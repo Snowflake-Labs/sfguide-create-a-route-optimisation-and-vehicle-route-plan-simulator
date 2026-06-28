@@ -198,7 +198,8 @@
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
     "layout": {
-      "default": { "columns": "340px 1fr", "rows": "auto 1fr 1fr auto auto", "grid": "\"kpi kpi\"\n\"journeys map\"\n\"stops map\"\n\"replay replay\"\n\"speed speed\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 440px auto auto auto", "grid": "\"kpi kpi\"\n\"journeys map\"\n\"replay replay\"\n\"detail detail\"\n\"speed speed\"" },
+      "mobile": { "columns": "1fr", "rows": "auto 260px 360px auto auto auto", "grid": "\"kpi\"\n\"journeys\"\n\"map\"\n\"replay\"\n\"detail\"\n\"speed\"" }
     },
     "areas": {
       "kpi": {
@@ -228,15 +229,6 @@
         },
         "config": { "rowKey": "journey_id", "maxRows": 100, "defaultSort": { "column": "deviated", "direction": "desc" }, "exceptionFirst": { "column": "deviated", "values": ["yes"] } },
         "emits": { "selected_journey": "selection" }
-      },
-      "stops": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT SEQUENCE_NUM AS seq, COALESCE(SITE_LABEL,'(transit/idle)') AS site, ARRIVAL_TS AS arrival, DEPARTURE_TS AS departure, ROUND(DWELL_DURATION_SEC/60,1) AS dwell_min, SLA_STATUS_ENUM AS sla FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY SEQUENCE_NUM LIMIT 200",
-          "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": { "rowKey": "seq", "maxRows": 200, "defaultSort": { "column": "seq", "direction": "asc" }, "exceptionFirst": { "column": "sla", "values": ["CRITICAL", "WARNING"] } },
-        "emits": { "selected_stop": "selection" }
       },
       "map": {
         "component": "Map",
@@ -358,7 +350,7 @@
           "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
-          "position": "drawer",
+          "position": "inline",
           "triggerKey": "selected_journey",
           "titleField": "journey_id",
           "subtitleFields": ["status"],
