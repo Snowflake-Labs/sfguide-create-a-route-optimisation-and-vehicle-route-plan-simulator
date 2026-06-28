@@ -9,7 +9,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
-import type { LayerSpec, MapAreaConfig } from '@/lib/map/layer-spec';
+import type { LayerSpec, MapAreaConfig, LegendItem } from '@/lib/map/layer-spec';
 import { compileLayer, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
@@ -105,6 +105,33 @@ function renderTooltip(template: string, object: Record<string, any>): string {
 
 const WORLD_FALLBACK = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 
+/** Absolutely-positioned legend card overlay, driven by config.legend. */
+function MapLegend({ items }: { items: LegendItem[] }) {
+  const rgba = (c: LegendItem['color']) => `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})`;
+  return (
+    <div
+      style={{
+        position: 'absolute', bottom: 12, left: 12, zIndex: 2,
+        background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(4px)',
+        border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '8px',
+        boxShadow: '0 1px 4px rgba(15,23,42,0.12)', padding: '8px 10px',
+        fontSize: '11px', color: 'var(--text-secondary, #4b5563)', pointerEvents: 'none',
+      }}
+    >
+      {items.map((it, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '2px 0' }}>
+          {it.shape === 'line' ? (
+            <span style={{ width: '16px', height: '3px', borderRadius: '2px', background: rgba(it.color), flex: '0 0 auto' }} />
+          ) : (
+            <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: rgba(it.color), flex: '0 0 auto' }} />
+          )}
+          <span>{it.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps) {
   const config = areaConfig.config;
   const specs = config.layers ?? [];
@@ -187,6 +214,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         fallbackViewState={fallback}
         getTooltip={getTooltip}
       />
+      {config.legend?.length ? <MapLegend items={config.legend} /> : null}
     </div>
   );
 }

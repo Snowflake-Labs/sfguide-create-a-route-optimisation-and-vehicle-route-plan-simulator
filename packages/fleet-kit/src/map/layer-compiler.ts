@@ -40,21 +40,23 @@ function colorAccessor(
   };
 }
 
-/** Build a PathLayer data array from rows (GeoJSON LineString or start->end). */
-function pathData(spec: PathLayerSpec, rows: Row[]): { path: number[][] }[] {
-  const out: { path: number[][] }[] = [];
+/** Build a PathLayer data array from rows (GeoJSON LineString or start->end).
+ *  Row properties are carried onto each datum so `{COLUMN}` tooltip tokens and
+ *  picking resolve against the source row. */
+function pathData(spec: PathLayerSpec, rows: Row[]): Array<{ path: number[][] } & Row> {
+  const out: Array<{ path: number[][] } & Row> = [];
   for (const r of rows) {
     if (spec.geojsonColumn && r[spec.geojsonColumn]) {
       try {
         const geo = JSON.parse(r[spec.geojsonColumn]);
         if (Array.isArray(geo?.coordinates) && geo.coordinates.length > 1) {
-          out.push({ path: geo.coordinates });
+          out.push({ ...r, path: geo.coordinates });
           continue;
         }
       } catch { /* fall through to straight segment */ }
     }
     if (spec.start && spec.end && has(r, spec.start.lng, spec.start.lat, spec.end.lng, spec.end.lat)) {
-      out.push({ path: [[num(r[spec.start.lng]), num(r[spec.start.lat])], [num(r[spec.end.lng]), num(r[spec.end.lat])]] });
+      out.push({ ...r, path: [[num(r[spec.start.lng]), num(r[spec.start.lat])], [num(r[spec.end.lng]), num(r[spec.end.lat])]] });
     }
   }
   return out;
@@ -115,6 +117,8 @@ export function compileLayer(
         getWidth: s.width ?? 2,
         widthMinPixels: s.widthMinPixels ?? 1,
         pickable: s.pickable ?? false,
+        autoHighlight: s.pickable ?? false,
+        highlightColor: s.highlightColor ?? [41, 181, 232, 220],
       });
     }
     case 'h3': {

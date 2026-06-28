@@ -93,7 +93,8 @@ export function AutoTable({ columns, rows, totalRows }: { columns: ColumnDef[]; 
   const displayed = rows.length;
   const total = totalRows ?? displayed;
   return (
-    <div style={{ overflow: 'auto' }}>
+    <div>
+      <div style={{ maxHeight: '330px', overflow: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
         <thead>
           <tr>
@@ -116,6 +117,7 @@ export function AutoTable({ columns, rows, totalRows }: { columns: ColumnDef[]; 
           ))}
         </tbody>
       </table>
+      </div>
       {total > displayed && (
         <div style={{ padding: '8px', fontSize: '12px', color: 'var(--text-secondary, #6b7280)', textAlign: 'center' }}>
           Showing {displayed} of {total.toLocaleString()}

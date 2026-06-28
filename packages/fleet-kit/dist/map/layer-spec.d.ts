@@ -60,6 +60,8 @@ export interface PathLayerSpec extends LayerBase {
     color?: ColorRGBA;
     width?: number;
     widthMinPixels?: number;
+    /** Color a path takes on hover (requires pickable). Defaults to Snowflake blue. */
+    highlightColor?: ColorRGBA;
 }
 export interface H3HexagonLayerSpec extends LayerBase {
     type: 'h3';
@@ -98,6 +100,13 @@ export interface MapViewStateSpec {
     pitch?: number;
     bearing?: number;
 }
+/** One entry in a map legend: a labeled color swatch. */
+export interface LegendItem {
+    label: string;
+    color: ColorRGBA;
+    /** Swatch shape; defaults to 'dot'. */
+    shape?: 'dot' | 'line';
+}
 /** `config` block of a `component: Map` area in an SA view YAML. */
 export interface MapAreaConfig {
     layers: LayerSpec[];
@@ -107,6 +116,8 @@ export interface MapAreaConfig {
     height?: number;
     /** Camera fallback when there are no coordinates to fit. */
     fallback?: MapViewStateSpec;
+    /** Optional legend rendered as an overlay card on the map. */
+    legend?: LegendItem[];
 }
 export {};
 //# sourceMappingURL=layer-spec.d.ts.map
