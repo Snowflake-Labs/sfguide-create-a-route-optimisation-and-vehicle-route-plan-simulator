@@ -14,7 +14,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
-SET JOB_ID = '59e656d4-6801-46fc-9209-137f909fbe31';
+SET JOB_ID = '38faa5fc-ed43-4259-98f1-91b99f18c527';
 
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

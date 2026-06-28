@@ -19,7 +19,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 USE WAREHOUSE ROUTING_ANALYTICS;
 
 -- Data Studio preset exported via datasets/export-preset.sql
-SET SEED_JOB_ID = '59e656d4-6801-46fc-9209-137f909fbe31';
+SET SEED_JOB_ID = '38faa5fc-ed43-4259-98f1-91b99f18c527';
 
 --------------------------------------------------------------------------------
 -- Stage & File Format
@@ -750,11 +750,11 @@ SELECT
   $SEED_JOB_ID,
   'SanFrancisco',
   'ebike',
-  'San Francisco E-Bike 50 @ seed',
+  'San Francisco E-Bike 100 @ seed',
   TRUE,
   CURRENT_TIMESTAMP(),
-  PARSE_JSON('{"fleet":50,"history":511,"offers":300,"partners":80,"pois":4998,"telemetry":518535,"trips":5685,"trip_schedule":5685,"places":52512,"lookup":5,"routes":300}'),
-  'Seed dataset from Data Studio preset San Francisco E-Bike 50';
+  PARSE_JSON('{"fleet":100,"history":511,"offers":300,"partners":80,"pois":4996,"telemetry":445536,"trips":3748,"trip_schedule":3748,"places":52351,"lookup":5,"routes":300}'),
+  'Seed dataset from Data Studio preset SF E-Bike Fleet';
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS;
 
@@ -763,19 +763,19 @@ INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
 SELECT
   $SEED_JOB_ID,
   '',
-  'San Francisco E-Bike 50',
+  'SF E-Bike Fleet',
   'SanFrancisco',
   'cycling-electric',
-  50,
+  100,
   DATEADD('day', -7, CURRENT_DATE()),
   DATEADD('day', -1, CURRENT_DATE()),
   'COMPLETED',
-  518535,
-  5685,
+  445536,
+  3748,
   DATEADD('hour', -2, CURRENT_TIMESTAMP()),
   DATEADD('minute', -5, CURRENT_TIMESTAMP()),
   NULL,
-  PARSE_JSON('{"vehicleType":"ebike","orsProfile":"cycling-electric","numVehicles":50,"days":7,"tripsPerDay":{"min":15,"max":35},"region":"SanFrancisco","source":"seed-data"}')
+  PARSE_JSON('{"vehicleType":"ebike","orsProfile":"cycling-electric","numVehicles":100,"days":7,"tripsPerDay":{"min":15,"max":35},"region":"SanFrancisco","source":"seed-data"}')
 ;
 
 --------------------------------------------------------------------------------
