@@ -248,7 +248,7 @@ export default function ServiceManager() {
                     const inFlight = serviceAction?.name === svc.name;
                     const instancesCell = svc.max_instances != null
                       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
-                      : '\u2014';
+                      : '-';
 
                     return (
                       <tr key={svc.name}>
@@ -351,7 +351,7 @@ export default function ServiceManager() {
                 <strong>{region}</strong>
                 {' '}
                 <span style={{ fontSize: 11, opacity: 0.8 }}>{r.graphs_persisted ? '(loading from stage)' : '(building from OSM)'}</span>
-                {` \u2014 ${r.graphs?.filter((g: any) => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
+                {` - ${r.graphs?.filter((g: any) => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
                 {r.graphs && r.graphs.length > 0 && (
                   <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none' }}>
                     {r.graphs.map((g: any) => (

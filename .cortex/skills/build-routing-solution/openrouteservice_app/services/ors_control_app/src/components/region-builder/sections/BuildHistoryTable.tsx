@@ -35,7 +35,7 @@ export default function BuildHistoryTable({ history, catalog, onRerun }: Props) 
           {history.map((b) => {
             const minutes = b.ELAPSED_MINUTES != null ? Math.round(b.ELAPSED_MINUTES * 10) / 10 : null;
             const elapsed = minutes == null
-              ? '\u2014'
+              ? '-'
               : minutes >= 60
                 ? `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`
                 : `${minutes}m`;
@@ -47,13 +47,13 @@ export default function BuildHistoryTable({ history, catalog, onRerun }: Props) 
             const canRerun = !!b.REGION && catalog.some((r) => r.regionKey.toUpperCase() === b.REGION!.toUpperCase());
             return (
               <tr key={b.BUILD_ID || `${b.REGION}-${b.STARTED_AT}`}>
-                <td>{b.REGION || '\u2014'}</td>
-                <td>{b.STARTED_AT ? new Date(b.STARTED_AT).toLocaleString() : '\u2014'}</td>
-                <td>{b.INSTANCE_FAMILY || '\u2014'}{b.COMPUTE_SIZE ? ` / ${b.COMPUTE_SIZE}` : ''}</td>
-                <td title={b.PROFILES || ''} style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.PROFILES || '\u2014'}</td>
+                <td>{b.REGION || '-'}</td>
+                <td>{b.STARTED_AT ? new Date(b.STARTED_AT).toLocaleString() : '-'}</td>
+                <td>{b.INSTANCE_FAMILY || '-'}{b.COMPUTE_SIZE ? ` / ${b.COMPUTE_SIZE}` : ''}</td>
+                <td title={b.PROFILES || ''} style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.PROFILES || '-'}</td>
                 <td>{elapsed}</td>
                 <td><span className={`badge ${statusBadge}`}>{b.EXIT_STATUS || 'UNKNOWN'}</span></td>
-                <td>{b.PEAK_RSS_GIB != null ? `${Math.round(b.PEAK_RSS_GIB)} GB` : '\u2014'}</td>
+                <td>{b.PEAK_RSS_GIB != null ? `${Math.round(b.PEAK_RSS_GIB)} GB` : '-'}</td>
                 <td>
                   <button
                     className="btn small"

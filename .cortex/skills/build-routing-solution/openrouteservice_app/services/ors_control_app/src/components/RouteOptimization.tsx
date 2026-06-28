@@ -635,7 +635,7 @@ export default function RouteOptimization() {
       const c = ROUTE_COLORS[assignment.vehicleIdx % ROUTE_COLORS.length];
       const label = PROFILE_LABELS[vehicles[assignment.vehicleIdx]?.profile] || 'Vehicle';
       html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.15)">`;
-      html += `<div style="margin-bottom:3px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:rgb(${c.join(',')});margin-right:6px"></span><b>${label} ${assignment.vehicleIdx + 1}</b> \u2014 Stop ${assignment.sequence} of ${assignment.totalStops}</div>`;
+      html += `<div style="margin-bottom:3px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:rgb(${c.join(',')});margin-right:6px"></span><b>${label} ${assignment.vehicleIdx + 1}</b> - Stop ${assignment.sequence} of ${assignment.totalStops}</div>`;
       if (assignment.timeWindow) html += `<div style="opacity:0.8">\u{1F550} ${assignment.timeWindow}</div>`;
       if (assignment.arrival != null) {
         const mins = Math.round(assignment.arrival / 60);
@@ -893,9 +893,9 @@ export default function RouteOptimization() {
                       </span>
                     </td>
                     <td style={{ padding: '6px 10px' }}><span style={{ fontWeight: 500 }}>{a.placeName}</span><br /><span style={{ opacity: 0.6, fontSize: 11 }}>{a.category}</span></td>
-                    <td style={{ padding: '6px 10px', opacity: 0.8, fontSize: 11 }}>{a.address || '\u2014'}</td>
-                    <td style={{ padding: '6px 10px', fontSize: 11 }}>{a.timeWindow || '\u2014'}</td>
-                    <td style={{ padding: '6px 10px', fontSize: 11 }}>{etaMins != null ? (etaMins >= 60 ? `${Math.floor(etaMins / 60)}h ${etaMins % 60}m` : `${etaMins}m`) : '\u2014'}</td>
+                    <td style={{ padding: '6px 10px', opacity: 0.8, fontSize: 11 }}>{a.address || '-'}</td>
+                    <td style={{ padding: '6px 10px', fontSize: 11 }}>{a.timeWindow || '-'}</td>
+                    <td style={{ padding: '6px 10px', fontSize: 11 }}>{etaMins != null ? (etaMins >= 60 ? `${Math.floor(etaMins / 60)}h ${etaMins % 60}m` : `${etaMins}m`) : '-'}</td>
                   </tr>
                 );
               })}

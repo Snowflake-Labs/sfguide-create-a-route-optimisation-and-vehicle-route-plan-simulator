@@ -231,7 +231,7 @@ export function OpsConsoleView() {
         : undefined;
     const instances = svc?.max_instances != null
       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
-      : '\u2014';
+      : '-';
     const drift = Number(svc?.auto_suspend_secs) === 0 && isRunning;
     return (
       <div key={fqName} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', padding: '4px 0' }}>

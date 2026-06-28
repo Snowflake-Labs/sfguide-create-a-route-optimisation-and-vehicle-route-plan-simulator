@@ -17,7 +17,7 @@ const STATE_GLYPH: Record<PhaseStatus, string> = {
   done: '\u2713',
   in_progress: '\u22EF',
   not_started: '\u25CB',
-  na: '\u2014',
+  na: '-',
 };
 
 const STATE_LABEL: Record<PhaseStatus, string> = {
@@ -55,7 +55,7 @@ export default function PhasePips({ phases, ready, showLabel = true, size = 'sm'
           <span
             key={key}
             className={STATE_CLASS[state]}
-            title={`${PHASE_TITLES[key]} \u2014 ${STATE_LABEL[state]}`}
+            title={`${PHASE_TITLES[key]} - ${STATE_LABEL[state]}`}
           >
             <span className="phase-pip-glyph">{STATE_GLYPH[state]}</span>
             {showLabel && <span className="phase-pip-label">{PHASE_LABEL[key]}</span>}

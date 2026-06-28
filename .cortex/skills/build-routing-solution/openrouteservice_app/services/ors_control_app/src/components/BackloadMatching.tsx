@@ -322,13 +322,13 @@ export default function BackloadMatching() {
         );
         const c = (cov[0] as any) || {};
         upstreamHint =
-          ` Active dataset coverage \u2014 trips: ${c.TRIPS ?? 0}, fleet: ${c.FLEET ?? 0}, ` +
+          ` Active dataset coverage - trips: ${c.TRIPS ?? 0}, fleet: ${c.FLEET ?? 0}, ` +
           `POIs: ${c.POIS ?? 0}, offers: ${c.OFFERS ?? 0}.`;
       } catch {
         // best-effort; fall back to the basic hint
       }
       const baseHint =
-        `Tables are empty for region "${regionName}" \u2014 trailers: ${tRows.length}, internal: ${iRows.length}, external: ${eRows.length}.`;
+        `Tables are empty for region "${regionName}" - trailers: ${tRows.length}, internal: ${iRows.length}, external: ${eRows.length}.`;
       const action = upstreamHint && /fleet:\s*0|POIs:\s*0/.test(upstreamHint)
         ? ' The active dataset is missing fleet or POIs, so run a Data Studio job for this region to create a complete dataset.'
         : ' Run a Data Studio job for this preset to populate missing freight data.';
@@ -1468,7 +1468,7 @@ export default function BackloadMatching() {
             <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>PAYLOAD SIZE (matrix budget)</div>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
               <div style={sliderBlock}>
-                <label style={labelStyle}>Max trailers: {maxVehicles}<InfoTip text={"How many idle trailers (closest to shipments) get sent to VROOM. Trailers beyond this cap are skipped \u2014 raise this to lift the assignment ratio.\n\nDefault 15. Auto-clamped on Solve so the precomputed ORS matrix stays under " + BM_MAX_MATRIX_LOCATIONS + " unique locations (gateway 45 s timeout protection)."} /></label>
+                <label style={labelStyle}>Max trailers: {maxVehicles}<InfoTip text={"How many idle trailers (closest to shipments) get sent to VROOM. Trailers beyond this cap are skipped - raise this to lift the assignment ratio.\n\nDefault 15. Auto-clamped on Solve so the precomputed ORS matrix stays under " + BM_MAX_MATRIX_LOCATIONS + " unique locations (gateway 45 s timeout protection)."} /></label>
                 <input type="range" min={BM_VEHICLES_MIN} max={BM_VEHICLES_MAX} value={maxVehicles} onChange={e => setMaxVehicles(Number(e.target.value))} style={{ width: '100%' }} />
               </div>
               <div style={sliderBlock}>

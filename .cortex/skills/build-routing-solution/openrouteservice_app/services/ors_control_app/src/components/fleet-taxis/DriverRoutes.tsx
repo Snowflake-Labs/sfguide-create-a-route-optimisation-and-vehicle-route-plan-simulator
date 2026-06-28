@@ -130,7 +130,7 @@ export default function DriverRoutes() {
             <option value="">Select a driver...</option>
             {drivers.map((d: any) => (
               <option key={d.DRIVER_ID} value={d.DRIVER_ID}>
-                {d.DRIVER_ID} \u2014 {d.TRIPS} trips, {fmtDec(d.TOTAL_KM)} km
+                {d.DRIVER_ID} - {d.TRIPS} trips, {fmtDec(d.TOTAL_KM)} km
               </option>
             ))}
           </select>
@@ -142,7 +142,7 @@ export default function DriverRoutes() {
               <option value="">Select a trip...</option>
               {routes.map((r: any) => (
                 <option key={r.TRIP_ID} value={r.TRIP_ID}>
-                  {String(r.TRIP_ID).slice(-10)} \u2014 {r.TRIP_KM} km, {fmtDec(r.TRIP_MIN)} min
+                  {String(r.TRIP_ID).slice(-10)} - {r.TRIP_KM} km, {fmtDec(r.TRIP_MIN)} min
                 </option>
               ))}
             </select>

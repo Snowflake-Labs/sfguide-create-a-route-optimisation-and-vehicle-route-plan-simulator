@@ -623,7 +623,7 @@
   "dispatch_execution_board": {
     "label": "Dispatch Execution Board",
     "category": "Core",
-    "description": "Manage scheduled {{labels.work_item}}s against plan \u2014 jobs list, resource board, and planned-vs-actual by day.",
+    "description": "Manage scheduled {{labels.work_item}}s against plan - jobs list, resource board, and planned-vs-actual by day.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1.2fr auto", "grid": "\"kpi kpi\"\n\"jobs map\"\n\"resource timeline\"" }
     },
@@ -709,7 +709,7 @@
   "safety_risk_scorecard": {
     "label": "Safety / Risk Scorecard",
     "category": "Core",
-    "description": "Operational risk by severity \u2014 click a KPI tile to filter, review the event queue, and map hot spots.",
+    "description": "Operational risk by severity - click a KPI tile to filter, review the event queue, and map hot spots.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1.2fr", "grid": "\"kpi kpi\"\n\"factor queue\"\n\"map map\"" }
     },
@@ -844,7 +844,7 @@
   "dwell_facilities": {
     "label": "Facility Utilization",
     "category": "Core",
-    "description": "Dwell load by facility and facility type \u2014 where vehicles spend the most time.",
+    "description": "Dwell load by facility and facility type - where vehicles spend the most time.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byfac bytype\"" }
     },
@@ -978,7 +978,7 @@
   "fleetops_origins": {
     "label": "Top Origins",
     "category": "Core",
-    "description": "Busiest origin locations by trip volume \u2014 where journeys begin (any origin type).",
+    "description": "Busiest origin locations by trip volume - where journeys begin (any origin type).",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byorigin map\"" }
     },
@@ -1039,7 +1039,7 @@
   "catchment": {
     "label": "Catchment",
     "category": "Location",
-    "description": "Points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
+    "description": "Points of interest - filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
       "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
     },
@@ -1148,7 +1148,7 @@
   "asset_velocity": {
     "label": "Asset Velocity",
     "category": "Asset Pool",
-    "description": "Idle trailers, cost of idleness, and where they are parked \u2014 set a minimum idle and click a trailer to highlight it.",
+    "description": "Idle trailers, cost of idleness, and where they are parked - set a minimum idle and click a trailer to highlight it.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
     },

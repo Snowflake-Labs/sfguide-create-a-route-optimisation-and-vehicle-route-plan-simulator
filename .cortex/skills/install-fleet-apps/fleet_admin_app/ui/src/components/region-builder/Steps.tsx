@@ -21,7 +21,7 @@ export function StepsStrip({ currentStage, allDone = false, elapsedHint }: { cur
           <span
             key={phase.id}
             className={`step-pip ${state}`}
-            title={`${idx + 1}. ${phase.label} \u2014 ${state === 'done' ? 'done' : state === 'active' ? 'in progress' : 'not started'}`}
+            title={`${idx + 1}. ${phase.label} - ${state === 'done' ? 'done' : state === 'active' ? 'in progress' : 'not started'}`}
           >
             {STEP_GLYPH[state]}
           </span>
