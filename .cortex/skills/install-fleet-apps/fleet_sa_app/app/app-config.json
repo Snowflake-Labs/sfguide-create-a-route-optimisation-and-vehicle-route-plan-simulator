@@ -108,6 +108,19 @@
       "type": "date_range",
       "label": "Date range",
       "default": "last_365_days"
+    },
+    {
+      "id": "deviation_threshold",
+      "type": "enum",
+      "label": "Deviation threshold",
+      "default": "0.10",
+      "options": [
+        { "value": "0.05", "label": "more than 5%" },
+        { "value": "0.10", "label": "more than 10%" },
+        { "value": "0.15", "label": "more than 15%" },
+        { "value": "0.20", "label": "more than 20%" },
+        { "value": "0.25", "label": "more than 25%" }
+      ]
     }
   ],
   "display": {
