@@ -471,6 +471,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   }, [participants, centers]);
 
   const labelStyle = { fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, marginBottom: '4px', display: 'block' };
+  const subLabelStyle = { fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, letterSpacing: '0.02em', marginBottom: '4px', display: 'block', whiteSpace: 'nowrap' as const };
   const inputStyle = { width: '100%', padding: '8px 10px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)', color: 'var(--text-primary, #111827)' };
   const btn = (enabled: boolean) => ({ padding: '8px 16px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: enabled ? 'pointer' : 'not-allowed', backgroundColor: 'var(--surface-accent-strong, #2563eb)', color: '#fff', opacity: enabled ? 1 : 0.6 });
 
@@ -509,13 +510,13 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
           </select>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', alignItems: 'end' }}>
           <div>
-            <label style={labelStyle}>2 · Isochrone min</label>
+            <label style={subLabelStyle}>2 · Isochrone min</label>
             <input type="number" min={1} max={60} style={inputStyle} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
           </div>
           <div>
-            <label style={labelStyle}>Participants</label>
+            <label style={subLabelStyle}>Participants</label>
             <input type="number" min={1} max={300} style={inputStyle} value={targetCount} onChange={(e) => setTargetCount(Number(e.target.value))} />
           </div>
         </div>
@@ -537,10 +538,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             </div>
             <div>
               <label style={labelStyle}>Each care center has:</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                <div><label style={labelStyle}>Vehicles / center</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
-                <div><label style={labelStyle}>Capacity</label><input type="number" min={1} max={20} style={inputStyle} value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} /></div>
-                <div><label style={labelStyle}>Max trips</label><input type="number" min={1} max={6} style={inputStyle} value={maxTrips} onChange={(e) => setMaxTrips(Number(e.target.value))} /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', alignItems: 'end' }}>
+                <div><label style={subLabelStyle}>Vehicles</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
+                <div><label style={subLabelStyle}>Capacity</label><input type="number" min={1} max={20} style={inputStyle} value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} /></div>
+                <div><label style={subLabelStyle}>Max trips</label><input type="number" min={1} max={6} style={inputStyle} value={maxTrips} onChange={(e) => setMaxTrips(Number(e.target.value))} /></div>
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
                 {depotCount} center(s) &times; {numVehicles} vehicle(s) = <strong>{depotCount * numVehicles}</strong> vehicles total. Each vehicle can shuttle back to its center up to {maxTrips} times.
