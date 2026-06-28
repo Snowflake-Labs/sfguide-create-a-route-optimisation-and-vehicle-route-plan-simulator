@@ -198,12 +198,33 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   // When a selection is active, focus on the selected object's coords only
   // (excluding context layers); otherwise frame the full set of all layers.
   const fitCoords = useMemo<LngLat[]>(() => {
-    const sel: LngLat[] = [];
-    for (const i of Object.keys(fitsSel)) sel.push(...fitsSel[Number(i)]);
+    // Collapse every layer's coords into a single bounding box (2 corner
+    // points) without spreading large arrays into push() — spreading
+    // data-sized arrays overflows the call stack. Downstream fit helpers
+    // only ever derive a bounding box from coords, so 2 corners is equivalent.
+    const boxFrom = (source: Record<number, LngLat[]>): LngLat[] => {
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      let seen = false;
+      for (const key of Object.keys(source)) {
+        const arr = source[Number(key)];
+        if (!arr) continue;
+        for (const c of arr) {
+          const lng = c[0];
+          const lat = c[1];
+          if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+          if (lng < minLng) minLng = lng;
+          if (lng > maxLng) maxLng = lng;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+          seen = true;
+        }
+      }
+      if (!seen) return [];
+      return [[minLng, minLat], [maxLng, maxLat]];
+    };
+    const sel = boxFrom(fitsSel);
     if (sel.length) return sel;
-    const all: LngLat[] = [];
-    for (const i of Object.keys(fitsFull)) all.push(...fitsFull[Number(i)]);
-    return all;
+    return boxFrom(fitsFull);
   }, [fitsSel, fitsFull]);
 
   // Changes whenever a tracked selection value changes; drives MapView's

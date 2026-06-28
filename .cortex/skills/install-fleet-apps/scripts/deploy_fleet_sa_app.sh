@@ -84,7 +84,11 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
   fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
-  ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npm run build ) \
+  # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
+  # dependency, and webpack's filesystem cache does not reliably invalidate when
+  # the kit's dist/ is rebuilt in place -> stale bundles ship the OLD kit code.
+  # Clearing .next forces a clean module graph so kit edits actually land.
+  ( cd "$UI_DIR" && rm -rf .next && { [ -d node_modules ] || npm ci; } && npm run build ) \
     > /tmp/fleet_sa_build.log 2>&1 || { echo "ERROR: next build failed"; tail -40 /tmp/fleet_sa_build.log; exit 1; }
 
   echo "[2/7] Login to SPCS image registry..."

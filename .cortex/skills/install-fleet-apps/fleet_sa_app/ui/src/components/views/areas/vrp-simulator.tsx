@@ -6,10 +6,27 @@
 
 import { useState } from 'react';
 import { RouteMapInline } from '@/components/inline/route-map-inline';
+import { useAppStore } from '@/lib/store';
 
 const PROFILES = ['driving-car', 'driving-hgv', 'cycling-regular', 'foot-walking'];
 
+// Humanize a region key ("SanFrancisco" -> "San Francisco") for placeholder copy
+// so the simulator examples track the active region instead of hardcoding a city.
+function humanizeRegion(region: string | undefined): string {
+  if (!region) return '';
+  return region
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim();
+}
+
 export function VrpSimulatorView() {
+  const region = useAppStore((s) => s.context['region']) as string | undefined;
+  const regionLabel = humanizeRegion(region);
+  const depotPlaceholder = regionLabel ? `e.g. depot in ${regionLabel}` : 'e.g. central depot';
+  const stopsPlaceholder = regionLabel
+    ? `Stop 1, ${regionLabel}\nStop 2, ${regionLabel}\n...`
+    : 'Stop 1\nStop 2\n...';
   const [depot, setDepot] = useState('');
   const [stops, setStops] = useState('');
   const [vehicles, setVehicles] = useState(2);
@@ -56,11 +73,11 @@ export function VrpSimulatorView() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
         <div style={{ gridColumn: '1 / -1' }}>
           <label style={labelStyle}>Depot</label>
-          <input style={inputStyle} value={depot} onChange={(e) => setDepot(e.target.value)} placeholder="e.g. Manchester depot" />
+          <input style={inputStyle} value={depot} onChange={(e) => setDepot(e.target.value)} placeholder={depotPlaceholder} />
         </div>
         <div style={{ gridColumn: '1 / -1' }}>
           <label style={labelStyle}>Delivery stops (one per line or comma-separated)</label>
-          <textarea style={{ ...inputStyle, minHeight: '90px', resize: 'vertical' }} value={stops} onChange={(e) => setStops(e.target.value)} placeholder="10 Downing St, London&#10;Kings Cross, London&#10;..." />
+          <textarea style={{ ...inputStyle, minHeight: '90px', resize: 'vertical' }} value={stops} onChange={(e) => setStops(e.target.value)} placeholder={stopsPlaceholder} />
         </div>
         <div>
           <label style={labelStyle}>Vehicles</label>

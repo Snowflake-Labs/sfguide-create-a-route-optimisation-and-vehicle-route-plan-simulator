@@ -5,6 +5,7 @@
 // reusable map DSL Solution Accelerator lacked.
 import { ScatterplotLayer, PathLayer, GeoJsonLayer, ArcLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
+import { cellToBoundary } from 'h3-js';
 const num = (v) => Number(v);
 const has = (r, ...cols) => cols.every((c) => r[c] != null);
 /** Resolve a ColorValue to a constant color or a per-row accessor. */
@@ -122,9 +123,27 @@ export function compileLayer(spec, rows, viewState, index, hovered) {
         }
         case 'h3': {
             const s = spec;
-            const vals = s.valueColumn ? rows.map((r) => num(r[s.valueColumn])).filter(Number.isFinite) : [];
-            const min = vals.length ? Math.min(...vals) : 0;
-            const max = vals.length ? Math.max(...vals) : 1;
+            let min = 0;
+            let max = 1;
+            if (s.valueColumn) {
+                let seen = false;
+                for (const r of rows) {
+                    const v = num(r[s.valueColumn]);
+                    if (!Number.isFinite(v))
+                        continue;
+                    if (!seen) {
+                        min = v;
+                        max = v;
+                        seen = true;
+                    }
+                    else {
+                        if (v < min)
+                            min = v;
+                        if (v > max)
+                            max = v;
+                    }
+                }
+            }
             const [lo, hi] = s.colorScale ?? [[41, 181, 232, 80], [41, 181, 232, 220]];
             const lerp = (d) => {
                 if (!s.valueColumn || max === min)
@@ -201,6 +220,25 @@ export function layerFitCoords(spec, rows) {
         for (const seg of pathData(spec, rows))
             for (const p of seg.path)
                 out.push([p[0], p[1]]);
+    }
+    else if (spec.type === 'h3') {
+        const s = spec;
+        const sample = 2000;
+        const stride = rows.length > sample ? Math.ceil(rows.length / sample) : 1;
+        for (let i = 0; i < rows.length; i += stride) {
+            const cell = rows[i]?.[s.hexColumn];
+            if (typeof cell !== 'string' || cell.length < 15)
+                continue;
+            try {
+                for (const v of cellToBoundary(cell)) {
+                    const lat = v[0];
+                    const lng = v[1];
+                    if (Number.isFinite(lat) && Number.isFinite(lng))
+                        out.push([lng, lat]);
+                }
+            }
+            catch { /* skip invalid cell */ }
+        }
     }
     return out;
 }
