@@ -48,10 +48,17 @@ interface PlanTrip {
   tripKey: string; physIndex: number; vehicleLabel: string; vehicleId: number;
   tripNumber: number; stops: PlanStop[]; load: number; capacity: number; durationSec: number;
 }
-interface PlanStats { evacuees: number; assigned: number; trips: number; totalMin: number; overflow: number; autoTrips: number; }
-interface VehicleMeta { physIndex: number; vehicleLabel: string; tripSlot: number; capacity: number; }
+interface PlanStats { evacuees: number; assigned: number; trips: number; totalMin: number; completionMin: number; overflow: number; autoTrips: number; }
+// All vans at a center are identical to VROOM (same depot/capacity); the physical
+// van + trip number is assigned AFTER the solve by scheduling each center's routes
+// across its vans, so meta only needs the originating center.
+interface VehicleMeta { centerIndex: number; centerName: string; capacity: number; }
 
-// Parse native VROOM routes[] into grouped, renumbered trips. Job-step ids map
+// Parse native VROOM routes[] into trips, then PARALLELIZE: each VROOM route is an
+// independent depot round-trip, so the routes VROOM returns for a center can run
+// simultaneously on that center's vans. We schedule them across `vansPerCenter`
+// vans with LPT (longest-processing-time first) to minimise the per-center
+// makespan, then label each trip "<center> - Van j - Trip t". Job-step ids map
 // back to participant pids via jobParticipant; stop coords come from our own
 // evacuee list so we never depend on VROOM echoing step locations.
 function parseRoutes(
@@ -59,10 +66,11 @@ function parseRoutes(
   evacuees: Participant[],
   vehicleMeta: Record<number, VehicleMeta>,
   jobParticipant: Record<number, string>,
+  vansPerCenter: number,
 ): { trips: PlanTrip[]; assigned: number } {
   const byPid: Record<string, Participant> = {};
   for (const p of evacuees) byPid[p.pid] = p;
-  type Raw = { meta: VehicleMeta; vehicleId: number; stops: PlanStop[]; durationSec: number };
+  type Raw = { centerIndex: number; centerName: string; capacity: number; vehicleId: number; stops: PlanStop[]; durationSec: number };
   const raws: Raw[] = [];
   const assigned = new Set<number>();
   for (const route of routes || []) {
@@ -80,20 +88,33 @@ function parseRoutes(
       const p = pid ? byPid[pid] : undefined;
       if (p) stops.push({ seq: i + 1, lon: p.lon, lat: p.lat, pid: p.pid });
     });
-    raws.push({ meta, vehicleId: vid, stops, durationSec: Number(route?.duration) || 0 });
+    raws.push({ centerIndex: meta.centerIndex, centerName: meta.centerName, capacity: meta.capacity, vehicleId: vid, stops, durationSec: Number(route?.duration) || 0 });
   }
+  // Group routes by originating center, then LPT-schedule across that center's vans.
   const groups: Record<number, Raw[]> = {};
-  for (const r of raws) (groups[r.meta.physIndex] ||= []).push(r);
+  for (const r of raws) (groups[r.centerIndex] ||= []).push(r);
+  const lanes = Math.max(1, vansPerCenter);
   const trips: PlanTrip[] = [];
-  for (const physIndex of Object.keys(groups).map(Number).sort((a, b) => a - b)) {
-    const g = groups[physIndex].sort((a, b) => a.meta.tripSlot - b.meta.tripSlot);
-    g.forEach((r, i) => {
+  for (const centerIndex of Object.keys(groups).map(Number).sort((a, b) => a - b)) {
+    const g = groups[centerIndex].slice().sort((a, b) => b.durationSec - a.durationSec);
+    const bins = Array.from({ length: lanes }, () => ({ load: 0, count: 0 }));
+    for (const r of g) {
+      // Assign to the currently least-loaded van (ties -> lowest van index).
+      let b = 0;
+      for (let j = 1; j < lanes; j++) if (bins[j].load < bins[b].load) b = j;
+      bins[b].count += 1;
+      bins[b].load += r.durationSec;
+      const tripNumber = bins[b].count;
+      const physIndex = centerIndex * lanes + b; // stable per physical van (for colour)
       trips.push({
-        tripKey: `${physIndex}:${i + 1}`, physIndex, vehicleLabel: r.meta.vehicleLabel, vehicleId: r.vehicleId,
-        tripNumber: i + 1, stops: r.stops, load: r.stops.length, capacity: r.meta.capacity, durationSec: r.durationSec,
+        tripKey: `${centerIndex}:${b}:${tripNumber}`, physIndex,
+        vehicleLabel: `${r.centerName} - Van ${b + 1}`, vehicleId: r.vehicleId,
+        tripNumber, stops: r.stops, load: r.stops.length, capacity: r.capacity, durationSec: r.durationSec,
       });
-    });
+    }
   }
+  // Display order: by van, then trip number, so each van's trips group together.
+  trips.sort((a, b) => a.physIndex - b.physIndex || a.tripNumber - b.tripNumber);
   return { trips, assigned: assigned.size };
 }
 
@@ -191,6 +212,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     evacuees: planStats?.evacuees ?? null,
     assigned: planStats?.assigned ?? null,
     trips: planStats?.trips ?? null,
+    completion_min: planStats?.completionMin ?? null,
     total_drive_min: planStats?.totalMin ?? null,
     overflow: planStats?.overflow ?? null,
     step,
@@ -276,31 +298,35 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     setBusy(true); setError(null);
     setTrips([]); setPlanStats(null); setSelectedTripKey(null); setUnassignedPids([]);
     try {
-      // Multi-depot, multi-trip: EVERY seeded/loaded care center is a depot, each
-      // holding `numVehicles` vans (no cap). Expand each van into virtual vehicles
-      // (one per trip). Auto-raise the trip count so total seats
-      // (centers*vans*capacity*trips) cover every evacuee, capped at CEIL_TRIPS.
+      // Every seeded/loaded care center is a depot holding `vansPerCenter` vans.
+      // Vans at a center are interchangeable to VROOM, so we just offer a POOL of
+      // identical vehicles per center (vans x trips) and let VROOM pick how many
+      // routes each center needs; parseRoutes then schedules those routes across
+      // the center's vans IN PARALLEL (makespan), so vans actually run concurrently
+      // instead of one van shuttling sequentially. Trip count auto-raises so total
+      // seats (centers*vans*capacity*trips) cover every evacuee, capped at CEIL_TRIPS.
+      // Total vehicles offered is capped at MAX_VEHICLES (VROOM maxvehicles=200).
+      const MAX_VEHICLES = 190;
       const depots = centers;
       const vansPerCenter = Math.max(1, numVehicles);
       const cap = Math.max(1, capacity);
       const totalVans = Math.max(1, depots.length * vansPerCenter);
       const neededTrips = Math.ceil(evacuees.length / (totalVans * cap));
       const effTrips = Math.min(CEIL_TRIPS, Math.max(Math.max(1, maxTrips), neededTrips));
+      let perCenterOffer = vansPerCenter * effTrips;
+      if (depots.length * perCenterOffer > MAX_VEHICLES) {
+        perCenterOffer = Math.max(vansPerCenter, Math.floor(MAX_VEHICLES / Math.max(1, depots.length)));
+      }
       const vehicles: unknown[] = [];
       const vehicleMeta: Record<number, VehicleMeta> = {};
       let vid = 1;
-      let physIndex = 0;
-      for (const d of depots) {
-        for (let k = 0; k < vansPerCenter; k++) {
-          const label = `${d.center_name} - Van ${k + 1}`;
-          for (let t = 0; t < effTrips; t++) {
-            vehicles.push({ id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] });
-            vehicleMeta[vid] = { physIndex, vehicleLabel: label, tripSlot: t, capacity: cap };
-            vid++;
-          }
-          physIndex++;
+      depots.forEach((d, ci) => {
+        for (let s = 0; s < perCenterOffer; s++) {
+          vehicles.push({ id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] });
+          vehicleMeta[vid] = { centerIndex: ci, centerName: d.center_name, capacity: cap };
+          vid++;
         }
-      }
+      });
       const jobParticipant: Record<number, string> = {};
       const jobs = evacuees.map((p, i) => {
         jobParticipant[i + 1] = p.pid;
@@ -317,13 +343,18 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
 
       // Build trips + coverage stats from the routes VROOM actually returned.
       const routes = (r.routes as any[]) ?? [];
-      const { trips: parsed, assigned } = parseRoutes(routes, evacuees, vehicleMeta, jobParticipant);
+      const { trips: parsed, assigned } = parseRoutes(routes, evacuees, vehicleMeta, jobParticipant, vansPerCenter);
       setTrips(parsed);
       const assignedPids = new Set(parsed.flatMap((t) => t.stops.map((s) => s.pid)));
       setUnassignedPids(evacuees.filter((p) => !assignedPids.has(p.pid)).map((p) => p.pid));
       const totalMin = Math.round(parsed.reduce((a, t) => a + t.durationSec, 0) / 60);
+      // Completion time = parallel makespan: vans run concurrently, so the plan is
+      // done when the busiest van finishes (max over vans of its summed trip time).
+      const vanLoad: Record<number, number> = {};
+      for (const t of parsed) vanLoad[t.physIndex] = (vanLoad[t.physIndex] || 0) + t.durationSec;
+      const completionMin = Math.round(Math.max(0, ...Object.values(vanLoad), 0) / 60);
       setPlanStats({
-        evacuees: evacuees.length, assigned, trips: parsed.length, totalMin,
+        evacuees: evacuees.length, assigned, trips: parsed.length, totalMin, completionMin,
         overflow: Math.max(0, evacuees.length - assigned),
         autoTrips: effTrips > Math.max(1, maxTrips) ? effTrips : 0,
       });
@@ -510,7 +541,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
               <Kpi label="Evacuees" value={planStats.evacuees} />
               <Kpi label="Evacuated" value={planStats.assigned} color="#16a34a" />
               <Kpi label="Trips" value={planStats.trips} />
-              <Kpi label="Total drive (min)" value={planStats.totalMin} />
+              <Kpi label="Completion (min)" value={planStats.completionMin} color="#2563eb" />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
+              Completion = when the last van finishes (vans run in parallel). Total drive across all vans: {planStats.totalMin} min.
             </div>
             {planStats.autoTrips > 0 && (
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
