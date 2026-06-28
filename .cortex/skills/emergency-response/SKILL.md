@@ -27,10 +27,11 @@ The operator walks four steps on one map:
    unions the drive-time isochrones of the region's health-anchor care centers
    (`VW_CARE_CENTERS`), samples routable Overture addresses inside it
    (MATRIX snap-filter ≤ 350 m), and tags each with county risk.
-3. **Vans** — set vehicle count, per-van capacity, and max trips per van.
+3. **Vans** — set **vans per care center**, per-van capacity, and max trips per van. Every seeded care center is a depot, so the total fleet = centers x vans/center.
 4. **Plan evacuation** — the wizard builds a capacitated multi-depot, multi-trip
-   `pickup:[1]` challenge (each van → up to `maxTrips` virtual vehicles across the
-   care centers) and solves it via `evac_solve` (ORS `OPTIMIZATION`); routes render
+   `pickup:[1]` challenge (every care center is a depot with `vans/center` vans,
+   each van → up to `maxTrips` virtual vehicles) and solves it via `evac_solve`
+   (ORS `OPTIMIZATION`); routes render
    on the map.
 
 ### How to run

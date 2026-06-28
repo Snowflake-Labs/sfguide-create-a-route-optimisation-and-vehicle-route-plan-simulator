@@ -165,6 +165,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Every loaded/seeded care center is a depot (no cap); the "Vans" input is the
+  // van count PER center, so total fleet = centers x vans.
+  const depotCount = centers.length;
+
   // Publish a compact, scalar-only summary of the on-screen state into panel
   // context so the left-side agent can answer "analyse results in dashboard"
   // directly from injected context (no tool call, no misroute). Geometry and
@@ -179,7 +183,9 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     isochrone_minutes: minutes,
     participants_seeded: participants.length,
     risk_threshold: `${RISK_LABELS[evacLevel]} (level ${evacLevel})`,
-    vans: numVehicles,
+    vans_per_center: numVehicles,
+    depot_count: depotCount,
+    total_vans: depotCount * numVehicles,
     capacity_per_van: capacity,
     max_trips_per_van: maxTrips,
     evacuees: planStats?.evacuees ?? null,
@@ -189,7 +195,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     overflow: planStats?.overflow ?? null,
     step,
     availability: avail,
-  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, planStats, step, avail]);
+  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, planStats, step, avail, depotCount]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -270,23 +276,29 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     setBusy(true); setError(null);
     setTrips([]); setPlanStats(null); setSelectedTripKey(null); setUnassignedPids([]);
     try {
-      // Multi-depot, multi-trip: round-robin vans across care centers; expand each
-      // van into virtual vehicles (one per trip). Auto-raise the trip count so total
-      // seats (vans*capacity*trips) cover every evacuee, capped at CEIL_TRIPS.
-      const depots = centers.slice(0, Math.max(1, numVehicles));
+      // Multi-depot, multi-trip: EVERY seeded/loaded care center is a depot, each
+      // holding `numVehicles` vans (no cap). Expand each van into virtual vehicles
+      // (one per trip). Auto-raise the trip count so total seats
+      // (centers*vans*capacity*trips) cover every evacuee, capped at CEIL_TRIPS.
+      const depots = centers;
+      const vansPerCenter = Math.max(1, numVehicles);
       const cap = Math.max(1, capacity);
-      const neededTrips = Math.ceil(evacuees.length / (Math.max(1, numVehicles) * cap));
+      const totalVans = Math.max(1, depots.length * vansPerCenter);
+      const neededTrips = Math.ceil(evacuees.length / (totalVans * cap));
       const effTrips = Math.min(CEIL_TRIPS, Math.max(Math.max(1, maxTrips), neededTrips));
       const vehicles: unknown[] = [];
       const vehicleMeta: Record<number, VehicleMeta> = {};
       let vid = 1;
-      for (let v = 0; v < numVehicles; v++) {
-        const d = depots[v % depots.length] || depots[0];
-        const label = `Van ${v + 1}`;
-        for (let t = 0; t < effTrips; t++) {
-          vehicles.push({ id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] });
-          vehicleMeta[vid] = { physIndex: v, vehicleLabel: label, tripSlot: t, capacity: cap };
-          vid++;
+      let physIndex = 0;
+      for (const d of depots) {
+        for (let k = 0; k < vansPerCenter; k++) {
+          const label = `${d.center_name} - Van ${k + 1}`;
+          for (let t = 0; t < effTrips; t++) {
+            vehicles.push({ id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] });
+            vehicleMeta[vid] = { physIndex, vehicleLabel: label, tripSlot: t, capacity: cap };
+            vid++;
+          }
+          physIndex++;
         }
       }
       const jobParticipant: Record<number, string> = {};
@@ -477,10 +489,16 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
                 {participants.filter((p) => (hazard === 'WILDFIRE' ? p.wfLvl : p.flLvl) >= evacLevel).length} of {participants.length} participants will be evacuated.
               </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-              <div><label style={labelStyle}>Vans</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
-              <div><label style={labelStyle}>Capacity</label><input type="number" min={1} max={20} style={inputStyle} value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} /></div>
-              <div><label style={labelStyle}>Max trips</label><input type="number" min={1} max={6} style={inputStyle} value={maxTrips} onChange={(e) => setMaxTrips(Number(e.target.value))} /></div>
+            <div>
+              <label style={labelStyle}>Each care center has:</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                <div><label style={labelStyle}>Vans / center</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
+                <div><label style={labelStyle}>Capacity</label><input type="number" min={1} max={20} style={inputStyle} value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} /></div>
+                <div><label style={labelStyle}>Max trips</label><input type="number" min={1} max={6} style={inputStyle} value={maxTrips} onChange={(e) => setMaxTrips(Number(e.target.value))} /></div>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
+                {depotCount} center(s) &times; {numVehicles} van(s) = <strong>{depotCount * numVehicles}</strong> vans total. Each van can shuttle back to its center up to {maxTrips} times.
+              </div>
             </div>
             <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? 'Solving…' : '4 · Plan evacuation'}</button>
           </>
@@ -501,7 +519,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             )}
             {planStats.overflow > 0 && (
               <div style={{ fontSize: '11px', color: '#b45309', background: '#fef3c7', padding: '8px 10px', borderRadius: 6 }}>
-                {planStats.overflow} participant(s) could not be seated within {numVehicles} van(s) × {capacity} capacity × {CEIL_TRIPS} max trips. Add vans or capacity. They are ringed in red on the map.
+                {planStats.overflow} participant(s) could not be seated within {depotCount} center(s) &times; {numVehicles} van(s) &times; {capacity} capacity &times; {CEIL_TRIPS} max trips. Add vans/center or capacity. They are ringed in red on the map.
               </div>
             )}
             {trips.length > 0 && (
@@ -518,7 +536,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
                           border: selected ? `1px solid rgb(${c[0]},${c[1]},${c[2]})` : '1px solid var(--border-default, #e5e7eb)',
                           background: selected ? `rgba(${c[0]},${c[1]},${c[2]},0.10)` : 'transparent', color: 'var(--text-primary, #111827)' }}>
                         <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c[0]},${c[1]},${c[2]})`, flexShrink: 0 }} />
-                        <span style={{ flex: 1 }}>{t.vehicleLabel} · Trip {t.tripNumber}</span>
+                        <span style={{ flex: 1 }}>{t.vehicleLabel} - Trip {t.tripNumber}</span>
                         <span style={{ color: 'var(--text-secondary, #6b7280)' }}>{t.load}/{t.capacity} · {Math.round(t.durationSec / 60)}m</span>
                       </button>
                     );
