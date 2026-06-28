@@ -48,7 +48,7 @@ interface PlanTrip {
   tripKey: string; physIndex: number; vehicleLabel: string; vehicleId: number;
   tripNumber: number; stops: PlanStop[]; load: number; capacity: number; durationSec: number;
 }
-interface PlanStats { evacuees: number; assigned: number; trips: number; totalMin: number; completionMin: number; overflow: number; autoTrips: number; }
+interface PlanStats { evacuees: number; assigned: number; trips: number; totalMin: number; completionMin: number; overflow: number; autoTrips: number; splitForSpeed: boolean; tripCap: number; }
 // All vans at a center are identical to VROOM (same depot/capacity); the physical
 // van + trip number is assigned AFTER the solve by scheduling each center's routes
 // across its vans, so meta only needs the originating center.
@@ -177,6 +177,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const [numVehicles, setNumVehicles] = useState(4);
   const [capacity, setCapacity] = useState(6);
   const [maxTrips, setMaxTrips] = useState(3);
+  const [optimizeMode, setOptimizeMode] = useState<'fastest' | 'fewest'>('fastest');
   const [evacLevel, setEvacLevel] = useState(3);
   const [routeGeo, setRouteGeo] = useState<GeoJSON.FeatureCollection | null>(null);
   const [trips, setTrips] = useState<PlanTrip[]>([]);
@@ -209,6 +210,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     total_vans: depotCount * numVehicles,
     capacity_per_van: capacity,
     max_trips_per_van: maxTrips,
+    optimize_mode: optimizeMode,
     evacuees: planStats?.evacuees ?? null,
     assigned: planStats?.assigned ?? null,
     trips: planStats?.trips ?? null,
@@ -217,7 +219,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     overflow: planStats?.overflow ?? null,
     step,
     availability: avail,
-  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, planStats, step, avail, depotCount]);
+  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, optimizeMode, planStats, step, avail, depotCount]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -311,7 +313,17 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       const vansPerCenter = Math.max(1, numVehicles);
       const cap = Math.max(1, capacity);
       const totalVans = Math.max(1, depots.length * vansPerCenter);
-      const neededTrips = Math.ceil(evacuees.length / (totalVans * cap));
+      // Split-for-speed: VROOM minimises TOTAL drive, so it consolidates evacuees
+      // into the fewest, fullest trips and leaves spare vans idle -> the busiest van
+      // (the makespan) does one long loop. To finish sooner we cap each trip's
+      // pickups so VROOM must spread work across all vans in parallel. The cap is
+      // driven by van count (not capacity), so completion no longer worsens with
+      // bigger capacity; capacity stays the seat upper-bound. 'fewest' keeps the
+      // consolidate behaviour. Only binds when it would actually split (< cap).
+      const parallelTasks = Math.max(1, Math.min(cap, Math.ceil(evacuees.length / totalVans)));
+      const splitForSpeed = optimizeMode === 'fastest' && parallelTasks < cap;
+      const tripCap = splitForSpeed ? parallelTasks : cap; // effective pickups per trip
+      const neededTrips = Math.ceil(evacuees.length / (totalVans * tripCap));
       const effTrips = Math.min(CEIL_TRIPS, Math.max(Math.max(1, maxTrips), neededTrips));
       let perCenterOffer = vansPerCenter * effTrips;
       if (depots.length * perCenterOffer > MAX_VEHICLES) {
@@ -322,7 +334,9 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       let vid = 1;
       depots.forEach((d, ci) => {
         for (let s = 0; s < perCenterOffer; s++) {
-          vehicles.push({ id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] });
+          const veh: Record<string, unknown> = { id: vid, start: [d.lon, d.lat], end: [d.lon, d.lat], profile: 'driving-car', capacity: [cap] };
+          if (splitForSpeed) veh.max_tasks = tripCap; // force parallel spread across vans
+          vehicles.push(veh);
           vehicleMeta[vid] = { centerIndex: ci, centerName: d.center_name, capacity: cap };
           vid++;
         }
@@ -357,11 +371,12 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         evacuees: evacuees.length, assigned, trips: parsed.length, totalMin, completionMin,
         overflow: Math.max(0, evacuees.length - assigned),
         autoTrips: effTrips > Math.max(1, maxTrips) ? effTrips : 0,
+        splitForSpeed, tripCap,
       });
       setStep(4);
     } catch (e) { setError(e instanceof Error ? e.message : 'Solve failed'); }
     finally { setBusy(false); }
-  }, [centers, numVehicles, maxTrips, capacity, participants, hazard, evacLevel, region]);
+  }, [centers, numVehicles, maxTrips, capacity, participants, hazard, evacLevel, region, optimizeMode]);
 
   // deck.gl layers per current state.
   const layers = useMemo<Layer[]>(() => {
@@ -531,6 +546,18 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
                 {depotCount} center(s) &times; {numVehicles} van(s) = <strong>{depotCount * numVehicles}</strong> vans total. Each van can shuttle back to its center up to {maxTrips} times.
               </div>
             </div>
+            <div>
+              <label style={labelStyle}>Optimize for</label>
+              <select style={inputStyle} value={optimizeMode} onChange={(e) => setOptimizeMode(e.target.value as 'fastest' | 'fewest')}>
+                <option value="fastest">Fastest completion (use all vans)</option>
+                <option value="fewest">Fewest vehicles (consolidate)</option>
+              </select>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
+                {optimizeMode === 'fastest'
+                  ? 'Splits pickups across all vans so they run in parallel — lowest completion time, more total km.'
+                  : 'Packs vans full to minimise total driving — fewer, longer trips and a higher completion time.'}
+              </div>
+            </div>
             <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? 'Solving…' : '4 · Plan evacuation'}</button>
           </>
         )}
@@ -546,6 +573,11 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
               Completion = when the last van finishes (vans run in parallel). Total drive across all vans: {planStats.totalMin} min.
             </div>
+            {planStats.splitForSpeed && (
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
+                Fastest mode: trips capped at {planStats.tripCap} stop(s) so all vans run in parallel.
+              </div>
+            )}
             {planStats.autoTrips > 0 && (
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
                 Raised to {planStats.autoTrips} trips/van to seat every evacuee.
