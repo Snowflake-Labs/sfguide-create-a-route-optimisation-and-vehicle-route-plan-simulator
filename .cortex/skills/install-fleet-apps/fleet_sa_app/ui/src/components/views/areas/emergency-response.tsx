@@ -108,7 +108,7 @@ function parseRoutes(
       const physIndex = centerIndex * lanes + b; // stable per physical van (for colour)
       trips.push({
         tripKey: `${centerIndex}:${b}:${tripNumber}`, physIndex,
-        vehicleLabel: `${r.centerName} - Van ${b + 1}`, vehicleId: r.vehicleId,
+        vehicleLabel: `${r.centerName} - Vehicle ${b + 1}`, vehicleId: r.vehicleId,
         tripNumber, stops: r.stops, load: r.stops.length, capacity: r.capacity, durationSec: r.durationSec,
       });
     }
@@ -538,24 +538,24 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             <div>
               <label style={labelStyle}>Each care center has:</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                <div><label style={labelStyle}>Vans / center</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
+                <div><label style={labelStyle}>Vehicles / center</label><input type="number" min={1} max={20} style={inputStyle} value={numVehicles} onChange={(e) => setNumVehicles(Number(e.target.value))} /></div>
                 <div><label style={labelStyle}>Capacity</label><input type="number" min={1} max={20} style={inputStyle} value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} /></div>
                 <div><label style={labelStyle}>Max trips</label><input type="number" min={1} max={6} style={inputStyle} value={maxTrips} onChange={(e) => setMaxTrips(Number(e.target.value))} /></div>
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
-                {depotCount} center(s) &times; {numVehicles} van(s) = <strong>{depotCount * numVehicles}</strong> vans total. Each van can shuttle back to its center up to {maxTrips} times.
+                {depotCount} center(s) &times; {numVehicles} vehicle(s) = <strong>{depotCount * numVehicles}</strong> vehicles total. Each vehicle can shuttle back to its center up to {maxTrips} times.
               </div>
             </div>
             <div>
               <label style={labelStyle}>Optimize for</label>
               <select style={inputStyle} value={optimizeMode} onChange={(e) => setOptimizeMode(e.target.value as 'fastest' | 'fewest')}>
-                <option value="fastest">Fastest completion (use all vans)</option>
+                <option value="fastest">Fastest completion (use all vehicles)</option>
                 <option value="fewest">Fewest vehicles (consolidate)</option>
               </select>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
                 {optimizeMode === 'fastest'
-                  ? 'Splits pickups across all vans so they run in parallel — lowest completion time, more total km.'
-                  : 'Packs vans full to minimise total driving — fewer, longer trips and a higher completion time.'}
+                  ? 'Splits pickups across all vehicles so they run in parallel — lowest completion time, more total km.'
+                  : 'Packs vehicles full to minimise total driving — fewer, longer trips and a higher completion time.'}
               </div>
             </div>
             <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? 'Solving…' : '4 · Plan evacuation'}</button>
@@ -571,21 +571,21 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
               <Kpi label="Completion (min)" value={planStats.completionMin} color="#2563eb" />
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
-              Completion = when the last van finishes (vans run in parallel). Total drive across all vans: {planStats.totalMin} min.
+              Completion = when the last vehicle finishes (vehicles run in parallel). Total drive across all vehicles: {planStats.totalMin} min.
             </div>
             {planStats.splitForSpeed && (
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
-                Fastest mode: trips capped at {planStats.tripCap} stop(s) so all vans run in parallel.
+                Fastest mode: trips capped at {planStats.tripCap} stop(s) so all vehicles run in parallel.
               </div>
             )}
             {planStats.autoTrips > 0 && (
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
-                Raised to {planStats.autoTrips} trips/van to seat every evacuee.
+                Raised to {planStats.autoTrips} trips/vehicle to seat every evacuee.
               </div>
             )}
             {planStats.overflow > 0 && (
               <div style={{ fontSize: '11px', color: '#b45309', background: '#fef3c7', padding: '8px 10px', borderRadius: 6 }}>
-                {planStats.overflow} participant(s) could not be seated within {depotCount} center(s) &times; {numVehicles} van(s) &times; {capacity} capacity &times; {CEIL_TRIPS} max trips. Add vans/center or capacity. They are ringed in red on the map.
+                {planStats.overflow} participant(s) could not be seated within {depotCount} center(s) &times; {numVehicles} vehicle(s) &times; {capacity} capacity &times; {CEIL_TRIPS} max trips. Add vehicles/center or capacity. They are ringed in red on the map.
               </div>
             )}
             {trips.length > 0 && (
