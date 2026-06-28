@@ -11,13 +11,14 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT ENTITY_ID) AS active_entities, COUNT(*) AS pings, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving, ROUND(AVG(SPEED_VALUE),1) AS avg_speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(DISTINCT ENTITY_ID) AS active_entities, ROUND(100*SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0))/NULLIF(COUNT(*),0),0) AS utilization_pct, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving_pings, SUM(IFF(MOTION_STATUS_ENUM NOT ILIKE 'MOVING',1,0)) AS idle_pings, ROUND(AVG(SPEED_VALUE),1) AS avg_speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
           "mapping": {
             "metrics": [
               { "column": "active_entities", "label": "Active {{labels.entity_plural}}", "format": "number" },
-              { "column": "moving", "label": "Moving Pings", "format": "number" },
-              { "column": "pings", "label": "GPS Pings", "format": "number" },
+              { "column": "utilization_pct", "label": "Movement Utilization %", "format": "number" },
+              { "column": "moving_pings", "label": "Moving Pings", "format": "number" },
+              { "column": "idle_pings", "label": "Idle / Dwell Pings", "format": "number" },
               { "column": "avg_speed", "label": "Avg Speed", "format": "number_2dp", "unit": "speed" }
             ]
           }
@@ -37,6 +38,18 @@
         "config": {
           "noPad": true,
           "layers": [
+            {
+              "type": "path",
+              "id": "breadcrumb",
+              "geojsonColumn": "trail_geojson",
+              "color": [41, 181, 232, 150],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT ENTITY_ID AS entity_id, '{\"type\":\"LineString\",\"coordinates\":[' || LISTAGG('[' || lng || ',' || lat || ']', ',') WITHIN GROUP (ORDER BY ts) || ']}' AS trail_geojson FROM (SELECT ENTITY_ID, TS AS ts, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY TS DESC) <= 300) GROUP BY ENTITY_ID HAVING COUNT(*) >= 2",
+                "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            },
             {
               "type": "scatterplot",
               "id": "positions",
@@ -59,6 +72,96 @@
                 "query": "SELECT ENTITY_ID AS entity_id, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, MOTION_STATUS_ENUM AS state FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY TS DESC) = 1",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
               }
+            }
+          ]
+        }
+      },
+      "detail": {
+        "component": "DetailPanel",
+        "data": {
+          "query": "WITH pos AS (SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), latest AS (SELECT * FROM pos QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY TS DESC) = 1), agg AS (SELECT ENTITY_ID, COUNT(*) AS ping_count, ROUND(AVG(SPEED_VALUE),1) AS avg_speed, ROUND(MAX(SPEED_VALUE),1) AS max_speed, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving_pings, MAX(TS) AS last_ts FROM pos GROUP BY ENTITY_ID), lastj AS (SELECT ENTITY_ID, JOURNEY_ID AS last_journey_id, ROUND(DISTANCE_VALUE,1) AS last_journey_km, STATUS_ENUM AS last_journey_status FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY START_TS DESC) = 1) SELECT l.ENTITY_ID AS entity_id, l.MOTION_STATUS_ENUM AS state, ROUND(l.SPEED_VALUE,1) AS current_speed, ROUND(l.HEADING_VALUE,0) AS heading, l.DATA_QUALITY_ENUM AS gps_quality, a.ping_count, a.avg_speed, a.max_speed, a.moving_pings, a.last_ts, j.last_journey_id, j.last_journey_km, j.last_journey_status FROM latest l JOIN agg a ON a.ENTITY_ID = l.ENTITY_ID LEFT JOIN lastj j ON j.ENTITY_ID = l.ENTITY_ID",
+          "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": {
+          "position": "drawer",
+          "triggerKey": "selected_entity",
+          "titleField": "entity_id",
+          "subtitleFields": ["state"],
+          "emptyMessage": "No telemetry for this {{labels.entity}} in the selected date range.",
+          "properties": [
+            { "field": "state", "label": "Status" },
+            { "field": "current_speed", "label": "Current Speed", "format": "number" },
+            { "field": "heading", "label": "Heading", "format": "number" },
+            { "field": "gps_quality", "label": "GPS Quality" },
+            { "field": "avg_speed", "label": "Avg Speed (window)", "format": "number" },
+            { "field": "max_speed", "label": "Max Speed", "format": "number" },
+            { "field": "ping_count", "label": "GPS Pings", "format": "number" },
+            { "field": "moving_pings", "label": "Moving Pings", "format": "number" },
+            { "field": "last_ts", "label": "Last Ping", "format": "datetime" },
+            { "field": "last_journey_km", "label": "Last Journey (km)", "format": "number" },
+            { "field": "last_journey_status", "label": "Last Journey Status" }
+          ],
+          "actions": [
+            { "label": "View Latest {{labels.journey}}", "view": "journey_inspector", "carry": { "selected_journey": "last_journey_id" }, "style": "primary" },
+            { "label": "Safety Events", "view": "safety_risk_scorecard", "carry": { "selected_entity": "entity_id" } }
+          ],
+          "sections": [
+            {
+              "type": "related_table",
+              "title": "Recent {{labels.journey_plural}}",
+              "query": "SELECT JOURNEY_ID AS journey_id, STATUS_ENUM AS status, ROUND(DISTANCE_VALUE,1) AS distance_km, ROUND(COALESCE(DEVIATION_DISTANCE_VALUE,0),1) AS deviation_km, START_TS AS started FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity ORDER BY START_TS DESC LIMIT 10",
+              "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No journeys for this selection.",
+              "columns": [
+                { "field": "journey_id", "header": "Journey" },
+                { "field": "status", "header": "Status" },
+                { "field": "distance_km", "header": "Dist (km)", "format": "number" },
+                { "field": "deviation_km", "header": "Deviation (km)", "format": "number" },
+                { "field": "started", "header": "Started", "format": "datetime" }
+              ]
+            },
+            {
+              "type": "related_table",
+              "title": "Safety & Compliance Events",
+              "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ROUND(METRIC_VALUE,1) AS value, EVENT_TS AS occurred FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity ORDER BY EVENT_TS DESC LIMIT 25",
+              "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No safety events recorded.",
+              "columns": [
+                { "field": "event_type", "header": "Type" },
+                { "field": "severity", "header": "Severity" },
+                { "field": "value", "header": "Value", "format": "number" },
+                { "field": "occurred", "header": "When", "format": "datetime" }
+              ]
+            },
+            {
+              "type": "related_table",
+              "title": "Planned Work",
+              "query": "SELECT WORK_ITEM_TYPE AS type, ORIGIN_SITE_ID AS origin, DESTINATION_SITE_ID AS destination, REQUESTED_START_TS AS planned_start, STATUS_ENUM AS status FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity ORDER BY REQUESTED_START_TS DESC LIMIT 10",
+              "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No planned work items.",
+              "columns": [
+                { "field": "type", "header": "Type" },
+                { "field": "origin", "header": "Origin" },
+                { "field": "destination", "header": "Destination" },
+                { "field": "planned_start", "header": "Planned Start", "format": "datetime" },
+                { "field": "status", "header": "Status" }
+              ]
+            },
+            {
+              "type": "related_table",
+              "title": "Asset Profile",
+              "query": "SELECT VEHICLE_TYPE AS type, VEHICLE_SUBTYPE AS subtype, OPERATING_MODE AS mode, BASE_SPEED_KMH AS base_speed, WEIGHT_TONS AS weight_t, LENGTH_M AS length_m, IFF(HAZMAT,'yes','no') AS hazmat FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_entity IS NOT NULL AND VEHICLE_ID = :selected_entity LIMIT 1",
+              "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No profile attributes.",
+              "columns": [
+                { "field": "type", "header": "Type" },
+                { "field": "subtype", "header": "Subtype" },
+                { "field": "mode", "header": "Mode" },
+                { "field": "base_speed", "header": "Base Speed", "format": "number" },
+                { "field": "weight_t", "header": "Weight (t)", "format": "number" },
+                { "field": "length_m", "header": "Length (m)", "format": "number" },
+                { "field": "hazmat", "header": "Hazmat" }
+              ]
             }
           ]
         }
