@@ -43,6 +43,7 @@ interface MapViewProps {
   onClick?: (info: any) => void;
   onViewStateChange?: (viewState: any) => void;
   getTooltip?: (info: any) => any;
+  onHover?: (info: any) => void;
   onRecenterReady?: (recenter: () => void) => void;
   children?: React.ReactNode;
 }
@@ -83,6 +84,7 @@ export default function MapView({
   onClick,
   onViewStateChange,
   getTooltip,
+  onHover,
   onRecenterReady,
   children,
 }: MapViewProps) {
@@ -232,6 +234,7 @@ export default function MapView({
           layers={allLayers}
           controller={true}
           onClick={onClick}
+          onHover={onHover}
           getTooltip={getTooltip}
           style={{ position: 'absolute', top: '0', left: '0', width: `${dims.width}px`, height: `${dims.height}px` }}
         />

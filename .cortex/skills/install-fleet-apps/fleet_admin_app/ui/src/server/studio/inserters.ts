@@ -67,6 +67,7 @@ export async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, j
         `${plannedGeo},${t.planned_distance_km !== null ? t.planned_distance_km : 'NULL'},` +
         `${escVal(t.is_detour)},${t.detour_distance_km !== null ? t.detour_distance_km : 'NULL'},` +
         `${escVal(t.trip_start)},${escVal(t.trip_end)},${escVal(t.status)},${escVal(t.ors_profile)},` +
+        `${escVal(t.trip_kind ?? 'LADEN')},` +
         `${escVal(jobId)}`;
     }).join(' UNION ALL\n');
 
@@ -76,7 +77,7 @@ export async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, j
        DESTINATION_LAT,DESTINATION_LON,DESTINATION,
        ROUTE_GEOG,DISTANCE_KM,DURATION_MINUTES,
        PLANNED_ROUTE_GEOG,PLANNED_DISTANCE_KM,
-       IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE,JOB_ID)
+       IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE,TRIP_KIND,JOB_ID)
       ${selects}`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);

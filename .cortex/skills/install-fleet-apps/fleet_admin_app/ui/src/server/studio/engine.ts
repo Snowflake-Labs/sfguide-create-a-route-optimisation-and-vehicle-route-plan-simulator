@@ -241,6 +241,61 @@ export async function* generateTelemetry(
     const numTrips = rngInt(memberRng, config.fleet.trips_per_day.min, config.fleet.trips_per_day.max);
     let currentOriginPoi = member.home_poi;
 
+    // Empty-leg / deadhead modeling (all vehicle types, default on). Routes a
+    // repositioning leg from the vehicle's current location to `toPoi`, emitting
+    // MOVING pings and a TRIP_KIND='EMPTY' trip row. Returns true when the
+    // vehicle actually moved; false when unroutable (vehicle stays put - never
+    // teleports). Used between jobs (drop-off -> next pickup) and at end of day
+    // (last drop-off -> home base), so the path stays continuous and empty miles
+    // (EMPTY km / total km) are measurable.
+    const emptyLegsEnabled = config.empty_legs?.enabled ?? true;
+    async function emitEmptyLeg(toPoi: POI): Promise<boolean> {
+      if (!toPoi || toPoi.location_id === lifecycle.location_id) return false;
+      let route: RouteGeometry | null = null;
+      for (let attempt = 0; attempt < MAX_ROUTE_RETRIES; attempt++) {
+        const r = await fetchRoute(lifecycle.lat, lifecycle.lng, toPoi.lat, toPoi.lng, config.ors_profile, config.region, snowSql);
+        if (r && r !== 'UNROUTABLE') { route = r; break; }
+        if (r === 'UNROUTABLE' && toPoi.location_id) unroutablePoiIds.add(toPoi.location_id);
+      }
+      if (!route || route.coordinates.length < 2) return false;
+      const legTripId = uuid(memberRng);
+      const legStart = new Date(lifecycle.currentTime);
+      const fromPoiId = lifecycle.location_id ?? currentOriginPoi.location_id;
+      const fromLat = lifecycle.lat;
+      const fromLon = lifecycle.lng;
+      lifecycle.state = 'MOVING';
+      points.push(...interpolateRoute(route, config, lifecycle, legTripId, toPoi, memberRng, false));
+      lifecycle.location_id = toPoi.location_id;
+      lifecycle.location_type = toPoi.location_type;
+      const legEnd = new Date(lifecycle.currentTime);
+      trips.push({
+        trip_id: legTripId,
+        vehicle_id: member.vehicle_id,
+        driver_id: member.driver_id,
+        vehicle_type: vt,
+        region: config.region,
+        origin_poi_id: fromPoiId,
+        destination_poi_id: toPoi.location_id,
+        origin_lat: fromLat,
+        origin_lon: fromLon,
+        destination_lat: toPoi.lat,
+        destination_lon: toPoi.lng,
+        route_coordinates: route.coordinates as [number, number][],
+        distance_km: Math.round((route.distance_m / 1000) * 100) / 100,
+        duration_minutes: Math.round(((legEnd.getTime() - legStart.getTime()) / 60000) * 100) / 100,
+        planned_route_coordinates: null,
+        planned_distance_km: null,
+        is_detour: false,
+        detour_distance_km: null,
+        trip_start: legStart,
+        trip_end: legEnd,
+        status: 'COMPLETED',
+        ors_profile: config.ors_profile,
+        trip_kind: 'EMPTY',
+      });
+      return true;
+    }
+
     for (let t = 0; t < numTrips; t++) {
       if (abortSignal?.aborted) break;
       const shiftEnd = member.shift_end < member.shift_start ? member.shift_end + 24 : member.shift_end;
@@ -261,6 +316,16 @@ export async function* generateTelemetry(
         const rechargeDwell: DwellConfig = { median_min: 20, sigma: 0.3, max_min: 40 };
         points.push(...emitDwell(lifecycle, config, null, rechargeDwell, 'DWELL_RECHARGE', currentOriginPoi, memberRng));
         lifecycle.vehicle.battery_pct = 100;
+      }
+
+      // Reposition to the next pickup as an EMPTY leg (deadhead). The pickup is
+      // chosen independently of the previous drop-off so the move is a visible
+      // routed movement, not a teleport. The first job (t===0) starts at home.
+      if (emptyLegsEnabled && t > 0) {
+        const pickupPoi = pickDestination(currentOriginPoi, pois, config, memberRng);
+        if (await emitEmptyLeg(pickupPoi)) {
+          currentOriginPoi = pickupPoi;
+        }
       }
 
       let destPoi = pickDestination(currentOriginPoi, pois, config, memberRng);
@@ -389,6 +454,7 @@ export async function* generateTelemetry(
           trip_end: tripEndTime,
           status: 'COMPLETED',
           ors_profile: config.ors_profile,
+          trip_kind: 'LADEN',
         };
         trips.push(tripRecord);
       }
@@ -406,6 +472,15 @@ export async function* generateTelemetry(
 
       currentOriginPoi = destPoi;
       lifecycle.tripSeq++;
+    }
+
+    // Return-to-base: close the operating day with an EMPTY leg from the last
+    // drop-off back to the home POI, so the day ends where the next one starts
+    // (and where ghost/idle pings are emitted) - removing the home_poi teleport.
+    if (emptyLegsEnabled && currentOriginPoi.location_id !== member.home_poi.location_id) {
+      if (await emitEmptyLeg(member.home_poi)) {
+        currentOriginPoi = member.home_poi;
+      }
     }
 
     const idleDwell = config.dwell.idle;

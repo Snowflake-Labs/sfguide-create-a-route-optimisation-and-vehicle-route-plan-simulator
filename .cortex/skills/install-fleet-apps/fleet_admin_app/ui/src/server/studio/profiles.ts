@@ -313,6 +313,13 @@ export interface GenerationConfig {
   // 4-instance ORS_SERVICE_<REGION> + 8-instance ROUTING_GATEWAY_SERVICE
   // back-end. Set to 1 for fully sequential / reproducible runs.
   parallelism?: number;
+  // Empty-leg / deadhead modeling (vehicle-type agnostic). When enabled
+  // (default on for every profile), the vehicle drives an EMPTY repositioning
+  // leg from its current drop-off to the next pickup, and an EMPTY return-to-base
+  // leg back to its home POI at end of an operating day - instead of teleporting.
+  // This makes paths continuous and lets `empty_distance_pct` be computed
+  // (EMPTY km / total km). Set { enabled: false } to restore back-to-back trips.
+  empty_legs?: { enabled: boolean };
   offers?: {
     count: number;
   };

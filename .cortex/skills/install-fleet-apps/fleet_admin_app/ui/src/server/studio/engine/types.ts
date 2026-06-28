@@ -49,6 +49,10 @@ export interface TripRecord {
   trip_end: Date;
   status: string;
   ors_profile: string;
+  // LADEN = carrying a load (pickup -> drop-off); EMPTY = repositioning /
+  // deadhead with no load (drop-off -> next pickup, or -> base before idle).
+  // Empty-leg distance is what "empty miles" is computed from.
+  trip_kind: 'LADEN' | 'EMPTY';
 }
 
 export type GenerationEvent =

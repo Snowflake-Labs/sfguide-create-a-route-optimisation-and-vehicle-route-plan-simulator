@@ -42,10 +42,26 @@
             { "label": "Moving", "color": [41, 181, 232, 230], "shape": "dot" },
             { "label": "Idle", "color": [255, 171, 0, 225], "shape": "dot" },
             { "label": "Dwell / Stopped", "color": [145, 158, 171, 220], "shape": "dot" },
-            { "label": "Latest trip", "color": [41, 181, 232, 240], "shape": "line" },
-            { "label": "Earlier trips", "color": [145, 158, 171, 170], "shape": "line" }
+            { "label": "Latest trip (laden)", "color": [41, 181, 232, 240], "shape": "line" },
+            { "label": "Earlier trips (laden)", "color": [145, 158, 171, 170], "shape": "line" },
+            { "label": "Empty leg (deadhead)", "color": [255, 171, 0, 210], "shape": "line" }
           ],
           "layers": [
+            {
+              "type": "path",
+              "id": "empty_legs",
+              "geojsonColumn": "trail_geojson",
+              "color": [255, 171, 0, 210],
+              "width": 3,
+              "widthMinPixels": 1,
+              "pickable": true,
+              "highlightColor": [255, 171, 0, 255],
+              "tooltip": "<b>Empty leg {trip}</b><br/>{distance_km} km · {started}",
+              "data": {
+                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, DISTANCE_VALUE, ACTUAL_PATH_GEOG, TRIP_KIND FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(TO_DATE(START_TS)) AS last_day FROM j WHERE COALESCE(TRIP_KIND,'LADEN')='LADEN') SELECT j.JOURNEY_ID AS journey_id, LEFT(j.JOURNEY_ID,8) AS trip, TO_VARCHAR(j.START_TS,'Mon DD HH24:MI') AS started, ROUND(j.DISTANCE_VALUE,1) AS distance_km, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE COALESCE(j.TRIP_KIND,'LADEN')='EMPTY' AND TO_DATE(j.START_TS) = d.last_day",
+                "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            },
             {
               "type": "path",
               "id": "breadcrumb_history",
@@ -55,9 +71,9 @@
               "widthMinPixels": 1,
               "pickable": true,
               "highlightColor": [41, 181, 232, 220],
-              "tooltip": "<b>Earlier trip</b><br/>{started}<br/>{distance_km} km",
+              "tooltip": "<b>Trip {trip}</b><br/>{distance_km} km · {started}",
               "data": {
-                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, DISTANCE_VALUE, ACTUAL_PATH_GEOG FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(TO_DATE(START_TS)) AS last_day, MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, TO_VARCHAR(j.START_TS,'Mon DD HH24:MI') AS started, ROUND(j.DISTANCE_VALUE,1) AS distance_km, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE TO_DATE(j.START_TS) = d.last_day AND j.START_TS < d.last_ts",
+                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, DISTANCE_VALUE, ACTUAL_PATH_GEOG, TRIP_KIND FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(TRIP_KIND,'LADEN')='LADEN' AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(TO_DATE(START_TS)) AS last_day, MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, LEFT(j.JOURNEY_ID,8) AS trip, TO_VARCHAR(j.START_TS,'Mon DD HH24:MI') AS started, ROUND(j.DISTANCE_VALUE,1) AS distance_km, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE TO_DATE(j.START_TS) = d.last_day AND j.START_TS < d.last_ts",
                 "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
               }
             },
@@ -70,9 +86,9 @@
               "widthMinPixels": 3,
               "pickable": true,
               "highlightColor": [17, 86, 127, 230],
-              "tooltip": "<b>Latest trip</b><br/>{started}<br/>{distance_km} km",
+              "tooltip": "<b>Latest trip {trip}</b><br/>{distance_km} km · {started}",
               "data": {
-                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, DISTANCE_VALUE, ACTUAL_PATH_GEOG FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, TO_VARCHAR(j.START_TS,'Mon DD HH24:MI') AS started, ROUND(j.DISTANCE_VALUE,1) AS distance_km, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE j.START_TS = d.last_ts",
+                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, DISTANCE_VALUE, ACTUAL_PATH_GEOG, TRIP_KIND FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(TRIP_KIND,'LADEN')='LADEN' AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, LEFT(j.JOURNEY_ID,8) AS trip, TO_VARCHAR(j.START_TS,'Mon DD HH24:MI') AS started, ROUND(j.DISTANCE_VALUE,1) AS distance_km, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE j.START_TS = d.last_ts",
                 "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
               }
             },
@@ -89,9 +105,12 @@
                 "baseColumn": "state",
                 "basePalette": { "MOVING": [41, 181, 232, 230], "IDLE": [255, 171, 0, 225], "DWELL_WAREHOUSE": [145, 158, 171, 215], "DWELL_DESTINATION": [145, 158, 171, 215], "DWELL_STORE": [145, 158, 171, 215], "DWELL_REST_STOP": [145, 158, 171, 215], "STOPPED": [209, 55, 78, 225] }
               },
-              "radius": 200,
-              "radiusMinPixels": 4,
-              "radiusMaxPixels": 10,
+              "radius": 120,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 7,
+              "stroked": true,
+              "lineColor": [99, 115, 129, 230],
+              "lineWidthMinPixels": 1,
               "pickable": true,
               "tooltip": "<b>{entity_id}</b><br/>{state}",
               "data": {

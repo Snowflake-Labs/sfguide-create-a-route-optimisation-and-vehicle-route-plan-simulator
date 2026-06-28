@@ -75,7 +75,7 @@ function geoFeatures(spec, rows) {
  * Compile one LayerSpec + its fetched rows into a deck.gl Layer.
  * `index` provides a stable fallback id. Returns null when there is no data.
  */
-export function compileLayer(spec, rows, viewState, index) {
+export function compileLayer(spec, rows, viewState, index, hovered) {
     if (!rows || rows.length === 0)
         return null;
     const id = spec.id ?? `spec-layer-${index}`;
@@ -91,22 +91,33 @@ export function compileLayer(spec, rows, viewState, index) {
                 getRadius: s.radius ?? 80,
                 radiusMinPixels: s.radiusMinPixels ?? 4,
                 radiusMaxPixels: s.radiusMaxPixels ?? 12,
+                stroked: s.stroked ?? false,
+                getLineColor: s.lineColor ?? [90, 99, 104, 255],
+                lineWidthMinPixels: s.lineWidthMinPixels ?? 1,
                 pickable: s.pickable ?? false,
                 updateTriggers: { getFillColor: [JSON.stringify(viewState)] },
             });
         }
         case 'path': {
             const s = spec;
+            // Hover bolding: when the hovered path belongs to this layer, widen the
+            // matching journey so it visibly stands out (autoHighlight only recolors).
+            const hov = hovered && hovered.layerId === id ? hovered.value : null;
+            const baseWidth = s.width ?? 2;
+            const widthOf = (d) => hov != null && String(d?.journey_id ?? d?.JOURNEY_ID ?? '') === String(hov)
+                ? baseWidth * 2.4
+                : baseWidth;
             return new PathLayer({
                 id,
                 data: pathData(s, rows),
                 getPath: (d) => d.path,
                 getColor: s.color ?? [41, 181, 232, 150],
-                getWidth: s.width ?? 2,
+                getWidth: hov == null ? baseWidth : widthOf,
                 widthMinPixels: s.widthMinPixels ?? 1,
                 pickable: s.pickable ?? false,
                 autoHighlight: s.pickable ?? false,
                 highlightColor: s.highlightColor ?? [41, 181, 232, 220],
+                updateTriggers: { getWidth: [hov] },
             });
         }
         case 'h3': {

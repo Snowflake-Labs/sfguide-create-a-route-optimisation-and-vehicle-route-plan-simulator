@@ -28,6 +28,7 @@ interface LayerFetcherProps {
   layer: LayerSpec;
   viewState: Record<string, unknown>;
   selectionKeys: string[];
+  hovered: { layerId: string; value: unknown } | null;
   onResult: (
     index: number,
     layer: Layer | null,
@@ -82,23 +83,33 @@ function selectionFitCoords(
  * Fetches one layer's data and lifts the compiled deck.gl Layer + fit coords to
  * the parent. Renders nothing. One child per layer keeps hook order stable.
  */
-function LayerFetcher({ index, layer, viewState, selectionKeys, onResult }: LayerFetcherProps) {
+function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, onResult }: LayerFetcherProps) {
   const { data } = useViewData(layer.data.query, layer.data.params);
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
   useEffect(() => {
-    const compiled = compileLayer(layer, rows, viewState, index);
+    const compiled = compileLayer(layer, rows, viewState, index, hovered);
     const fitFull = layerFitCoords(layer, rows) as LngLat[];
     const fitSel = selectionFitCoords(layer, rows, viewState, selectionKeys);
     onResult(index, compiled, fitFull, fitSel, layer.tooltip);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, viewState, selectionKeys]);
+  }, [rows, viewState, selectionKeys, hovered]);
   return null;
 }
 
-/** Fill a `{COLUMN}` template from a picked object's properties. */
+/** Fill a `{COLUMN}` template from a picked object's properties. Token lookup is
+ *  case-insensitive so templates work whether the source columns came back
+ *  lower- or UPPER-cased. */
 function renderTooltip(template: string, object: Record<string, any>): string {
+  let lower: Record<string, any> | null = null;
   return template.replace(/\{(\w+)\}/g, (_, col) => {
-    const v = object[col];
+    let v = object[col];
+    if (v == null) {
+      if (!lower) {
+        lower = {};
+        for (const k of Object.keys(object)) lower[k.toLowerCase()] = object[k];
+      }
+      v = lower[String(col).toLowerCase()];
+    }
     return v == null ? '' : String(v);
   });
 }
@@ -149,6 +160,22 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
   const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
+  // Path hovered in the map -> widen the matching journey (see compileLayer).
+  const [hovered, setHovered] = useState<{ layerId: string; value: unknown } | null>(null);
+
+  const onHover = useCallback((info: any) => {
+    if (info?.layer && info.object) {
+      const value = info.object.journey_id ?? info.object.JOURNEY_ID ?? null;
+      const layerId = info.layer.id as string;
+      setHovered((prev) =>
+        prev && prev.layerId === layerId && String(prev.value) === String(value)
+          ? prev
+          : { layerId, value },
+      );
+    } else {
+      setHovered((prev) => (prev === null ? prev : null));
+    }
+  }, []);
 
   const onResult = useCallback(
     (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined) => {
@@ -206,13 +233,14 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
       {specs.map((ls, i) => (
-        <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} onResult={onResult} />
+        <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} onResult={onResult} />
       ))}
       <MapView
         layers={orderedLayers}
         fitTo={{ coords: fitCoords, regionKey, focusKey }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
+        onHover={onHover}
       />
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
     </div>

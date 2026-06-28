@@ -87,6 +87,7 @@ export function compileLayer(
   rows: Row[],
   viewState: Record<string, unknown>,
   index: number,
+  hovered?: { layerId: string; value: unknown } | null,
 ): Layer | null {
   if (!rows || rows.length === 0) return null;
   const id = spec.id ?? `spec-layer-${index}`;
@@ -112,16 +113,25 @@ export function compileLayer(
     }
     case 'path': {
       const s = spec as PathLayerSpec;
+      // Hover bolding: when the hovered path belongs to this layer, widen the
+      // matching journey so it visibly stands out (autoHighlight only recolors).
+      const hov = hovered && hovered.layerId === id ? hovered.value : null;
+      const baseWidth = s.width ?? 2;
+      const widthOf = (d: any) =>
+        hov != null && String(d?.journey_id ?? d?.JOURNEY_ID ?? '') === String(hov)
+          ? baseWidth * 2.4
+          : baseWidth;
       return new PathLayer({
         id,
         data: pathData(s, rows),
         getPath: (d: any) => d.path,
         getColor: s.color ?? [41, 181, 232, 150],
-        getWidth: s.width ?? 2,
+        getWidth: hov == null ? baseWidth : (widthOf as any),
         widthMinPixels: s.widthMinPixels ?? 1,
         pickable: s.pickable ?? false,
         autoHighlight: s.pickable ?? false,
         highlightColor: s.highlightColor ?? [41, 181, 232, 220],
+        updateTriggers: { getWidth: [hov] },
       });
     }
     case 'h3': {

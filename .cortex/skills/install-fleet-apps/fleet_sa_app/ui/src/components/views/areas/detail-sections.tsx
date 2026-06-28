@@ -89,12 +89,15 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
 }
 
 // Generic table renderer used by the query-backed section renderers below.
-export function AutoTable({ columns, rows, totalRows }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number }) {
+// `scrollHeight` (px) makes the scroll area a FIXED height (~6 rows) so several
+// tables rendered side by side line up regardless of row count; omit it for the
+// default max-height behavior.
+export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number; scrollHeight?: number }) {
   const displayed = rows.length;
   const total = totalRows ?? displayed;
   return (
     <div>
-      <div style={{ maxHeight: '330px', overflow: 'auto' }}>
+      <div style={{ height: scrollHeight, maxHeight: scrollHeight ? undefined : '330px', overflow: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
         <thead>
           <tr>
@@ -167,17 +170,19 @@ export function RelatedTableSection({
   section,
   params = { id: 'viewState.id' },
   showViewFn,
+  scrollHeight,
 }: {
   section: Extract<SectionDef, { type: 'related_table' }>;
   params?: Record<string, string>;
   showViewFn: (id: string) => void;
+  scrollHeight?: number;
 }) {
   const { data, loading, error } = useViewData(section.query, params);
 
   return (
     <div style={{ marginBottom: '28px' }}>
       <SectionHeading title={section.title} />
-      <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden' }}>
+      <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden', minHeight: scrollHeight }}>
         {loading ? (
           <Skeleton />
         ) : error ? (
@@ -185,7 +190,7 @@ export function RelatedTableSection({
         ) : !data?.rows.length ? (
           <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{section.emptyMessage ?? 'No records found.'}</div>
         ) : (
-          <AutoTable columns={section.columns} rows={data.rows} />
+          <AutoTable columns={section.columns} rows={data.rows} scrollHeight={scrollHeight} />
         )}
       </div>
       {section.link && (

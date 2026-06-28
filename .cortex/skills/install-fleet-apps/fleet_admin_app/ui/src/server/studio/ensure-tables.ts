@@ -30,8 +30,13 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       IS_DETOUR BOOLEAN, DETOUR_DISTANCE_KM FLOAT,
       TRIP_START TIMESTAMP_NTZ, TRIP_END TIMESTAMP_NTZ,
       STATUS VARCHAR(20), ORS_PROFILE VARCHAR(30),
+      TRIP_KIND VARCHAR(16),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Empty-miles support: tag each trip leg LADEN vs EMPTY (repositioning /
+    // deadhead). Idempotent ALTER so existing FACT_TRIPS tables pick the column
+    // up; legacy rows default to LADEN so the contract's COALESCE stays correct.
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_KIND VARCHAR(16) DEFAULT 'LADEN'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET (
       VEHICLE_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORS_PROFILE VARCHAR(30), SHIFT_TYPE VARCHAR(30),

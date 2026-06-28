@@ -8,7 +8,7 @@
 // itself absolutely over the view (the renderer places drawer areas outside the
 // CSS grid). Reuses the shared primitives in detail-sections.tsx.
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
@@ -51,6 +51,32 @@ interface DetailPanelAreaProps {
 
 // ── Open-state body (mounted only when a selection is active, so the section
 // sub-queries don't fire while the drawer is closed). ────────────────────────
+
+// Fixed scroll height (~6 rows) for inline related-table sections so several
+// side-by-side tables line up regardless of row count.
+const SECTION_SCROLL_H = 220;
+
+// Defers mounting children (and therefore their useViewData queries) until the
+// wrapper scrolls near the viewport - so the per-section tables are queried in
+// the background as the detail comes into view rather than all at once. Falls
+// back to mounting immediately where IntersectionObserver is unavailable.
+function LazyMount({ minHeight, children }: { minHeight?: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (shown) return;
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setShown(true); return; }
+    const obs = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) { setShown(true); obs.disconnect(); } },
+      { rootMargin: '200px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [shown]);
+  return <div ref={ref} style={{ minHeight: shown ? undefined : minHeight }}>{shown ? children : null}</div>;
+}
 
 function DetailPanelBody({
   headerQuery,
@@ -158,15 +184,17 @@ function DetailPanelBody({
 
             {(() => {
               const secs = (config.sections ?? []).map((section, idx) => (
-                <RelatedTableSection
-                  key={idx}
-                  section={{ ...section, title: tr(section.title) }}
-                  params={section.params}
-                  showViewFn={showView}
-                />
+                <LazyMount key={idx} minHeight={inline ? SECTION_SCROLL_H + 40 : undefined}>
+                  <RelatedTableSection
+                    section={{ ...section, title: tr(section.title) }}
+                    params={section.params}
+                    showViewFn={showView}
+                    scrollHeight={inline ? SECTION_SCROLL_H : undefined}
+                  />
+                </LazyMount>
               ));
               return inline ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px', alignItems: 'start' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px', alignItems: 'stretch' }}>
                   {secs}
                 </div>
               ) : (

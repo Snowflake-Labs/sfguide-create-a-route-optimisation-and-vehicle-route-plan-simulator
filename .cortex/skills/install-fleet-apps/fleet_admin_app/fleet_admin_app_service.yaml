@@ -17,7 +17,7 @@
 spec:
   containers:
     - name: fleet-admin-app
-      image: /openrouteservice_app/core/image_repository/fleet_admin_app:v0.1.10
+      image: /openrouteservice_app/core/image_repository/fleet_admin_app:v0.1.11
       env:
         HOSTNAME: "0.0.0.0"   # bind Next standalone to all interfaces
         SNOWFLAKE_DATABASE: "OPENROUTESERVICE_APP"
