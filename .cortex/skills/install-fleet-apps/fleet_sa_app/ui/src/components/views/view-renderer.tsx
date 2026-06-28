@@ -210,6 +210,11 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
         gap: '1px',
         height: hasFlexRow ? '100%' : 'auto',
         minHeight: hasFlexRow ? undefined : '100%',
+        // Without a flexible (fr) row the grid is forced to minHeight:100% but its
+        // fixed/auto rows don't fill it; the grid default (align-content:stretch)
+        // would then balloon the auto rows (e.g. KPI), opening a gap before the
+        // content. Pack rows at the top so free space collapses to the bottom.
+        alignContent: hasFlexRow ? undefined : 'start',
         backgroundColor: 'var(--border-default, #e5e7eb)',
       }}
     >
