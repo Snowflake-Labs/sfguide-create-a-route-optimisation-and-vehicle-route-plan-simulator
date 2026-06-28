@@ -555,8 +555,8 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
               </select>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginTop: 4 }}>
                 {optimizeMode === 'fastest'
-                  ? 'Splits pickups across all vehicles so they run in parallel — lowest completion time, more total km.'
-                  : 'Packs vehicles full to minimise total driving — fewer, longer trips and a higher completion time.'}
+                  ? 'Splits pickups across all vehicles so they run in parallel - lowest completion time, more total km.'
+                  : 'Packs vehicles full to minimise total driving - fewer, longer trips and a higher completion time.'}
               </div>
             </div>
             <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? 'Solving…' : '4 · Plan evacuation'}</button>

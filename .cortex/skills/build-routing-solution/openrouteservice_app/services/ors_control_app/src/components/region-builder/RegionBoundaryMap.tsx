@@ -90,7 +90,7 @@ export default function RegionBoundaryMap({ boundaries, fitKey, height = 260 }: 
     [boundaries],
   );
 
-  // Single color assignment shared by polygon layers AND legend — eliminates index drift.
+  // Single color assignment shared by polygon layers AND legend - eliminates index drift.
   const colorByKey = useMemo(() => {
     const m = new Map<string, { stroke: [number, number, number, number]; fill: [number, number, number, number] }>();
     let colorIndex = 0;

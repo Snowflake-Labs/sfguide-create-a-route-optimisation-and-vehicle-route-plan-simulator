@@ -7,7 +7,7 @@ import { requireOps } from '@/lib/ingress-identity';
 
 // OPS-only "activate dataset" action (R4): promote a dataset to the GLOBAL active
 // scope (DIM_DATASETS.IS_ACTIVE flip), preserving the one-active-per-(region,
-// vehicle) invariant. Consumers never reach this — they do per-session selection
+// vehicle) invariant. Consumers never reach this - they do per-session selection
 // via the contextBar + F_*_SCOPED.
 //
 // The mutation flows through the audited synapse verb activate_dataset (Tenet 7)

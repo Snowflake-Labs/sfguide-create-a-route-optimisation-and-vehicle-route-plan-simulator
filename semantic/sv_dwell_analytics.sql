@@ -1,4 +1,4 @@
--- SV_DWELL_ANALYTICS — dwell analysis semantic view
+-- SV_DWELL_ANALYTICS - dwell analysis semantic view
 -- Source: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED (dwell sessions),
 --         FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY (per-driver SLA)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)

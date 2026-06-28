@@ -72,14 +72,14 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       VEHICLE_EQUIPMENT VARCHAR(30), DISTANCE_KM FLOAT, PRICE_PER_KM_USD FLOAT,
       PARTNER_ID VARCHAR, STATUS VARCHAR(20)
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Vehicle-agnostic offers — idempotent enrichment ALTERs so older
+    // Vehicle-agnostic offers - idempotent enrichment ALTERs so older
     // deployments pick the columns up on next boot.
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS ADD COLUMN IF NOT EXISTS VEHICLE_EQUIPMENT VARCHAR(30)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Delivery marketplace — partner directory and lane history per preset.
+    // Delivery marketplace - partner directory and lane history per preset.
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_PARTNERS (
       PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       NAME VARCHAR, COUNTRY VARCHAR(4),
@@ -113,7 +113,7 @@ BEGIN
 EXCEPTION WHEN OTHER THEN RETURN 'skipped';
 END;
 $$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // All region-keyed (no VEHICLE_TYPE — they describe the place/area,
+    // All region-keyed (no VEHICLE_TYPE - they describe the place/area,
     // not the fleet) and JOB_ID-versioned like DIM_POIS. V_*_CURRENT
     // projection views live in init.ts.
     // -----------------------------------------------------------------

@@ -8,7 +8,7 @@ import { defineProc, t } from '@snowflake/synapse';
 //
 // The dataset_id format is enforced by the arg schema regex, so a malformed id
 // is rejected by the envelope's parse step (BAD_VALUE_TYPE) before execute runs
-// — no string interpolation, value is bound. Ops-only.
+// - no string interpolation, value is bound. Ops-only.
 export const activate_dataset = defineProc({
   name: 'activate_dataset',
   description:

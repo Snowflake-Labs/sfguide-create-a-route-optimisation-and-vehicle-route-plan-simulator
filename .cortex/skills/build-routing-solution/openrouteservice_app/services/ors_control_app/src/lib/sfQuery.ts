@@ -1,12 +1,12 @@
 // Consolidated Snowflake SQL helpers for the React control app.
 //
 // Two responsibilities:
-//   1. `sfQuery` — POST a SQL string to /api/query (the Express read-only
+//   1. `sfQuery` - POST a SQL string to /api/query (the Express read-only
 //      passthrough that runs against Snowflake). Surfaces `body.error` when
 //      callers opt in via `{throwOnError:true}`. Without this option callers
 //      get an empty array even on SQL errors, which is how the entire repo
 //      historically masked escape bugs.
-//   2. `asSqlJsonLiteral` — embed a JS object into a SQL statement using a
+//   2. `asSqlJsonLiteral` - embed a JS object into a SQL statement using a
 //      Snowflake dollar-quoted string literal so that apostrophes, backslashes
 //      and double-quotes in the JSON do NOT need to be escaped. Replaces the
 //      fragile `'${JSON.stringify(x).replace(/'/g, "''")}'` pattern that breaks
@@ -57,7 +57,7 @@ export async function sfQuery(
       return [];
     }
     // SQL errors come back as { error: "..." }. Without this branch, callers
-    // see an empty array indistinguishable from "no rows" — the canonical
+    // see an empty array indistinguishable from "no rows" - the canonical
     // mask for JSON-escape bugs and silent permission errors.
     if (body && typeof body === 'object' && !Array.isArray(body) && 'error' in body) {
       const msg = String((body as { error?: unknown }).error ?? '').slice(0, 500);
@@ -114,7 +114,7 @@ export function asSqlJsonLiteral(value: unknown): string {
  * Strip characters from free-text fields that are noisy or harmful when
  * embedded inside a JSON value (POI names, addresses, listing text). Use
  * this for `description` fields that are surfaced to the LLM or to debug
- * logs — the data layer (asSqlJsonLiteral) is already escape-proof, but
+ * logs - the data layer (asSqlJsonLiteral) is already escape-proof, but
  * stripped strings keep diagnostics readable.
  */
 export function safeText(s: string | null | undefined, maxLen = 80): string {

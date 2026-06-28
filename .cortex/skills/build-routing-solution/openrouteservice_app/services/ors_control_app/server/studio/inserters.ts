@@ -1,4 +1,4 @@
-// Studio batch inserters — write generated telemetry, trips, fleet, POIs, and
+// Studio batch inserters - write generated telemetry, trips, fleet, POIs, and
 // freight offers into the SYNTHETIC_DATASETS.UNIFIED FACT/DIM tables. All
 // helpers chunk into safe-size INSERTs and return inserted row counts.
 

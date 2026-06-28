@@ -146,9 +146,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-int
 
 1. **Describe** ORS service to extract configured `<REGION_NAME>` from volume source path.
 2. **Download** ORS config and parse enabled routing profiles. Follow `.cortex/skills/routing-customization/read-ors-configuration/SKILL.md`.
-3. **Ask user** which location to use — recommend the currently configured region first.
-4. **Check region match** — if mismatch, user must reconfigure ORS via `.cortex/skills/routing-customization/SKILL.md`.
-5. **Check/resume services** — run `SHOW SERVICES IN OPENROUTESERVICE_APP.CORE` and resume any suspended services.
+3. **Ask user** which location to use - recommend the currently configured region first.
+4. **Check region match** - if mismatch, user must reconfigure ORS via `.cortex/skills/routing-customization/SKILL.md`.
+5. **Check/resume services** - run `SHOW SERVICES IN OPENROUTESERVICE_APP.CORE` and resume any suspended services.
 6. **Test ORS routing** with a DIRECTIONS call using center coordinates of the target city.
 
 ### Step 3: Configure Database, Warehouse, and Schema
@@ -191,17 +191,17 @@ CTAS with 5 shift patterns (Graveyard, Early, Morning, Day, Evening). Default 80
 ### Step 6: Generate Trips
 
 1. **Materialize** `VEHICLE_LOCATIONS_NUMBERED` with stable row numbers.
-2. **Create** `DRIVER_TRIPS` — trip assignments with hour/pickup/dropoff location IDs. Trip counts vary by shift.
-3. **Create** `DRIVER_TRIPS_WITH_COORDS` — join trips with coordinate geometry.
+2. **Create** `DRIVER_TRIPS` - trip assignments with hour/pickup/dropoff location IDs. Trip counts vary by shift.
+3. **Create** `DRIVER_TRIPS_WITH_COORDS` - join trips with coordinate geometry.
 4. **Verify** trip distribution per shift.
 
 ### Step 7: Generate ORS Routes
 
 **WARNING:** This step makes many ORS API calls. ~1,000 trips: 3-5 min, ~5,000: 15-20 min.
 
-1. **Create** `DRIVER_ROUTES` — call `OPENROUTESERVICE_APP.CORE.DIRECTIONS` for each trip.
-2. **Create** `DRIVER_ROUTES_PARSED` — extract geometry, distance, duration from JSON response.
-3. **Create** `DRIVER_ROUTE_GEOMETRIES` — add cumulative timing with `{START_DATE}`.
+1. **Create** `DRIVER_ROUTES` - call `OPENROUTESERVICE_APP.CORE.DIRECTIONS` for each trip.
+2. **Create** `DRIVER_ROUTES_PARSED` - extract geometry, distance, duration from JSON response.
+3. **Create** `DRIVER_ROUTE_GEOMETRIES` - add cumulative timing with `{START_DATE}`.
 4. **Verify** route statistics.
 
 ### Step 8: Create Driver Locations (`DRIVER_LOCATIONS`)
@@ -211,11 +211,11 @@ Interpolate 15 points per trip along route geometry with driver states (`waiting
 ### Step 9: Create Analytics Views
 
 Create 5 analytics views:
-- `DRIVER_LOCATIONS_V` — locations with LAT/LON
-- `TRIPS_ASSIGNED_TO_DRIVERS` — trip assignments with geometry
-- `ROUTE_NAMES` — origin→destination labels
-- `TRIP_ROUTE_PLAN` — full trip details with ROUTE JSON
-- `TRIP_SUMMARY` — route geometries with avg/max speed
+- `DRIVER_LOCATIONS_V` - locations with LAT/LON
+- `TRIPS_ASSIGNED_TO_DRIVERS` - trip assignments with geometry
+- `ROUTE_NAMES` - origin→destination labels
+- `TRIP_ROUTE_PLAN` - full trip details with ROUTE JSON
+- `TRIP_SUMMARY` - route geometries with avg/max speed
 
 Verify all view row counts.
 
@@ -277,7 +277,7 @@ Result: 80 drivers with ~18,000 realistic GPS points across New York (~8 min)
 
 | Issue | Solution |
 |-------|----------|
-| ORS routes returning NULL | Location outside ORS configured region — verify map data |
+| ORS routes returning NULL | Location outside ORS configured region - verify map data |
 | ORS routes failing | Verify OpenRouteService Native App is installed and running |
 | No locations found | Bounding box may be too restrictive or outside Overture coverage |
 | Out of memory | Use larger warehouse or batch processing |

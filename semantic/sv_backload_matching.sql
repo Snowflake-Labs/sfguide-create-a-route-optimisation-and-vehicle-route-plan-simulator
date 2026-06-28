@@ -1,4 +1,4 @@
--- SV_BACKLOAD_MATCHING — Backload matching demo semantic view
+-- SV_BACKLOAD_MATCHING - Backload matching demo semantic view
 -- Source: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- NOTE: offers/trailers views may be empty until the backload-matching demo generates data;

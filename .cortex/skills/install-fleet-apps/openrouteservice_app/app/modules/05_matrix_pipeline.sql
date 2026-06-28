@@ -593,7 +593,7 @@ BEGIN
     WHILE (retry_pass < max_error_retries) DO
         -- Only retry rows that lack BOTH a durations array AND a structured ORS error.
         -- Rows with MATRIX_RESULT:error.code set (e.g. 6010 out-of-bounds) are deterministic
-        -- failures — retrying them is futile and creates an infinite delete/re-insert loop.
+        -- failures - retrying them is futile and creates an infinite delete/re-insert loop.
         error_retry_sql := 'SELECT COUNT(*) AS CNT FROM ' || raw_table ||
             ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
             ' AND MATRIX_RESULT:durations IS NULL' ||

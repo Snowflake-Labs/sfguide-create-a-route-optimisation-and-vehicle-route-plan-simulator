@@ -21,7 +21,7 @@ const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9_]{0,254}$/;
 
 // Best-effort canonical region name. Strips characters that would be unsafe
 // in identifiers; returns DEFAULT_REGION_NAME for empty input or the legacy
-// "default" sentinel. Never throws — use for log lines, cache keys, and
+// "default" sentinel. Never throws - use for log lines, cache keys, and
 // branches that just need *some* region to key off.
 export function normalizeRegion(input: string | null | undefined): string {
   const raw = String(input ?? '').replace(/[^A-Za-z0-9_]/g, '');

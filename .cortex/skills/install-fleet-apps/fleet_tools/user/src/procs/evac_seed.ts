@@ -23,7 +23,7 @@ export const evac_seed = defineProc({
     hazard_type: t
       .string({ max: 20 })
       .nullable()
-      .describe('WILDFIRE, FLOOD, or COMPOSITE — which FEMA risk to tag participants with. Defaults to WILDFIRE.'),
+      .describe('WILDFIRE, FLOOD, or COMPOSITE - which FEMA risk to tag participants with. Defaults to WILDFIRE.'),
     range_minutes: t
       .number()
       .nullable()

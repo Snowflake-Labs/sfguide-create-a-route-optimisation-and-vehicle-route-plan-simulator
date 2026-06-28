@@ -1,4 +1,4 @@
-// Matrix build endpoints — region listing, cost estimate, build/restore/cancel,
+// Matrix build endpoints - region listing, cost estimate, build/restore/cancel,
 // road-filter availability, existing-table lookup. These are the handlers that
 // prepare or trigger matrix builds (mutating + region/lookup helpers).
 
@@ -27,7 +27,7 @@ export function createMatrixBuildRouter(): Router {
         );
         for (const r of rows || []) {
           const a = Number(r.A);
-          // K1 (REGION_KEY) is unique and authoritative — set unconditionally.
+          // K1 (REGION_KEY) is unique and authoritative - set unconditionally.
           // K2 (LOOKUP_NAME) is a non-unique fallback, set only when no
           // REGION_KEY already claimed the key, so a same-name sub-region never
           // shadows the deployed region's true area.
@@ -375,9 +375,9 @@ export function createMatrixBuildRouter(): Router {
           });
         }
         if (impliedPairs > 625_000_000) {
-          preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e9).toFixed(1)}B pairs) — recommend XLARGE warehouse`);
+          preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e9).toFixed(1)}B pairs) - recommend XLARGE warehouse`);
         } else if (impliedPairs > 25_000_000) {
-          preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e6).toFixed(0)}M pairs) — recommend LARGE warehouse`);
+          preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e6).toFixed(0)}M pairs) - recommend LARGE warehouse`);
         }
       }
 

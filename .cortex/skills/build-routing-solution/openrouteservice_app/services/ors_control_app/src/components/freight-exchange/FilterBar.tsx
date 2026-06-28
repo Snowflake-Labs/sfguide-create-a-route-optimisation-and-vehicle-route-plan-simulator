@@ -1,4 +1,4 @@
-// Filter bar — vendor source chips, equipment chips, ADR / status / trust /
+// Filter bar - vendor source chips, equipment chips, ADR / status / trust /
 // usd-per-km controls. Pure presentational; takes filter state
 // + setters from the orchestrator and emits changes via a single setter.
 

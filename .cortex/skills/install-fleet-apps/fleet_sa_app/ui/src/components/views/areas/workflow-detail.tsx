@@ -41,7 +41,7 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 }
 
 function fmt(val: string | null): string {
-  if (!val) return '—';
+  if (!val) return '-';
   try {
     const d = new Date(val);
     if (isNaN(d.getTime())) return val;
@@ -159,7 +159,7 @@ export function WorkflowDetailArea({ database, schema }: WorkflowDetailAreaProps
     setActionLoading(true); setActionStatus(null);
     try {
       const safeAction = action === 'approve' ? 'approved' : 'rejected';
-      // Call the TypeScript workflow service — it executes remaining steps after the gate.
+      // Call the TypeScript workflow service - it executes remaining steps after the gate.
       const res = await fetch('/api/workflow/resume', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -167,7 +167,7 @@ export function WorkflowDetailArea({ database, schema }: WorkflowDetailAreaProps
       });
       const result = await res.json() as { status?: string; error?: string };
       if (!res.ok || result.error) throw new Error(result.error ?? `HTTP ${res.status}`);
-      setActionStatus(action === 'approve' ? 'Approved — workflow resuming.' : 'Rejected — workflow cancelled.');
+      setActionStatus(action === 'approve' ? 'Approved - workflow resuming.' : 'Rejected - workflow cancelled.');
       await fetchInstance();
     } catch (e) {
       setActionStatus(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`);

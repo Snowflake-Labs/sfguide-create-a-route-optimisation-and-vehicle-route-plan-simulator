@@ -22,9 +22,9 @@ const validateCampaign: WorkflowStep = {
     if (!rows[0]) throw new Error(`Campaign not found: ${campaignId}`);
     const errors: string[] = [];
     if (rows[0].AUDIENCE_STATUS && rows[0].AUDIENCE_STATUS !== 'active')
-      errors.push(`Audience "${rows[0].AUDIENCE_NAME}" is "${rows[0].AUDIENCE_STATUS}" — approve it before activation`);
+      errors.push(`Audience "${rows[0].AUDIENCE_NAME}" is "${rows[0].AUDIENCE_STATUS}" - approve it before activation`);
     if (rows[0].OFFER_STATUS && rows[0].OFFER_STATUS !== 'active')
-      errors.push(`Offer "${rows[0].OFFER_NAME}" is "${rows[0].OFFER_STATUS}" — approve it before activation`);
+      errors.push(`Offer "${rows[0].OFFER_NAME}" is "${rows[0].OFFER_STATUS}" - approve it before activation`);
     if (errors.length > 0) throw new Error(errors.join('. '));
     return { validated: true };
   },
@@ -46,7 +46,7 @@ const resolveAudience: WorkflowStep = {
       WHERE audience_id = ? AND tenant_id = 'default' AND deleted_at IS NULL`, [audienceId]);
     if (!auds[0]) throw new Error(`Audience not found: ${audienceId}`);
     const definitionSql = auds[0].DEFINITION_SQL;
-    if (!definitionSql) throw new Error('Audience has no definition_sql — cannot resolve membership');
+    if (!definitionSql) throw new Error('Audience has no definition_sql - cannot resolve membership');
     const countRows = await query<{ CNT: number }>(`SELECT COUNT(*) AS CNT FROM (${definitionSql}) AS _m`);
     const rawCount = countRows[0]?.CNT ?? 0;
     await run(
@@ -66,7 +66,7 @@ const applyFilters: WorkflowStep = {
     return {
       eligible_count: rawCount,
       filter_breakdown: { suppressed: 0, no_consent: 0, frequency_capped: 0, cooldown: 0 },
-      note: 'Compliance filters not yet implemented — all records passed through',
+      note: 'Compliance filters not yet implemented - all records passed through',
     };
   },
 };
@@ -86,7 +86,7 @@ const push: WorkflowStep = {
     return {
       records_pushed: prev.eligible_count ?? 0,
       destination: String(params.destination ?? 'email_platform'),
-      note: 'Destination push not yet implemented — placeholder',
+      note: 'Destination push not yet implemented - placeholder',
     };
   },
 };
@@ -135,7 +135,7 @@ export const campaignExecutionWorkflow: WorkflowDefinition = {
       type: 'metric_check',
       condition: 'raw_audience_count > 0',
       onFail: 'abort',
-      failMessage: 'Target audience resolved to 0 records — check audience definition and source data freshness.',
+      failMessage: 'Target audience resolved to 0 records - check audience definition and source data freshness.',
     },
     {
       afterStep: 'enrich_payload',

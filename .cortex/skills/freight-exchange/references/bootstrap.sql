@@ -1,10 +1,10 @@
 -- ============================================================================
--- Freight Exchange (Phase A/B) — Bootstrap (projection views over UNIFIED)
+-- Freight Exchange (Phase A/B) - Bootstrap (projection views over UNIFIED)
 -- ============================================================================
 -- Mirrors the DDL embedded in
 --   services/ors_control_app/server/lib/init.ts
 -- so a greenfield install or audit run can recreate every object without
--- bouncing the SPCS service. The init.ts copy is the source of truth — keep
+-- bouncing the SPCS service. The init.ts copy is the source of truth - keep
 -- this file in sync when changing column lists.
 --
 -- Creates:

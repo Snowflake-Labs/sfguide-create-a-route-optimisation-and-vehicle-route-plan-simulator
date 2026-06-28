@@ -91,8 +91,8 @@ export default function FleetOverview() {
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Fleet Overview</h2>
       <p className="subtitle">Taxi fleet analytics</p>
       <div className="metric-grid">
-        <MetricCard label="Drivers" value={loading ? '...' : (kpis.DRIVERS ?? '—')} />
-        <MetricCard label="Trips" value={loading ? '...' : (kpis.TRIPS ?? '—')} />
+        <MetricCard label="Drivers" value={loading ? '...' : (kpis.DRIVERS ?? '-')} />
+        <MetricCard label="Trips" value={loading ? '...' : (kpis.TRIPS ?? '-')} />
         <MetricCard label="Avg Distance" value={loading ? '...' : `${fmtDec(kpis.AVG_DISTANCE_KM)} km`} />
         <MetricCard label="Avg Duration" value={loading ? '...' : `${fmtDec(kpis.AVG_DURATION_MIN)} min`} />
       </div>

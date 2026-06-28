@@ -12,7 +12,7 @@ produces its OWN Snowflake-managed MCP server (per-bundle servers = role isolati
 
 Only `ROUTING_MCP` is attached to the consumer Cortex Agent (`FLEET_AGENT`). `FLEET_ADMIN_MCP`
 is bound to the admin role. `FLEET_OPS_MCP` is bound to the ops role and attached to a SEPARATE
-role-gated agent `FLEET_OPS_AGENT` (NOT the consumer agent) — so an end-user agent session can
+role-gated agent `FLEET_OPS_AGENT` (NOT the consumer agent) - so an end-user agent session can
 never see or invoke an Ops verb. The in-app Ops console reaches these verbs via `/api/ops`.
 
 ## Design
@@ -54,7 +54,7 @@ the `snowCliConn` (`fleet_test_evals` = wgb26798), warehouse, db, schema, and `m
 
 ## Authoring gotchas (learned)
 
-- The `export const` name MUST equal the `defineProc({ name })` value (snake_case) — the bundler
+- The `export const` name MUST equal the `defineProc({ name })` value (snake_case) - the bundler
   imports by proc name.
 - Keep the materialize `--install` target dir SEPARATE from the app source dir; materialize writes
   a runtime `package.json` into the target and would clobber the source one.
@@ -64,12 +64,12 @@ the `snowCliConn` (`fleet_test_evals` = wgb26798), warehouse, db, schema, and `m
 
 The synapse framework is **vendored** into this repo at `fleet_tools/vendor/synapse/`
 (its built `dist/` is committed; `node_modules/` is installed from public npm). All three
-apps depend on it via `"@snowflake/synapse": "file:../vendor/synapse"` — no absolute or
-external path — so the branch is a forkable, self-contained tier-C template. To refresh the
+apps depend on it via `"@snowflake/synapse": "file:../vendor/synapse"` - no absolute or
+external path - so the branch is a forkable, self-contained tier-C template. To refresh the
 vendored framework, re-copy `dist/` + `package.json` from an upstream synapse build.
 
 ## Verified (wgb26798)
 
 `SHOW MCP SERVERS` lists both servers. `check_substrate` ran through the envelope: `verb_attempt`
 recorded `outcome=ok`, and a repeated idempotency key produced an `idempotent_replay` row. Live
-routing verbs (`get_directions` etc.) require the ORS/VROOM SPCS services up — verify at deploy time.
+routing verbs (`get_directions` etc.) require the ORS/VROOM SPCS services up - verify at deploy time.

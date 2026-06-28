@@ -87,7 +87,7 @@ snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_
 
 This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `services/ors_control_app/server/lib/init.ts` and runs on every container start.
 
-> **CRITICAL on a fresh `install-fleet-apps` install — run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (install-fleet-apps engine boot) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a post-seed step in install-fleet-apps, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
+> **CRITICAL on a fresh `install-fleet-apps` install - run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (install-fleet-apps engine boot) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a post-seed step in install-fleet-apps, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
 
 ### Step 4: Rebuild and Redeploy ORS Control App (only for page source changes)
 
@@ -130,11 +130,11 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX REFRESH;
 | C     | future | Saved searches, Snowflake Alerts -> SSE, posting (trucks + loads), chat, bids |
 | D     | future | OFFER_DOCS + AI_PARSE_DOCUMENT, full cabotage cross-border flags, round-trip toggle UI, tariff calculator |
 
-> **Pending:** UI surfaces for E1–E8 (React grid columns, drawers, map layers) are not yet wired into [FreightExchange.tsx](../build-routing-solution/openrouteservice_app/services/ors_control_app/src/components/FreightExchange.tsx). Server endpoints + SQL objects exist; UI integration is a follow-up.
+> **Pending:** UI surfaces for E1-E8 (React grid columns, drawers, map layers) are not yet wired into [FreightExchange.tsx](../build-routing-solution/openrouteservice_app/services/ors_control_app/src/components/FreightExchange.tsx). Server endpoints + SQL objects exist; UI integration is a follow-up.
 
-## Enrichment Bootstrap (E1–E8)
+## Enrichment Bootstrap (E1-E8)
 
-Phase E1–E8 MARKETPLACE objects (`FACT_OFFER_ROUTES`, `FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `OFFER_DRAFTS`, routed columns on `VW_OFFER_ENRICHED`, and `PROPOSAL_DECISIONS` discriminator columns) are created automatically on every `ors_control_app` container boot via `init.ts`. No manual SQL step is required for a normal deploy.
+Phase E1-E8 MARKETPLACE objects (`FACT_OFFER_ROUTES`, `FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `OFFER_DRAFTS`, routed columns on `VW_OFFER_ENRICHED`, and `PROPOSAL_DECISIONS` discriminator columns) are created automatically on every `ors_control_app` container boot via `init.ts`. No manual SQL step is required for a normal deploy.
 
 For greenfield audits or out-of-band rebuilds, run:
 
@@ -167,7 +167,7 @@ DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
 
 -- The PROPOSAL_DECISIONS schema additions (SOURCE_PAGE, DECISION_TYPE,
--- BUNDLE_ID) are NOT dropped automatically — backload-matching also writes
+-- BUNDLE_ID) are NOT dropped automatically - backload-matching also writes
 -- to those columns now.
 ```
 
@@ -176,11 +176,11 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
 ## Out of Scope
 
 - Live Timocom / WTransnet / Teleroute / B2P / DAT / Truckstop API integration (synthetic only).
-- Reverse posting (free truck / load) — Phase C.
-- Chat / bidding / counter-offers — Phase C.
-- Saved searches + push notifications — Phase C.
-- Document parsing (CMR / POD / ADR certificates) — Phase D.
-- Cross-border / customs flags — Phase D.
-- Round-trip / multi-leg solver — Phase D.
-- Tariff calculator widget — Phase D.
-- i18n (multi-language UI) — out of scope per current product direction.
+- Reverse posting (free truck / load) - Phase C.
+- Chat / bidding / counter-offers - Phase C.
+- Saved searches + push notifications - Phase C.
+- Document parsing (CMR / POD / ADR certificates) - Phase D.
+- Cross-border / customs flags - Phase D.
+- Round-trip / multi-leg solver - Phase D.
+- Tariff calculator widget - Phase D.
+- i18n (multi-language UI) - out of scope per current product direction.

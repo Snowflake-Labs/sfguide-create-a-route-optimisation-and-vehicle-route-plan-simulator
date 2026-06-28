@@ -1,7 +1,7 @@
-# build-routing-solution — Friction Log (Phase B: MMAP + follow-ups)
+# build-routing-solution - Friction Log (Phase B: MMAP + follow-ups)
 
 - **Date:** 2026-06-02 (Phase B execution)
-- **Task:** Plan `phaseb-mmap-and-followups` — add per-region MMAP, CPU_X64_SL small runtime family, apply+benchmark on Europe, fix run_sql_module.sh, refresh heap telemetry comment.
+- **Task:** Plan `phaseb-mmap-and-followups` - add per-region MMAP, CPU_X64_SL small runtime family, apply+benchmark on Europe, fix run_sql_module.sh, refresh heap telemetry comment.
 - **Connection:** TIB (tib85385 / GEOLAB / ACCOUNTADMIN)
 - **Outcome:** COMPLETED_WITH_WORKAROUNDS (2 deploy-time SQL bugs hit + fixed in source; benchmark gate passed; MMAP adopted for Europe)
 
@@ -32,7 +32,7 @@
 - Recommendation: when widening a proc's arg list with defaults, always drop the prior signature first.
 
 ### F-B2.3 (INFO): create_region_ors_service does NOT regenerate ors-config.yml
-- The staged ors-config.yml is written by WRITE_ORS_CONFIG (provisioning / APPLY_ORS_LIMITS), not by create_region_ors_service. So DOWNSIZE had to call WRITE_ORS_CONFIG itself BEFORE recreating the service — critical because CPU_X64_SL has a 24G heap and a RAM_STORE start would OOM the 24GB graph. Ordering: set REGION_ORS_MAP (family+GDA) -> WRITE_ORS_CONFIG -> create_region_ors_service.
+- The staged ors-config.yml is written by WRITE_ORS_CONFIG (provisioning / APPLY_ORS_LIMITS), not by create_region_ors_service. So DOWNSIZE had to call WRITE_ORS_CONFIG itself BEFORE recreating the service - critical because CPU_X64_SL has a 24G heap and a RAM_STORE start would OOM the 24GB graph. Ordering: set REGION_ORS_MAP (family+GDA) -> WRITE_ORS_CONFIG -> create_region_ors_service.
 
 ### F-B2.4 (INFO): stage file read needs a named file format
 - `SELECT $1 FROM @stage/file (FILE_FORMAT => (TYPE=CSV ...))` fails ("argument required to be a constant"). Use a pre-created (TEMP) named FILE FORMAT instead.

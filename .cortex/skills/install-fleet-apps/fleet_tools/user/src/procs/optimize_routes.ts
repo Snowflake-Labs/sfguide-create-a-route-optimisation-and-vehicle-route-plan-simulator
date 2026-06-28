@@ -43,12 +43,12 @@ export const optimize_routes = defineProc({
       );
     }
     // 2. Profile is intentionally NOT validated here: the TOOL_ROUTE_OPTIMIZATION
-    //    proc is the single resolver — it maps vehicle types / cycling variants
+    //    proc is the single resolver - it maps vehicle types / cycling variants
     //    (ebike, cycling-regular) to a built profile, falls back when a profile is
     //    not built in the region, and reports any substitution via profile_note.
     //    Pass the raw value through so the proc sees the user's original request.
     // 3. Region, when supplied, must be a provisioned region. Checked through the
-    //    routing contract (Tenet 1) — never by reading the engine schema directly.
+    //    routing contract (Tenet 1) - never by reading the engine schema directly.
     //    REGION_EXISTS returns TRUE for null/empty, so a null region passes here
     //    and is resolved to the active region downstream.
     if (args.region != null && args.region.trim() !== '') {

@@ -10,7 +10,7 @@ spec:
         VROOM_PORT: 3000
         ORS_PORT: 8082
         ORS_API_PATH: /ors/v2
-        # v1.1.0 — no global ORS_SERVICE / VROOM_SERVICE. Every region (including
+        # v1.1.0 - no global ORS_SERVICE / VROOM_SERVICE. Every region (including
         # the default) is per-region; missing region resolves to this name.
         # Set to the provisioned/active region so region=NULL routing tool calls
         # (TOOL_DIRECTIONS etc. do not pass a region) reach a live ORS service.

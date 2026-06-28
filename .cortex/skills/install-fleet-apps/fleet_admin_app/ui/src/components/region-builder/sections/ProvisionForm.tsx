@@ -158,7 +158,7 @@ export default function ProvisionForm(props: Props) {
                       style={{ cursor: 'pointer' }}
                     >
                       <td><strong>{r.regionName}</strong></td>
-                      <td>{r.source === 'bbbike' ? 'City' : [r.continent, r.country].filter(Boolean).join(' / ') || '—'}</td>
+                      <td>{r.source === 'bbbike' ? 'City' : [r.continent, r.country].filter(Boolean).join(' / ') || '-'}</td>
                       <td><span className="badge">{r.level}</span></td>
                       <td><span className={sizeClass(r.pbfSizeMb)}>{sizeLabel(r.pbfSizeMb)}</span></td>
                       <td>{estTime(r.pbfSizeMb)}</td>

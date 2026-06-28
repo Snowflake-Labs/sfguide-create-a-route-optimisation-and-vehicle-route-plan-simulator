@@ -167,7 +167,7 @@ function sampleOne(bbox: BBox, rand: () => number, roadPoints?: [number, number]
     if (boundary) {
       const pt = pickFromRoadInBoundary(roadPoints, boundary, rand);
       if (pt) return pt;
-      // No road point inside polygon — fall back to polygon-rejection sampling.
+      // No road point inside polygon - fall back to polygon-rejection sampling.
       return randomPointInBoundary(boundary, bbox, rand, shrink);
     }
     return pickFromRoad(roadPoints, rand);
@@ -203,7 +203,7 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
     }
     // No road point in the target distance ring. On continent-scale regions the seeded
     // road points are spread by tile (~degrees apart), so target ranges of a few km will
-    // never match. Fall back to the nearest road points to the anchor — keeps both ends
+    // never match. Fall back to the nearest road points to the anchor - keeps both ends
     // on real roads (avoids angular offsets into ocean/wilderness) and stays geographically
     // local instead of coast-to-coast. When a polygon boundary is known, restrict the
     // pool to in-polygon roads first.
@@ -268,7 +268,7 @@ function sampleWithSeparation(
   for (let i = 1; i < count; i++) {
     pts.push(samplePointNear(first, constraints.minKm * 0.5, constraints.maxKm, bbox, rand, roadPoints, boundary));
   }
-  return { points: pts, hint: 'Region is small — using reduced sample distances.' };
+  return { points: pts, hint: 'Region is small - using reduced sample distances.' };
 }
 
 function sampleDirections(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
@@ -333,7 +333,7 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
       return { points: [depot, ...jobs] };
     }
   }
-  return { points: [depot, ...jobs], hint: 'Region is small — using reduced sample distances.' };
+  return { points: [depot, ...jobs], hint: 'Region is small - using reduced sample distances.' };
 }
 
 export function samplePoints(input: SamplePointsInput): SampledPoints | null {

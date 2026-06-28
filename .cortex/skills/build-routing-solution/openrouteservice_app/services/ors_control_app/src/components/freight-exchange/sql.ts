@@ -1,6 +1,6 @@
 // Snowflake-via-sfQuery hooks for the Freight Exchange page. Each hook owns
 // one read and exposes { rows, loading, refetch }. Adding a new SQL surface
-// (e.g. useDeadhead, useTrailers) is a single new function here — UI files
+// (e.g. useDeadhead, useTrailers) is a single new function here - UI files
 // import the hook and never touch the query string.
 
 import { useEffect, useRef, useState, useCallback } from 'react';

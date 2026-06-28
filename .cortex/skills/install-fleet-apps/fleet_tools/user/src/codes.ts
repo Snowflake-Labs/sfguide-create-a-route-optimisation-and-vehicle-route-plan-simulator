@@ -40,7 +40,7 @@ export const OVERTURE_PLACES_GROUP_BY = ['list', 'city', 'category'] as const;
 export const OVERTURE_ADDRESSES_GROUP_BY = ['list', 'city'] as const;
 
 /**
- * Supported ORS routing profiles — the graphs the engine actually builds.
+ * Supported ORS routing profiles - the graphs the engine actually builds.
  * Used by verb validate hooks AFTER the profile is resolved via resolveProfile().
  * The default region builds driving-car, driving-hgv, and cycling-electric only;
  * cycling-regular / foot-walking are NOT built, so they are mapped to a built
@@ -58,7 +58,7 @@ export const SUPPORTED_PROFILES = [
  * Maps a vehicle_type (from DIM_DATASETS / the context bar) OR a loosely-named
  * routing profile to the ORS profile the engine actually builds. The engine
  * builds 'cycling-electric' as its only cycling graph, so every cycling variant
- * and the 'ebike' vehicle_type resolve to it — otherwise a cycle/ebike request
+ * and the 'ebike' vehicle_type resolve to it - otherwise a cycle/ebike request
  * either errored (ORS 2003 for the unbuilt cycling-regular) or silently routed
  * as driving-car (wrong travel mode). Mirrors the SQL whitelist in
  * routing-agent/references/deploy-agent.sql and DIM_VEHICLE_PROFILE.

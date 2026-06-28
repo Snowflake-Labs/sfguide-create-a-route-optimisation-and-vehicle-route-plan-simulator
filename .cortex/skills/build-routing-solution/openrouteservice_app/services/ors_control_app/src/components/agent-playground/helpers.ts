@@ -236,8 +236,8 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
   for (const tr of toolResults) {
     if (!tr || typeof tr !== 'object') continue;
     // Two POI list shapes are accepted:
-    //   tr.poi_list  — legacy local executeToolPoi shape: { name, lng, lat, category }
-    //   tr.pois      — TOOL_POI_IN_ISOCHRONE proc shape:   { name, longitude, latitude, basic_category, primary_category }
+    //   tr.poi_list  - legacy local executeToolPoi shape: { name, lng, lat, category }
+    //   tr.pois      - TOOL_POI_IN_ISOCHRONE proc shape:   { name, longitude, latitude, basic_category, primary_category }
     const list: any[] = Array.isArray(tr.poi_list) ? tr.poi_list : (Array.isArray(tr.pois) ? tr.pois : []);
     for (const poi of list) {
       const lng = poi.lng ?? poi.longitude;

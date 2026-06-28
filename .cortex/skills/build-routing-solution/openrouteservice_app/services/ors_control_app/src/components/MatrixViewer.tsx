@@ -172,7 +172,7 @@ export default function MatrixViewer() {
     if (mode === 'area') {
       if (hexId === originHex) return;
       if (!originSet.has(hexId)) {
-        setNotOriginMsg(`${hexId} is a destination only — no origin data available. Click a gray hexagon instead.`);
+        setNotOriginMsg(`${hexId} is a destination only - no origin data available. Click a gray hexagon instead.`);
         setTimeout(() => setNotOriginMsg(''), 3000);
         return;
       }
@@ -199,7 +199,7 @@ export default function MatrixViewer() {
 
     // pair mode
     if (!originSet.has(hexId)) {
-      setNotOriginMsg(`${hexId} is a destination only — no origin data available. Click a gray hexagon instead.`);
+      setNotOriginMsg(`${hexId} is a destination only - no origin data available. Click a gray hexagon instead.`);
       setTimeout(() => setNotOriginMsg(''), 3000);
       return;
     }
@@ -513,7 +513,7 @@ export default function MatrixViewer() {
               <select className="select" value={selRes} onChange={e => setSelRes(e.target.value)}>
                 {resolutions.map(r => {
                   const match = inventory.find(t => t.region === selRegion && t.profile === selProfile && t.resolution === r);
-                  return <option key={r} value={r}>{r} — {RES_LABELS[parseInt(r.replace('RES', ''))] || ''}{match?.road_filter ? ' · road-aware' : ''}</option>;
+                  return <option key={r} value={r}>{r} - {RES_LABELS[parseInt(r.replace('RES', ''))] || ''}{match?.road_filter ? ' · road-aware' : ''}</option>;
                 })}
               </select>
             </div>

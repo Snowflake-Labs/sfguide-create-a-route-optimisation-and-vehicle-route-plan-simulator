@@ -164,7 +164,7 @@ export default function AssetVelocity() {
       try {
         await fetch('/api/asset-velocity/ensure', { method: 'POST' });
       } catch {
-        /* ignore — page falls back to its empty state */
+        /* ignore - page falls back to its empty state */
       }
       loadData();
     })();

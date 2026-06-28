@@ -18,7 +18,7 @@ export interface UseH3FitMapOptions extends UseFitMapOptions {
 /**
  * Like `useFitMap`, but accepts rows backed by H3 cell strings. Builds the
  * bounding box from each hex's polygon vertices (via `cellToBoundary`), so the
- * camera fits the full hex footprint instead of just hex centers — fixing the
+ * camera fits the full hex footprint instead of just hex centers - fixing the
  * outer-hex cropping that occurs at low H3 resolutions.
  */
 export function useH3FitMap<T>(

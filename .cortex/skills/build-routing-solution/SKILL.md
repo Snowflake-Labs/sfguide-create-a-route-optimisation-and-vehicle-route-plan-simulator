@@ -1,13 +1,13 @@
 ---
 name: build-routing-solution
-description: "DEPRECATED / RETIRED. The ORS/VROOM routing engine build was absorbed into install-fleet-apps (Phase C). Use when: build routing solution, set up OpenRouteService, build and push SPCS images, deploy ORS app, redeploy app, rebuild container images, provision the routing engine. This skill now only redirects to install-fleet-apps (which builds the engine by default). Do NOT use for: anything directly — follow install-fleet-apps. Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS app, rebuild images, SPCS image build, OpenRouteService deployment, provision routing engine."
+description: "DEPRECATED / RETIRED. The ORS/VROOM routing engine build was absorbed into install-fleet-apps (Phase C). Use when: build routing solution, set up OpenRouteService, build and push SPCS images, deploy ORS app, redeploy app, rebuild container images, provision the routing engine. This skill now only redirects to install-fleet-apps (which builds the engine by default). Do NOT use for: anything directly - follow install-fleet-apps. Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS app, rebuild images, SPCS image build, OpenRouteService deployment, provision routing engine."
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
   category: infrastructure
 ---
 
-# build-routing-solution — RETIRED (see install-fleet-apps)
+# build-routing-solution - RETIRED (see install-fleet-apps)
 
 This skill has been **retired**. The ORS/VROOM routing-engine build substrate
 (SQL modules, the 4 engine service images, staged map/config, build scripts, and

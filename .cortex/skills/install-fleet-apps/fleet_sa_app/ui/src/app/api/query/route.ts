@@ -47,7 +47,7 @@ function validateParams(params?: Record<string, string | null>): void {
 
 // Databases an agent-emitted (dynamic) query may reference. FLEET_APP is the
 // neutral data contract; SNOWFLAKE.CORTEX.COMPLETE backs the asset-velocity
-// rationale. This is a fast pre-filter for clear errors — the AUTHORITATIVE
+// rationale. This is a fast pre-filter for clear errors - the AUTHORITATIVE
 // boundary is the owner's-rights proc FLEET_APP.CORE.QUERY_DYNAMIC, which runs
 // as FLEET_APP_DYNAMIC_READER and physically cannot reach other databases.
 const ALLOWED_DYNAMIC_DBS = new Set(['FLEET_APP', 'SNOWFLAKE']);

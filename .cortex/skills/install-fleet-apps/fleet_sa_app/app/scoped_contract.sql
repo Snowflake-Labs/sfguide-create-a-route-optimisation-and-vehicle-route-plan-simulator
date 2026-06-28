@@ -278,7 +278,7 @@ GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(VA
 -- (which installs first; those packs depend_on it) is the correct owner.
 
 -- ============================================================================
--- FLEET_OPS — the ONE universal, mode-agnostic analytics layer (R6)
+-- FLEET_OPS - the ONE universal, mode-agnostic analytics layer (R6)
 -- ============================================================================
 -- A single schema of dataset-scoped UDTFs powering every fleet analytics INTENT
 -- (Fleet/Asset Status, Asset Map, Demand Density, Trip Inspection, Operator
@@ -563,7 +563,7 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
 
 -- ============================================================================
--- FLEET_APP.CORE — the NEUTRAL, industry/vehicle-agnostic data contract (R-agnostic)
+-- FLEET_APP.CORE - the NEUTRAL, industry/vehicle-agnostic data contract (R-agnostic)
 -- ============================================================================
 -- Implements the agnostic-view report's neutral schema (report section 6.2) as an
 -- ADDITIVE aliasing layer: no physical table is renamed. Every entity below is a
@@ -592,7 +592,7 @@ CREATE SCHEMA IF NOT EXISTS FLEET_APP.CORE
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"neutral-data-contract"}}';
 
 -- ---------------------------------------------------------------------------
--- dim_metric_definition — neutral KPI vocabulary (report section 3.2). Static seed
+-- dim_metric_definition - neutral KPI vocabulary (report section 3.2). Static seed
 -- table: metric_name + display label key + unit + thresholds + direction. The UI
 -- config resolver (Phase 2) reads display_label_key/unit_code/thresholds so the
 -- same metric renders with domain-appropriate label/units without code edits.
@@ -753,7 +753,8 @@ CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_POSITION_SCOPED(P_REGION VARCHA
 RETURNS TABLE (
   POSITION_ID VARCHAR, ENTITY_ID VARCHAR, JOURNEY_ID VARCHAR, TS TIMESTAMP_NTZ,
   LOCATION_GEOG GEOGRAPHY, H3_CELL VARCHAR, SPEED_VALUE FLOAT, HEADING_VALUE FLOAT,
-  MOTION_STATUS_ENUM VARCHAR, DATA_QUALITY_ENUM VARCHAR, SOURCE_SYSTEM VARCHAR, REGION VARCHAR
+  MOTION_STATUS_ENUM VARCHAR, DATA_QUALITY_ENUM VARCHAR, SOURCE_SYSTEM VARCHAR, REGION VARCHAR,
+  POSTED_SPEED_VALUE FLOAT, IS_SPEEDING BOOLEAN
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -764,7 +765,8 @@ $$
          SPEED_KMH AS SPEED_VALUE, HEADING_DEG AS HEADING_VALUE, STATUS AS MOTION_STATUS_ENUM,
          CASE WHEN GPS_ACCURACY_M IS NULL THEN NULL WHEN GPS_ACCURACY_M <= 15 THEN 'good'
               WHEN GPS_ACCURACY_M <= 50 THEN 'fair' ELSE 'poor' END AS DATA_QUALITY_ENUM,
-         'synthetic' AS SOURCE_SYSTEM, REGION
+         'synthetic' AS SOURCE_SYSTEM, REGION,
+         POSTED_SPEED_KMH AS POSTED_SPEED_VALUE, IS_SPEEDING
   FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
 $$;
 
@@ -924,7 +926,7 @@ GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
 
 -- ============================================================================
--- FLEET_APP.EMERGENCY_RESPONSE — region-generic evacuation-planning contract
+-- FLEET_APP.EMERGENCY_RESPONSE - region-generic evacuation-planning contract
 -- ============================================================================
 -- Region-scoped, dataset-versioned hazard + care-center contract powering the
 -- generic Emergency Response wizard. Replaces the CA/CO/PA-locked
@@ -993,7 +995,7 @@ $$
           OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
 $$;
 
--- Global-active views (NULL scope args) — surfacing-gate probe + agent default.
+-- Global-active views (NULL scope args) - surfacing-gate probe + agent default.
 CREATE OR REPLACE VIEW FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT * FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_HAZARD_ZONES_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));

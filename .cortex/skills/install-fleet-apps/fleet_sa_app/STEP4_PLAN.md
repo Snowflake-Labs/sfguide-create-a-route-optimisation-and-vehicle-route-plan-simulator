@@ -1,4 +1,4 @@
-# Step 4 plan — Routing Platform + domain-agnostic primitives app
+# Step 4 plan - Routing Platform + domain-agnostic primitives app
 
 > How to resume in a new context: read project memory `fleet-sa-synapse-migration` and this file.
 > Step 3 is COMPLETE and LIVE on branch `feature/sa-synapse-app` in this work repo (SPCS service
@@ -7,7 +7,7 @@
 > `fleet_test_evals`). Step 3 is NOT yet committed. Execute the tasks below in order.
 >
 > User's ultimate goal (verbatim intent): the **routing service runs as a separate app**, and the
-> **main app is domain- and vehicle-agnostic** — a set of **reusable primitives** users apply to
+> **main app is domain- and vehicle-agnostic** - a set of **reusable primitives** users apply to
 > their own use cases per domain (no taxi/bike/dwell/freight call-outs baked in). Fleet becomes one
 > example domain pack. This is achievable and is mostly DECOUPLING, not a rewrite.
 >
@@ -19,7 +19,7 @@
 An audit of `fleet_sa_app/ui/` shows the host is already mostly generic and config-driven:
 
 - **Generic primitives (keep as-is, ~55 files):** the declarative dashboard engine
-  (`view-renderer.tsx` + `areas/*` — MetricCards/Chart/Table/Map/Slider/ClickableTable/ComboBox/FilterBar),
+  (`view-renderer.tsx` + `areas/*` - MetricCards/Chart/Table/Map/Slider/ClickableTable/ComboBox/FilterBar),
   the deck.gl map DSL (`lib/map/*`), the view registry + loader (`load-views.tsx`, `view-registry.ts`,
   `use-view-data.ts`), the agent proxy (`agent-config.ts` is fully env-driven), and the data tap (`/api/query`).
 - **Already swappable via JSON/env:** `app-config.json`, `app-views.json`, `agent-spec.json`,
@@ -34,7 +34,7 @@ An audit of `fleet_sa_app/ui/` shows the host is already mostly generic and conf
 
 The routing engine itself (ORS/VROOM/gateway + `FLEET_INTELLIGENCE.CORE` functions + `ROUTING_AGENT.TOOL_*`
 + the synapse routing verbs in `FLEET_USER_MCP`) already lives in its own database (`OPENROUTESERVICE_APP`)
-with its own control app — so the "separate routing app" largely exists; Step 4 formalizes it as a clean,
+with its own control app - so the "separate routing app" largely exists; Step 4 formalizes it as a clean,
 reusable product and fixes its substrate sizing.
 
 ### Target architecture
@@ -81,13 +81,13 @@ flowchart TD
 
 ### 4B - Extract the Routing Platform as a standalone product
 - Define the routing service boundary and rename its public tool API from `FLEET_USER_MCP` to a neutral
-  `ROUTING_MCP` (alias retained) — the 7 verbs are already domain-agnostic primitives (directions, isochrone,
+  `ROUTING_MCP` (alias retained) - the 7 verbs are already domain-agnostic primitives (directions, isochrone,
   optimize_routes, find_poi, pharma/site catchment, network optimizers). Move them out of the `SYNAPSE_USER`
   fleet schema into a routing-product schema (or keep + alias).
 - Reposition the evolved ORS control app as the **Routing Platform admin/provisioning console** (region graph
-  builds, matrix builds, Function Tester) — this is where the heavy provisioning lives, owned by the routing
+  builds, matrix builds, Function Tester) - this is where the heavy provisioning lives, owned by the routing
   product, not the analytics app.
-- **Routing substrate fix (priority):** resolve the live-routing blocker — ORS-Europe graph is 23.4 GB on a
+- **Routing substrate fix (priority):** resolve the live-routing blocker - ORS-Europe graph is 23.4 GB on a
   24 GB node, so its HTTP hangs. Right-size the ORS region compute pools (larger instance family) and/or trim
   per-region graphs; document a region->pool-size matrix. Verify directions/optimize render live end-to-end.
 
@@ -187,12 +187,12 @@ per-call `provider` override with a per-region default; ORS adapter live, extern
 ## Open items / decisions to confirm at execution
 - Routing platform: **evolve the existing `OPENROUTESERVICE_APP` + control app** into the standalone product
   (recommended) vs build a new shell. Renaming `FLEET_USER_MCP` -> `ROUTING_MCP` and moving verbs out of the
-  fleet schema is a breaking change for the live agent — do it behind aliases.
+  fleet schema is a breaking change for the live agent - do it behind aliases.
 - How far to take vehicle-agnosticism in the routing primitives: keep `profile` as a free parameter (already
   generic) vs add a capability/profile registry.
 - Distribution shape: two separate listings (Routing Platform + Analytics App) vs one bundle with the routing
   product as a dependency.
-- Old control app: becomes the Routing Platform admin console (kept, repositioned) rather than decommissioned —
+- Old control app: becomes the Routing Platform admin console (kept, repositioned) rather than decommissioned -
   confirm this matches "routing as a separate app".
 
 ## How to resume in a new chat

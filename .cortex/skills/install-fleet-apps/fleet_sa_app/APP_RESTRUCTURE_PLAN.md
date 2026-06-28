@@ -1,4 +1,4 @@
-# APP_RESTRUCTURE_PLAN — Routing/Fleet apps -> "2 products / 3 surfaces / 1 UI kit"
+# APP_RESTRUCTURE_PLAN - Routing/Fleet apps -> "2 products / 3 surfaces / 1 UI kit"
 
 > RESUME HEADER (read first in a new context)
 > - Read: project memory `fleet-sa-synapse-migration` (at `/Users/obielov/.snowflake/cortex/memory/projects/Users-obielov-Documents-GitHub-synapse/fleet-sa-synapse-migration.md`), `STEP4_PLAN.md`, `STEP4C_PLAN.md`, and this file.
@@ -8,28 +8,28 @@
 > - Start at R0. Do NOT consolidate to a single host before R3 (4D).
 >
 > PROGRESS LOG (update as phases complete):
-> - R0: DONE (commit 9d2470a) — `packages/fleet-kit/` shell + .gitignore dist negation; suspended idle ORS_SERVICE_EUROPE+SANFRANCISCO; baseline builds green.
-> - R1.1: DONE (commit 897c8bc) — extracted 3 zero-dep modules to `@fleet-kit/core` (`sf-auth`, `sql-utils`, `map` layer-spec TYPES); consumer consumes kit via `file:` dep + re-export shims; consumer build green, sf-auth inlined into 9 server route bundles.
-> - R1.2: DONE — extracted `map-fit` + `layer-compiler` to `@fleet-kit/core/map` (deck.gl/h3-js PEER deps); consumer dedupes via `transpilePackages:['@fleet-kit/core']` + webpack `resolve.symlinks=false`; lib/map shims; build green, compiler bundled into client chunks. Runtime map render = end deploy.
-> - R2.1: DONE — UNIFIED scope-arg fns (see below). 
-> - R2.2: DONE — contract-layer per-session wiring. Added FLEET_APP.UNIFIED_FLEET.F_VW_FACT_{TRIPS,VEHICLE_TELEMETRY}_SCOPED(region,dataset_id) wrapping the UNIFIED fns (consumer stays bound to the neutral contract, not the physical source). ContextBar no longer writes the shared CONFIG (per-session); added a dynamic Dataset picker (DIM_DATASETS by region -> context.dataset_id). Repointed the 6 fleet_operations/fleet_map queries to TABLE(F_VW_*_SCOPED(:region,:dataset_id)). Verified live: contract scoped==null-fallback==global view==394; SAMPLE-on-subquery telemetry query returns rows; consumer build green. Two-concurrent-session verification = end deploy. FOLLOW-ON: wire the FLEET_APP contract scoped fns into the pack installer for fresh installs (currently in scoped_contract.sql + applied live).
-> - R3: DONE — ingress-identity role gating. New `ui/src/lib/ingress-identity.ts` reads `Sf-Context-Current-User`; requireOps/requireAdmin check FLEET_APP_OPS/ADMIN via SHOW GRANTS TO USER. Fails CLOSED when deployed (SNOWFLAKE_HOST set), OPEN locally. Wired into /api/ops + /api/region POST. Build green. Live 403-for-non-admin = end deploy (needs a non-admin test user).
-> - R4: DONE — global writes demoted to OPS. Consumer contextBar no longer writes CONFIG (R2.2); /api/region POST is now requireOps-gated. New OPS "activate dataset" primitive: FLEET_INTELLIGENCE.CORE.ACTIVATE_DATASET(dataset_id) (committed app/ops_primitives.sql + mirrored into init.ts; verified live flip+restore preserving one-active-per-(region,vehicle)) exposed via OPS-gated /api/ops/activate-dataset. ops-console is the OPS surface. Surface-ownership map (Section 3) holds.
+> - R0: DONE (commit 9d2470a) - `packages/fleet-kit/` shell + .gitignore dist negation; suspended idle ORS_SERVICE_EUROPE+SANFRANCISCO; baseline builds green.
+> - R1.1: DONE (commit 897c8bc) - extracted 3 zero-dep modules to `@fleet-kit/core` (`sf-auth`, `sql-utils`, `map` layer-spec TYPES); consumer consumes kit via `file:` dep + re-export shims; consumer build green, sf-auth inlined into 9 server route bundles.
+> - R1.2: DONE - extracted `map-fit` + `layer-compiler` to `@fleet-kit/core/map` (deck.gl/h3-js PEER deps); consumer dedupes via `transpilePackages:['@fleet-kit/core']` + webpack `resolve.symlinks=false`; lib/map shims; build green, compiler bundled into client chunks. Runtime map render = end deploy.
+> - R2.1: DONE - UNIFIED scope-arg fns (see below). 
+> - R2.2: DONE - contract-layer per-session wiring. Added FLEET_APP.UNIFIED_FLEET.F_VW_FACT_{TRIPS,VEHICLE_TELEMETRY}_SCOPED(region,dataset_id) wrapping the UNIFIED fns (consumer stays bound to the neutral contract, not the physical source). ContextBar no longer writes the shared CONFIG (per-session); added a dynamic Dataset picker (DIM_DATASETS by region -> context.dataset_id). Repointed the 6 fleet_operations/fleet_map queries to TABLE(F_VW_*_SCOPED(:region,:dataset_id)). Verified live: contract scoped==null-fallback==global view==394; SAMPLE-on-subquery telemetry query returns rows; consumer build green. Two-concurrent-session verification = end deploy. FOLLOW-ON: wire the FLEET_APP contract scoped fns into the pack installer for fresh installs (currently in scoped_contract.sql + applied live).
+> - R3: DONE - ingress-identity role gating. New `ui/src/lib/ingress-identity.ts` reads `Sf-Context-Current-User`; requireOps/requireAdmin check FLEET_APP_OPS/ADMIN via SHOW GRANTS TO USER. Fails CLOSED when deployed (SNOWFLAKE_HOST set), OPEN locally. Wired into /api/ops + /api/region POST. Build green. Live 403-for-non-admin = end deploy (needs a non-admin test user).
+> - R4: DONE - global writes demoted to OPS. Consumer contextBar no longer writes CONFIG (R2.2); /api/region POST is now requireOps-gated. New OPS "activate dataset" primitive: FLEET_INTELLIGENCE.CORE.ACTIVATE_DATASET(dataset_id) (committed app/ops_primitives.sql + mirrored into init.ts; verified live flip+restore preserving one-active-per-(region,vehicle)) exposed via OPS-gated /api/ops/activate-dataset. ops-console is the OPS surface. Surface-ownership map (Section 3) holds.
 > - END VERIFY: DEPLOYED FLEET_SA_APP v0.1.6 -> v0.1.7 (READY, clean boot). v0.1.6 logs caught a real R2.2 regression (surfacing-gate probed the scoped UDTF as a table -> would hide fleet dashboards); FIXED in pack-status/route.ts (skip FQNs followed by '(') and shipped v0.1.7. /api/query + /api/app-config 200. INTERACTIVE visual check (maps render, two-session isolation, non-admin 403) still requires a browser login (SPCS OAuth) by the user.
-> - R5-R8: R5 + R6 DONE — see below. R7/R8 NOT done.
-> - R5: DONE — new parallel service FLEET_ADMIN_APP (Next 15 + @fleet-kit/core) holding the 9 privileged build/admin pages, deployed v0.1.2 (READY, restartCount 0, boot-init clean ~39s). Full-rewrite-to-Next-route-handlers: 73 API routes across shared infra + 9 pages (Status&Health, Region Builder, Function Tester, Matrix Viewer, Matrix Builder, Data Studio, Routing Limits, Observability, Diagnostics). Express-free server foundation + studio engine ported verbatim into ui/src/server/ (.js stripped); boot-init via instrumentation.ts register(); globalThis-pinned singletons (diagnostics ring, matrix-viewer cache, studio activeJobs registry); Data Studio SSE as ReadableStream w/ replay+heartbeat; ingress-identity requireOps/requireAdmin on writes. Legacy Vite ORS_CONTROL_APP untouched (R7 cutover retires it). Dir: fleet_admin_app/ui; deploy: scripts/deploy_fleet_admin_app.sh; tag FLEET_ADMIN_APP_TAG. Also closed the R2 follow-on: scoped_contract.sql wired into the pack installer. INTERACTIVE visual check (maps render, SSE live progress, non-admin 403) still requires a browser SPCS-OAuth login.
-> - R7-R8: NOT done — large multi-session efforts (blue/green cutover retiring the Vite app; distribution). See Section 5. (R6 analytics consolidation DONE — see R6 below.)
+> - R5-R8: R5 + R6 DONE - see below. R7/R8 NOT done.
+> - R5: DONE - new parallel service FLEET_ADMIN_APP (Next 15 + @fleet-kit/core) holding the 9 privileged build/admin pages, deployed v0.1.2 (READY, restartCount 0, boot-init clean ~39s). Full-rewrite-to-Next-route-handlers: 73 API routes across shared infra + 9 pages (Status&Health, Region Builder, Function Tester, Matrix Viewer, Matrix Builder, Data Studio, Routing Limits, Observability, Diagnostics). Express-free server foundation + studio engine ported verbatim into ui/src/server/ (.js stripped); boot-init via instrumentation.ts register(); globalThis-pinned singletons (diagnostics ring, matrix-viewer cache, studio activeJobs registry); Data Studio SSE as ReadableStream w/ replay+heartbeat; ingress-identity requireOps/requireAdmin on writes. Legacy Vite ORS_CONTROL_APP untouched (R7 cutover retires it). Dir: fleet_admin_app/ui; deploy: scripts/deploy_fleet_admin_app.sh; tag FLEET_ADMIN_APP_TAG. Also closed the R2 follow-on: scoped_contract.sql wired into the pack installer. INTERACTIVE visual check (maps render, SSE live progress, non-admin 403) still requires a browser SPCS-OAuth login.
+> - R7-R8: NOT done - large multi-session efforts (blue/green cutover retiring the Vite app; distribution). See Section 5. (R6 analytics consolidation DONE - see R6 below.)
 
 ## 1. Context (verified read-only)
 
 Two logical planes, 18 services today:
-- **Consumer (Analytics App):** `FLEET_SA_APP` — Next 15 / React 19, domain-agnostic primitives (dashboard YAML DSL, deck.gl map DSL, `/api/query` data tap, agent proxy, `sf-auth`, contextBar, surfacing gate, config-driven pack loader). Runs as the SPCS service identity (ACCOUNTADMIN today).
-- **Routing Platform / control plane:** `ORS_CONTROL_APP` (separate **React 18 + Vite + Redux** SPA + Express server) holding region builder, matrix builder, function tester, substrate observability, Data Studio — PLUS ~12 fleet demo analytics pages. Also `ROUTING_GATEWAY_SERVICE`, `DOWNLOADER`, per-region `ORS_SERVICE_<r>` + `VROOM_SERVICE_<r>` (7 regions).
+- **Consumer (Analytics App):** `FLEET_SA_APP` - Next 15 / React 19, domain-agnostic primitives (dashboard YAML DSL, deck.gl map DSL, `/api/query` data tap, agent proxy, `sf-auth`, contextBar, surfacing gate, config-driven pack loader). Runs as the SPCS service identity (ACCOUNTADMIN today).
+- **Routing Platform / control plane:** `ORS_CONTROL_APP` (separate **React 18 + Vite + Redux** SPA + Express server) holding region builder, matrix builder, function tester, substrate observability, Data Studio - PLUS ~12 fleet demo analytics pages. Also `ROUTING_GATEWAY_SERVICE`, `DOWNLOADER`, per-region `ORS_SERVICE_<r>` + `VROOM_SERVICE_<r>` (7 regions).
 
 Key findings:
 - **No code is shared between the two frontends**, but heavy conceptual duplication: SF SQL client (`server/lib/sql.ts` vs `ui/src/lib/snowflake.ts`), SPCS-OAuth/PAT auth (`server/lib/sanitize.ts:getSpcsToken` vs `ui/src/lib/sf-auth.ts`), deck.gl map (`src/shared/MapView.tsx` + `src/dynamic/layer-compiler.ts` vs `ui/src/lib/map/*`), `asSqlJsonLiteral`, charts/metric cards.
 - **Scoping is 100% GLOBAL today.** Both apps write the physical single-row per-schema `CONFIG(VEHICLE_TYPE, REGION)` tables; `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views resolve the active dataset by a **global** `DIM_DATASETS.IS_ACTIVE = TRUE` flag. Consumer "switch region" (`ui/src/app/api/region/route.ts` POST) and control-app `POST /api/regions/active` both `UPDATE ... CONFIG SET REGION=?` across all schemas. No per-user/session isolation anywhere. (Confirmed: `region/route.ts`, `routes/regions/lifecycle.ts`, `init.ts` V_*_CURRENT defs, `studio/jobs.ts` archive logic.)
-- **Lifecycle data objects (coordination seam):** `OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP` (+ `REGION_CATALOG` boundaries) for provisioned regions; `FLEET_INTELLIGENCE.CORE.DIM_DATASETS` (immutable, one `IS_ACTIVE` per region+vehicle) for datasets; per-schema `CONFIG`; the surfacing gate (`/api/pack-status`) hides packs whose probe view has 0 rows. A new region/dataset already surfaces to the consumer via these tables with no redeploy — this is the data-coordination contract to preserve and harden.
+- **Lifecycle data objects (coordination seam):** `OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP` (+ `REGION_CATALOG` boundaries) for provisioned regions; `FLEET_INTELLIGENCE.CORE.DIM_DATASETS` (immutable, one `IS_ACTIVE` per region+vehicle) for datasets; per-schema `CONFIG`; the surfacing gate (`/api/pack-status`) hides packs whose probe view has 0 rows. A new region/dataset already surfaces to the consumer via these tables with no redeploy - this is the data-coordination contract to preserve and harden.
 
 ## 2. Target architecture
 
@@ -79,47 +79,47 @@ Principle honored: the two products coordinate through Snowflake DATA, not share
 - **Reads -> per-session (multi-tenant safe), lands BEFORE 4D.** Introduce scope-arg resolution: `SYNTHETIC_DATASETS.UNIFIED.F_<TABLE>_SCOPED(region, dataset_id)` table functions (Snowflake views can't take params), resolving an explicit dataset instead of the global `IS_ACTIVE`. Keep `V_*_CURRENT` for the global default + surfacing-gate probes. Consumer contextBar carries `region` + `dataset_id` as per-session client state -> `use-view-data` resolves them as `:params` -> dashboards read scope-args. Consumer "switch" stops writing `CONFIG`.
 - **Writes -> demoted to OPS/ADMIN, ENFORCED BY 4D.** "Promote active scope" + "activate dataset" + "provision" + "generate" require ingress-identity role gating (`Sf-Context-Current-User`) + least-privilege runtime roles. Until 4D lands, consumer + admin remain **separate services** (current safe default); 4D is sequenced before any single-host consolidation (we keep two services regardless). Ties to 4E (generic N-dimension contextBar + write-back) and 4D (role gating).
 
-## 5. Phased implementation (R0–R8)
+## 5. Phased implementation (R0-R8)
 
-### R0 — Guardrails + parallel-safe scaffolding (no behavior change)
+### R0 - Guardrails + parallel-safe scaffolding (no behavior change)
 - Stand up an in-repo npm workspace `packages/fleet-kit/` (empty shell, not yet imported). Confirm both app build paths still green. Suspend idle ORS/VROOM regions for cost. Re-confirm tracking-tag + deploy discipline. Keep `FLEET_SA_APP` live untouched.
 
-### R1 — Extract the shared UI kit (framework-agnostic core)
+### R1 - Extract the shared UI kit (framework-agnostic core)
 - Move portable primitives into `packages/fleet-kit/*`: map (`layer-spec`, `layer-compiler`, `map-fit`), `sf-client` core (REST `/api/v2/statements` + poll + type-coerce), `sf-auth` (SPCS OAuth + PAT), `sql-utils` (`asSqlJsonLiteral`), `charts`, shared `types`, area-DSL types. These are the dedup targets present in BOTH trees.
 - Repoint `fleet_sa_app/ui` imports to the kit; zero behavior change. Verify `npm run build` + `tsc --noEmit` green; redeploy `FLEET_SA_APP` (image bump) renders identically.
 
-### R2 — Per-session scope-arg data contract (multi-tenant-safe READS) — additive, no privilege
+### R2 - Per-session scope-arg data contract (multi-tenant-safe READS) - additive, no privilege
 - Add `F_<TABLE>_SCOPED(region, dataset_id)` table functions over the base UNIFIED tables (committed DDL, tracking COMMENT). Keep `V_*_CURRENT` for the global default + surfacing probe.
 - Extend consumer contextBar to carry `region` + `dataset_id` per-session; thread as `:params` through `use-view-data` + `/api/query`; migrate dashboards to scope-args. Consumer "switch" no longer writes `CONFIG`.
 - Verify: two concurrent browser sessions select different region/dataset and see different data simultaneously. New dataset appears in the picker via `DIM_DATASETS` with no redeploy.
 
-### R3 — 4D role-gating prerequisite (ingress identity + least-privilege)
+### R3 - 4D role-gating prerequisite (ingress identity + least-privilege)
 - Enforce role at `/api/ops` + write routes via `Sf-Context-Current-User`; bind real users to `FLEET_APP_USER/OPS/ADMIN`; least-privilege runtime roles; remove ACCOUNTADMIN from the consumer service where feasible.
 - INVARIANT: consumer + admin stay SEPARATE services; this phase is the prerequisite for any host consolidation (not planned now) and for the write demotion in R4.
 
-### R4 — Demote global-scope WRITES to OPS; consumer read-only of selected scope
+### R4 - Demote global-scope WRITES to OPS; consumer read-only of selected scope
 - Move "switch region (global)" + "activate dataset (`IS_ACTIVE` flip)" behind an OPS surface (app/agent observability ops view in the Analytics App), gated by R3. Consumer keeps per-session selection only (no global write). Lock the surface-ownership map (Section 3).
 
-### R5 — Modernize the admin/build console onto Next + kit (Product A: Routing Platform)
-- Rewrite `ORS_CONTROL_APP` onto Next 15/React 19 + `fleet-kit` as a NEW service (e.g. `ROUTING_ADMIN_APP`), holding ONLY privileged substrate tools: region builder, matrix builder, function tester, substrate observability, Data Studio. Port `server/{lib,routes,studio}/*` to Next API routes / co-located node server; reuse kit `sf-client`/`sf-auth`. Build in PARALLEL — old Vite app stays live until cutover (R7).
+### R5 - Modernize the admin/build console onto Next + kit (Product A: Routing Platform)
+- Rewrite `ORS_CONTROL_APP` onto Next 15/React 19 + `fleet-kit` as a NEW service (e.g. `ROUTING_ADMIN_APP`), holding ONLY privileged substrate tools: region builder, matrix builder, function tester, substrate observability, Data Studio. Port `server/{lib,routes,studio}/*` to Next API routes / co-located node server; reuse kit `sf-client`/`sf-auth`. Build in PARALLEL - old Vite app stays live until cutover (R7).
 - ADMIN owns create-region + generate-dataset. Heavy substrate (graphs, image pipeline) stays here (hybrid provisioning tenet).
 
-### R6 — Migrate the 12 demo analytics pages to the consumer app as packs
+### R6 - Migrate the 12 demo analytics pages to the consumer app as packs
 - Reimplement Dwell, Taxis, Delivery, Route Deviation, Asset Velocity, Backload, Freight Exchange, Retail, Emergency, Route Opt as consumer packs (YAML dashboards + showcase views via `PACK_REGISTRY`), reading through the R2 scope-arg contract. Reconcile with the YAML equivalents the consumer app already has. Remove the duplicate React pages from the soon-retired Vite control app.
 - **R6 RE-SCOPED + DONE (analytics consolidation):** instead of porting per-vehicle demos 1:1, the analytics surface was reorganized around **business problems / intents over ONE universal, mode-agnostic layer** (`FLEET_APP.FLEET_OPS`). Asset/vehicle type is now a *data dimension* (the active dataset's `VEHICLE_TYPE`), never a per-type schema/view/pack. Adding a new mode (vessel/aircraft) needs data + config only. See `app/packs/BUSINESS_PROBLEM_TAXONOMY.md`.
   - **Data layer:** 7 dataset-scoped intent UDTFs + 5 global-active views in `app/scoped_contract.sql` (`FLEET_APP.FLEET_OPS.*`), binding the neutral `FLEET_APP.UNIFIED_FLEET.F_VW_*_SCOPED` contract; no `VEHICLE_TYPE` branching.
   - **Dashboards:** 6 `fleetops_*` intents (Status, Map, Demand Density H3, Trip Inspection, Operator Performance, Top Origins) replace `taxi_overview`/`taxi_routes`/`food_delivery`/`fleet_operations`/`fleet_map` in `app-views.json`.
   - **Agent:** ONE `SV_FLEET_OPS` (`semantic/sv_fleet_ops.sql`) + single `query_fleet_ops` tool; retired `query_taxis`/`query_food_delivery`/`query_fleet_operations`, `SV_TAXIS`/`SV_FOOD_DELIVERY`/`SV_FLEET_OPERATIONS`, and `FLEET_APP.TAXI`/`FOOD_DELIVERY` packs+schemas. `FLEET_AGENT` rebuilt from `agent-spec.json`.
-  - **Kept (re-labeled) intents:** Dwell, Route Deviation (global-default; per-session re-key deferred — Tenet 6), Catchment, Asset Utilization (HGV economics via optional `F_VW_ASSET_ATTRIBUTES_SCOPED`), Optimization + Freight Matching (programmatic verb views via `/api/tool` + `ROUTING_PLATFORM.CONTRACT`).
+  - **Kept (re-labeled) intents:** Dwell, Route Deviation (global-default; per-session re-key deferred - Tenet 6), Catchment, Asset Utilization (HGV economics via optional `F_VW_ASSET_ATTRIBUTES_SCOPED`), Optimization + Freight Matching (programmatic verb views via `/api/tool` + `ROUTING_PLATFORM.CONTRACT`).
   - **Verified live (wgb26798):** SV_FLEET_OPS answers across car/hgv/ebike from ONE view (extensibility proof); fresh-install path (`install.py` unified_fleet→fleet_ops→scoped_contract) clean; FLEET_SA_APP redeployed (v0.1.7, config-only, READY). The Vite control-app's own fleet pages + the legacy `FLEET_INTELLIGENCE_CAR`/`FOOD_DELIVERY` demo-skill schemas are out of scope (Tenet 6; retired by R7 cutover).
 
-### R7 — Cutover + retire old control app; finalize topology
+### R7 - Cutover + retire old control app; finalize topology
 - Blue/green cut over to `ROUTING_ADMIN_APP`; verify all admin/build flows + provisioning end-to-end; retire `ORS_CONTROL_APP` (Vite). Finalize endpoint topology. Never break the live demo.
 
-### R8 — Distribution + close-out (accelerator now, product-ready seams)
+### R8 - Distribution + close-out (accelerator now, product-ready seams)
 - Accelerator now: branch-as-template + config bundle; document the data-contract + `ROUTING_PLATFORM.CONTRACT` seams as the dependency boundary. Design (not necessarily publish) TWO listings: Routing Platform (Product A) + Analytics App (Product B, depends on A). Carry forward 4E/4F/4G follow-ups (generic N-dim contextBar, SV VQR/eval, vitest/CI).
 
-## 6. Service / endpoint topology — before vs after
+## 6. Service / endpoint topology - before vs after
 
 - **Before:** `FLEET_SA_APP` (consumer, Next) | `ORS_CONTROL_APP` (admin+demos, Vite) | `ROUTING_GATEWAY_SERVICE` | `DOWNLOADER` | 7x(`ORS_SERVICE_<r>` + `VROOM_SERVICE_<r>`).
 - **After:** `FLEET_SA_APP` (consumer USER + OPS surfaces, Next+kit) | `ROUTING_ADMIN_APP` (admin/build only, Next+kit) | `ROUTING_GATEWAY_SERVICE` | `DOWNLOADER` | per-region ORS+VROOM (unchanged). Still two app services (4D trust boundary preserved). Migration path: additive kit + scope views; new admin service built in parallel; blue/green cutover; old Vite app retired only after verification.
@@ -133,8 +133,8 @@ Principle honored: the two products coordinate through Snowflake DATA, not share
 - R6: each migrated demo page renders in the consumer app via the scope-arg contract; surfacing gate still hides empty packs.
 
 ## 8. Critical files
-- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/lib/map/*`, `lib/snowflake.ts`, `lib/sf-auth.ts`, `components/views/view-renderer.tsx` — kit extraction sources (R1).
-- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/server/lib/init.ts` + `studio/jobs.ts` + `studio/ensure-tables.ts` — V_*_CURRENT / DIM_DATASETS owner; source for `F_*_SCOPED` table functions (R2) and Data Studio port (R5).
-- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/app/api/region/route.ts` + `use-view-data.ts` + `components/context-bar.tsx` — per-session scoping + write demotion (R2/R4).
-- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/app/api/ops/route.ts` — 4D ingress-identity gating (R3/R4).
-- `ors_control_app/src/components/{RegionBuilder,MatrixBuilder,FunctionTester,Observability,FleetDataStudio}.tsx` — admin/build console rewrite targets (R5); the 12 demo pages -> consumer packs (R6).
+- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/lib/map/*`, `lib/snowflake.ts`, `lib/sf-auth.ts`, `components/views/view-renderer.tsx` - kit extraction sources (R1).
+- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/server/lib/init.ts` + `studio/jobs.ts` + `studio/ensure-tables.ts` - V_*_CURRENT / DIM_DATASETS owner; source for `F_*_SCOPED` table functions (R2) and Data Studio port (R5).
+- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/app/api/region/route.ts` + `use-view-data.ts` + `components/context-bar.tsx` - per-session scoping + write demotion (R2/R4).
+- `.cortex/skills/build-routing-solution/fleet_sa_app/ui/src/app/api/ops/route.ts` - 4D ingress-identity gating (R3/R4).
+- `ors_control_app/src/components/{RegionBuilder,MatrixBuilder,FunctionTester,Observability,FleetDataStudio}.tsx` - admin/build console rewrite targets (R5); the 12 demo pages -> consumer packs (R6).

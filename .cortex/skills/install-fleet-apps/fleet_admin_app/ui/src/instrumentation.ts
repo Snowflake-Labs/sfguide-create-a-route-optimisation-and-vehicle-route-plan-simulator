@@ -1,4 +1,4 @@
-// Next.js instrumentation hook — runs ONCE at server process startup
+// Next.js instrumentation hook - runs ONCE at server process startup
 // (replaces the Express boot-init in the legacy Vite control app).
 //
 // R5 decision "new app also runs init": this app runs the same idempotent
@@ -32,7 +32,7 @@ export async function register(): Promise<void> {
       }`);
     }
     try {
-      // Observability schema + ORS_REQUEST_LOG + V_ORS_METRICS_SUMMARY — needed
+      // Observability schema + ORS_REQUEST_LOG + V_ORS_METRICS_SUMMARY - needed
       // by the Observability admin page.
       await ensureObservabilityObjects(runSql);
     } catch (err) {

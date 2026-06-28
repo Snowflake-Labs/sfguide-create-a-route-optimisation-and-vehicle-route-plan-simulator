@@ -1,4 +1,4 @@
-# Routing Platform — Admin/Build console service spec (FLEET_ADMIN_APP, R5).
+# Routing Platform - Admin/Build console service spec (FLEET_ADMIN_APP, R5).
 #
 # The modernized replacement for the legacy Vite ORS_CONTROL_APP, holding ONLY
 # the privileged build tools: region builder, matrix builder, function tester,

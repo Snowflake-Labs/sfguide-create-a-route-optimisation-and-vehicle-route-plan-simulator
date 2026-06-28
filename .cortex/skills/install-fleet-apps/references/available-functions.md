@@ -1,11 +1,11 @@
-# Available Functions (v2.0 — Consolidated)
+# Available Functions (v2.0 - Consolidated)
 
 The app registers the following SQL functions in the `CORE` schema.
 All routing functions accept an optional `region` as the **last** parameter (DEFAULT NULL).
 When omitted or NULL, the gateway resolves to `DEFAULT_REGION_NAME` (configured at the
 gateway service spec, default: `SanFrancisco`). When provided, the call routes to the
 named city's per-region service (`ORS_SERVICE_<REGION>` / `VROOM_SERVICE_<REGION>`).
-v1.1.0 — there is no longer a separate global `ORS_SERVICE`; even the default region
+v1.1.0 - there is no longer a separate global `ORS_SERVICE`; even the default region
 follows the per-region naming convention.
 
 ## Routing Table Functions
@@ -47,17 +47,17 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 
 ## Lifecycle Management Procedures
 
-- `RESUME_ALL_SERVICES()` — Resumes all suspended services and the compute pool
-- `SUSPEND_ALL_SERVICES()` — Suspends all services except the control app
-- `SCALE_SERVICES(min, max)` — Scales ORS + gateway + all city ORS instances and pool nodes
-- `GET_STATUS()` — Returns JSON with compute pool state and all service statuses
+- `RESUME_ALL_SERVICES()` - Resumes all suspended services and the compute pool
+- `SUSPEND_ALL_SERVICES()` - Suspends all services except the control app
+- `SCALE_SERVICES(min, max)` - Scales ORS + gateway + all city ORS instances and pool nodes
+- `GET_STATUS()` - Returns JSON with compute pool state and all service statuses
 
 ## Multi-Region Procedures
 
-- `SETUP_REGION_ORS(region)` — Provisions a new region with its own ORS service
-- `DROP_REGION_ORS(region)` — Removes a region's service and metadata
-- `LIST_REGIONS()` — Returns JSON array of all provisioned regions
-- `REFRESH_REGION_CATALOG()` — Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
+- `SETUP_REGION_ORS(region)` - Provisions a new region with its own ORS service
+- `DROP_REGION_ORS(region)` - Removes a region's service and metadata
+- `LIST_REGIONS()` - Returns JSON array of all provisioned regions
+- `REFRESH_REGION_CATALOG()` - Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
 
 ## Region Boundary Helpers
 
@@ -85,7 +85,7 @@ bbox rectangles. See the seed parquet at
 1. Geofabrik publishes a new sub-region: re-run
    `python3 scripts/region_catalog/expand_geofabrik_subregions.py` then
    `python3 scripts/region_catalog/build_boundaries.py`.
-2. A state/province Geofabrik does not split (e.g. a new US state — never
+2. A state/province Geofabrik does not split (e.g. a new US state - never
    happens, but illustrative): the Natural Earth supplement already covers
    all admin-1 globally. Re-run
    `python3 scripts/region_catalog/supplement_natural_earth.py` only when
@@ -108,7 +108,7 @@ CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEE
 `OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS` whenever
 they cannot resolve `P_REGION` to a catalog polygon. Any matrix tessellated
 after a warning will leak hexes outside the intended boundary (the bbox
-rectangle nearly always over-covers — California's bbox spans NV/OR/Pacific,
+rectangle nearly always over-covers - California's bbox spans NV/OR/Pacific,
 NSW's bbox spans Lord Howe Island, etc.). Inspect with:
 
 ```sql
@@ -153,13 +153,13 @@ SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start, end, 'berlin'))
 
 ## Travel Time Matrix Procedures
 
-- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region, profile)` — End-to-end matrix build with parallel ASYNC workers
-- `BUILD_HEXAGONS(res, min_lat, max_lat, min_lon, max_lon, region, profile)` — Generates H3 hex grid using H3_POLYGON_TO_CELLS_STRINGS (native polygon coverage)
-- `BUILD_WORK_QUEUE(res, region, profile)` — Creates chunked origin→destinations work queue (max 1000 destinations per row)
-- `BUILD_TRAVEL_TIME_RANGE_REGION(res, start_seq, end_seq, matrix_fn, region, profile)` — Processes batch range with retry logic
-- `FLATTEN_MATRIX_RAW(res, region, profile)` — Flattens VARIANT results into travel time pairs (ORDER BY ORIGIN_H3)
-- `MATRIX_PROGRESS(region, profile)` — Returns JSON with per-resolution build status
-- `ENSURE_MATRIX_TABLES(region, profile, res)` — Creates region/profile-specific matrix tables if not exists
+- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region, profile)` - End-to-end matrix build with parallel ASYNC workers
+- `BUILD_HEXAGONS(res, min_lat, max_lat, min_lon, max_lon, region, profile)` - Generates H3 hex grid using H3_POLYGON_TO_CELLS_STRINGS (native polygon coverage)
+- `BUILD_WORK_QUEUE(res, region, profile)` - Creates chunked origin→destinations work queue (max 1000 destinations per row)
+- `BUILD_TRAVEL_TIME_RANGE_REGION(res, start_seq, end_seq, matrix_fn, region, profile)` - Processes batch range with retry logic
+- `FLATTEN_MATRIX_RAW(res, region, profile)` - Flattens VARIANT results into travel time pairs (ORDER BY ORIGIN_H3)
+- `MATRIX_PROGRESS(region, profile)` - Returns JSON with per-resolution build status
+- `ENSURE_MATRIX_TABLES(region, profile, res)` - Creates region/profile-specific matrix tables if not exists
 
 ## Matrix Builder Architecture
 
@@ -214,7 +214,7 @@ All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walkin
 
 ## Default Service Limits
 
-All configurable ORS service limits are set to `Integer.MAX_VALUE` (**2,147,483,647**) — i.e. effectively unlimited. ORS does not enforce a hard ceiling on these fields; the value is the practical Java `int` upper bound. This applies to:
+All configurable ORS service limits are set to `Integer.MAX_VALUE` (**2,147,483,647**) - i.e. effectively unlimited. ORS does not enforce a hard ceiling on these fields; the value is the practical Java `int` upper bound. This applies to:
 
 | Endpoint | Settings raised to 2,147,483,647 |
 |---|---|

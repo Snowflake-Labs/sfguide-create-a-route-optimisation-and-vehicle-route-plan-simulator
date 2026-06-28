@@ -109,8 +109,8 @@ export default function FleetMap() {
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Fleet Map</h2>
       <p className="subtitle">Courier positions and delivery routes</p>
       <div className="metric-grid">
-        <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '—')} />
-        <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '—')} />
+        <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '-')} />
+        <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '-')} />
         <MetricCard label="Avg Delivery" value={loading ? '...' : `${fmtDec(kpis.AVG_DELIVERY_MIN)} min`} />
       </div>
       <h3>Couriers</h3>

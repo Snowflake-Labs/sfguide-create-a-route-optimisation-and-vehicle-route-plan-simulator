@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ------------------------------------------------------------------
-# run_sql_module.sh — wrapper around `snow sql -f` that fails the
+# run_sql_module.sh - wrapper around `snow sql -f` that fails the
 # script when the file emits SQL errors.
 #
 # Background: `snow sql -f <multi-statement-file>` returns exit 0

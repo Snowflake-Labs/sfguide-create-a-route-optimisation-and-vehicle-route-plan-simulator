@@ -1,4 +1,4 @@
--- SV_OFFERS — vehicle-agnostic offers marketplace semantic view
+-- SV_OFFERS - vehicle-agnostic offers marketplace semantic view
 -- Source: FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED (offers, denormalized)
 --         FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY      (partner-lane reliability)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)

@@ -19,7 +19,7 @@ Snowflake SQL Scripting uses `:` to bind variables in DML statements. The rules 
 - **LET declarations**: `LET wait_secs INTEGER := wait_attempt * 15;`
 - **String concatenation for EXECUTE IMMEDIATE**: `'... ' || P_PROFILE || ' ...'`
 
-### FAILS — computed expressions in SET clauses
+### FAILS - computed expressions in SET clauses
 Snowflake cannot resolve local variable arithmetic inside static DML SET clauses:
 
 ```sql
@@ -140,7 +140,7 @@ END;
 | Direct procedure CREATE in app DB | GRANT fails "Insufficient privileges" | Only create via setup_script + upgrade |
 | Missing column in existing table | "invalid identifier 'COL'" | Add column to CREATE TABLE DDL and re-run (CREATE OR REPLACE) |
 | Bare variable in static DML | "invalid identifier" | Add `:` prefix |
-| Colon in assignment | Syntax error | Remove `:` — assignments use bare variables |
+| Colon in assignment | Syntax error | Remove `:` - assignments use bare variables |
 | City ORS service auto-suspends mid-build | 500 Internal Server Error from MATRIX_TABULAR | Wrapper now suspends then resumes the city service before building to reset the auto-suspend timer. Traffic via gateway does NOT count as direct service activity for SPCS auto-suspend. |
 | Gateway processes rows sequentially (pre-v0.9.6) | Matrix builds very slow (~62s per batch of 50) | Gateway v0.9.6 uses `ThreadPoolExecutor(MATRIX_CONCURRENCY)` (default 6) for concurrent ORS calls within each batch. Do NOT revert to sequential processing. |
 | Work queue row has >1000 destinations | ORS error 6099 "too many locations" or gateway 500 | BUILD_WORK_QUEUE chunks destinations to max 1000 per row via `FLOOR((dest_seq - 1) / 1000)`. Do NOT revert to all-destinations-per-origin. |
@@ -157,7 +157,7 @@ END;
 
 ### Service instance counts
 - **ORS_SERVICE** (default region): 3 instances for dev/test, 5-10 for production traffic.
-- **ROUTING_GATEWAY_SERVICE**: 3 instances is sufficient — lightweight gunicorn proxy (2 workers, 4 threads, 300s timeout). `MATRIX_CONCURRENCY=6` env var controls ThreadPoolExecutor parallelism per batch.
+- **ROUTING_GATEWAY_SERVICE**: 3 instances is sufficient - lightweight gunicorn proxy (2 workers, 4 threads, 300s timeout). `MATRIX_CONCURRENCY=6` env var controls ThreadPoolExecutor parallelism per batch.
 - **ORS_SERVICE_\<REGION\>** (city-specific): 1 instance per region.
 - **Other services** (vroom, control app): 1 instance each.
 - **Never set ORS and gateway to the same instance count** unless explicitly needed. Use the 3-arg `SCALE_SERVICES(ors, gateway, pool_nodes)` overload.
@@ -181,7 +181,7 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 - With gateway v0.9.6 concurrency (6 threads), 50 rows complete in ~10-15s vs 100s sequentially.
 
 ### Matrix parallel workers formula
-- `LEAST(GREATEST(service_instances * 2, 2), 4)` — adapts to ORS instance count.
+- `LEAST(GREATEST(service_instances * 2, 2), 4)` - adapts to ORS instance count.
 - Default ORS (3 instances) = 4 SQL workers; city ORS (1 instance) = 2 SQL workers.
 - Detected at runtime via `SHOW SERVICES LIKE 'ORS_SERVICE_%'`.
 - Benchmark: Berlin RES8 (2,611 hexagons, ~6.8M pairs, 1-instance city ORS, 2 workers) = **6 minutes**.

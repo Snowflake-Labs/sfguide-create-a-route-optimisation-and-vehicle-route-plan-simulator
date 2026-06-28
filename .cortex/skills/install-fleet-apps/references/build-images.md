@@ -1,6 +1,6 @@
 # Build and Push the ORS Engine Container Images
 
-Authenticate, build, and push the four ORS/VROOM engine container images to the Snowflake SPCS image repository. (The two app images — FLEET_SA_APP / FLEET_ADMIN_APP — are built by their own `deploy_fleet_*_app.sh` scripts, not here.)
+Authenticate, build, and push the four ORS/VROOM engine container images to the Snowflake SPCS image repository. (The two app images - FLEET_SA_APP / FLEET_ADMIN_APP - are built by their own `deploy_fleet_*_app.sh` scripts, not here.)
 
 > **Working directory:** All commands below must be run from `.cortex/skills/install-fleet-apps/`. Run `cd .cortex/skills/install-fleet-apps` before starting.
 
@@ -67,7 +67,7 @@ $CONTAINER_CMD push $REPO_URL/vroom-docker:$VROOM_DOCKER_TAG
 
 ## 4. Verify All Images Pushed
 
-Push progress output uses carriage returns (`\r`) for in-place updates. When piped through `tail` or captured in logs, progress lines overwrite each other and appear invisible. Do not assume a push is stuck — verify completion separately:
+Push progress output uses carriage returns (`\r`) for in-place updates. When piped through `tail` or captured in logs, progress lines overwrite each other and appear invisible. Do not assume a push is stuck - verify completion separately:
 
 ```bash
 snow spcs image-repository list-images OPENROUTESERVICE_APP.core.image_repository -c <connection>
@@ -101,7 +101,7 @@ Total first push: 20-30 minutes. Subsequent pushes with cached layers: ~5 minute
 
 ## Pinned Upstream Base Images
 
-All upstream base images are pinned to explicit versions — never use `:latest`. Pinned versions are documented in `image-versions.env` (variables `OPENROUTESERVICE_BASE_TAG`, `VROOM_BASE_TAG`).
+All upstream base images are pinned to explicit versions - never use `:latest`. Pinned versions are documented in `image-versions.env` (variables `OPENROUTESERVICE_BASE_TAG`, `VROOM_BASE_TAG`).
 
 | Service | Base image | Pinned version | Source |
 |---------|-----------|----------------|--------|
@@ -113,12 +113,12 @@ All upstream base images are pinned to explicit versions — never use `:latest`
 ### Bumping an upstream version
 
 1. Check the upstream release notes for breaking changes.
-2. Test locally: `docker run --rm <image>:<new_tag>` — verify it starts cleanly.
+2. Test locally: `docker run --rm <image>:<new_tag>` - verify it starts cleanly.
 3. Update the `ARG BASE_IMAGE=` line in the corresponding Dockerfile.
 4. Update `image-versions.env` (`OPENROUTESERVICE_BASE_TAG` or `VROOM_BASE_TAG`).
 5. Rebuild and push the SPCS image (bump `*_TAG` in `image-versions.env`).
 6. Redeploy: update service YAML, upload to stage, `ALTER SERVICE … SUSPEND` / update spec / `RESUME`.
-7. Verify: `SHOW SERVICES` — confirm status is `RUNNING`.
+7. Verify: `SHOW SERVICES` - confirm status is `RUNNING`.
 
 ## Common Errors
 

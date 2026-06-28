@@ -45,7 +45,7 @@ Delivery, Site & Catchment, Fleet Logistics).
 
 > **Important:** The demo stored procedures themselves are created by
 > `$routing-agent`. This skill only seeds the data tables and uploads the
-> scenario config — it does NOT create procedures.
+> scenario config - it does NOT create procedures.
 
 ## Configuration
 
@@ -87,7 +87,7 @@ Delivery, Site & Catchment, Fleet Logistics).
 > Follow the Error Logging convention in AGENTS.md. Log file prefix:
 > `setup-agent-playground`.
 
-## Step 1 — Run the SQL pipeline
+## Step 1 - Run the SQL pipeline
 
 Execute every statement in `references/deploy-demo-data.sql` end-to-end. The
 file:
@@ -101,13 +101,13 @@ file:
    - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS` (55 rows)
    - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG` (25 rows)
    - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES` (6 rows)
-   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT` (1 row — depot + region)
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT` (1 row - depot + region)
 5. Creates `OPENROUTESERVICE_APP.CORE.JSON_FORMAT` (idempotent).
 
 Every CREATE statement carries the standard `oss-setup-agent-playground`
 COMMENT tracking tag.
 
-## Step 2 — Upload `agent-demos.json` to the ORS stage
+## Step 2 - Upload `agent-demos.json` to the ORS stage
 
 The Agent Playground's `/api/agent/config` endpoint reads scenarios from
 `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json`. Upload it
@@ -164,11 +164,11 @@ After both steps complete, all of the following must be true:
 
 | Issue | Fix |
 |-------|-----|
-| "Object does not exist" for CONFIG tables | `$install-fleet-apps` has not completed — run it first. |
-| "Unknown function TOOL_CATCHMENT" | `$routing-agent` not run — run it before this skill. |
-| Scenarios not appearing in the Agent Playground | `agent-demos.json` not on stage — re-run Step 2. |
-| "OPTIMIZATION returned no results" | VROOM service suspended — `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()`. |
-| "Isochrone geometry is null" | ORS not ready — `SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO');` |
+| "Object does not exist" for CONFIG tables | `$install-fleet-apps` has not completed - run it first. |
+| "Unknown function TOOL_CATCHMENT" | `$routing-agent` not run - run it before this skill. |
+| Scenarios not appearing in the Agent Playground | `agent-demos.json` not on stage - re-run Step 2. |
+| "OPTIMIZATION returned no results" | VROOM service suspended - `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()`. |
+| "Isochrone geometry is null" | ORS not ready - `SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO');` |
 
 ## Cleanup
 

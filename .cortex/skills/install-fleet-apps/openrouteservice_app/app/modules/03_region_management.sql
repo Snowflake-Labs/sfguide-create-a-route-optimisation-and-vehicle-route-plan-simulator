@@ -427,7 +427,7 @@ BEGIN
         END;
     END FOR;
 
-    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running - waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
     -- Wait ceiling scales with compute size. Country-scale HGV builds on the
     -- largest high-memory hardware can take 4-6 hours during CH preparation;
     -- smaller regions complete in single-digit minutes. The loop has two exit
@@ -529,7 +529,7 @@ BEGIN
                     END;
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
-                        MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
+                        MESSAGE='Region provisioned - ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
                         COMPLETED_AT=SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
                     -- Best-effort peak RSS for telemetry; NULL on failure.
@@ -689,7 +689,7 @@ EXCEPTION
         -- Cost guard: if the service either does not exist yet OR is not in
         -- READY status, suspend it. A service in READY status is mid-build
         -- and protected by the same contract as the fall-through path
-        -- (lines 229-239) — leave it alone for the operator to inspect via
+        -- (lines 229-239) - leave it alone for the operator to inspect via
         -- DIAGNOSE_REGION. See cost-guard-v3-head-aligned.plan.md.
         LET svc_state VARCHAR DEFAULT '';
         BEGIN
@@ -1457,13 +1457,13 @@ END;
 $$;
 
 -- ===========================================================================
--- ORS service-level routing limits (per-region, runtime-only — no rebuild).
+-- ORS service-level routing limits (per-region, runtime-only - no rebuild).
 --
 -- ORS_LIMIT_DEFAULTS() is the single source of truth for the default values
 -- emitted into ors-config.yml. REGION_ORS_LIMITS stores per-region overrides
 -- so a user can widen distance/waypoint/snapping/matrix/isochrone caps via the
 -- control-app "Routing Limits" panel; WRITE_ORS_CONFIG reads both at config
--- generation time, so overrides survive every reprovision (Option A — limits
+-- generation time, so overrides survive every reprovision (Option A - limits
 -- are never lost to a fresh build). Changing these requires only a container
 -- restart (suspend/resume), never a graph rebuild.
 -- ===========================================================================
@@ -1667,7 +1667,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
 $$;
 
 -- ===========================================================================
--- APPLY_ORS_LIMITS — persist per-region service-level routing limits and apply
+-- APPLY_ORS_LIMITS - persist per-region service-level routing limits and apply
 -- them WITHOUT a graph rebuild. Stores the overrides in REGION_ORS_LIMITS,
 -- regenerates ors-config.yml on the region's stage (WRITE_ORS_CONFIG reads the
 -- overrides), then suspend/resumes the regional ORS service so the new config
@@ -1758,12 +1758,12 @@ BEGIN
     CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_file, :profiles, :compute_size) INTO :write_msg;
 
     -- Cycle the service so the new config is read on container start. The
-    -- persisted graph is reloaded (REBUILD_GRAPHS=false) — no recalculation.
+    -- persisted graph is reloaded (REBUILD_GRAPHS=false) - no recalculation.
     -- ALTER SERVICE ... SUSPEND is asynchronous, so poll SHOW SERVICES until the
     -- service actually reports SUSPENDED (cap ~60s) BEFORE resuming. A fixed
     -- WAIT(5) raced the suspend: if the container had not finished suspending,
     -- RESUME_SERVICE saw status RUNNING, short-circuited ("already running"),
-    -- and the in-flight suspend then landed afterward — leaving the service
+    -- and the in-flight suspend then landed afterward - leaving the service
     -- SUSPENDED with the new config never loaded. That is the "service didn't
     -- restart / limits look unchanged" symptom.
     CALL OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(:svc_name) INTO :susp_msg;
@@ -3443,7 +3443,7 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='COMPLETE', STAGE='READY',
-        MESSAGE='Region provisioned via rescue task — ' || :profile_count || ' profile(s) ready',
+        MESSAGE='Region provisioned via rescue task - ' || :profile_count || ' profile(s) ready',
         ERROR_MSG=NULL,
         COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :job_id;
@@ -4152,7 +4152,7 @@ ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RE
 -- ===========================================================================
 -- Idempotent migration: re-stage ors-config.yml with init_threads for every
 -- DEPLOYED region so the next suspend/resume loads profiles in parallel.
--- Does not ALTER SERVICE — config is picked up on the next container start.
+-- Does not ALTER SERVICE - config is picked up on the next container start.
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS()
 RETURNS STRING
@@ -4220,7 +4220,7 @@ END;
 $$;
 
 -- ===========================================================================
--- v1.1.0 — Bootstrap default region (SanFrancisco) using the same per-region
+-- v1.1.0 - Bootstrap default region (SanFrancisco) using the same per-region
 -- service-creation procs used for every other region. Replaces the legacy
 -- global ORS_SERVICE/VROOM_SERVICE create-statements that lived in
 -- 01_core_infra.sql.

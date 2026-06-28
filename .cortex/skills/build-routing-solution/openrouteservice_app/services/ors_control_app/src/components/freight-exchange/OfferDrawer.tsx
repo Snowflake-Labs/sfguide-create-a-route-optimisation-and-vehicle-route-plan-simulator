@@ -18,17 +18,17 @@ interface Props {
 const HR = <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px solid #e5e7eb' }} />;
 
 export default function OfferDrawer({ selected, laneHistory, route }: Props) {
-  // Live > V2 cache > '—'. Live (from /api/fx/offer-route) and V2 cache
+  // Live > V2 cache > '-'. Live (from /api/fx/offer-route) and V2 cache
   // (selected.ROAD_KM / ROAD_MIN) both come from the same FACT_OFFER_ROUTES
   // contract, so the precedence is purely about freshness.
   const roadKm = route.roadKm ?? selected?.ROAD_KM ?? null;
   const roadMin = route.roadMin ?? selected?.ROAD_MIN ?? null;
   const roadKmLabel = roadKm != null && Number.isFinite(roadKm)
     ? `${roadKm.toFixed(0)} km`
-    : route.loading ? '…' : '—';
+    : route.loading ? '…' : '-';
   const roadMinLabel = roadMin != null && Number.isFinite(roadMin)
     ? formatDuration(roadMin)
-    : route.loading ? '…' : '—';
+    : route.loading ? '…' : '-';
   return (
     <div style={{ overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fff', padding: 12 }}>
       {!selected ? (
@@ -51,14 +51,14 @@ export default function OfferDrawer({ selected, laneHistory, route }: Props) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
             <div><b>Pickup:</b> {selected.PICKUP_CITY}</div>
             <div><b>Drop:</b> {selected.DROPOFF_CITY}</div>
-            <div><b>Distance:</b> {selected.DISTANCE_KM != null ? `${selected.DISTANCE_KM.toFixed(0)} km` : '—'}</div>
-            <div><b>Equipment:</b> {selected.EQUIPMENT || '—'}</div>
+            <div><b>Distance:</b> {selected.DISTANCE_KM != null ? `${selected.DISTANCE_KM.toFixed(0)} km` : '-'}</div>
+            <div><b>Equipment:</b> {selected.EQUIPMENT || '-'}</div>
             <div><b>Road km:</b> {roadKmLabel}</div>
             <div><b>Road time:</b> {roadMinLabel}</div>
             <div><b>Weight:</b> {selected.WEIGHT_KG.toLocaleString()} kg</div>
-            <div><b>LDM:</b> {selected.LDM != null ? selected.LDM.toFixed(1) : '—'}</div>
+            <div><b>LDM:</b> {selected.LDM != null ? selected.LDM.toFixed(1) : '-'}</div>
             <div><b>Price:</b> ${selected.PRICE_USD.toLocaleString()}</div>
-            <div><b>USD/km:</b> {selected.PRICE_PER_KM_USD != null ? `$${selected.PRICE_PER_KM_USD.toFixed(2)}` : '—'}</div>
+            <div><b>USD/km:</b> {selected.PRICE_PER_KM_USD != null ? `$${selected.PRICE_PER_KM_USD.toFixed(2)}` : '-'}</div>
             <div><b>ADR:</b> {selected.HAZMAT ? `class ${selected.ADR_CLASS}` : 'no'}</div>
             <div><b>Status:</b> {selected.STATUS}</div>
           </div>

@@ -17,7 +17,7 @@ function buildTools() {
   return [
     {
       name: 'lookup_entity',
-      description: 'REQUIRED before update, delete, or restore. Searches transactional entity records by name and returns record_id, version, and all fields. Always call this first — the record_id and version in the result are what propose_write needs. Do NOT use cortex_analyst_text_to_sql to find records for writes.',
+      description: 'REQUIRED before update, delete, or restore. Searches transactional entity records by name and returns record_id, version, and all fields. Always call this first - the record_id and version in the result are what propose_write needs. Do NOT use cortex_analyst_text_to_sql to find records for writes.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -29,7 +29,7 @@ function buildTools() {
     },
     {
       name: 'propose_write',
-      description: 'Stage a create, update, delete, or restore for user confirmation. REQUIRED: call lookup_entity first to get record_id and version for update/delete/restore. Returns pending_confirmation — the UI will show a confirmation dialog before executing the write.',
+      description: 'Stage a create, update, delete, or restore for user confirmation. REQUIRED: call lookup_entity first to get record_id and version for update/delete/restore. Returns pending_confirmation - the UI will show a confirmation dialog before executing the write.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -79,7 +79,7 @@ async function handleLookupEntity(args: Record<string, unknown>): Promise<Record
   const nameCol  = def.unique_columns?.[0] ?? def.writable_columns[0];
   const fqSchema = manifest.schema;
   const softDeleteFilter = def.soft_delete ? 'AND deleted_at IS NULL' : '';
-  // Select only record_id, version, and writable columns — avoids leaking internal
+  // Select only record_id, version, and writable columns - avoids leaking internal
   // fields (tenant_id, created_by, deleted_at, audit timestamps) into the agent context.
   const selectCols = [
     `${def.primary_key} AS record_id`,

@@ -1,4 +1,4 @@
-// Matrix viewer endpoints — read-only queries against built MATRIX_RES tables.
+// Matrix viewer endpoints - read-only queries against built MATRIX_RES tables.
 // Includes inventory, random origin, all hexes, reachability, and ring stats.
 // Local helpers (parseViewerTableName / getViewerInventory / validateViewerTable)
 // are used only by these handlers.

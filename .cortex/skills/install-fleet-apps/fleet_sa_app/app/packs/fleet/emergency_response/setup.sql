@@ -1,4 +1,4 @@
--- EMERGENCY_RESPONSE pack — minimal setup (hand-written, NOT generated).
+-- EMERGENCY_RESPONSE pack - minimal setup (hand-written, NOT generated).
 -- The region-generic Emergency Response contract (schema, dataset-scoped
 -- F_VW_*_SCOPED UDTFs, global-active VW_HAZARD_ZONES / VW_CARE_CENTERS views,
 -- and their grants) is authored in fleet_sa_app/app/scoped_contract.sql and

@@ -1,4 +1,4 @@
-# Fleet Intelligence — Solution Accelerator app (Step 2)
+# Fleet Intelligence - Solution Accelerator app (Step 2)
 
 This is the Fleet Intelligence app built on the Solution Accelerator (SA) host, migrated from
 the ORS control app per the Step 2 plan
@@ -54,7 +54,7 @@ interpolated from raw input.
 
 ## Running locally
 
-The vendored host depends on `@snowflake/stellar-*` packages that are NOT on public npm — they
+The vendored host depends on `@snowflake/stellar-*` packages that are NOT on public npm - they
 resolve via Snowflake's internal Artifactory (see `ui/.npmrc`). Installing therefore requires
 network access + auth to that registry.
 
@@ -94,4 +94,4 @@ tool results render as deck.gl maps in chat via the inline registry (`get_direct
 
 ### Map area (deck.gl)
 - Pure layers ported from the control app: `ui/src/lib/map/{layer-spec,layer-compiler,map-fit}.ts`. Runtime: `areas/map-view.tsx` (DeckGL + CARTO basemap via `/api/tiles`), `areas/view-map.tsx` (SA area, per-layer `useViewData`).
-- Requires the full deck.gl 9.2.x suite (core, layers, geo-layers, mesh-layers, aggregation-layers, extensions, react, widgets) + `h3-js` — all public npm.
+- Requires the full deck.gl 9.2.x suite (core, layers, geo-layers, mesh-layers, aggregation-layers, extensions, react, widgets) + `h3-js` - all public npm.

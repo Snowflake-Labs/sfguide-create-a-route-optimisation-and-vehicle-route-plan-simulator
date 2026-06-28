@@ -1,14 +1,14 @@
-# Architecture Tenets — synapse + Solution Accelerator
+# Architecture Tenets - synapse + Solution Accelerator
 
 These are the load-bearing invariants of the agent-first analytics app built on the
 **Solution Accelerator (SA)** host + the **synapse** typed/audited tool layer
-(the `feature/sa-synapse-app` line of work). They exist so that any future change —
-new domain, new dashboard, new tool, new engine — preserves what makes this solution
+(the `feature/sa-synapse-app` line of work). They exist so that any future change -
+new domain, new dashboard, new tool, new engine - preserves what makes this solution
 swappable, role-isolated, auditable, and reproducible.
 
 **Read this before evolving the SA app, the synapse tool bundles, the routing contract,
 or the data-contract packs.** When a change would violate a tenet, stop and reconsider
-the design — do not work around it. These complement (do not replace) the operational
+the design - do not work around it. These complement (do not replace) the operational
 rules in `AGENTS.md` (commit discipline, tracking tags, geospatial conventions, fix discipline).
 
 Primary code locations referenced below:
@@ -31,7 +31,7 @@ ISOCHRONES/OPTIMIZATION/MATRIX/ROUTING_STATUS), which resolves a provider via
 `COALESCE(per-call, region default, ors_internal)`. Need to consume data? Read the neutral
 `FLEET_APP.<domain>` views produced by a pack's `generate.py`, and source-bind new data only
 through `entity-mapping.yaml`. To add an engine, add an adapter in `ROUTING_PLATFORM.PROVIDERS`
-+ register it — do not touch the contract signatures.
++ register it - do not touch the contract signatures.
 
 **Anti-pattern.** A dashboard, view, semantic view, or tool that selects directly from
 `OPENROUTESERVICE_APP.CORE.*`, an engine-specific raw function, or a physical synthetic
@@ -43,13 +43,13 @@ and breaks customer-data and engine swappability.
 ## 2. Best-of-both topology, one repo
 
 **Tenet.** SA owns the UI, the Cortex Agent, and distribution; synapse owns the typed,
-audited tool layer. The upstream SA and synapse repos are **read-only references** —
+audited tool layer. The upstream SA and synapse repos are **read-only references** -
 all shipped code is **vendored into this work repo**.
 
 **How to apply.** Make every change inside `.cortex/skills/build-routing-solution/`
 (`fleet_sa_app/` for host+bundle, `fleet_tools/` for tools, `routing_platform/` for the
 contract). The synapse framework is vendored at `fleet_tools/vendor/synapse/` (its built
-`dist/` ships; `node_modules` is gitignored) — bundles depend on it via `file:../vendor/synapse`,
+`dist/` ships; `node_modules` is gitignored) - bundles depend on it via `file:../vendor/synapse`,
 never an absolute path.
 
 **Anti-pattern.** Editing or committing in `/Users/obielov/Documents/GitHub/solution-accelerator`
@@ -71,7 +71,7 @@ bundle. Keep `FLEET_OPS_AGENT`/admin tooling off the consumer agent's `mcp_serve
 
 **Anti-pattern.** Adding an ops/admin verb to the user bundle, or attaching `FLEET_OPS_MCP`/
 `FLEET_ADMIN_MCP` to `FLEET_AGENT` "for convenience." The firm isolation guarantee is that the
-consumer agent has no privileged tools — do not erode it.
+consumer agent has no privileged tools - do not erode it.
 
 ---
 
@@ -86,7 +86,7 @@ fleet literals remain only as **fallbacks** so the live fleet deploy stays behav
 (`domainPack`, `tools{schema,verbs,mapTools}`, `ops{schema,verbs}`, `region{database,schemas}`)
 and `app/app-views.json`. The API routes (`/api/tool`, `/api/ops`, `/api/region`) already read
 their allowlists from `getServerConfig()`. Re-point live by `snow stage copy` of the JSON to
-`FLEET_APP_STAGE/config` + suspend/resume — no image rebuild.
+`FLEET_APP_STAGE/config` + suspend/resume - no image rebuild.
 
 **Anti-pattern.** Hardcoding a schema name, verb list, or region column in a `.tsx`/route file,
 or branching app logic on `domainPack === 'fleet'` outside the designated loader. That defeats
@@ -104,7 +104,7 @@ neutral `FLEET_APP.<domain>` contract.
 **How to apply.** Author `data-model.yaml` (logical entities) + `entity-mapping.yaml`
 (source binding + transforms) and regenerate with the pack's `generate.py` / `install.py`;
 verify counts/sums against the legacy physical objects before cutover. Swapping a customer's
-data = a new `entity-mapping.<customer>.yaml`, regenerate, done — dashboards and SVs unchanged.
+data = a new `entity-mapping.<customer>.yaml`, regenerate, done - dashboards and SVs unchanged.
 
 **Anti-pattern.** Editing generated views by hand, baking aggregates that can't be reproduced
 from raw sources, or pointing a semantic view's base table at a physical table instead of the
@@ -116,8 +116,8 @@ from raw sources, or pointing a semantic view's base table at a physical table i
 Built-in generation profiles are persisted as data in `FLEET_INTELLIGENCE.CORE.GENERATION_PROFILE_CATALOG`
 (seeded at control-app/admin boot from `studio/profiles.ts` `PROFILE_TEMPLATES`; the `/api/studio/templates`
 endpoint reads the catalog with a TS fallback). The generation *engine* never branches on vehicle type:
-per-mode behavior is driven by declarative profile fields — `base_speed_kmh`, `home_location_types`,
-`category_map`, `generates_freight` — and by the **presence** of `battery` / `breaks` / `overnight`
+per-mode behavior is driven by declarative profile fields - `base_speed_kmh`, `home_location_types`,
+`category_map`, `generates_freight` - and by the **presence** of `battery` / `breaks` / `overnight`
 (battery drain, HOS breaks, overnight rest). **Adding a new mode (vessel/aircraft) = inserting a profile
 row (or saving a preset), with zero generator code edits.** Mode-specific asset dims + evaluation
 thresholds come from the sibling `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` catalog (see Tenet 1).
@@ -126,17 +126,17 @@ thresholds come from the sibling `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA`
 `server/studio/engine/*`, or hardcoding a generation knob in TypeScript instead of a profile field.
 
 **Accepted physical-schema decisions (intentionally NOT changed).** The few mode-specific physical
-column names — `DRIVER_ID` (FACT_TRIPS, DIM_TRIP_SCHEDULE), `DRIVER_PROFILE` (DIM_FLEET),
-`IS_HOS_VIOLATION` (telemetry) — are deliberately left as-is and neutralized by the `FLEET_APP` contract
+column names - `DRIVER_ID` (FACT_TRIPS, DIM_TRIP_SCHEDULE), `DRIVER_PROFILE` (DIM_FLEET),
+`IS_HOS_VIOLATION` (telemetry) - are deliberately left as-is and neutralized by the `FLEET_APP` contract
 (`DRIVER_ID -> OPERATOR_ID`, canonical `FLEET_APP.CORE` renames). Renaming them at the physical layer is
-churn across CORE + FLEET_OPS + every `replaces:` binding for zero architectural gain — the contract seam
+churn across CORE + FLEET_OPS + every `replaces:` binding for zero architectural gain - the contract seam
 exists precisely to absorb this. Likewise `DIM_POIS` is **REGION-scoped only** (no `VEHICLE_TYPE`): a POI
 set is shared across modes within a region, identified by `(REGION, JOB_ID)`.
 
 
 ---
 
-## 6. Hybrid provisioning — heavy substrate stays in the control app
+## 6. Hybrid provisioning - heavy substrate stays in the control app
 
 **Tenet.** Compute-heavy, slow-to-provision substrate (ORS/VROOM graphs, compute pools,
 the image build/push pipeline, region lifecycle) lives in the `OPENROUTESERVICE_APP`
@@ -153,7 +153,7 @@ SA host or a synapse verb. That couples the thin layer to heavy infra and breaks
 
 ---
 
-## 7. Audited envelope — no unaudited tool calls
+## 7. Audited envelope - no unaudited tool calls
 
 **Tenet.** Every tool/verb invocation flows through the synapse envelope, which records a
 `VERB_ATTEMPT` audit row (actor, role, args, outcome, error, result hash) and enforces
@@ -173,7 +173,7 @@ envelope. That loses the audit trail and idempotency guarantees.
 ## 8. New-deployment-first (SA + synapse analog of Fix Discipline)
 
 **Tenet.** Every fix or feature lands first in the **source artifacts a fresh install consumes**
-— pack YAML/`generate.py`, `app-config.json`/`app-views.json` on the deploy stage, synapse bundle
+- pack YAML/`generate.py`, `app-config.json`/`app-views.json` on the deploy stage, synapse bundle
 source, `role_binding.sql`, `routing_platform/setup.sql`, `native-app/setup.sql`. A live hotfix
 (ALTER SERVICE, ad-hoc `snow sql`, stage edit) is always **secondary** and only valid once the
 same change exists in repo source.
@@ -184,5 +184,5 @@ same change exists in repo source.
 then optionally apply the live hotfix.
 
 **Anti-pattern.** Fixing only the running SPCS service, agent spec, or config stage and leaving
-the repo source stale — the next clean deploy regresses. (This mirrors the existing
+the repo source stale - the next clean deploy regresses. (This mirrors the existing
 "Fix Discipline (new-deployment-first)" rule in `AGENTS.md`, extended to the SA/synapse stack.)

@@ -223,7 +223,7 @@ export default function BackloadMatching() {
       sfQuery(`SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS='COMPLETE' AND REGION='${regionName?.replace(/'/g, "''") || ''}' ORDER BY COMPLETED_AT DESC LIMIT 1`, 'OPENROUTESERVICE_APP', 'CORE'),
       sfQuery(`SELECT ZONE_ID, NAME, CATEGORY, ST_ASGEOJSON(POLYGON)::VARCHAR AS POLYGON_GEOJSON FROM ${BM_DB}.${BM_SCHEMA}.AVOID_ZONES`).catch(() => []),
     ]);
-    // Defensive dedupe by TRAILER_ID — guards against the upstream view
+    // Defensive dedupe by TRAILER_ID - guards against the upstream view
     // regressing and feeding the same trailer to VROOM as multiple vehicles
     // (which produces visually-identical duplicate assignment cards).
     const seenTrailerIds = new Set<string>();
@@ -350,7 +350,7 @@ export default function BackloadMatching() {
   }, [regionName, refetch]);
 
   // -----------------------------------------------------------------
-  // Solve — every visible knob lands inside the OPTIMIZATION call.
+  // Solve - every visible knob lands inside the OPTIMIZATION call.
   // -----------------------------------------------------------------
   const solve = useCallback(async () => {
     if (!trailers.length) return;
@@ -370,7 +370,7 @@ export default function BackloadMatching() {
     //     when the routing graph for `regionName` is fully loaded into the
     //     ORS process. Without this check the gateway's matrix pre-compute
     //     hits a half-warm ORS, returns 5xx, and the gateway silently falls
-    //     back to per-leg VROOM routing — the canonical "hang for several
+    //     back to per-leg VROOM routing - the canonical "hang for several
     //     minutes" failure mode this Solve button has shown.
     if (regionName) {
       setSolverLog('Verifying ORS graph readiness...');
@@ -392,7 +392,7 @@ export default function BackloadMatching() {
       }
     }
 
-    // Refuse to solve if vehicleClass isn't loaded — every solver constant
+    // Refuse to solve if vehicleClass isn't loaded - every solver constant
     // (capacity, costs, ORS profile, baseline) is class-derived now.
     if (!vehicleClass) {
       setSolveError(vehicleClassError ||
@@ -426,7 +426,7 @@ export default function BackloadMatching() {
     };
     // Effective €/h for VROOM = real €/h + €/km * km/h (folds per-km cost into per-hour).
     // VROOM v1.0.4 (the deployed regional build) does NOT support
-    // vehicle.costs.per_hour — that field was added in upstream VROOM v1.13.
+    // vehicle.costs.per_hour - that field was added in upstream VROOM v1.13.
     // When present it silently rejects the entire payload (0 rows back). Until
     // the gateway upgrades VROOM, we fold the user's €/h slider into an
     // equivalent €/km via the assumed average HGV speed (60 km/h) and send
@@ -494,7 +494,7 @@ export default function BackloadMatching() {
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
-    // Region-agnostic time/distance budget — per-vehicle empty-leg baselines.
+    // Region-agnostic time/distance budget - per-vehicle empty-leg baselines.
     // For each trailer we compute the shortest-path travel time + distance
     // from its current dropoff to its end point (HOME or shared dest) using
     // the ORS MATRIX TVF. The user's "Detour budget" slider then adds extra
@@ -717,7 +717,7 @@ export default function BackloadMatching() {
       const uniq = new Map<string, [number, number]>();
       // Single source of truth for location keys. addLoc and indexFor MUST
       // agree, otherwise some vehicles/shipments will silently fail to get a
-      // *_index — and VROOM rejects the payload with
+      // *_index - and VROOM rejects the payload with
       // "Missing start_index or end_index" when matrices are provided.
       const keyFor = (lon: number, lat: number) =>
         `${Number(lon).toFixed(6)},${Number(lat).toFixed(6)}`;
@@ -795,7 +795,7 @@ export default function BackloadMatching() {
     // Use _OPTIMIZATION_RAW (returns the full VROOM JSON as VARIANT) instead
     // of the OPTIMIZATION TVF. The TVF does LATERAL FLATTEN(resp:routes), which
     // strips the row entirely when VROOM (or the gateway) returns an error
-    // payload with no `routes` array — manifesting as the misleading
+    // payload with no `routes` array - manifesting as the misleading
     // "OPTIMIZATION returned 0 rows" overlay. Parsing the raw response keeps
     // routes / unassigned / error / matrix_precompute_failed all visible.
     const sql = `SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON('${jsonStr}'), '${regionName}') AS RESP`;
@@ -830,9 +830,9 @@ export default function BackloadMatching() {
     solveAbortRef.current = null;
 
     // Parse VROOM's raw JSON response. Three things can be present:
-    //   routes:[]           — successful tours
-    //   unassigned:[]       — shipments VROOM couldn't place (with reasons)
-    //   error / message     — gateway / VROOM rejected the payload (e.g.
+    //   routes:[]           - successful tours
+    //   unassigned:[]       - shipments VROOM couldn't place (with reasons)
+    //   error / message     - gateway / VROOM rejected the payload (e.g.
     //                         matrix_precompute_failed at code 99)
     const rawResp: any = respRows?.[0]?.RESP;
     const respObj: any = (() => {
@@ -983,7 +983,7 @@ export default function BackloadMatching() {
       const detourKm = Math.max(0, tourKm - directHomeKm);
       const savedKm  = Math.max(0, directHomeKm - detourKm);
 
-      // Post-solve economics — VROOM returns duration (sec); distance may be
+      // Post-solve economics - VROOM returns duration (sec); distance may be
       // present as meters depending on solver version.
       const tourSec   = Number(route?.duration) || 0;
       const tourHrs   = tourSec / 3600;
@@ -1088,7 +1088,7 @@ export default function BackloadMatching() {
         ...externalSubset.map(o => Number(o.WEIGHT_KG)),
       ]);
       const classDiag = (medTrailer > 0 && medShip > medTrailer)
-        ? ` Median shipment weight ${Math.round(medShip)} kg > ${cls.LABEL_NOUN} capacity ${Math.round(medTrailer)} kg — wrong vehicle class for this preset's payload.`
+        ? ` Median shipment weight ${Math.round(medShip)} kg > ${cls.LABEL_NOUN} capacity ${Math.round(medTrailer)} kg - wrong vehicle class for this preset's payload.`
         : '';
       setSolveError(
         `VROOM placed 0 shipments out of ${newUnassigned.length}. Top reasons: ${summary}.${classDiag} ` +
@@ -1384,7 +1384,7 @@ export default function BackloadMatching() {
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
-    // Stop marker on selected route — matches StopsPanel row info.
+    // Stop marker on selected route - matches StopsPanel row info.
     if (object._idx && (object.kind === 'start' || object.kind === 'pickup' ||
                         object.kind === 'dropoff' || object.kind === 'end' ||
                         object.kind === 'break')) {
@@ -1431,7 +1431,7 @@ export default function BackloadMatching() {
     <PageContainer width="wide" padded={false}>
     <div className="panel" style={{ padding: 16 }}>
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Backload Matching Engine</h2>
-      <p className="subtitle">Fleet-wide VRP solve with VROOM + ORS — every visible knob maps 1:1 to a solver field.</p>
+      <p className="subtitle">Fleet-wide VRP solve with VROOM + ORS - every visible knob maps 1:1 to a solver field.</p>
 
       {seedHint && (
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -1519,7 +1519,7 @@ export default function BackloadMatching() {
           <input type="range" min={0} max={12} value={windowSlackHrs} onChange={e => setWindowSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 220 }}>
-          <label style={labelStyle}>Trailer end<InfoTip text="Where the trailer must finish: Home depot, a Shared destination you pick, or Open-ended (no return — useful for asset rebalancing).\n\nVROOM field: vehicle.end (omitted for open-ended)" /></label>
+          <label style={labelStyle}>Trailer end<InfoTip text="Where the trailer must finish: Home depot, a Shared destination you pick, or Open-ended (no return - useful for asset rebalancing).\n\nVROOM field: vehicle.end (omitted for open-ended)" /></label>
           <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'home'} onChange={() => setEndMode('home')} />Home</label>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'shared'} onChange={() => setEndMode('shared')} />Shared</label>
@@ -1584,7 +1584,7 @@ export default function BackloadMatching() {
       <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6 }}>
         <button onClick={() => setShowAdvanced(s => !s)} type="button"
                 style={{ width: '100%', padding: '8px 12px', textAlign: 'left', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>
-          <span>ENGINE FEATURES (VROOM + ORS) — {showAdvanced ? 'hide' : 'show'}</span>
+          <span>ENGINE FEATURES (VROOM + ORS) - {showAdvanced ? 'hide' : 'show'}</span>
           <span>{showAdvanced ? '▴' : '▾'}</span>
         </button>
         {showAdvanced && (
@@ -1620,7 +1620,7 @@ export default function BackloadMatching() {
             {/* Card C */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <input type="checkbox" checked={useMultiDimCapacity} onChange={e => setUseMultiDimCapacity(e.target.checked)} />
-              <b>Multi-dim capacity</b><InfoTip text="Adds pallets and m³ alongside kg. The solver enforces all three simultaneously — a shipment that fits by weight may still be rejected on volume.\n\nVROOM fields: vehicle.capacity[] / shipment.amount[]" />
+              <b>Multi-dim capacity</b><InfoTip text="Adds pallets and m³ alongside kg. The solver enforces all three simultaneously - a shipment that fits by weight may still be rejected on volume.\n\nVROOM fields: vehicle.capacity[] / shipment.amount[]" />
             </label>
             {/* Card B */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1636,7 +1636,7 @@ export default function BackloadMatching() {
             {avoidZones.length > 0 && (
               <div style={{ minWidth: 240 }}>
                 <label style={{ display: 'block', marginBottom: 4 }}>
-                  <b>Avoid zones</b><InfoTip text="Polygons forwarded to ORS as routing avoid_polygons. Currently rendered on the map only — routing-gateway propagation to ORS matrix pre-computation is a TODO." />
+                  <b>Avoid zones</b><InfoTip text="Polygons forwarded to ORS as routing avoid_polygons. Currently rendered on the map only - routing-gateway propagation to ORS matrix pre-computation is a TODO." />
                 </label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 100, overflowY: 'auto' }}>
                   {avoidZones.map(z => (

@@ -1,4 +1,4 @@
-// Region lifecycle endpoints — listing + active region setter.
+// Region lifecycle endpoints - listing + active region setter.
 // /api/regions             GET   merged registry+catalog+telemetry view
 // /api/regions/active      GET   currently-marked-default region row
 // /api/regions/active      POST  set active region (mutates CONFIGs)

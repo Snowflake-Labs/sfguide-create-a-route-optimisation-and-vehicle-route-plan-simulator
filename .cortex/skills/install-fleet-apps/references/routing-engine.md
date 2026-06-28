@@ -3,7 +3,7 @@
 This skill **owns** both the neutral routing seam `ROUTING_PLATFORM.CONTRACT.*`
 (`routing_platform/setup.sql`, applied by the orchestrator) **and** the live
 ORS/VROOM engine build (Phase C). Consumers and the synapse User verbs bind to
-the contract, never to a named engine — so the engine is a swappable provider
+the contract, never to a named engine - so the engine is a swappable provider
 behind the seam (TENETS.md tenet 1), while remaining fully self-contained here.
 
 The engine keeps the `OPENROUTESERVICE_APP.CORE` runtime namespace. That DB name
@@ -30,7 +30,7 @@ layer 3 runs `scripts/provision_engine.sh <connection>`, which:
 
 1. Ensures `OPENROUTESERVICE_APP` infra (DB, `CORE` + `TRAVEL_MATRIX` schemas,
    image repository, `ORS_SPCS_STAGE` / `ORS_GRAPHS_SPCS_STAGE` /
-   `ORS_ELEVATION_CACHE_SPCS_STAGE`, `ROUTING_ANALYTICS` warehouse) — all
+   `ORS_ELEVATION_CACHE_SPCS_STAGE`, `ROUTING_ANALYTICS` warehouse) - all
    `IF NOT EXISTS`, independent of whatever infra the app images use.
 2. Validates engine image tags (`scripts/check_image_versions.sh`).
 3. Builds + pushes the 4 engine images to `OPENROUTESERVICE_APP.core.image_repository`
@@ -60,7 +60,7 @@ podman / stuck-push (`crane`) caveats are in `references/troubleshooting.md`.
 
 ## After provisioning
 
-`ORS_SERVICE_<region>` takes 5–15 min to build graphs on first boot. Re-running
+`ORS_SERVICE_<region>` takes 5-15 min to build graphs on first boot. Re-running
 `install_fleet_apps.sh` (idempotent) re-detects the engine and reports LIVE;
 nothing else re-installs. Confirm health with
 `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()`.
@@ -75,5 +75,5 @@ nothing else re-installs. Confirm health with
 | LIVE routing verbs (directions/isochrone/VRP/matrix) | Yes (default; skip with `--no-engine`) |
 | Dynamic data generation (Data Studio) | Yes (FLEET_ADMIN_APP) |
 
-There is no external skill dependency for any of the above — `build-routing-solution`
+There is no external skill dependency for any of the above - `build-routing-solution`
 has been retired (Phase C).

@@ -51,14 +51,14 @@ VALUES (UUID_STRING(), 'USA', CURRENT_TIMESTAMP());
 
 Snowflake refuses any function call inside a VALUES clause.
 
-**Workaround 1** — `INSERT ... SELECT` (functions are valid in SELECT):
+**Workaround 1** - `INSERT ... SELECT` (functions are valid in SELECT):
 
 ```sql
 INSERT INTO MY_TABLE (BUILD_ID, REGION, STARTED_AT)
 SELECT UUID_STRING(), 'USA', CURRENT_TIMESTAMP();
 ```
 
-**Workaround 2** — inside a Snowflake Scripting procedure, assign to a `LET`
+**Workaround 2** - inside a Snowflake Scripting procedure, assign to a `LET`
 or `DECLARE` variable first, then reference `:var` in VALUES (variables are
 allowed; function calls are not):
 
@@ -102,11 +102,11 @@ run `SHOW ...` interactively first and read the column header casing.
 
 ## Helpful tools when these bite
 
-- **Compile-only validation** — when writing SQL you intend to commit but not
+- **Compile-only validation** - when writing SQL you intend to commit but not
   run, compile-check it via `snow sql -q "<ddl>"` against a test connection,
   or via the `snowflake_sql_execute` MCP tool with `only_compile=true`.
-- **`snow sql -f <file>`** — applies an entire SQL module. The CLI handles
+- **`snow sql -f <file>`** - applies an entire SQL module. The CLI handles
   `$$ ... $$` procedure bodies correctly without manual splitting.
-- **`SHOW COMPUTE POOL INSTANCE FAMILIES`** — the source of truth for which
+- **`SHOW COMPUTE POOL INSTANCE FAMILIES`** - the source of truth for which
   families are available in the current cloud + region. Drives the
   `RESOLVE_LARGEST_HIGHMEM_FAMILY` resolver.

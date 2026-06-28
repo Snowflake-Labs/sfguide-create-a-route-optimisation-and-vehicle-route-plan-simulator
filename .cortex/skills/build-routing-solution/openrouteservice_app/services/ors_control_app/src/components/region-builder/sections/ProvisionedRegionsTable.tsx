@@ -70,7 +70,7 @@ export default function ProvisionedRegionsTable({ regions, loading, onDrop }: Pr
                 }
                 if (gr?.error) return <span className="badge error">Failed</span>;
                 if (!gr) return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Checking...</span>;
-                if (totalCount === 0) return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                if (totalCount === 0) return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>-</span>;
                 if (isReady) return <span className="badge ok">{readyCount}/{totalCount} ready</span>;
                 return <span className="badge warn">Building {readyCount}/{totalCount}</span>;
               })();
@@ -89,10 +89,10 @@ export default function ProvisionedRegionsTable({ regions, loading, onDrop }: Pr
                     const phases = g.phases;
                     const profileBadge = (() => {
                       if (g.profile === '(no profiles)') {
-                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>-</span>;
                       }
                       if (!isServiceUp) {
-                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>-</span>;
                       }
                       if (g.ready) return <span className="badge ok">Ready</span>;
                       if (gr?.error) return <span className="badge error">Failed</span>;

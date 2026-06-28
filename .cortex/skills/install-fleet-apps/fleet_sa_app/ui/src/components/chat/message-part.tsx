@@ -10,7 +10,7 @@ import type { Operation } from '@/components/inline/confirm-action';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-// Tools whose tool_result is suppressed — agent text summarizes these.
+// Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
 const SUPPRESS_RESULT_SUFFIXES = ['execute_workflow', 'resume_workflow', 'cortex_analyst_text_to_sql'];
 function isSuppressedTool(toolName: string): boolean {
@@ -57,7 +57,7 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
   }
 
   // If an execute_workflow tool result contains pending_approval, render ApprovalAction
-  // instead of suppressing it — this is the mechanical HITL gate UI, no LLM involvement.
+  // instead of suppressing it - this is the mechanical HITL gate UI, no LLM involvement.
   if ((part.type === 'tool_result') &&
       isSuppressedTool(part.toolName) &&
       part.toolName !== undefined &&
@@ -75,7 +75,7 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
   }
 
   // Suppress tool_result/tool_error for workflow and analytics tools whose results
-  // the agent narrates directly — the agent text is the user-facing output.
+  // the agent narrates directly - the agent text is the user-facing output.
   if (!debug && (part.type === 'tool_result' || part.type === 'tool_error') &&
       isSuppressedTool(part.toolName)) {
     return null;

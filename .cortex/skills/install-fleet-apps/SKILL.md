@@ -17,7 +17,7 @@ This skill **owns** all of its artifacts (relocated here), so the stack installs
 
 ## Scope: vehicle/industry-AGNOSTIC only
 
-This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimension carried by the selected dataset — never a schema, view, semantic view, agent tool, or UI surface. The R6 `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` (status: locked) is the authoritative contract.
+This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimension carried by the selected dataset - never a schema, view, semantic view, agent tool, or UI surface. The R6 `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` (status: locked) is the authoritative contract.
 
 | Layer | INSTALLED (agnostic) | EXCLUDED (industry-vertical) |
 |---|---|---|
@@ -26,13 +26,13 @@ This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimens
 | Agents | `SV_FLEET_OPS`, `SV_DWELL_ANALYTICS`, `SV_ROUTE_DEVIATION`, `SV_ASSET_VELOCITY`, `SV_CATCHMENT` + neutral routing verbs | `SV_DELIVERIES`, `SV_BACKLOAD_MATCHING`, `SV_DHL_BACKLOAD` |
 | Seed data | `SYNTHETIC_DATASETS.UNIFIED.*` / `NEUTRAL.*`, `FLEET_INTELLIGENCE.CORE`, DWELL/DEVIATION/ROUTE_OPT CONFIG, `CATCHMENT` base tables | freight offers/partners, DHL tables |
 
-The installer always installs the **complete** agnostic set — there is no per-use-case selection prompt.
+The installer always installs the **complete** agnostic set - there is no per-use-case selection prompt.
 
 > **Agent Playground demo tools are dynamic.** The `TOOL_CATCHMENT`,
 > `TOOL_DELIVERY_OPTIMIZATION`, and `TOOL_NETWORK_OPTIMIZATION` procs source live,
 > region-scoped Overture POIs (`FLEET_INTELLIGENCE.CATCHMENT.POIS` /
 > `REGIONAL_ADDRESSES`, BOUNDARY-constrained + routable-filtered) and read the
-> active region from `CATCHMENT.CONFIG` — no static demo seed is required. Step 4.6
+> active region from `CATCHMENT.CONFIG` - no static demo seed is required. Step 4.6
 > uploads the region-neutral `agent-demos.json` scenario config to the ORS stage
 > (engine-present only; skip with `SKIP_DEMO=1`).
 
@@ -48,7 +48,7 @@ The installer always installs the **complete** agnostic set — there is no per-
 
 - Container runtime (Podman or Docker) running; Node.js >= 20 + npm; Python 3; Snowflake CLI (`snow`).
   - The engine build (on by default) auto-detects **docker first** (a default 2 GB podman machine OOMs the ORS image build). Force a runtime with `CONTAINER_CMD=docker|podman`.
-  - Install **crane** (`brew install crane`) for reliable SPCS image pushes — `docker push` to the SPCS registry intermittently hangs on the final manifest commit; `build_push` prefers crane when present (docker runtime). Disable with `USE_CRANE_PUSH=0`.
+  - Install **crane** (`brew install crane`) for reliable SPCS image pushes - `docker push` to the SPCS registry intermittently hangs on the final manifest commit; `build_push` prefers crane when present (docker runtime). Disable with `USE_CRANE_PUSH=0`.
 - `export SNOWFLAKE_CLI_NO_UPDATE_CHECK=true`.
 - An active connection whose role can create databases, schemas, services, compute pools, image repositories, external access integrations, roles, and agents (see `## Required Privileges`).
 - Repository cloned; the four Carto/Overture Marketplace shares are optional (basemap egress is via the CARTO EAI).
@@ -61,17 +61,17 @@ bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connectio
 
 The orchestrator runs these layers in order (detect-and-reuse-else-create throughout):
 
-1. **Preflight** — tools, connection, account.
-2. **Infra** — image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses `OPENROUTESERVICE_APP` equivalents if present; otherwise creates skill-owned objects. See `references/infra.sql`.
-3. **Data** — probes the agnostic source tables; reuses existing rows, else loads `scripts/seed_data.sql`. See `references/seed-data.md`.
-4. **Analytic layer** — authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode — the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
-5. **Data contract** — `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
-5.5. **Semantic views** — `fleet_sa_app/app/semantic_views.sql` creates `FLEET_INTELLIGENCE.SEMANTIC` + the 5 Cortex Analyst SVs the consumer agent binds to (`SV_FLEET_OPS`, `SV_ROUTE_DEVIATION`, `SV_CATCHMENT`, `SV_DWELL_ANALYTICS`, `SV_ASSET_VELOCITY`). DWELL/ASSET_VELOCITY are rebound onto the pack-built `FLEET_APP.*` views; the rest bind the analytic-layer objects. Runs after packs + analytic layer, before roles/agents (so the role grant and the agent's Cortex Analyst tools resolve). Best-effort; gate off with `SKIP_SEMANTIC=1`.
-6. **Synapse tools** — per-account materialize + deploy of the `user`/`ops`/`admin` bundles (`ROUTING_MCP`, `FLEET_OPS_MCP`, `FLEET_ADMIN_MCP`). See `references/synapse-bundles.md`.
-7. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
-8. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
-9. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
-10. **Routing engine + tool substrate** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. Then applies the engine-agnostic routing contract (`routing_platform/setup.sql`) and the 9 `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` procedures (from `routing-agent/references/deploy-agent.sql`) that the synapse routing verbs wrap — without this substrate every `FLEET_AGENT` routing request fails ("routing service experiencing issues") even with a healthy engine. The installer asserts all 9 `TOOL_*` procs exist and warns loudly if any are missing. See `references/routing-engine.md`.
+1. **Preflight** - tools, connection, account.
+2. **Infra** - image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses `OPENROUTESERVICE_APP` equivalents if present; otherwise creates skill-owned objects. See `references/infra.sql`.
+3. **Data** - probes the agnostic source tables; reuses existing rows, else loads `scripts/seed_data.sql`. See `references/seed-data.md`.
+4. **Analytic layer** - authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode - the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
+5. **Data contract** - `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
+5.5. **Semantic views** - `fleet_sa_app/app/semantic_views.sql` creates `FLEET_INTELLIGENCE.SEMANTIC` + the 5 Cortex Analyst SVs the consumer agent binds to (`SV_FLEET_OPS`, `SV_ROUTE_DEVIATION`, `SV_CATCHMENT`, `SV_DWELL_ANALYTICS`, `SV_ASSET_VELOCITY`). DWELL/ASSET_VELOCITY are rebound onto the pack-built `FLEET_APP.*` views; the rest bind the analytic-layer objects. Runs after packs + analytic layer, before roles/agents (so the role grant and the agent's Cortex Analyst tools resolve). Best-effort; gate off with `SKIP_SEMANTIC=1`.
+6. **Synapse tools** - per-account materialize + deploy of the `user`/`ops`/`admin` bundles (`ROUTING_MCP`, `FLEET_OPS_MCP`, `FLEET_ADMIN_MCP`). See `references/synapse-bundles.md`.
+7. **Roles** - applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
+8. **Agents** - `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
+9. **Apps** - `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
+10. **Routing engine + tool substrate** - probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. Then applies the engine-agnostic routing contract (`routing_platform/setup.sql`) and the 9 `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` procedures (from `routing-agent/references/deploy-agent.sql`) that the synapse routing verbs wrap - without this substrate every `FLEET_AGENT` routing request fails ("routing service experiencing issues") even with a healthy engine. The installer asserts all 9 `TOOL_*` procs exist and warns loudly if any are missing. See `references/routing-engine.md`.
 
 ## Live routing engine (default; skip with `--no-engine`)
 
@@ -135,23 +135,23 @@ DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 
 The agnostic `FLEET_INTELLIGENCE.*` analytic objects the packs read are owned by skill SQL and authored in the data + analytic steps, in this order:
 
-- `scripts/seed_data.sql` — ensures `ROUTING_ANALYTICS`, the engine-namespace stubs the loader needs (`OPENROUTESERVICE_APP.CORE` + `REGION_CATALOG`), and the `ROUTE_OPTIMIZATION` base tables, then runs the canonical loader (`UNIFIED.*` + `DIM_DATASETS`).
-- `scripts/vehicle_profile_catalog.sql` — `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` + the `DIM_FLEET` asset-column stamp.
-- `scripts/projection_views.sql` — the dataset-scoped `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views.
-- `scripts/analytic_layer.sql` (step 3.5) — `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables.
+- `scripts/seed_data.sql` - ensures `ROUTING_ANALYTICS`, the engine-namespace stubs the loader needs (`OPENROUTESERVICE_APP.CORE` + `REGION_CATALOG`), and the `ROUTE_OPTIMIZATION` base tables, then runs the canonical loader (`UNIFIED.*` + `DIM_DATASETS`).
+- `scripts/vehicle_profile_catalog.sql` - `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` + the `DIM_FLEET` asset-column stamp.
+- `scripts/projection_views.sql` - the dataset-scoped `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views.
+- `scripts/analytic_layer.sql` (step 3.5) - `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables.
 
 These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design); its legacy DWELL asset-velocity views are gated on `DWELL_ANALYSIS.DT_DWELL_ENRICHED` (absent on the agnostic install → skipped) and its `MARKETPLACE`/`BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. The legacy `build-routing-solution` Vite control app (also containing an `init.ts`) is slated for retirement once a clean-account engine e2e confirms parity; there is no obligation to keep it in sync.
 
 ## References
 
-- `references/conventions.md` — query_tag + COMMENT tracking literals.
-- `references/infra.sql` — detect-and-reuse-else-create infra provisioning.
-- `references/seed-data.md` — agnostic seed-data probe + load path.
-- `references/synapse-bundles.md` — per-account materialize + deploy.
-- `references/routing-engine.md` — engine detection + native provisioning (default; skip with `--no-engine`).
-- `references/build-images.md` — build + push the 4 ORS/VROOM engine images.
-- `references/available-functions.md` — engine SQL functions, profiles, service limits, matrix builders.
-- `references/snowflake-scripting-guidelines.md` — SQL Scripting rules for the engine modules.
-- `references/snowflake-sql-gotchas.md` — engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
-- `references/troubleshooting.md` — engine image build / registry / service troubleshooting.
-- `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` — the locked agnostic contract.
+- `references/conventions.md` - query_tag + COMMENT tracking literals.
+- `references/infra.sql` - detect-and-reuse-else-create infra provisioning.
+- `references/seed-data.md` - agnostic seed-data probe + load path.
+- `references/synapse-bundles.md` - per-account materialize + deploy.
+- `references/routing-engine.md` - engine detection + native provisioning (default; skip with `--no-engine`).
+- `references/build-images.md` - build + push the 4 ORS/VROOM engine images.
+- `references/available-functions.md` - engine SQL functions, profiles, service limits, matrix builders.
+- `references/snowflake-scripting-guidelines.md` - SQL Scripting rules for the engine modules.
+- `references/snowflake-sql-gotchas.md` - engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
+- `references/troubleshooting.md` - engine image build / registry / service troubleshooting.
+- `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` - the locked agnostic contract.

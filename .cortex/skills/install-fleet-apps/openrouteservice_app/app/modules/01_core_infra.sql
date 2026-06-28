@@ -47,14 +47,14 @@ SELECT
     "name",
     "state",
     CASE "state"
-        WHEN 'ACTIVE' THEN 'Ready — proceeding to create services'
+        WHEN 'ACTIVE' THEN 'Ready - proceeding to create services'
         ELSE 'WARNING: Pool state is ' || "state" || '. Wait for ACTIVE then re-run 01_core_infra.sql'
     END AS POOL_STATUS_CHECK
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'OPENROUTESERVICE_APP_COMPUTE_POOL';
 
 -- ===========================================================================
--- v1.1.0 — Unified region model
+-- v1.1.0 - Unified region model
 --
 -- The legacy global services ORS_SERVICE and VROOM_SERVICE have been removed.
 -- After this module finishes, the install flow continues with module

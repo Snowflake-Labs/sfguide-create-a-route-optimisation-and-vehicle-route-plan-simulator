@@ -1,5 +1,5 @@
 /*
- * seed-data.sql — Retail Catchment Analysis
+ * seed-data.sql - Retail Catchment Analysis
  * Creates schema, CONFIG, and optimized data tables from Overture Maps.
  * Run via: snow sql -f .cortex/skills/retail-catchment/references/seed-data.sql -c <connection>
  *
@@ -117,7 +117,7 @@ AND p.ADDRESSES[0]:region IS NOT NULL
 -- Bbox prefilter (fast partition prune)
 AND ST_X(p.GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
 AND ST_Y(p.GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
--- Polygon refine via temp boundary table (NULL-safe — if no boundary loaded, refine is skipped):
+-- Polygon refine via temp boundary table (NULL-safe - if no boundary loaded, refine is skipped):
 AND (b.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, b.BOUNDARY));
 
 --------------------------------------------------------------------
@@ -175,7 +175,7 @@ AND a.GEOMETRY IS NOT NULL
 -- Bbox prefilter (fast partition prune)
 AND ST_X(a.GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
 AND ST_Y(a.GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
--- Polygon refine via temp boundary table (NULL-safe — if no boundary loaded, refine is skipped):
+-- Polygon refine via temp boundary table (NULL-safe - if no boundary loaded, refine is skipped):
 AND (b.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, b.BOUNDARY));
 
 --------------------------------------------------------------------

@@ -7,12 +7,12 @@
 
 Today the repo has two parallel data origins:
 
-1. **Data Studio** — a live, region/config-driven generator (`server/studio/`) that produces movement data (fleet, trips, telemetry, freight, partners) and pulls POIs live from Overture Places.
-2. **Static seeds** — a frozen parquet snapshot (`datasets/synthetic_ebikes/*.parquet`) shipped as the install seed, plus hardcoded `DEMO_*` tables, a CareConnect CSV, and hardcoded demographics / demand catalogs / industry templates baked into demo skills.
+1. **Data Studio** - a live, region/config-driven generator (`server/studio/`) that produces movement data (fleet, trips, telemetry, freight, partners) and pulls POIs live from Overture Places.
+2. **Static seeds** - a frozen parquet snapshot (`datasets/synthetic_ebikes/*.parquet`) shipped as the install seed, plus hardcoded `DEMO_*` tables, a CareConnect CSV, and hardcoded demographics / demand catalogs / industry templates baked into demo skills.
 
 The target end-state:
 
-- Data Studio can generate **every non-route entity any use case needs** — POIs, PACE / health-facility anchors, key sites, depots, disaster/hazard zones, area demographics, demand catalogs — from **Overture Maps + free Marketplace datasets**, region/config-driven, with **no hardcoded city / pharma / company literals**.
+- Data Studio can generate **every non-route entity any use case needs** - POIs, PACE / health-facility anchors, key sites, depots, disaster/hazard zones, area demographics, demand catalogs - from **Overture Maps + free Marketplace datasets**, region/config-driven, with **no hardcoded city / pharma / company literals**.
 - Sourcing is **semantic-layer-first**: query through vendor **semantic views** (Overture `OVERTUREMAPS_*_SEMANTIC_VIEW`, any Marketplace dataset's semantic layer) and Cortex Analyst for query shaping; use real **Overture Divisions** boundaries where they beat bbox/Geofabrik approximations; fall back to base tables only when no semantic layer exists.
 - The **first Data Studio run becomes the seed**: run once, export via [`datasets/export-preset.sql`](../../datasets/export-preset.sql), and the resulting parquet *replaces* `datasets/synthetic_ebikes/`.
 - The static `DEMO_*` tables and the CareConnect CSV are **retired**.
@@ -83,15 +83,15 @@ graph TD
 
 | Gap | Listing | Global name | SV? | Notes |
 |---|---|---|---|---|
-| Area demographics | No Fret Data — "U.S. Census Demographics + Geospatial Boundaries — Free" | `GZ1M6ZYDCF2` | verify | ZIP-level + boundaries |
-| Area demographics (alt) | aterio — "US Census Data & Demographic Insights - Free" | `GZTSZ10H0398` | verify | ZIP historical + forecast |
+| Area demographics | No Fret Data - "U.S. Census Demographics + Geospatial Boundaries - Free" | `GZ1M6ZYDCF2` | verify | ZIP-level + boundaries |
+| Area demographics (alt) | aterio - "US Census Data & Demographic Insights - Free" | `GZTSZ10H0398` | verify | ZIP historical + forecast |
 | Hazard risk | FEMA National Risk Index | `GZSTZKU9FH9` | N | Already used (emergency-response) |
-| Disaster declarations | BrainForgeAI — FEMA Disaster Declarations (OpenFEMA) | `GZT1ZS38HS` | verify | Public-domain OpenFEMA |
+| Disaster declarations | BrainForgeAI - FEMA Disaster Declarations (OpenFEMA) | `GZT1ZS38HS` | verify | Public-domain OpenFEMA |
 | POIs / anchors | Overture Places | `GZT0Z4CM1E9KR` | **Y** | `OVERTUREMAPS_PLACES_SEMANTIC_VIEW` |
 | Addresses | Overture Addresses | `GZT0Z4CM1E9NQ` | N | No SV ships with the addresses share |
 | Building-centroid depots | Overture Buildings (CARTO) | *(discover GZ id)* | verify | `ST_CENTROID` of building footprints |
 | Real boundaries | Overture Divisions (CARTO) | *(discover GZ id)* | verify | Admin polygons for display + spatial filter |
-| Firmographics (optional) | Equifax B2bConnect — free sample | `GZT0ZOSU8TV` | verify | Sample only; keep optional |
+| Firmographics (optional) | Equifax B2bConnect - free sample | `GZT0ZOSU8TV` | verify | Sample only; keep optional |
 
 **Per-listing verification checklist** (run before committing to any source):
 
@@ -111,21 +111,21 @@ SELECT * FROM <DB_NAME>.<SCHEMA>.<TABLE> LIMIT 20;
 
 Every new generator follows this sourcing hierarchy:
 
-1. **Vendor semantic view** if one exists. Shape queries against its facts/dimensions/metrics, and optionally drive generation/validation through **Cortex Analyst** (`call_cortex_analyst`, or attach the SV as an Analyst tool — the agent already attaches Overture Places as `query_overture_global`).
+1. **Vendor semantic view** if one exists. Shape queries against its facts/dimensions/metrics, and optionally drive generation/validation through **Cortex Analyst** (`call_cortex_analyst`, or attach the SV as an Analyst tool - the agent already attaches Overture Places as `query_overture_global`).
 2. **Overture Divisions** for real administrative boundaries where a true polygon improves on the bbox/Geofabrik approximation (display + spatial filtering), while still keeping the cost-safe `ST_WITHIN(REGION_CATALOG.BOUNDARY)` refine for engine-routability.
 3. **Base tables** only when no semantic layer exists (today's `loadPOIs` path), always with bbox-prune + `ST_WITHIN(BOUNDARY)` + a hard `LIMIT`.
 
-Known reality of the Overture semantic views (see Appendix A): `OVERTUREMAPS_PLACES_SEMANTIC_VIEW` exposes **confidence metrics only** (AVG/MIN/MAX) — no COUNT — so "how many" queries still route to the base table or to `CATCHMENT` counts. The Addresses share ships **no** semantic view. Treat the SV as the preferred *shaping/discovery* surface and the base table as the *bulk extract* surface.
+Known reality of the Overture semantic views (see Appendix A): `OVERTUREMAPS_PLACES_SEMANTIC_VIEW` exposes **confidence metrics only** (AVG/MIN/MAX) - no COUNT - so "how many" queries still route to the base table or to `CATCHMENT` counts. The Addresses share ships **no** semantic view. Treat the SV as the preferred *shaping/discovery* surface and the base table as the *bulk extract* surface.
 
 ## 5. Target Data Studio architecture
 
 New generators are added as **sibling modules** under `server/studio/engine/`, mirroring the existing seams:
 
-- **Orchestration** — register each generator step in [`engine.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/engine.ts) (the `generateTelemetry` async generator) and the job lifecycle in `jobs.ts`.
-- **DDL** — add `CREATE TABLE IF NOT EXISTS` for each new entity in [`ensure-tables.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/ensure-tables.ts) (today owns `FACT_VEHICLE_TELEMETRY`, `FACT_TRIPS`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `FACT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, plus CORE `GENERATION_JOBS`/`JOB_EVENTS`/`DIM_DATASETS`).
-- **Inserts** — add batch INSERT helpers in `inserters.ts`.
-- **Config** — gate each generator with flags on `GenerationConfig` in [`profiles.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/profiles.ts) (`export interface GenerationConfig` ~line 183); move the hardcoded `poi_categories` arrays (lines 43/86/139) into the persisted profile catalog (`generation-profile-catalog.ts` already persists templates into `GENERATION_PROFILE_CATALOG`).
-- **Versioning** — every new table carries `JOB_ID` + flows through the `DIM_DATASETS` IS_ACTIVE / `V_*_CURRENT` projection-view discipline (AGENTS.md invariant). Consumers read `V_*_CURRENT`, never base tables.
+- **Orchestration** - register each generator step in [`engine.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/engine.ts) (the `generateTelemetry` async generator) and the job lifecycle in `jobs.ts`.
+- **DDL** - add `CREATE TABLE IF NOT EXISTS` for each new entity in [`ensure-tables.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/ensure-tables.ts) (today owns `FACT_VEHICLE_TELEMETRY`, `FACT_TRIPS`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `FACT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, plus CORE `GENERATION_JOBS`/`JOB_EVENTS`/`DIM_DATASETS`).
+- **Inserts** - add batch INSERT helpers in `inserters.ts`.
+- **Config** - gate each generator with flags on `GenerationConfig` in [`profiles.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/profiles.ts) (`export interface GenerationConfig` ~line 183); move the hardcoded `poi_categories` arrays (lines 43/86/139) into the persisted profile catalog (`generation-profile-catalog.ts` already persists templates into `GENERATION_PROFILE_CATALOG`).
+- **Versioning** - every new table carries `JOB_ID` + flows through the `DIM_DATASETS` IS_ACTIVE / `V_*_CURRENT` projection-view discipline (AGENTS.md invariant). Consumers read `V_*_CURRENT`, never base tables.
 
 New generator modules:
 
@@ -145,7 +145,7 @@ Current state: `datasets/synthetic_ebikes/*.parquet` is a frozen export of a spe
 Target flow:
 
 1. Run Data Studio once for the canonical preset (with all new generators enabled), producing a complete dataset under one `JOB_ID`.
-2. Extend `export-preset.sql` to also export the **new entity tables** (`DIM_ANCHORS`, `FACT_HAZARD_ZONES`, `DIM_AREA_DEMOGRAPHICS`, `DIM_DEMAND_CATALOG`) — same `COPY INTO @...SEED_DATA_STAGE/synthetic_ebikes/<table>/` + `ST_ASWKT(...)` for GEOGRAPHY columns pattern already used for telemetry/trips.
+2. Extend `export-preset.sql` to also export the **new entity tables** (`DIM_ANCHORS`, `FACT_HAZARD_ZONES`, `DIM_AREA_DEMOGRAPHICS`, `DIM_DEMAND_CATALOG`) - same `COPY INTO @...SEED_DATA_STAGE/synthetic_ebikes/<table>/` + `ST_ASWKT(...)` for GEOGRAPHY columns pattern already used for telemetry/trips.
 3. `snow stage copy` the stage back down into `datasets/synthetic_ebikes/`, replacing the frozen snapshot.
 4. Update `load-seed-data.sql` to `COPY INTO` the new tables and to pin the new canonical `JOB_ID` (and the `DIM_DATASETS` active row).
 
@@ -167,11 +167,11 @@ Each wave is independently shippable and reversible (config flag off + keep the 
 
 - **Overture coverage** is strongest in the US/urban areas; rural or non-US regions may yield sparse anchors/POIs. Mitigation: category fallbacks + minimum-count guards per region.
 - **Marketplace free tiers** are often *samples* (limited rows/geography) or rate-limited. Mitigation: the §3 verification checklist before committing; prefer listings explicitly labeled free with full coverage.
-- **Semantic-view absence** — Addresses and some listings ship no SV; the hierarchy must degrade gracefully to base tables.
+- **Semantic-view absence** - Addresses and some listings ship no SV; the hierarchy must degrade gracefully to base tables.
 - **ORS graph boundary constraints** (documented gotchas): `MATRIX` errors all-or-nothing (code 6010) if any point is outside the graph; VROOM aborts (code 3, silent 0 rows) on unsnappable in-boundary points. Anchor/route generators MUST keep the `ST_WITHIN(BOUNDARY)` + `snapped_distance <= 350m` pre-filter.
-- **Dataset-version invariants** — new tables must not break the `ensureUnifiedTables()`-before-`V_*_CURRENT` boot ordering or the `DIM_DATASETS` active-row contract.
-- **Reserved word** — `rows` is reserved in Snowflake; use `out_rows` in any dynamic SQL.
-- **Legacy mirror drift** — only edit the `fleet_admin_app` studio source.
+- **Dataset-version invariants** - new tables must not break the `ensureUnifiedTables()`-before-`V_*_CURRENT` boot ordering or the `DIM_DATASETS` active-row contract.
+- **Reserved word** - `rows` is reserved in Snowflake; use `out_rows` in any dynamic SQL.
+- **Legacy mirror drift** - only edit the `fleet_admin_app` studio source.
 
 ## 9. Acceptance criteria
 
@@ -182,7 +182,7 @@ Each wave is independently shippable and reversible (config flag off + keep the 
 
 ---
 
-## Appendix A — Overture Maps query reference
+## Appendix A - Overture Maps query reference
 
 Reusable facts for shaping the new generators' SQL (validated in prior Overture integration work + `analytic_layer.sql`).
 
@@ -196,14 +196,14 @@ Reusable facts for shaping the new generators' SQL (validated in prior Overture 
 | Confidence | `CONFIDENCE` | the SV exposes AVG/MIN/MAX of this |
 | BBox | `BBOX`; `ST_XMIN/XMAX/YMIN/YMAX` work on GEOGRAPHY | |
 
-Semantic view: `OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW` — **confidence metrics only, no COUNT**. Use for discovery/shaping; route counts to `CATCHMENT` or base-table aggregates.
+Semantic view: `OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW` - **confidence metrics only, no COUNT**. Use for discovery/shaping; route counts to `CATCHMENT` or base-table aggregates.
 
 ### Addresses (`OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS`)
 `ID`, `GEOMETRY`, `ADDRESS_LEVELS[1]:value::VARCHAR` (city), `POSTCODE`, `COUNTRY` (`'US'`). **No semantic view ships** with this share.
 
 ### Buildings / Divisions
 - **Buildings** (CARTO): footprint polygons; depot centroids via `ST_CENTROID(GEOMETRY)` over a building or POI cluster. Acquire the listing first.
-- **Divisions** (CARTO): administrative boundary polygons — the semantic-layer source for *real* region boundaries (display + spatial filter). Provisioning still requires the Geofabrik `.poly` clip mask; Divisions augments display/filtering, it does not replace provisioning input.
+- **Divisions** (CARTO): administrative boundary polygons - the semantic-layer source for *real* region boundaries (display + spatial filter). Provisioning still requires the Geofabrik `.poly` clip mask; Divisions augments display/filtering, it does not replace provisioning input.
 
 ### Cost-safe extract pattern (reuse verbatim)
 ```sql

@@ -29,7 +29,7 @@ export default function FacilityUtilization() {
     if (data.length === 0) return 0;
     return (data.reduce((s, r) => s + Number(r.AVG_DWELL_MINUTES || 0), 0) / data.length).toFixed(1);
   }, [data]);
-  const busiest = data[0]?.FACILITY_NAME || '—';
+  const busiest = data[0]?.FACILITY_NAME || '-';
   const types = useMemo(() => new Set(data.map(r => r.FACILITY_TYPE)).size, [data]);
 
   return (

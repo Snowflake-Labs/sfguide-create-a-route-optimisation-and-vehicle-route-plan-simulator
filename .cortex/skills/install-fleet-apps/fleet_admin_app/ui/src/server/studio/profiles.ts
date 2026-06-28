@@ -261,7 +261,7 @@ export interface GenerationConfig {
   poi_categories?: string[];
   // --- Declarative, mode-agnostic generation knobs (replace engine vt/mode
   // branches; see studio/generation-profile-catalog.ts). Adding a new mode is a
-  // data/config change — a profile row carrying these fields — with no engine
+  // data/config change - a profile row carrying these fields - with no engine
   // code edits. Capability behaviors (battery drain, HOS breaks, overnight rest)
   // are driven purely by the PRESENCE of `battery` / `breaks` / `overnight`
   // above, not by vehicle type.

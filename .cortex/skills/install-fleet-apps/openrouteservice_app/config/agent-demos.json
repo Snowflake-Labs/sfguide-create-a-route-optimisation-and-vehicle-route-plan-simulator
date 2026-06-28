@@ -20,7 +20,7 @@
       "id": "retail",
       "label": "Retail & Catchment",
       "icon": "🏪",
-      "description": "Retail site analysis — competitor proximity, drive-time catchments, POI discovery",
+      "description": "Retail site analysis - competitor proximity, drive-time catchments, POI discovery",
       "prompts": [
         { "label": "1. Store catchment", "icon": "📍", "prompt": "Show me the area reachable within a 10 minute drive from Union Square, San Francisco" },
         { "label": "2. Nearby competitors", "icon": "🏪", "prompt": "Show me all shops and shopping malls within a 10 minute drive from Union Square, San Francisco" },
@@ -33,7 +33,7 @@
       "id": "logistics",
       "label": "Fleet Logistics",
       "icon": "🚛",
-      "description": "Fleet delivery optimisation — multi-vehicle routing with capacity and skills",
+      "description": "Fleet delivery optimisation - multi-vehicle routing with capacity and skills",
       "prompts": [
         { "label": "1. Fleet delivery demo", "icon": "🚚", "prompt": "Run the SF fleet delivery optimization demo" },
         { "label": "2. HGV directions", "icon": "🚛", "prompt": "Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street" },

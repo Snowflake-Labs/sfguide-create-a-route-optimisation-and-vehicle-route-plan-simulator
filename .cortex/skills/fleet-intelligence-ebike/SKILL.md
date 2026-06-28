@@ -23,8 +23,8 @@ Data is generated using **Data Studio** in the ORS Control Panel, which writes t
 Projection views in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE` read active-dataset projections (`V_FACT_TRIPS_CURRENT`, `V_DIM_POIS_CURRENT`) and filter by vehicle type and region via a `CONFIG` table. See [`references/sql-projection-views.sql`](references/sql-projection-views.sql) for the complete view definitions.
 
 **Objects created:**
-- `CONFIG` — single-row filter table (VEHICLE_TYPE + REGION)
-- `TRIPS` + `ORIGINS_ENRICHED` — React fleet page views
+- `CONFIG` - single-row filter table (VEHICLE_TYPE + REGION)
+- `TRIPS` + `ORIGINS_ENRICHED` - React fleet page views
 
 The San Francisco baseline is loaded by `install-fleet-apps` Step 8 into UNIFIED tables.
 

@@ -1,5 +1,5 @@
 // Tiny CSS-only info tooltip. Hover or focus the ⓘ to reveal an
-// immediate, styled bubble — replaces the browser's slow native title
+// immediate, styled bubble - replaces the browser's slow native title
 // tooltip on every lever in the Backload Matching page.
 //
 // Renders the bubble through a body-level React portal with

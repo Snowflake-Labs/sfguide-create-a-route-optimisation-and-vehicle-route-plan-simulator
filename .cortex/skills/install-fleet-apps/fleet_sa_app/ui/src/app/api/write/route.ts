@@ -231,7 +231,7 @@ async function handleUpdate(
   const snapCols = snap.resultSetMetaData?.rowType ?? ([...snapshotCols, { name: 'version', type: 'fixed' }] as Array<string | { name: string; type: string }>).map((n) => typeof n === 'string' ? { name: n, type: 'text' } : n);
   const prevRow = rowToObject(snap.data[0], snapCols as Array<{ name: string; type: string }>);
 
-  // Always use the current version from the DB snapshot — the client's expected_version
+  // Always use the current version from the DB snapshot - the client's expected_version
   // is informational only. This gives "last write wins" semantics which is appropriate
   // for a single-user conversational app. Concurrent conflict detection can be added
   // later if needed (e.g. strict mode flag on the request).
@@ -376,7 +376,7 @@ async function handlePost(request: NextRequest): Promise<Response> {
     const def = manifest.entities[req.entity];
     const fqSchema = manifest.schema;
 
-    // tenant_id and created_by are always injected server-side — never trusted from client
+    // tenant_id and created_by are always injected server-side - never trusted from client
     const tenantId = 'default'; // TODO: resolve from auth session when multi-tenancy is enabled
     const createdBy = ROLE || 'app_user'; // Use the configured role as the user identity
 

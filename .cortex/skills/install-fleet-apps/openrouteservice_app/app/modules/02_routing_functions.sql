@@ -4,7 +4,7 @@
    -- REGION_CATALOG bootstrap (Mirror of REGION_CATALOG DDL in 03_region_management.sql; keep in sync.)
    -- Some functions below (DIRECTIONS, ISOCHRONES_CLIPPED, REGION_FOR_POINT,
    -- POINT_IN_REGION, SAMPLE_ADDRESSES_FOR_REGION) reference REGION_CATALOG. We
-   -- create it here idempotently so module 02 compiles standalone — do not rely on
+   -- create it here idempotently so module 02 compiles standalone - do not rely on
    -- 03 having run first. The DDL is duplicated verbatim from 03; both use
    -- CREATE TABLE IF NOT EXISTS so re-running 03 is a no-op.
    -- =============================================================================
@@ -40,7 +40,7 @@
    -- =============================================================================
    -- REGION_ORS_MAP bootstrap (Mirror of REGION_ORS_MAP DDL in 03_region_management.sql; keep in sync.)
    -- REGION_FOR_POINT joins REGION_ORS_MAP. Create it here idempotently so module 02
-   -- compiles standalone — do not rely on 03 having run first.
+   -- compiles standalone - do not rely on 03 having run first.
    -- =============================================================================
    CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
        REGION VARCHAR,
@@ -158,13 +158,13 @@
    -- ===== PUBLIC TABLE FUNCTIONS (granted to app_user) =====
    -- These wrap _RAW internals and parse GEOGRAPHY columns.
    --
-   -- v1.1.0 — Region semantics:
+   -- v1.1.0 - Region semantics:
    --   * Pass an explicit region name (e.g. 'SanFrancisco', 'Berlin') to route
    --     the call to ORS_SERVICE_<REGION> / VROOM_SERVICE_<REGION>.
    --   * Pass NULL or omit the argument to route to the default region. The
    --     gateway resolves it via DEFAULT_REGION_NAME (configured at the gateway
    --     service spec level). After the v1.1.0 unification there is no global
-   --     ORS_SERVICE — every region (including the default) is per-region.
+   --     ORS_SERVICE - every region (including the default) is per-region.
    -- DEFAULT NULL is preserved for backward-compat with notebooks / agents that
    -- pre-date the unified model.
 

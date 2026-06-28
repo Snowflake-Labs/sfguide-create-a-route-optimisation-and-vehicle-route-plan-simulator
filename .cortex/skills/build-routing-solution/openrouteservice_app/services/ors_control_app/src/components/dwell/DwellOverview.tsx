@@ -49,10 +49,10 @@ export default function DwellOverview() {
       <h3>Dwell Analysis Overview</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Fleet dwell time analytics and SLA monitoring</p>
       <div className="metric-grid">
-        <MetricCard label="Total Trips" value={loading ? '...' : (k.TOTAL_TRIPS ?? '—')} />
+        <MetricCard label="Total Trips" value={loading ? '...' : (k.TOTAL_TRIPS ?? '-')} />
         <MetricCard label="Avg Dwell Time" value={loading ? '...' : `${fmtDec(k.AVG_DWELL)} min`} />
         <MetricCard label="SLA Compliance" value={loading ? '...' : `${fmtDec(k.SLA_PCT)}%`} />
-        <MetricCard label="Active Drivers" value={loading ? '...' : (k.ACTIVE_DRIVERS ?? '—')} />
+        <MetricCard label="Active Drivers" value={loading ? '...' : (k.ACTIVE_DRIVERS ?? '-')} />
       </div>
       <div className="chart-row">
         <div className="chart-card">

@@ -43,7 +43,7 @@ interface DependencyDef {
 }
 
 export interface EntityDetailConfig {
-  entity: string;         // manifest key — used in /api/write calls
+  entity: string;         // manifest key - used in /api/write calls
   pk_field: string;       // row field that holds the primary key value
   name_field: string;     // row field used as the page title
   parent_view: string;    // view ID for the back-nav button
@@ -317,7 +317,7 @@ export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
                 return (
                   <div key={dep.field} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', backgroundColor: 'white', borderRadius: '6px', border: '1px solid #fcd34d' }}>
                     <span style={{ fontSize: '12px', fontWeight: 500, color: '#374151', flex: 1 }}>
-                      {dep.entity}: <strong>{depName}</strong> — <span style={{ color: '#6b7280' }}>{depStatus}</span>
+                      {dep.entity}: <strong>{depName}</strong> - <span style={{ color: '#6b7280' }}>{depStatus}</span>
                     </span>
                     <button
                       onClick={() => showView(dep.detail_view, { id: depId })}
@@ -377,7 +377,7 @@ export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
               <div key={idx} style={{ marginBottom: '28px' }}>
                 <SectionHeading title={section.title} />
                 <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-primary, #111827)', lineHeight: 1.6 }}>
-                  {val ? String(val) : '—'}
+                  {val ? String(val) : '-'}
                 </p>
               </div>
             );
@@ -390,7 +390,7 @@ export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
               <div key={idx} style={{ marginBottom: '28px' }}>
                 <SectionHeading title={section.title} />
                 <pre style={{ margin: 0, padding: '12px 14px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', borderRadius: '6px', fontSize: '12px', fontFamily: 'monospace', overflow: 'auto', border: '1px solid var(--border-default, #e5e7eb)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {val ? String(val) : '—'}
+                  {val ? String(val) : '-'}
                 </pre>
               </div>
             );

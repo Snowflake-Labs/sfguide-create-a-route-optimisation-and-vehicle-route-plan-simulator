@@ -9,7 +9,7 @@ describe('asSqlJsonLiteral', () => {
   it('round-trips a literal double-quote without breaking PARSE_JSON-ready output', () => {
     // The historic bug: terminal name like `"Mansheim Clemens Spedition"` (with
     // literal quotes in the data) used to land inside a SQL single-quoted
-    // string as `\"...\"` — Snowflake then choked on PARSE_JSON. The dollar-
+    // string as `\"...\"` - Snowflake then choked on PARSE_JSON. The dollar-
     // quoted form embeds the JSON.stringify output verbatim, so the JSON
     // parser sees the standard `\"` escape and accepts it.
     const out = asSqlJsonLiteral({ description: '"Mansheim Clemens Spedition" (WAREHOUSE)' });

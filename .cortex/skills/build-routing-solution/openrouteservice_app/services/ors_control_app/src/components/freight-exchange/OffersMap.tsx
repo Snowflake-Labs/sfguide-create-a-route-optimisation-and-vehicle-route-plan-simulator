@@ -95,7 +95,7 @@ export default function OffersMap({ rows, selected, onSelect, route }: Props) {
       // Path: prefer the resolved road geometry; while the live fetch is in
       // flight, render a dashed straight pickup->dropoff segment so the user
       // immediately sees the lane direction. On ORS failure (no coords, not
-      // loading) we draw nothing here — the two endpoint markers below still
+      // loading) we draw nothing here - the two endpoint markers below still
       // anchor the visual.
       if (route.coords && route.coords.length >= 2) {
         base.push(new PathLayer({

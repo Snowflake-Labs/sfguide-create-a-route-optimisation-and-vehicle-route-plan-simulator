@@ -1,5 +1,5 @@
 /*
- * extend_routing_agent.sql — adds 9 Cortex Analyst (text-to-SQL) tools to the
+ * extend_routing_agent.sql - adds 9 Cortex Analyst (text-to-SQL) tools to the
  * existing FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT, one per semantic view
  * in FLEET_INTELLIGENCE.SEMANTIC, while preserving the 7 existing ORS/demo
  * procedure tools. Re-creates ONLY the AGENT object (the procedures already exist).
@@ -27,7 +27,7 @@ instructions:
        and the config-driven catchment / delivery / network-optimization demo tools.
 
     B) ANALYTICS tools (Cortex Analyst over semantic views) for questions about DATA
-       already generated/stored by the solution — both the raw Data Studio telemetry
+       already generated/stored by the solution - both the raw Data Studio telemetry
        and every demo's analytics layer. Use these for counts, sums, averages, rates,
        rankings, breakdowns, and trends.
 
@@ -59,7 +59,7 @@ instructions:
     - Pre-geocoded 30-stop fleet delivery demo: tool_delivery_optimization
     - Drive-time catchment / area profile around a site: tool_catchment
 
-    ANALYTICS (Cortex Analyst over semantic views) — use for aggregate/historical questions:
+    ANALYTICS (Cortex Analyst over semantic views) - use for aggregate/historical questions:
     - Universal fleet analytics (any asset mode - car/hgv/ebike): trips (distance, duration,
       speed, detours, status), operator breakdowns (shift, profile), and top origins,
       by region/vehicle_type/operator => query_fleet_ops

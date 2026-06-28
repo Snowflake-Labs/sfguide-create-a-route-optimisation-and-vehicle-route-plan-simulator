@@ -1,5 +1,5 @@
 /**
- * Framework UI tests — Tier 2: Playwright E2E.
+ * Framework UI tests - Tier 2: Playwright E2E.
  *
  * Tests:
  *   1. Every view in app-views.json opens without an error state (HTTP 5xx)

@@ -122,7 +122,7 @@ def _check_skill(skill_md: Path, ignore_prefixes: list[str] | None = None) -> di
         for m in s3_pattern.finditer(content):
             rel = f.relative_to(skill_dir)
             line_num = content[:m.start()].count("\n") + 1
-            issues.append(f"Stale S3 reference in {rel}:{line_num} — all seed data should use datasets/ or Snowflake stages")
+            issues.append(f"Stale S3 reference in {rel}:{line_num} - all seed data should use datasets/ or Snowflake stages")
 
     return {
         "skill": folder_name,

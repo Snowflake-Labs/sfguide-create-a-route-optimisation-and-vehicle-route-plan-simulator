@@ -1,4 +1,4 @@
-# Emergency Response — Execution Log
+# Emergency Response - Execution Log
 
 - **Date:** 2026-06-11 09:45
 - **Skill:** emergency-response (v2 rewrite)

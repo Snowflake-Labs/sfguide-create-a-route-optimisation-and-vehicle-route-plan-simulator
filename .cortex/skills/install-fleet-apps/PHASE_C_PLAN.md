@@ -1,4 +1,4 @@
-# Phase C — Absorb the ORS engine substrate into install-fleet-apps
+# Phase C - Absorb the ORS engine substrate into install-fleet-apps
 
 > Goal: make `install-fleet-apps` able to build and deploy the live ORS/VROOM
 > routing engine end-to-end, so `build-routing-solution` can be deleted with
@@ -80,13 +80,13 @@ not a namespace rename.
   `PROVISION_ENGINE=1`) because building 4 SPCS images + a region graph is heavy
   (tens of minutes) and many installs reuse an existing engine.
 - Preserve the AUTO_SUSPEND_SECS invariant + REBUILD_GRAPHS reuse logic
-  (documented in the old AGENTS.md "Common Patterns") — these procs move as-is.
+  (documented in the old AGENTS.md "Common Patterns") - these procs move as-is.
 
 ### C5. Update routing-engine.md + the contract providers note
 - `references/routing-engine.md`: replace the "delegate to build-routing-solution"
   section with "install_fleet_apps.sh --with-engine provisions it natively".
 - Confirm `routing_platform/setup.sql` PROVIDERS still point at
-  `OPENROUTESERVICE_APP.CORE._*_RAW` (unchanged) — no edit expected.
+  `OPENROUTESERVICE_APP.CORE._*_RAW` (unchanged) - no edit expected.
 
 ### C6. Retire build-routing-solution
 - Once the engine builds + provisions from `install-fleet-apps` and a region
@@ -132,12 +132,12 @@ not a namespace rename.
 - The 4 engine images are large; ARM-Mac podman/esbuild caveats from the old
   AGENTS.md "Control App Image Deployment" apply (crane fallback for stuck pushes).
 - Preserve the AUTO_SUSPEND_SECS + REBUILD_GRAPHS + per-region VROOM invariants
-  verbatim — they are correctness-critical and easy to break in a move.
+  verbatim - they are correctness-critical and easy to break in a move.
 - Do NOT rename OPENROUTESERVICE_APP.CORE; that is explicitly out of scope (C7 is
   the only optional namespace move, limited to the MCP server).
 
 ## Out of scope
 - Renaming the OPENROUTESERVICE_APP engine database.
 - Re-architecting region/matrix provisioning (move as-is).
-- The legacy vertical demo skills (taxis/food/retail/backload/freight/dhl) —
+- The legacy vertical demo skills (taxis/food/retail/backload/freight/dhl) -
   decide separately whether to relocate or delete under the agnostic direction.

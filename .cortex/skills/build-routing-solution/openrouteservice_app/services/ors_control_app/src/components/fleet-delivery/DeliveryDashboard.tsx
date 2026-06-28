@@ -92,11 +92,11 @@ export default function DeliveryDashboard() {
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Delivery Dashboard</h2>
       <p className="subtitle">Fleet-wide delivery analytics</p>
       <div className="metric-grid">
-        <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '—')} />
-        <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '—')} />
+        <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '-')} />
+        <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '-')} />
         <MetricCard label="Avg Time" value={loading ? '...' : `${fmtDec(kpis.AVG_DELIVERY_MIN)} min`} />
         <MetricCard label="Avg Distance" value={loading ? '...' : `${fmtDec(kpis.AVG_DISTANCE_KM)} km`} />
-        <MetricCard label="Completed" value={loading ? '...' : (kpis.COMPLETED ?? '—')} />
+        <MetricCard label="Completed" value={loading ? '...' : (kpis.COMPLETED ?? '-')} />
       </div>
       <div ref={containerRef} style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginBottom: 12 }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}

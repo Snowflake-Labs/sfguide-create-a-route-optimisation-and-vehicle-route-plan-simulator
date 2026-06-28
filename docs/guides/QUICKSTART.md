@@ -31,7 +31,7 @@ This triggers the `build-routing-solution` skill. It will:
 3. Deploy the ORS App on SPCS
 4. Download and configure OpenStreetMap data for your region
 
-**Time:** ~15–30 minutes depending on region size and compute pool provisioning.
+**Time:** ~15-30 minutes depending on region size and compute pool provisioning.
 
 **Verify:** All 5 services should show RUNNING:
 ```sql
@@ -84,5 +84,5 @@ This triggers the `routing-solution-cleanup` skill, which discovers all tagged S
 
 ## Further Reading
 
-- [AGENTS.md](../../AGENTS.md) — Skill conventions and dependency graph
-- [Skill Audit Report](../dev/AUDIT-REPORT.md) — Full skill quality audit
+- [AGENTS.md](../../AGENTS.md) - Skill conventions and dependency graph
+- [Skill Audit Report](../dev/AUDIT-REPORT.md) - Full skill quality audit

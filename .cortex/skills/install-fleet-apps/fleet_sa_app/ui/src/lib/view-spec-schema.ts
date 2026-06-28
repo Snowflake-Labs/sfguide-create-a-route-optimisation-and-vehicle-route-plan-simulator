@@ -6,7 +6,7 @@
 // and rendered. This is the authoritative client-side gate (the verb performs a
 // lighter server-side structural check for early agent self-correction).
 //
-// Hand-rolled (no zod dependency) — the spec shape is small and the data boundary
+// Hand-rolled (no zod dependency) - the spec shape is small and the data boundary
 // is enforced separately by /api/query (dynamic:true -> owner's-rights
 // FLEET_APP_DYNAMIC_READER). Mirrors ParsedViewDef / AreaConfig from view-renderer.tsx.
 import { AREA_COMPONENT_NAMES } from '@/lib/area-components';

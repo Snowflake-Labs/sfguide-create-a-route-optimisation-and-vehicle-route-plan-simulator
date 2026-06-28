@@ -144,12 +144,12 @@ export const useAppStore = create<AppStore>()(
       },
 
       appendAssistantPart: (messageId: string, part: MessagePart) => {
-        // propose_write is now served via CDP_WORKFLOW_MCP — tool name is cdp_workflow_mcp__propose_write.
+        // propose_write is now served via CDP_WORKFLOW_MCP - tool name is cdp_workflow_mcp__propose_write.
         // ConfirmAction renders from tool_result (pending_confirmation payload), not tool_pending.
         const isMcpProposeWrite = (n: string | undefined) =>
           !!n && (n === 'propose_write' || n.endsWith('__propose_write'));
 
-        // Tools whose tool_result means data was written — bump views so the panel auto-refreshes.
+        // Tools whose tool_result means data was written - bump views so the panel auto-refreshes.
         // Also bump when a confirmed propose_write lands (handled in message-part.tsx confirm flow directly).
         const WRITE_TOOLS = new Set(['execute_workflow', 'resume_workflow']);
         const isWriteTool = (n: string | undefined) =>

@@ -1,10 +1,10 @@
 'use client';
 
-// DetailPanelArea — a reusable, config-driven slide-over drawer that opens when a
+// DetailPanelArea - a reusable, config-driven slide-over drawer that opens when a
 // selection viewState key (e.g. `selected_entity`) becomes non-null and fills with
 // parameterized sub-queries about the selected item. Any view can add one via
 // app-views.json with `"component": "DetailPanel"` and `config.position: "drawer"`;
-// no bespoke React per view. Renders nothing into the grid flow — it positions
+// no bespoke React per view. Renders nothing into the grid flow - it positions
 // itself absolutely over the view (the renderer places drawer areas outside the
 // CSS grid). Reuses the shared primitives in detail-sections.tsx.
 
@@ -93,7 +93,7 @@ function DetailPanelBody({
       {/* Header: title + subtitle + actions */}
       <div style={{ padding: inline ? '0 0 12px' : '14px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)', flexShrink: inline ? undefined : 0 }}>
         <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text-primary, #111827)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {title || '—'}
+          {title || '-'}
         </h2>
         {subtitleParts.length > 0 && (
           <div style={{ fontSize: '12.5px', color: 'var(--text-secondary, #6b7280)', marginTop: '3px' }}>

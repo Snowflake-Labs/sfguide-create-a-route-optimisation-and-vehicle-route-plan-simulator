@@ -35,7 +35,7 @@ Common issues and their solutions when deploying the ORS App.
 ```bash
 cd openrouteservice_app/services/ors_control_app
 
-# 1. Build locally (native ARM — no QEMU)
+# 1. Build locally (native ARM - no QEMU)
 npm ci --legacy-peer-deps
 npm run build
 npx tsc -p tsconfig.server.json

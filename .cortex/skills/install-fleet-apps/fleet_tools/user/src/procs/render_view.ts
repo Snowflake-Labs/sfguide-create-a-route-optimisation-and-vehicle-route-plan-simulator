@@ -6,7 +6,7 @@ import { RenderCodes, RENDER_COMPONENTS } from '../codes.js';
 // it back. The value is the audited envelope (VERB_ATTEMPT records the prompt ->
 // spec) and the tool_result surface: the SA chat client picks up the result and
 // renders it as an ephemeral panel page. This verb intentionally does NOT touch
-// data — area queries run later through /api/query under the owner's-rights
+// data - area queries run later through /api/query under the owner's-rights
 // FLEET_APP_DYNAMIC_READER boundary (see role_binding.sql). roles:['user'] ->
 // it materializes onto ROUTING_MCP, the only server attached to the consumer agent.
 export const render_view = defineProc({

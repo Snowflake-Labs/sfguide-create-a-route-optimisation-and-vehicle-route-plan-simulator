@@ -173,9 +173,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 **Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
 
-**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses — just redeploy.
+**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses - just redeploy.
 
-> **_NOTE:_** The React-based Function Tester in the ORS Control App dynamically loads installed profiles from ORS_STATUS — no hardcoded profile list to update.
+> **_NOTE:_** The React-based Function Tester in the ORS Control App dynamically loads installed profiles from ORS_STATUS - no hardcoded profile list to update.
 
 **Actions:**
 

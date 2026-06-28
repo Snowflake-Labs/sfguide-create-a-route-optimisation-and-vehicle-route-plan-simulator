@@ -79,7 +79,7 @@ export default function DatasetPicker() {
       return;
     }
     if (ds.isAvailable === false) {
-      setError('No fleet data for this preset — re-run Data Studio.');
+      setError('No fleet data for this preset - re-run Data Studio.');
       setOpen(false);
       return;
     }
@@ -95,7 +95,7 @@ export default function DatasetPicker() {
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
         const msg = body.code === 'BOOT_INCOMPLETE'
-          ? 'Service still booting — try again in a few seconds'
+          ? 'Service still booting - try again in a few seconds'
           : (body.error || `Activation failed (${res.status})`);
         setError(msg);
         await fetchDatasets();
@@ -109,7 +109,7 @@ export default function DatasetPicker() {
       window.dispatchEvent(new CustomEvent('ors-region-switched'));
       await fetchDatasets();
     } catch {
-      setError('Network error — please retry');
+      setError('Network error - please retry');
     } finally {
       setSwitching(false);
     }

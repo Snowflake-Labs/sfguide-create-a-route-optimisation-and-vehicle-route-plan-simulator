@@ -14,10 +14,10 @@ export default function LaneHistoryPanel({ row }: { row: LaneRow | null }) {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
           <div><b>Shipments:</b> {row.SHIPMENTS}</div>
-          <div><b>On-time:</b> {row.SHIPMENTS > 0 ? `${Math.round(100 * row.ON_TIME / row.SHIPMENTS)}%` : '—'}</div>
+          <div><b>On-time:</b> {row.SHIPMENTS > 0 ? `${Math.round(100 * row.ON_TIME / row.SHIPMENTS)}%` : '-'}</div>
           <div><b>Late:</b> {row.LATE_CNT}</div>
           <div><b>Damaged:</b> {row.DAMAGED_CNT}</div>
-          <div><b>Avg USD/km:</b> {row.AVG_EUR_PER_KM != null ? `$${row.AVG_EUR_PER_KM.toFixed(2)}` : '—'}</div>
+          <div><b>Avg USD/km:</b> {row.AVG_EUR_PER_KM != null ? `$${row.AVG_EUR_PER_KM.toFixed(2)}` : '-'}</div>
           <div><b>Equipment:</b> {row.EQUIPMENT}</div>
         </div>
       )}

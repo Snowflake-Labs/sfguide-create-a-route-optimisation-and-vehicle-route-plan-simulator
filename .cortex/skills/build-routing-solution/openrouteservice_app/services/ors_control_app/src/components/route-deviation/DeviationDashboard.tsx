@@ -46,7 +46,7 @@ export default function DeviationDashboard() {
         <MetricCard label="Total Routes" value={loading ? '...' : Number(kpis.TOTAL_ROUTES || 0).toLocaleString()} />
         <MetricCard label="Avg Deviation" value={loading ? '...' : `${fmtDec(kpis.AVG_DEVIATION_PCT)}%`} />
         <MetricCard label="On-Route %" value={loading ? '...' : `${fmtDec(kpis.ON_ROUTE_PCT)}%`} />
-        <MetricCard label="High Deviations" value={loading ? '...' : (kpis.HIGH_DEVIATIONS ?? '—')} />
+        <MetricCard label="High Deviations" value={loading ? '...' : (kpis.HIGH_DEVIATIONS ?? '-')} />
       </div>
       <div className="chart-row">
         <div className="chart-card">

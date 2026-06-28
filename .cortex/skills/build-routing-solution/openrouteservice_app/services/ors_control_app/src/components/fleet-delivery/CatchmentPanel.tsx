@@ -139,10 +139,10 @@ export default function CatchmentPanel() {
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment Analysis</h2>
       <p className="subtitle">Restaurant delivery isochrone catchment</p>
       <div className="metric-grid">
-        <MetricCard label="Selected" value={selected?.RESTAURANT_NAME || '—'} />
-        <MetricCard label="Orders" value={selected?.TOTAL_ORDERS ?? '—'} />
-        <MetricCard label="Customers" value={customers.length || '—'} />
-        <MetricCard label="Zones" value={catchmentZones.length || '—'} />
+        <MetricCard label="Selected" value={selected?.RESTAURANT_NAME || '-'} />
+        <MetricCard label="Orders" value={selected?.TOTAL_ORDERS ?? '-'} />
+        <MetricCard label="Customers" value={customers.length || '-'} />
+        <MetricCard label="Zones" value={catchmentZones.length || '-'} />
       </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>

@@ -1,4 +1,4 @@
-// Matrix endpoint schemas — region listing, build/status/inventory + viewer
+// Matrix endpoint schemas - region listing, build/status/inventory + viewer
 // queries. Loose-passthrough on most rows because some optional fields
 // (boundaryAreaKm2, road_filter, etc.) appear only conditionally.
 

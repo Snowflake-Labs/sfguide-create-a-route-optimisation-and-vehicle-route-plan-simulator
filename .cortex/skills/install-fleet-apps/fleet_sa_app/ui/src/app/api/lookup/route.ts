@@ -29,7 +29,7 @@ async function handlePost(request: NextRequest): Promise<Response> {
     const limit     = req.limit ?? 10;
     const fqSchema  = manifest.schema;
     const softDeleteFilter = def.soft_delete ? 'AND deleted_at IS NULL' : '';
-    // Select only record_id, version, and writable columns — avoids leaking
+    // Select only record_id, version, and writable columns - avoids leaking
     // internal fields (tenant_id, created_by, audit timestamps) to callers.
     const selectCols = [
       `${def.primary_key} AS record_id`,

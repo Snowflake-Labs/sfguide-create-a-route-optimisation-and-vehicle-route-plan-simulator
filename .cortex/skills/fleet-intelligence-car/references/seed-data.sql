@@ -1,8 +1,8 @@
 /*
- * seed-data.sql — Fleet Intelligence Car Fleet
+ * seed-data.sql - Fleet Intelligence Car Fleet
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables.
  * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
- * No S3 external stages — all data comes from UNIFIED.
+ * No S3 external stages - all data comes from UNIFIED.
  */
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

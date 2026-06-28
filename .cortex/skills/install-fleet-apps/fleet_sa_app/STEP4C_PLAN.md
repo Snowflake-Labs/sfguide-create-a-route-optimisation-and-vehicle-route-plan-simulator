@@ -1,4 +1,4 @@
-# Step 4C plan — Domain-pack loader + neutral starter pack
+# Step 4C plan - Domain-pack loader + neutral starter pack
 
 > How to resume in a new context: read project memory `fleet-sa-synapse-migration`
 > (at `/Users/obielov/.snowflake/cortex/memory/projects/Users-obielov-Documents-GitHub-synapse/fleet-sa-synapse-migration.md`)
@@ -12,21 +12,21 @@
 > packs migrated to `FLEET_APP.<DOMAIN>`; route_optimization/backload/dhl_ntbo self-building; manifest +
 > install.py + surfacing gate live; reproducible SV-repoint committed.
 >
-> CONFIRMED DECISIONS for 4C: (1) DEPLOY — redeploy `FLEET_SA_APP` (bump v0.1.4 -> v0.1.5) to demo the
+> CONFIRMED DECISIONS for 4C: (1) DEPLOY - redeploy `FLEET_SA_APP` (bump v0.1.4 -> v0.1.5) to demo the
 > starter live. (2) Neutral vocabulary = `LOCATIONS` / `MOVEMENTS` (and `ASSETS` if needed). (3)
 > `app-config.json` selects packs via `domainPacks: string[]` (legacy `domainPack` string coerced).
 > (4) Starter app DB = neutral `STARTER_APP` (proves the data layer is not fleet-bound). (5) Starter ships
-> NO custom React views (pure YAML dashboards) — the strongest proof the core needs zero domain code.
+> NO custom React views (pure YAML dashboards) - the strongest proof the core needs zero domain code.
 > (6) NEUTRAL SUBSTRATE FORM = **zero-copy VIEWS** `SYNTHETIC_DATASETS.NEUTRAL.*` over the EXPLICIT
 > `REGION='SanFrancisco'` slice of `SYNTHETIC_DATASETS.UNIFIED.*` (NOT CONFIG-following, NOT materialized
-> tables) — idiomatic data-contract pattern, no storage duplication, always fresh, reversible. Materialize
+> tables) - idiomatic data-contract pattern, no storage duplication, always fresh, reversible. Materialize
 > only later IF a distributable neutral seed for fresh accounts is needed (packaging decision, not the proof).
 > (7) FLEET PACK SCOPE = **STARTER ONLY maps from the substrate.** All 10 fleet packs stay exactly as-is on
 > their current sources (Europe live demo unchanged). Do NOT re-point trip-shaped fleet packs (rejected
 > option b/c): the agnosticism proof needs exactly ONE neutral pack; re-pointing working packs adds
 > regression blast radius (packs x SVs x dashboards x SV-repoints) for no extra proof, and is inherently
 > partial (dwell/marketplace/backload/dhl can't derive from LOCATIONS/MOVEMENTS/ASSETS).
-> (8) "SF AS LIVE DEFAULT" IS A SEPARATE, OPTIONAL CONFIG FLIP — decoupled from the substrate/starter work.
+> (8) "SF AS LIVE DEFAULT" IS A SEPARATE, OPTIONAL CONFIG FLIP - decoupled from the substrate/starter work.
 > The fleet packs already filter by `CONFIG` (e.g. route_optimization `WHERE REGION=(SELECT REGION FROM
 > CONFIG)`), so setting active `CONFIG` to `(SanFrancisco, ebike)` + the routing gateway default to
 > SanFrancisco renders SF data with ZERO binding changes; non-SF packs auto-hide via the surfacing gate.
@@ -38,7 +38,7 @@
 > bundle as steady state). One service, no extra cost, no second endpoint.
 
 ## Goal (the user's ultimate intent)
-The routing service runs as a separate product and the **main app is domain- and vehicle-agnostic** — a set
+The routing service runs as a separate product and the **main app is domain- and vehicle-agnostic** - a set
 of reusable primitives users apply to their own use cases per domain. Fleet is one reference domain pack.
 4C delivers the config-driven domain-pack LOADER (replacing the hardcoded `domainPack==='fleet'` gate) and a
 **neutral starter pack** built from the real seeded **San Francisco** synthetic dataset, proving a non-fleet
@@ -46,7 +46,7 @@ domain can be authored on the primitives with no core code edits.
 
 ## Context / findings (verified read-only)
 
-Remaining fleet coupling (grep — 5 files):
+Remaining fleet coupling (grep - 5 files):
 - `ui/src/components/app-shell.tsx` lines 11, 111-113: hardcoded `import { registerFleetViews }`, called
   behind `appConfig.domainPack === 'fleet'`. AppConfig already has `domainPack?: string` + `tools.mapTools`.
 - `ui/src/lib/fleet-views.tsx`: `registerFleetViews(disabledSchemas?)` registers 5 showcase views
@@ -108,19 +108,19 @@ flowchart TD
   unified --> neutral --> starterdata --> startersv --> starterbundle
 ```
 
-NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fleet bundle stays on its current
+NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 - starter only). The fleet bundle stays on its current
 `FLEET_APP.*` sources. The `NEUTRAL` layer exists solely to feed the starter proof.
 
 ## Implementation steps
 
 ### A. Decouple the app core (config-driven pack loader)
-1. **UI pack registry** — new `ui/src/lib/packs/registry.ts`:
+1. **UI pack registry** - new `ui/src/lib/packs/registry.ts`:
    `export const PACK_REGISTRY: Record<string, { registerViews: (disabled?: Set<string>) => void }>`.
    Move the fleet showcase registration into `ui/src/lib/packs/fleet/index.ts` (relocate the body of
    `registerFleetViews`; keep the `disabledSchemas` arg + MARKETPLACE/BACKLOAD_MATCHING gating). Register
    `fleet` in PACK_REGISTRY. (Leave the 5 view component files where they are under
-   `components/views/areas/` — only the registration moves, minimal churn.)
-2. **app-shell** — add `domainPacks?: string[]` to `AppConfig`; coerce legacy `domainPack?: string` ->
+   `components/views/areas/` - only the registration moves, minimal churn.)
+2. **app-shell** - add `domainPacks?: string[]` to `AppConfig`; coerce legacy `domainPack?: string` ->
    `[domainPack]`. Replace the `import { registerFleetViews }` + `if (domainPack==='fleet')` branch with
    `for (const id of resolvedPacks) PACK_REGISTRY[id]?.registerViews(disabledSchemas)`. No domain import
    remains in the shell. Delete `fleet-views.tsx` (or leave a thin re-export from the pack module).
@@ -132,7 +132,7 @@ NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fle
    `pack-status/route.ts` (read DB from `server-config.ts`). Fleet keeps working (default `FLEET_APP`).
 
 ### C. Build the neutral SF substrate (VIEWS) + author the starter data-contract pack
-4a. **Neutral substrate (zero-copy VIEWS)** — create schema `SYNTHETIC_DATASETS.NEUTRAL` and relabel the
+4a. **Neutral substrate (zero-copy VIEWS)** - create schema `SYNTHETIC_DATASETS.NEUTRAL` and relabel the
    EXPLICIT SF slice of `UNIFIED.*` with domain-agnostic names (no vehicle/trailer/HGV vocabulary). Minimum
    set for the starter:
    - `NEUTRAL.LOCATIONS` <- `UNIFIED.DIM_POIS WHERE REGION='SanFrancisco'` (LOCATION_ID, NAME, CATEGORY,
@@ -141,10 +141,10 @@ NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fle
      ORIGIN_ID=ORIGIN_POI_ID, DESTINATION_ID=DESTINATION_POI_ID, DISTANCE_KM, DURATION_MINUTES,
      STARTED_AT=TRIP_START, ENDED_AT=TRIP_END, STATUS, ROUTE_GEOG). Drop VEHICLE/DRIVER/ORS_PROFILE.
    - `NEUTRAL.ASSETS` <- `UNIFIED.DIM_FLEET WHERE REGION='SanFrancisco'` (ASSET_ID=VEHICLE_ID, neutral
-     attributes only) — include only if a dashboard/SV needs it.
+     attributes only) - include only if a dashboard/SV needs it.
    These are plain VIEWS (not CONFIG-following, not materialized). Tracking COMMENT per AGENTS.md. This IS
-   the "restructured seed to fit the domain-agnostic concept" — done as a view layer, reversible, zero-copy.
-4b. New `app/packs/starter/{data-model.yaml, entity-mapping.yaml}` — `app_schema: STARTER_APP.CORE`; the
+   the "restructured seed to fit the domain-agnostic concept" - done as a view layer, reversible, zero-copy.
+4b. New `app/packs/starter/{data-model.yaml, entity-mapping.yaml}` - `app_schema: STARTER_APP.CORE`; the
    entity-mapping binds to the `SYNTHETIC_DATASETS.NEUTRAL.*` views (NOT to `UNIFIED.*` directly):
    - `LOCATIONS` (mapped) <- `NEUTRAL.LOCATIONS`; `MOVEMENTS` (mapped) <- `NEUTRAL.MOVEMENTS`;
      optional `MOVEMENT_DAILY` (derived rollup by day).
@@ -160,12 +160,12 @@ NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fle
 6. Create `STARTER_APP.SEMANTIC.SV_STARTER` over `VW_LOCATIONS` + `VW_MOVEMENTS` (neutral facts/dims/
    metrics: location count by category; movement count; avg distance/duration; movements by day). Validate
    with `call_cortex_analyst`. Commit the DDL as `app/packs/starter/sv_starter.sql` (the starter is the
-   reference for "SV as a committed artifact" — closes the SV-DDL-source gap for this pack).
+   reference for "SV as a committed artifact" - closes the SV-DDL-source gap for this pack).
 7. New `app/starter/` bundle:
    - `app-config.json`: neutral name (e.g. "Locations & Movements"), `domainPacks: []`,
      `dataLayer.database: STARTER_APP`, no region/vehicle contextBar (or a minimal date_range only),
      no `tools`/`ops`/routing.
-   - `app-views.json`: 2 pure-YAML dashboards — (a) a `Map` scatter of `VW_LOCATIONS.POINT_GEOM`
+   - `app-views.json`: 2 pure-YAML dashboards - (a) a `Map` scatter of `VW_LOCATIONS.POINT_GEOM`
      (use `ST_X`/`ST_Y` or LAT/LNG), (b) metrics + table/line over `VW_MOVEMENTS` (count, avg distance/
      duration; movements-by-day line if MOVEMENT_DAILY built).
    - `agent-spec.json`: one `cortex_analyst_text_to_sql` tool over `SV_STARTER` + `data_to_chart`;
@@ -190,7 +190,7 @@ NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fle
    `FLEET_SA_APP`, verify/screenshot the starter rendering SF data with NO fleet views, then **restore the
    fleet bundle** (re-upload fleet `app-config.json`/`app-views.json`, suspend/resume) as the steady-state
    live bundle. Do NOT stand up a second service. Do NOT leave the starter bundle staged.
-11. **SF-as-live-default (decision 8) is OPTIONAL and SEPARATE — only if explicitly requested:** flip active
+11. **SF-as-live-default (decision 8) is OPTIONAL and SEPARATE - only if explicitly requested:** flip active
    `CONFIG` to `(SanFrancisco, ebike)` in the per-schema CONFIG tables + set the routing gateway
    `DEFAULT_REGION_NAME=SanFrancisco`; ensure the SF ORS service auto-resumes/prewarms (avoid the 4B
    service_unreachable trap) and that SF's built ORS profiles cover what any routing showcase calls. This is
@@ -213,17 +213,17 @@ NOTE: fleet packs do NOT read `NEUTRAL.*` (decision 7 — starter only). The fle
 - Logical commits: (1) loader refactor + FQN genericization; (2) starter data pack + SV + app bundle;
   (3) docs; (4) v0.1.5 tag bump. Push to `origin/feature/sa-synapse-app` via the gh-token method in
   `/memories/git-push-method.md` (plain `git push` fails). PR #127 (base `dev`) auto-includes the commits;
-  add a summary comment (requires `gh auth switch --user sfc-gh-obielov` then back — EMU restriction).
+  add a summary comment (requires `gh auth switch --user sfc-gh-obielov` then back - EMU restriction).
 - Update memory `fleet-sa-synapse-migration` with the 4C close-out.
 
 ## Critical files
-- `ui/src/components/app-shell.tsx` — remove fleet import; add domainPacks loop over the registry.
+- `ui/src/components/app-shell.tsx` - remove fleet import; add domainPacks loop over the registry.
 - `ui/src/lib/fleet-views.tsx` -> move to `ui/src/lib/packs/fleet/index.ts` + new `ui/src/lib/packs/registry.ts`.
-- `ui/src/lib/load-views.tsx` + `ui/src/app/api/pack-status/route.ts` — config-driven data-layer DB prefix.
-- `app/packs/_lib/generate.py` — reused unchanged (neutral DB via `app_schema`); new `app/packs/starter/*`
+- `ui/src/lib/load-views.tsx` + `ui/src/app/api/pack-status/route.ts` - config-driven data-layer DB prefix.
+- `app/packs/_lib/generate.py` - reused unchanged (neutral DB via `app_schema`); new `app/packs/starter/*`
   (data-model.yaml, entity-mapping.yaml, setup.sql, sv_starter.sql, neutral_substrate.sql, README.md).
-- `app/packs/manifest.yaml` — register the starter pack; `app/starter/*` — the starter app bundle.
-- `SYNTHETIC_DATASETS.NEUTRAL.*` — new zero-copy view layer (DDL committed in `neutral_substrate.sql`).
+- `app/packs/manifest.yaml` - register the starter pack; `app/starter/*` - the starter app bundle.
+- `SYNTHETIC_DATASETS.NEUTRAL.*` - new zero-copy view layer (DDL committed in `neutral_substrate.sql`).
 
 ## Deferred (after 4C)
 4D per-user ops gating (ingress identity `Sf-Context-Current-User` in `/api/ops`); 4E generic N-dimension

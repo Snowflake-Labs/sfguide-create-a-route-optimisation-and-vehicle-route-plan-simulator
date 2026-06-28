@@ -158,7 +158,7 @@ def _check_progressive_disclosure(skill_dir: Path, text: str) -> tuple[bool, str
     body = re.sub(r"^---\n.*?\n---\n?", "", text, count=1, flags=re.DOTALL)
     word_count = len(body.split())
     if word_count > 2000 and not has_refs:
-        return False, f"Body {word_count} words with no references/ — needs extraction"
+        return False, f"Body {word_count} words with no references/ - needs extraction"
     if has_refs:
         ref_files = list(refs_dir.iterdir())
         linked = sum(1 for f in ref_files if f.name in text)

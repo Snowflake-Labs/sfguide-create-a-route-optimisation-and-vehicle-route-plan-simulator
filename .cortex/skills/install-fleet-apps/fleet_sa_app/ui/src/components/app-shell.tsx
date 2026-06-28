@@ -143,7 +143,7 @@ export function AppShell() {
         // Always-on role-evaluation view (works for any domain pack).
         registerRoleAccessView();
         // Config-driven domain-pack loader: register each configured pack's
-        // custom showcase views via the registry — no domain import in the
+        // custom showcase views via the registry - no domain import in the
         // shell. Legacy single `domainPack` string is coerced to an array.
         // Pack-backed showcases are gated by the surfacing set.
         const resolvedPacks =
@@ -152,7 +152,7 @@ export function AppShell() {
           PACK_REGISTRY[id]?.registerViews(disabledSchemas);
         }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
-          // Always set the FQN — it's used by the write layer and other framework features.
+          // Always set the FQN - it's used by the write layer and other framework features.
           setSnowflakeFqn(`${appConfig.snowflake.database}.${appConfig.snowflake.schema}`);
           if (appConfig.hasWorkflows !== false) {
             registerWorkflowViews(appConfig.snowflake.database, appConfig.snowflake.schema);

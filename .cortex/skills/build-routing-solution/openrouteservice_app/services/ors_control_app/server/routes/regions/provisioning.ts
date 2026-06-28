@@ -1,4 +1,4 @@
-// Region provisioning lifecycle endpoints — provision, status polling,
+// Region provisioning lifecycle endpoints - provision, status polling,
 // progress, build-progress, cancel, delete, and one-click diagnose.
 // All wrap CORE.PROVISION_REGION_WRAPPER / DROP_REGION_ORS / DIAGNOSE_REGION
 // procs and surface progress to the build UI.

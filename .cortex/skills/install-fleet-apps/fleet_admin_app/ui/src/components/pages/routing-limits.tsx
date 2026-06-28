@@ -44,7 +44,7 @@ const GROUPS: Group[] = [
   },
   {
     title: 'Isochrones',
-    blurb: 'Reachability limits — distance and time. Time is capped here (directions are not).',
+    blurb: 'Reachability limits - distance and time. Time is capped here (directions are not).',
     fields: [
       { key: 'isochrones_maximum_range_distance', label: 'Max range distance', help: 'Max distance-based isochrone range.', unit: 'm' },
       { key: 'isochrones_maximum_range_time', label: 'Max range time', help: 'Max time-based isochrone range.', unit: 's' },
@@ -82,7 +82,7 @@ const SCALE_PRESETS: ScalePreset[] = [
   {
     id: 'city',
     label: 'City',
-    description: 'Metro / urban extract — routes up to ~300 km, standard snapping and VRP size.',
+    description: 'Metro / urban extract - routes up to ~300 km, standard snapping and VRP size.',
     limits: {
       maximum_distance: 300000,
       maximum_distance_dynamic_weights: 300000,
@@ -103,7 +103,7 @@ const SCALE_PRESETS: ScalePreset[] = [
   {
     id: 'country',
     label: 'Country',
-    description: 'Single large country — routes up to ~2,000 km, wider snapping for rural roads.',
+    description: 'Single large country - routes up to ~2,000 km, wider snapping for rural roads.',
     limits: {
       maximum_distance: 2000000,
       maximum_distance_dynamic_weights: 2000000,
@@ -124,7 +124,7 @@ const SCALE_PRESETS: ScalePreset[] = [
   {
     id: 'continent',
     label: 'Continent',
-    description: 'Multi-country / continental extract — uncapped route distance, 5 km snapping, large VRP/matrix. Isochrone time capped at 2 h (gateway timeout safety, not geographic scale).',
+    description: 'Multi-country / continental extract - uncapped route distance, 5 km snapping, large VRP/matrix. Isochrone time capped at 2 h (gateway timeout safety, not geographic scale).',
     limits: {
       maximum_distance: 100000000,
       maximum_distance_dynamic_weights: 100000000,
@@ -222,7 +222,7 @@ export function RoutingLimitsPage() {
           setRestart({ phase, progress: Number(d.progress) || 0 });
           if (phase === 'ready') { setRestart(null); return true; }
         }
-      } catch { /* service briefly unreachable mid-restart — keep polling */ }
+      } catch { /* service briefly unreachable mid-restart - keep polling */ }
     }
     setRestart(null);
     return false;
@@ -266,14 +266,14 @@ export function RoutingLimitsPage() {
       }
       setMessage({
         kind: 'ok',
-        text: `Applied to ${displayName}. ORS is restarting — the persisted graph reloads (no rebuild).`,
+        text: `Applied to ${displayName}. ORS is restarting - the persisted graph reloads (no rebuild).`,
       });
       const ready = await pollRestart();
       await load(true);
       setMessage({
         kind: 'ok',
         text: ready
-          ? `Applied to ${displayName}. ORS restarted and graphs report Ready — the new limits are live.`
+          ? `Applied to ${displayName}. ORS restarted and graphs report Ready - the new limits are live.`
           : `Applied to ${displayName}. ORS is still reloading the graph. Check Status & Health until it reports Ready.`,
       });
     } catch (e: any) {
@@ -295,7 +295,7 @@ export function RoutingLimitsPage() {
       <h2>Routing Limits</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: -4 }}>
         Service-level ORS limits for <strong>{displayName}</strong>. Applying re-stages the config and
-        restarts the region's ORS service — the persisted graph is reloaded, never recalculated. Overrides
+        restarts the region's ORS service - the persisted graph is reloaded, never recalculated. Overrides
         persist across reprovisions.
       </p>
 
@@ -303,7 +303,7 @@ export function RoutingLimitsPage() {
         Applying briefly restarts the regional ORS service (seconds to ~1-2 min while the graph reloads).
         Requests fail until it reports Ready again. <strong>Waypoints</strong> and <strong>isochrone range time</strong>
         routed through the shared routing gateway are additionally capped by the gateway guardrail
-        (defaults 1000 / 18000 s) — raising them above those here will be capped at the gateway until its
+        (defaults 1000 / 18000 s) - raising them above those here will be capped at the gateway until its
         env vars are widened.
       </div>
 
@@ -324,7 +324,7 @@ export function RoutingLimitsPage() {
           background: 'rgba(33,150,243,0.10)', border: '1px solid rgba(33,150,243,0.4)', color: '#1565c0',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-            <span><strong>Restarting ORS</strong> — {RESTART_LABELS[restart.phase] || restart.phase}</span>
+            <span><strong>Restarting ORS</strong> - {RESTART_LABELS[restart.phase] || restart.phase}</span>
             <span style={{ fontFamily: 'monospace' }}>{restart.progress}%</span>
           </div>
           <div style={{ height: 6, borderRadius: 3, background: 'rgba(33,150,243,0.2)', overflow: 'hidden' }}>
@@ -361,7 +361,7 @@ export function RoutingLimitsPage() {
         )}
         {activePreset === 'custom' && (
           <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '8px 0 0' }}>
-            Values differ from the last selected preset — edit fields freely, then Apply.
+            Values differ from the last selected preset - edit fields freely, then Apply.
           </p>
         )}
       </section>
@@ -407,7 +407,7 @@ export function RoutingLimitsPage() {
                       </div>
                     </td>
                     <td style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                      {defaults[f.key]?.toLocaleString() ?? '—'}
+                      {defaults[f.key]?.toLocaleString() ?? '-'}
                     </td>
                   </tr>
                 );

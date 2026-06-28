@@ -329,7 +329,7 @@ const GEOFABRIK_BASE = 'https://download.geofabrik.de';
       const geofabrikCount = allRows.filter(r => r.source === 'geofabrik').length;
       const bbbikeCount = allRows.filter(r => r.source === 'bbbike').length;
 
-      // Upsert scraped metadata by PBF_URL. Never DELETE — baked BOUNDARY / LOOKUP_NAME /
+      // Upsert scraped metadata by PBF_URL. Never DELETE - baked BOUNDARY / LOOKUP_NAME /
       // ISO columns from the seed parquet must survive a catalog refresh.
       if (allRows.length > 0) {
         const mergeable = allRows.filter(r => r.pbf_url != null && String(r.pbf_url).trim() !== '');

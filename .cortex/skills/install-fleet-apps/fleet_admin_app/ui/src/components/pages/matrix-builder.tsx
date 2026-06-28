@@ -285,10 +285,10 @@ export function MatrixBuilderPage() {
                   <tr key={key}>
                     <td>{item.region}</td>
                     <td>{item.profile}</td>
-                    <td>{item.resolution} — {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}<RoadFilterBadge on={item.road_filter} /></td>
+                    <td>{item.resolution} - {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}<RoadFilterBadge on={item.road_filter} /></td>
                     <td>{formatNumber(item.row_count)}</td>
                     <td>{formatBytes(item.bytes)}</td>
-                    <td>{item.execution_time_secs > 0 ? formatDuration(item.execution_time_secs / 60) : '—'}</td>
+                    <td>{item.execution_time_secs > 0 ? formatDuration(item.execution_time_secs / 60) : '-'}</td>
                     <td>{timeAgo(item.created)}</td>
                     <td>
                       <button
@@ -321,7 +321,7 @@ export function MatrixBuilderPage() {
             return (
               <div key={job.job_id} className="progress-card">
                 <div className="progress-header">
-                  <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></span>
+                  <span>{job.region} / {job.profile} / {job.resolution} - {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></span>
                   <span className={`badge ${isQueued ? '' : 'warn'}`}>{isQueued ? 'Queued' : job.stage}</span>
                 </div>
                 {isQueued ? (
@@ -363,7 +363,7 @@ export function MatrixBuilderPage() {
               <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div>
-                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></strong>
+                    <strong>{job.region} / {job.profile} / {job.resolution} - {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></strong>
                     <span className="badge error" style={{ marginLeft: 8 }}>FAILED</span>
                     {job.stage && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>at stage: {job.stage}</span>}
                     {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{timeAgo(job.completed_at)}</span>}
@@ -431,7 +431,7 @@ export function MatrixBuilderPage() {
                 {roadFilterAvailable === null && 'Checking Overture Maps Transportation availability...'}
                 {roadFilterAvailable === false && `Unavailable: ${roadFilterReason}`}
                 {roadFilterAvailable === true && roadFilterEnabled && 'Only hexagons intersecting roads will be tessellated (default ON)'}
-                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled — full bbox tessellation (legacy behaviour)'}
+                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled - full bbox tessellation (legacy behaviour)'}
               </div>
             </div>
           </label>
@@ -442,7 +442,7 @@ export function MatrixBuilderPage() {
               <label key={h.res} className={`res-card ${selectedRes.has(h.res) ? 'active' : ''}`}>
                 <input type="checkbox" checked={selectedRes.has(h.res)} onChange={() => toggleRes(h.res)} />
                 <div>
-                  <div className="res-label">Res {h.res} — {RES_LABELS[h.res]}<RoadFilterBadge on={roadFilterEnabled && roadFilterAvailable === true} /></div>
+                  <div className="res-label">Res {h.res} - {RES_LABELS[h.res]}<RoadFilterBadge on={roadFilterEnabled && roadFilterAvailable === true} /></div>
                   <div className="res-detail">
                     ~{formatNumber(h.hexagons)} hexagons
                     {h.filtered && h.bboxHexagons > 0 && (

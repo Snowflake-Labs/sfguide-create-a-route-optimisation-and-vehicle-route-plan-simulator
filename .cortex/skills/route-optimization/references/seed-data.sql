@@ -1,5 +1,5 @@
 /*
- * seed-data.sql — Route Optimization Demo
+ * seed-data.sql - Route Optimization Demo
  *
  * Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) and the
  * SEED_ROUTE_OPTIMIZATION_REGION procedure now live inside

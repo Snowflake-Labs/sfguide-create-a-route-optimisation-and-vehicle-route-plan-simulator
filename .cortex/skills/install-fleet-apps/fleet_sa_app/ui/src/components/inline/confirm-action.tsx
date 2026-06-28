@@ -25,7 +25,7 @@ interface WriteResponse {
 }
 
 interface ConfirmActionProps {
-  // Write intent — passed from the agent's propose_write tool result
+  // Write intent - passed from the agent's propose_write tool result
   entity?: string;
   operation?: Operation;
   record_id?: string;
@@ -231,7 +231,7 @@ export function ConfirmAction({
     return (
       <div style={{ ...containerStyle, borderColor: 'var(--border-warning, #fcd34d)', backgroundColor: 'var(--surface-warning, #fffbeb)' }}>
         <div style={{ fontWeight: 600, color: 'var(--text-warning, #b45309)', marginBottom: '4px' }}>
-          ⚠ Could not complete — record was modified by someone else
+          ⚠ Could not complete - record was modified by someone else
         </div>
         {conflictCurrent && (
           <div style={{ color: 'var(--text-secondary, #6b7280)', marginTop: '4px' }}>
@@ -240,7 +240,7 @@ export function ConfirmAction({
               .slice(0, 3)
               .map(([k, v]) => (
                 <span key={k} style={{ marginRight: '12px' }}>
-                  {k}: <strong>{String(v ?? '—')}</strong>
+                  {k}: <strong>{String(v ?? '-')}</strong>
                 </span>
               ))}
           </div>

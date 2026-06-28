@@ -1,4 +1,4 @@
-// Matrix status endpoints — job progress and built-table inventory.
+// Matrix status endpoints - job progress and built-table inventory.
 // Read-only views over MATRIX_BUILD_JOBS plus a live RAW row count
 // for jobs in the BUILDING stage.
 

@@ -94,7 +94,7 @@ ORDER BY WINDOW_NAME, ENDPOINT;
 --
 -- Reads the gateway service stdout via SYSTEM$GET_SERVICE_LOGS, extracts the
 -- `[ORS_METRIC] {json}` markers, and inserts new rows into ORS_REQUEST_LOG.
--- Dedupes by REQUEST_ID. Tolerates missing fields gracefully — any malformed
+-- Dedupes by REQUEST_ID. Tolerates missing fields gracefully - any malformed
 -- JSON line is skipped without halting the procedure.
 --
 -- Inputs:

@@ -1,4 +1,4 @@
-// Sortable offers grid. Pure presentational — orchestrator owns sort state
+// Sortable offers grid. Pure presentational - orchestrator owns sort state
 // and passes it in.
 
 import type { Offer, SortKey, SortDir } from './types';
@@ -33,7 +33,7 @@ export default function OffersGrid({ rows, loading, totalRows, selected, onSelec
       ) : rows.length === 0 ? (
         <div style={{ padding: 24, color: '#6b7280' }}>
           No offers match your filters. {totalRows === 0 && (
-            <span> The current preset has no FACT_FREIGHT_OFFERS rows — run a Data Studio job for the active preset.</span>
+            <span> The current preset has no FACT_FREIGHT_OFFERS rows - run a Data Studio job for the active preset.</span>
           )}
         </div>
       ) : (
@@ -71,12 +71,12 @@ export default function OffersGrid({ rows, loading, totalRows, selected, onSelec
                   </td>
                   <td style={tdStyle}>{o.PICKUP_CITY}</td>
                   <td style={tdStyle}>{o.DROPOFF_CITY}</td>
-                  <td style={tdNum}>{o.DISTANCE_KM != null ? o.DISTANCE_KM.toFixed(0) : '—'}</td>
-                  <td style={tdStyle}>{o.EQUIPMENT || '—'}</td>
-                  <td style={tdStyle}>{o.HAZMAT ? `ADR ${o.ADR_CLASS || ''}` : '—'}</td>
+                  <td style={tdNum}>{o.DISTANCE_KM != null ? o.DISTANCE_KM.toFixed(0) : '-'}</td>
+                  <td style={tdStyle}>{o.EQUIPMENT || '-'}</td>
+                  <td style={tdStyle}>{o.HAZMAT ? `ADR ${o.ADR_CLASS || ''}` : '-'}</td>
                   <td style={tdNum}>{o.WEIGHT_KG.toLocaleString()}</td>
                   <td style={tdNum}>{'$' + o.PRICE_USD.toLocaleString()}</td>
-                  <td style={tdNum}>{o.PRICE_PER_KM_USD != null ? `$${o.PRICE_PER_KM_USD.toFixed(2)}` : '—'}</td>
+                  <td style={tdNum}>{o.PRICE_PER_KM_USD != null ? `$${o.PRICE_PER_KM_USD.toFixed(2)}` : '-'}</td>
                   <td style={tdNum}>{o.POSTED_AGE_MIN < 60 ? `${o.POSTED_AGE_MIN}m` : `${Math.round(o.POSTED_AGE_MIN / 60)}h`}</td>
                   <td style={tdStyle}>{renderTrust(o.TRUST_BADGE)}</td>
                   <td style={tdStyle}>{renderMarket(o)}</td>

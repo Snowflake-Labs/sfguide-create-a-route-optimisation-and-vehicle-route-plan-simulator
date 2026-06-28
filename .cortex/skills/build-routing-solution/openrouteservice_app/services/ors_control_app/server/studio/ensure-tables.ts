@@ -68,7 +68,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       LISTING_TEXT VARCHAR, POSTED_AT TIMESTAMP_NTZ,
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Freight Exchange (Phase A/B) — enrichment columns on FACT_FREIGHT_OFFERS.
+    // Freight Exchange (Phase A/B) - enrichment columns on FACT_FREIGHT_OFFERS.
     // Idempotent ALTERs so older deployments pick them up on next boot.
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS EQUIPMENT VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS ADR_CLASS VARCHAR(8)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
@@ -77,7 +77,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Freight Exchange — partner directory and lane history per preset.
+    // Freight Exchange - partner directory and lane history per preset.
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_PARTNERS (
       PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       NAME VARCHAR, COUNTRY VARCHAR(4),

@@ -1,6 +1,6 @@
 import { query, run } from '@/lib/snowflake';
 
-// Workflow instances table — resolved from env vars set in service-spec.yaml.
+// Workflow instances table - resolved from env vars set in service-spec.yaml.
 // AGENT_DATABASE / AGENT_SCHEMA must be set (same values used by the rest of the app).
 const WF_DB = process.env.AGENT_DATABASE ?? 'APP';
 const WF_SCHEMA = process.env.AGENT_SCHEMA ?? 'PUBLIC';

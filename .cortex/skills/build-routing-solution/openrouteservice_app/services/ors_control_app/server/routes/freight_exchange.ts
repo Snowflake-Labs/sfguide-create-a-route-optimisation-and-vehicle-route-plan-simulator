@@ -4,21 +4,21 @@
 // existing read-only Freight Exchange page (Phase A/B).
 //
 // Routes:
-//   GET    /api/fx/enriched-offers     — VW_OFFER_ENRICHED
-//   POST   /api/fx/refresh-routes      — Batch DIRECTIONS for OPEN offers, populates FACT_OFFER_ROUTES (Phase E1)
-//   POST   /api/fx/eta                 — On-demand DIRECTIONS for trailer -> offer pickup (Phase E1/E2)
-//   POST   /api/fx/offer-route         — On-demand DIRECTIONS for offer pickup -> offer dropoff (map preview)
-//   POST   /api/fx/isochrone           — ISOCHRONES from trailer for reachability filter (Phase E2)
-//   POST   /api/fx/refresh-deadhead    — Batch MATRIX trailer.last_drop -> offer.pickup, populates FACT_DEADHEAD_MATRIX (Phase E3)
-//   GET    /api/fx/deadhead            — VW_OFFER_DEADHEAD read for active region
-//   POST   /api/fx/round-trip          — 1-vehicle/2-shipment OPTIMIZATION (Phase E4)
-//   POST   /api/fx/bundle              — N-shipment OPTIMIZATION with EU 561 break (Phase E5)
-//   GET    /api/fx/lane-density        — VW_LANE_DENSITY H3 heatmap (Phase E7)
-//   POST   /api/fx/draft-counter       — Cortex Complete negotiation draft + suggested USD (Phase E8)
-//   POST   /api/fx/decisions           — Write accepted decision to PROPOSAL_DECISIONS with SOURCE_PAGE='FREIGHT_EXCHANGE'
+//   GET    /api/fx/enriched-offers     - VW_OFFER_ENRICHED
+//   POST   /api/fx/refresh-routes      - Batch DIRECTIONS for OPEN offers, populates FACT_OFFER_ROUTES (Phase E1)
+//   POST   /api/fx/eta                 - On-demand DIRECTIONS for trailer -> offer pickup (Phase E1/E2)
+//   POST   /api/fx/offer-route         - On-demand DIRECTIONS for offer pickup -> offer dropoff (map preview)
+//   POST   /api/fx/isochrone           - ISOCHRONES from trailer for reachability filter (Phase E2)
+//   POST   /api/fx/refresh-deadhead    - Batch MATRIX trailer.last_drop -> offer.pickup, populates FACT_DEADHEAD_MATRIX (Phase E3)
+//   GET    /api/fx/deadhead            - VW_OFFER_DEADHEAD read for active region
+//   POST   /api/fx/round-trip          - 1-vehicle/2-shipment OPTIMIZATION (Phase E4)
+//   POST   /api/fx/bundle              - N-shipment OPTIMIZATION with EU 561 break (Phase E5)
+//   GET    /api/fx/lane-density        - VW_LANE_DENSITY H3 heatmap (Phase E7)
+//   POST   /api/fx/draft-counter       - Cortex Complete negotiation draft + suggested USD (Phase E8)
+//   POST   /api/fx/decisions           - Write accepted decision to PROPOSAL_DECISIONS with SOURCE_PAGE='FREIGHT_EXCHANGE'
 //
 // ORS routing profile is resolved from MARKETPLACE.CONFIG joined to the active
-// DIM_DATASETS row — not from the React vehicle-type switcher.
+// DIM_DATASETS row - not from the React vehicle-type switcher.
 //
 // Tracking: every SQL call sets query_tag = oss-freight-exchange v1.1.
 
@@ -113,7 +113,7 @@ export function createFreightExchangeRouter(): Router {
   const router = Router();
 
   // -------------------------------------------------------------------------
-  // GET /api/fx/enriched-offers — read VW_OFFER_ENRICHED
+  // GET /api/fx/enriched-offers - read VW_OFFER_ENRICHED
   // -------------------------------------------------------------------------
   router.get('/api/fx/enriched-offers', async (req, res) => {
     try {
@@ -134,7 +134,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/refresh-routes — Phase E1
+  // POST /api/fx/refresh-routes - Phase E1
   // Body: { batchSize?: number, maxAgeHours?: number }
   // -------------------------------------------------------------------------
   router.post('/api/fx/refresh-routes', async (req, res) => {
@@ -200,7 +200,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/eta — Phase E1
+  // POST /api/fx/eta - Phase E1
   // Body: { trailerLon, trailerLat, offerId }
   // -------------------------------------------------------------------------
   router.post('/api/fx/eta', async (req, res) => {
@@ -242,7 +242,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/offer-route — Pickup -> Dropoff DIRECTIONS for the selected offer
+  // POST /api/fx/offer-route - Pickup -> Dropoff DIRECTIONS for the selected offer
   // Body: { offerId }
   // -------------------------------------------------------------------------
   router.post('/api/fx/offer-route', async (req, res) => {
@@ -340,7 +340,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/isochrone — Phase E2
+  // POST /api/fx/isochrone - Phase E2
   // Body: { trailerLon, trailerLat, rangeSeconds?: number | number[] }
   // -------------------------------------------------------------------------
   router.post('/api/fx/isochrone', async (req, res) => {
@@ -385,7 +385,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/fx/deadhead — Phase E3 (read VW_OFFER_DEADHEAD)
+  // GET /api/fx/deadhead - Phase E3 (read VW_OFFER_DEADHEAD)
   // -------------------------------------------------------------------------
   router.get('/api/fx/deadhead', async (_req, res) => {
     try {
@@ -405,7 +405,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/refresh-deadhead — Phase E3
+  // POST /api/fx/refresh-deadhead - Phase E3
   // -------------------------------------------------------------------------
   router.post('/api/fx/refresh-deadhead', async (req, res) => {
     try {
@@ -486,7 +486,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/round-trip — Phase E4
+  // POST /api/fx/round-trip - Phase E4
   // -------------------------------------------------------------------------
   router.post('/api/fx/round-trip', async (req, res) => {
     try {
@@ -548,7 +548,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/bundle — Phase E5
+  // POST /api/fx/bundle - Phase E5
   // -------------------------------------------------------------------------
   router.post('/api/fx/bundle', async (req, res) => {
     try {
@@ -625,7 +625,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/fx/lane-density — Phase E7
+  // GET /api/fx/lane-density - Phase E7
   // -------------------------------------------------------------------------
   router.get('/api/fx/lane-density', async (_req, res) => {
     try {
@@ -644,7 +644,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/draft-counter — Phase E8
+  // POST /api/fx/draft-counter - Phase E8
   // -------------------------------------------------------------------------
   router.post('/api/fx/draft-counter', async (req, res) => {
     try {

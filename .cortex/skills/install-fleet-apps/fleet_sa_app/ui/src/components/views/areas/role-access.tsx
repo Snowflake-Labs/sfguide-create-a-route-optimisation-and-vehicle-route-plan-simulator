@@ -155,7 +155,7 @@ export function RoleAccessView(_props: ViewProps) {
     <div style={{ padding: '20px', overflow: 'auto', height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
         <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0, color: 'var(--text-primary, #111827)' }}>
-          Role Access — {ROLE_LABELS[selectedRole]}
+          Role Access - {ROLE_LABELS[selectedRole]}
         </h2>
         <span style={{ fontSize: '12px', color: 'var(--text-tertiary, #9ca3af)' }}>
           ({ROLE_SNOWFLAKE_ROLE[selectedRole]})
@@ -186,7 +186,7 @@ export function RoleAccessView(_props: ViewProps) {
         ))}
       </div>
       <p style={{ fontSize: '11px', color: 'var(--text-tertiary, #9ca3af)', marginTop: '6px', marginBottom: '18px' }}>
-        Simulated view filter — switching role changes what this UI surfaces, not the privileges used for backend calls.
+        Simulated view filter - switching role changes what this UI surfaces, not the privileges used for backend calls.
         {detectedRole ? ` Your detected role is ${ROLE_LABELS[detectedRole]}.` : ''}
       </p>
 

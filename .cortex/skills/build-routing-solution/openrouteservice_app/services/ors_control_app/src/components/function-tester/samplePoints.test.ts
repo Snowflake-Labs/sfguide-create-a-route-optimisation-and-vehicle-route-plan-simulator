@@ -279,7 +279,7 @@ function fractionInside(points: [number, number][], boundary: BoundaryGeoJson): 
   return inside / points.length;
 }
 
-describe('polygon-aware sampling — California', () => {
+describe('polygon-aware sampling - California', () => {
   for (const fnName of COORD_FUNCTIONS) {
     it(`${fnName} 100% of points inside California polygon (no road points)`, () => {
       const all: [number, number][] = [];
@@ -322,7 +322,7 @@ describe('polygon-aware sampling — California', () => {
   });
 });
 
-describe('polygon-aware sampling — Italy', () => {
+describe('polygon-aware sampling - Italy', () => {
   for (const fnName of COORD_FUNCTIONS) {
     it(`${fnName} 100% of points inside Italy polygon`, () => {
       const all: [number, number][] = [];
@@ -342,9 +342,9 @@ describe('polygon-aware sampling — Italy', () => {
   }
 });
 
-describe('polygon-aware sampling — fallback safety', () => {
+describe('polygon-aware sampling - fallback safety', () => {
   it('falls back to bbox sampling when boundary has no inside-bbox area', () => {
-    // Degenerate boundary that does not intersect the bbox at all — the code
+    // Degenerate boundary that does not intersect the bbox at all - the code
     // should still return points (within the bbox) instead of hanging.
     const empty: BoundaryGeoJson = {
       type: 'Polygon',

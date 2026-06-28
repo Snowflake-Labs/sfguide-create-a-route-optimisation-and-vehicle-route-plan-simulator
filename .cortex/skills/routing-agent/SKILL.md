@@ -1,6 +1,6 @@
 ---
 name: routing-agent
-description: "Deploy the routing TOOL_* procedures (AI-geocoded directions, isochrones, POI-in-isochrone, optimization, catchment, delivery/network demos) into FLEET_INTELLIGENCE.ROUTING_TOOLS. These are wrapped by the synapse ROUTING_MCP verbs that the app-level FLEET_AGENT attaches — there is no separate standalone routing agent. Use when: setting up the ORS routing tool substrate the fleet app depends on, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing tools, ORS tool procedures, routing substrate."
+description: "Deploy the routing TOOL_* procedures (AI-geocoded directions, isochrones, POI-in-isochrone, optimization, catchment, delivery/network demos) into FLEET_INTELLIGENCE.ROUTING_TOOLS. These are wrapped by the synapse ROUTING_MCP verbs that the app-level FLEET_AGENT attaches - there is no separate standalone routing agent. Use when: setting up the ORS routing tool substrate the fleet app depends on, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing tools, ORS tool procedures, routing substrate."
 depends_on:
   - install-fleet-apps
 metadata:
@@ -11,17 +11,17 @@ metadata:
 
 # OpenRouteService Routing Tool Substrate
 
-Deploy the AI-geocoded routing procedures into `FLEET_INTELLIGENCE.ROUTING_TOOLS`. These `TOOL_*` procedures are the implementation layer wrapped by the synapse `ROUTING_MCP` verbs that the app-level **FLEET_AGENT** attaches. The previous standalone `ROUTING_AGENT` Cortex Agent has been **retired** — `FLEET_AGENT` (created by `install-fleet-apps`) is now the single routing + analytics agent, so this skill only deploys the procedures, not an agent.
+Deploy the AI-geocoded routing procedures into `FLEET_INTELLIGENCE.ROUTING_TOOLS`. These `TOOL_*` procedures are the implementation layer wrapped by the synapse `ROUTING_MCP` verbs that the app-level **FLEET_AGENT** attaches. The previous standalone `ROUTING_AGENT` Cortex Agent has been **retired** - `FLEET_AGENT` (created by `install-fleet-apps`) is now the single routing + analytics agent, so this skill only deploys the procedures, not an agent.
 
 The procedures provide seven LLM-facing capabilities:
 
-- `tool_directions` — multi-region driving / cycling / walking directions.
-- `tool_isochrone` — multi-region reachability polygons.
-- `tool_poi_in_isochrone` — Overture Maps POI search inside an isochrone.
-- `tool_optimization` — multi-region multi-vehicle VRP via VROOM.
-- `tool_network_optimization` — full distribution-network plan (depot + key sites + 3 skill-tier vehicles).
-- `tool_delivery_optimization` — 30 pre-geocoded stops with skill-bound vehicles.
-- `tool_catchment` — drive-time catchment / area profile for a site.
+- `tool_directions` - multi-region driving / cycling / walking directions.
+- `tool_isochrone` - multi-region reachability polygons.
+- `tool_poi_in_isochrone` - Overture Maps POI search inside an isochrone.
+- `tool_optimization` - multi-region multi-vehicle VRP via VROOM.
+- `tool_network_optimization` - full distribution-network plan (depot + key sites + 3 skill-tier vehicles).
+- `tool_delivery_optimization` - 30 pre-geocoded stops with skill-bound vehicles.
+- `tool_catchment` - drive-time catchment / area profile for a site.
 
 The first four are functional immediately after this skill runs. The three demo
 tools require seed data deployed by [`setup-agent-playground`](../setup-agent-playground/SKILL.md);
@@ -39,7 +39,7 @@ they fail gracefully with a "run setup-agent-playground" message if the data is 
 
 - OpenRouteService Native App installed with functions: `DIRECTIONS`, `ISOCHRONES`, `ISOCHRONES_CLIPPED`, `OPTIMIZATION`
 - Cortex AI access (claude-sonnet-4-5 for geocoding)
-- Overture Maps Places share acquired (`OVERTURE_MAPS__PLACES` from Snowflake Marketplace listing `GZT0Z4CM1E9KR`) — used by `TOOL_POI_IN_ISOCHRONE`
+- Overture Maps Places share acquired (`OVERTURE_MAPS__PLACES` from Snowflake Marketplace listing `GZT0Z4CM1E9KR`) - used by `TOOL_POI_IN_ISOCHRONE`
 - A role with privileges listed in the Required Privileges section below
 
 ## Required Privileges
@@ -80,7 +80,7 @@ The Agent Playground (control-app page) is region- and vehicle-aware end-to-end:
 
 ## Quick Start
 
-No seed data or pre-computed tables required. This skill deploys only the routing `TOOL_*` stored procedures (no agent — the app-level FLEET_AGENT wraps them via ROUTING_MCP). Run `snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>` to create all procedures.
+No seed data or pre-computed tables required. This skill deploys only the routing `TOOL_*` stored procedures (no agent - the app-level FLEET_AGENT wraps them via ROUTING_MCP). Run `snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>` to create all procedures.
 
 ## Workflow
 
@@ -130,7 +130,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 
 ### Step 4: Deploy All Procedures
 
-**Goal:** Create the routing TOOL_* procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_POI_IN_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION, TOOL_OVERTURE_SEARCH, TOOL_OVERTURE_ADDRESSES, TOOL_CATCHMENT, TOOL_DELIVERY_OPTIMIZATION, TOOL_NETWORK_OPTIMIZATION) in a single step. No agent is created — FLEET_AGENT wraps these via ROUTING_MCP.
+**Goal:** Create the routing TOOL_* procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_POI_IN_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION, TOOL_OVERTURE_SEARCH, TOOL_OVERTURE_ADDRESSES, TOOL_CATCHMENT, TOOL_DELIVERY_OPTIMIZATION, TOOL_NETWORK_OPTIMIZATION) in a single step. No agent is created - FLEET_AGENT wraps these via ROUTING_MCP.
 
 ```bash
 snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>
@@ -165,10 +165,10 @@ Before testing, verify all services are RUNNING (see Step 2b).
 
 | Region | Directions | Isochrone | Optimization | POIs in isochrone |
 |--------|-----------|-----------|--------------|-------------------|
-| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square — 2 vehicles from Union Square" | "What cafes can I reach within a 15 minute ebike ride from Civic Center, San Francisco" |
-| New York | "Driving directions from Times Square to Central Park" | "Areas reachable within 15 min by car from Grand Central" | "Optimize deliveries to Empire State, Rockefeller Center, Times Square — 2 vehicles from Grand Central" | "Pharmacies within 10 minutes walk of Grand Central" |
-| London | "Driving directions from Tower Bridge to Buckingham Palace" | "Areas reachable within 15 min by car from King's Cross" | "Optimize deliveries to British Museum, Tower of London, Westminster Abbey — 2 vehicles from Trafalgar Square" | "Restaurants within 20 minutes walk of King's Cross" |
-| Berlin | "Driving directions from Brandenburg Gate to Alexanderplatz" | "Areas reachable within 15 min by car from Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, East Side Gallery — 2 vehicles from Alexanderplatz" | "Bars within 15 minutes cycle from Alexanderplatz" |
+| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square - 2 vehicles from Union Square" | "What cafes can I reach within a 15 minute ebike ride from Civic Center, San Francisco" |
+| New York | "Driving directions from Times Square to Central Park" | "Areas reachable within 15 min by car from Grand Central" | "Optimize deliveries to Empire State, Rockefeller Center, Times Square - 2 vehicles from Grand Central" | "Pharmacies within 10 minutes walk of Grand Central" |
+| London | "Driving directions from Tower Bridge to Buckingham Palace" | "Areas reachable within 15 min by car from King's Cross" | "Optimize deliveries to British Museum, Tower of London, Westminster Abbey - 2 vehicles from Trafalgar Square" | "Restaurants within 20 minutes walk of King's Cross" |
+| Berlin | "Driving directions from Brandenburg Gate to Alexanderplatz" | "Areas reachable within 15 min by car from Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, East Side Gallery - 2 vehicles from Alexanderplatz" | "Bars within 15 minutes cycle from Alexanderplatz" |
 
 Use central city locations as depots.
 

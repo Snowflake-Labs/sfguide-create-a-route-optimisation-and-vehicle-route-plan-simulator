@@ -5,7 +5,7 @@ import { APP_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type AppRole } from '@/lib/r
 
 // Role-evaluation selector. Picking a role filters which views the UI surfaces
 // and what the Role Access view summarizes. This is a SIMULATED filter for
-// evaluation — it does not change the privileges used for backend calls.
+// evaluation - it does not change the privileges used for backend calls.
 export function RoleSelector() {
   const selectedRole = useAppStore((s) => s.selectedRole);
   const detectedRole = useAppStore((s) => s.detectedRole);

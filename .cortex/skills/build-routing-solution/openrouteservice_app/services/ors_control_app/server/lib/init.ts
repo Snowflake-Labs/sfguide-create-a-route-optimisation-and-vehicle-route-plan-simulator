@@ -16,7 +16,7 @@ import { ensureGenerationProfileCatalog } from '../studio/generation-profile-cat
 // Tracking tag for ROUTE_OPTIMIZATION (Asset Velocity) objects.
 const TRACK_RO_AV = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
 
-// Asset Velocity view definitions — SINGLE runtime source of truth.
+// Asset Velocity view definitions - SINGLE runtime source of truth.
 // Both the boot path (ensureBackloadAndAssetVelocityObjects) and the lazy
 // self-heal endpoint (POST /api/asset-velocity/ensure -> ensureAssetVelocityViews)
 // run these, so there is exactly one runtime copy.
@@ -281,8 +281,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
   // -----------------------------------------------------------------
   // Bootstrap fix for friction-log F4: ensure FLEET_INTELLIGENCE.CORE.DIM_DATASETS
   // (and the UNIFIED base tables) exist BEFORE we try to create the
-  // V_*_CURRENT projection views below. Otherwise on a fresh install — where
-  // no Studio job has ever run — DIM_DATASETS does not exist and every
+  // V_*_CURRENT projection views below. Otherwise on a fresh install - where
+  // no Studio job has ever run - DIM_DATASETS does not exist and every
   // CREATE OR REPLACE VIEW V_*_CURRENT fails with "object does not exist",
   // breaking every demo that reads through these views.
   // ensureUnifiedTables() is idempotent: CREATE TABLE IF NOT EXISTS + an
@@ -293,7 +293,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
   } catch (e: any) {
     log('WARN', 'Init', `ensureUnifiedTables failed: ${e?.message?.slice(0, 200)}`);
   }
-  // Vehicle-type parameter catalog — single source of truth for per-mode asset
+  // Vehicle-type parameter catalog - single source of truth for per-mode asset
   // dimensions + evaluation thresholds (dwell SLA, deviation ratio, teleport m).
   // Must run before the V_*_CURRENT views / contract UDTFs and before any
   // generation stamps DIM_FLEET from it. Idempotent (CREATE IF NOT EXISTS +
@@ -303,7 +303,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
   } catch (e: any) {
     log('WARN', 'Init', `ensureVehicleProfileCatalog failed: ${e?.message?.slice(0, 200)}`);
   }
-  // Generation profile catalog — persists the built-in generation templates as
+  // Generation profile catalog - persists the built-in generation templates as
   // data so a new mode can be added by INSERTing a profile row (no engine edits).
   // Idempotent (CREATE IF NOT EXISTS + MERGE upsert of built-in rows).
   try {
@@ -317,7 +317,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
   const stmts: { sql: string; db?: string; schema?: string }[] = [
     // Asset-attribute migration for existing installs (boot-only). DIM_FLEET's
     // V_DIM_FLEET_CURRENT view is `SELECT f.*`, so ADD COLUMN invalidates its
-    // declared column count — drop it FIRST, then add columns; the view is
+    // declared column count - drop it FIRST, then add columns; the view is
     // recreated unconditionally later in this same boot (CREATE OR REPLACE
     // V_DIM_FLEET_CURRENT below). Fresh installs already get these columns from
     // the DIM_FLEET CREATE TABLE in studio/ensure-tables.ts. This migration is
@@ -331,7 +331,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
-    // VEHICLE_CLASS_PROFILE — single source of truth for per-vehicle-class
+    // VEHICLE_CLASS_PROFILE - single source of truth for per-vehicle-class
     // capacity, costs, ORS profile, and UI label. Lives in
     // OPENROUTESERVICE_APP.CORE so any page on any preset can read it.
     {
@@ -476,8 +476,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         ),
         -- Resolve the active vehicle_type to its class profile. If the
         -- vehicle_type isn't in VEHICLE_CLASS_PROFILE the JOIN returns 0 rows
-        -- so the view is empty — the React page surfaces this as a precise
-        -- "Unknown vehicle_type — add a row to VEHICLE_CLASS_PROFILE" error.
+        -- so the view is empty - the React page surfaces this as a precise
+        -- "Unknown vehicle_type - add a row to VEHICLE_CLASS_PROFILE" error.
         cls AS (
           SELECT vcp.*
           FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
@@ -656,7 +656,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------
-    // Card F: AVOID_ZONES — seeded with two real EU low-emission zones
+    // Card F: AVOID_ZONES - seeded with two real EU low-emission zones
     // (Berlin, Munich) and a sample construction zone. The Backload UI
     // sends the polygons to ORS via vehicle.profile_options.avoid_polygons.
     // ---------------------------------------------------------------
@@ -883,7 +883,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
     // ALWAYS read from V_*_CURRENT (not the base table) so old datasets
     // remain queryable by JOB_ID without polluting the active view.
     //
-    // DIM_POIS has no VEHICLE_TYPE column — a POI dataset is identified
+    // DIM_POIS has no VEHICLE_TYPE column - a POI dataset is identified
     // purely by (REGION, JOB_ID). Joining on JOB_ID = DATASET_ID with
     // IS_ACTIVE = TRUE returns POIs from any active dataset whose JOB_ID
     // matches, which is exactly what we want when multiple vehicle types
@@ -995,7 +995,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
     // Per-session scope-arg data contract (R2.1 of APP_RESTRUCTURE_PLAN).
     // Multi-tenant-safe READ layer: resolve an EXPLICIT (region, dataset_id)
     // instead of the GLOBAL DIM_DATASETS.IS_ACTIVE flag, so concurrent users
-    // can view different scopes without clobbering each other. ADDITIVE — the
+    // can view different scopes without clobbering each other. ADDITIVE - the
     // V_*_CURRENT views above are unchanged (global default + surfacing probe).
     //   F_<TABLE>_SCOPED(P_REGION, P_DATASET_ID):
     //     dataset_id given -> exactly that immutable dataset (per-session);
@@ -1399,7 +1399,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
     try {
       await sqlFn(sql, db, schema);
     } catch (e: any) {
-      // Log and continue — most failures are "schema doesn't exist" on first
+      // Log and continue - most failures are "schema doesn't exist" on first
       // boot before build-routing-solution finished, which is fine; subsequent
       // boots will succeed.
       log('WARN', 'Init', `boot init step failed: ${e?.message?.slice(0, 200)}`);
@@ -1458,7 +1458,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
   // returns SQL 422 "schema does not exist". Mirror the schema/table/view
   // here so the page always renders, even on accounts where module 08 was
   // never applied. The full ingest procedure + scheduled tasks remain owned
-  // by module 08 — without them the table is empty and the page shows zero
+  // by module 08 - without them the table is empty and the page shows zero
   // rows (which is preferable to a SQL error). Operators who want live data
   // should still apply module 08 and `ALTER TASK ... RESUME` the ingest task.
   //

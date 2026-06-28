@@ -1,11 +1,11 @@
 // ORS service-level routing-limits endpoints (per-region, runtime-only).
 //
-//   GET  /api/regions/:region/ors-limits  — defaults + stored overrides + effective
-//   PUT  /api/regions/:region/ors-limits  — persist overrides + apply via restart
+//   GET  /api/regions/:region/ors-limits  - defaults + stored overrides + effective
+//   PUT  /api/regions/:region/ors-limits  - persist overrides + apply via restart
 //
 // These are the limits ORS reads at container start (distances, waypoints,
 // snapping radius, visited nodes, matrix routes, isochrone ranges). Applying
-// them only requires a suspend/resume of the regional ORS service — never a
+// them only requires a suspend/resume of the regional ORS service - never a
 // graph rebuild (REBUILD_GRAPHS=false reloads the persisted graph). Persistence
 // lives in CORE.REGION_ORS_LIMITS and is re-read by WRITE_ORS_CONFIG, so the
 // overrides survive every reprovision (Option A).

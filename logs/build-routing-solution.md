@@ -17,7 +17,7 @@ Started: 2026-04-12
 - All objects verified successfully.
 
 ### Step 4 - Upload Configuration Files
-- **FRICTION**: The skill says paths are relative to the skill directory (`.cortex/skills/build-routing-solution/`), but Step 4 uses paths like `native_app/provider_setup/staged_files/SanFrancisco.osm.pbf` and `scripts/download_map.py` WITHOUT clarifying this. If you run from repo root (which is the normal working directory), these paths don't exist. The actual paths are under `.cortex/skills/build-routing-solution/`. This is mentioned in "Execution Rules" Rule 1, but the `snow stage copy` commands don't reflect this — they show bare relative paths. The agent must mentally prepend the skill directory. This is confusing and error-prone.
+- **FRICTION**: The skill says paths are relative to the skill directory (`.cortex/skills/build-routing-solution/`), but Step 4 uses paths like `native_app/provider_setup/staged_files/SanFrancisco.osm.pbf` and `scripts/download_map.py` WITHOUT clarifying this. If you run from repo root (which is the normal working directory), these paths don't exist. The actual paths are under `.cortex/skills/build-routing-solution/`. This is mentioned in "Execution Rules" Rule 1, but the `snow stage copy` commands don't reflect this - they show bare relative paths. The agent must mentally prepend the skill directory. This is confusing and error-prone.
 - **FRICTION**: The skill uses `<connection>` placeholder but the `snowflake_sql_execute` tool and `snow` CLI use different connections. The `snowflake_sql_execute` tool connects to `wgb26798` via account config, but `snow` CLI's `default` connection points to a different account (`SFCOGSOPS-SNOWHOUSE_AWS_US_WEST_2`). The correct CLI connection was `fleet_test_evals`. The skill should either (a) detect the correct connection from the Snowflake context, or (b) explicitly tell the agent how to find the matching CLI connection name. This caused one failed upload attempt.
 - **NOTE**: `snow` CLI version 3.9.0 shows deprecation warning about newer version 3.16.0.
 
@@ -46,9 +46,9 @@ Started: 2026-04-12
 ### Step 8 - Load Seed Datasets
 - **BUG**: `load-seed-data.sql` ran via `snow sql -f`, but several COPY INTO statements loaded 0 rows:
   - **DIM_FLEET**: `COPY ... FROM @...synthetic_ebikes/dim_fleet ... MATCH_BY_COLUMN_NAME` => "Copy executed with 0 files processed". The file is at `synthetic_ebikes/dim_fleet_0_0_0.snappy.parquet` (root), not `synthetic_ebikes/dim_fleet/` (subfolder). The prefix match works the second time we run it manually, but NOT the first time within `snow sql -f`. This is a Snowflake COPY-INTO caching issue: when the script ran it already "saw" the file but didn't load it (possibly because MATCH_BY_COLUMN_NAME conflicted with the path resolution in sequential multi-statement execution).
-  - **DIM_POIS**: Same issue — "Copy executed with 0 files processed" on first run. Reloading manually with the same SQL worked fine.
+  - **DIM_POIS**: Same issue - "Copy executed with 0 files processed" on first run. Reloading manually with the same SQL worked fine.
   - **FACT_VEHICLE_TELEMETRY**: Only loaded 2 of 8 parquet files (90,112 of 472,869 rows). The remaining 6 files were silently skipped. Adding `FORCE = TRUE` or truncating + re-running loaded all 8 files.
-  - **Matrix table** (SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8): The CREATE TABLE inside the native app database failed silently when run via `snow sql -f` — the script's last SELECT returned "Seed data loaded successfully" but the matrix table didn't exist afterward. Re-running the CREATE + COPY manually worked.
+  - **Matrix table** (SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8): The CREATE TABLE inside the native app database failed silently when run via `snow sql -f` - the script's last SELECT returned "Seed data loaded successfully" but the matrix table didn't exist afterward. Re-running the CREATE + COPY manually worked.
 - **ROOT CAUSE HYPOTHESIS**: Running `snow sql -f` with a large multi-statement SQL file may have issues with COPY INTO metadata caching across statements, causing some COPYs to skip files they think were already loaded in the same session.
 - **WORKAROUND**: After running `snow sql -f`, manually verified counts and re-ran any COPY with 0 rows using `FORCE = TRUE`.
 - **SUGGESTION**: The `load-seed-data.sql` script should add `FORCE = TRUE` to all COPY INTO statements, or split into separate files/steps to avoid this issue.
@@ -81,7 +81,7 @@ Started: 2026-04-12
 ### Overall Deployment Status
 - **Steps 1-8**: All completed successfully (infrastructure, images, app, seed data).
 - **Step 9 Demos Deployed**: 3 of 6 (Food Delivery, Route Deviation, Dwell Analysis).
-- **Step 9 Demos Blocked**: 3 of 6 (Taxis, Retail Catchment, Route Optimization — need Overture Maps).
+- **Step 9 Demos Blocked**: 3 of 6 (Taxis, Retail Catchment, Route Optimization - need Overture Maps).
 
 ### Top Friction Points
 1. **Step 4 path confusion**: Skill references paths relative to skill dir but doesn't prepend them in commands.

@@ -22,7 +22,7 @@ export interface RegionOption {
   // instead of bbox - dramatically reduces ORS PointNotFound for water-bordered
   // regions and shows the real region shape on the map.
   boundaryGeoJson?: any | null;
-  /** From /api/regions/provisioned — configured vs live-loaded profiles. */
+  /** From /api/regions/provisioned - configured vs live-loaded profiles. */
   graphReadiness?: GraphReadiness | null;
 }
 

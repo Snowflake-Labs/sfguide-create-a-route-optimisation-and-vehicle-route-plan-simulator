@@ -2,7 +2,7 @@
   "live_asset_operations": {
     "label": "Live {{labels.entity}} Operations",
     "category": "Core",
-    "description": "Where is every {{labels.entity}} now — live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
+    "description": "Where is every {{labels.entity}} now - live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 460px auto", "grid": "\"kpi kpi\"\n\"entities map\"\n\"detail detail\"" },
       "mobile": { "columns": "1fr", "rows": "auto 360px 320px auto", "grid": "\"kpi\"\n\"entities\"\n\"map\"\n\"detail\"" }
@@ -324,7 +324,7 @@
   "space_time_density": {
     "label": "Space-Time Density",
     "category": "Core",
-    "description": "Where activity concentrates over space and time — H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
+    "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
     },

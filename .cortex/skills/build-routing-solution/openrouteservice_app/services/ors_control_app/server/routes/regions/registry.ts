@@ -1,4 +1,4 @@
-// Region registry / lookup endpoints — provisioned region listing, build
+// Region registry / lookup endpoints - provisioned region listing, build
 // history, retry strategy, healthcheck, and largest-family resolver. These
 // are read-only views over CORE.REGION_REGISTRY / ORS_BUILD_HISTORY plus a
 // few diagnostic procedure calls.
@@ -130,7 +130,7 @@ export function createRegionsRegistryRouter(): Router {
               bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
             } else if (catBboxOk && bbox && cat.MIN_LAT <= bbox.min_lat && cat.MAX_LAT >= bbox.max_lat
                        && cat.MIN_LON <= bbox.min_lon && cat.MAX_LON >= bbox.max_lon) {
-              // Catalog bbox is a superset of REGION_ORS_MAP bbox — prefer it so
+              // Catalog bbox is a superset of REGION_ORS_MAP bbox - prefer it so
               // road-point sampling covers the full PBF/graph extent. SF case:
               // ORS_MAP stores a narrow city-center bbox (37.71-37.81) but the
               // BBBike PBF + graph cover 37.54-37.93. Without this override,

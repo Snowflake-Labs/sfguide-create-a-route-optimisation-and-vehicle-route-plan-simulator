@@ -1,4 +1,4 @@
-// Vehicle-type parameter catalog — the single source of truth for per-mode
+// Vehicle-type parameter catalog - the single source of truth for per-mode
 // asset dimensions and evaluation thresholds (dwell SLA, route-deviation ratio,
 // GPS teleport distance).
 //
@@ -16,7 +16,7 @@
 // LOOKING UP the selected type's row (no code/SQL branches on vehicle type),
 // and the SA_APP dwell / route_deviation packs JOIN the catalog on the active
 // dataset's VEHICLE_TYPE for their thresholds. Onboarding a new mode
-// (vessel / aircraft) becomes a single catalog row + data — zero code change.
+// (vessel / aircraft) becomes a single catalog row + data - zero code change.
 //
 // The orsProfile / operatingMode are sourced from profiles.ts PROFILE_TEMPLATES
 // so they never drift; the asset dimensions and thresholds are NEW knowledge
@@ -98,7 +98,7 @@ function operatingModeFor(vt: VehicleType): string {
 
 // Asset-dimension + threshold knowledge per mode. HGV values mirror the
 // historical extend-dim-fleet-hgv.sql trucking defaults; car/ebike carry light
-// realistic dimensions (no CASE branch — the row IS the per-mode answer).
+// realistic dimensions (no CASE branch - the row IS the per-mode answer).
 const ASSET_SPEC: Record<VehicleType, {
   weightTons: number; heightM: number; lengthM: number; widthM: number; axleloadT: number;
   hazmatProb: number; subtypeDist: SubtypeShare[] | null;

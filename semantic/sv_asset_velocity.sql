@@ -1,4 +1,4 @@
--- SV_ASSET_VELOCITY — Route Optimization (asset velocity) semantic view
+-- SV_ASSET_VELOCITY - Route Optimization (asset velocity) semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS + VW_LANE_DEMAND
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOGRAPHY columns (LAST_LOCATION_GEOM, TERMINAL_GEOM) excluded. Two independent facts.

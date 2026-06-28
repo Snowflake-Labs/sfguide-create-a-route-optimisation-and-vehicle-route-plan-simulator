@@ -1,4 +1,4 @@
-// Vehicle-agnostic offer generator. Self-contained — depends only on POIs,
+// Vehicle-agnostic offer generator. Self-contained - depends only on POIs,
 // GenerationConfig, and the deterministic RNG from profiles. Replaces the
 // HGV-only freight generator: every fleet type produces "offers" whose
 // products, equipment label, weight band, hazmat rate, and per-km rate scale to
@@ -12,8 +12,8 @@ import { POI, Offer, Partner } from './types';
 
 // Per-vehicle-class offer content defaults. Config knobs
 // (delivery_sources / delivery_products / delivery_equipment) override these;
-// these are the built-in, vehicle-appropriate fallbacks so any preset — and any
-// user-added vehicle class — produces semantically sensible offers with no
+// these are the built-in, vehicle-appropriate fallbacks so any preset - and any
+// user-added vehicle class - produces semantically sensible offers with no
 // code edit. weight_kg band mirrors OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
 // (SHIPMENT_KG_MIN/MAX); the SQL VW_EXTERNAL_OFFERS view re-clamps to the
 // authoritative DB band, so this only needs to be reasonable.
@@ -104,7 +104,7 @@ export function generateOffers(
     const winLen = 30 + Math.floor(rng() * 420);
     const src = sources[offers.length % sources.length];
     const product = products[offers.length % products.length];
-    // Status: ~78% OPEN, 17% TAKEN, 5% EXPIRED — gives the page a live feel.
+    // Status: ~78% OPEN, 17% TAKEN, 5% EXPIRED - gives the page a live feel.
     const sRoll = rng();
     const status = sRoll < 0.78 ? 'OPEN' : sRoll < 0.95 ? 'TAKEN' : 'EXPIRED';
     // Posted within the last 24h, weighted toward more recent.

@@ -87,7 +87,7 @@ export interface FleetMember {
   vehicle_type: string;
   battery_pct: number;
   // Sparse asset attributes, stamped from FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
-  // (the per-mode catalog) — never branched on vehicle_type. Modes with no
+  // (the per-mode catalog) - never branched on vehicle_type. Modes with no
   // trailer subtype carry vehicle_subtype = null and hazmat = false.
   weight_tons: number | null;
   height_m: number | null;
@@ -120,7 +120,7 @@ export type RouteFetchResult = RouteGeometry | null | 'UNROUTABLE';
 // `vehicle_equipment` is the (vehicle-appropriate) carrier/equipment label
 // (e.g. INSULATED_BAG for an e-bike, CARGO_VAN for a van, TAUTLINER for an HGV);
 // the trucking-only ADR_CLASS / LDM columns were dropped. Generated for ANY
-// fleet type — content (products, equipment, weight band, rate) scales to the
+// fleet type - content (products, equipment, weight band, rate) scales to the
 // selected vehicle class.
 export interface Offer {
   offer_id: string;

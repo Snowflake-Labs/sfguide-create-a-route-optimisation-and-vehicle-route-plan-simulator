@@ -12,7 +12,7 @@ interface DatasetRow {
 }
 
 const fmt = (n?: number | null) =>
-  n == null ? '—' : Number(n).toLocaleString();
+  n == null ? '-' : Number(n).toLocaleString();
 
 const cellStyle: React.CSSProperties = {
   padding: '8px 10px',
@@ -190,7 +190,7 @@ export default function DatasetsPanel() {
                   <td style={cellStyle}>{r.region}</td>
                   <td style={cellStyle}>{r.vehicleType}</td>
                   <td style={cellStyle}>
-                    <div>{r.label || <span style={{ color: '#6E7681' }}>—</span>}</div>
+                    <div>{r.label || <span style={{ color: '#6E7681' }}>-</span>}</div>
                     <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#6E7681', marginTop: 2 }}>
                       {r.datasetId}
                     </div>

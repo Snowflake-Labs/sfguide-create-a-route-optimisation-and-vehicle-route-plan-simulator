@@ -11,9 +11,9 @@ import { logger } from '@/lib/logger';
 // an ADMIN (or OPS) app role before allowing the privileged action.
 //
 // Posture (accelerator now, product-ready seams):
-//   - Deployed (SPCS, SNOWFLAKE_HOST set): FAIL CLOSED — a missing/unknown
+//   - Deployed (SPCS, SNOWFLAKE_HOST set): FAIL CLOSED - a missing/unknown
 //     identity is denied on write routes.
-//   - Local dev (no SNOWFLAKE_HOST): FAIL OPEN — allow, so PAT-based local runs
+//   - Local dev (no SNOWFLAKE_HOST): FAIL OPEN - allow, so PAT-based local runs
 //     and the owner can operate without an ingress header.
 
 const OPS_ROLES = ['FLEET_APP_OPS', 'FLEET_APP_ADMIN', 'ACCOUNTADMIN', 'SYSADMIN'];

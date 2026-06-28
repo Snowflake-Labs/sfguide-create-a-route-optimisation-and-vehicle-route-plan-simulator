@@ -3,7 +3,7 @@
 // Replaces the static, domain-specific DEMO_DEMAND_CATALOG (a pharma drug list)
 // with a neutral, region-derived handling catalog. One row per distinct Overture
 // BASIC_CATEGORY present in the region, assigned a deterministic 1..3 handling
-// tier (hash of the category — stable across runs, no domain labels). Written
+// tier (hash of the category - stable across runs, no domain labels). Written
 // via server-side INSERT...SELECT.
 
 import type { SnowSqlFn } from './types';

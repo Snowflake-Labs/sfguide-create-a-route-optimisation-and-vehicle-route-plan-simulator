@@ -54,7 +54,7 @@ for row in "${BUNDLES[@]}"; do
 
   # The materialized install.sql does `USE SCHEMA <SCHEMA>` but does not CREATE it.
   # On a fresh install the target schema may not exist yet (e.g.
-  # OPENROUTESERVICE_APP.ROUTING — the routing-verb home — or the SYNAPSE_OPS /
+  # OPENROUTESERVICE_APP.ROUTING - the routing-verb home - or the SYNAPSE_OPS /
   # SYNAPSE_ADMIN bundle schemas), so ensure it first. Idempotent.
   snow sql -c "$CONNECTION" -q "CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
     || { echo "ERROR: could not ensure schema $DB.$SCHEMA"; tail -20 /tmp/synapse_${SRC}_schema.log; exit 1; }

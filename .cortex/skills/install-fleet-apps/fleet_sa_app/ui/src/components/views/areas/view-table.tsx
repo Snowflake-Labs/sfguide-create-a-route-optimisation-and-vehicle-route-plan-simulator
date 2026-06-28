@@ -18,7 +18,7 @@ interface ViewTableAreaProps {
 }
 
 function formatCell(value: unknown): string {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return '-';
   if (typeof value === 'number') {
     if (Math.abs(value) < 1 && value !== 0) return value.toFixed(4);
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;

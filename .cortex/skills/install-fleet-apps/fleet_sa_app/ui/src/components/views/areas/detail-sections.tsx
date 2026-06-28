@@ -3,7 +3,7 @@
 // Shared detail-rendering primitives used by both EntityDetailArea (full-page
 // CRUD detail) and DetailPanelArea (selection-driven slide-over drawer). Kept in
 // one module so the two consumers never drift. No selection/navigation logic
-// lives here — just value formatting, key/value rows, section headings, a
+// lives here - just value formatting, key/value rows, section headings, a
 // generic auto-table, and the two query-backed section renderers.
 
 import { useViewData } from '@/hooks/use-view-data';
@@ -34,7 +34,7 @@ export type SectionDef =
 // ── Value formatting ────────────────────────────────────────────────────────
 
 export function fmtValue(val: unknown, format?: string): string {
-  if (val === null || val === undefined || val === '') return '—';
+  if (val === null || val === undefined || val === '') return '-';
   const s = String(val);
   if (!format || format === 'text') return s;
   if (format === 'number') {
@@ -63,7 +63,7 @@ export function KVRow({ label, value }: { label: string; value: React.ReactNode 
   return (
     <div style={{ display: 'flex', gap: '12px', padding: '8px 0', borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
       <div style={{ width: '160px', flexShrink: 0, color: 'var(--text-secondary, #6b7280)', fontSize: '13px', fontWeight: 500 }}>{label}</div>
-      <div style={{ color: 'var(--text-primary, #111827)', fontSize: '13px', wordBreak: 'break-word', flex: 1 }}>{value ?? '—'}</div>
+      <div style={{ color: 'var(--text-primary, #111827)', fontSize: '13px', wordBreak: 'break-word', flex: 1 }}>{value ?? '-'}</div>
     </div>
   );
 }
@@ -125,17 +125,17 @@ export function AutoTable({ columns, rows, totalRows }: { columns: ColumnDef[]; 
   );
 }
 
-// Runs row[field] as a SQL query — used for "Live Membership" in audience detail.
+// Runs row[field] as a SQL query - used for "Live Membership" in audience detail.
 export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; title?: string; limit?: number }) {
   const wrappedSql = sql ? `SELECT * FROM (${sql}) AS _t LIMIT ${limit ?? 200}` : undefined;
   const { data, loading, error, refetch } = useViewData(wrappedSql);
 
   return (
     <div style={{ marginBottom: '28px' }}>
-      <SectionHeading title={title} note="— evaluated from definition SQL" />
+      <SectionHeading title={title} note="- evaluated from definition SQL" />
       <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden' }}>
         {!sql ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No SQL — membership cannot be computed.</div>
+          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No SQL - membership cannot be computed.</div>
         ) : loading ? (
           <Skeleton />
         ) : error ? (
@@ -157,7 +157,7 @@ export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; t
   );
 }
 
-// Runs a static parameterized sub-query — used for sub-lists like Activation
+// Runs a static parameterized sub-query - used for sub-lists like Activation
 // History (EntityDetail) and the per-entity detail-panel sections. `params`
 // defaults to the EntityDetail convention ({ id: 'viewState.id' }); the detail
 // panel passes its own selection + scope params.

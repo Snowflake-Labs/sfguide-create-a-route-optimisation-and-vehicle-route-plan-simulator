@@ -3,13 +3,13 @@
 // Emits a region-scoped, JOB_ID-versioned FACT_HAZARD_ZONES table at
 // sub-county granularity using a procedural H3 hexagon grid. This replaces the
 // old FEMA National Risk Index (county-level) source, which produced a single
-// coarse polygon per county — too blunt for a city-scale demo (the whole city
+// coarse polygon per county - too blunt for a city-scale demo (the whole city
 // rendered as one risk blob). The H3 approach is:
-//   * Worldwide — works for any region with a boundary polygon (or its bbox),
+//   * Worldwide - works for any region with a boundary polygon (or its bbox),
 //     not just the US (FEMA is US-only).
-//   * Granular — hundreds-to-low-thousands of hexagons per region, so the
+//   * Granular - hundreds-to-low-thousands of hexagons per region, so the
 //     choropleth shows real intra-city variation.
-//   * Free + deterministic — no marketplace data dependency. The risk field is
+//   * Free + deterministic - no marketplace data dependency. The risk field is
 //     a smooth low-frequency gradient + deterministic hotspots seeded by
 //     region+JOB_ID, so re-runs are reproducible.
 //

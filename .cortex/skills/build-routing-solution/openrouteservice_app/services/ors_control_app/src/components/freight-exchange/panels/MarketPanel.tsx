@@ -9,9 +9,9 @@ export default function MarketPanel({ offer }: { offer: Offer }) {
         Market benchmark (this equipment, this week)
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4 }}>
-        <div><b>p25:</b> {offer.MARKET_P25 != null ? `$${offer.MARKET_P25.toFixed(2)}` : '—'}</div>
-        <div><b>p50:</b> {offer.MARKET_P50 != null ? `$${offer.MARKET_P50.toFixed(2)}` : '—'}</div>
-        <div><b>p75:</b> {offer.MARKET_P75 != null ? `$${offer.MARKET_P75.toFixed(2)}` : '—'}</div>
+        <div><b>p25:</b> {offer.MARKET_P25 != null ? `$${offer.MARKET_P25.toFixed(2)}` : '-'}</div>
+        <div><b>p50:</b> {offer.MARKET_P50 != null ? `$${offer.MARKET_P50.toFixed(2)}` : '-'}</div>
+        <div><b>p75:</b> {offer.MARKET_P75 != null ? `$${offer.MARKET_P75.toFixed(2)}` : '-'}</div>
       </div>
     </div>
   );

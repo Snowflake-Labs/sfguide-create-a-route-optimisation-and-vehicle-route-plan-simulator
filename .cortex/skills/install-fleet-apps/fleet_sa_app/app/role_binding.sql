@@ -1,4 +1,4 @@
--- Fleet Intelligence — production role binding (Phase 3E).
+-- Fleet Intelligence - production role binding (Phase 3E).
 -- Source of truth for the account-role grants applied on the provider account
 -- (wgb26798). Creates the three app roles and grants least-privilege access per
 -- bundle. Run as ACCOUNTADMIN (or a role with MANAGE GRANTS + ownership).
@@ -156,7 +156,7 @@ GRANT SELECT ON FUTURE DYNAMIC TABLES IN SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO 
 -- The SQL API `role` override does NOT disable the caller's secondary roles, so a
 -- role override alone does not isolate. This proc, owned by FLEET_APP_DYNAMIC_READER
 -- and EXECUTE AS OWNER, runs with ONLY the reader role (no caller secondary roles
--- leak in), so an agent SELECT can reach only the FLEET_APP contract — verified:
+-- leak in), so an agent SELECT can reach only the FLEET_APP contract - verified:
 -- a SYNTHETIC_DATASETS reference fails even when called by ACCOUNTADMIN.
 -- Co-located here (not scoped_contract.sql) so re-applying the contract alone can't
 -- silently revert ownership to the installer. Requires FLEET_APP.CORE to exist

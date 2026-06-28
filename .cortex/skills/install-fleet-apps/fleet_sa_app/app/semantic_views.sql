@@ -1,4 +1,4 @@
--- semantic_views.sql — agnostic Cortex Analyst semantic views for FLEET_AGENT.
+-- semantic_views.sql - agnostic Cortex Analyst semantic views for FLEET_AGENT.
 -- Owned by install-fleet-apps. Creates FLEET_INTELLIGENCE.SEMANTIC + the 5 SVs the
 -- consumer agent (agent-spec.json) binds its cortex_analyst_text_to_sql tools to.
 -- DWELL + ASSET_VELOCITY are rebound onto the pack-built FLEET_APP.* contract views
@@ -13,7 +13,7 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.SEMANTIC
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"semantic-views"}}';
 
 -- ============ SV_FLEET_OPS (FLEET_APP.FLEET_OPS.*) ============
--- SV_FLEET_OPS — the ONE universal, mode-agnostic fleet analytics semantic view (R6)
+-- SV_FLEET_OPS - the ONE universal, mode-agnostic fleet analytics semantic view (R6)
 -- Source: FLEET_APP.FLEET_OPS.* global-active views (thin wrappers over the
 --         dataset-scoped UDTFs in fleet_sa_app/app/scoped_contract.sql).
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via the fleet_test_evals connection)
@@ -143,7 +143,7 @@ Conventions:
 ;
 
 -- ============ SV_ROUTE_DEVIATION (FLEET_INTELLIGENCE.ROUTE_DEVIATION) ============
--- SV_ROUTE_DEVIATION — route deviation analysis semantic view
+-- SV_ROUTE_DEVIATION - route deviation analysis semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS (per trip)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- ACTUAL_PATH / EXPECTED_PATH GEOGRAPHY columns excluded.
@@ -202,7 +202,7 @@ Conventions:
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============
--- SV_CATCHMENT — Catchment demo semantic view
+-- SV_CATCHMENT - Catchment demo semantic view
 -- Source: FLEET_INTELLIGENCE.CATCHMENT.POIS + CITIES_BY_STATE
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOMETRY GEOGRAPHY column excluded; lat/lon retained on base view but not modeled as metrics.
@@ -260,7 +260,7 @@ Conventions:
 ;
 
 -- ============ SV_DWELL_ANALYTICS (rebound onto FLEET_APP.DWELL.*) ============
--- SV_DWELL_ANALYTICS — dwell analysis semantic view
+-- SV_DWELL_ANALYTICS - dwell analysis semantic view
 -- Source: FLEET_APP.DWELL.VW_DWELL_SESSIONS (dwell sessions),
 --         FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY (per-driver SLA)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
@@ -332,7 +332,7 @@ Conventions:
 ;
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============
--- SV_ASSET_VELOCITY — Route Optimization (asset velocity) semantic view
+-- SV_ASSET_VELOCITY - Route Optimization (asset velocity) semantic view
 -- Source: FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS + VW_LANE_DEMAND
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOGRAPHY columns (LAST_LOCATION_GEOM, TERMINAL_GEOM) excluded. Two independent facts.

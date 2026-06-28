@@ -249,7 +249,7 @@ export default function RouteOptimization() {
            ORDER BY RANDOM()
            LIMIT 200`;
     }
-    // JOB_TEMPLATE.INDUSTRY may not exist on older installs — fall back without it.
+    // JOB_TEMPLATE.INDUSTRY may not exist on older installs - fall back without it.
     let jobRows: any[] = [];
     try {
       jobRows = await sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, INDUSTRY, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' AND INDUSTRY = '${selectedIndustry}' LIMIT 30`);
@@ -697,7 +697,7 @@ export default function RouteOptimization() {
 
       {nearbySchools.length > 0 && (
         <div style={{ marginBottom: 12, padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
-          <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'block' }}>{depotLabel} — select one or more:</label>
+          <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'block' }}>{depotLabel} - select one or more:</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {nearbySchools.map((s: any) => {
               const isSelected = selectedSchools.some((ss: any) => ss.NAME === s.NAME);
@@ -773,7 +773,7 @@ export default function RouteOptimization() {
             <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 12, flexWrap: 'wrap' }}>
               <span style={{ width: 12, height: 12, borderRadius: '50%', background: `rgb(${ROUTE_COLORS[i % ROUTE_COLORS.length].join(',')})`, flexShrink: 0 }} />
               <select className="select" value={v.profile} disabled={!availableProfiles.length} onChange={e => setVehicles(prev => prev.map((vv, ii) => ii === i ? { ...vv, profile: e.target.value } : vv))} style={{ width: 120 }}>
-                {availableProfiles.length === 0 && <option value="">—</option>}
+                {availableProfiles.length === 0 && <option value="">-</option>}
                 {availableProfiles.map(p => <option key={p} value={p}>{PROFILE_LABELS[p] ?? p}</option>)}
               </select>
               <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>Cap:</span>
@@ -835,7 +835,7 @@ export default function RouteOptimization() {
       {vrpResult && (
         <>
           <div className="info-box success" style={{ marginBottom: 8 }}>
-            Solution: {routePaths.length} routes, {jobAssignments.length} assigned{loadingDirections ? ' — fetching directions...' : ''}
+            Solution: {routePaths.length} routes, {jobAssignments.length} assigned{loadingDirections ? ' - fetching directions...' : ''}
           </div>
           <div style={{ display: 'flex', gap: 0, marginBottom: 12 }}>
             <button onClick={() => setActiveResultTab('map')} style={{ padding: '6px 16px', fontSize: 12, fontWeight: activeResultTab === 'map' ? 600 : 400, background: activeResultTab === 'map' ? 'var(--accent, #29B5E8)' : 'transparent', color: activeResultTab === 'map' ? '#fff' : 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '6px 0 0 6px', cursor: 'pointer' }}>Map</button>

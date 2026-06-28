@@ -341,7 +341,7 @@ export default function FunctionTester() {
       )}
       {graphsLoading && (
         <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 0' }}>
-          ORS graphs are loading for this region — profiles marked &quot;(loading...)&quot; are not yet routable.
+          ORS graphs are loading for this region - profiles marked &quot;(loading...)&quot; are not yet routable.
         </p>
       )}
       {regionsError && (
@@ -385,7 +385,7 @@ export default function FunctionTester() {
       )}
       {COORD_FUNCTIONS.includes(selectedFn) && overtureAvailable && roadPointsReason && (!roadPoints || roadPoints.length === 0) && (
         <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>
-          Couldn't snap to roads ({roadPointsReason}) — recommended point may be outside the active graph.
+          Couldn't snap to roads ({roadPointsReason}) - recommended point may be outside the active graph.
         </p>
       )}
       {overtureAvailable === false && COORD_FUNCTIONS.includes(selectedFn) && (

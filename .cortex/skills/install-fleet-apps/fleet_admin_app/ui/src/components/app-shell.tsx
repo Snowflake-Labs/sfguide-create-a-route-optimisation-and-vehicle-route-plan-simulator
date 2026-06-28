@@ -83,7 +83,7 @@ function Placeholder({ tab }: { tab: string }) {
     <div className="panel">
       <h2>{headerLabel(tab)}</h2>
       <p className="subtitle">This privileged build tool is being ported to the new admin app (R5).</p>
-      <div className="empty-state">Page <code>{tab}</code> — coming in this phase.</div>
+      <div className="empty-state">Page <code>{tab}</code> - coming in this phase.</div>
     </div>
   );
 }
@@ -178,7 +178,7 @@ export function AppShell() {
         <div className="app">
           <aside className="sidebar">
             <div className="sidebar-brand">
-              <span>Routing Platform — Admin</span>
+              <span>Routing Platform - Admin</span>
             </div>
             <nav className="sidebar-nav">
               {ALL_SECTIONS.map((section) => (

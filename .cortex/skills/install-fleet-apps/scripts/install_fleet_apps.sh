@@ -11,8 +11,8 @@
 #   0 preflight -> 1 infra -> 2 data -> 3 routing contract+engine
 #   -> 3.5 analytic layer (FLEET_INTELLIGENCE.* the packs read) -> 4 packs
 #   -> 5 synapse tools -> 6 agents -> 7 apps -> 8 roles+grants -> friction log
-#   (roles/grants run LAST: role_binding.sql grants on SYNAPSE_USER objects —
-#    the 3 agents and the FLEET_SA_APP service role — which only exist after
+#   (roles/grants run LAST: role_binding.sql grants on SYNAPSE_USER objects -
+#    the 3 agents and the FLEET_SA_APP service role - which only exist after
 #    the agents+apps steps, so the single idempotent grants pass must follow them.)
 #
 # Usage:
@@ -156,7 +156,7 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     find "$REPO_ROOT/datasets" -name '.DS_Store' -delete 2>/dev/null || true
     # datasets/ has nested subdirs (intro/, metadata/, synthetic_ebikes/<table>/...) that the
     # loader COPY INTOs from by path, so the upload MUST preserve directory structure (--recursive).
-    # NOTE: ~85 MB uploaded file-by-file (per-file MD5/compress) — expect a few minutes with no
+    # NOTE: ~85 MB uploaded file-by-file (per-file MD5/compress) - expect a few minutes with no
     # per-file progress output; it is not stalled.
     note "  uploading ~85 MB seed parquet (file-by-file; expect a few minutes)..."
     snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite --recursive >/tmp/ifa_stage.log 2>&1 \
@@ -251,14 +251,14 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
       "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     if [ "${TOOL_N:-0}" -lt 9 ]; then
-      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed — routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
+      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
     else
       ROUTING_SUBSTRATE="OK (9/9 ROUTING_TOOLS.TOOL_* procs)"
       note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else
-    ROUTING_SUBSTRATE="MISSING SOURCE: $ROUTING_TOOLS_SQL not found — routing verbs will fail"
+    ROUTING_SUBSTRATE="MISSING SOURCE: $ROUTING_TOOLS_SQL not found - routing verbs will fail"
     note "  WARN: $ROUTING_SUBSTRATE"
   fi
   step "3 routing" OK
@@ -387,7 +387,7 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   note "[7/8] deploying FLEET_SA_APP + FLEET_ADMIN_APP..."
   # Defensive: the infra step always resolves COMPUTE_POOL now, but guard anyway
   # so a future regression fails loudly here instead of as an opaque unbound-var.
-  : "${COMPUTE_POOL:?COMPUTE_POOL is unset — the infra step (1/8) must resolve it before apps}"
+  : "${COMPUTE_POOL:?COMPUTE_POOL is unset - the infra step (1/8) must resolve it before apps}"
   bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
     || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
   COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
@@ -419,7 +419,7 @@ fi
 # ── friction log + summary ──────────────────────────────────────
 ELAPSED=$(( $(date +%s) - START_TS ))
 {
-  echo "# install-fleet-apps friction log — $(date)"
+  echo "# install-fleet-apps friction log - $(date)"
   echo
   echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"

@@ -31,7 +31,7 @@ interface MetricCardsAreaProps {
 }
 
 function formatValue(value: unknown, format?: string): string {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return '-';
   const num = Number(value);
   if (isNaN(num)) return String(value);
 

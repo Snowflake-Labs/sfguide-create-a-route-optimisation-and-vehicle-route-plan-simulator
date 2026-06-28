@@ -62,11 +62,11 @@ const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], 
 
 // Standard boundary join pattern (see AGENTS.md "Prefer Boundary over Bbox").
 // Resolves REGION_CATALOG to the ONE correct polygon for `orsKey` and joins it
-// so spatial filtering happens server-side against the polygon — no GeoJSON sent
+// so spatial filtering happens server-side against the polygon - no GeoJSON sent
 // over the wire. The catalog holds same-name rows (e.g. country "Mexico" vs the
 // natural-earth state "México", both LOOKUP_NAME='Mexico'), so we resolve to a
 // single ranked row (exact REGION_KEY first, then larger admin level/area) and
-// JOIN it via ON TRUE — a bare JOIN on the table would fan out duplicate POIs
+// JOIN it via ON TRUE - a bare JOIN on the table would fan out duplicate POIs
 // and could pick the wrong (smaller) polygon. Ranking mirrors the server helper
 // server/lib/region-catalog-match.ts; keep the two in sync.
 function boundaryJoin(orsKey: string): string {
@@ -108,7 +108,7 @@ export default function RetailCatchment() {
   const [loading, setLoading] = useState(true);
 
   // Resolve every globalRegion against ORS_STATUS. Try REGION_NAME first, then
-  // ORS_REGION_KEY — REGION_REGISTRY can hold a stale ORS_REGION_KEY (e.g.
+  // ORS_REGION_KEY - REGION_REGISTRY can hold a stale ORS_REGION_KEY (e.g.
   // 'California' for region 'UsCalifornia'), and the actual ORS service is
   // named after REGION_NAME. The first key that returns service_ready=true
   // with non-empty profiles is stored as ors_key for downstream calls.
@@ -159,7 +159,7 @@ export default function RetailCatchment() {
 
   // When the local region selection changes: refresh available profiles, reset
   // travel mode if needed, recenter the map onto the region's BOUNDARY centroid
-  // (authoritative — always on land, inside the polygon), and load POIs from
+  // (authoritative - always on land, inside the polygon), and load POIs from
   // either the cached pipeline tables (SanFrancisco) or live Overture
   // polygon-clipped (every other region).
   useEffect(() => {
@@ -185,7 +185,7 @@ export default function RetailCatchment() {
       setTravelMode(preferred);
     }
 
-    // Always recenter on the boundary centroid — even if 0 POIs come back.
+    // Always recenter on the boundary centroid - even if 0 POIs come back.
     /* viewState driven by useFitMap on data changes */
 
     setLoading(true);
@@ -367,7 +367,7 @@ export default function RetailCatchment() {
         <div className="form-group" style={{ minWidth: 140 }}>
           <label>Travel Mode</label>
           <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)} disabled={!availableProfiles.length}>
-            {availableProfiles.length === 0 && <option value="">—</option>}
+            {availableProfiles.length === 0 && <option value="">-</option>}
             {availableProfiles.map(p => <option key={p} value={p}>{PROFILE_LABELS[p] ?? p}</option>)}
           </select>
         </div>

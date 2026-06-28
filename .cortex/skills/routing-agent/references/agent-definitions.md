@@ -352,7 +352,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR
 
 ---
 
-## CREATE AGENT Specification (RETIRED — historical reference only)
+## CREATE AGENT Specification (RETIRED - historical reference only)
 
 > **RETIRED:** The standalone `ROUTING_AGENT` Cortex Agent is no longer created.
 > The app-level `FLEET_AGENT` (created by `install-fleet-apps`) attaches

@@ -1,5 +1,5 @@
-// /api/query — read-only SQL passthrough used by demo views.
-// /api/tiles/:z/:x/:y — Carto basemap tile proxy with in-memory LRU cache.
+// /api/query - read-only SQL passthrough used by demo views.
+// /api/tiles/:z/:x/:y - Carto basemap tile proxy with in-memory LRU cache.
 
 import { Router } from 'express';
 import { runSql, submitSqlAsync, fetchResultByHandle } from '../lib/sql.js';

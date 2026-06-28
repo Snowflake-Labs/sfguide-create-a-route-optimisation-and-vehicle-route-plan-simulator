@@ -246,7 +246,7 @@ function extractToolOutput(
         const parsed = JSON.parse(item.text);
         if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
       } catch {
-        // not JSON — fall through to raw text
+        // not JSON - fall through to raw text
       }
       return { text: item.text };
     }

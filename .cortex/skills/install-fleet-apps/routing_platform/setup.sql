@@ -1,5 +1,5 @@
 -- =============================================================================
--- ROUTING_PLATFORM — engine-agnostic routing contract (Step 4B.2)
+-- ROUTING_PLATFORM - engine-agnostic routing contract (Step 4B.2)
 -- =============================================================================
 -- Source of truth for the engine-agnostic routing layer. Consumers (synapse
 -- ROUTING_MCP verbs, ROUTING_TOOLS.TOOL_* procs, dashboards, agents) depend ONLY

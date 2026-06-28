@@ -1,4 +1,4 @@
-// /api/diagnostics/* — log retrieval, env snapshot, connectivity probe.
+// /api/diagnostics/* - log retrieval, env snapshot, connectivity probe.
 
 import { Router } from 'express';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE } from '../constants.js';

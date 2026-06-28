@@ -1,4 +1,4 @@
-// /api/sample-road-points — Overture-backed bbox sampling endpoint that
+// /api/sample-road-points - Overture-backed bbox sampling endpoint that
 // FunctionTester / RegionBuilder use to seed routable road origins.
 
 import { Router } from 'express';
@@ -33,7 +33,7 @@ export function createSamplingRouter(): Router {
 
     // Resolve the region's BOUNDARY polygon (if any) so we can clip road points
     // server-side. For non-rectangular regions like California or Italy, the
-    // bbox alone leaks points into Nevada / Adriatic / ocean — ST_WITHIN against
+    // bbox alone leaks points into Nevada / Adriatic / ocean - ST_WITHIN against
     // REGION_CATALOG.BOUNDARY removes them at the source.
     let safeRegionForBoundary: string | null = null;
     if (regionParam && regionParam !== 'default') {
@@ -84,7 +84,7 @@ export function createSamplingRouter(): Router {
     //      provisioned regions whose REGION_KEY/REGION_NAME differ from the
     //      ORS_MAP key (e.g. NewYork vs NewYorkUS) still resolve their polygon.
     //
-    // bbbike-bbox sources are intentionally INCLUDED — those rows store a valid
+    // bbbike-bbox sources are intentionally INCLUDED - those rows store a valid
     // 5-vertex rectangle BOUNDARY equal to the bbox, so ST_INTERSECTS becomes
     // a no-op for points already inside the bbox. No need to special-case.
     const mSample = safeRegionForBoundary ? regionCatalogMatch('', `'${safeRegionForBoundary}'`) : null;
@@ -103,7 +103,7 @@ export function createSamplingRouter(): Router {
       : '';
 
     // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
-    // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
+    // and pick one representative road start point per coarse tile via ANY_VALUE - geographic spread
     // without an expensive ORDER BY RANDOM() over the full filtered set.
     const sql = `
       WITH segments AS (

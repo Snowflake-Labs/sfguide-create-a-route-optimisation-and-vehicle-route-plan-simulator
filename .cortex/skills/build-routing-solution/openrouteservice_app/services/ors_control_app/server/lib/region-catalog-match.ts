@@ -8,7 +8,7 @@
 // cities, and with same-name sub-regions in other countries. ~470 catalog rows
 // participate in such LOOKUP_NAME collisions.
 //
-// The old resolution heuristic ("ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1" — pick the
+// The old resolution heuristic ("ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1" - pick the
 // smallest polygon with this name) silently returned the WRONG polygon for any
 // deployed region whose name collided with a smaller same-name sub-region. Concretely,
 // deploying the country "Mexico" rendered only the small "Estado de México" polygon.
@@ -30,7 +30,7 @@
 //
 // Usage
 // -----
-// `target` is the SQL right-hand side to compare against — either a quoted, escaped
+// `target` is the SQL right-hand side to compare against - either a quoted, escaped
 // literal (e.g. `"'" + escapeString(region) + "'"`) or a column reference
 // (e.g. `'rr.ORS_REGION_KEY'`). The caller owns quoting/escaping of literals.
 //
@@ -57,7 +57,7 @@ const LEVEL_RANK =
  * REGION_CATALOG. See module header for the full rationale.
  *
  * @param alias  Table alias used in the query (e.g. 'rc'). Pass '' for no alias.
- * @param target SQL expression to match against — a quoted+escaped literal
+ * @param target SQL expression to match against - a quoted+escaped literal
  *               (`"'Mexico'"`) or a column reference (`'rr.ORS_REGION_KEY'`).
  */
 export function regionCatalogMatch(alias: string, target: string): RegionCatalogMatch {

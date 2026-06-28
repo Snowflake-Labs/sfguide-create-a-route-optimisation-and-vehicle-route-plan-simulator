@@ -11,7 +11,7 @@ import { viewRegistry } from '@/lib/view-registry';
 // DHL) are intentionally excluded from this installer.
 //
 // This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
-// it generically via the configured `domainPacks` array — there is no fleet
+// it generically via the configured `domainPacks` array - there is no fleet
 // import in the shell itself (Step 4C).
 export function registerViews(_disabledSchemas?: Set<string>): void {
   viewRegistry.register({

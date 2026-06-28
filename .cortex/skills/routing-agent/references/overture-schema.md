@@ -58,7 +58,7 @@ verbs and `analytic_layer.sql`:
 1. **bbox prefilter** for partition pruning: `ST_X(geom) BETWEEN ? AND ? AND ST_Y(geom) BETWEEN ? AND ?`.
 2. **authoritative polygon refine**: `ST_WITHIN(geom, boundary)` where `boundary`
    comes from `OPENROUTESERVICE_APP.CORE.REGION_CATALOG` (NULL-safe: degrades to
-   bbox-only when no boundary). Prefer the real boundary polygon over bbox — a
+   bbox-only when no boundary). Prefer the real boundary polygon over bbox - a
    bbox over-includes ocean and neighbouring regions.
 3. **hard LIMIT** (capped at 500 in the verbs) on returned rows/groups.
 
@@ -94,14 +94,14 @@ dimensions (`PRIMARY_CATEGORY`, `PRIMARY_NAME`, `BRAND_NAME`, `COUNTRY`,
 `REGION`, `LOCALITY`, `POSTCODE`, `STREET`, `CONFIDENCE`) and synonyms. We reuse
 it directly (attached to `FLEET_AGENT` as `query_overture_global`) rather than
 rebuild it. **Caveat:** it exposes only confidence metrics (`AVG/MIN/MAX_CONFIDENCE`),
-**no row-count metric** — so "how many" questions are routed to `query_catchment`
+**no row-count metric** - so "how many" questions are routed to `query_catchment`
 (region-scoped, has `total_pois` / `total_addresses` COUNT metrics) or the
 deterministic verbs instead. The ADDRESSES share ships no semantic view, so
 address questions are served by `query_overture_addresses` and `SV_CATCHMENT`'s
 `total_addresses` metric.
 
 The vendor SV is global and lives in a share we do not control, so it is an
-*additive* convenience, not a contract dependency — the region-scoped SV and the
+*additive* convenience, not a contract dependency - the region-scoped SV and the
 verbs remain the contract-bound path. The consumer role (`FLEET_APP_USER`) needs
 `GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES` for the Analyst
 tool to read it (granted in `role_binding.sql`); the verbs run owner's-rights and
@@ -114,7 +114,7 @@ In `list` mode, `TOOL_OVERTURE_SEARCH` and `TOOL_OVERTURE_ADDRESSES` also return
 (`properties`: name/category/city for places, city/postcode for addresses). The SA
 app's inline chat map (`RouteMapInline`) deep-scans tool output for GeoJSON, so the
 places/addresses plot automatically once the verb is listed in `tools.mapTools`
-(`app-config.json`). Aggregate modes (`city` / `category`) return `NULL` geometry —
+(`app-config.json`). Aggregate modes (`city` / `category`) return `NULL` geometry -
 correct for a counts answer (no map). Point markers expose name/category on hover.
 
 ## Where these objects are defined

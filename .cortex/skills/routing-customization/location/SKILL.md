@@ -1,6 +1,6 @@
 ---
 name: location
-description: "Change the OpenRouteService map region by downloading new OSM data and updating service configuration. Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing ORS map region as part of customization workflow. Do NOT use for: standalone execution, reading current config, or changing routing profiles. Triggers: change location, change map, download map, new region."
+description: "Change the OpenRouteService map region by downloading new OSM data and updating service configuration. Subskill of routing-customization - must be invoked from the router, not independently. Use when: changing ORS map region as part of customization workflow. Do NOT use for: standalone execution, reading current config, or changing routing profiles. Triggers: change location, change map, download map, new region."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -110,7 +110,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 **Actions:**
 
-**Option A — Using WRITE_ORS_CONFIG (recommended):**
+**Option A - Using WRITE_ORS_CONFIG (recommended):**
 ```sql
 CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
     '<REGION_NAME>',
@@ -119,7 +119,7 @@ CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
 );
 ```
 
-**Option B — Manual editing (fallback):**
+**Option B - Manual editing (fallback):**
 
 1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`

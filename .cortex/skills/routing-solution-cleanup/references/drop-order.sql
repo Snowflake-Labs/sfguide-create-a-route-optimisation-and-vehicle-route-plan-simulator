@@ -1,5 +1,5 @@
 -- ============================================================================
--- FULL TEARDOWN SCRIPT — Drops all objects created by routing solution skills
+-- FULL TEARDOWN SCRIPT - Drops all objects created by routing solution skills
 -- ============================================================================
 -- Usage: snow sql -f .cortex/skills/routing-solution-cleanup/references/drop-order.sql -c <connection>
 --
@@ -46,7 +46,7 @@ ALTER TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS SUSPEND;
 DROP TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS;
 
 -- ============================================================================
--- PHASE 6: Dynamic Tables (reverse pipeline order — downstream first)
+-- PHASE 6: Dynamic Tables (reverse pipeline order - downstream first)
 -- ============================================================================
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY;

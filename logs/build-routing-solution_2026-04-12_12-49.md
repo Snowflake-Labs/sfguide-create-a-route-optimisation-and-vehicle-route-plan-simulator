@@ -16,7 +16,7 @@ Started: 2026-04-12 12:49 UTC-7
 - No issues. All CREATE IF NOT EXISTS worked cleanly.
 
 ### Step 4 - Upload Configuration Files
-- **FRICTION (repeated from prior run)**: Skill says "paths are relative to skill directory" in Execution Rules but Step 4 commands show bare relative paths (e.g., `native_app/provider_setup/...`). The `snow stage copy` commands in the SKILL.md body DO correctly prepend `.cortex/skills/build-routing-solution/` but only because they reference "paths relative to repo root." This is confusing — the Execution Rule says skill dir, but the commands use repo root. Should pick one and be consistent.
+- **FRICTION (repeated from prior run)**: Skill says "paths are relative to skill directory" in Execution Rules but Step 4 commands show bare relative paths (e.g., `native_app/provider_setup/...`). The `snow stage copy` commands in the SKILL.md body DO correctly prepend `.cortex/skills/build-routing-solution/` but only because they reference "paths relative to repo root." This is confusing - the Execution Rule says skill dir, but the commands use repo root. Should pick one and be consistent.
 - **FRICTION (repeated)**: Connection name mismatch between `snowflake_sql_execute` (uses IDE connection `wgb26798`) and `snow` CLI (default connection points to a different account). Correct CLI connection `fleet_test_evals` had to be identified manually by matching the `account` field. The skill should have a clearer note about this.
 - **NOTE**: `snow` CLI version 3.9.0 shows deprecation warning. New version 3.16.0 available.
 
@@ -44,7 +44,7 @@ Started: 2026-04-12 12:49 UTC-7
 ### Step 8 - Load Seed Datasets
 - **BUG (repeated from prior run)**: `load-seed-data.sql` run via `snow sql -f` loaded partial data:
   - **DIM_FLEET**: 0 files processed. Stage path is `synthetic_ebikes/dim_fleet` but file is `synthetic_ebikes/dim_fleet_0_0_0.snappy.parquet` (flat, not in subfolder). The COPY INTO prefix `dim_fleet` should match `dim_fleet_` (with trailing underscore) to hit the flat file. Fixed by using path `synthetic_ebikes/dim_fleet_` manually.
-  - **DIM_POIS**: Same issue — 0 files processed. Fixed with path `synthetic_ebikes/dim_pois_`.
+  - **DIM_POIS**: Same issue - 0 files processed. Fixed with path `synthetic_ebikes/dim_pois_`.
   - **FACT_VEHICLE_TELEMETRY**: Only loaded 4 of 8 files (211,746 of 472,869 rows). Fixed by TRUNCATE + re-COPY with FORCE=TRUE.
 - **BUG**: `load-seed-data.sql` has a syntax error at line ~390: `CREATE OR REPLACE PROCEDURE ... EXECUTE AS OWNER COMMENT = '...' AS $$`. The COMMENT clause is between EXECUTE AS OWNER and AS, which causes `syntax error line 7 at position 0 unexpected 'COMMENT'`. The COMMENT must come before RETURNS or after CREATE OR REPLACE PROCEDURE directly. I had to run the procedure creation manually without the COMMENT.
 - **ROOT CAUSE for dim_fleet/dim_pois**: The COPY INTO uses prefix path `synthetic_ebikes/dim_fleet` which matches `synthetic_ebikes/dim_fleet_0_0_0.snappy.parquet`, but Snowflake interprets `dim_fleet` as a directory prefix and expects files IN that directory (like `dim_fleet/something.parquet`). Adding the trailing underscore `dim_fleet_` makes it match correctly as a file prefix.
@@ -98,7 +98,7 @@ Started: 2026-04-12 12:49 UTC-7
 1. **`load-seed-data.sql` DIM_FLEET/DIM_POIS COPY path bug**: Prefix `dim_fleet` doesn't match flat files `dim_fleet_0_0_0.snappy.parquet`. Needs trailing underscore.
 2. **`load-seed-data.sql` procedure COMMENT syntax error**: COMMENT between EXECUTE AS OWNER and AS is invalid SQL.
 3. **`load-seed-data.sql` partial telemetry loads**: 4 of 8 files skipped silently. FORCE=TRUE + TRUNCATE workaround needed.
-4. **`sql-pipeline.md` (retail-catchment) CLUSTER BY GEOGRAPHY**: Invalid — GEOGRAPHY columns can't be clustered.
+4. **`sql-pipeline.md` (retail-catchment) CLUSTER BY GEOGRAPHY**: Invalid - GEOGRAPHY columns can't be clustered.
 5. **`sql-pipeline.md` (retail-catchment) SET variables**: Don't persist in `snowflake_sql_execute` tool calls.
 
 ### Minor Friction

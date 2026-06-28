@@ -32,7 +32,7 @@ function hashStr(s: string): number {
 }
 
 // Pick a subtype from the catalog distribution by HASH bucket. Returns null when
-// the mode has no subtype distribution (car / ebike) — no vehicle-type branch.
+// the mode has no subtype distribution (car / ebike) - no vehicle-type branch.
 function pickSubtype(dist: SubtypeShare[] | null | undefined, vehicleId: string): string | null {
   if (!dist || dist.length === 0) return null;
   const bucket = hashStr(`${vehicleId}|sub`) % 100;
@@ -83,7 +83,7 @@ export function buildFleetWithDiagnostics(
   if (homePois.length === 0) homePois.push(...pois.slice(0, Math.min(10, pois.length)));
 
   const vt = resolveVehicleType(config);
-  // Per-mode asset attributes come from the catalog row — looked up ONCE, never
+  // Per-mode asset attributes come from the catalog row - looked up ONCE, never
   // branched on vehicle type. Modes absent from the catalog fall back to nulls.
   const assetRow = vehicleProfileFor(vt);
 

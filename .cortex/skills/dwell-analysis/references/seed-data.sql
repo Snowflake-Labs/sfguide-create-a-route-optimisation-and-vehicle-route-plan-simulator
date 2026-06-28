@@ -1,10 +1,10 @@
 /*
- * seed-data.sql — Dwell Analysis
+ * seed-data.sql - Dwell Analysis
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables,
  * computes GEOFENCE_POLYGONS from views, and inserts SLA_THRESHOLDS inline.
  * Dynamic Tables must be created separately (see sql-pipeline.sql Steps 5-13).
  * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
- * No S3 external stages — all data comes from UNIFIED.
+ * No S3 external stages - all data comes from UNIFIED.
  */
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

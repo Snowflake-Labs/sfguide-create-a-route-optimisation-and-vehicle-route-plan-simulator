@@ -36,9 +36,9 @@ export async function POST(request: NextRequest) {
   }
   if (availableViews.length > 0) {
     const viewLinks = availableViews
-      .map((v) => `  [${v.label}](view:${v.id}) — ${v.description}`)
+      .map((v) => `  [${v.label}](view:${v.id}) - ${v.description}`)
       .join('\n');
-    contextPrefix += `[Available panel views — use the exact markdown link format below when your response would benefit from the user exploring data or taking action in the UI:\n${viewLinks}\n\nInclude a view link when: the question is about data that view surfaces, the user could take a useful action in the view, or the answer alone leaves the user without an obvious next step. Do not include links for general or conceptual questions. One or two links per response at most. Always use the markdown link format — never plain text view names.]\n\n`;
+    contextPrefix += `[Available panel views - use the exact markdown link format below when your response would benefit from the user exploring data or taking action in the UI:\n${viewLinks}\n\nInclude a view link when: the question is about data that view surfaces, the user could take a useful action in the view, or the answer alone leaves the user without an obvious next step. Do not include links for general or conceptual questions. One or two links per response at most. Always use the markdown link format - never plain text view names.]\n\n`;
   } else if (contextPrefix) {
     contextPrefix += '\n';
   }

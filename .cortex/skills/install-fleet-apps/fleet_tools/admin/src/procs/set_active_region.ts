@@ -18,7 +18,7 @@ export const set_active_region = defineProc({
   },
   validate: async (args, ctx) => {
     // Reject activating a region that is not provisioned. Checked through the
-    // routing contract (Tenet 1) — never by reading the engine schema directly.
+    // routing contract (Tenet 1) - never by reading the engine schema directly.
     if (args.region != null && args.region.trim() !== '') {
       const ok = await ctx.conn.execScalar<boolean>(
         'SELECT ROUTING_PLATFORM.CONTRACT.REGION_EXISTS(?)',

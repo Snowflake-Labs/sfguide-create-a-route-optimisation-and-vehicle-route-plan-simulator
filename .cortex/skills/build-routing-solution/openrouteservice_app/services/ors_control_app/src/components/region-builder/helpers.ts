@@ -105,7 +105,7 @@ export function recommendComputeSize(level: string | undefined): ComputeSize {
 export type SourceTab = 'bbbike' | 'geofabrik';
 
 export function sizeLabel(mb: number | undefined | null): string {
-  if (mb == null) return '—';
+  if (mb == null) return '-';
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${Math.round(mb)} MB`;
 }
@@ -119,7 +119,7 @@ export function sizeClass(mb: number | undefined | null): string {
 }
 
 export function estTime(mb: number | undefined | null): string {
-  if (mb == null) return '—';
+  if (mb == null) return '-';
   if (mb < 100) return '~5 min';
   if (mb < 500) return '~10-30 min';
   if (mb < 2048) return '~30-60 min';

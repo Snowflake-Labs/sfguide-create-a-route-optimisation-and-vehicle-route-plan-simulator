@@ -154,7 +154,7 @@ export function nearestByRoad(
 // Per-trailer isochrone polygon for the dispatcher's reachability gate.
 // Returns GeoJSON polygon (or null on error). Uses the existing ISOCHRONES
 // wrapper; HGV-specific restrictions inside the wrapper are not yet plumbed
-// through, so this polygon is profile-only (driving-hgv graph) — the matrix
+// through, so this polygon is profile-only (driving-hgv graph) - the matrix
 // gate (CH fast-path matrix) is the authoritative duration filter.
 export async function fetchTrailerIsochrone(
   trailer: Trailer,

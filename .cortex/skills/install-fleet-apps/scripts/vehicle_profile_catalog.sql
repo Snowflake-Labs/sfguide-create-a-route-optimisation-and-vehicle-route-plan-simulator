@@ -81,7 +81,7 @@ VALUES
 -- ---------------------------------------------------------------------------
 -- Stamp DIM_FLEET asset columns from the catalog. scoped_contract.sql's
 -- F_DIM_FLEET_SCOPED selects f.WEIGHT_TONS/HEIGHT_M/LENGTH_M/WIDTH_M/AXLELOAD_T/
--- HAZMAT/VEHICLE_SUBTYPE — columns the Studio generator normally adds to DIM_FLEET.
+-- HAZMAT/VEHICLE_SUBTYPE - columns the Studio generator normally adds to DIM_FLEET.
 -- On the agnostic seed path those columns are absent, so add + stamp them here.
 -- V_DIM_FLEET_CURRENT is `SELECT f.*`, so it MUST be dropped before ADD COLUMN
 -- (projection_views.sql recreates it AFTER this file runs). Mirrors init.ts.

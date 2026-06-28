@@ -15,7 +15,7 @@ if [ ! -f "$VERSION_FILE" ]; then
   exit 1
 fi
 # manifest.yml is only present when this skill is packaged as a Snowflake Native App.
-# In the SPCS-only deployment path it is absent — that's expected, skip its checks.
+# In the SPCS-only deployment path it is absent - that's expected, skip its checks.
 HAS_MANIFEST=0
 if [ -f "$MANIFEST" ]; then
   HAS_MANIFEST=1
@@ -23,7 +23,7 @@ fi
 
 source "$VERSION_FILE"
 
-# Build parallel arrays (bash 3.x compatible — no declare -A)
+# Build parallel arrays (bash 3.x compatible - no declare -A)
 # Phase C: only the four ORS/VROOM engine images are validated here. The legacy
 # ors_control_app was retired (superseded by fleet_admin_app); the two app images
 # (FLEET_SA_APP/FLEET_ADMIN_APP) are validated by their own deploy scripts.
@@ -112,7 +112,7 @@ for yaml_file in "$OPENROUTESERVICE_APP_DIR"/services/*/*.yaml; do
   BAD_SCHEMAS=$(grep -oE '@[A-Z_]+\.' "$yaml_file" 2>/dev/null | grep -v "@${EXPECTED_SCHEMA}\." | sort -u || true)
   if [ -n "$BAD_SCHEMAS" ]; then
     for bad in $BAD_SCHEMAS; do
-      error "$(basename "$yaml_file") references volume schema ${bad} — expected @${EXPECTED_SCHEMA}."
+      error "$(basename "$yaml_file") references volume schema ${bad} - expected @${EXPECTED_SCHEMA}."
     done
   fi
 done

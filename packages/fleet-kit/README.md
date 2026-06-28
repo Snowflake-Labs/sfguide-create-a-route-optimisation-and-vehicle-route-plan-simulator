@@ -1,10 +1,10 @@
-# @fleet-kit/core — Shared UI kit
+# @fleet-kit/core - Shared UI kit
 
 The single home for the **framework-agnostic** UI and data primitives shared by the two
 frontends of this repo:
 
-- **Analytics App** (consumer + ops surfaces) — `.cortex/skills/install-fleet-apps/fleet_sa_app/ui` (Next.js)
-- **Routing Platform admin/build console** — `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app` (being modernized onto Next in R5)
+- **Analytics App** (consumer + ops surfaces) - `.cortex/skills/install-fleet-apps/fleet_sa_app/ui` (Next.js)
+- **Routing Platform admin/build console** - `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app` (being modernized onto Next in R5)
 
 ## Why this exists
 

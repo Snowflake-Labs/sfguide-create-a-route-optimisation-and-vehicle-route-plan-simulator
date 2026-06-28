@@ -4,12 +4,12 @@
 // Convoy / Uber Freight in NA): a sortable grid + map of offers with vendor /
 // equipment / ADR / price / age filters, plus trust + market-rate badges.
 //
-// This file is the orchestrator only — state, derived memos, and layout.
+// This file is the orchestrator only - state, derived memos, and layout.
 // All SQL, styling, badge renderers, filter controls, grid markup, map
 // layers, and drawer panels live in ./freight-exchange/*.
 //
 // Phase C (saved searches, posting, chat, bidding, alerts) and Phase D
-// (docs, cross-border, round-trip, tariff calculator) are NOT in this file —
+// (docs, cross-border, round-trip, tariff calculator) are NOT in this file -
 // see references/productisation.md.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -41,7 +41,7 @@ export default function FreightExchange() {
   const route = useSelectedOfferRoute(selected);
 
   // Seed source toggles once when offers first arrive. The guard preserves
-  // any subsequent user toggles — without it, a re-fetch would wipe the
+  // any subsequent user toggles - without it, a re-fetch would wipe the
   // user's selections and re-render every chip as enabled.
   useEffect(() => {
     if (!offers.length) return;

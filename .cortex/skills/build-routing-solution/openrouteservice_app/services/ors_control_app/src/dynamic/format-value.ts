@@ -7,7 +7,7 @@ import type { NumberFormat } from './spec-types';
  * grouping for counts) so converted dashboards match their originals.
  */
 export function formatValue(value: unknown, format: NumberFormat = 'number', suffix = ''): string {
-  if (value == null || value === '') return '—';
+  if (value == null || value === '') return '-';
   let out: string;
   switch (format) {
     case 'percent':
@@ -30,6 +30,6 @@ export function formatValue(value: unknown, format: NumberFormat = 'number', suf
     default:
       out = String(value);
   }
-  if (out === '—') return out;
+  if (out === '-') return out;
   return suffix ? `${out}${suffix}` : out;
 }

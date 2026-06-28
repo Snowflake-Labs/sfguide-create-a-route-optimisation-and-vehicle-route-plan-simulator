@@ -1,4 +1,4 @@
-// @fleet-kit/core/map — map DSL barrel.
+// @fleet-kit/core/map - map DSL barrel.
 //   layer-spec      pure DSL types (no runtime deps)
 //   map-fit         camera-fit + coordinate extraction (peer: @deck.gl/core, h3-js)
 //   layer-compiler  LayerSpec -> deck.gl Layer instances (peer: @deck.gl/core, /layers, /geo-layers)

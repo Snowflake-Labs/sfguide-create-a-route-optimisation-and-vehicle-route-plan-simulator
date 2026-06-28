@@ -1,4 +1,4 @@
-# Freight Exchange — Use Case Narrative
+# Freight Exchange - Use Case Narrative
 
 ## Customer anchor
 
@@ -19,21 +19,21 @@ Same NTBO call as `backload-matching` (May 5, 2026, DHL Freight). The pain point
 | Cadence | A few times per day | Continuous (every 5-15 min) |
 | Read pattern | One big OPTIMIZATION call | Many small filtered selects on one denormalized view |
 
-The two converge at `PROPOSAL_DECISIONS` — accepted offers from either page write the same audit row, so EUR-reclaimed and offers-accepted KPIs roll up uniformly.
+The two converge at `PROPOSAL_DECISIONS` - accepted offers from either page write the same audit row, so EUR-reclaimed and offers-accepted KPIs roll up uniformly.
 
 ## What the demo does (Phase A + B)
 
-Phase A — **looks like a freight exchange**:
+Phase A - **looks like a freight exchange**:
 1. Sidebar entry **Freight Exchange** (under *Solution Accelerators*) opens a new route.
 2. Top filter bar: source vendor chips (Timocom / WTransnet / Teleroute / B2P, or DAT / Truckstop / Convoy / Uber Freight depending on preset region), equipment chips (TAUTLINER / MEGA / REEFER / BOX / FLATBED), ADR toggle, USD/km min/max, posted-since slider.
 3. Sortable AG-Grid (300 offers per preset): source, pickup, dropoff, distance_km, equipment, ADR, weight, USD, USD/km, age.
 4. Map: deck.gl ScatterplotLayer of offer pickup points, color-coded by source vendor; selected offer highlighted.
 5. Click any offer -> right-rail drawer with offer details.
 
-Phase B — **trust + market intelligence on top**:
+Phase B - **trust + market intelligence on top**:
 1. Trust badge per offer (GREEN / YELLOW / RED) computed from `DIM_PARTNERS` credit_score + KYC + blacklist.
 2. Market badge per offer (BELOW_MARKET / AT_MARKET / ABOVE_MARKET) computed from `RATE_INDEX` weekly p50 USD/km by EQUIPMENT.
-3. Detail drawer shows partner credit score, payment-days average, lane-history aggregate ("This partner has shipped this DE -> NL TAUTLINER lane 14x — 92% on-time, no damage events").
+3. Detail drawer shows partner credit score, payment-days average, lane-history aggregate ("This partner has shipped this DE -> NL TAUTLINER lane 14x - 92% on-time, no damage events").
 
 ## How customer signals map to the schema
 
@@ -52,7 +52,7 @@ Same ICP as `backload-matching`. The skill is vendor-neutral by construction:
 - `EXTERNAL_OFFERS.SOURCE` per region uses TIMOCOM / WTRANSNET / TELEROUTE / B2P in EU and DAT / TRUCKSTOP / CONVOY / UBER_FREIGHT in NA. The Data Studio engine picks based on the preset region.
 - `DIM_PARTNERS.COUNTRY` is region-aware (DE/NL/PL/CZ/AT for Germany preset, FR/BE/ES/IT for France, US/CA/MX for NA, etc.).
 
-Adding a new region is purely a Data Studio operation — generate a preset for that region and the page picks it up the next time the user selects it from DatasetPicker.
+Adding a new region is purely a Data Studio operation - generate a preset for that region and the page picks it up the next time the user selects it from DatasetPicker.
 
 ## Supporting roles for other ORS / Cortex functions
 

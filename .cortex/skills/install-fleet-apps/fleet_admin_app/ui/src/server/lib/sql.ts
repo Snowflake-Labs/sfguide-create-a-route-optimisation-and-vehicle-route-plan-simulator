@@ -75,7 +75,7 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
   // The Snowflake SQL REST API returns ALL values as strings inside `data`
   // arrays (numerics, booleans, dates, etc). Without coercion, every numeric
   // column in the React app arrives as a string and `(x as number).toFixed()`
-  // throws — the canonical mask for "blank page on Freight Exchange". Coerce
+  // throws - the canonical mask for "blank page on Freight Exchange". Coerce
   // by `rowType[i].type` here so callers get JS-native types. BIGINTs
   // (NUMBER with precision > 15, scale 0) stay as strings to preserve
   // precision; everything else (`real`, `fixed` with safe precision/scale,
@@ -125,7 +125,7 @@ export async function callProcedure(proc: string): Promise<string> {
   return rows?.[0]?.[Object.keys(rows[0])[0]] || '';
 }
 
-// Async statement submission — returns a Snowflake statementHandle for
+// Async statement submission - returns a Snowflake statementHandle for
 // long-running queries. Caller polls / cancels via cancelStatement.
 // db/schema let callers target the right namespace (e.g. EMERGENCY_RESPONSE).
 export async function submitSqlAsync(sql: string, database?: string, schema?: string): Promise<string> {

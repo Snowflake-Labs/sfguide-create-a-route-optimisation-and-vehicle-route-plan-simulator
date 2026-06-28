@@ -31,7 +31,7 @@ const DEPOT_BUILDING_SAMPLE = 5000;
 // Default anchor taxonomy when a preset does not declare anchor_categories.
 // Neutral, domain-agnostic Overture BASIC_CATEGORY families. Category names are
 // verified against the live Overture Places taxonomy (e.g. there is no bare
-// 'pharmacy'/'grocery_store' — the real values are 'pharmacy_and_drug_store',
+// 'pharmacy'/'grocery_store' - the real values are 'pharmacy_and_drug_store',
 // 'shopping_mall', etc.).
 const DEFAULT_ANCHOR_CATEGORIES: Record<string, string[]> = {
   HEALTH_FACILITY: [

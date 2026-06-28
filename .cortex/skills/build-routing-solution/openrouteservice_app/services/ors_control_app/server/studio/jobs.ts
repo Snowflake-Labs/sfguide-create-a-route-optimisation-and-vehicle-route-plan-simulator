@@ -478,7 +478,7 @@ export async function deleteDataset(
 // recorded as an immutable dataset in FLEET_INTELLIGENCE.CORE.DIM_DATASETS
 // keyed by JOB_ID; at most one row per (REGION, VEHICLE_TYPE) is IS_ACTIVE.
 // Downstream consumers read from V_*_CURRENT views which join to
-// DIM_DATASETS and filter on IS_ACTIVE = TRUE — so prior runs stay queryable
+// DIM_DATASETS and filter on IS_ACTIVE = TRUE - so prior runs stay queryable
 // by JOB_ID without polluting the live UI.
 //
 // FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_TRIP_SCHEDULE keep their existing
@@ -491,7 +491,7 @@ export async function deleteDataset(
 // datasets in a region.
 //
 // INVARIANT: All destructive cleanup of fact/dim rows MUST be scoped by
-// JOB_ID — never by REGION or (REGION, VEHICLE_TYPE). Each preset /
+// JOB_ID - never by REGION or (REGION, VEHICLE_TYPE). Each preset /
 // generation run is an independent dataset keyed by JOB_ID; deleting one
 // preset's data must never touch another preset's rows. The only
 // JOB_ID-scoped destructive helper is deleteJobData() above. Do not add
@@ -576,7 +576,7 @@ async function revertArchivePriorDatasets(
 }
 
 // Recompute ROW_COUNTS on DIM_DATASETS after a job's inserts complete.
-// Best-effort — failure does not affect the job outcome.
+// Best-effort - failure does not affect the job outcome.
 async function updateDatasetRowCounts(
   snowSql: SnowSqlFn,
   jobId: string,
@@ -611,7 +611,7 @@ async function updateDatasetRowCounts(
 // DELETEs would have wiped data across ALL datasets in a region, breaking
 // per-preset independence. See the INVARIANT comment above
 // archivePriorDatasets. If you need to physically purge a single dataset,
-// use deleteJobData(jobId) — it is the only sanctioned destructive helper.
+// use deleteJobData(jobId) - it is the only sanctioned destructive helper.
 
 function broadcast(job: Job, event: string, data: any) {
   job.events.push({ event, data, ts: Date.now() });
@@ -661,7 +661,7 @@ export function subscribeJob(jobId: string, cb: SseCallback): () => void {
 // captureAndScaleUp() / scaleDown() (see ./scaling.ts) so it is region-aware
 // and uses captured baselines for symmetric restore. The previous hardcoded
 // disableOrsAutoSuspend / restoreOrsAutoSuspend helpers only pinned the
-// gateway, the legacy ORS_SERVICE name, and ORS_SERVICE_SANFRANCISCO — they
+// gateway, the legacy ORS_SERVICE name, and ORS_SERVICE_SANFRANCISCO - they
 // never touched the active job's per-region ORS_SERVICE_<REGION>,
 // VROOM_SERVICE_<REGION>, or ORS_POOL_<REGION>, which is why ORS could
 // auto-suspend mid-run. The new flow guarantees pin and unpin always travel

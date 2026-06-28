@@ -1,4 +1,4 @@
--- SV_CATCHMENT — Catchment demo semantic view
+-- SV_CATCHMENT - Catchment demo semantic view
 -- Source: FLEET_INTELLIGENCE.CATCHMENT.POIS + CITIES_BY_STATE
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOMETRY GEOGRAPHY column excluded; lat/lon retained on base view but not modeled as metrics.

@@ -1,4 +1,4 @@
--- FLEET_OPS pack — minimal setup (hand-written, NOT generated).
+-- FLEET_OPS pack - minimal setup (hand-written, NOT generated).
 -- The FLEET_OPS analytics layer (schema, dataset-scoped intent UDTFs, global-active
 -- views, and their grants) is authored in fleet_sa_app/app/scoped_contract.sql and
 -- applied by packs/_lib/install.py AFTER the unified_fleet pack. This file only ensures

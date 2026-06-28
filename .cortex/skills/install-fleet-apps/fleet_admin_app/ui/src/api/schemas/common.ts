@@ -6,7 +6,7 @@ import { z } from 'zod';
 // Empty string is allowed because the server treats it as "default region".
 export const RegionName = z.string().regex(/^[A-Za-z0-9_]*$/);
 
-// ORS profile string. Validated loosely — server accepts profiles dynamically
+// ORS profile string. Validated loosely - server accepts profiles dynamically
 // per region (driving-car, driving-hgv, cycling-electric, etc.).
 export const Profile = z.string().min(1);
 

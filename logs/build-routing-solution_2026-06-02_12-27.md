@@ -1,4 +1,4 @@
-# Build Routing Solution — Execution Log
+# Build Routing Solution - Execution Log
 
 - **Date:** 2026-06-02 12:27
 - **Skill:** build-routing-solution (level-driven serving-tier downsize change)
@@ -70,7 +70,7 @@ Standardize verification queries on RESULT_SCAN projections in the skill docs.
 ---
 
 ## Notes
-- No image rebuild required — backend SQL module only.
+- No image rebuild required - backend SQL module only.
 - Continental MMAP service (Europe) took ~5 min to reach service_ready after
   recreation (lazy page-in of the memory-mapped graph); city RAM_STORE box was
   ready in ~90 s. Expected.

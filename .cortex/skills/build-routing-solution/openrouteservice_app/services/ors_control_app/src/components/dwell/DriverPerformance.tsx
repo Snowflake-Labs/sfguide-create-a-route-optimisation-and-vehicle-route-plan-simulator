@@ -36,9 +36,9 @@ export default function DriverPerformance() {
   }, [data]);
   const totalBreaches = useMemo(() => data.reduce((s, r) => s + Number(r.SLA_BREACHES || 0), 0), [data]);
   const best = useMemo(() => {
-    if (data.length === 0) return '—';
+    if (data.length === 0) return '-';
     const sorted = [...data].sort((a, b) => Number(a.BREACH_RATE || 0) - Number(b.BREACH_RATE || 0));
-    return sorted[0]?.DRIVER_ID || '—';
+    return sorted[0]?.DRIVER_ID || '-';
   }, [data]);
 
   return (

@@ -1,4 +1,4 @@
-# install-fleet-apps — Friction-Status Assessment & Source Hardening
+# install-fleet-apps - Friction-Status Assessment & Source Hardening
 
 - **Date:** 2026-06-24 12:42
 - **Skill:** install-fleet-apps
@@ -18,16 +18,16 @@ Per plan `verify-clean-install-frictions.plan.md`.
 
 | Friction (log) | Fix location | Status |
 |---|---|---|
-| F1/F2 02-05, F4 06-23 — loader aborts on missing `ROUTING_ANALYTICS` / `OPENROUTESERVICE_APP` / `ROUTE_OPTIMIZATION.PLACES` | `scripts/seed_data.sql` (warehouse + engine-DB + REGION_CATALOG + PLACES/LOOKUP stubs) | FIXED |
-| F3 02-05 — `install.json` dirties tree, blocks app deploy guard | `.gitignore:57` `**/_installed/**/install.json` | FIXED |
-| F5 02-05 — routing contract applied before engine -> 0 functions | orchestrator `[3/8]` "Engine FIRST then contract" | FIXED |
-| F1 07-30 — `docker push` SPCS manifest hang | `provision_engine.sh` auto crane fallback (`USE_CRANE_PUSH`) | FIXED |
-| F2 07-30 — podman preferred / 2 GB OOM | `provision_engine.sh` docker-first + <4 GB warn; documented `SKILL.md:42-43` | FIXED |
-| F3 07-30 — `SKIP_DATA=1` skips DIM_FLEET stamp + projection views | catalog+projection moved to `[2.5/8]`, decoupled from `SKIP_DATA` (own `SKIP_PROJECTIONS`) | FIXED |
-| F4 07-30 + F4 02-05 — `COMPUTE_POOL` unbound under `SKIP_INFRA` | infra step always resolves `COMPUTE_POOL`; guard at apps step (`:?`) | FIXED |
-| F5 07-30 — contract grants `FLEET_APP_USER` before roles exist | roles pre-created at `[0.5/8]` before packs/contract | FIXED |
-| F6 07-30 — `FLEET_INTELLIGENCE.SEMANTIC` grant on nonexistent schema | `semantic_views.sql` creates the schema at `[4.5/8]` (first DDL) before role grants `[6/8]` | FIXED |
-| F7b 07-30 — no-arg `ROUTING_STATUS()` reported `ors-service-europe` | source already `DEFAULT_REGION_NAME: SanFrancisco` (gateway yaml + app); was a stale live value | NO ACTION (source correct) |
+| F1/F2 02-05, F4 06-23 - loader aborts on missing `ROUTING_ANALYTICS` / `OPENROUTESERVICE_APP` / `ROUTE_OPTIMIZATION.PLACES` | `scripts/seed_data.sql` (warehouse + engine-DB + REGION_CATALOG + PLACES/LOOKUP stubs) | FIXED |
+| F3 02-05 - `install.json` dirties tree, blocks app deploy guard | `.gitignore:57` `**/_installed/**/install.json` | FIXED |
+| F5 02-05 - routing contract applied before engine -> 0 functions | orchestrator `[3/8]` "Engine FIRST then contract" | FIXED |
+| F1 07-30 - `docker push` SPCS manifest hang | `provision_engine.sh` auto crane fallback (`USE_CRANE_PUSH`) | FIXED |
+| F2 07-30 - podman preferred / 2 GB OOM | `provision_engine.sh` docker-first + <4 GB warn; documented `SKILL.md:42-43` | FIXED |
+| F3 07-30 - `SKIP_DATA=1` skips DIM_FLEET stamp + projection views | catalog+projection moved to `[2.5/8]`, decoupled from `SKIP_DATA` (own `SKIP_PROJECTIONS`) | FIXED |
+| F4 07-30 + F4 02-05 - `COMPUTE_POOL` unbound under `SKIP_INFRA` | infra step always resolves `COMPUTE_POOL`; guard at apps step (`:?`) | FIXED |
+| F5 07-30 - contract grants `FLEET_APP_USER` before roles exist | roles pre-created at `[0.5/8]` before packs/contract | FIXED |
+| F6 07-30 - `FLEET_INTELLIGENCE.SEMANTIC` grant on nonexistent schema | `semantic_views.sql` creates the schema at `[4.5/8]` (first DDL) before role grants `[6/8]` | FIXED |
+| F7b 07-30 - no-arg `ROUTING_STATUS()` reported `ors-service-europe` | source already `DEFAULT_REGION_NAME: SanFrancisco` (gateway yaml + app); was a stale live value | NO ACTION (source correct) |
 | F1-F11 06-23 (10 source fixes) | all committed (`--recursive`, `--format=CSV`, legacy control-app removal, loader stubs, pack resolver, substrate, projection views, catalog, best-effort packs, role ordering) | FIXED |
 
 ## Friction Points (this session)
@@ -73,9 +73,9 @@ Per plan `verify-clean-install-frictions.plan.md`.
   datasets, which are not the default seed. Revisit only if a pack hard-requires non-NULL
   VEHICLE_SUBTYPE on the agnostic path.
 
-### Drift audit — clean (no action)
+### Drift audit - clean (no action)
 
-- `scripts/analytic_layer.sql`: NO clean-install dependency risk — all sources resolve to
+- `scripts/analytic_layer.sql`: NO clean-install dependency risk - all sources resolve to
   earlier orchestrator steps (seed_data -> loader -> projection_views -> self) or Overture
   Marketplace shares acquired idempotently within the file. No demo-skill / init.ts coupling.
 - `scripts/projection_views.sql`: 5 shared `V_*_CURRENT` views identical to `init.ts`; the 3

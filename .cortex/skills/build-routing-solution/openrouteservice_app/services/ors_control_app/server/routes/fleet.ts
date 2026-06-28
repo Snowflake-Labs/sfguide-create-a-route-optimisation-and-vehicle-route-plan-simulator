@@ -1,4 +1,4 @@
-// /api/fleet-config + /api/datasets — dataset picker and vehicle-type
+// /api/fleet-config + /api/datasets - dataset picker and vehicle-type
 // switching endpoints. Mutate the per-demo CONFIG tables.
 
 import { Router } from 'express';
@@ -119,7 +119,7 @@ export function createFleetRouter(): Router {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /api/datasets — list completed Data Studio generation jobs as a single
+  // GET /api/datasets - list completed Data Studio generation jobs as a single
   // unified dataset list. Used by the DatasetPicker header dropdown to replace
   // the separate region + vehicle-type switchers.
   // ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ export function createFleetRouter(): Router {
         const vehicleType = r.CFG_VEHICLE_TYPE || ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
         // isActive is derived from DIM_DATASETS.IS_ACTIVE, NOT from
         // a region+vehicle equality check, so at most ONE dataset per
-        // (region, vehicle) shows the Active badge — the one whose
+        // (region, vehicle) shows the Active badge - the one whose
         // JOB_ID matches the current DIM_DATASETS row with IS_ACTIVE=TRUE.
         const fleetRowCount = Number(r.FLEET_ROW_COUNT ?? 0);
         return {
@@ -188,7 +188,7 @@ export function createFleetRouter(): Router {
   });
 
   // ---------------------------------------------------------------------------
-  // POST /api/datasets/activate — atomically activate a (region, vehicleType)
+  // POST /api/datasets/activate - atomically activate a (region, vehicleType)
   // pair selected from the DatasetPicker. Updates VEHICLE_TYPE and REGION on
   // all 6 demo CONFIG tables in ONE server round-trip BEFORE returning, so
   // that when the React UI subsequently flips its state and remounts demo

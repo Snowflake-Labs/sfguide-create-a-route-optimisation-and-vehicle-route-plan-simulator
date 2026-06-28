@@ -1,4 +1,4 @@
-# Neutralize Domain Naming — Execution Log
+# Neutralize Domain Naming - Execution Log
 
 - **Date:** 2026-06-25 01:20
 - **Skill/Plan:** `.snowflake/cortex/plans/neutralize-domain-naming.plan.md`
@@ -69,7 +69,7 @@ not a SQL-callable procedure, so it cannot be triggered from the deploy shell.
 
 **Resolution:**
 Used a targeted, tracked `UPDATE` on the active dataset's `DIM_FLEET` rows
-(`food_delivery` → `urban_ebike`, 50 rows) — the live-migration equivalent of the schema
+(`food_delivery` → `urban_ebike`, 50 rows) - the live-migration equivalent of the schema
 ALTER. The only stale value was the cosmetic `OPERATING_MODE` (functionally inert post-rename,
 since only the renamed `regional_hgv` branch reads it; joins are keyed on `VEHICLE_TYPE`).
 The redeployed admin app's boot already reseeded `DIM_VEHICLE_PROFILE` and
@@ -99,7 +99,7 @@ Tier B identifier rename and the Tier C schema rename. Worked cleanly.
 
 ## Summary
 
-- **Outcome:** COMPLETED_WITH_WORKAROUNDS — all 8 plan tasks done.
+- **Outcome:** COMPLETED_WITH_WORKAROUNDS - all 8 plan tasks done.
 - **Commits (branch feature/sa-synapse-app):** Tier A (2f4ab86c), Tier B (8fe4ad80),
   Tier C (bdda2274), tag bumps (c7d7e4cd), legacy/doc residue cleanup (a2aeb6da). All pushed.
 - **Live (wgb26798):** GENERATION_PROFILE_CATALOG → 3 neutral builtin ids;

@@ -415,7 +415,7 @@ export default function AgentPlayground() {
           )}
         </div>
       </div>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent - ask about directions, reachability, or place discovery</p>
 
       <div style={{ marginBottom: 10 }}>
         {scenarios.length > 1 && (
@@ -441,7 +441,7 @@ export default function AgentPlayground() {
           </div>
         )}
         <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Try an example{examplesLoading ? ` — generating for ${regionName}${vehicleType ? ` + ${vehicleType}` : ''}...` : ''}
+          Try an example{examplesLoading ? ` - generating for ${regionName}${vehicleType ? ` + ${vehicleType}` : ''}...` : ''}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {(scenarios.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (

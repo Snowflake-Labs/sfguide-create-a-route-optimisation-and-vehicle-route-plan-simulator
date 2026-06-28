@@ -642,7 +642,7 @@ BEGIN
     -- its rescue path; without this loop the pool stays pinned indefinitely
     -- once the rescue resolves, since DOWNSIZE_REGION_AFTER_BUILD only fires
     -- on L/XXL builds. Default idle value is 3600 (matches create_region_ors_service
-    -- and DOWNSIZE_REGION_AFTER_BUILD), not 14400 — pools may suspend faster
+    -- and DOWNSIZE_REGION_AFTER_BUILD), not 14400 - pools may suspend faster
     -- than services.
     SHOW COMPUTE POOLS LIKE 'ORS_POOL_%';
     LET pls RESULTSET := (SELECT "name" AS pool_name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
@@ -671,7 +671,7 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         -- Active Data Studio generation job targeting this region pins the
-        -- pool to 0 too — without this, the pool can auto-suspend mid-run
+        -- pool to 0 too - without this, the pool can auto-suspend mid-run
         -- (default 3600s) and bring ORS_SERVICE_<REGION> down with it.
         BEGIN
             LET psc INTEGER := 0;

@@ -31,13 +31,13 @@ export function renderTrust(b: Offer['TRUST_BADGE']) {
   if (b === 'GREEN') return <span style={{ color: '#16a34a', fontWeight: 600 }}>● Verified</span>;
   if (b === 'YELLOW') return <span style={{ color: '#ca8a04', fontWeight: 600 }}>● Caution</span>;
   if (b === 'RED') return <span style={{ color: '#dc2626', fontWeight: 600 }}>● Risk</span>;
-  return <span style={{ color: '#6b7280' }}>—</span>;
+  return <span style={{ color: '#6b7280' }}>-</span>;
 }
 
 // Market-rate badge cell renderer (Phase B).
 export function renderMarket(o: Offer) {
   if (o.MARKET_BADGE === 'UNKNOWN' || o.PRICE_DELTA_PCT === null) {
-    return <span style={{ color: '#6b7280' }}>—</span>;
+    return <span style={{ color: '#6b7280' }}>-</span>;
   }
   const pct = o.PRICE_DELTA_PCT;
   const style: React.CSSProperties = { fontWeight: 600 };
@@ -50,7 +50,7 @@ export function renderMarket(o: Offer) {
 
 // Detour badge cell renderer (Phase E1, used by RoutePanel + grid).
 export function renderDetour(b: Offer['ROUTE_DETOUR_BADGE']) {
-  if (!b || b === 'PENDING_ROUTE') return <span style={{ color: '#6b7280' }}>—</span>;
+  if (!b || b === 'PENDING_ROUTE') return <span style={{ color: '#6b7280' }}>-</span>;
   if (b === 'DIRECT') return <span style={{ color: '#16a34a', fontWeight: 600 }}>● Direct</span>;
   if (b === 'DETOUR_MODERATE') return <span style={{ color: '#ca8a04', fontWeight: 600 }}>● Detour</span>;
   return <span style={{ color: '#dc2626', fontWeight: 600 }}>● Heavy</span>;
@@ -58,7 +58,7 @@ export function renderDetour(b: Offer['ROUTE_DETOUR_BADGE']) {
 
 // ROAD_MIN -> "3h 20m" / "45m"
 export function formatDuration(min: number | null | undefined): string {
-  if (min == null || !Number.isFinite(min)) return '—';
+  if (min == null || !Number.isFinite(min)) return '-';
   if (min < 60) return `${Math.round(min)}m`;
   const h = Math.floor(min / 60);
   const m = Math.round(min - h * 60);

@@ -1,4 +1,4 @@
-# Step 3 plan — Fleet Intelligence SA+synapse: full coverage, Ops, Analyst
+# Step 3 plan - Fleet Intelligence SA+synapse: full coverage, Ops, Analyst
 
 > How to resume in a new context: read project memory `fleet-sa-synapse-migration`
 > and this file. Step 2 is committed on branch `feature/sa-synapse-app` in this work
@@ -23,15 +23,15 @@ Scope decisions (this pass):
 
 | Area | Step 2 | Step 3 |
 |---|---|---|
-| Dwell (overview, congestion) | Done | — |
-| Dwell (facilities, SLA, trip inspector, driver perf, live) | — | 3B |
-| Fleet Delivery (dashboard, fleet map, catchment, heatmap) | — | 3B |
-| Fleet Taxis (overview, driver routes, heatmap) | — | 3B |
-| Route Deviation (dashboard, comparison, inspector) | — | 3B |
-| Retail Catchment, Asset Velocity | — | 3B |
-| Freight Exchange (+AI negotiation), Backload Matching | — | 3C |
-| Routing tools: directions/isochrone/optimize/poi/pharma_catchment | Done (5) | — |
-| Routing tools: pharma_optimization, supply_chain | — | 3F |
+| Dwell (overview, congestion) | Done | - |
+| Dwell (facilities, SLA, trip inspector, driver perf, live) | - | 3B |
+| Fleet Delivery (dashboard, fleet map, catchment, heatmap) | - | 3B |
+| Fleet Taxis (overview, driver routes, heatmap) | - | 3B |
+| Route Deviation (dashboard, comparison, inspector) | - | 3B |
+| Retail Catchment, Asset Velocity | - | 3B |
+| Freight Exchange (+AI negotiation), Backload Matching | - | 3C |
+| Routing tools: directions/isochrone/optimize/poi/pharma_catchment | Done (5) | - |
+| Routing tools: pharma_optimization, supply_chain | - | 3F |
 | Cortex Analyst over semantic views | Deferred | 3A |
 | Ops: service lifecycle, region/vehicle/dataset, routing limits | Deferred | 3D |
 | Heavy provisioning builders (region/matrix/data studio/function tester) | n/a | Stay in control app (hybrid) |

@@ -1,4 +1,4 @@
-// Generation profile catalog — persists the built-in generation profiles
+// Generation profile catalog - persists the built-in generation profiles
 // (formerly TypeScript-only PROFILE_TEMPLATES) as DATA in Snowflake so a new
 // vehicle mode can be onboarded by INSERTing a profile row (with the declarative
 // knobs the de-branched engine reads), with ZERO generator code edits.

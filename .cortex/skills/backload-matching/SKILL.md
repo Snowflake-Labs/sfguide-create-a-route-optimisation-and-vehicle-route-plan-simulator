@@ -14,7 +14,7 @@ metadata:
 
 Adds a parallel page to the ORS Control App that solves the *backload* problem for any line-haul fleet with imbalanced lanes: trailers reaching the continent and waiting up to three days for a return load. The page issues a **single `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` call** that jointly assigns N idle-bound trailers to a pool of internal volumes (own waiting shipments) and external offers (synthesized in the style of Timocom, WTransnet, Teleroute, B2P), minimizing total empty kilometres. Internal-first preference is encoded as VROOM `priority`; ADR/equipment gating uses VROOM `skills`; direction-to-home bias is encoded in each vehicle's `end` location. Accepted plans are written back to `PROPOSAL_DECISIONS` to close the *Action Engine* loop.
 
-The existing **Route Optimization** and **Asset Velocity** pages are **not modified** — Backload is an additive, parallel page.
+The existing **Route Optimization** and **Asset Velocity** pages are **not modified** - Backload is an additive, parallel page.
 
 ## Use Case Narrative
 
@@ -23,14 +23,14 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 - ~2,500 trailers, ~100 Nordic dispatchers, ~20 new orders/min across Europe.
 - Trailers reach the continent and wait up to **3 days** in Paris for backloads.
 - Today: manual portal-hopping across Timocom, WTransnet, Teleroute, B2P.
-- Desired: fleet-wide *"give me a structural plan for tomorrow"* — internal-first, external-second.
-- Generalises 1:1 to Maersk Inland, K+N Road, DSV, XPO, Geodis, Dachser, FedEx Freight, Schneider, J.B. Hunt — anyone with imbalanced lanes.
+- Desired: fleet-wide *"give me a structural plan for tomorrow"* - internal-first, external-second.
+- Generalises 1:1 to Maersk Inland, K+N Road, DSV, XPO, Geodis, Dachser, FedEx Freight, Schneider, J.B. Hunt - anyone with imbalanced lanes.
 
 ## Prerequisites
 
-- `install-fleet-apps` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
+- `install-fleet-apps` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App - no specific region required.
 - `route-optimization` deployed.
-- Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) — not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
+- Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) - not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
 - Run Data Studio for the target `(region, vehicle_type)` first so `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, and `V_FACT_FREIGHT_OFFERS_CURRENT` are populated. The page no longer has an in-page "Generate seed data" action.
 
 ## Required Privileges
@@ -57,7 +57,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | SCHEMA | `BACKLOAD_MATCHING` | Schema for backload tables and views |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
 | REGION | (active preset) | Auto-derived from `BACKLOAD_MATCHING.CONFIG`, which mirrors the active Control App region/vehicle. No hardcoded city. |
-| VEHICLE_CLASS_PROFILE | `OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE` | Single source of truth for per-vehicle-class capacity (`PAYLOAD_KG_TYP`), shipment-weight band, ORS profile, costs (€/km, €/hr), and UI label. The skill is transport-type agnostic — no HGV-specific constants. Seeded with 8 classes (`bicycle`, `ebike`, `foot`, `motorcycle`, `car`, `van`, `hgv`, `truck`). Unknown `vehicle_type` → bootstrap and React both fail loudly so a custom preset never silently runs with wrong-class defaults. |
+| VEHICLE_CLASS_PROFILE | `OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE` | Single source of truth for per-vehicle-class capacity (`PAYLOAD_KG_TYP`), shipment-weight band, ORS profile, costs (€/km, €/hr), and UI label. The skill is transport-type agnostic - no HGV-specific constants. Seeded with 8 classes (`bicycle`, `ebike`, `foot`, `motorcycle`, `car`, `van`, `hgv`, `truck`). Unknown `vehicle_type` → bootstrap and React both fail loudly so a custom preset never silently runs with wrong-class defaults. |
 | TRAILER_COUNT | up to ~80 (driven by Data Studio dataset) | Idle-bound trailers for the active preset |
 | INTERNAL_VOLUMES_COUNT | 120 | Internal waiting loads (most-recent FACT_TRIPS) |
 | EXTERNAL_OFFERS_COUNT | 300 | Synthetic external offers per region |
@@ -131,13 +131,13 @@ In the app:
 2. Click **Backload Matching** in the sidebar (under Solution Accelerators).
 3. Verify the map shows ~80 trailer markers + ~120 internal volume circles + ~300 external offer circles.
 4. Adjust `Internal Priority` slider if desired (default 100). Click **Solve Backloads**.
-5. Within ~10–30 sec the page should render colored loaded legs + gray empty legs + a per-trailer assignment table on the right rail with KPIs:
+5. Within ~10-30 sec the page should render colored loaded legs + gray empty legs + a per-trailer assignment table on the right rail with KPIs:
    - **% trailers assigned**
    - **Total empty km**
    - **% internal coverage** (assigned-to-internal / assigned)
    - **EUR/day reclaimed** (rough = `idle_days_saved * IDLE_COST_EUR_PER_DAY` + `empty_km_saved * EUR_PER_EMPTY_KM`)
 6. Click any trailer in the table -> *"Why this assignment?"* card -> Cortex returns a 2-sentence rationale.
-7. Click **Confirm Plan** — assignments land in `FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS`.
+7. Click **Confirm Plan** - assignments land in `FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS`.
 
 ### Step 6: AISQL Notebook (optional)
 
@@ -160,7 +160,7 @@ The Control App image rollback is handled by re-deploying the previous image tag
 
 ## Out of Scope
 
-- Live Timocom / WTransnet / Teleroute / B2P API integration (synthetic only — productisation note in `references/optimization-vrp-mapping.md`).
+- Live Timocom / WTransnet / Teleroute / B2P API integration (synthetic only - productisation note in `references/optimization-vrp-mapping.md`).
 - Asset Velocity 7-day idle alerting / email engine (the existing `Asset Velocity` tab covers KPIs; this skill stays focused on the solver).
 - DGF / myDHLI POD-map use case.
 - Real-time streaming pipeline (we ship a polled view first; productisation: Snowpipe Streaming for `EXTERNAL_OFFERS`).

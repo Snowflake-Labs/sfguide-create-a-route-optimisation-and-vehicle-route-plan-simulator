@@ -1,4 +1,4 @@
-// Next.js middleware — runs before every request.
+// Next.js middleware - runs before every request.
 // Logs HTTP arrival at debug level so we can confirm requests reach the container
 // even when route handlers fail or the SPCS proxy returns an error.
 //

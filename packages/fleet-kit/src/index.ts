@@ -1,4 +1,4 @@
-// @fleet-kit/core — shared, framework-agnostic UI/data primitives.
+// @fleet-kit/core - shared, framework-agnostic UI/data primitives.
 //
 // Populated incrementally per APP_RESTRUCTURE_PLAN R1. Subpath modules (import
 // from the subpath, not the root barrel, to keep server-only modules out of

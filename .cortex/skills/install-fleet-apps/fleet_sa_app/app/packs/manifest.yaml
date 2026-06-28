@@ -38,7 +38,7 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS]
     self_building: true
 
-  # FLEET_OPS — the ONE universal, mode-agnostic analytics layer (R6). Supersedes the
+  # FLEET_OPS - the ONE universal, mode-agnostic analytics layer (R6). Supersedes the
   # retired taxi + food_delivery packs. Its schema, dataset-scoped intent UDTFs, and
   # global-active views are authored in app/scoped_contract.sql (applied by install.py
   # after unified_fleet); this pack's setup.sql only ensures the schema + role USAGE so

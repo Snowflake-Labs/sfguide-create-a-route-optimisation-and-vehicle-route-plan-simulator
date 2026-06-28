@@ -19,7 +19,7 @@ export function ApprovalAction({ instance_id, prompt, message }: ApprovalActionP
   const handleAction = async (decision: 'approved' | 'rejected') => {
     setStatus('loading');
     try {
-      // Call the workflow service via Next.js proxy — the TypeScript engine executes remaining steps.
+      // Call the workflow service via Next.js proxy - the TypeScript engine executes remaining steps.
       // Do NOT call RESUME_WORKFLOW directly via SQL; it bypasses the TypeScript engine steps.
       const res = await fetch('/api/workflow/resume', {
         method: 'POST',
@@ -47,14 +47,14 @@ export function ApprovalAction({ instance_id, prompt, message }: ApprovalActionP
   if (status === 'approved') {
     return (
       <div style={{ ...containerStyle, backgroundColor: '#d1fae5', borderColor: '#6ee7b7' }}>
-        <span style={{ color: '#065f46', fontWeight: 600 }}>✓ Approved — workflow is resuming.</span>
+        <span style={{ color: '#065f46', fontWeight: 600 }}>✓ Approved - workflow is resuming.</span>
       </div>
     );
   }
   if (status === 'rejected') {
     return (
       <div style={{ ...containerStyle, backgroundColor: '#fee2e2', borderColor: '#fca5a5' }}>
-        <span style={{ color: '#991b1b', fontWeight: 600 }}>✗ Rejected — workflow cancelled.</span>
+        <span style={{ color: '#991b1b', fontWeight: 600 }}>✗ Rejected - workflow cancelled.</span>
       </div>
     );
   }

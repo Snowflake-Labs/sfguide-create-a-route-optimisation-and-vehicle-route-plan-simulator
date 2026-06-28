@@ -1,4 +1,4 @@
--- SV_FLEET_OPS — the ONE universal, mode-agnostic fleet analytics semantic view (R6)
+-- SV_FLEET_OPS - the ONE universal, mode-agnostic fleet analytics semantic view (R6)
 -- Source: FLEET_APP.FLEET_OPS.* global-active views (thin wrappers over the
 --         dataset-scoped UDTFs in fleet_sa_app/app/scoped_contract.sql).
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via the fleet_test_evals connection)

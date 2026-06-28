@@ -19,7 +19,7 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
-# v1.1.0 — Unified region model. There is NO global ORS_SERVICE or VROOM_SERVICE
+# v1.1.0 - Unified region model. There is NO global ORS_SERVICE or VROOM_SERVICE
 # anymore; every region (including the default) is served by a per-region pair
 # named ORS_SERVICE_<REGION> / VROOM_SERVICE_<REGION>. When a caller does not
 # supply a region, we resolve it to DEFAULT_REGION_NAME so we still produce a
@@ -27,7 +27,7 @@ MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
 DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 # Per-endpoint downstream timeouts (seconds). Isochrones on continental graphs
 # (e.g. USA driving-hgv) routinely take longer than the legacy 120 s default
-# because fastisochrones is not enabled — see GitHub issue tracking that.
+# because fastisochrones is not enabled - see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
@@ -58,13 +58,13 @@ def _normalize_region(region):
 
 def resolve_ors_host(region=None):
     """Per-region ORS service. After the v1.1.0 unification there is no global
-    ORS_SERVICE — even the default region resolves to ors-service-<default>."""
+    ORS_SERVICE - even the default region resolves to ors-service-<default>."""
     return f'ors-service-{_normalize_region(region)}'
 
 
 def resolve_vroom_host(region=None):
     """Per-region VROOM service co-located with the region's ORS. After v1.1.0
-    there is no global VROOM_SERVICE — the default region maps to
+    there is no global VROOM_SERVICE - the default region maps to
     vroom-service-<default>."""
     return f'vroom-service-{_normalize_region(region)}'
 

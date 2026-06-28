@@ -107,7 +107,7 @@ export function useStudioStream(
       }
       const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
       retryCountRef.current++;
-      // Suppress the first quick reconnect from the visible viewer log — long
+      // Suppress the first quick reconnect from the visible viewer log - long
       // SSE streams routinely get recycled by SPCS ingress / proxies and the
       // first retry usually succeeds within ~1s. Still emit to console.warn
       // so it remains visible for diagnostics.

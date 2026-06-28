@@ -1,4 +1,4 @@
-// /api/route-optimization/ensure-seeded — region-agnostic self-heal.
+// /api/route-optimization/ensure-seeded - region-agnostic self-heal.
 //
 // The Route Optimisation page calls this on every region change. It probes
 // FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP for the supplied region; if the
@@ -32,7 +32,7 @@ const inflight = new Map<string, Promise<SeedResult>>();
 
 async function ensureSeededOnce(region: string): Promise<SeedResult> {
   const safe = escapeString(region);
-  // Cheap check first — if LOOKUP already populated, nothing to do.
+  // Cheap check first - if LOOKUP already populated, nothing to do.
   const lookupRows = await runSql(
     `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE REGION = '${safe}'`
   );
@@ -76,7 +76,7 @@ export function createRouteOptimizationRouter(): Router {
     res.json(result);
   });
 
-  // /api/asset-velocity/ensure — lazy self-heal for the Asset Velocity page.
+  // /api/asset-velocity/ensure - lazy self-heal for the Asset Velocity page.
   // The four ROUTE_OPTIMIZATION views reference DWELL_ANALYSIS.DT_DWELL_ENRICHED,
   // which Snowflake validates at CREATE VIEW time, so on a fresh install where
   // dwell-analysis is deployed AFTER the container booted, the boot-time create

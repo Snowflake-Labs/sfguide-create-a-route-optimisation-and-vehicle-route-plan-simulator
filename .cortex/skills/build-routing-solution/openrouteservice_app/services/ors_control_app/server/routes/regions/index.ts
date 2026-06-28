@@ -1,4 +1,4 @@
-// Region router barrel — composes all sub-routers under one mount.
+// Region router barrel - composes all sub-routers under one mount.
 
 import { Router } from 'express';
 import { createRegionsLifecycleRouter } from './lifecycle.js';

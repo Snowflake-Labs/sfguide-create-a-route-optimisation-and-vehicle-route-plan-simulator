@@ -5,13 +5,13 @@ This directory collects error and issue reports from skill executions. Logs help
 ## When to Log
 
 Log an entry whenever a skill execution encounters:
-- **SQL errors** — query compilation failures, runtime exceptions, permission denied
-- **Missing objects** — table/view/schema/database/stage not found when expected
-- **Unexpected data** — 0 rows returned, NULL columns, wrong row counts, data type mismatches
-- **Service failures** — ORS services not starting, health checks failing, SPCS container errors
-- **Deployment failures** — Docker build errors, image push failures, stage upload errors, Streamlit deployment issues
-- **Workarounds applied** — any time you had to deviate from the documented steps to make something work
-- **Ambiguous instructions** — steps in the SKILL.md that were unclear, missing, or contradictory
+- **SQL errors** - query compilation failures, runtime exceptions, permission denied
+- **Missing objects** - table/view/schema/database/stage not found when expected
+- **Unexpected data** - 0 rows returned, NULL columns, wrong row counts, data type mismatches
+- **Service failures** - ORS services not starting, health checks failing, SPCS container errors
+- **Deployment failures** - Docker build errors, image push failures, stage upload errors, Streamlit deployment issues
+- **Workarounds applied** - any time you had to deviate from the documented steps to make something work
+- **Ambiguous instructions** - steps in the SKILL.md that were unclear, missing, or contradictory
 
 ## Log File Format
 
@@ -22,7 +22,7 @@ Example: `fleet-intelligence-taxis_2026-03-19_14-30.md`
 ### Template
 
 ```markdown
-# {Skill Name} — Execution Log
+# {Skill Name} - Execution Log
 
 - **Date:** {YYYY-MM-DD HH:MM}
 - **Skill:** {skill-name}
@@ -96,7 +96,7 @@ A friction log is generated after EVERY `build-routing-solution` execution, rega
 ### Template
 
 ```markdown
-# Friction Log — Build Routing Solution
+# Friction Log - Build Routing Solution
 
 - **Date:** {YYYY-MM-DD HH:MM}
 - **Connection:** {snowflake connection name}
@@ -129,7 +129,7 @@ A friction log is generated after EVERY `build-routing-solution` execution, rega
 - **Severity:** {High | Medium | Low}
 - **What happened:** {Description of the friction}
 - **Resolution:** {What was done during this run to work around or fix the problem}
-- **Recommendation:** {What should change in the skill, reference docs, or tooling to prevent this in future runs — e.g., reword step X, add a validation query, change a default value, add a retry mechanism}
+- **Recommendation:** {What should change in the skill, reference docs, or tooling to prevent this in future runs - e.g., reword step X, add a validation query, change a default value, add a retry mechanism}
 
 ---
 

@@ -47,7 +47,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function fmt(val: string | null): string {
-  if (!val) return '—';
+  if (!val) return '-';
   try {
     const d = new Date(val);
     if (isNaN(d.getTime())) return val;

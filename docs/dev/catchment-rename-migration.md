@@ -1,4 +1,4 @@
-# Catchment Rename — Live Deploy Runbook
+# Catchment Rename - Live Deploy Runbook
 
 One-time migration for the "generalize-industry-verbs" change (branch
 `feature/sa-synapse-app`). The repo source is already correct for a **fresh**
@@ -37,7 +37,7 @@ has the old `pharma`/`RETAIL_CATCHMENT` objects.
    DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES;
    ```
 
-2. **Procs + agent** — re-run `routing-agent` `deploy-agent.sql` (creates the
+2. **Procs + agent** - re-run `routing-agent` `deploy-agent.sql` (creates the
    three renamed procs + the agent spec). Then drop the obsolete old procs:
    ```sql
    DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT(VARCHAR, FLOAT, VARCHAR);
@@ -45,24 +45,24 @@ has the old `pharma`/`RETAIL_CATCHMENT` objects.
    DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN(VARCHAR);
    ```
 
-3. **Semantic view** — deploy `semantic/sv_catchment.sql`; drop old:
+3. **Semantic view** - deploy `semantic/sv_catchment.sql`; drop old:
    ```sql
    DROP SEMANTIC VIEW IF EXISTS FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT;
    ```
    Validate with `evaluate_semantic_view` on `semantic/sv_catchment.sql`.
 
-4. **Demo data** — run `setup-agent-playground` `deploy-demo-data.sql`
+4. **Demo data** - run `setup-agent-playground` `deploy-demo-data.sql`
    (seeds `DEMO_*` + `DEMO_DEPOT`, updates `CATCHMENT.CONFIG`) and re-upload
    `agent-demos.json` to `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/`.
 
-5. **Extended analyst agent** — re-run `semantic/extend_routing_agent.sql`
+5. **Extended analyst agent** - re-run `semantic/extend_routing_agent.sql`
    (rebinds `query_catchment` -> `SV_CATCHMENT` + the three renamed verb tools).
 
-6. **SA app** — regenerate/apply `packs/fleet/catchment/setup.sql`
+6. **SA app** - regenerate/apply `packs/fleet/catchment/setup.sql`
    (`FLEET_APP.CATCHMENT.VW_POIS`), re-apply `role_binding.sql`, redeploy the
    agent from `agent-spec.json`.
 
-7. **Control-app + fleet_admin image** — rebuild and redeploy per AGENTS.md
+7. **Control-app + fleet_admin image** - rebuild and redeploy per AGENTS.md
    "Control App Image Deployment" (multi-stage `Dockerfile.runtime`, bump
    `image-versions.env` + service YAML, `snow stage copy`, suspend -> update ->
    resume). Needed because the server fleet-schema arrays + Agent Playground

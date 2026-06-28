@@ -22,16 +22,16 @@ orchestrator wraps this probe and treats any error (missing object) as "absent".
 Used only when the probe finds no rows. Loads the canonical SF / ebike preset --
 a mode-AGNOSTIC dataset (`VEHICLE_TYPE = ebike` is just a data dimension):
 
-1. **Ensure base tables + FLEET-owned stage** — run `scripts/seed_data.sql`
+1. **Ensure base tables + FLEET-owned stage** - run `scripts/seed_data.sql`
    (creates `SYNTHETIC_DATASETS.UNIFIED`, `FLEET_INTELLIGENCE.CORE`, the FLEET
    seed stage, and the parquet file format). Base table DDL is created by the
    admin app boot (`fleet_admin_app/.../server/studio/ensure-tables.ts`) or the
    routing engine; the orchestrator ensures it before loading.
-2. **Stage the parquet payload** —
+2. **Stage the parquet payload** -
    ```bash
    snow stage copy datasets/ @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c <conn> --overwrite
    ```
-3. **Load** — run the canonical loader with its stage name retargeted to the
+3. **Load** - run the canonical loader with its stage name retargeted to the
    FLEET-owned stage so no `OPENROUTESERVICE_APP` object is required:
    ```bash
    sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
@@ -39,7 +39,7 @@ a mode-AGNOSTIC dataset (`VEHICLE_TYPE = ebike` is just a data dimension):
    ```
    The loader lives at repo-root `datasets/` (NOT under any skill folder),
    so it survives deprecation of the routing-engine skill.
-4. **Agnostic guard** — re-run `scripts/seed_data.sql`; its step 3 PURGES any
+4. **Agnostic guard** - re-run `scripts/seed_data.sql`; its step 3 PURGES any
    industry-vertical rows the loader created (freight offers, partners, partner
    history, and the MARKETPLACE/BACKLOAD/DHL schemas) so only agnostic data
    persists.

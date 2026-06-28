@@ -174,12 +174,12 @@ export default function Observability() {
                 <td style={{ textAlign: 'right' }}>{m.REQ_COUNT}</td>
                 <td style={{ textAlign: 'right', color: m.ERROR_COUNT > 0 ? 'var(--red)' : 'var(--text-secondary)' }}>{m.ERROR_COUNT}</td>
                 <td style={{ textAlign: 'right', color: (m.ERROR_RATE_PCT || 0) > 5 ? 'var(--red)' : 'var(--text-secondary)' }}>{m.ERROR_RATE_PCT?.toFixed(1) || '0.0'}%</td>
-                <td style={{ textAlign: 'right' }}>{m.P50_MS ?? '—'}</td>
-                <td style={{ textAlign: 'right' }}>{m.P95_MS ?? '—'}</td>
-                <td style={{ textAlign: 'right' }}>{m.MAX_MS ?? '—'}</td>
-                <td style={{ textAlign: 'right' }}>{m.AVG_REQ_BYTES ? (m.AVG_REQ_BYTES / 1024).toFixed(1) : '—'}</td>
-                <td style={{ textAlign: 'right' }}>{m.AVG_RESP_BYTES ? (m.AVG_RESP_BYTES / 1024).toFixed(1) : '—'}</td>
-                <td style={{ color: 'var(--text-secondary)' }}>{m.LAST_EVENT_TS || '—'}</td>
+                <td style={{ textAlign: 'right' }}>{m.P50_MS ?? '-'}</td>
+                <td style={{ textAlign: 'right' }}>{m.P95_MS ?? '-'}</td>
+                <td style={{ textAlign: 'right' }}>{m.MAX_MS ?? '-'}</td>
+                <td style={{ textAlign: 'right' }}>{m.AVG_REQ_BYTES ? (m.AVG_REQ_BYTES / 1024).toFixed(1) : '-'}</td>
+                <td style={{ textAlign: 'right' }}>{m.AVG_RESP_BYTES ? (m.AVG_RESP_BYTES / 1024).toFixed(1) : '-'}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{m.LAST_EVENT_TS || '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -234,13 +234,13 @@ export default function Observability() {
               <tr key={ev.REQUEST_ID}>
                 <td style={{ color: 'var(--text-secondary)' }}>{ev.REQUEST_TS}</td>
                 <td>{ev.ENDPOINT}</td>
-                <td style={{ color: 'var(--text-secondary)' }}>{ev.PROFILE || '—'}</td>
-                <td style={{ color: (ev.STATUS_CODE || 0) >= 400 ? 'var(--red)' : 'var(--text-secondary)' }}>{ev.STATUS_CODE ?? '—'}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{ev.PROFILE || '-'}</td>
+                <td style={{ color: (ev.STATUS_CODE || 0) >= 400 ? 'var(--red)' : 'var(--text-secondary)' }}>{ev.STATUS_CODE ?? '-'}</td>
                 <td style={{ color: 'var(--red)' }}>{ev.ERROR_CODE || ''}</td>
-                <td style={{ textAlign: 'right' }}>{ev.LATENCY_MS ?? '—'}</td>
-                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.REQUEST_BYTES ?? '—'}</td>
-                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.RESPONSE_BYTES ?? '—'}</td>
-                <td style={{ color: 'var(--text-secondary)' }}>{ev.ORS_HOST || '—'}</td>
+                <td style={{ textAlign: 'right' }}>{ev.LATENCY_MS ?? '-'}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.REQUEST_BYTES ?? '-'}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.RESPONSE_BYTES ?? '-'}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{ev.ORS_HOST || '-'}</td>
               </tr>
             ))}
           </tbody>

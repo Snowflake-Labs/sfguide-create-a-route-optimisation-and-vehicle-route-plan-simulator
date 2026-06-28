@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 /**
- * Playwright E2E configuration — Tier 2 UI smoke tests.
+ * Playwright E2E configuration - Tier 2 UI smoke tests.
  *
  * REMOTE WORKSPACE NOTE: The Playwright headless Chromium requires glibc >= 2.38
  * which is not available on the Snowflake remote development workspace (system

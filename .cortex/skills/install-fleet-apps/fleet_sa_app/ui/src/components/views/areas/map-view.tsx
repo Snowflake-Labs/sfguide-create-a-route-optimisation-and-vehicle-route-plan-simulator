@@ -26,7 +26,7 @@ interface FitToOptions {
   maxZoom?: number;
   regionKey?: string;
   // When this changes to a non-empty value, force a one-shot fit to the current
-  // coords — even if the user has panned/zoomed or the coords are already in
+  // coords - even if the user has panned/zoomed or the coords are already in
   // view. Used to focus the camera on a freshly selected object (trip, driver,
   // offer, computed result). Clearing the selection (empty focusKey) does NOT
   // move the camera. The forced fit waits for the coords signature to actually
@@ -150,7 +150,7 @@ export default function MapView({
   // the current coords signature as a baseline. The fit fires only once the
   // signature changes (fresh narrowed coords arrived), so it lands on the
   // selected object instead of the stale full set. Clearing the selection
-  // (empty focusKey) records the change but does NOT pend a fit — camera stays.
+  // (empty focusKey) records the change but does NOT pend a fit - camera stays.
   if (lastFocusRef.current !== fitFocusKey) {
     lastFocusRef.current = fitFocusKey;
     if (fitFocusKey) {

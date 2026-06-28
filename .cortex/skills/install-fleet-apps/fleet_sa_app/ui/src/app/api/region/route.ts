@@ -96,7 +96,7 @@ async function handleGet() {
 }
 
 // POST promotes the SHARED per-schema CONFIG (the GLOBAL active scope). As of R3/R4
-// this is an OPS/ADMIN-only "promote active scope" action — consumers do per-session
+// this is an OPS/ADMIN-only "promote active scope" action - consumers do per-session
 // selection via the contextBar (which no longer calls this) + scope-arg functions.
 //
 // The mutation now flows through the audited synapse verb set_active_context

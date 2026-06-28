@@ -71,8 +71,8 @@ export default function RouteComparison() {
       {selected && (
         <div className="metric-grid">
           <MetricCard label="Deviation" value={`${fmtDec(selected.DEV_PCT)}%`} />
-          <MetricCard label="Origin" value={selected.ORIGIN_NAME || '—'} />
-          <MetricCard label="Destination" value={selected.DEST_NAME || '—'} />
+          <MetricCard label="Origin" value={selected.ORIGIN_NAME || '-'} />
+          <MetricCard label="Destination" value={selected.DEST_NAME || '-'} />
         </div>
       )}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, fontSize: 12 }}>

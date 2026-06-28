@@ -11,7 +11,7 @@
 
 When asking "can we replace static seed X with Overture Maps data?", use this
 classification. The short answer: **Overture is reference map data** (where things
-are — places, addresses, roads, buildings, admin boundaries). It does **not**
+are - places, addresses, roads, buildings, admin boundaries). It does **not**
 contain demographics, time-series telemetry, external risk indices, or
 business/commercial data. So only *location* seeds are Overture-replaceable; the
 rest are either generated *from* Overture already or have no Overture analog.

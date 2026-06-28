@@ -1,9 +1,9 @@
-// Region catalog endpoints — list catalog rows and refresh the geofabrik /
+// Region catalog endpoints - list catalog rows and refresh the geofabrik /
 // bbbike PBF download index. The refresh handler is large because it parses
 // HTML index pages, fetches bbox metadata, and bulk-INSERTs into REGION_CATALOG.
 //
 // For full polygon boundaries (Geofabrik MultiPolygon support, holes):
-// see scripts/region_catalog/build_boundaries.py — that offline bake populates
+// see scripts/region_catalog/build_boundaries.py - that offline bake populates
 // REGION_CATALOG.BOUNDARY for shipped regions. Newly discovered regions via
 // this dynamic-refresh path will have NULL BOUNDARY until the bake re-runs.
 
@@ -16,7 +16,7 @@ import { refreshRegionCatalog } from '../../lib/refresh-region-catalog.js';
 export function createRegionsCatalogRouter(): Router {
   const router = Router();
 
-  // List catalog metadata only — omit BOUNDARY GeoJSON (~47 MB for 5k rows).
+  // List catalog metadata only - omit BOUNDARY GeoJSON (~47 MB for 5k rows).
   // Polygon for the selected region: GET /api/regions/catalog/:catalogId/boundary
   router.get('/api/regions/catalog', async (req, res) => {
     try {

@@ -119,8 +119,8 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
   const drawerAreaNames = allAreaNames.filter((n) => isDrawerArea(viewDef.areas[n]));
   const scrollableAreas = getScrollableAreas(layout.grid, layout.rows || 'auto');
   // When the layout has no flexible (fr) row, its rows are auto/fixed and the
-  // grid sizes to content — taller than the viewport once an auto detail row
-  // grows — so the view itself must scroll vertically. Views with an fr row
+  // grid sizes to content - taller than the viewport once an auto detail row
+  // grows - so the view itself must scroll vertically. Views with an fr row
   // keep the current behavior (grid fills 100% height, fr areas scroll inside).
   const hasFlexRow = /\bfr\b/.test(layout.rows ?? 'auto');
 

@@ -72,7 +72,7 @@ The Asset Velocity page now uses real ORS + VROOM features instead of Euclidean 
 
 Known limitations (synthetic data):
 - The wrapped `ISOCHRONES(...)` UDF does not yet pass `profile_params` through, so the polygon is profile-only (the matrix gate is the authoritative filter).
-- `DIM_POIS` has no `OPEN_FROM/OPEN_TO`, so terminal time windows default to 06:00–22:00 UTC.
+- `DIM_POIS` has no `OPEN_FROM/OPEN_TO`, so terminal time windows default to 06:00-22:00 UTC.
 - `LANE_PROFILE` does not exist on terminals; skill-mismatch heuristics treat `RESTAURANT` POIs as REEFER-required and everything else as DRY-friendly.
 
 ### Deploy the Asset Velocity views
@@ -116,7 +116,7 @@ The page will gracefully render an empty state with deployment instructions if `
 
 ## Execution Rules
 
-1. Never use bulk `sed` or `replace_all` on `.ipynb` files — notebooks are JSON with structured cell arrays. Use targeted replacements on specific cells identified by name.
+1. Never use bulk `sed` or `replace_all` on `.ipynb` files - notebooks are JSON with structured cell arrays. Use targeted replacements on specific cells identified by name.
 2. Replace longer phrases before shorter ones when editing notebook prompts to avoid garbled text.
 3. Replace complete prompt strings, not individual words.
 4. Always validate JSON validity of modified `.ipynb` files before uploading.
@@ -208,9 +208,9 @@ CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
 
 ### Step 5b: Deploy Asset Velocity Page Views (required for the Asset Velocity page)
 
-**Goal:** Create the Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_TRAILER_COST_OF_IDLENESS`, `VW_FLEET_HGV_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
+**Goal:** Create the Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_TRAILER_COST_OF_IDLENESS`, `VW_FLEET_HGV_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic - shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
 
-**Dependency:** `dwell-analysis` must be deployed first — the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
+**Dependency:** `dwell-analysis` must be deployed first - the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
 
 > **Runtime owner:** the control-app `init.ts` is the source of truth for these four views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) and `CREATE OR REPLACE`s them on every container boot. The `.sql` files below are the keep-in-sync source and the manual-repair path (run them when a boot recreate failed silently, e.g. `DT_DWELL_ENRICHED` was absent at boot). The active-preset pointer they filter on lives in `ROUTE_OPTIMIZATION.CONFIG`, seeded by `datasets/load-seed-data.sql` and by this skill's `seed-data.sql`.
 

@@ -47,7 +47,7 @@ if [ -z "${CONTAINER_CMD:-}" ]; then
   else echo "ERROR: neither docker nor podman found"; exit 1; fi
 fi
 note "container runtime: $CONTAINER_CMD (override with CONTAINER_CMD=docker|podman)"
-# Warn on a small podman machine — the ORS image build is memory-heavy.
+# Warn on a small podman machine - the ORS image build is memory-heavy.
 if [ "$CONTAINER_CMD" = "podman" ] && command -v podman >/dev/null 2>&1; then
   PODMAN_MEM_MB=$(podman machine inspect --format '{{.Resources.Memory}}' 2>/dev/null | head -1)
   if [ -n "${PODMAN_MEM_MB:-}" ] && [ "${PODMAN_MEM_MB:-0}" -lt 4096 ] 2>/dev/null; then
@@ -56,7 +56,7 @@ if [ "$CONTAINER_CMD" = "podman" ] && command -v podman >/dev/null 2>&1; then
 fi
 # crane gives a reliable SPCS manifest commit; `docker push` intermittently hangs
 # on the final manifest PUT (bearer token expires mid-upload). build_push prefers
-# crane when present (docker runtime only — crane reads ~/.docker/config.json).
+# crane when present (docker runtime only - crane reads ~/.docker/config.json).
 if command -v crane >/dev/null 2>&1; then
   note "  crane found: using crane for SPCS image pushes (avoids docker-push manifest hang)"
 else
@@ -141,7 +141,7 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   note "  verifying pushed images..."
   snow spcs image-repository list-images "$ENGINE_REPO" -c "$CONN" 2>/dev/null | tail -8 || true
 else
-  note "[3/6] SKIP_IMAGES=1 — skipping image build/push."
+  note "[3/6] SKIP_IMAGES=1 - skipping image build/push."
 fi
 
 # ── 4. upload staged map/config + service specs ─────────────────
@@ -172,7 +172,7 @@ if [ "${SKIP_MODULES:-0}" != "1" ]; then
     ALTER TASK IF EXISTS OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK RESUME;
   " >/dev/null 2>&1 || true
 else
-  note "[5/6] SKIP_MODULES=1 — skipping SQL module load."
+  note "[5/6] SKIP_MODULES=1 - skipping SQL module load."
 fi
 
 # ── 6. verify ───────────────────────────────────────────────────
@@ -184,5 +184,5 @@ echo "================================================================"
 echo " ORS engine provisioning complete."
 echo "   region (default bootstrap): $REGION"
 echo "   ORS_SERVICE_${REGION} may take 5-15 min to finish building graphs."
-echo "   Re-run install_fleet_apps.sh (idempotent) — layer 3 will report LIVE."
+echo "   Re-run install_fleet_apps.sh (idempotent) - layer 3 will report LIVE."
 echo "================================================================"

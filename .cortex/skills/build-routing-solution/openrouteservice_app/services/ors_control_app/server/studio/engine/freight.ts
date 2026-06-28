@@ -1,4 +1,4 @@
-// Synthetic freight-offer generator. Self-contained — depends only on POIs,
+// Synthetic freight-offer generator. Self-contained - depends only on POIs,
 // GenerationConfig, and the deterministic RNG from profiles. Enriched with
 // equipment / ADR class / LDM / EUR-per-km / partner_id / status / posted_at
 // columns to power the Freight Exchange page filters and badges.
@@ -65,7 +65,7 @@ export function generateFreightOffers(
     const winLen = 60 + Math.floor(rng() * 420);
     const src = sources[offers.length % sources.length];
     const product = FREIGHT_PRODUCTS[offers.length % FREIGHT_PRODUCTS.length];
-    // Status: ~78% OPEN, 17% TAKEN, 5% EXPIRED — gives the page a live feel.
+    // Status: ~78% OPEN, 17% TAKEN, 5% EXPIRED - gives the page a live feel.
     const sRoll = rng();
     const status = sRoll < 0.78 ? 'OPEN' : sRoll < 0.95 ? 'TAKEN' : 'EXPIRED';
     // Posted within the last 24h, weighted toward more recent.

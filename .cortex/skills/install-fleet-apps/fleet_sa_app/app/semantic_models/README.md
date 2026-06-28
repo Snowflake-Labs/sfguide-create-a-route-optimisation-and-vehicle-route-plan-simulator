@@ -1,4 +1,4 @@
-# Semantic models (Cortex Analyst) — FLEET_AGENT data layer
+# Semantic models (Cortex Analyst) - FLEET_AGENT data layer
 
 The consumer agent `FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT` answers analytical
 questions via **Cortex Analyst** over the 10 native semantic views below (one
@@ -23,7 +23,7 @@ The agent also has `data_to_chart` and the `ROUTING_MCP` routing tools (in `OPEN
 
 ## Grants implication (3E)
 A non-admin consumer role (`FLEET_APP_USER`) needs `USAGE` on each semantic view and
-`SELECT` on the underlying tables/views — including the cross-database
+`SELECT` on the underlying tables/views - including the cross-database
 `SYNTHETIC_DATASETS.UNIFIED.*` objects backing `SV_FLEET_OPERATIONS`.
 
 ## Reproducing the views (3G)

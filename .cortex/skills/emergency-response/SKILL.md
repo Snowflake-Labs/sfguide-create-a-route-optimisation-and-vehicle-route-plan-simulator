@@ -11,7 +11,7 @@ metadata:
 
 # Emergency Response (region-generic evacuation wizard)
 
-**v3 — region-generic.** Emergency Response is now a normal Data Studio-generated
+**v3 - region-generic.** Emergency Response is now a normal Data Studio-generated
 use case that runs for **whatever US region/dataset is active**, not a hardcoded
 CA/CO/PA demo. The full 4-step wizard lives in the **FLEET_SA_APP** (view
 `emergency_response`), binds to the neutral `FLEET_APP.EMERGENCY_RESPONSE`
@@ -20,15 +20,15 @@ User verbs. No ZIP-code share, no CareConnect CSV, no `STATE_REGION_MAP`.
 
 The operator walks four steps on one map:
 
-1. **Risk** — pick flood or wildfire; the map colors the active region's **counties**
+1. **Risk** - pick flood or wildfire; the map colors the active region's **counties**
    by FEMA National Risk Index level (1 Very Low … 5 Very High) from
    `FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES`.
-2. **Seed participants** — set isochrone minutes + participant count; `evac_seed`
+2. **Seed participants** - set isochrone minutes + participant count; `evac_seed`
    unions the drive-time isochrones of the region's health-anchor care centers
    (`VW_CARE_CENTERS`), samples routable Overture addresses inside it
    (MATRIX snap-filter ≤ 350 m), and tags each with county risk.
-3. **Vehicles** — set **vehicles per care center**, per-vehicle capacity, max trips per vehicle, and an **Optimize** mode. Every seeded care center is a depot, so the total fleet = centers x vehicles/center. Optimize = *Fastest completion* caps each trip's pickups (`max_tasks`) so VROOM spreads work across all vehicles in parallel (lowest completion time, more total km); *Fewest vehicles* consolidates into full trips (least total drive, higher completion).
-4. **Plan evacuation** — the wizard builds a capacitated multi-depot, multi-trip
+3. **Vehicles** - set **vehicles per care center**, per-vehicle capacity, max trips per vehicle, and an **Optimize** mode. Every seeded care center is a depot, so the total fleet = centers x vehicles/center. Optimize = *Fastest completion* caps each trip's pickups (`max_tasks`) so VROOM spreads work across all vehicles in parallel (lowest completion time, more total km); *Fewest vehicles* consolidates into full trips (least total drive, higher completion).
+4. **Plan evacuation** - the wizard builds a capacitated multi-depot, multi-trip
    `pickup:[1]` challenge (every care center is a depot with `vehicles/center` vehicles,
    each vehicle → up to `maxTrips` virtual vehicles) and solves it via `evac_solve`
    (ORS `OPTIMIZATION`). Returned routes are scheduled across each center's vehicles
@@ -38,7 +38,7 @@ The operator walks four steps on one map:
 ### How to run
 
 1. In the **Admin app → Data Studio**, run a generation for your region with
-   **Hazard** and **Anchors** enabled (every built-in preset already does — see
+   **Hazard** and **Anchors** enabled (every built-in preset already does - see
    `feeds: ['emergency-response']`). This populates `FACT_HAZARD_ZONES` +
    `DIM_ANCHORS` for that region.
 2. In the **SA app**, select that region's dataset in the context bar and open
@@ -72,7 +72,7 @@ health anchors replace the curated PACE centers.
 ## Prerequisites
 
 1. ORS app deployed via `install-fleet-apps`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`UsCalifornia`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
-2. **FEMA National Risk Index (Free)** — Marketplace listing `GZSTZKU9FH9` → `FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES` (auto-installed in Step 0a of `references/sql-pipeline.sql`).
+2. **FEMA National Risk Index (Free)** - Marketplace listing `GZSTZKU9FH9` → `FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES` (auto-installed in Step 0a of `references/sql-pipeline.sql`).
 3. **US ZIP metadata + geometry** share → `U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.{ZIP_CODE_META_SHARE, ZIP_CODE_GEOMETRY_SHARE}`.
 4. **Overture Maps addresses** share → `OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS`.
 5. **OpenCage secret** `OPENROUTESERVICE_APP.CORE.OPENCAGE_API_KEY` + `ORS_GEOCODE_EAI` external-access integration (egress `api.opencagedata.com:443`). Used **only at build time** to geocode the 18 CareConnect centers lacking coordinates; the resolved coordinates are committed to `datasets/careconnect_centers_geocoded.csv`, so a fresh install needs no runtime geocoding.
@@ -105,7 +105,7 @@ The only persisted config is the state → ORS region map:
 | CO | `UsColorado` | deployed |
 | PA | `UsPennsylvania` | deployed |
 
-Wizard inputs (patient count, drive minutes, per-center vehicles/capacity, risk threshold) are entered live in the UI — no config table.
+Wizard inputs (patient count, drive minutes, per-center vehicles/capacity, risk threshold) are entered live in the UI - no config table.
 
 ## Data Model
 
@@ -123,7 +123,7 @@ EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(loc, minutes, region)  -> GEOGR
 OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS          (participant address pool)
 ```
 
-Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) ratings; wildfire = `WFIR_RISKR`. Ratings map to ordinal 1–5 (`Very Low`..`Very High`); `No Rating`/`Insufficient Data`/`Not Applicable` → 0.
+Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) ratings; wildfire = `WFIR_RISKR`. Ratings map to ordinal 1-5 (`Very Low`..`Very High`); `No Rating`/`Insufficient Data`/`Not Applicable` → 0.
 
 > **Superseded.** Everything below this line documents the **retired v2** CA/CO/PA
 > pipeline (ZIP-share `V_ZIP_RISK`, CareConnect CSV, `STATE_REGION_MAP`) and the
@@ -133,7 +133,7 @@ Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) r
 
 ## Workflow
 
-### Step 1 — Deploy the SQL pipeline
+### Step 1 - Deploy the SQL pipeline
 
 From repo root (run the statements in `references/sql-pipeline.sql`), then upload the committed centers CSV and load it:
 
@@ -145,7 +145,7 @@ snow stage copy \
 
 The pipeline installs FEMA NRI, creates `EMERGENCY_RESPONSE` (CONFIG/CORE/PIPELINE), seeds `STATE_REGION_MAP`, loads `CARECONNECT_CENTERS` (20 rows), builds `V_ZIP_RISK` and `ORS_ISOCHRONE_FOR_CENTER`, and drops retired v1 objects. Every CREATE carries the COMMENT tracking tag.
 
-### Step 2 — Verify
+### Step 2 - Verify
 
 ```sql
 SELECT COUNT(*) FROM EMERGENCY_RESPONSE.CORE.CARECONNECT_CENTERS;                              -- 20
@@ -153,7 +153,7 @@ SELECT WILDFIRE_LEVEL, COUNT(*) FROM EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK WHER
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;   -- target state's ORS + VROOM RUNNING
 ```
 
-### Step 3 — Deploy the control-app image
+### Step 3 - Deploy the control-app image
 
 The wizard lives in `src/components/emergency/EmergencyResponse.tsx` (+ `helpers.ts`) and appears as the single **Emergency Response** sidebar item. Rebuild and redeploy `ors_control_app` per the AGENTS.md "Control App Image Deployment" section (bump `image-versions.env` + service YAML, `snow stage copy` the spec, suspend → update → resume). Then open the printed endpoint and select **Emergency Response**.
 
@@ -184,7 +184,7 @@ User: "Demo a California flood scenario."
 |-------|----------|
 | "ORS region not running" banner | Resume the state's ORS + VROOM services; CA ships suspended. |
 | Seed returns 0 participants | Drive time too small or centers outside graph; increase minutes. |
-| Plan returns no routes | VROOM warming up — retry in ~20s; or capacity 0 for all centers. |
+| Plan returns no routes | VROOM warming up - retry in ~20s; or capacity 0 for all centers. |
 | All ZIPs render risk 0 | County has `No Rating`/`Insufficient Data` in NRI for that hazard. |
 | Risers not colored as expected | Flood uses max(riverine, coastal); inland states show riverine only. |
 

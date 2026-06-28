@@ -5,7 +5,7 @@ export const BM_SCHEMA = 'BACKLOAD_MATCHING';
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
 // Default freight economics (€/loaded-km is the standard pricing unit on
-// European freight exchanges — Timocom, WTransnet, Teleroute all quote rates
+// European freight exchanges - Timocom, WTransnet, Teleroute all quote rates
 // per loaded km). Internal volumes inherit the same model.
 export const EUR_PER_LOADED_KM = 1.20;
 export const EUR_PER_EMPTY_KM = 1.20; // legacy alias kept for older code paths

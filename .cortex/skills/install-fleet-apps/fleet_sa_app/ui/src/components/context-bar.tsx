@@ -66,7 +66,7 @@ interface DatasetOption {
 
 // Dynamic dataset picker (R2.2). Lists ALL datasets from DIM_DATASETS and
 // writes the chosen DATASET_ID into store context.dataset_id. The dataset is
-// the source of truth for REGION and VEHICLE_TYPE — selecting a dataset auto-
+// the source of truth for REGION and VEHICLE_TYPE - selecting a dataset auto-
 // syncs both values into context so all 30+ dashboard queries binding :region
 // and :vehicle_type stay consistent.
 function DatasetPicker({ field }: { field: ContextBarField }) {
@@ -372,7 +372,7 @@ function DynamicEnumPicker({ field }: { field: ContextBarField }) {
 // R2.2: selection is PURELY client-side context. Changing a picker sets
 // store.context.<id>, so every dashboard whose params reference context.<id>
 // auto-refetches (via useViewData) against the per-session scope. The contextBar
-// NO LONGER writes the shared per-schema CONFIG table — that global "promote
+// NO LONGER writes the shared per-schema CONFIG table - that global "promote
 // active scope" action moves to the OPS surface (R4), keeping the consumer
 // multi-tenant safe (one user's switch never changes another user's view).
 export function ContextBar({ fields }: { fields: ContextBarField[] }) {

@@ -1,4 +1,4 @@
--- SV_ROUTE_DEVIATION — route deviation analysis semantic view
+-- SV_ROUTE_DEVIATION - route deviation analysis semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS (per trip)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- ACTUAL_PATH / EXPECTED_PATH GEOGRAPHY columns excluded.
