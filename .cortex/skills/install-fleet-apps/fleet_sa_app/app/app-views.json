@@ -257,7 +257,7 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "WITH j AS (SELECT DISTANCE_VALUE, PLANNED_DISTANCE_VALUE, DURATION_SEC, DEVIATION_DISTANCE_VALUE FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), s AS (SELECT COUNT(*) AS stops, COALESCE(SUM(DWELL_DURATION_SEC),0)/60 AS dwell_min FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), e AS (SELECT COUNT(*) AS events FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), p AS (SELECT ROUND(AVG(SPEED_VALUE),1) AS avg_kmh, ROUND(MAX(SPEED_VALUE),1) AS max_kmh FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), dv AS (SELECT AVG(IFF(ST_DISTANCE(pos.LOCATION_GEOG, (SELECT PLANNED_PATH_GEOG FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey LIMIT 1)) > 40,1,0)) AS dev_frac FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) pos WHERE :selected_journey IS NOT NULL AND pos.JOURNEY_ID = :selected_journey AND pos.LOCATION_GEOG IS NOT NULL) SELECT ROUND(j.DISTANCE_VALUE,1) AS dist_km, ROUND(j.PLANNED_DISTANCE_VALUE,1) AS planned_km, ROUND(j.DURATION_SEC/60,1) AS dur_min, p.avg_kmh, s.stops, ROUND(s.dwell_min,1) AS dwell_min, e.events, COALESCE(dv.dev_frac,0) AS deviation_frac FROM j CROSS JOIN s CROSS JOIN e CROSS JOIN p CROSS JOIN dv",
+          "query": "WITH j AS (SELECT DISTANCE_VALUE, PLANNED_DISTANCE_VALUE, DURATION_SEC, DEVIATION_DISTANCE_VALUE, PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), s AS (SELECT COUNT(*) AS stops, COALESCE(SUM(DWELL_DURATION_SEC),0)/60 AS dwell_min FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), e AS (SELECT COUNT(*) AS events FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), p AS (SELECT ROUND(AVG(SPEED_VALUE),1) AS avg_kmh, ROUND(MAX(SPEED_VALUE),1) AS max_kmh FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), dv AS (SELECT AVG(IFF(ST_DISTANCE(pos.LOCATION_GEOG, j.pg) > 40,1,0)) AS dev_frac FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) pos CROSS JOIN j WHERE :selected_journey IS NOT NULL AND pos.JOURNEY_ID = :selected_journey AND pos.LOCATION_GEOG IS NOT NULL) SELECT ROUND(j.DISTANCE_VALUE,1) AS dist_km, ROUND(j.PLANNED_DISTANCE_VALUE,1) AS planned_km, ROUND(j.DURATION_SEC/60,1) AS dur_min, p.avg_kmh, s.stops, ROUND(s.dwell_min,1) AS dwell_min, e.events, COALESCE(dv.dev_frac,0) AS deviation_frac FROM j CROSS JOIN s CROSS JOIN e CROSS JOIN p CROSS JOIN dv",
           "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
           "mapping": {
             "metrics": [
@@ -996,6 +996,26 @@
           "layers": [
             {
               "type": "scatterplot",
+              "id": "sla-breaches-all",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "column": "sla",
+                "palette": { "OK": [46, 204, 113, 190], "WARNING": [255, 160, 0, 190], "CRITICAL": [209, 55, 78, 200] },
+                "default": [46, 204, 113, 190]
+              },
+              "radius": 90,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 8,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
+              "data": {
+                "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE AVG_POINT IS NOT NULL AND (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 5000",
+                "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            },
+            {
+              "type": "scatterplot",
               "id": "driver-sla-stops",
               "lng": "lng",
               "lat": "lat",
@@ -1004,9 +1024,12 @@
                 "palette": { "OK": [46, 204, 113, 220], "WARNING": [255, 160, 0, 220], "CRITICAL": [209, 55, 78, 230] },
                 "default": [46, 204, 113, 220]
               },
-              "radius": 120,
-              "radiusMinPixels": 4,
-              "radiusMaxPixels": 12,
+              "radius": 150,
+              "radiusMinPixels": 6,
+              "radiusMaxPixels": 16,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 255],
+              "lineWidthMinPixels": 2,
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
               "data": {
