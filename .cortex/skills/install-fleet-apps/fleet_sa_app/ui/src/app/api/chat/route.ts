@@ -21,7 +21,17 @@ export async function POST(request: NextRequest) {
   let contextPrefix = '';
   const availableViews = (panelContext?.availableViews || []) as Array<{ id: string; label: string; description: string }>;
   if (panelContext?.activeView) {
-    const view = panelContext.activeView as { id: string; label: string; description: string };
+    const view = panelContext.activeView as {
+      id: string;
+      label: string;
+      description: string;
+      agentKnowledge?: {
+        preferredTool?: string;
+        keyMetrics?: string[];
+        exampleQuestions?: string[];
+        gotchas?: string;
+      };
+    };
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
     if (vs && Object.keys(vs).length > 0) {
@@ -30,6 +40,13 @@ export async function POST(request: NextRequest) {
         .map(([k, v]) => `${k}=${v}`)
         .join(', ');
       if (activeFilters) parts.push(`Active filters: ${activeFilters}.`);
+    }
+    const ak = view.agentKnowledge;
+    if (ak) {
+      if (ak.preferredTool) parts.push(`Prefer the "${ak.preferredTool}" tool for questions about this view.`);
+      if (ak.keyMetrics?.length) parts.push(`Key metrics here: ${ak.keyMetrics.join('; ')}.`);
+      if (ak.exampleQuestions?.length) parts.push(`Typical questions: ${ak.exampleQuestions.join(' / ')}.`);
+      if (ak.gotchas) parts.push(`Note: ${ak.gotchas}`);
     }
     parts.push('Use this context when the user asks about their data, campaigns, performance, or anything the view relates to. Do NOT use it only if the question is clearly about a different topic entirely. When you use the view context, start with "Looking at [view name] (filtered by [active filters]):" matching exactly what the context chip shows. Do NOT suggest or mention any other views in your response.]');
     contextPrefix = parts.join(' ') + '\n\n';

@@ -449,6 +449,7 @@ export const useAppStore = create<AppStore>()(
             id: panel.activeViewId,
             label: def?.label || panel.activeViewId,
             description: def?.description || '',
+            agentKnowledge: def?.agentKnowledge,
           };
         }
         const availableViews = viewRegistry.list(selectedRole).map((v: { id: string; label: string; description: string }) => ({

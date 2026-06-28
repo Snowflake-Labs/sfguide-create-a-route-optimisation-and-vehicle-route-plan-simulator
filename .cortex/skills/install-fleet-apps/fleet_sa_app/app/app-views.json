@@ -3,6 +3,12 @@
     "label": "Live {{labels.entity}} Operations",
     "category": "Core",
     "description": "Where is every {{labels.entity}} now - live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": ["active {{labels.entity_plural}}", "movement utilization %", "empty miles %", "average speed"],
+      "exampleQuestions": ["How many {{labels.entity_plural}} are moving right now?", "What is our empty miles percentage?"],
+      "gotchas": "Positions are GPS pings; utilization is the share of pings in a MOVING state, not a duty-cycle measure."
+    },
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 420px auto", "grid": "\"kpi kpi\"\n\"entities map\"\n\"detail detail\"" },
       "mobile": { "columns": "1fr", "rows": "auto 360px 320px auto", "grid": "\"kpi\"\n\"entities\"\n\"map\"\n\"detail\"" }
@@ -584,6 +590,12 @@
     "label": "Plan-vs-Actual Performance",
     "category": "Core",
     "description": "Which {{labels.journey_plural}} diverge from plan, where, and by how much (merges Route Deviation and Route Comparison).",
+    "agentKnowledge": {
+      "preferredTool": "query_route_deviation",
+      "keyMetrics": ["deviation rate", "deviated {{labels.journey_plural}}", "excess distance vs plan"],
+      "exampleQuestions": ["Which {{labels.journey_plural}} deviated most from plan?", "How much excess distance did deviations add?"],
+      "gotchas": "Deviation compares the actual path against the planned route; a journey with no planned route is excluded, not counted as zero deviation."
+    },
     "layout": {
       "default": { "columns": "1fr", "rows": "auto 1.3fr auto", "grid": "\"kpi\"\n\"map\"\n\"table\"" }
     },
@@ -920,6 +932,12 @@
     "label": "SLA Alerts",
     "category": "Core",
     "description": "Dwell sessions that breached SLA thresholds, by severity.",
+    "agentKnowledge": {
+      "preferredTool": "query_dwell",
+      "keyMetrics": ["total SLA alerts", "critical vs warning breaches", "average minutes over the threshold"],
+      "exampleQuestions": ["Which facilities breached SLA the most?", "How many critical dwell alerts this week?"],
+      "gotchas": "Dwell sessions are sessionized from position pings; a stop shorter than the SLA threshold is not counted as a breach."
+    },
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"bystatus table\"\n\"detail detail\"" }
     },

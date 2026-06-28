@@ -19,8 +19,23 @@ export type MessagePart =
   | { type: 'status'; status: string; message: string }
   | { type: 'metadata'; threadId?: number; assistantMessageId?: number; runId?: string };
 
+// Per-view grounding hint fed to the chat agent (config-authored in app-views.json).
+// Thin routing + framing layer only - domain SQL / metric definitions live in the
+// semantic views, never here. Every field is optional; an absent block leaves the
+// agent context prefix unchanged.
+export interface AgentKnowledge {
+  // Cortex Analyst / MCP tool the agent should prefer when this view is active.
+  preferredTool?: string;
+  // Metrics/columns that matter on this view (plain-language phrases).
+  keyMetrics?: string[];
+  // Representative questions a user is likely to ask here.
+  exampleQuestions?: string[];
+  // Caveats the agent should know (e.g. how a metric is derived).
+  gotchas?: string;
+}
+
 export interface PanelContext {
-  activeView: { id: string; label: string; description: string } | null;
+  activeView: { id: string; label: string; description: string; agentKnowledge?: AgentKnowledge } | null;
   viewState: Record<string, unknown>;
   availableViews: Array<{ label: string; description: string }>;
   context: Record<string, unknown>;
@@ -46,6 +61,8 @@ export interface ViewDef {
   // Minimum role tiers allowed to see this view (simulated client-side filter).
   // Omitted => visible to all roles. Honors hierarchy admin > ops > user.
   roles?: AppRole[];
+  // Optional per-view grounding hint surfaced to the chat agent via panel context.
+  agentKnowledge?: AgentKnowledge;
 }
 
 // Zero-code retargeting surface (agnostic-view report section 6.3). Every field is

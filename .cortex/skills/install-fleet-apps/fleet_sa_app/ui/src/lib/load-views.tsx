@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import type { ViewDef, AppRole } from './types';
+import type { ViewDef, AgentKnowledge, AppRole } from './types';
 import type { ParsedViewDef } from '@/components/views/view-renderer';
 import { viewRegistry } from './view-registry';
 import { getDisplayConfigGlobal, interpolateTokens } from './display-config';
@@ -26,6 +26,8 @@ interface YamlViewDef {
   category?: string;
   // Config-driven role tagging (simulated view filter). Omitted => all roles.
   roles?: AppRole[];
+  // Optional per-view grounding hint for the chat agent (see AgentKnowledge).
+  agentKnowledge?: AgentKnowledge;
   layout: {
     default: LayoutDef;
     tablet?: LayoutDef;
@@ -68,6 +70,19 @@ function createLazyViewComponent(viewDef: YamlViewDef) {
 // hidden, so the view-picker (which filters !hidden) omits it. Pass an empty
 // set to surface everything. `dataLayerDb` is the neutral DB prefix used to
 // derive each view's schema set (defaults to FLEET_APP for fleet back-compat).
+function interpolateAgentKnowledge(
+  ak: AgentKnowledge | undefined,
+  display: ReturnType<typeof getDisplayConfigGlobal>,
+): AgentKnowledge | undefined {
+  if (!ak) return undefined;
+  return {
+    preferredTool: ak.preferredTool,
+    keyMetrics: ak.keyMetrics?.map((m) => interpolateTokens(m, display)),
+    exampleQuestions: ak.exampleQuestions?.map((q) => interpolateTokens(q, display)),
+    gotchas: ak.gotchas ? interpolateTokens(ak.gotchas, display) : undefined,
+  };
+}
+
 export function registerViewsFromConfig(
   config: ViewsConfig,
   disabledSchemas?: Set<string>,
@@ -85,6 +100,7 @@ export function registerViewsFromConfig(
       hidden: view.hidden || gatedOff,
       category: view.category ?? 'Core',
       roles: view.roles,
+      agentKnowledge: interpolateAgentKnowledge(view.agentKnowledge, display),
       component: createLazyViewComponent(view),
     };
     viewRegistry.register(registration);
