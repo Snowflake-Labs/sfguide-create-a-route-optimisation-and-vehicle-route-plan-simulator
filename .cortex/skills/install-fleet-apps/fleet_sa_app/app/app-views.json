@@ -11,12 +11,13 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT ENTITY_ID) AS active_entities, ROUND(100*SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0))/NULLIF(COUNT(*),0),0) AS utilization_pct, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving_pings, SUM(IFF(MOTION_STATUS_ENUM NOT ILIKE 'MOVING',1,0)) AS idle_pings, ROUND(AVG(SPEED_VALUE),1) AS avg_speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "WITH p AS (SELECT COUNT(DISTINCT ENTITY_ID) AS active_entities, ROUND(100*SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0))/NULLIF(COUNT(*),0),0) AS utilization_pct, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving_pings, SUM(IFF(MOTION_STATUS_ENUM NOT ILIKE 'MOVING',1,0)) AS idle_pings, ROUND(AVG(SPEED_VALUE),1) AS avg_speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), e AS (SELECT ROUND(100*SUM(IFF(TRIP_KIND='EMPTY',DISTANCE_VALUE,0))/NULLIF(SUM(DISTANCE_VALUE),0),0) AS empty_miles_pct FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))) SELECT p.active_entities, p.utilization_pct, e.empty_miles_pct, p.moving_pings, p.idle_pings, p.avg_speed FROM p CROSS JOIN e",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
           "mapping": {
             "metrics": [
               { "column": "active_entities", "label": "Active {{labels.entity_plural}}", "format": "number" },
               { "column": "utilization_pct", "label": "Movement Utilization %", "format": "number" },
+              { "column": "empty_miles_pct", "label": "Empty Miles %", "format": "number" },
               { "column": "moving_pings", "label": "Moving Pings", "format": "number" },
               { "column": "idle_pings", "label": "Idle / Dwell Pings", "format": "number" },
               { "column": "avg_speed", "label": "Avg Speed", "format": "number_2dp", "unit": "speed" }
@@ -224,24 +225,33 @@
       "journeys": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT JOURNEY_ID AS journey_id, ENTITY_ID AS entity, OPERATOR_ID AS operator, ROUND(DISTANCE_VALUE,1) AS dist_km, ROUND(DURATION_SEC/60,1) AS dur_min, IFF(IS_DEVIATION,'yes','no') AS deviated FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY DISTANCE_VALUE DESC NULLS LAST LIMIT 100",
+          "query": "SELECT JOURNEY_ID AS journey_id, SPLIT_PART(JOURNEY_ID,'-',1) AS trip, ENTITY_ID AS entity, OPERATOR_ID AS operator, ROUND(DISTANCE_VALUE,1) AS dist_km, ROUND(DURATION_SEC/60,1) AS dur_min, IFF(IS_DEVIATION,'yes','no') AS deviated FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY DISTANCE_VALUE DESC NULLS LAST LIMIT 100",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "journey_id", "maxRows": 100, "defaultSort": { "column": "deviated", "direction": "desc" }, "exceptionFirst": { "column": "deviated", "values": ["yes"] } },
+        "config": { "rowKey": "journey_id", "maxRows": 100, "columns": [ { "field": "trip", "header": "Trip" }, { "field": "entity", "header": "Entity" }, { "field": "operator", "header": "Operator" }, { "field": "dist_km", "header": "Dist (km)" }, { "field": "dur_min", "header": "Dur (min)" }, { "field": "deviated", "header": "Deviated" } ], "defaultSort": { "column": "deviated", "direction": "desc" }, "exceptionFirst": { "column": "deviated", "values": ["yes"] } },
         "emits": { "selected_journey": "selection" }
       },
       "map": {
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Expected route", "color": [41, 181, 232, 200], "shape": "line" },
+            { "label": "Actual / deviation", "color": [209, 55, 78, 220], "shape": "line" },
+            { "label": "Origin", "color": [46, 204, 113, 235], "shape": "dot" },
+            { "label": "Destination", "color": [44, 62, 80, 235], "shape": "dot" },
+            { "label": "Dwell - warning", "color": [255, 160, 0, 230], "shape": "dot" },
+            { "label": "Dwell - critical", "color": [209, 55, 78, 230], "shape": "dot" },
+            { "label": "Replay position", "color": [0, 229, 255, 255], "shape": "dot" }
+          ],
           "layers": [
             {
               "type": "path",
               "id": "planned",
               "geojsonColumn": "planned_geojson",
-              "color": [41, 181, 232, 160],
+              "color": [41, 181, 232, 200],
               "width": 4,
-              "widthMinPixels": 2,
+              "widthMinPixels": 3,
               "data": {
                 "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(PLANNED_PATH_GEOG)::STRING AS planned_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE PLANNED_PATH_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 5",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
@@ -253,29 +263,9 @@
               "geojsonColumn": "route_geojson",
               "color": [209, 55, 78, 220],
               "width": 4,
-              "widthMinPixels": 2,
+              "widthMinPixels": 3,
               "data": {
                 "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
-                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-              }
-            },
-            {
-              "type": "scatterplot",
-              "id": "events",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "column": "severity",
-                "palette": { "high": [209, 55, 78, 230], "medium": [255, 160, 0, 230], "low": [255, 210, 80, 200] },
-                "default": [209, 55, 78, 220]
-              },
-              "radius": 80,
-              "radiusMinPixels": 4,
-              "radiusMaxPixels": 12,
-              "pickable": true,
-              "tooltip": "<b>{event_type}</b><br/>{severity}",
-              "data": {
-                "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 5000",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
@@ -285,9 +275,12 @@
               "lng": "lng",
               "lat": "lat",
               "fillColor": { "column": "sla", "palette": { "CRITICAL": [209, 55, 78, 230], "WARNING": [255, 160, 0, 230], "OK": [46, 204, 113, 200] }, "default": [120, 120, 120, 200] },
-              "radius": 90,
-              "radiusMinPixels": 6,
-              "radiusMaxPixels": 20,
+              "radius": 50,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [90, 99, 104, 255],
+              "lineWidthMinPixels": 1,
               "pickable": true,
               "tooltip": "<b>{site}</b><br/>Dwell: {dwell_min} min<br/>SLA: {sla}",
               "data": {
@@ -300,10 +293,13 @@
               "id": "od",
               "lng": "lng",
               "lat": "lat",
-              "fillColor": { "column": "kind", "palette": { "origin": [46, 204, 113, 235], "destination": [231, 76, 60, 235] }, "default": [120, 120, 120, 200] },
-              "radius": 120,
-              "radiusMinPixels": 7,
-              "radiusMaxPixels": 16,
+              "fillColor": { "column": "kind", "palette": { "origin": [46, 204, 113, 235], "destination": [44, 62, 80, 235] }, "default": [120, 120, 120, 200] },
+              "radius": 40,
+              "radiusMinPixels": 5,
+              "radiusMaxPixels": 9,
+              "stroked": true,
+              "lineColor": [90, 99, 104, 255],
+              "lineWidthMinPixels": 1,
               "pickable": true,
               "tooltip": "<b>{kind}</b><br/>{site}",
               "data": {
@@ -317,9 +313,12 @@
               "lng": "lng",
               "lat": "lat",
               "fillColor": [0, 229, 255, 255],
-              "radius": 110,
-              "radiusMinPixels": 8,
-              "radiusMaxPixels": 18,
+              "radius": 60,
+              "radiusMinPixels": 6,
+              "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [90, 99, 104, 255],
+              "lineWidthMinPixels": 1,
               "pickable": true,
               "tooltip": "<b>Replay</b><br/>{t}<br/>{speed} km/h",
               "data": {
@@ -384,10 +383,10 @@
             {
               "type": "related_table",
               "title": "Safety & Compliance Events",
-              "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ROUND(METRIC_VALUE,1) AS value, EVENT_TS AS occurred FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY EVENT_TS DESC LIMIT 25",
+              "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, COUNT(*) AS occurrences, ROUND(MAX(METRIC_VALUE),1) AS max_value, MIN(EVENT_TS) AS first_seen, MAX(EVENT_TS) AS last_seen FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey GROUP BY EVENT_TYPE, SEVERITY_ENUM ORDER BY occurrences DESC",
               "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "dataset_id": "context.dataset_id" },
               "emptyMessage": "No safety events on this journey.",
-              "columns": [ { "field": "event_type", "header": "Type" }, { "field": "severity", "header": "Severity" }, { "field": "value", "header": "Value", "format": "number" }, { "field": "occurred", "header": "When", "format": "datetime" } ]
+              "columns": [ { "field": "event_type", "header": "Type" }, { "field": "severity", "header": "Severity" }, { "field": "occurrences", "header": "Count", "format": "number" }, { "field": "max_value", "header": "Max", "format": "number" }, { "field": "first_seen", "header": "First", "format": "datetime" }, { "field": "last_seen", "header": "Last", "format": "datetime" } ]
             }
           ]
         }
