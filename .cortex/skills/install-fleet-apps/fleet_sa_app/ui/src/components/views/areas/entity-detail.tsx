@@ -5,6 +5,15 @@ import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import type { Operation } from '@/app/api/write/route';
+import {
+  fmtValue,
+  KVRow,
+  SectionHeading,
+  DynamicSqlSection,
+  RelatedTableSection,
+  type PropertyDef,
+  type SectionDef,
+} from './detail-sections';
 
 // ── Config type definitions ────────────────────────────────────────────────────
 
@@ -12,27 +21,6 @@ interface StatusTransitionDef {
   label: string;
   next: string;
   danger?: boolean;
-}
-
-interface PropertyDef {
-  field: string;
-  label: string;
-  format?: 'number' | 'currency' | 'datetime' | 'date' | 'text';
-  link_view?: string;   // navigate to this view on click
-  id_field?: string;    // which row field provides the ID for link_view
-  conditional?: boolean; // hide row when field is null/empty
-}
-
-type SectionDef =
-  | { type: 'text';              field: string; title?: string; conditional?: boolean }
-  | { type: 'code';              field: string; title?: string; conditional?: boolean }
-  | { type: 'dynamic_sql_table'; field: string; title?: string; limit?: number }
-  | { type: 'related_table';     title?: string; query: string; columns: ColumnDef[]; link?: { label: string; view: string } };
-
-interface ColumnDef {
-  field: string;
-  header: string;
-  format?: string;
 }
 
 interface ActionDef {
@@ -68,164 +56,6 @@ export interface EntityDetailConfig {
   actions?: ActionDef[];
   dependency_check?: DependencyDef[];
   // noPad handled by view-renderer; not read here
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fmtValue(val: unknown, format?: string): string {
-  if (val === null || val === undefined || val === '') return '—';
-  const s = String(val);
-  if (!format || format === 'text') return s;
-  if (format === 'number') {
-    const n = Number(val);
-    return isNaN(n) ? s : n.toLocaleString();
-  }
-  if (format === 'currency') {
-    const n = Number(val);
-    return isNaN(n) ? s : '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  if (format === 'datetime' || format === 'date') {
-    try {
-      const d = new Date(s);
-      if (isNaN(d.getTime())) return s;
-      return format === 'date'
-        ? d.toLocaleDateString(undefined, { dateStyle: 'medium' })
-        : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-    } catch { return s; }
-  }
-  return s;
-}
-
-// ── Shared primitives ─────────────────────────────────────────────────────────
-
-function KVRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', gap: '12px', padding: '8px 0', borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
-      <div style={{ width: '160px', flexShrink: 0, color: 'var(--text-secondary, #6b7280)', fontSize: '13px', fontWeight: 500 }}>{label}</div>
-      <div style={{ color: 'var(--text-primary, #111827)', fontSize: '13px', wordBreak: 'break-word', flex: 1 }}>{value ?? '—'}</div>
-    </div>
-  );
-}
-
-function SectionHeading({ title, note }: { title?: string; note?: string }) {
-  if (!title) return null;
-  return (
-    <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary, #111827)' }}>
-      {title}
-      {note && <span style={{ marginLeft: '8px', fontSize: '12px', fontWeight: 400, color: 'var(--text-secondary, #6b7280)' }}>{note}</span>}
-    </h3>
-  );
-}
-
-function Skeleton({ rows = 3 }: { rows?: number }) {
-  return (
-    <div style={{ padding: '16px' }}>
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} style={{ height: '28px', marginBottom: '6px', borderRadius: '4px', backgroundColor: 'var(--surface-secondary, #f3f4f6)' }} />
-      ))}
-    </div>
-  );
-}
-
-// ── Section components (each has its own hooks so they can call useViewData) ──
-
-// Runs row[field] as a SQL query — used for "Live Membership" in audience detail
-function DynamicSqlSection({ sql, title, limit }: { sql: string | null; title?: string; limit?: number }) {
-  const wrappedSql = sql ? `SELECT * FROM (${sql}) AS _t LIMIT ${limit ?? 200}` : undefined;
-  const { data, loading, error, refetch } = useViewData(wrappedSql);
-
-  return (
-    <div style={{ marginBottom: '28px' }}>
-      <SectionHeading title={title} note="— evaluated from definition SQL" />
-      <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden' }}>
-        {!sql ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No SQL — membership cannot be computed.</div>
-        ) : loading ? (
-          <Skeleton />
-        ) : error ? (
-          <div style={{ padding: '12px 16px' }}>
-            <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px', marginBottom: '8px' }}>Error: {error}</div>
-            <button onClick={refetch} style={{ padding: '4px 12px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border-default, #e5e7eb)', cursor: 'pointer', backgroundColor: 'white' }}>Retry</button>
-          </div>
-        ) : !data?.rows.length ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No members found.</div>
-        ) : (
-          <AutoTable
-            columns={data.columns.map(c => ({ field: c.key, header: c.label }))}
-            rows={data.rows}
-            totalRows={data.totalRows}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Runs a static parameterized sub-query — used for sub-lists like Activation History
-function RelatedTableSection({ section, showViewFn }: { section: Extract<SectionDef, { type: 'related_table' }>; showViewFn: (id: string) => void }) {
-  const { data, loading, error } = useViewData(section.query, { id: 'viewState.id' });
-
-  return (
-    <div style={{ marginBottom: '28px' }}>
-      <SectionHeading title={section.title} />
-      <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden' }}>
-        {loading ? (
-          <Skeleton />
-        ) : error ? (
-          <div style={{ padding: '12px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
-        ) : !data?.rows.length ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No records found.</div>
-        ) : (
-          <AutoTable columns={section.columns} rows={data.rows} />
-        )}
-      </div>
-      {section.link && (
-        <button
-          onClick={() => showViewFn(section.link!.view)}
-          style={{ marginTop: '8px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-accent, #2563eb)', fontSize: '13px', padding: 0 }}
-        >
-          {section.link.label}
-        </button>
-      )}
-    </div>
-  );
-}
-
-// Generic table renderer used by both section types above
-function AutoTable({ columns, rows, totalRows }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number }) {
-  const displayed = rows.length;
-  const total = totalRows ?? displayed;
-  return (
-    <div style={{ overflow: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-        <thead>
-          <tr>
-            {columns.map(col => (
-              <th key={col.field} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, backgroundColor: 'var(--surface-secondary, #f3f4f6)', borderBottom: '2px solid var(--border-default, #e5e7eb)', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 1 }}>
-                {col.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
-              {columns.map(col => (
-                <td key={col.field} style={{ padding: '6px 12px', whiteSpace: 'nowrap', color: 'var(--text-primary, #111827)' }}>
-                  {fmtValue(row[col.field], col.format)}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {total > displayed && (
-        <div style={{ padding: '8px', fontSize: '12px', color: 'var(--text-secondary, #6b7280)', textAlign: 'center' }}>
-          Showing {displayed} of {total.toLocaleString()}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ── Main area component ────────────────────────────────────────────────────────
