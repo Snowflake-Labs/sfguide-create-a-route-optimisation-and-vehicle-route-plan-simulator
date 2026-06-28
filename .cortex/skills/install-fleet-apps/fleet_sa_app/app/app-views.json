@@ -218,7 +218,7 @@
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 440px auto auto auto", "grid": "\"kpi kpi\"\n\"journeys map\"\n\"replay replay\"\n\"detail detail\"\n\"speed speed\"" },
+      "default": { "columns": "1fr 1fr", "rows": "96px 440px auto auto auto", "grid": "\"kpi kpi\"\n\"journeys map\"\n\"replay replay\"\n\"detail detail\"\n\"speed speed\"" },
       "mobile": { "columns": "1fr", "rows": "auto 260px 360px auto auto auto", "grid": "\"kpi\"\n\"journeys\"\n\"map\"\n\"replay\"\n\"detail\"\n\"speed\"" }
     },
     "areas": {
@@ -255,8 +255,8 @@
         "config": {
           "noPad": true,
           "legend": [
-            { "label": "Expected route", "color": [41, 181, 232, 200], "shape": "line" },
-            { "label": "Actual / deviation", "color": [209, 55, 78, 220], "shape": "line" },
+            { "label": "On-plan route", "color": [41, 181, 232, 220], "shape": "line" },
+            { "label": "Deviation", "color": [209, 55, 78, 220], "shape": "line" },
             { "label": "Origin", "color": [46, 204, 113, 235], "shape": "dot" },
             { "label": "Destination", "color": [44, 62, 80, 235], "shape": "dot" },
             { "label": "Dwell - warning", "color": [255, 160, 0, 230], "shape": "dot" },
@@ -278,13 +278,25 @@
             },
             {
               "type": "path",
-              "id": "actual",
+              "id": "actual_on_plan",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 220],
+              "width": 4,
+              "widthMinPixels": 3,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(IS_DEVIATION, FALSE) = FALSE AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual_deviation",
               "geojsonColumn": "route_geojson",
               "color": [209, 55, 78, 220],
               "width": 4,
               "widthMinPixels": 3,
               "data": {
-                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND IS_DEVIATION = TRUE AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
