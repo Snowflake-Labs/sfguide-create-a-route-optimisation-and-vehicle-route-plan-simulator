@@ -21,6 +21,9 @@ export interface AppConfig {
   capabilities: string[];
   sampleQuestions: string[];
   snowflake?: { database: string; schema: string; warehouse?: string };
+  // Optional target for the cross-link to the admin app (resolved server-side
+  // for admins only via /api/admin-link). Defaults to the FLEET_ADMIN_APP service.
+  adminApp?: { serviceFqn?: string; endpointName?: string };
   hasWorkflows?: boolean;
   contextBar?: ContextBarField[];
   // Domain packs whose custom showcase views to register (4C loader). Each id
@@ -72,6 +75,7 @@ export function AppShell() {
   const setSnowflakeFqn = useAppStore((s) => s.setSnowflakeFqn);
   const setDetectedRole = useAppStore((s) => s.setDetectedRole);
   const setSelectedRole = useAppStore((s) => s.setSelectedRole);
+  const setAdminAppUrl = useAppStore((s) => s.setAdminAppUrl);
   const setDisplayConfig = useAppStore((s) => s.setDisplayConfig);
 
   // Seed the role dropdown from the user's detected role (hint only; the
@@ -83,10 +87,18 @@ export function AppShell() {
         if (w.detectedRole) {
           setDetectedRole(w.detectedRole);
           setSelectedRole(w.detectedRole);
+          // Resolve the admin app cross-link only for true admins. The route is
+          // itself admin-gated, so non-admins receive { url: null }.
+          if (w.detectedRole === 'admin') {
+            fetch('/api/admin-link')
+              .then((r) => r.json())
+              .then((a: { url?: string | null }) => setAdminAppUrl(a.url ?? null))
+              .catch(() => {});
+          }
         }
       })
       .catch(() => {});
-  }, [setDetectedRole, setSelectedRole]);
+  }, [setDetectedRole, setSelectedRole, setAdminAppUrl]);
 
   useEffect(() => {
     Promise.all([

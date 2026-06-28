@@ -26,6 +26,10 @@
     "database": "FLEET_INTELLIGENCE",
     "schema": "DWELL_ANALYSIS"
   },
+  "adminApp": {
+    "serviceFqn": "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP",
+    "endpointName": "fleet-admin-app"
+  },
   "tools": {
     "schema": "OPENROUTESERVICE_APP.ROUTING",
     "verbs": {

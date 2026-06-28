@@ -62,6 +62,9 @@ interface AppState {
   // the UI surfaces; `detectedRole` is the user's real role from /api/whoami (hint only).
   selectedRole: AppRole;
   detectedRole: AppRole | null;
+  // Resolved FLEET_ADMIN_APP URL (admins only, from /api/admin-link); null hides
+  // the header cross-link.
+  adminAppUrl: string | null;
 }
 
 interface AppActions {
@@ -85,6 +88,7 @@ interface AppActions {
   setSnowflakeFqn: (fqn: string) => void;
   setSelectedRole: (role: AppRole) => void;
   setDetectedRole: (role: AppRole) => void;
+  setAdminAppUrl: (url: string | null) => void;
   setDisplayConfig: (cfg: DisplayConfig | null) => void;
 }
 
@@ -121,6 +125,7 @@ export const useAppStore = create<AppStore>()(
       displayConfig: null,
       selectedRole: 'admin' as AppRole,
       detectedRole: null,
+      adminAppUrl: null,
 
       addUserMessage: (text: string) => {
         const msg: Message = {
@@ -409,6 +414,9 @@ export const useAppStore = create<AppStore>()(
 
       setDetectedRole: (role: AppRole) => {
         set({ detectedRole: role });
+      },
+      setAdminAppUrl: (url: string | null) => {
+        set({ adminAppUrl: url });
       },
 
       dismissToolPending: (toolName: string, entityKey: string) => {
