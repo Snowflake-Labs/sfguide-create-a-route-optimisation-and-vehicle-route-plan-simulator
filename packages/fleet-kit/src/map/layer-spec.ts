@@ -56,6 +56,12 @@ export interface ScatterplotLayerSpec extends LayerBase {
   radius?: number;
   radiusMinPixels?: number;
   radiusMaxPixels?: number;
+  /** Draw an outline around each point. */
+  stroked?: boolean;
+  /** Outline color (requires stroked). Defaults to a neutral grey. */
+  lineColor?: ColorRGBA;
+  /** Minimum outline width in pixels (requires stroked). */
+  lineWidthMinPixels?: number;
 }
 
 export interface PathLayerSpec extends LayerBase {

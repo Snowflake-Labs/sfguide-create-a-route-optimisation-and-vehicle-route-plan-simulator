@@ -103,6 +103,9 @@ export function compileLayer(
         getRadius: s.radius ?? 80,
         radiusMinPixels: s.radiusMinPixels ?? 4,
         radiusMaxPixels: s.radiusMaxPixels ?? 12,
+        stroked: s.stroked ?? false,
+        getLineColor: s.lineColor ?? [90, 99, 104, 255],
+        lineWidthMinPixels: s.lineWidthMinPixels ?? 1,
         pickable: s.pickable ?? false,
         updateTriggers: { getFillColor: [JSON.stringify(viewState)] },
       });
