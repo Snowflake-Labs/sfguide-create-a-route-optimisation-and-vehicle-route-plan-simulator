@@ -13,6 +13,7 @@ import {
   ViewCheckboxArea,
 } from './areas';
 import { EntityDetailArea } from './areas/entity-detail';
+import { DetailPanelArea } from './areas/detail-panel';
 import type { AreaComponentName } from '@/lib/area-components';
 
 export interface AreaConfig {
@@ -58,7 +59,15 @@ const AREA_COMPONENTS: Record<AreaComponentName, AnyAreaComponent> = {
   ClickableTable: ViewClickableTableArea,
   Checkbox: ViewCheckboxArea,
   EntityDetail: EntityDetailArea,
+  DetailPanel: DetailPanelArea,
 };
+
+// An area pinned as a slide-over drawer (config.position === 'drawer') renders
+// OUTSIDE the CSS grid: it positions itself absolutely over the view and is
+// shown/hidden by its own selection state, so it never consumes a grid cell.
+function isDrawerArea(areaConfig: AreaConfig): boolean {
+  return (areaConfig.config as { position?: string } | undefined)?.position === 'drawer';
+}
 
 function parseGridTemplate(grid: string): string {
   const lines = grid.trim().split('\n');
@@ -105,7 +114,9 @@ function getScrollableAreas(grid: string, rows: string): Set<string> {
 
 export function ViewRenderer({ viewDef }: ViewRendererProps) {
   const layout = viewDef.layout.default;
-  const areaNames = Object.keys(viewDef.areas);
+  const allAreaNames = Object.keys(viewDef.areas);
+  const areaNames = allAreaNames.filter((n) => !isDrawerArea(viewDef.areas[n]));
+  const drawerAreaNames = allAreaNames.filter((n) => isDrawerArea(viewDef.areas[n]));
   const scrollableAreas = getScrollableAreas(layout.grid, layout.rows || 'auto');
 
   // viewState keys that represent a user selection (emit-type "selection" from a
@@ -128,6 +139,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
   );
 
   return (
+    <div style={{ position: 'relative', height: '100%', minHeight: 0 }}>
     <div
       style={{
         display: 'grid',
@@ -166,6 +178,16 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
           >
             <Component areaConfig={areaConfig} selectionKeys={selectionKeys} />
           </div>
+        );
+      })}
+    </div>
+      {/* Drawer-positioned areas render over the grid, not inside a grid cell. */}
+      {drawerAreaNames.map((areaName) => {
+        const areaConfig = viewDef.areas[areaName];
+        const Component = AREA_COMPONENTS[areaConfig.component as AreaComponentName];
+        if (!Component) return null;
+        return (
+          <Component key={areaName} areaConfig={areaConfig} selectionKeys={selectionKeys} />
         );
       })}
     </div>

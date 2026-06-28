@@ -14,6 +14,7 @@ export const AREA_COMPONENT_NAMES = [
   'ClickableTable',
   'Checkbox',
   'EntityDetail',
+  'DetailPanel',
 ] as const;
 
 export type AreaComponentName = (typeof AREA_COMPONENT_NAMES)[number];
