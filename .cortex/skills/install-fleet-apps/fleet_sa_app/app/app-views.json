@@ -278,25 +278,49 @@
             },
             {
               "type": "path",
-              "id": "actual_on_plan",
+              "id": "actual_overview_on",
               "geojsonColumn": "route_geojson",
               "color": [41, 181, 232, 220],
               "width": 4,
               "widthMinPixels": 3,
               "data": {
-                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(IS_DEVIATION, FALSE) = FALSE AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NULL AND ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(IS_DEVIATION, FALSE) = FALSE ORDER BY START_TS DESC LIMIT 50",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
             {
               "type": "path",
-              "id": "actual_deviation",
+              "id": "actual_overview_dev",
               "geojsonColumn": "route_geojson",
               "color": [209, 55, 78, 220],
               "width": 4,
               "widthMinPixels": 3,
               "data": {
-                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND IS_DEVIATION = TRUE AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NULL AND ACTUAL_PATH_GEOG IS NOT NULL AND IS_DEVIATION = TRUE ORDER BY START_TS DESC LIMIT 50",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual_seg_on",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 220],
+              "width": 4,
+              "widthMinPixels": 3,
+              "data": {
+                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg, COALESCE(IS_DEVIATION,FALSE) AS dev FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, LAG(ST_X(LOCATION_GEOG)) OVER (ORDER BY TS) AS plng, LAG(ST_Y(LOCATION_GEOG)) OVER (ORDER BY TS) AS plat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), seg AS (SELECT ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(plng,plat),ST_MAKEPOINT(lng,lat)))::STRING AS route_geojson, CASE WHEN j.pg IS NULL THEN (NOT j.dev) ELSE (ST_DISTANCE(ST_MAKEPOINT(lng,lat),j.pg) <= 40 AND ST_DISTANCE(ST_MAKEPOINT(plng,plat),j.pg) <= 40) END AS on_plan FROM pts CROSS JOIN j WHERE pts.plng IS NOT NULL) SELECT route_geojson FROM seg WHERE on_plan = TRUE",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual_seg_dev",
+              "geojsonColumn": "route_geojson",
+              "color": [209, 55, 78, 220],
+              "width": 4,
+              "widthMinPixels": 3,
+              "data": {
+                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg, COALESCE(IS_DEVIATION,FALSE) AS dev FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, LAG(ST_X(LOCATION_GEOG)) OVER (ORDER BY TS) AS plng, LAG(ST_Y(LOCATION_GEOG)) OVER (ORDER BY TS) AS plat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), seg AS (SELECT ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(plng,plat),ST_MAKEPOINT(lng,lat)))::STRING AS route_geojson, CASE WHEN j.pg IS NULL THEN (NOT j.dev) ELSE (ST_DISTANCE(ST_MAKEPOINT(lng,lat),j.pg) <= 40 AND ST_DISTANCE(ST_MAKEPOINT(plng,plat),j.pg) <= 40) END AS on_plan FROM pts CROSS JOIN j WHERE pts.plng IS NOT NULL) SELECT route_geojson FROM seg WHERE on_plan = FALSE",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
