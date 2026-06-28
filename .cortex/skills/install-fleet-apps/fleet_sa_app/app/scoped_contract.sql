@@ -844,25 +844,77 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- fact_stop <- planned stop grain from DIM_TRIP_SCHEDULE (always present). A
--- richer dwell-backed fact_stop (arrival/departure/dwell/service/wait) is provided
--- by the dwell pack (FLEET_APP.DWELL.VW_DWELL_SESSIONS) when installed.
+-- fact_stop <- ACTUAL dwell-backed stop grain, sessionized from telemetry. One
+-- row per contiguous DWELL/IDLE session per entity (mirrors the dwell pack's
+-- CONDITIONAL_CHANGE_EVENT sessionization, but driven by the dataset-scoped
+-- telemetry function so it stays region/dataset-scoped and vehicle-agnostic).
+-- Populates JOURNEY_ID, arrival/departure, dwell seconds, SLA status (vs.
+-- DIM_VEHICLE_DWELL_SLA), a stop centroid (STOP_GEOG) and resolved SITE_LABEL.
+-- Planned stops remain available via dim_plan / fact_work_item.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_STOP_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
 RETURNS TABLE (
   STOP_ID VARCHAR, JOURNEY_ID VARCHAR, ENTITY_ID VARCHAR, SITE_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
   DEPARTURE_TS TIMESTAMP_NTZ, DWELL_DURATION_SEC FLOAT, WAIT_DURATION_SEC FLOAT, SERVICE_DURATION_SEC FLOAT,
-  SEQUENCE_NUM NUMBER, SLA_STATUS_ENUM VARCHAR, STOP_GRAIN VARCHAR, REGION VARCHAR
+  SEQUENCE_NUM NUMBER, SLA_STATUS_ENUM VARCHAR, STOP_GRAIN VARCHAR, REGION VARCHAR,
+  STOP_GEOG GEOGRAPHY, SITE_LABEL VARCHAR
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  SELECT SCHEDULE_ID || '-dest' AS STOP_ID, CAST(NULL AS VARCHAR) AS JOURNEY_ID, VEHICLE_ID AS ENTITY_ID,
-         DESTINATION_POI_ID AS SITE_ID, PLANNED_END AS ARRIVAL_TS, CAST(NULL AS TIMESTAMP_NTZ) AS DEPARTURE_TS,
-         CAST(NULL AS FLOAT) AS DWELL_DURATION_SEC, CAST(NULL AS FLOAT) AS WAIT_DURATION_SEC,
-         CAST(NULL AS FLOAT) AS SERVICE_DURATION_SEC, TRIP_SEQ AS SEQUENCE_NUM,
-         CAST(NULL AS VARCHAR) AS SLA_STATUS_ENUM, 'planned' AS STOP_GRAIN, REGION
-  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(P_REGION, P_DATASET_ID))
+  WITH tel AS (
+    SELECT TELEMETRY_ID, VEHICLE_ID, VEHICLE_TYPE, TRIP_ID, TS, POINT_GEOM, LOCATION_ID, LOCATION_TYPE, REGION,
+           CASE
+             WHEN STATUS = 'DWELL_ORIGIN' AND LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS') THEN 'DWELL_WAREHOUSE'
+             WHEN STATUS = 'DWELL_ORIGIN' AND LOCATION_TYPE IN ('RESTAURANT','STORE','ADDRESS') THEN 'DWELL_STORE'
+             WHEN STATUS = 'DWELL_ORIGIN' THEN 'DWELL_DESTINATION'
+             WHEN STATUS = 'DWELL_REST' THEN 'DWELL_REST_STOP'
+             WHEN STATUS = 'DWELL_RECHARGE' THEN 'DWELL_REST_STOP'
+             WHEN STATUS = 'DWELL_DETOUR' THEN 'DWELL_DETOUR'
+             ELSE STATUS
+           END AS STATUS
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
+  ),
+  -- Sessionize over the FULL ordered sequence (incl. MOVING) so two dwell blocks
+  -- of the same kind split by travel are not merged across the gap.
+  sess AS (
+    SELECT *,
+           CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID
+    FROM tel
+    WHERE STATUS IN ('MOVING','DWELL_WAREHOUSE','DWELL_DESTINATION',
+                     'DWELL_REST_STOP','DWELL_STORE','DWELL_DETOUR','IDLE')
+  ),
+  agg AS (
+    SELECT VEHICLE_ID, SESSION_ID, STATUS,
+           ANY_VALUE(VEHICLE_TYPE) AS VEHICLE_TYPE, ANY_VALUE(TRIP_ID) AS TRIP_ID,
+           ANY_VALUE(LOCATION_ID) AS LOCATION_ID, ANY_VALUE(REGION) AS REGION,
+           MIN(TS) AS ARRIVAL_TS, MAX(TS) AS DEPARTURE_TS,
+           DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SEC,
+           ST_CENTROID(ST_COLLECT(POINT_GEOM)) AS STOP_GEOG
+    FROM sess
+    WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
+    GROUP BY VEHICLE_ID, SESSION_ID, STATUS
+  )
+  SELECT a.VEHICLE_ID || '-' || a.SESSION_ID::VARCHAR AS STOP_ID,
+         a.TRIP_ID AS JOURNEY_ID, a.VEHICLE_ID AS ENTITY_ID, a.LOCATION_ID AS SITE_ID,
+         a.ARRIVAL_TS, a.DEPARTURE_TS,
+         a.DWELL_SEC::FLOAT AS DWELL_DURATION_SEC,
+         CAST(NULL AS FLOAT) AS WAIT_DURATION_SEC,
+         a.DWELL_SEC::FLOAT AS SERVICE_DURATION_SEC,
+         ROW_NUMBER() OVER (PARTITION BY a.TRIP_ID ORDER BY a.ARRIVAL_TS) AS SEQUENCE_NUM,
+         CASE
+           WHEN sla.CRITICAL_MIN IS NOT NULL AND a.DWELL_SEC / 60.0 >= sla.CRITICAL_MIN THEN 'CRITICAL'
+           WHEN sla.WARNING_MIN  IS NOT NULL AND a.DWELL_SEC / 60.0 >= sla.WARNING_MIN  THEN 'WARNING'
+           ELSE 'OK'
+         END AS SLA_STATUS_ENUM,
+         'actual' AS STOP_GRAIN, a.REGION,
+         a.STOP_GEOG, site.SITE_LABEL
+  FROM agg a
+  LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA sla
+    ON sla.VEHICLE_TYPE = a.VEHICLE_TYPE
+   AND sla.LOCATION_TYPE = REPLACE(a.STATUS, 'DWELL_', '')
+  LEFT JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(P_REGION, P_DATASET_ID)) site
+    ON site.SITE_ID = a.LOCATION_ID
 $$;
 
 -- ---------------------------------------------------------------------------
