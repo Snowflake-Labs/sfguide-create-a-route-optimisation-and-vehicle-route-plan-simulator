@@ -550,21 +550,26 @@
     "category": "Core",
     "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto $heroMap", "grid": "\"metric controls\"\n\"map map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto $map $content", "grid": "\"metric controls\"\n\"aggregate aggregate\"\n\"map map\"\n\"places drivers\"" }
     },
     "areas": {
       "metric": {
         "component": "ComboBox",
         "data": {
-          "query": "SELECT 'pings' AS value, 'Activity (pings)' AS label UNION ALL SELECT 'entities','Unique {{labels.entity_plural}}'"
+          "query": "SELECT 'time' AS value, 'Time spent' AS label UNION ALL SELECT 'entities','Distinct vehicles'"
         },
-        "config": { "label": "Metric", "placeholder": "Activity (pings)" },
+        "config": { "label": "Metric", "placeholder": "Time spent" },
         "emits": { "selected_metric": "selection" }
       },
       "controls": {
         "component": "Slider",
         "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 12, "format": "hour", "play": true },
         "emits": { "selected_hour": "" }
+      },
+      "aggregate": {
+        "component": "Checkbox",
+        "config": { "label": "Aggregate whole period (ignore hour)", "default": false },
+        "emits": { "aggregate_all": "" }
       },
       "map": {
         "component": "Map",
@@ -575,16 +580,32 @@
               "type": "h3",
               "hexColumn": "h3_index",
               "valueColumn": "metric_value",
-              "extruded": true,
+              "extruded": false,
               "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
               "pickable": true,
-              "tooltip": "<b>{h3_index}</b><br/>Pings: {ping_count}<br/>Entities: {entities}",
+              "tooltip": "<b>{h3_index}</b><br/>Time spent: {dwell_min} min<br/>Distinct vehicles: {entities}",
               "data": {
-                "query": "SELECT H3_CELL AS h3_index, SUM(EVENT_COUNT) AS ping_count, MAX(UNIQUE_ENTITY_COUNT) AS entities, CASE WHEN :selected_metric = 'entities' THEN MAX(UNIQUE_ENTITY_COUNT) ELSE SUM(EVENT_COUNT) END AS metric_value FROM TABLE(FLEET_APP.CORE.F_FACT_AREA_METRIC_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(8 AS NUMBER))) WHERE TS_BUCKET = TO_NUMBER(:selected_hour) GROUP BY H3_CELL LIMIT 5000",
-                "params": { "selected_metric": "viewState.selected_metric", "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+                "query": "WITH t AS (SELECT VEHICLE_ID, POINT_GEOM, STATUS, EXTRACT(HOUR FROM TS) AS hr, LEAST(COALESCE(DATEDIFF('second', LAG(TS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS), TS),0),900) AS gap FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE POINT_GEOM IS NOT NULL) SELECT H3_POINT_TO_CELL_STRING(POINT_GEOM,8) AS h3_index, ROUND(SUM(IFF(COALESCE(STATUS,'')<>'MOVING',gap,0))/60,1) AS dwell_min, COUNT(DISTINCT VEHICLE_ID) AS entities, CASE WHEN :selected_metric='entities' THEN COUNT(DISTINCT VEHICLE_ID) ELSE SUM(IFF(COALESCE(STATUS,'')<>'MOVING',gap,0))/60 END AS metric_value FROM t WHERE (COALESCE(:aggregate_all,'false')='true' OR hr=TO_NUMBER(:selected_hour)) GROUP BY 1 LIMIT 5000",
+                "params": { "selected_metric": "viewState.selected_metric", "selected_hour": "viewState.selected_hour", "aggregate_all": "viewState.aggregate_all", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]
+        }
+      },
+      "places": {
+        "component": "Table",
+        "config": { "title": "Top places by time spent" },
+        "data": {
+          "query": "WITH t AS (SELECT VEHICLE_ID, LOCATION_ID, STATUS, EXTRACT(HOUR FROM TS) AS hr, LEAST(COALESCE(DATEDIFF('second', LAG(TS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS), TS),0),900) AS gap FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))) SELECT COALESCE(p.NAME, t.LOCATION_ID) AS place, ROUND(SUM(t.gap)/60,1) AS dwell_min, COUNT(DISTINCT t.VEHICLE_ID) AS vehicles FROM t LEFT JOIN TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_POIS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) p ON p.LOCATION_ID=t.LOCATION_ID WHERE t.LOCATION_ID IS NOT NULL AND COALESCE(t.STATUS,'')<>'MOVING' AND (COALESCE(:aggregate_all,'false')='true' OR t.hr=TO_NUMBER(:selected_hour)) GROUP BY 1 ORDER BY dwell_min DESC LIMIT 6",
+          "params": { "selected_hour": "viewState.selected_hour", "aggregate_all": "viewState.aggregate_all", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        }
+      },
+      "drivers": {
+        "component": "Table",
+        "config": { "title": "Top drivers by dwell" },
+        "data": {
+          "query": "WITH t AS (SELECT VEHICLE_ID, STATUS, EXTRACT(HOUR FROM TS) AS hr, LEAST(COALESCE(DATEDIFF('second', LAG(TS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS), TS),0),900) AS gap FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))) SELECT VEHICLE_ID AS driver, ROUND(SUM(IFF(COALESCE(STATUS,'')<>'MOVING',gap,0))/60,1) AS dwell_min FROM t WHERE (COALESCE(:aggregate_all,'false')='true' OR hr=TO_NUMBER(:selected_hour)) GROUP BY 1 ORDER BY dwell_min DESC LIMIT 6",
+          "params": { "selected_hour": "viewState.selected_hour", "aggregate_all": "viewState.aggregate_all", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         }
       }
     }
