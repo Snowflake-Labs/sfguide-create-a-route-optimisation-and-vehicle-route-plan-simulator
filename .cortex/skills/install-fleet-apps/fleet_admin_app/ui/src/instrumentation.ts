@@ -40,6 +40,29 @@ export async function register(): Promise<void> {
         (err as Error)?.message?.slice(0, 300)
       }`);
     }
+
+    // Mark any orphaned RUNNING jobs as FAILED (container crash / restart recovery).
+    // Also reconcile auto_suspend_secs on services that were pinned to 0 for a
+    // generation run that never completed its scaleDown().
+    try {
+      const { reconcileStaleJobs } = await import('@/server/studio/jobs');
+      const reconciled = await reconcileStaleJobs(runSql, 30);
+      if (reconciled > 0) {
+        log('WARN', 'BootInit', `Reconciled ${reconciled} orphaned studio job(s)`);
+        try {
+          await runSql(`CALL OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()`);
+        } catch (reconcileErr) {
+          log('WARN', 'BootInit', `RECONCILE_AUTO_SUSPEND failed: ${
+            (reconcileErr as Error)?.message?.slice(0, 200)
+          }`);
+        }
+      }
+    } catch (err) {
+      log('WARN', 'BootInit', `Studio job reconcile failed: ${
+        (err as Error)?.message?.slice(0, 200)
+      }`);
+    }
+
     log('INFO', 'BootInit', `boot init complete in ${Date.now() - t0}ms`);
   })();
 
