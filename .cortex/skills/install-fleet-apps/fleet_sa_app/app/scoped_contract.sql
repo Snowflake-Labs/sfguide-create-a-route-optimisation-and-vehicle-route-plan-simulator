@@ -33,13 +33,25 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-app-restr
 -- scoped functions below compile on datasets generated before the empty-leg
 -- feature. Idempotent; legacy rows default to LADEN so COALESCE stays correct.
 -- NOTE: bare ADD COLUMN IF NOT EXISTS + DEFAULT triggers Snowflake bug 002028
--- ("ambiguous column name") when the column already exists. Use exception guard.
+-- ("ambiguous column name") when the column already exists. Use a temporary
+-- procedure as an exception-guard wrapper (snow sql -f cannot parse bare
+-- BEGIN..END blocks outside of CREATE PROCEDURE/FUNCTION).
 -- ---------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
 BEGIN
   ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN TRIP_KIND VARCHAR(16) DEFAULT 'LADEN';
+  RETURN 'added';
 EXCEPTION
-  WHEN OTHER THEN NULL; -- column already exists
+  WHEN OTHER THEN RETURN 'already exists';
 END;
+$$;
+CALL SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING();
+DROP PROCEDURE IF EXISTS SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING();
 
 -- ---------------------------------------------------------------------------
 -- FACT_TRIPS (region + vehicle scoped)
