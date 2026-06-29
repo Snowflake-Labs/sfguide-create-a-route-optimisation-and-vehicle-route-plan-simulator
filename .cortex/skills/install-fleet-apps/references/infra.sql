@@ -59,12 +59,21 @@ CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_OSM_EAI
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- 4. Compute pool for the two Next.js app services (light vs the ORS engine pool).
+-- MAX_NODES = 4: hosts FLEET_ADMIN_APP + FLEET_SA_APP (1 node each at rest).
+-- SPCS rolling upgrades spin up a replacement container before retiring the old
+-- one, so a deploy transiently needs a free node per app being upgraded. Sizing
+-- the pool at 4 lets either app roll without a manual MAX_NODES bump (the old
+-- value of 2 left zero headroom and parked the new container as PENDING
+-- "insufficient CPU" mid-deploy).
 CREATE COMPUTE POOL IF NOT EXISTS FLEET_APPS_COMPUTE_POOL
   INSTANCE_FAMILY = CPU_X64_XS
   MIN_NODES = 1
-  MAX_NODES = 2
+  MAX_NODES = 4
   AUTO_RESUME = TRUE
   AUTO_SUSPEND_SECS = 3600;
+-- Idempotent: bring an already-created pool up to the current MAX_NODES too,
+-- since CREATE ... IF NOT EXISTS is a no-op on a pre-existing (smaller) pool.
+ALTER COMPUTE POOL FLEET_APPS_COMPUTE_POOL SET MAX_NODES = 4;
 ALTER COMPUTE POOL FLEET_APPS_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"fleet-apps"}}';
 
 SHOW COMPUTE POOLS LIKE 'FLEET_APPS_COMPUTE_POOL';

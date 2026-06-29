@@ -91,6 +91,29 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   ( cd "$UI_DIR" && rm -rf .next && { [ -d node_modules ] || npm ci; } && npm run build ) \
     > /tmp/fleet_sa_build.log 2>&1 || { echo "ERROR: next build failed"; tail -40 /tmp/fleet_sa_build.log; exit 1; }
 
+  # Bundle verification (stale-kit guard): @fleet-kit/core is symlinked, and a
+  # stale webpack cache has previously shipped OLD kit code while reporting a
+  # successful build (cost two deploy cycles). Assert a sentinel token from the
+  # current kit map code is actually present in the freshly built chunks before
+  # we package an image. cellToBoundary (the h3-js call in the H3 map-fit branch)
+  # survives minification as a property access, so its presence proves the
+  # current layer-compiler bundled. Override via BUNDLE_VERIFY_TOKEN if the kit
+  # sentinel ever changes; set BUNDLE_VERIFY=0 to skip (not recommended).
+  if [ "${BUNDLE_VERIFY:-1}" != "0" ]; then
+    BUNDLE_VERIFY_TOKEN="${BUNDLE_VERIFY_TOKEN:-cellToBoundary}"
+    CHUNK_DIR="$UI_DIR/.next/static/chunks"
+    echo "[1b/7] Verify fleet-kit landed in bundle (token=$BUNDLE_VERIFY_TOKEN)..."
+    if ! grep -rql "$BUNDLE_VERIFY_TOKEN" "$CHUNK_DIR" 2>/dev/null; then
+      echo "ERROR: bundle verification failed - '$BUNDLE_VERIFY_TOKEN' not found in $CHUNK_DIR"
+      echo "       The built bundle does NOT contain the current @fleet-kit/core map code."
+      echo "       Likely a stale webpack cache against the symlinked kit. Try:"
+      echo "         rm -rf '$UI_DIR/.next' '$REPO_ROOT/packages/fleet-kit/node_modules/.cache' && redeploy"
+      echo "       (or set BUNDLE_VERIFY_TOKEN to a current kit sentinel / BUNDLE_VERIFY=0 to bypass)."
+      exit 1
+    fi
+    echo "  OK: '$BUNDLE_VERIFY_TOKEN' present in built chunks."
+  fi
+
   echo "[2/7] Login to SPCS image registry..."
   snow spcs image-registry login -c "$CONNECTION" >/dev/null
   REPO_URL=$(snow spcs image-repository url "$IMAGE_REPO_SQL_NAME" -c "$CONNECTION")
