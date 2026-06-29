@@ -29,7 +29,7 @@ const TARGET_REGION_NODES = 4;
 const TARGET_REGION_INSTANCES = 4;
 const TARGET_GATEWAY_NODES = 8;
 const TARGET_GATEWAY_INSTANCES = 8;
-const ORS_READY_MAX_ATTEMPTS = 8;
+const ORS_READY_MAX_ATTEMPTS = 24;
 const ORS_READY_INTERVAL_MS = 15_000;
 
 // Steady-state defaults used as a fallback restore value when the original

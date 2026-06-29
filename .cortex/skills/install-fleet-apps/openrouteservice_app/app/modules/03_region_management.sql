@@ -3759,6 +3759,21 @@ BEGIN
         svc_name := 'ORS_SERVICE_' || UPPER(:region);
         svc_full := 'OPENROUTESERVICE_APP.CORE.' || :svc_name;
 
+        -- Guard: skip regions where the ORS service is SUSPENDED. A suspended
+        -- service is NOT broken - it auto-suspended after idle timeout. Probing
+        -- via SYSTEM$GET_SERVICE_STATUS would trigger AUTO_RESUME, inadvertently
+        -- waking the service. SHOW SERVICES is metadata-only (no wake).
+        BEGIN
+            LET svc_status_str VARCHAR := '';
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            SELECT "status" INTO :svc_status_str
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+            IF (UPPER(:svc_status_str) = 'SUSPENDED') THEN
+                CONTINUE;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;  -- service doesn't exist: fall through to container_ready check below
+        END;
+
         BEGIN
             rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || '''))[0] AS S');
             LET cs CURSOR FOR rs;
