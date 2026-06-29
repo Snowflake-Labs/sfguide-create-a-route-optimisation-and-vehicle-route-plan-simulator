@@ -40,15 +40,16 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    AUTO_SUSPEND_SECS = 600;
 ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
--- Verify compute pool is ACTIVE before creating services.
--- State must be ACTIVE; if STARTING wait ~2 minutes and re-run this module.
+-- Verify compute pool state. Services queue automatically if pool is STARTING.
+-- No re-run needed; the pool reaches ACTIVE within ~2 minutes and services start.
 SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';
 SELECT
     "name",
     "state",
     CASE "state"
         WHEN 'ACTIVE' THEN 'Ready - proceeding to create services'
-        ELSE 'WARNING: Pool state is ' || "state" || '. Wait for ACTIVE then re-run 01_core_infra.sql'
+        WHEN 'IDLE' THEN 'Ready (idle) - proceeding to create services'
+        ELSE 'INFO: Pool state is ' || "state" || '. Services will queue and start automatically once ACTIVE (no re-run needed).'
     END AS POOL_STATUS_CHECK
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'OPENROUTESERVICE_APP_COMPUTE_POOL';

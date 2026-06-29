@@ -32,8 +32,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-app-restr
 -- Empty-miles support: ensure the physical FACT_TRIPS carries TRIP_KIND so the
 -- scoped functions below compile on datasets generated before the empty-leg
 -- feature. Idempotent; legacy rows default to LADEN so COALESCE stays correct.
+-- NOTE: bare ADD COLUMN IF NOT EXISTS + DEFAULT triggers Snowflake bug 002028
+-- ("ambiguous column name") when the column already exists. Use exception guard.
 -- ---------------------------------------------------------------------------
-ALTER TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_KIND VARCHAR(16) DEFAULT 'LADEN';
+BEGIN
+  ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN TRIP_KIND VARCHAR(16) DEFAULT 'LADEN';
+EXCEPTION
+  WHEN OTHER THEN NULL; -- column already exists
+END;
 
 -- ---------------------------------------------------------------------------
 -- FACT_TRIPS (region + vehicle scoped)

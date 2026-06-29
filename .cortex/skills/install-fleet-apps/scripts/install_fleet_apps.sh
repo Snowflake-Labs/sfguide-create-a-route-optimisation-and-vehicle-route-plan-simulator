@@ -241,8 +241,8 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   # AFTER the contract and BEFORE the verbs/agents. Idempotent (CREATE OR REPLACE).
   if [ -f "$ROUTING_TOOLS_SQL" ]; then
     note "  deploying ROUTING_TOOLS.TOOL_* substrate (routing verb dependency)..."
-    snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1 \
-      || note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
+    snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1
+    ROUTING_TOOLS_RC=$?
     # Assert all 9 TOOL_* procs exist. Non-fatal by design (matches the
     # best-effort routing step), but a shortfall is recorded in ROUTING_SUBSTRATE
     # so the friction log AND the final summary highlight it loudly instead of it
@@ -251,6 +251,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
       "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     if [ "${TOOL_N:-0}" -lt 9 ]; then
+      [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
       ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
     else
@@ -388,9 +389,12 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   # Defensive: the infra step always resolves COMPUTE_POOL now, but guard anyway
   # so a future regression fails loudly here instead of as an opaque unbound-var.
   : "${COMPUTE_POOL:?COMPUTE_POOL is unset - the infra step (1/8) must resolve it before apps}"
-  bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+  # ALLOW_DIRTY=1: the installer's own --regenerate step (layer 4) rewrites
+  # pack setup.sql files, which always dirties the tree. The deploy scripts'
+  # dirty-tree guard is for standalone human-driven deploys, not automated installs.
+  ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
     || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
-  COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
+  ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
     || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
   SA_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-sa-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
   ADMIN_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-admin-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
