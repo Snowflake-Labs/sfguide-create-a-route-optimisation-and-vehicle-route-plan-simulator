@@ -287,8 +287,7 @@
         "config": {
           "noPad": true,
           "legend": [
-            { "label": "On-plan route", "color": [41, 181, 232, 220], "shape": "line" },
-            { "label": "Deviation", "color": [209, 55, 78, 220], "shape": "line" },
+            { "label": "Actual route", "color": [41, 181, 232, 200], "shape": "line" },
             { "label": "Origin", "color": [46, 204, 113, 235], "shape": "dot" },
             { "label": "Destination", "color": [44, 62, 80, 235], "shape": "dot" },
             { "label": "Dwell - warning", "color": [255, 160, 0, 230], "shape": "dot" },
@@ -334,26 +333,15 @@
             },
             {
               "type": "path",
-              "id": "actual_seg_on",
+              "id": "actual_full",
               "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 220],
+              "color": [41, 181, 232, 200],
               "width": 4,
               "widthMinPixels": 3,
+              "pickable": true,
               "data": {
-                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, LAG(ST_X(LOCATION_GEOG)) OVER (ORDER BY TS) AS plng, LAG(ST_Y(LOCATION_GEOG)) OVER (ORDER BY TS) AS plat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), tf AS (SELECT AVG(IFF(ST_DISTANCE(ST_MAKEPOINT(lng,lat),(SELECT pg FROM j)) > 40,1,0)) AS dev_frac FROM pts), seg AS (SELECT ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(plng,plat),ST_MAKEPOINT(lng,lat)))::STRING AS route_geojson, CASE WHEN (SELECT dev_frac FROM tf) < COALESCE(TRY_TO_DOUBLE(:deviation_threshold),0.10) THEN TRUE WHEN j.pg IS NULL THEN TRUE ELSE (ST_DISTANCE(ST_MAKEPOINT(lng,lat),j.pg) <= 40 AND ST_DISTANCE(ST_MAKEPOINT(plng,plat),j.pg) <= 40) END AS on_plan FROM pts CROSS JOIN j WHERE pts.plng IS NOT NULL) SELECT route_geojson FROM seg WHERE on_plan = TRUE",
-                "params": { "selected_journey": "viewState.selected_journey", "deviation_threshold": "context.deviation_threshold", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-              }
-            },
-            {
-              "type": "path",
-              "id": "actual_seg_dev",
-              "geojsonColumn": "route_geojson",
-              "color": [209, 55, 78, 220],
-              "width": 4,
-              "widthMinPixels": 3,
-              "data": {
-                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, LAG(ST_X(LOCATION_GEOG)) OVER (ORDER BY TS) AS plng, LAG(ST_Y(LOCATION_GEOG)) OVER (ORDER BY TS) AS plat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), tf AS (SELECT AVG(IFF(ST_DISTANCE(ST_MAKEPOINT(lng,lat),(SELECT pg FROM j)) > 40,1,0)) AS dev_frac FROM pts), seg AS (SELECT ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(plng,plat),ST_MAKEPOINT(lng,lat)))::STRING AS route_geojson, CASE WHEN (SELECT dev_frac FROM tf) < COALESCE(TRY_TO_DOUBLE(:deviation_threshold),0.10) THEN TRUE WHEN j.pg IS NULL THEN TRUE ELSE (ST_DISTANCE(ST_MAKEPOINT(lng,lat),j.pg) <= 40 AND ST_DISTANCE(ST_MAKEPOINT(plng,plat),j.pg) <= 40) END AS on_plan FROM pts CROSS JOIN j WHERE pts.plng IS NOT NULL) SELECT route_geojson FROM seg WHERE on_plan = FALSE",
-                "params": { "selected_journey": "viewState.selected_journey", "deviation_threshold": "context.deviation_threshold", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
             {
@@ -1215,7 +1203,7 @@
   "asset_velocity": {
     "label": "Asset Velocity",
     "category": "Asset Pool",
-    "description": "Idle trailers, cost of idleness, and where they are parked - set a minimum idle and click a trailer to highlight it.",
+    "description": "Idle {{labels.entity_plural}}, cost of idleness, and where they are parked - set a minimum idle threshold and click a {{labels.entity}} to highlight it.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto auto $map $content auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
     },
@@ -1228,11 +1216,11 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_vehicles, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
           "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
           "mapping": {
             "metrics": [
-              { "column": "idle_trailers", "label": "Idle Trailers", "format": "number" },
+              { "column": "idle_vehicles", "label": "Idle {{labels.entity_plural}}", "format": "number" },
               { "column": "cost_usd", "label": "Cost of Idleness ($)", "format": "number" },
               { "column": "savings_usd", "label": "Projected Savings ($)", "format": "number" },
               { "column": "avg_idle_days", "label": "Avg Idle Days", "format": "number_2dp" }
@@ -1243,13 +1231,13 @@
       "byseverity": {
         "component": "Chart",
         "data": {
-          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
+          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS vehicles FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY IDLE_SEVERITY ORDER BY vehicles DESC",
           "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
         "config": {
-          "title": "Trailers by Idle Severity",
+          "title": "{{labels.entity_plural}} by Idle Severity",
           "xAxis": { "field": "severity", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "trailers", "label": "Trailers" } ]
+          "series": [ { "type": "bar", "field": "vehicles", "label": "{{labels.entity_plural}}" } ]
         }
       },
       "map": {
@@ -1282,7 +1270,7 @@
                 "base": [255, 107, 53, 200],
                 "active": [41, 181, 232, 255],
                 "matchColumn": "vehicle_id",
-                "whenViewStateEquals": "selected_trailer",
+                "whenViewStateEquals": "selected_vehicle",
                 "baseColumn": "severity",
                 "basePalette": {
                   "CRITICAL": [209, 55, 78, 220],
@@ -1297,7 +1285,7 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{severity}<br/>Idle {idle_days} days",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL AND (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) LIMIT 2000",
+                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL AND (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) LIMIT 2000",
                 "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
               }
             }
@@ -1307,17 +1295,17 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 50",
+          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 50",
           "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
         "config": { "rowKey": "vehicle_id", "defaultSort": { "column": "cost_usd", "direction": "desc" }, "exceptionFirst": { "column": "severity", "values": ["CRITICAL", "WARNING"] } },
-        "emits": { "selected_trailer": "selection" }
+        "emits": { "selected_vehicle": "selection" }
       },
       "rationale": {
         "component": "Table",
         "data": {
-          "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle trailer ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'trailer') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_trailer",
-          "params": { "selected_trailer": "viewState.selected_trailer", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle vehicle ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'vehicle') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_vehicle",
+          "params": { "selected_vehicle": "viewState.selected_vehicle", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }
     }

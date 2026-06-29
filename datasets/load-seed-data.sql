@@ -857,7 +857,7 @@ CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
 --------------------------------------------------------------------------------
 -- Both pages read projection views gated by a single-row CONFIG pointer:
 --   * FLEET_INTELLIGENCE.MARKETPLACE.CONFIG        -> Offers (VW_OFFER_ENRICHED)
---   * FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG -> Asset Velocity (VW_IDLE_TRAILERS, etc.)
+--   * FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG -> Asset Velocity (VW_IDLE_VEHICLES, etc.)
 -- The control-app's init.ts recreates the views + MERGEs MARKETPLACE.CONFIG on
 -- every boot, but a fresh install boots (Step 6) BEFORE this seed loader runs
 -- (Step 7), so at boot it derives from an empty UNIFIED and leaves both pointers

@@ -47,7 +47,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
         COMMENT = ${TRACK_RO_AV}
         AS
         WITH cfg AS (
@@ -142,7 +142,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE
         COMMENT = ${TRACK_RO_AV}
         AS
         WITH cfg AS (
@@ -175,7 +175,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
         COMMENT = ${TRACK_RO_AV}
         AS
         SELECT
@@ -195,8 +195,8 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
             WHEN t.IDLE_DAYS >= 3  THEN 'WATCH'
             ELSE 'OK'
           END                                                                                AS IDLE_SEVERITY
-        FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS t
-        LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE hgv
+        FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES t
+        LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE hgv
           ON hgv.VEHICLE_ID = t.VEHICLE_ID
         CROSS JOIN (SELECT MAX(DAILY_RENTAL_RATE_AVOIDED_USD) AS DAILY_RENTAL_RATE_AVOIDED_USD,
                            MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE,
@@ -1487,7 +1487,7 @@ $$`,
   // -----------------------------------------------------------------
   try {
     await sqlFn(
-      `SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS LIMIT 1`,
+      `SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS LIMIT 1`,
       'FLEET_INTELLIGENCE',
       'ROUTE_OPTIMIZATION',
     );

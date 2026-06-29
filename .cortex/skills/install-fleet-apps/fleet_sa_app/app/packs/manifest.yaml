@@ -66,7 +66,7 @@ packs:
   - name: route_optimization
     app_schema: FLEET_APP.ROUTE_OPTIMIZATION
     depends_on: [dwell]    # IDLE_TRAILERS reads FLEET_APP.DWELL.VW_DWELL_SESSIONS
-    probe: FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
+    probe: FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY]
     self_building: true
 

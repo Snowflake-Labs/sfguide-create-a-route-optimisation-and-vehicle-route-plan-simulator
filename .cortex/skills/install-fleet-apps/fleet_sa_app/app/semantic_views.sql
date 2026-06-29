@@ -333,14 +333,14 @@ Conventions:
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============
 -- SV_ASSET_VELOCITY - Route Optimization (asset velocity) semantic view
--- Source: FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS + VW_LANE_DEMAND
+-- Source: FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS + VW_LANE_DEMAND
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOGRAPHY columns (LAST_LOCATION_GEOM, TERMINAL_GEOM) excluded. Two independent facts.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   TABLES (
-    idle AS FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
+    idle AS FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
       PRIMARY KEY (VEHICLE_ID)
     , lane AS FLEET_APP.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
       PRIMARY KEY (TERMINAL_ID)
@@ -361,22 +361,22 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   DIMENSIONS (
     idle.region AS REGION COMMENT = 'Operating region'
-    , idle.last_location_name AS LAST_LOCATION_NAME WITH SYNONYMS ('parked at', 'location') COMMENT = 'Where the trailer is parked'
+    , idle.last_location_name AS LAST_LOCATION_NAME WITH SYNONYMS ('parked at', 'location') COMMENT = 'Where the vehicle is parked'
     , idle.last_location_type AS LAST_LOCATION_TYPE COMMENT = 'Type of parking location'
     , idle.assigned_dispatcher AS ASSIGNED_DISPATCHER WITH SYNONYMS ('dispatcher') COMMENT = 'Assigned dispatcher'
     , idle.driver_profile AS DRIVER_PROFILE COMMENT = 'Driver profile'
     , idle.idle_severity AS IDLE_SEVERITY WITH SYNONYMS ('severity') COMMENT = 'Idle severity (OK/WATCH/WARNING/CRITICAL)'
-    , idle.vehicle_subtype AS VEHICLE_SUBTYPE WITH SYNONYMS ('trailer type') COMMENT = 'Vehicle subtype (DRY/REEFER/FLAT/TANKER)'
+    , idle.vehicle_subtype AS VEHICLE_SUBTYPE WITH SYNONYMS ('vehicle type', 'subtype') COMMENT = 'Vehicle subtype (e.g. DRY/REEFER/FLAT/TANKER for HGV)'
     , idle.hazmat AS HAZMAT COMMENT = 'Hazmat flag'
     , idle.ors_profile AS ORS_PROFILE COMMENT = 'Routing profile'
-    , idle.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('trailer', 'trailer id') COMMENT = 'Vehicle/trailer id'
+    , idle.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('vehicle', 'vehicle id', 'asset', 'trailer') COMMENT = 'Vehicle/asset identifier'
     , lane.terminal_name AS TERMINAL_NAME WITH SYNONYMS ('terminal', 'depot') COMMENT = 'Terminal name'
     , lane.lane_region AS REGION COMMENT = 'Region (lane demand)'
     , lane.location_type AS LOCATION_TYPE COMMENT = 'Terminal location type'
   )
 
   METRICS (
-    idle.idle_vehicle_count AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('number of idle trailers', 'idle vehicles') COMMENT = 'Distinct idle vehicles'
+    idle.idle_vehicle_count AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('number of idle vehicles', 'idle vehicles', 'idle trailers') COMMENT = 'Distinct idle vehicles'
     , idle.total_cost_of_idleness AS SUM(cost_of_idleness_usd) WITH SYNONYMS ('total idle cost', 'cost of idleness') COMMENT = 'Total cost of idleness (USD)'
     , idle.total_projected_savings AS SUM(projected_savings_usd) WITH SYNONYMS ('potential savings') COMMENT = 'Total projected savings (USD)'
     , idle.avg_idle_hours AS AVG(idle_hours) COMMENT = 'Average idle hours'
@@ -388,13 +388,13 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
     , lane.avg_demand_score AS AVG(demand_score) COMMENT = 'Average demand score'
   )
 
-  COMMENT = 'Asset velocity (Route Optimization demo): idle trailers with cost of idleness and projected savings, plus terminal lane demand for repositioning.'
+  COMMENT = 'Asset velocity (Route Optimization): idle vehicles with cost of idleness and projected savings, plus terminal lane demand for repositioning.'
 
   AI_SQL_GENERATION 'Asset velocity semantic view.
 Entities (two independent facts):
-- idle (VW_TRAILER_COST_OF_IDLENESS): one row per idle trailer with cost/savings and idle duration. Use for idle fleet, cost of idleness, projected savings; group by idle_severity, region, vehicle_subtype.
+- idle (VW_VEHICLE_COST_OF_IDLENESS): one row per idle vehicle with cost/savings and idle duration. Use for idle fleet, cost of idleness, projected savings; group by idle_severity, region, vehicle_subtype.
 - lane (VW_LANE_DEMAND): terminal-level demand for repositioning idle assets; use total_net_outbound to find reposition target terminals.
 Conventions:
-- "idle trailers over N days" -> filter idle_days; "cost of idleness" -> total_cost_of_idleness; "savings" -> total_projected_savings.
+- "idle vehicles over N days" -> filter idle_days; "cost of idleness" -> total_cost_of_idleness; "savings" -> total_projected_savings.
 - "where to reposition" -> lane.total_net_outbound by terminal_name.'
 ;
