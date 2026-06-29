@@ -1817,7 +1817,8 @@ try {
 
     // Step 1: materialize the per-center isochrones into a temp table, fetched in
     // BATCHES via the multi-location ISOCHRONES endpoint (_ISOCHRONES_RAW takes a
-    // locations array; engine cap is 5/call). 10 centers -> 2 calls instead of 10.
+    // locations array; engine + gateway caps are >= CHUNK after the v2 limit bump
+    // to 50). 10 centers -> 1 call instead of 10.
     // Rationale (measured): a single ORS instance on a small node is slow/unstable
     // per request (~14s under load); minimizing round-trips keeps the whole seed
     // well under the app's 80s statement timeout + 90s SPCS ingress. Each batch is
@@ -1830,26 +1831,29 @@ try {
       "WHERE LON IS NOT NULL AND LAT IS NOT NULL LIMIT 25", binds: [region] }).execute();
     var centers = [];
     while (crs.next()) { centers.push([crs.getColumnValue(1), crs.getColumnValue(2)]); }
-    var CHUNK = 5; // ORS isochrones_maximum_locations cap per call (gateway max)
+    var CHUNK = 10; // locations per isochrone call; must be <= the region's isochrones_maximum_locations (default 50)
     var insSql =
       "INSERT INTO FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO " +
       "SELECT TO_GEOGRAPHY(f.value:geometry) " +
       "FROM TABLE(FLATTEN(input => OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW('" + profile + "', " +
       "  OBJECT_CONSTRUCT('locations', PARSE_JSON(?), 'range', ARRAY_CONSTRUCT(" + (mins * 60) + "), 'range_type', 'time'), ?):features)) f " +
       "WHERE f.value:geometry IS NOT NULL AND ST_NPOINTS(TO_GEOGRAPHY(f.value:geometry)) > 0";
-    // Insert one batch; on failure fall back to per-center calls. A fresh ORS
-    // install ships isochrones_maximum_locations=2 (< CHUNK), so a 5-location
-    // request would be rejected (request_too_large) -> the per-center fallback
-    // preserves coverage regardless of the region's effective limit, without
-    // needing to read/raise the limit first.
+    // Insert one batch; fall back to per-center calls when the batch yields NO
+    // rows. An over-cap request does NOT throw -- _ISOCHRONES_RAW returns HTTP 200
+    // with an embedded {error:{code:3004,...}} and features=NULL, so FLATTEN(NULL)
+    // inserts 0 rows silently. Therefore the fallback must trigger on a 0-row
+    // insert (not just a thrown exception), which also covers a region whose
+    // effective isochrones_maximum_locations was lowered below CHUNK via the
+    // Routing Limits panel. Returns the number of rows actually inserted.
     function insertBatch(batch) {
-        try { snowflake.createStatement({ sqlText: insSql,
-                  binds: [JSON.stringify(batch), region] }).execute(); return true; }
-        catch(eIso) { return false; }
+        try { var st = snowflake.createStatement({ sqlText: insSql,
+                  binds: [JSON.stringify(batch), region] });
+              st.execute(); return st.getNumRowsInserted(); }
+        catch(eIso) { return 0; }
     }
     for (var start = 0; start < centers.length; start += CHUNK) {
         var batch = centers.slice(start, start + CHUNK);
-        if (!insertBatch(batch) && batch.length > 1) {
+        if (insertBatch(batch) === 0 && batch.length > 1) {
             for (var k = 0; k < batch.length; k++) { insertBatch([batch[k]]); }
         }
     }

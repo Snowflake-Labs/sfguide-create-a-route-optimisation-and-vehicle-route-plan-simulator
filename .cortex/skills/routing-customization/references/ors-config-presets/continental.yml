@@ -73,7 +73,7 @@ ors:
       # Higher snapping radius matches the engine-side default.
       maximum_search_radius: 5000
     isochrones:
-      maximum_locations: 2
+      maximum_locations: 50
       maximum_intervals: 10
       # Continental isochrone range is widened to 7200s (2h) per the
       # current gateway-side cap (#113). Going higher would exceed the

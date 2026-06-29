@@ -23,15 +23,16 @@ spec:
         # (#audit-pr-120 follow-up). Engine-side caps in ors-config.yml are
         # already permissive (matrix maximum_routes = 2,000,000 -> sqrt = 1414),
         # so the gateway env vars below are the real bottleneck. Defaults are
-        # 200 / 2 / 10 / 18000 / 1000 in routing_service.py.
+        # 200 / 50 / 10 / 18000 / 1000 in routing_service.py.
         # Studio routability sends 1+1000 destinations per MATRIX_TABULAR call;
         # BackloadMatching's slider goes to 500 unique locations. 1500 covers
         # both with headroom under the engine's implied 1414 ceiling, where
         # _retry_matrix_chunked reliably recovers via 50 -> 10 fallback.
         ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS: "1500"
-        # Default 2 was tight for what-if comparisons; engine cap is 2 only
-        # in some presets, but most allow 5+. Stays aligned with engine.
-        ORS_GUARDRAIL_ISOCHRONES_MAX_LOCATIONS: "5"
+        # Default 2 was tight for what-if comparisons and broke the Emergency
+        # Response seed (dozens of care centers per isochrone request). Engine
+        # default is now 50 (ORS_LIMIT_DEFAULTS), so keep the guardrail aligned.
+        ORS_GUARDRAIL_ISOCHRONES_MAX_LOCATIONS: "50"
         ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS: "10"
         ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S: "18000"
         ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS: "1000"

@@ -1483,7 +1483,7 @@ $$
         'maximum_snapping_radius', 1000,
         'matrix_maximum_routes', 2000000,
         'matrix_maximum_visited_nodes', 100000000,
-        'isochrones_maximum_locations', 2,
+        'isochrones_maximum_locations', 50,
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
         'isochrones_maximum_range_time', 18000
@@ -1525,7 +1525,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'maximum_snapping_radius': 1000,
         'matrix_maximum_routes': 2000000,
         'matrix_maximum_visited_nodes': 100000000,
-        'isochrones_maximum_locations': 2,
+        'isochrones_maximum_locations': 50,
         'isochrones_maximum_intervals': 10,
         'isochrones_maximum_range_distance': 1500000,
         'isochrones_maximum_range_time': 18000,

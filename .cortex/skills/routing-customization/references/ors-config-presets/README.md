@@ -30,7 +30,7 @@ All presets in this folder satisfy the same invariants, so it is safe to swap be
 - `ors.engine.profile_default.build.instructions: false` - turn-by-turn text is generated client-side.
 - `ors.engine.profile_default.service.maximum_distance: 100000000` - gateway-side guardrails enforce realistic caps; the engine limit is a hard backstop.
 - `ors.endpoints.matrix.maximum_routes_flexible: 2000000` - large matrix calls succeed; the gateway pre-rejects payloads above the region's documented per-call cap (see #51).
-- `ors.endpoints.isochrones.maximum_locations: 2`, `maximum_intervals: 10` - keep isochrone payloads small enough to fit the gateway timeout budget.
+- `ors.endpoints.isochrones.maximum_locations: 50`, `maximum_intervals: 10` - allow dozens of centers per isochrone request (e.g. Emergency Response seed) while keeping payloads within the gateway timeout budget.
 
 ## Choosing the right preset by demo
 
