@@ -287,7 +287,9 @@
         "config": {
           "noPad": true,
           "legend": [
-            { "label": "Actual route", "color": [41, 181, 232, 200], "shape": "line" },
+            { "label": "Planned route", "color": [120, 144, 156, 200], "shape": "line" },
+            { "label": "Actual - on plan", "color": [41, 181, 232, 220], "shape": "line" },
+            { "label": "Actual - deviation", "color": [209, 55, 78, 235], "shape": "line" },
             { "label": "Origin", "color": [46, 204, 113, 235], "shape": "dot" },
             { "label": "Destination", "color": [44, 62, 80, 235], "shape": "dot" },
             { "label": "Dwell - warning", "color": [255, 160, 0, 230], "shape": "dot" },
@@ -299,7 +301,7 @@
               "type": "path",
               "id": "planned",
               "geojsonColumn": "planned_geojson",
-              "color": [41, 181, 232, 200],
+              "color": [120, 144, 156, 200],
               "width": 4,
               "widthMinPixels": 3,
               "data": {
@@ -333,14 +335,27 @@
             },
             {
               "type": "path",
-              "id": "actual_full",
+              "id": "actual_on_plan",
               "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 200],
+              "color": [41, 181, 232, 220],
               "width": 4,
               "widthMinPixels": 3,
               "pickable": true,
               "data": {
-                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1",
+                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT TS, ST_X(LOCATION_GEOG) AS lon, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), seg AS (SELECT ST_MAKEPOINT(LAG(lon) OVER (ORDER BY TS), LAG(lat) OVER (ORDER BY TS)) AS prev_pt, ST_MAKEPOINT(lon, lat) AS curr_pt FROM pts) SELECT ST_ASGEOJSON(ST_MAKELINE(prev_pt, curr_pt))::STRING AS route_geojson FROM seg CROSS JOIN j WHERE prev_pt IS NOT NULL AND (j.pg IS NULL OR (ST_DISTANCE(curr_pt, j.pg) <= 40 AND ST_DISTANCE(prev_pt, j.pg) <= 40))",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual_deviation",
+              "geojsonColumn": "route_geojson",
+              "color": [209, 55, 78, 235],
+              "width": 5,
+              "widthMinPixels": 4,
+              "pickable": true,
+              "data": {
+                "query": "WITH j AS (SELECT PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), pts AS (SELECT TS, ST_X(LOCATION_GEOG) AS lon, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL), seg AS (SELECT ST_MAKEPOINT(LAG(lon) OVER (ORDER BY TS), LAG(lat) OVER (ORDER BY TS)) AS prev_pt, ST_MAKEPOINT(lon, lat) AS curr_pt FROM pts) SELECT ST_ASGEOJSON(ST_MAKELINE(prev_pt, curr_pt))::STRING AS route_geojson FROM seg CROSS JOIN j WHERE prev_pt IS NOT NULL AND j.pg IS NOT NULL AND (ST_DISTANCE(curr_pt, j.pg) > 40 OR ST_DISTANCE(prev_pt, j.pg) > 40)",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             },
