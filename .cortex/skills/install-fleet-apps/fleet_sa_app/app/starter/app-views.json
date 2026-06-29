@@ -43,6 +43,9 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Location", "color": [41, 181, 232, 160], "shape": "dot" }
+          ],
           "layers": [
             {
               "type": "scatterplot",

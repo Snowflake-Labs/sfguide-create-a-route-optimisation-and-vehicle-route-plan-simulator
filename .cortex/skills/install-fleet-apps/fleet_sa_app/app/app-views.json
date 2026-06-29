@@ -527,6 +527,9 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Actual route", "color": [41, 181, 232, 170], "shape": "line" }
+          ],
           "layers": [
             {
               "type": "path",
@@ -575,6 +578,10 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Lower activity", "color": [1, 152, 189, 200] },
+            { "label": "Higher activity", "color": [209, 55, 78, 200] }
+          ],
           "layers": [
             {
               "type": "h3",
@@ -643,6 +650,10 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Planned route", "color": [41, 181, 232, 180], "shape": "line" },
+            { "label": "Actual route (deviated)", "color": [209, 55, 78, 220], "shape": "line" }
+          ],
           "layers": [
             {
               "type": "path",
@@ -718,6 +729,10 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Destination site", "color": [41, 122, 232, 170], "shape": "dot" },
+            { "label": "Selected route (actual)", "color": [209, 55, 78, 200], "shape": "line" }
+          ],
           "layers": [
             {
               "type": "scatterplot",
@@ -813,6 +828,12 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "High severity", "color": [209, 55, 78, 230] },
+            { "label": "Medium severity", "color": [255, 160, 0, 220] },
+            { "label": "Low severity", "color": [255, 210, 80, 200] },
+            { "label": "Selected entity", "color": [41, 181, 232, 255] }
+          ],
           "layers": [
             {
               "type": "scatterplot",
@@ -1017,6 +1038,11 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "OK", "color": [46, 204, 113, 190] },
+            { "label": "Warning", "color": [255, 160, 0, 190] },
+            { "label": "Critical", "color": [209, 55, 78, 200] }
+          ],
           "layers": [
             {
               "type": "scatterplot",
@@ -1105,6 +1131,9 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Origin location", "color": [41, 181, 232, 180], "shape": "dot" }
+          ],
           "layers": [
             {
               "type": "scatterplot",
@@ -1179,6 +1208,12 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "POI", "color": [41, 181, 232, 160] },
+            { "label": "Selected POI", "color": [255, 200, 0, 255] },
+            { "label": "Nearby competitor", "color": [209, 55, 78, 200] },
+            { "label": "Address density", "color": [255, 140, 0, 200] }
+          ],
           "layers": [
             {
               "type": "h3",
@@ -1280,6 +1315,14 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "legend": [
+            { "label": "Demand terminal", "color": [41, 122, 232, 170] },
+            { "label": "Idle - critical", "color": [209, 55, 78, 220] },
+            { "label": "Idle - warning", "color": [255, 160, 0, 220] },
+            { "label": "Idle - watch", "color": [255, 210, 80, 200] },
+            { "label": "Idle - OK", "color": [140, 140, 140, 180] },
+            { "label": "Selected vehicle", "color": [41, 181, 232, 255] }
+          ],
           "layers": [
             {
               "type": "scatterplot",
