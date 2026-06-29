@@ -340,7 +340,7 @@ Conventions:
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   TABLES (
-    idle AS FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+    idle AS FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
       PRIMARY KEY (VEHICLE_ID)
     , lane AS FLEET_APP.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
       PRIMARY KEY (TERMINAL_ID)
@@ -371,7 +371,6 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
     , idle.ors_profile AS ORS_PROFILE COMMENT = 'Routing profile'
     , idle.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('vehicle', 'vehicle id', 'asset', 'trailer') COMMENT = 'Vehicle/asset identifier'
     , lane.terminal_name AS TERMINAL_NAME WITH SYNONYMS ('terminal', 'depot') COMMENT = 'Terminal name'
-    , lane.lane_region AS REGION COMMENT = 'Region (lane demand)'
     , lane.location_type AS LOCATION_TYPE COMMENT = 'Terminal location type'
   )
 
