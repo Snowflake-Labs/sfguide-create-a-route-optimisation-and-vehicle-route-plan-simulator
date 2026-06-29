@@ -65,6 +65,29 @@ async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: b
   }
 }
 
+interface PoiPointsResult {
+  points: [number, number][] | null;
+  source?: string;
+  reason?: string;
+}
+
+// Region-scoped seed POIs are pre-validated routable, so they make the most
+// reliable coordinate pool for the Function Tester (no water/off-graph picks).
+async function fetchSeedPoiPoints(region: string, opts?: { limit?: number }): Promise<PoiPointsResult> {
+  try {
+    const params = new URLSearchParams({ region });
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    const resp = await fetch(`/api/sample-poi-points?${params}`);
+    const data = await resp.json();
+    if (data.ok && data.points?.length > 0) {
+      return { points: data.points, source: data.source };
+    }
+    return { points: null, reason: data.reason || 'no seed POIs' };
+  } catch (e: any) {
+    return { points: null, reason: e?.message || 'network error' };
+  }
+}
+
 export function FunctionTesterPage() {
   const preset = useActivePreset();
   const [regions, setRegions] = useState<RegionOption[]>([]);
@@ -81,6 +104,9 @@ export function FunctionTesterPage() {
   const [duration, setDuration] = useState<number | null>(null);
   const [roadPoints, setRoadPoints] = useState<[number, number][] | null>(null);
   const [roadPointsReason, setRoadPointsReason] = useState<string | null>(null);
+  // Which source fed the coordinate pool: 'seed' (routable seed POIs),
+  // 'overture' (road segments), or null (boundary/bbox sampling fallback).
+  const [poolSource, setPoolSource] = useState<'seed' | 'overture' | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
@@ -187,24 +213,46 @@ export function FunctionTesterPage() {
     const profile = selectedProfile;
     const bbox = region?.bbox;
 
-    if (overtureAvailable !== true || !bbox || !region) {
+    if (!region) {
       setRoadPoints(null);
       setRoadPointsReason(null);
+      setPoolSource(null);
       return;
     }
 
     setRoadPoints(null);
     setRoadPointsReason(null);
+    setPoolSource(null);
 
     const mySeq = ++roadSeqRef.current;
     const nocache = nocacheNextRef.current;
     nocacheNextRef.current = false;
 
     (async () => {
-      const rp = await fetchRoadPoints(bbox, profile, { region: region.region, nocache });
+      // 1. Prefer region-scoped seed POIs (pre-validated routable). Independent
+      //    of Overture availability. ORDER BY RANDOM() means each fetch (and
+      //    each Reshuffle) returns a fresh set.
+      const poi = await fetchSeedPoiPoints(region.region, { limit: 50 });
       if (mySeq !== roadSeqRef.current) return;
-      setRoadPoints(rp.points);
-      setRoadPointsReason(rp.points ? null : (rp.reason || 'no road points'));
+      if (poi.points && poi.points.length > 0) {
+        setRoadPoints(poi.points);
+        setRoadPointsReason(null);
+        setPoolSource('seed');
+        return;
+      }
+      // 2. Fall back to Overture road segments (needs bbox + Overture share).
+      if (overtureAvailable === true && bbox) {
+        const rp = await fetchRoadPoints(bbox, profile, { region: region.region, nocache });
+        if (mySeq !== roadSeqRef.current) return;
+        setRoadPoints(rp.points);
+        setRoadPointsReason(rp.points ? null : (rp.reason || 'no road points'));
+        setPoolSource(rp.points ? 'overture' : null);
+        return;
+      }
+      // 3. No pool - samplePoints falls back to boundary/bbox sampling.
+      setRoadPoints(null);
+      setRoadPointsReason(poi.reason || 'no seed POIs');
+      setPoolSource(null);
     })();
   }, [selectedRegion, selectedProfile, overtureAvailable, roadNonce]);
 
@@ -379,19 +427,19 @@ export function FunctionTesterPage() {
       {sampleHint && (
         <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>{sampleHint}</p>
       )}
-      {COORD_FUNCTIONS.includes(selectedFn) && overtureAvailable && roadPoints && roadPoints.length > 0 && (
+      {COORD_FUNCTIONS.includes(selectedFn) && poolSource === 'seed' && roadPoints && roadPoints.length > 0 && (
+        <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0' }}>
+          Sampling from {roadPoints.length} routable seed POI{roadPoints.length === 1 ? '' : 's'} for region.
+        </p>
+      )}
+      {COORD_FUNCTIONS.includes(selectedFn) && poolSource === 'overture' && roadPoints && roadPoints.length > 0 && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0' }}>
           Snapped to {roadPoints.length} Overture road point{roadPoints.length === 1 ? '' : 's'} for region.
         </p>
       )}
-      {COORD_FUNCTIONS.includes(selectedFn) && overtureAvailable && roadPointsReason && (!roadPoints || roadPoints.length === 0) && (
-        <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>
-          Couldn't snap to roads ({roadPointsReason}) - recommended point may be outside the active graph.
-        </p>
-      )}
-      {overtureAvailable === false && COORD_FUNCTIONS.includes(selectedFn) && (
+      {COORD_FUNCTIONS.includes(selectedFn) && poolSource === null && (!roadPoints || roadPoints.length === 0) && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
-          Install Overture Maps Transportation for road-snapped sample points.
+          No seed POIs or Overture roads for this region - using boundary sampling (points may be off-road).
         </p>
       )}
       <div className="action-row">
@@ -412,6 +460,15 @@ export function FunctionTesterPage() {
       {error && (
         <div className="error-banner">
           <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {!error && selectedFn === 'OPTIMIZATION' && Array.isArray(result) && result.length === 0 && (
+        <div className="error-banner" style={{ background: 'var(--warning, #f0ad4e)' }}>
+          <strong>No routes returned.</strong> The solver could not snap one or more job/vehicle
+          locations to a road (e.g. a point in water or off the active graph), so VROOM aborted the
+          whole solve (code 3) and OPTIMIZATION returned zero rows. Click &quot;Reshuffle points&quot;
+          to regenerate routable sample points, or edit the coordinates to on-road locations.
         </div>
       )}
 
