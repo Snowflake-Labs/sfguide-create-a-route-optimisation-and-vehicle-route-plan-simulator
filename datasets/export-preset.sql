@@ -14,7 +14,26 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
-SET JOB_ID = '38faa5fc-ed43-4259-98f1-91b99f18c527';
+-- JOB_ID to export. Defaults to the currently ACTIVE Data Studio dataset for the
+-- target region/vehicle (the dataset you just generated end-to-end and
+-- validated as SEED_READY). To pin a specific dataset instead, replace the
+-- derivation below with: SET JOB_ID = '<dataset-id>';
+SET SEED_REGION = 'SanFrancisco';
+SET SEED_VEHICLE_TYPE = 'ebike';
+SET JOB_ID = (
+  SELECT DATASET_ID
+  FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+  WHERE IS_ACTIVE = TRUE
+    AND REGION = $SEED_REGION
+    AND VEHICLE_TYPE = $SEED_VEHICLE_TYPE
+  ORDER BY CREATED_AT DESC
+  LIMIT 1
+);
+
+-- Sanity: surface the resolved dataset + its seed-readiness note before export.
+SELECT DATASET_ID, REGION, VEHICLE_TYPE, LABEL, NOTES, ROW_COUNTS
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+WHERE DATASET_ID = $JOB_ID;
 
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

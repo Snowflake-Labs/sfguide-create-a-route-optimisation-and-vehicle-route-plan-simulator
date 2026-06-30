@@ -48,6 +48,10 @@ export { generateParticipants } from './engine/participants';
 export { generateDemographics } from './engine/demographics';
 export { generateHazardZones } from './engine/hazard';
 export { generateDemandCatalog } from './engine/demand';
+// Route-optimization PLACES + LOOKUP, JOB_ID-versioned (first-class generator,
+// replaces the legacy external-proc + blanket-re-tag path).
+export { generatePlacesAndLookup } from './engine/places';
+export type { PlacesLookupResult } from './engine/places';
 
 interface VehicleDayResult {
   vehicleId: string;

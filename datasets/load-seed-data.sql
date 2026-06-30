@@ -18,8 +18,11 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
--- Data Studio preset exported via datasets/export-preset.sql
-SET SEED_JOB_ID = '38faa5fc-ed43-4259-98f1-91b99f18c527';
+-- Data Studio preset exported via datasets/export-preset.sql. SEED_JOB_ID is
+-- derived AFTER the parquet is loaded (from the JOB_ID carried in the data
+-- itself), so this loader is correct for ANY exported dataset with no literal
+-- to edit. The initial value is a placeholder only; it is reassigned below.
+SET SEED_JOB_ID = '';
 
 --------------------------------------------------------------------------------
 -- Stage & File Format
@@ -742,19 +745,48 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Derive the seed dataset identity + scope from the data just loaded (the
+-- parquet carries JOB_ID/REGION/VEHICLE_TYPE per row). After the TRUNCATE+COPY
+-- above, DIM_FLEET holds exactly the seed dataset, so these are unambiguous.
+-- This keeps the loader correct for whatever dataset export-preset.sql produced.
+SET SEED_JOB_ID       = (SELECT MAX(JOB_ID)       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET);
+SET SEED_REGION       = (SELECT MAX(REGION)       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_VEHICLE_TYPE = (SELECT MAX(VEHICLE_TYPE) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_PROFILE      = (SELECT MAX(ORS_PROFILE)  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_NUM_VEHICLES = (SELECT COUNT(*)          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_START        = (SELECT MIN(TS)::DATE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_END          = (SELECT MAX(TS)::DATE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID);
+
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS;
 
 INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
   (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE, CREATED_AT, ROW_COUNTS, NOTES)
 SELECT
   $SEED_JOB_ID,
-  'SanFrancisco',
-  'ebike',
-  'San Francisco E-Bike 100 @ seed',
+  $SEED_REGION,
+  $SEED_VEHICLE_TYPE,
+  'Seed dataset (' || $SEED_REGION || ' / ' || $SEED_VEHICLE_TYPE || ')',
   TRUE,
   CURRENT_TIMESTAMP(),
-  PARSE_JSON('{"fleet":100,"history":511,"offers":300,"partners":80,"pois":4996,"telemetry":445536,"trips":3748,"trip_schedule":3748,"places":52351,"lookup":5,"routes":300}'),
-  'Seed dataset from Data Studio preset SF E-Bike Fleet';
+  OBJECT_CONSTRUCT(
+    'fleet',         (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET             WHERE JOB_ID = $SEED_JOB_ID),
+    'pois',          (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS              WHERE JOB_ID = $SEED_JOB_ID),
+    'trips',         (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = $SEED_JOB_ID),
+    'telemetry',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID),
+    'offers',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS           WHERE JOB_ID = $SEED_JOB_ID),
+    'partners',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = $SEED_JOB_ID),
+    'history',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = $SEED_JOB_ID),
+    'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE     WHERE JOB_ID = $SEED_JOB_ID),
+    'places',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES     WHERE JOB_ID = $SEED_JOB_ID),
+    'lookup',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP     WHERE JOB_ID = $SEED_JOB_ID),
+    'routes',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = $SEED_JOB_ID),
+    'anchors',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS           WHERE JOB_ID = $SEED_JOB_ID),
+    'demographics',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS WHERE JOB_ID = $SEED_JOB_ID),
+    'hazard',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES     WHERE JOB_ID = $SEED_JOB_ID),
+    'demand',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG    WHERE JOB_ID = $SEED_JOB_ID),
+    'participants',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS      WHERE JOB_ID = $SEED_JOB_ID)
+  ),
+  'Seed dataset from Data Studio preset (loaded by load-seed-data.sql)';
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS;
 
@@ -763,19 +795,25 @@ INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
 SELECT
   $SEED_JOB_ID,
   '',
-  'SF E-Bike Fleet',
-  'SanFrancisco',
-  'cycling-electric',
-  100,
-  DATEADD('day', -7, CURRENT_DATE()),
-  DATEADD('day', -1, CURRENT_DATE()),
+  'Seed: ' || $SEED_REGION || ' ' || $SEED_VEHICLE_TYPE,
+  $SEED_REGION,
+  $SEED_PROFILE,
+  $SEED_NUM_VEHICLES,
+  $SEED_START,
+  $SEED_END,
   'COMPLETED',
-  445536,
-  3748,
+  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID),
+  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS WHERE JOB_ID = $SEED_JOB_ID),
   DATEADD('hour', -2, CURRENT_TIMESTAMP()),
   DATEADD('minute', -5, CURRENT_TIMESTAMP()),
   NULL,
-  PARSE_JSON('{"vehicleType":"ebike","orsProfile":"cycling-electric","numVehicles":100,"days":7,"tripsPerDay":{"min":15,"max":35},"region":"SanFrancisco","source":"seed-data"}')
+  OBJECT_CONSTRUCT(
+    'vehicleType', $SEED_VEHICLE_TYPE,
+    'orsProfile',  $SEED_PROFILE,
+    'numVehicles', $SEED_NUM_VEHICLES,
+    'region',      $SEED_REGION,
+    'source',      'seed-data'
+  )
 ;
 
 --------------------------------------------------------------------------------

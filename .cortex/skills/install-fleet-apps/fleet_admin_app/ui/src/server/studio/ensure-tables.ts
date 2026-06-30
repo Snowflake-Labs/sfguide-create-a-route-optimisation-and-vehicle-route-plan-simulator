@@ -166,6 +166,27 @@ $$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
       DEMAND_TIER INT, TIER_LABEL VARCHAR(40), HANDLING VARCHAR(60),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // -----------------------------------------------------------------
+    // Route-optimization PLACES + LOOKUP. Generated as first-class,
+    // JOB_ID-versioned Studio output (engine/places.ts) so a fresh install is
+    // seed-complete without the external SEED_ROUTE_OPTIMIZATION_REGION proc
+    // (which may be absent). The CREATE IF NOT EXISTS covers a clean account;
+    // the ALTER ADD COLUMN backfills JOB_ID on tables that pre-exist from the
+    // legacy Overture import / marketplace path.
+    // -----------------------------------------------------------------
+    { sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION' },
+    { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (
+      REGION VARCHAR, GEOMETRY GEOGRAPHY, PHONES VARCHAR, CATEGORY VARCHAR,
+      NAME VARCHAR, ADDRESS VARIANT, ALTERNATE VARIANT, JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION' },
+    { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
+      REGION VARCHAR, INDUSTRY VARCHAR, PA VARCHAR, PB VARCHAR, PC VARCHAR,
+      IND ARRAY, IND2 ARRAY, CTYPE ARRAY, STYPE ARRAY,
+      SOURCE_TABLE VARCHAR, DEPOT_CTYPE ARRAY, DEPOT_LABEL VARCHAR, JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION' },
+    { sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`, db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION' },
+    { sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`, db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION' },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
       JOB_ID VARCHAR, PRESET_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
       ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,

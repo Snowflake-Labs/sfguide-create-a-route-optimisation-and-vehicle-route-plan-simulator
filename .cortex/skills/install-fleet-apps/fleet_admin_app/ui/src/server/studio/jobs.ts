@@ -1,5 +1,5 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles';
-import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateOffers, generatePartners, generatePartnerHistory, generateAnchors, generateParticipants, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
+import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateOffers, generatePartners, generatePartnerHistory, generateAnchors, generateParticipants, generateDemographics, generateHazardZones, generateDemandCatalog, generatePlacesAndLookup } from './engine';
 import { buildFleetWithDiagnostics } from './engine/fleet';
 import { spreadStats, binDegForArea, bboxAreaKm2 } from './engine/spatial';
 import { log } from '../diagnostics';
@@ -582,12 +582,22 @@ async function revertArchivePriorDatasets(
   }
 }
 
-// Recompute ROW_COUNTS on DIM_DATASETS after a job's inserts complete.
-// Best-effort - failure does not affect the job outcome.
+// Recompute ROW_COUNTS on DIM_DATASETS after a job's inserts complete, and
+// derive a seed-readiness verdict. A dataset is SEED_READY only when every
+// seed-critical entity has > 0 rows - the gate that stops a silently-incomplete
+// run (e.g. empty PLACES/LOOKUP) from being mistaken for a shippable seed.
+// Best-effort - failure does not affect the job outcome. Returns the verdict so
+// the caller can surface a warning.
+const SEED_REQUIRED_ENTITIES = [
+  'fleet', 'pois', 'trips', 'telemetry', 'offers', 'partners', 'history',
+  'trip_schedule', 'places', 'lookup', 'routes', 'anchors', 'demographics',
+  'hazard', 'demand', 'participants',
+] as const;
+
 async function updateDatasetRowCounts(
   snowSql: SnowSqlFn,
   jobId: string,
-): Promise<void> {
+): Promise<{ seedReady: boolean; missing: string[] }> {
   try {
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
@@ -599,16 +609,48 @@ async function updateDatasetRowCounts(
          'history',   (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = ${escVal(jobId)}),
          'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE WHERE JOB_ID = ${escVal(jobId)}),
          'places',    (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE JOB_ID = ${escVal(jobId)}),
+         'lookup',    (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE JOB_ID = ${escVal(jobId)}),
+         'routes',    (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = ${escVal(jobId)}),
+         'anchors',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS         WHERE JOB_ID = ${escVal(jobId)}),
+         'demographics', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS WHERE JOB_ID = ${escVal(jobId)}),
+         'hazard',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES   WHERE JOB_ID = ${escVal(jobId)}),
+         'demand',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG   WHERE JOB_ID = ${escVal(jobId)}),
+         'participants',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS    WHERE JOB_ID = ${escVal(jobId)}),
          'trips',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = ${escVal(jobId)}),
          'telemetry', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = ${escVal(jobId)})
        )
        WHERE DATASET_ID = ${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
+    // Derive seed-readiness from the freshly written ROW_COUNTS and persist it
+    // (+ the list of any zero-count entities) into NOTES, so the Studio Datasets
+    // panel can show whether a dataset is shippable as the install seed.
+    const rows = await snowSql(
+      `SELECT ${SEED_REQUIRED_ENTITIES.map(e => `COALESCE(ROW_COUNTS:${e}::INT, 0) AS ${e}`).join(', ')}
+       FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE DATASET_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const row = rows?.[0] ?? {};
+    const missing = SEED_REQUIRED_ENTITIES.filter(
+      e => Number(row[e] ?? row[e.toUpperCase()] ?? 0) <= 0,
+    );
+    const seedReady = missing.length === 0;
+    const note = seedReady
+      ? `SEED_READY: all ${SEED_REQUIRED_ENTITIES.length} seed entities present`
+      : `NOT SEED_READY: missing/empty - ${missing.join(', ')}`;
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET NOTES = ${escVal(note)}
+       WHERE DATASET_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    return { seedReady, missing };
   } catch (e: any) {
     log('WARN', 'Studio',
         `updateDatasetRowCounts failed for ${jobId} (non-fatal): ${e.message?.slice(0, 200)}`,
         { jobId });
+    return { seedReady: false, missing: ['<row-count update failed>'] };
   }
 }
 
@@ -955,6 +997,23 @@ export async function startGeneration(
           broadcast(job, 'warning', { message: `Demand catalog generation failed: ${e.message?.slice(0, 150)}` });
         }
       }
+      // Route-optimization PLACES + LOOKUP as a first-class, JOB_ID-versioned
+      // generator (replaces the legacy post-flip ensureRouteOptimizationSeedData
+      // proc call + blanket region re-tag). Runs BEFORE the dataset flip so the
+      // rows join the new active dataset. A PLACES failure here is surfaced as a
+      // warning and leaves places=0, which the seed-readiness gate
+      // (updateDatasetRowCounts) then flags - so a broken run can never look
+      // seed-complete.
+      if (config.generates_places) {
+        try {
+          const { places, lookup } = await generatePlacesAndLookup(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${places} places, ${lookup} lookup rows`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${places} places, ${lookup} lookup rows` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `PLACES/LOOKUP generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Route-optimization PLACES/LOOKUP generation failed: ${e.message?.slice(0, 150)}` });
+        }
+      }
 
       // Atomic switchover: now that all dimension/freight tables for this run
       // are fully populated, flip the active dataset pointer. From this
@@ -963,10 +1022,17 @@ export async function startGeneration(
       broadcast(job, 'progress', {
         status: `Activated new dataset for ${config.region} / ${vt} (prior datasets kept queryable; jobId = ${jobId})`,
       });
-      try {
-        await ensureRouteOptimizationSeedData(snowSql, config.region, jobId);
-      } catch (e: any) {
-        log('WARN', 'Studio', `Route optimization seed failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+      // Legacy route-optimization seed path. Only used when generates_places is
+      // OFF (the new first-class generator above already populated PLACES/LOOKUP
+      // for this JOB_ID before the flip). Kept as a fallback for presets that do
+      // not generate places, behind the external SEED_ROUTE_OPTIMIZATION_REGION
+      // proc (may be absent - failure is non-fatal).
+      if (!config.generates_places) {
+        try {
+          await ensureRouteOptimizationSeedData(snowSql, config.region, jobId);
+        } catch (e: any) {
+          log('WARN', 'Studio', `Route optimization seed failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        }
       }
       try {
         await precomputeOfferRoutes(snowSql, config.region, config.ors_profile, jobId);
@@ -1086,8 +1152,19 @@ export async function startGeneration(
       }
       // Always refresh ROW_COUNTS on the dataset registry so the Studio UI
       // can show row counts per archived dataset (POIs, fleet, offers,
-      // partners, history, trips, telemetry). Best-effort.
-      await updateDatasetRowCounts(snowSql, jobId);
+      // partners, history, trips, telemetry, places, lookup, routes, and the
+      // universal-gen entities). Also derives + persists a SEED_READY verdict.
+      // Best-effort.
+      const seedVerdict = await updateDatasetRowCounts(snowSql, jobId);
+      if (job.status === 'COMPLETED' && job.pointsGenerated > 0 && !seedVerdict.seedReady) {
+        const msg = `Dataset ${jobId} completed but is NOT seed-ready (missing/empty: ${seedVerdict.missing.join(', ')}). ` +
+          `It can be used for demos, but do not promote it to install seed until these entities are populated.`;
+        log('WARN', 'Studio', msg, { jobId });
+        broadcast(job, 'warning', { message: msg });
+      } else if (seedVerdict.seedReady) {
+        log('INFO', 'Studio', `Dataset ${jobId} is SEED_READY (all seed entities present)`, { jobId });
+        broadcast(job, 'progress', { status: 'Dataset is seed-ready (all seed entities present)' });
+      }
     } catch (e: any) {
       job.status = 'FAILED';
       job.error = e.message;

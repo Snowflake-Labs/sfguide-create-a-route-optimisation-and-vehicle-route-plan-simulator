@@ -52,6 +52,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      generates_places: true,
       // Emergency Response: 10 random medical centers + a 50km raw Overture-address
       // participant sample. The wizard's isochrone step filters this sample.
       anchor_limits: { HEALTH_FACILITY: 10 },
@@ -112,6 +113,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      generates_places: true,
       // Emergency Response: 10 random medical centers + a 50km raw Overture-address
       // participant sample. The wizard's isochrone step filters this sample.
       anchor_limits: { HEALTH_FACILITY: 10 },
@@ -176,6 +178,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      generates_places: true,
       // Emergency Response: 10 random medical centers + a 50km raw Overture-address
       // participant sample. The wizard's isochrone step filters this sample.
       anchor_limits: { HEALTH_FACILITY: 10 },
@@ -359,6 +362,12 @@ export interface GenerationConfig {
   generates_hazard?: boolean;
   // Neutral category-derived demand catalog -> DIM_DEMAND_CATALOG.
   generates_demand?: boolean;
+  // Route-optimization PLACES (region Overture sample) + LOOKUP (industry/skills
+  // config) -> FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES / LOOKUP, JOB_ID-
+  // versioned. Required for a seed-complete dataset (the Route Optimisation demo
+  // + Overture place-search read these). Self-contained: sources Overture Places
+  // directly, no dependency on the external SEED_ROUTE_OPTIMIZATION_REGION proc.
+  generates_places?: boolean;
   // --- Vehicle-agnostic delivery content (config-driven; the per-vehicle-class
   // defaults in engine/deliveries.ts are fallbacks when these are unset) -------
   // Delivery marketplace source labels (e.g. ['DISPATCH','MARKETPLACE']).
