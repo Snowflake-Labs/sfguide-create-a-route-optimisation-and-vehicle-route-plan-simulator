@@ -1,0 +1,128 @@
+# sap-mapping.yaml - per-account configuration surface for sap-fleet-connector
+#
+# A new SAP customer is a new block here - NO SQL edits. The scripts in scripts/
+# substitute the {{...}} placeholders from the active profile. Profiles below are
+# generic ARCHETYPES keyed by join strategy; rename/clone one per customer.
+#
+# Pick the active profile with the skill's `account_profile` parameter.
+
+active_profile: serial_direct
+
+profiles:
+
+  # Telematics serial == EQUI.SERNR after normalization. Crosswalk is a VIEW over EQUI.
+  serial_direct:
+    region: Region1
+    vehicle_type: asset
+    # Step 0: SAP and telematics typically land in SEPARATE accounts - co-locate first.
+    colocation:
+      method: data_share          # data_share | replication | same_account
+      sap_inbound_db: SAP_INBOUND
+      telematics_inbound_db: TELEMATICS_INBOUND
+    # Where SAP is reachable post co-location (raw transparent tables, MANDT present).
+    sap_db: SAP_INBOUND
+    sap_schema: SAP_INBOUND.ECC
+    cdc:
+      tool: qlik            # qlik | odp | fivetran | slt_raw | cds_view
+      client: "100"         # MANDT to keep
+      change_oper_col: HEADER__CHANGE_OPER
+      change_ts_col: HEADER__TIMESTAMP
+    # SAP object names (override if customer uses CDS/Z* names).
+    objects:
+      equi: EQUI
+      iflot: IFLOT
+      likp: LIKP
+      lips: LIPS
+      imrg: IMRG          # maintenance pack (Phase 3)
+      aufk: AUFK
+      qmel: QMEL
+    # Telematics GPS fact + its column names.
+    telematics:
+      table: TELEMATICS_INBOUND.GPS.POSITIONS
+      device_col: SERIAL_NUMBER     # joined to crosswalk
+      pk_col: MESSAGE_ID
+      ts_col: EVENT_TS
+      lat_col: LATITUDE
+      lon_col: LONGITUDE
+      speed_col: GROUND_SPEED
+      heading_col: HEADING
+    join:
+      strategy: native_serial       # crosswalk = VIEW over EQUI.SERNR
+    materialize_position: true       # Dynamic Table clustered on (VEHICLE_ID, TS)
+
+  # Telematics carries a device/message id, not a vehicle id. Two hops:
+  # device -> VIN/chassis (telematics vehicle master) -> EQUI.SERNR.
+  device_vin_bridge:
+    region: Region1
+    vehicle_type: asset
+    colocation:
+      method: data_share
+      sap_inbound_db: SAP_INBOUND
+      telematics_inbound_db: TELEMATICS_INBOUND
+    sap_schema: SAP_INBOUND.S4          # raw transparent (MANDT, LASTCHANGEDATETIME)
+    cdc: { tool: slt_raw, client: "100", change_ts_col: LASTCHANGEDATETIME }
+    objects: { equi: EQUI, iflot: IFLOT, likp: LIKP, lips: LIPS }
+    telematics:
+      table: TELEMATICS_INBOUND.GPS.MESSAGES
+      device_col: MESSAGE_RESULT_ID        # message id -> needs 2-hop to VIN
+      pk_col: MESSAGE_RESULT_ID
+      ts_col: EVENT_TS
+      lat_col: LATITUDE
+      lon_col: LONGITUDE
+      speed_col: SPEED
+      heading_col: GPS_HEADING
+    join:
+      strategy: vin_2hop
+      device_vin_index: TELEMATICS_INBOUND.GPS.DEVICE_INDEX   # device -> VIN/chassis bridge
+    materialize_position: true
+
+  # SAP is finance-only (BSEG/EKKO): NO EQUI. VIN binds to an external asset master;
+  # SAP joins only at the finance/cost layer.
+  vin_external:
+    region: Region1
+    vehicle_type: asset
+    colocation:
+      method: data_share
+      sap_inbound_db: SAP_INBOUND
+      telematics_inbound_db: TELEMATICS_INBOUND
+    sap_schema: SAP_INBOUND.FI          # finance-only: no EQUI (join only at cost layer)
+    cdc: { tool: fivetran, client: "100" }
+    objects: { bseg: BSEG, ekko: EKKO }
+    telematics:
+      table: TELEMATICS_INBOUND.GPS.READINGS
+      device_col: VIN
+      pk_col: READING_ID
+      ts_col: READING_TS
+      lat_col: LAT
+      lon_col: LNG
+      speed_col: SPEED
+      heading_col: GPS_HEADING
+    join:
+      strategy: vin_external
+      external_asset_master: FLEET_MASTER.CORE.VEHICLE   # VIN -> asset_id (no SAP equipment)
+    materialize_position: true
+
+  # Assets are vessels keyed by IMO/MMSI from an AIS provider.
+  marine:
+    region: Region1
+    vehicle_type: vessel
+    colocation:
+      method: data_share          # AIS is often a Marketplace share; SAP via inbound share
+      sap_inbound_db: SAP_INBOUND
+      telematics_inbound_db: AIS_INBOUND
+    sap_schema: SAP_INBOUND.S4
+    cdc: { tool: qlik, client: "100" }
+    objects: { equi: EQUI }
+    telematics:
+      table: AIS_INBOUND.AIS.POSITIONS
+      device_col: MMSI
+      pk_col: MESSAGE_ID
+      ts_col: EVENT_TS
+      lat_col: LATITUDE
+      lon_col: LONGITUDE
+      speed_col: SPEED
+      heading_col: HEADING
+    join:
+      strategy: marine
+      vessel_master: AIS_INBOUND.AIS.VESSELS          # IMO/MMSI -> vessel
+    materialize_position: true
