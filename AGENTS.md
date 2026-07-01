@@ -74,6 +74,7 @@ No global build/lint step - each skill is independently deployable via its own S
 | `fleet-intelligence-car` | fleet-intelligence | Taxi GPS telemetry generation + React dashboard |
 | `fleet-intelligence-ebike` | fleet-intelligence | Food delivery courier telemetry + React app |
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
+| `location-diagnostics` | demo | Region-agnostic retail site cannibalisation + closure modelling. A POI subset becomes the store estate (OWNED/CANDIDATE), Overture addresses are the household proxy, ORS drive-time bands drive the overlap and next-closest-store logic. Adds `FLEET_INTELLIGENCE.LOCATION` + `FLEET_APP.LOCATION` views + `SV_LOCATION` + Site Impact / Closure Impact app views. Commercials are synthetic proxies; extendable to first-party via Data Studio. |
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
