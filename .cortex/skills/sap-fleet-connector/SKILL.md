@@ -98,6 +98,15 @@ No ACCOUNTADMIN required. The seam repoint needs ownership of the `UNIFIED_FLEET
 3. **Discover** the landed SAP + telematics objects and their exposure form (raw / CDS /
    Datasphere): run [`scripts/introspect_sap.sql`](scripts/introspect_sap.sql). Reconcile the
    output against `sap-mapping.yaml`.
+   - **From the app UI (no SQL):** the fleet app's chat agent can run this discovery live via
+     the `introspect_sap` verb. Ask, e.g., "Which SAP tables can I bind in `MY_SAP_DB`?" (or
+     "scan `MY_SAP_DB` and `MY_TELEMATICS_DB` for bindable tables") and it returns the SAP fleet
+     objects, the CDC-tool fingerprint, the telematics columns, and a suggested `cdc.tool` +
+     join strategy. The verb wraps the read-only proc
+     `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(P_SAP_DB, P_TELEMATICS_DB)`
+     (EXECUTE AS OWNER, so the proc owner needs `USAGE` on the scanned databases). For a demo
+     without real SAP data, run [`scripts/mock_sap_seed.sql`](scripts/mock_sap_seed.sql) first,
+     then ask the agent to scan `MOCK_SAP` / `MOCK_TELEMATICS`.
 4. **Build the crosswalk**: run [`scripts/build_crosswalk.sql`](scripts/build_crosswalk.sql)
    (creates `SAP_SOURCE.FLEET.normalize_serial` + `ASSET_CROSSWALK` per the chosen strategy).
 5. **Validate the join** in-account: run
