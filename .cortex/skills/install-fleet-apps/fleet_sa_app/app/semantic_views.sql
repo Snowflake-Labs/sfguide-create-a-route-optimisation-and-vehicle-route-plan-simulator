@@ -399,40 +399,29 @@ Conventions:
 ;
 
 -- ============ SV_LOCATION (FLEET_APP.LOCATION.*) ============
--- SV_LOCATION - location-diagnostics semantic view (cannibalisation + closure slice).
--- Source: FLEET_APP.LOCATION.VW_STORE_FACTS (store estate + synthetic commercials),
---         FLEET_APP.LOCATION.VW_CANNIBALISATION (candidate->existing transfer),
---         FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT (closed->gaining reassignment).
+-- SV_LOCATION - location-diagnostics ESTATE semantic view (store facts only).
+-- Source: FLEET_APP.LOCATION.VW_STORE_FACTS (store estate + synthetic commercials).
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via the fleet_test_evals connection).
--- Three independent facts (no cross-grain joins). GEOGRAPHY columns excluded.
--- NOTE: revenue/EBITDA/interaction-mix/rent are SYNTHETIC proxies (see analytic_layer.sql).
+-- NOTE: cannibalisation + closure are NOT modeled here - they are computed LIVE by the
+-- app (calling ORS ISOCHRONES on each interaction; see Architecture Tenet 9), so there
+-- is no materialized table for Cortex Analyst to query. This view covers the estate
+-- (how many stores, revenue/EBITDA, household base) which the agent CAN answer via SQL.
+-- Revenue/EBITDA/interaction-mix/rent are SYNTHETIC proxies (see analytic_layer.sql).
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
 
   TABLES (
     stores AS FLEET_APP.LOCATION.VW_STORE_FACTS
       PRIMARY KEY (REGION, STORE_ID)
-    , cannibalisation AS FLEET_APP.LOCATION.VW_CANNIBALISATION
-      PRIMARY KEY (REGION, CANDIDATE_ID, EXISTING_STORE_ID, BAND_MIN)
-    , closure AS FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT
-      PRIMARY KEY (REGION, CLOSED_STORE_ID, GAINING_STORE_ID)
   )
 
   FACTS (
     stores.annual_revenue AS ANNUAL_REVENUE COMMENT = 'Synthetic annual revenue'
     , stores.annual_ebitda AS ANNUAL_EBITDA COMMENT = 'Synthetic annual EBITDA'
-    , stores.hh_20min AS HH_20MIN COMMENT = 'Households within a 20-minute drive'
+    , stores.reference_hh AS REFERENCE_HH COMMENT = 'Household base (nearest-store Voronoi territory)'
     , stores.sqft AS SQFT COMMENT = 'Synthetic store floor area (sqft)'
     , stores.annual_rent AS ANNUAL_RENT COMMENT = 'Synthetic annual rent'
     , stores.value_per_cost AS VALUE_PER_COST COMMENT = 'Revenue per unit of rent cost'
-    , cannibalisation.shared_hh AS SHARED_HH COMMENT = 'Households shared between candidate and existing store'
-    , cannibalisation.transfer_revenue AS TRANSFER_REVENUE COMMENT = 'Revenue drawn from an existing store by the candidate'
-    , cannibalisation.transfer_ebitda AS TRANSFER_EBITDA COMMENT = 'EBITDA drawn from an existing store by the candidate'
-    , cannibalisation.transfer_pct AS TRANSFER_PCT COMMENT = 'Fraction of the existing store households captured'
-    , closure.hh_inherited AS HH_INHERITED COMMENT = 'Households inherited by a surviving store on closure'
-    , closure.revenue_inherited AS REVENUE_INHERITED COMMENT = 'Revenue inherited by a surviving store on closure'
-    , closure.ebitda_inherited AS EBITDA_INHERITED COMMENT = 'EBITDA inherited by a surviving store on closure'
-    , closure.pct_of_closed AS PCT_OF_CLOSED COMMENT = 'Fraction of the closed store households inherited'
   )
 
   DIMENSIONS (
@@ -441,38 +430,22 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.store_role AS STORE_ROLE WITH SYNONYMS ('role', 'owned or candidate') COMMENT = 'OWNED (existing estate) or CANDIDATE (proposed new site)'
     , stores.store_category AS CATEGORY WITH SYNONYMS ('category', 'format') COMMENT = 'Store category'
     , stores.store_region AS REGION COMMENT = 'Region'
-    , cannibalisation.candidate_name AS CANDIDATE_NAME WITH SYNONYMS ('candidate', 'new site') COMMENT = 'Candidate (proposed) site name'
-    , cannibalisation.existing_name AS EXISTING_NAME WITH SYNONYMS ('existing store', 'impacted store') COMMENT = 'Existing store impacted by the candidate'
-    , cannibalisation.band_min AS BAND_MIN WITH SYNONYMS ('drive time', 'drive-time band', 'minutes') COMMENT = 'Drive-time band in minutes (nested scenario; do not sum across bands)'
-    , cannibalisation.cannib_region AS REGION COMMENT = 'Region (cannibalisation)'
-    , closure.closed_name AS CLOSED_NAME WITH SYNONYMS ('closed store', 'store to close') COMMENT = 'Store being closed'
-    , closure.gaining_name AS GAINING_NAME WITH SYNONYMS ('gaining store', 'inheriting store') COMMENT = 'Surviving store that inherits demand'
-    , closure.closure_region AS REGION COMMENT = 'Region (closure)'
   )
 
   METRICS (
     stores.store_count AS COUNT(DISTINCT STORE_ID) WITH SYNONYMS ('number of stores', 'store count') COMMENT = 'Distinct stores'
     , stores.total_revenue AS SUM(annual_revenue) WITH SYNONYMS ('total revenue') COMMENT = 'Total synthetic annual revenue'
     , stores.total_ebitda AS SUM(annual_ebitda) WITH SYNONYMS ('total ebitda') COMMENT = 'Total synthetic annual EBITDA'
-    , stores.total_households AS SUM(hh_20min) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total households within 20-minute catchments'
+    , stores.total_households AS SUM(reference_hh) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total household base across the estate'
     , stores.avg_value_per_cost AS AVG(value_per_cost) WITH SYNONYMS ('value for money', 'revenue per rent') COMMENT = 'Average revenue per unit of rent'
-    , cannibalisation.total_transfer_revenue AS SUM(transfer_revenue) WITH SYNONYMS ('cannibalised revenue', 'transferred revenue') COMMENT = 'Total revenue cannibalised (pick ONE band)'
-    , cannibalisation.total_transfer_ebitda AS SUM(transfer_ebitda) WITH SYNONYMS ('cannibalised ebitda') COMMENT = 'Total EBITDA cannibalised (pick ONE band)'
-    , cannibalisation.total_shared_hh AS SUM(shared_hh) WITH SYNONYMS ('shared households') COMMENT = 'Total shared households (pick ONE band)'
-    , closure.total_hh_inherited AS SUM(hh_inherited) WITH SYNONYMS ('households reassigned') COMMENT = 'Total households inherited by surviving stores'
-    , closure.total_revenue_inherited AS SUM(revenue_inherited) WITH SYNONYMS ('revenue retained', 'revenue inherited') COMMENT = 'Total revenue retained by surviving stores'
   )
 
-  COMMENT = 'Location diagnostics (cannibalisation + closure). Store estate (OWNED/CANDIDATE) with synthetic commercials, candidate-to-existing revenue transfer by drive-time band, and closed-store household/revenue reassignment to surviving stores.'
+  COMMENT = 'Location diagnostics estate: store estate (OWNED/CANDIDATE) with synthetic commercials and household base. Cannibalisation and closure are computed live in-app (ORS), not modeled here.'
 
-  AI_SQL_GENERATION 'Location-diagnostics semantic view (retail site cannibalisation + closure).
-Entities (three independent facts):
-- stores (VW_STORE_FACTS): one row per store. store_role = OWNED (existing) or CANDIDATE (proposed). Use total_revenue/total_ebitda/total_households/store_count grouped by store_role or store_category. Commercials are synthetic proxies.
-- cannibalisation (VW_CANNIBALISATION): one row per (candidate, existing store, drive-time band). Use total_transfer_revenue/total_transfer_ebitda/total_shared_hh to answer "how much would a new site cannibalise the estate".
-- closure (VW_CLOSURE_REASSIGNMENT): one row per (closed store, gaining store). Use total_revenue_inherited/total_hh_inherited to answer "if we close store X, which store inherits its sales".
+  AI_SQL_GENERATION 'Location-diagnostics ESTATE semantic view (store-level facts only).
+- stores (VW_STORE_FACTS): one row per store. store_role = OWNED (existing) or CANDIDATE (proposed). Use total_revenue/total_ebitda/total_households/store_count/avg_value_per_cost grouped by store_role or store_category. Commercials are synthetic proxies.
 Conventions:
-- band_min is a NESTED what-if scenario. ALWAYS filter to ONE band_min (default 20) for cannibalisation questions; never SUM across bands for the same candidate/existing pair.
-- "how much will the new site cannibalise" -> total_transfer_revenue filtered by candidate_name and band_min=20.
-- "which existing store loses the most" -> total_transfer_revenue grouped by existing_name at a fixed band_min.
-- "if we close store X who inherits" -> total_revenue_inherited grouped by gaining_name filtered by closed_name.'
+- "how many stores" -> store_count; "total revenue/ebitda" -> total_revenue/total_ebitda grouped by store_role.
+- "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
+IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
 ;

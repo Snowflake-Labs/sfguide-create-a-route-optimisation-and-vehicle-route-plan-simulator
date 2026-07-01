@@ -3111,7 +3111,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT EXISTING_STORE_ID) AS impacted, COALESCE(SUM(SHARED_HH),0) AS shared_hh, ROUND(COALESCE(SUM(TRANSFER_REVENUE),0)) AS transfer_rev, ROUND(COALESCE(SUM(TRANSFER_EBITDA),0)) AS transfer_ebitda FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate)",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),(SELECT band FROM pt),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), owned AS (SELECT STORE_ID, POI_NAME, LON, LAT, ANNUAL_REVENUE, ANNUAL_EBITDA, HV_PCT, SAMPLE_PCT, WALKIN_PCT, REFERENCE_HH FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED'), captured AS (SELECT STORE_ID AS OWN_ID, SUM(HH) AS cap_hh FROM (SELECT c.H3, c.HH, o.STORE_ID, ROW_NUMBER() OVER (PARTITION BY c.H3 ORDER BY ST_DISTANCE(c.CENTROID, ST_MAKEPOINT(o.LON,o.LAT))) rn FROM FLEET_APP.LOCATION.VW_HH_CELLS c CROSS JOIN owned o, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)) WHERE rn=1 GROUP BY STORE_ID) SELECT COUNT(DISTINCT cap.OWN_ID) AS impacted, COALESCE(SUM(cap.cap_hh),0) AS shared_hh, ROUND(COALESCE(SUM(o.ANNUAL_REVENUE*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5),0)) AS transfer_rev, ROUND(COALESCE(SUM(o.ANNUAL_EBITDA*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5),0)) AS transfer_ebitda FROM captured cap JOIN owned o ON o.STORE_ID=cap.OWN_ID",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -3142,7 +3142,7 @@
             "name": "band",
             "label": "Drive-time band",
             "data": {
-              "query": "SELECT DISTINCT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES ORDER BY BAND_MIN"
+              "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
             },
             "emits": { "selected_band": "selection" }
           }
@@ -3152,7 +3152,7 @@
         "component": "Table",
         "config": { "title": "Revenue transfer by existing store (selected band)" },
         "data": {
-          "query": "SELECT EXISTING_NAME AS store, SHARED_HH AS households, ROUND(TRANSFER_PCT*100,1) AS transfer_pct, ROUND(TRANSFER_REVENUE) AS revenue, ROUND(TRANSFER_HV) AS home_visit, ROUND(TRANSFER_SAMPLE) AS sample_rev, ROUND(TRANSFER_WALKIN) AS walk_in FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate) ORDER BY revenue DESC LIMIT 20",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),(SELECT band FROM pt),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), owned AS (SELECT STORE_ID, POI_NAME, LON, LAT, ANNUAL_REVENUE, ANNUAL_EBITDA, HV_PCT, SAMPLE_PCT, WALKIN_PCT, REFERENCE_HH FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED'), captured AS (SELECT STORE_ID AS OWN_ID, SUM(HH) AS cap_hh FROM (SELECT c.H3, c.HH, o.STORE_ID, ROW_NUMBER() OVER (PARTITION BY c.H3 ORDER BY ST_DISTANCE(c.CENTROID, ST_MAKEPOINT(o.LON,o.LAT))) rn FROM FLEET_APP.LOCATION.VW_HH_CELLS c CROSS JOIN owned o, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)) WHERE rn=1 GROUP BY STORE_ID) SELECT o.POI_NAME AS store, cap.cap_hh AS households, ROUND(100*cap.cap_hh/NULLIF(o.REFERENCE_HH,0),1) AS transfer_pct, ROUND(o.ANNUAL_REVENUE*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5) AS revenue, ROUND(o.ANNUAL_REVENUE*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5*o.HV_PCT) AS home_visit, ROUND(o.ANNUAL_REVENUE*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5*o.SAMPLE_PCT) AS sample_rev, ROUND(o.ANNUAL_REVENUE*(cap.cap_hh/NULLIF(o.REFERENCE_HH,0))*0.5*o.WALKIN_PCT) AS walk_in FROM captured cap JOIN owned o ON o.STORE_ID=cap.OWN_ID ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -3179,7 +3179,7 @@
               "lineColor": [41, 181, 232, 200],
               "lineWidth": 2,
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_candidate IS NOT NULL AND STORE_ID = :selected_candidate AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20)",
+                "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(GEOJSON)::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),(SELECT band FROM pt),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE GEOJSON IS NOT NULL",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
@@ -3239,7 +3239,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COALESCE(SUM(HH_INHERITED),0) AS hh_reassigned, ROUND(COALESCE(SUM(REVENUE_INHERITED),0)) AS revenue_retained, COUNT(DISTINCT GAINING_STORE_ID) AS gaining_stores FROM FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT WHERE REGION = :region AND (:selected_closed IS NULL OR CLOSED_STORE_ID = :selected_closed)",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT COALESCE(SUM(a.hh_inh),0) AS hh_reassigned, ROUND(COALESCE(SUM(a.hh_inh),0) * (SELECT rev FROM crev) / NULLIF((SELECT total_in FROM tot),0)) AS revenue_retained, COUNT(DISTINCT a.GAIN_ID) AS gaining_stores FROM agg a",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed"
@@ -3270,7 +3270,7 @@
         "component": "Table",
         "config": { "title": "Households and revenue inherited by surviving stores" },
         "data": {
-          "query": "SELECT GAINING_NAME AS gaining_store, HH_INHERITED AS households, ROUND(PCT_OF_CLOSED*100,1) AS pct_of_closed, ROUND(REVENUE_INHERITED) AS revenue, ROUND(EBITDA_INHERITED) AS ebitda FROM FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT WHERE REGION = :region AND (:selected_closed IS NULL OR CLOSED_STORE_ID = :selected_closed) ORDER BY revenue DESC LIMIT 20",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev, ANNUAL_EBITDA AS ebit FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, POI_NAME, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households, ROUND(100*a.hh_inh/NULLIF((SELECT total_in FROM tot),0),1) AS pct_of_closed, ROUND((SELECT rev FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS revenue, ROUND((SELECT ebit FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS ebitda FROM agg a JOIN FLEET_APP.LOCATION.VW_STORE_FACTS g ON g.STORE_ID=a.GAIN_ID ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed"
@@ -3295,7 +3295,7 @@
               "lineColor": [209, 55, 78, 200],
               "lineWidth": 2,
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_closed IS NOT NULL AND STORE_ID = :selected_closed AND BAND_MIN = 20",
+                "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(GEOJSON)::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE GEOJSON IS NOT NULL",
                 "params": {
                   "region": "context.region",
                   "selected_closed": "viewState.selected_closed"

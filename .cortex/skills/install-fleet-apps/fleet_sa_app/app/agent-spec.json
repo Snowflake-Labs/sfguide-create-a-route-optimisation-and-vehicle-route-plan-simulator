@@ -81,7 +81,7 @@
       "tool_spec": {
         "type": "cortex_analyst_text_to_sql",
         "name": "query_location",
-        "description": "Location diagnostics for retail site decisions: store estate (OWNED existing vs CANDIDATE proposed sites) with synthetic commercials, candidate-to-existing revenue/EBITDA cannibalisation by drive-time band, and closed-store household/revenue reassignment to surviving stores. Use for 'how much would a new site cannibalise the estate', 'which existing store loses the most revenue', and 'if we close store X which store inherits its sales'. Filter cannibalisation to ONE drive-time band (default 20 minutes); never sum across bands. Commercial figures are synthetic proxies."
+        "description": "Retail store-estate facts: OWNED (existing) vs CANDIDATE (proposed) sites with synthetic commercials (revenue, EBITDA, household base, sqft, rent, value-per-cost). Use for estate composition questions: 'how many stores', 'total revenue by store role', 'best value-for-rent stores', 'stores by category'. NOTE: cannibalisation ('how much would a new site take from the estate') and closure ('who inherits a closed store') are computed LIVE in the Site Impact / Closure Impact app pages using the ORS drive-time engine - they are NOT in this semantic view; point the user to those pages for interactive what-if analysis. Commercial figures are synthetic proxies."
       }
     },
     {
