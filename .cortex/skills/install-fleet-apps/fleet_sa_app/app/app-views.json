@@ -3103,8 +3103,8 @@
     "layout": {
       "default": {
         "columns": "360px 1fr",
-        "rows": "auto auto $map",
-        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"transfers map\""
+        "rows": "auto auto $map auto",
+        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"transfers map\"\n\"ziptable ziptable\""
       }
     },
     "areas": {
@@ -3165,19 +3165,60 @@
         "config": {
           "noPad": true,
           "legend": [
-            { "label": "Candidate isochrone", "color": [41, 181, 232, 80] },
-            { "label": "Owned store", "color": [41, 181, 232, 200] },
-            { "label": "Candidate site", "color": [209, 55, 78, 220] },
-            { "label": "Selected candidate", "color": [255, 200, 0, 255] }
+            { "label": "ZIP <= 15 min", "color": [102, 189, 99, 150] },
+            { "label": "ZIP <= 25 min", "color": [217, 239, 139, 150] },
+            { "label": "ZIP <= 45 min", "color": [253, 174, 97, 160] },
+            { "label": "ZIP 60 min", "color": [244, 109, 67, 160] },
+            { "label": "Candidate band ring", "color": [209, 55, 78, 220] },
+            { "label": "Owned store catchment (20 min)", "color": [41, 181, 232, 90] }
           ],
           "layers": [
             {
               "type": "geojson",
+              "id": "zip-drivetime-choropleth",
+              "geojsonColumn": "geo",
+              "colorColumn": "band_min",
+              "colorMap": {
+                "10": [26, 152, 80, 150],
+                "15": [102, 189, 99, 150],
+                "20": [166, 217, 106, 150],
+                "25": [217, 239, 139, 150],
+                "30": [254, 224, 139, 150],
+                "45": [253, 174, 97, 160],
+                "60": [244, 109, 67, 160]
+              },
+              "fillColor": [200, 200, 200, 60],
+              "lineColor": [120, 120, 120, 120],
+              "lineWidth": 1,
+              "pickable": true,
+              "tooltip": "<b>ZIP {zip}</b><br/>{band_min} min drive<br/>Pop {population}",
+              "data": {
+                "query": "SELECT ZIP AS zip, BAND_MIN AS band_min, POPULATION AS population, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
+                "params": {
+                  "region": "context.region",
+                  "selected_candidate": "viewState.selected_candidate"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "owned-catchments",
+              "geojsonColumn": "geo",
+              "fillColor": [41, 181, 232, 45],
+              "lineColor": [41, 181, 232, 160],
+              "lineWidth": 1,
+              "data": {
+                "query": "SELECT STORE_ID AS store_id, POI_NAME AS name, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
+                "params": { "region": "context.region" }
+              }
+            },
+            {
+              "type": "geojson",
               "id": "candidate-isochrone",
               "geojsonColumn": "geo",
-              "fillColor": [41, 181, 232, 60],
-              "lineColor": [41, 181, 232, 200],
-              "lineWidth": 2,
+              "fillColor": [0, 0, 0, 0],
+              "lineColor": [209, 55, 78, 230],
+              "lineWidth": 3,
               "data": {
                 "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(GEOJSON)::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),(SELECT band FROM pt),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE GEOJSON IS NOT NULL",
                 "params": {
@@ -3214,6 +3255,17 @@
               }
             }
           ]
+        }
+      },
+      "ziptable": {
+        "component": "Table",
+        "config": { "title": "ZIP codes by drive-time band from the candidate (real population)" },
+        "data": {
+          "query": "SELECT BAND_MIN AS drive_time_min, COUNT(*) AS zip_codes, SUM(POPULATION) AS population, SUM(HOUSEHOLDS) AS households, SUM(SUM(POPULATION)) OVER (ORDER BY BAND_MIN) AS cumulative_population FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) GROUP BY BAND_MIN ORDER BY BAND_MIN",
+          "params": {
+            "region": "context.region",
+            "selected_candidate": "viewState.selected_candidate"
+          }
         }
       }
     }

@@ -82,6 +82,8 @@ export interface GeoJsonLayerSpec extends LayerBase {
     fillColor?: ColorRGBA;
     lineColor?: ColorRGBA;
     lineWidth?: number;
+    colorColumn?: string;
+    colorMap?: Record<string, ColorRGBA>;
 }
 export interface ArcLayerSpec extends LayerBase {
     type: 'arc';

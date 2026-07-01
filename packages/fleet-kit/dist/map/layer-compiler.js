@@ -169,16 +169,25 @@ export function compileLayer(spec, rows, viewState, index, hovered) {
         }
         case 'geojson': {
             const s = spec;
+            const fallbackFill = s.fillColor ?? [41, 181, 232, 40];
+            // Per-feature choropleth: color by properties[colorColumn] via colorMap.
+            const fillAccessor = s.colorColumn && s.colorMap
+                ? (f) => {
+                    const v = f?.properties?.[s.colorColumn];
+                    return (v != null && s.colorMap[String(v)]) || fallbackFill;
+                }
+                : fallbackFill;
             return new GeoJsonLayer({
                 id,
                 data: geoFeatures(s, rows),
                 filled: true,
                 stroked: true,
-                getFillColor: s.fillColor ?? [41, 181, 232, 40],
+                getFillColor: fillAccessor,
                 getLineColor: s.lineColor ?? [41, 181, 232, 200],
                 getLineWidth: s.lineWidth ?? 2,
                 lineWidthMinPixels: 1,
                 pickable: s.pickable ?? false,
+                updateTriggers: { getFillColor: [s.colorColumn, JSON.stringify(s.colorMap)] },
             });
         }
         case 'arc': {

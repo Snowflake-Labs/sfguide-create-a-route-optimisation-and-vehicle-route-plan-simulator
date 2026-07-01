@@ -90,6 +90,11 @@ export interface GeoJsonLayerSpec extends LayerBase {
   fillColor?: ColorRGBA;
   lineColor?: ColorRGBA;
   lineWidth?: number;
+  // Per-feature choropleth: color each feature by the value of `colorColumn`
+  // (read from the row's properties) looked up in `colorMap` (keyed by the
+  // stringified value). Falls back to `fillColor` when the value is absent.
+  colorColumn?: string;
+  colorMap?: Record<string, ColorRGBA>;
 }
 
 export interface ArcLayerSpec extends LayerBase {

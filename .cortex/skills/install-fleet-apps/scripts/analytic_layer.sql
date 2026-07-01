@@ -501,6 +501,26 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORE_FACTS (
   VALUE_PER_COST   NUMBER(12,3)   -- ANNUAL_REVENUE / ANNUAL_RENT
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- ZIP/postcode areas: REAL postcode polygons + REAL demographics (US demo only).
+-- Reference data (NO ORS): polygons come from the free SFR "U.S. ZIP Code Metadata
+-- with Geometry" Marketplace listing (GZTYZ7P39MI) and population/housing/income are
+-- rolled up from the free SafeGraph Open Census 2020 CBGs (SAFEGRAPH_OPEN_CENSUS_FREE).
+-- The ZIP-by-drive-time drill + choropleth compute isochrones LIVE over these polygons.
+-- Populated by BUILD_LOCATION_ZIP_ENRICHMENT (guarded; skipped when the listings are
+-- absent or the active region is non-US).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS (
+  REGION        VARCHAR NOT NULL,
+  ZIP           VARCHAR,
+  STATE         VARCHAR,
+  GEOG          GEOGRAPHY,      -- ZIP/ZCTA polygon (SFR geometry listing)
+  CENTROID      GEOGRAPHY,
+  LAND_SQMI     NUMBER(12,4),
+  POPULATION    INT,            -- real, SafeGraph CBG rollup
+  HOUSEHOLDS    INT,            -- real, SafeGraph CBG housing-unit rollup
+  MEDIAN_INCOME NUMBER(12,0),   -- real, SafeGraph CBG median (approx)
+  POP_PER_SQMI  NUMBER(14,2)
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Build procedure: materializes the estate + household grid + synthetic facts for
 -- the active region. NO ORS calls (isochrones are computed live by the app views).
 -- Owner's rights. Idempotent per region.
@@ -627,6 +647,71 @@ $$;
 
 CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
 
+-- ZIP enrichment (US demo only): real ZIP polygons (SFR listing GZTYZ7P39MI) +
+-- real population/housing/income rolled up from SafeGraph Open Census CBGs. Guarded
+-- with EXCEPTION so a fresh install without the two free listings (or a non-US region)
+-- simply skips enrichment instead of failing the whole analytic layer. ZIP_AREAS then
+-- stays empty and the ZIP drill/choropleth render nothing (the rest of LOCATION works).
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  rg VARCHAR;
+  n INT DEFAULT 0;
+BEGIN
+  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  IF (rg IS NULL) THEN
+    RETURN 'no active region';
+  END IF;
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS
+    (REGION, ZIP, STATE, GEOG, CENTROID, LAND_SQMI, POPULATION, HOUSEHOLDS, MEDIAN_INCOME, POP_PER_SQMI)
+  WITH rzips AS (
+    SELECT DISTINCT POSTCODE AS zip
+    FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+    WHERE REGION = :rg AND POSTCODE IS NOT NULL
+  ),
+  zpoly AS (
+    SELECT g.ZIP_CODE AS zip, g.STATE AS state, TO_GEOGRAPHY(ST_ASWKT(g.GEOMETRY), TRUE) AS geog
+    FROM U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.ZIP_CODE_GEOMETRY_SHARE g
+    JOIN rzips r ON r.zip = g.ZIP_CODE
+  ),
+  zmeta AS (
+    SELECT ZIP_CODE AS zip, LAND_SQ_MILES FROM U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.ZIP_CODE_META_SHARE
+  ),
+  cbg AS (
+    SELECT ST_CENTROID(TO_GEOGRAPHY(g.GEOMETRY, TRUE)) AS ctr,
+           p."B01001e1" AS pop, h."B25001e1" AS hh, i."B19013e1" AS inc
+    FROM SAFEGRAPH_OPEN_CENSUS_FREE.PUBLIC."2020_CBG_GEOMETRY_WKT" g
+    JOIN SAFEGRAPH_OPEN_CENSUS_FREE.PUBLIC."2020_CBG_B01" p ON p.CENSUS_BLOCK_GROUP = g.CENSUS_BLOCK_GROUP
+    JOIN SAFEGRAPH_OPEN_CENSUS_FREE.PUBLIC."2020_CBG_B25" h ON h.CENSUS_BLOCK_GROUP = g.CENSUS_BLOCK_GROUP
+    LEFT JOIN SAFEGRAPH_OPEN_CENSUS_FREE.PUBLIC."2020_CBG_B19" i ON i.CENSUS_BLOCK_GROUP = g.CENSUS_BLOCK_GROUP
+    WHERE g.STATE IN (SELECT DISTINCT state FROM zpoly)
+  ),
+  roll AS (
+    SELECT zp.zip, ROUND(SUM(c.pop)) AS pop, ROUND(SUM(c.hh)) AS hh, ROUND(MEDIAN(c.inc)) AS inc
+    FROM zpoly zp JOIN cbg c ON ST_WITHIN(c.ctr, zp.geog)
+    GROUP BY zp.zip
+  )
+  SELECT :rg, zp.zip, zp.state, zp.geog, ST_CENTROID(zp.geog),
+         zm.LAND_SQ_MILES, r.pop, r.hh, r.inc,
+         CASE WHEN zm.LAND_SQ_MILES > 0 THEN r.pop / zm.LAND_SQ_MILES END
+  FROM zpoly zp
+  LEFT JOIN roll r ON r.zip = zp.zip
+  LEFT JOIN zmeta zm ON zm.zip = zp.zip;
+  SELECT COUNT(*) INTO n FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS WHERE REGION = :rg;
+  RETURN 'ZIP enrichment built for ' || rg || ': ' || n || ' ZIP areas';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ZIP enrichment skipped (listings absent or non-US region): ' || SQLERRM;
+END;
+$$;
+
+CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
+
 -- 5b. FLEET_APP neutral-contract views the SA app reads (consumers never bind to
 --     FLEET_INTELLIGENCE directly). Mirrors the generated CATCHMENT pack pattern.
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
@@ -640,6 +725,69 @@ CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_HH_CELLS AS
   SELECT * FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS;
 CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_BANDS AS
   SELECT * FROM FLEET_INTELLIGENCE.LOCATION.BANDS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_ZIP_AREAS AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS;
+
+-- Live ZIP drive-time drill: assigns each region ZIP to the smallest drive-time band
+-- whose isochrone (computed LIVE, all bands in one ORS call) contains its centroid,
+-- carrying real SafeGraph population/housing. Powers the ZIP-by-drive-time table and
+-- the per-band ZIP choropleth. Owner's-rights; app roles get USAGE below.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(P_STORE_ID VARCHAR, P_REGION VARCHAR)
+RETURNS TABLE (ZIP VARCHAR, BAND_MIN INT, POPULATION INT, HOUSEHOLDS INT, MEDIAN_INCOME NUMBER(12,0), GEO GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH iso AS (
+    SELECT (f.value:properties:value::INT)/60 AS band_min,
+           TO_GEOGRAPHY(f.value:geometry) AS g
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID),
+        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID))),
+      (SELECT ARRAY_AGG(BAND_MIN*60) FROM FLEET_INTELLIGENCE.LOCATION.BANDS),
+      'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  ),
+  z AS (
+    SELECT ZIP, POPULATION, HOUSEHOLDS, MEDIAN_INCOME, CENTROID, GEOG
+    FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS WHERE REGION = P_REGION
+  )
+  SELECT z.ZIP, MIN(iso.band_min) AS band_min, ANY_VALUE(z.POPULATION), ANY_VALUE(z.HOUSEHOLDS),
+         ANY_VALUE(z.MEDIAN_INCOME), ANY_VALUE(z.GEOG)
+  FROM z JOIN iso ON ST_WITHIN(z.CENTROID, iso.g)
+  GROUP BY z.ZIP
+$$;
+
+-- Live owned-store catchments: one ORS call returns every OWNED store's isochrone at
+-- the given band (group_index maps back to the STORE_ID-ordered store list). Powers the
+-- Site Impact overlap layer ("several isochrones intersection").
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (STORE_ID VARCHAR, POI_NAME VARCHAR, BAND_MIN INT, GEO GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH owned AS (
+    SELECT STORE_ID, POI_NAME, ROW_NUMBER() OVER (ORDER BY STORE_ID) - 1 AS grp
+    FROM FLEET_INTELLIGENCE.LOCATION.STORES
+    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
+  ),
+  iso AS (
+    SELECT f.value:properties:group_index::INT AS grp,
+           TO_GEOGRAPHY(f.value:geometry) AS g
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY STORE_ID)
+         FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'),
+      ARRAY_CONSTRUCT(P_BAND * 60),
+      'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  )
+  SELECT o.STORE_ID, o.POI_NAME, P_BAND, i.g
+  FROM owned o JOIN iso i ON i.grp = o.grp
+$$;
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
 -- role-less install does not error the whole file.
@@ -652,6 +800,14 @@ GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
+
+-- Live ZIP/overlap UDTFs (owner's-rights; consumers only need USAGE).
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
