@@ -105,8 +105,11 @@ No ACCOUNTADMIN required. The seam repoint needs ownership of the `UNIFIED_FLEET
      join strategy. The verb wraps the read-only proc
      `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(P_SAP_DB, P_TELEMATICS_DB)`
      (EXECUTE AS OWNER, so the proc owner needs `USAGE` on the scanned databases). For a demo
-     without real SAP data, run [`scripts/mock_sap_seed.sql`](scripts/mock_sap_seed.sql) first,
-     then ask the agent to scan `MOCK_SAP` / `MOCK_TELEMATICS`.
+     without real SAP data, use `MOCK_SAP` / `MOCK_TELEMATICS`: `install-fleet-apps` lands this
+     mock landscape automatically (step 3.5, raw tables only, no bind), so on a fleet install it
+     is already present - just ask the agent to scan `MOCK_SAP` / `MOCK_TELEMATICS`. For a
+     standalone/SAP-skill-only account, run [scripts/mock_sap_seed.sql](scripts/mock_sap_seed.sql)
+     first (it is the single source of truth the installer runs).
 4. **Build the crosswalk**: run [`scripts/build_crosswalk.sql`](scripts/build_crosswalk.sql)
    (creates `SAP_SOURCE.FLEET.normalize_serial` + `ASSET_CROSSWALK` per the chosen strategy).
 5. **Validate the join** in-account: run

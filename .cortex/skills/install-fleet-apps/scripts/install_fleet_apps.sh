@@ -71,6 +71,7 @@ SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
 AGENT_DEMOS_JSON="$SKILL_DIR/openrouteservice_app/config/agent-demos.json"
 START_TS=$(date +%s)
 ROUTING_SUBSTRATE="(routing step not run)"   # set by step 3; surfaced in friction log + summary
+SAP_MOCK="(sap mock step not run)"           # set by step 2.6; surfaced in summary
 LOG_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/logs"
 mkdir -p "$LOG_DIR"
 FRICTION_LOG="$LOG_DIR/friction-log_$(date +%Y-%m-%d_%H-%M).md"
@@ -204,6 +205,36 @@ if [ "${SKIP_PROJECTIONS:-0}" != "1" ]; then
   step "2.5 projections" OK
 else
   step "2.5 projections" SKIPPED
+fi
+
+# ── 2.6 SAP mock landscape (demo example; ALWAYS run, NOT gated by SKIP_DATA) ──
+# Lands a tiny, static MOCK_SAP + MOCK_TELEMATICS landscape so the SAP connector
+# demo (introspection/discovery) has example data in an account with no real SAP.
+# Raw tables only - does NOT bind FLEET_APP to SAP (binding is an explicit,
+# opt-in sap-fleet-connector step). Not a Data Studio generator: pure static
+# INSERTs. Idempotent (CREATE DATABASE IF NOT EXISTS + CREATE OR REPLACE TABLE),
+# best-effort (a WARN never aborts the install). Single source of truth stays in
+# the sap-fleet-connector skill; cleanup via the COMMENT tag or the DROPs in
+# SKILL.md (DROP DATABASE MOCK_SAP / MOCK_TELEMATICS).
+SAP_MOCK_SQL="$REPO_ROOT/.cortex/skills/sap-fleet-connector/scripts/mock_sap_seed.sql"
+if [ -f "$SAP_MOCK_SQL" ]; then
+  note "[2.6/8] SAP mock landscape (MOCK_SAP + MOCK_TELEMATICS; demo example, raw-only)..."
+  if snow sql -c "$CONNECTION" -f "$SAP_MOCK_SQL" >/tmp/ifa_sap_mock.log 2>&1; then
+    SAP_MOCK_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
+      "SELECT COUNT(*) FROM MOCK_SAP.FLEET.EQUI;" \
+      2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
+    SAP_MOCK="OK (${SAP_MOCK_N:-0} EQUI rows in MOCK_SAP.FLEET)"
+    note "  SAP mock landed: $SAP_MOCK"
+    step "2.6 sap-mock" OK
+  else
+    SAP_MOCK="WARN: mock seed reported errors (see /tmp/ifa_sap_mock.log)"
+    note "  $SAP_MOCK"
+    step "2.6 sap-mock" OK
+  fi
+else
+  SAP_MOCK="MISSING SOURCE: $SAP_MOCK_SQL not found"
+  note "  WARN: $SAP_MOCK"
+  step "2.6 sap-mock" SKIPPED
 fi
 
 # ── 3. engine detect/delegate, THEN the routing contract (owned) ────────
@@ -460,6 +491,9 @@ ELAPSED=$(( $(date +%s) - START_TS ))
     OK*) : ;;
     *) echo "- ACTION: routing verbs (get_directions, optimize_routes, ...) depend on these procs; re-run \`routing-agent/references/deploy-agent.sql\` against \`$CONNECTION\` to restore them." ;;
   esac
+  echo
+  echo "## SAP mock landscape"
+  echo "- MOCK_SAP + MOCK_TELEMATICS (sap-fleet-connector demo example, raw-only): **${SAP_MOCK}**"
   echo
   echo "## Friction points"
   echo "_None recorded automatically. Add manual observations here._"

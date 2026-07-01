@@ -64,6 +64,7 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 1. **Preflight** - tools, connection, account.
 2. **Infra** - image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses `OPENROUTESERVICE_APP` equivalents if present; otherwise creates skill-owned objects. See `references/infra.sql`.
 3. **Data** - probes the agnostic source tables; reuses existing rows, else loads `scripts/seed_data.sql`. See `references/seed-data.md`.
+3.5. **SAP mock landscape** - always lands a tiny, static `MOCK_SAP` (EAM/SD: EQUI/IFLOT/LIKP/LIPS) + `MOCK_TELEMATICS` (GPS) example so the `sap-fleet-connector` demo (introspection/discovery) has data in an account with no real SAP. Runs `.cortex/skills/sap-fleet-connector/scripts/mock_sap_seed.sql` (pure static INSERTs - NOT a Data Studio generator), raw tables only (does NOT bind `FLEET_APP` to SAP), idempotent, best-effort (a WARN never aborts). Not gated by `SKIP_DATA`.
 4. **Analytic layer** - authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode - the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
 5. **Data contract** - `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
 5.5. **Semantic views** - `fleet_sa_app/app/semantic_views.sql` creates `FLEET_INTELLIGENCE.SEMANTIC` + the 5 Cortex Analyst SVs the consumer agent binds to (`SV_FLEET_OPS`, `SV_ROUTE_DEVIATION`, `SV_CATCHMENT`, `SV_DWELL_ANALYTICS`, `SV_ASSET_VELOCITY`). DWELL/ASSET_VELOCITY are rebound onto the pack-built `FLEET_APP.*` views; the rest bind the analytic-layer objects. Runs after packs + analytic layer, before roles/agents (so the role grant and the agent's Cortex Analyst tools resolve). Best-effort; gate off with `SKIP_SEMANTIC=1`.
@@ -122,6 +123,9 @@ DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT;
 DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT;
 DROP DATABASE IF EXISTS FLEET_APP;
 DROP DATABASE IF EXISTS STARTER_APP;
+-- SAP mock landscape (demo example landed by step 3.5):
+DROP DATABASE IF EXISTS MOCK_SAP;
+DROP DATABASE IF EXISTS MOCK_TELEMATICS;
 -- Self-provisioned infra (only if this skill created them):
 DROP EXTERNAL ACCESS INTEGRATION IF EXISTS FLEET_APP_CARTO_EAI;
 DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
