@@ -16,7 +16,9 @@ Region-agnostic store-location intelligence for retail site decisions, covering 
 - **Cannibalisation / transfer modelling** - for a candidate new site, how much revenue and EBITDA it draws from the existing estate, by drive-time band and by existing store, split by interaction type (Home Visit / Sample / Walk-in).
 - **Closure modelling** - if an existing store closes, which surviving store inherits its households and sales via the next-closest-store (drive-time) approach.
 
-Everything is built from data already present in the accelerator: a deterministic subset of `FLEET_INTELLIGENCE.CATCHMENT.POIS` (the region's most spatially-spread retail category) becomes the **store estate** (OWNED existing + CANDIDATE proposed sites); `CATCHMENT.REGIONAL_ADDRESSES` is the **household proxy**; and drive-time bands (10/15/20/25/30/45/60 min) come from the live OpenRouteService engine. The estate's commercial figures (revenue, EBITDA, HV/Sample/Walk-in mix, sqft, rent) are **synthetic, deterministic proxies** - clearly a stand-in for a customer's first-party sales, not real data. To plug in richer branded first-party data, see [references/data-studio-extension.md](references/data-studio-extension.md).
+Everything is built from data already present in the accelerator: a deterministic subset of `FLEET_INTELLIGENCE.CATCHMENT.POIS` (the region's most spatially-spread retail category) becomes the **store estate** (OWNED existing + CANDIDATE proposed sites) and `CATCHMENT.REGIONAL_ADDRESSES` is the **household proxy** (H3 cells). The estate's commercial figures (revenue, EBITDA, HV/Sample/Walk-in mix, sqft, rent) are **synthetic, deterministic proxies** - a stand-in for a customer's first-party sales, not real data. To plug in richer branded first-party data, see [references/data-studio-extension.md](references/data-studio-extension.md).
+
+**Live routing (Architecture Tenet 9).** Drive-time catchments are NOT precomputed. Each time the user picks a candidate site / band (or a store to close), the app view calls `OPENROUTESERVICE_APP.CORE.ISOCHRONES` live and attributes households at interaction time. The build only materializes non-ORS reference data (estate, household grid, synthetic facts). This means every interaction shows the actual routing engine at work - and **the region's ORS service must be RESUMED** or the views return an embedded error until it warms up.
 
 > Deferred to a follow-on slice (not built here): gap / penetration analysis, competitor & catchment analytics, property benchmarking, retail-park intelligence. The `FLEET_INTELLIGENCE.LOCATION` layer and `SV_LOCATION` are designed to extend to those.
 
@@ -62,18 +64,16 @@ The `FLEET_INTELLIGENCE.LOCATION` layer, `FLEET_APP.LOCATION` views, `SV_LOCATIO
    ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
 2. **Verify ORS** for the active region is `service_ready:true` (resume if needed).
-3. **Build the layer** (precomputes estate, isochrones, household cells, facts, cannibalisation, closure). Idempotent per region; the isochrone loop makes ~ (owned+candidate) x bands ORS calls (default ~91), a few minutes:
+3. **Build the layer** (materializes estate, household cells, synthetic facts, band list). NO ORS calls at build time - fast, idempotent per region:
    ```sql
    CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
    ```
    If the objects/proc do not yet exist (older install), run the `5. LOCATION DIAGNOSTICS` section of `.cortex/skills/install-fleet-apps/scripts/analytic_layer.sql` first (it creates the schema, tables, proc, calls it, and creates the `FLEET_APP.LOCATION` contract views + grants).
-4. **Verify** the derived tables are populated:
+4. **Verify** the reference tables are populated:
    ```sql
    SELECT 'STORES' T, COUNT(*) N FROM FLEET_INTELLIGENCE.LOCATION.STORES
-   UNION ALL SELECT 'ISOCHRONES', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES
-   UNION ALL SELECT 'FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-   UNION ALL SELECT 'CANNIBALISATION', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION
-   UNION ALL SELECT 'CLOSURE', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT;
+   UNION ALL SELECT 'HH_CELLS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS
+   UNION ALL SELECT 'FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS;
    ```
 5. **Deploy the app config** (the Site Impact + Closure Impact views live in `app-views.json`):
    ```bash
@@ -84,18 +84,31 @@ The `FLEET_INTELLIGENCE.LOCATION` layer, `FLEET_APP.LOCATION` views, `SV_LOCATIO
 
 ## How it works
 
-- **Store estate** - the region's `BASIC_CATEGORY` with the most distinct H3 res-6 cells is chosen (data-derived, not hardcoded); one POI per cell is taken, first 10 flagged `OWNED`, next 3 `CANDIDATE`.
-- **Drive-time bands** - `OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car', lon, lat, band_min, region)` per store (range is in MINUTES). ORS SQL table functions only evaluate with LITERAL args, so a stored-proc loop issues literal `EXECUTE IMMEDIATE` inserts.
-- **Household proxy** - addresses aggregated to H3 res-8 cells (`HH_CELLS`) with a representative centroid.
-- **Cannibalisation** - candidate band polygon intersected with each owned store's 20-min catchment; shared households / owned households x capture -> transferred revenue, split by the owned store's interaction mix. Bands are **nested what-if scenarios**; pick ONE band, never sum across bands for a pair.
-- **Closure** - each closed store's 20-min household cells reassigned to the nearest OTHER owned store (smallest band containing the cell, tie = distance); households and revenue aggregated per gaining store.
+- **Store estate** (build time) - the region's `BASIC_CATEGORY` with the most distinct H3 res-6 cells is chosen (data-derived, not hardcoded); one POI per cell is taken, first 10 flagged `OWNED`, next 3 `CANDIDATE`.
+- **Household proxy** (build time) - addresses aggregated to H3 res-8 cells (`HH_CELLS`) with a representative centroid. `STORE_FACTS.REFERENCE_HH` = each store's nearest-store Voronoi territory over those cells (data-only, no ORS).
+- **Cannibalisation** (LIVE) - the Site Impact view calls `ISOCHRONES('driving-car', lon, lat, band_min, region)` for the selected candidate at the selected band (coords resolved via scalar subquery from the estate; range in MINUTES). Household cells inside the polygon are assigned to their nearest OWNED store (Voronoi); transfer_pct = captured / that store's REFERENCE_HH (same partition, so pct <= 1); transfer_revenue = revenue x transfer_pct x capture(0.5), split by interaction mix.
+- **Closure** (LIVE) - the Closure Impact view calls `ISOCHRONES` (20-min) for the selected store; cells inside are reassigned to the nearest surviving owned store; households and revenue aggregated per gaining store.
+- **Why live** - ORS SQL functions only evaluate with literal / scalar-subquery / bind args (not correlated per-row), so the views pass the selection as a scalar subquery. Per Architecture Tenet 9, nothing ORS is cached.
+
+## UK / postcode-accurate deployments (optional)
+
+The household layer uses Overture addresses aggregated to H3 cells, which is region-agnostic. For a **Great Britain** deployment that reports by real postcode (matching the original brief's "postcodes within drive times"), swap the household/boundary layer for these Ordnance Survey Marketplace listings (all verified available, free, provider Ordnance Survey):
+
+| Listing | Global name | Use |
+|---|---|---|
+| Postcode units - GB: Code-Point Open | `GZ1MOZ2HCBPHF` | GB postcode-unit centroids -> postcode-level catchment reporting (replaces H3 cells) |
+| Unique Property Reference Numbers - GB: Open UPRN | `GZ1MOZBWYYH` | ~40M property points -> household proxy |
+| Addresses - UK: OS GB Address and OS Islands Address | `GZ1MOZ2HCBPI0` | Full UK address detail (sample) -> household proxy |
+| Administrative boundaries - GB: Boundary-Line Open | `GZ1MOZBWYYT` | Admin boundaries -> region clipping |
+
+Install from `https://app.snowflake.com/marketplace/listing/<global_name>`. Point `HH_CELLS` (or a new postcode table) at Open UPRN / Code-Point Open instead of `CATCHMENT.REGIONAL_ADDRESSES`; the live ISOCHRONES logic is unchanged. These are GB-only and do not apply to non-UK regions (e.g. the default SanFrancisco).
 
 ## Output
 
-- Tables: `FLEET_INTELLIGENCE.LOCATION.{STORES, BANDS, STORE_ISOCHRONES, HH_CELLS, STORE_FACTS, CANNIBALISATION, CLOSURE_REASSIGNMENT}`
-- Contract views: `FLEET_APP.LOCATION.{VW_STORES, VW_STORE_ISOCHRONES, VW_STORE_FACTS, VW_CANNIBALISATION, VW_CLOSURE_REASSIGNMENT}`
-- Semantic view: `FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION` (agent tool `query_location`)
-- App views: **Site Impact** (cannibalisation) and **Closure Impact** under the Location category
+- Tables (non-ORS reference data): `FLEET_INTELLIGENCE.LOCATION.{STORES, BANDS, HH_CELLS, STORE_FACTS}`
+- Contract views: `FLEET_APP.LOCATION.{VW_STORES, VW_STORE_FACTS, VW_HH_CELLS, VW_BANDS}`
+- Semantic view: `FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION` (agent tool `query_location`) - estate facts only; cannibalisation/closure are live in-app
+- App views: **Site Impact** (live cannibalisation) and **Closure Impact** (live closure) under the Location category
 
 ## Data Studio Extension (optional)
 
@@ -104,11 +117,6 @@ The synthetic commercials are a demo proxy. To drive the same views from richer,
 ## Cleanup
 
 ```sql
-DROP VIEW IF EXISTS FLEET_APP.LOCATION.VW_STORES;
-DROP VIEW IF EXISTS FLEET_APP.LOCATION.VW_STORE_ISOCHRONES;
-DROP VIEW IF EXISTS FLEET_APP.LOCATION.VW_STORE_FACTS;
-DROP VIEW IF EXISTS FLEET_APP.LOCATION.VW_CANNIBALISATION;
-DROP VIEW IF EXISTS FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT;
 DROP SCHEMA IF EXISTS FLEET_APP.LOCATION;
 DROP SEMANTIC VIEW IF EXISTS FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.LOCATION;
