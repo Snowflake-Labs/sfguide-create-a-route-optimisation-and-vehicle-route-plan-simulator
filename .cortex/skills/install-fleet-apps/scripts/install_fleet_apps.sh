@@ -61,6 +61,9 @@ ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
 ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-agent.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
+# SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
+# Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
+SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
 # Agent Playground scenario config (region-neutral). The 3 demo tools
 # (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
 # NO static demo data is seeded; only this scenario config is uploaded so the
@@ -360,6 +363,22 @@ if [ "${SKIP_DEMO:-0}" != "1" ] && [ -f "$AGENT_DEMOS_JSON" ]; then
   fi
 else
   step "4.6 playground-config" SKIPPED
+fi
+
+# ── 4.7 SAP-binding knowledge base (Cortex Search) ──────────────────────
+# Seeds FLEET_INTELLIGENCE.SEMANTIC.SAP_BINDING_KB + the SAP_BINDING_SEARCH
+# Cortex Search service the consumer agent's search_sap_binding tool binds to
+# (and the SAP Binding help view references). Runs AFTER semantic views (same
+# schema) and BEFORE agents (step 6, whose spec references the service) and
+# roles (step 8). Idempotent; best-effort - a failure here must not abort the
+# install (the agent tool just returns no knowledge until the KB is built).
+if [ "${SKIP_SAP_KB:-0}" != "1" ] && [ -f "$SAP_KNOWLEDGE_SQL" ]; then
+  note "[4.7/8] creating SAP-binding Cortex Search knowledge base..."
+  snow sql -c "$CONNECTION" -f "$SAP_KNOWLEDGE_SQL" >/tmp/ifa_sap_kb.log 2>&1 \
+    && step "4.7 sap-knowledge" OK \
+    || { note "  WARN: SAP knowledge base build failed; see /tmp/ifa_sap_kb.log"; step "4.7 sap-knowledge" FAILED; }
+else
+  step "4.7 sap-knowledge" SKIPPED
 fi
 
 # ── 5. synapse tool bundles ─────────────────────────────────────
