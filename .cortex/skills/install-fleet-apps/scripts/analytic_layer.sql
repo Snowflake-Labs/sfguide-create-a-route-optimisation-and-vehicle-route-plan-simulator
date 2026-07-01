@@ -341,6 +341,19 @@ bnd AS (
   WHERE rc.BOUNDARY IS NOT NULL
   ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
   LIMIT 1
+),
+-- Dominant ISO country code of the region's Overture places within the bbox.
+-- Lets the address ingest prune by COUNTRY (fast) while staying region-agnostic
+-- (resolves 'US' for SanFrancisco, 'GB' for London, 'DE' for Berlin, etc.).
+ctry AS (
+  SELECT p.ADDRESSES[0]:country::VARCHAR AS CC
+  FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p, ext e
+  WHERE p.ADDRESSES[0]:country IS NOT NULL
+    AND ST_X(p.GEOMETRY) BETWEEN COALESCE(e.MNLON, -123.0) - 0.1 AND COALESCE(e.MXLON, -121.5) + 0.1
+    AND ST_Y(p.GEOMETRY) BETWEEN COALESCE(e.MNLAT,   36.8) - 0.1 AND COALESCE(e.MXLAT,   38.5) + 0.1
+  GROUP BY 1
+  ORDER BY COUNT(*) DESC
+  LIMIT 1
 )
 SELECT
   a.REGION                                   AS REGION_KEY,
@@ -348,7 +361,8 @@ SELECT
   COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
   COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
   COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
-  (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY
+  (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY,
+  (SELECT CC FROM ctry)                      AS COUNTRY
 FROM active a CROSS JOIN ext e;
 
 DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
@@ -405,11 +419,378 @@ SELECT
     a.POSTCODE
 FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
 CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
-WHERE a.COUNTRY = 'US'
+-- Region-agnostic: prune by the region's dominant country (partition-friendly),
+-- then the bbox + boundary polygon scope the geography precisely.
+WHERE (d.COUNTRY IS NULL OR a.COUNTRY = d.COUNTRY)
 AND a.GEOMETRY IS NOT NULL
 AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
 AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
 AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+
+-- =============================================================================
+-- 5. LOCATION DIAGNOSTICS  (cannibalisation + closure vertical slice)
+--    Region-agnostic store-location intelligence built ENTIRELY from data already
+--    present: a deterministic subset of CATCHMENT.POIS becomes the "store estate"
+--    (OWNED + CANDIDATE sites), CATCHMENT.REGIONAL_ADDRESSES is the household proxy,
+--    and drive-time bands come from the live ORS engine (single-point ISOCHRONES,
+--    range in MINUTES). Commercial figures (revenue, EBITDA, HV/Sample/Walkin mix,
+--    sqft, rent) are SYNTHETIC and deterministic (HASH-seeded) - clearly a proxy
+--    for a customer's first-party data, not real sales.
+--
+--    Precompute pattern: ORS SQL table functions only evaluate with LITERAL args
+--    (correlated / multi-location calls return nothing on this engine), so the
+--    isochrone precompute is a stored-procedure loop issuing literal EXECUTE
+--    IMMEDIATE inserts. Everything downstream (household counts, overlap transfer,
+--    closure reassignment) is pure spatial SQL over the precomputed polygons, so
+--    the app reads plain contract views with no live routing call.
+--
+--    Runs LAST (after CATCHMENT) and degrades to empty tables (never an error) when
+--    the engine is unreachable or the region has no Overture coverage: an ORS error
+--    yields 0 features -> the loop inserts 0 isochrone rows -> derived tables empty.
+--
+--    NOTE (single-active-region model, mirrors CATCHMENT): the proc rebuilds only
+--    the region in FLEET_INTELLIGENCE.CATCHMENT.CONFIG (DELETE-by-region + INSERT),
+--    so rows for other regions are preserved.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORES (
+  REGION      VARCHAR NOT NULL,
+  STORE_ID    VARCHAR NOT NULL,   -- synthetic (ST0001..), safe for dynamic SQL
+  POI_ID      VARCHAR,
+  POI_NAME    VARCHAR,
+  CATEGORY    VARCHAR,
+  LON         FLOAT,
+  LAT         FLOAT,
+  GEOG        GEOGRAPHY,
+  STORE_ROLE  VARCHAR             -- OWNED | CANDIDATE
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES (
+  REGION      VARCHAR NOT NULL,
+  STORE_ID    VARCHAR NOT NULL,
+  STORE_ROLE  VARCHAR,
+  BAND_MIN    INT,
+  BAND_SEC    INT,
+  GEOG        GEOGRAPHY
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Drive-time bands (minutes). A tiny constant table avoids a multi-row VALUES()
+-- table literal, which the SQL-scripting FOR-cursor grammar rejects.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.BANDS (
+  BAND_MIN INT
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.HH_CELLS (
+  REGION    VARCHAR NOT NULL,
+  H3        VARCHAR,
+  HH        INT,                  -- household proxy = address count in H3 res-8 cell
+  CENTROID  GEOGRAPHY
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORE_FACTS (
+  REGION           VARCHAR NOT NULL,
+  STORE_ID         VARCHAR NOT NULL,
+  POI_NAME         VARCHAR,
+  CATEGORY         VARCHAR,
+  STORE_ROLE       VARCHAR,
+  LON              FLOAT,
+  LAT              FLOAT,
+  HH_20MIN         INT,           -- households within 20-min drive (real, from iso)
+  AVG_SPEND_PER_HH NUMBER(10,2),  -- synthetic
+  ANNUAL_REVENUE   NUMBER(18,2),  -- synthetic = HH_20MIN * AVG_SPEND_PER_HH
+  EBITDA_PCT       NUMBER(5,3),   -- synthetic
+  ANNUAL_EBITDA    NUMBER(18,2),  -- synthetic
+  HV_PCT           NUMBER(5,3),   -- synthetic interaction mix (Home Visit)
+  SAMPLE_PCT       NUMBER(5,3),   -- synthetic interaction mix (Sample)
+  WALKIN_PCT       NUMBER(5,3),   -- synthetic interaction mix (Walk-in)
+  HV_REVENUE       NUMBER(18,2),
+  SAMPLE_REVENUE   NUMBER(18,2),
+  WALKIN_REVENUE   NUMBER(18,2),
+  SQFT             INT,           -- synthetic property size
+  RENT_PSF         NUMBER(10,2),  -- synthetic rent per sqft
+  ANNUAL_RENT      NUMBER(18,2),  -- synthetic = SQFT * RENT_PSF
+  RATES_PSF        NUMBER(10,2),  -- synthetic business rates per sqft
+  VALUE_PER_COST   NUMBER(12,3)   -- ANNUAL_REVENUE / ANNUAL_RENT
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION (
+  REGION            VARCHAR NOT NULL,
+  CANDIDATE_ID      VARCHAR,
+  CANDIDATE_NAME    VARCHAR,
+  BAND_MIN          INT,
+  EXISTING_STORE_ID VARCHAR,
+  EXISTING_NAME     VARCHAR,
+  SHARED_HH         INT,
+  TRANSFER_PCT      NUMBER(6,4),  -- shared_hh / existing HH_20MIN
+  TRANSFER_REVENUE  NUMBER(18,2), -- existing revenue * transfer_pct * CAPTURE(0.5)
+  TRANSFER_EBITDA   NUMBER(18,2),
+  TRANSFER_HV       NUMBER(18,2),
+  TRANSFER_SAMPLE   NUMBER(18,2),
+  TRANSFER_WALKIN   NUMBER(18,2)
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT (
+  REGION             VARCHAR NOT NULL,
+  CLOSED_STORE_ID    VARCHAR,
+  CLOSED_NAME        VARCHAR,
+  GAINING_STORE_ID   VARCHAR,
+  GAINING_NAME       VARCHAR,
+  HH_INHERITED       INT,
+  PCT_OF_CLOSED      NUMBER(6,4),
+  REVENUE_INHERITED  NUMBER(18,2),
+  EBITDA_INHERITED   NUMBER(18,2)
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Build procedure: precomputes the estate, isochrones, and all diagnostics for the
+-- active region. Owner's rights (installer = engine-capable). Idempotent per region.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  rg VARCHAR;
+  q VARCHAR DEFAULT CHR(39);   -- single quote, to keep dynamic SQL readable
+  n_iso INT DEFAULT 0;
+  -- Cursor-based FOR loop (query-based FOR loops do not expose rec.<col> here).
+  -- References CATCHMENT.CONFIG directly so it needs no bind variable.
+  store_band_cur CURSOR FOR
+    SELECT s.STORE_ID, s.LON, s.LAT, s.STORE_ROLE, b.BAND_MIN
+    FROM FLEET_INTELLIGENCE.LOCATION.STORES s
+         CROSS JOIN FLEET_INTELLIGENCE.LOCATION.BANDS b
+    WHERE s.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1);
+BEGIN
+  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  IF (rg IS NULL) THEN
+    RETURN 'no active region in CATCHMENT.CONFIG';
+  END IF;
+
+  -- 1. Store estate: deterministic subset of the region most-spread retail category.
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
+    (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
+  WITH cat AS (
+    SELECT BASIC_CATEGORY
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+    WHERE REGION = :rg AND BASIC_CATEGORY IS NOT NULL AND LONGITUDE IS NOT NULL
+    GROUP BY BASIC_CATEGORY
+    ORDER BY COUNT(DISTINCT H3_POINT_TO_CELL_STRING(GEOMETRY, 6)) DESC, COUNT(*) DESC
+    LIMIT 1
+  ),
+  ranked AS (
+    SELECT p.POI_ID, p.POI_NAME, p.BASIC_CATEGORY, p.LONGITUDE, p.LATITUDE, p.GEOMETRY,
+           ROW_NUMBER() OVER (PARTITION BY H3_POINT_TO_CELL_STRING(p.GEOMETRY, 6) ORDER BY p.POI_ID) AS rn_cell
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
+    JOIN cat ON p.BASIC_CATEGORY = cat.BASIC_CATEGORY
+    WHERE p.REGION = :rg AND p.LONGITUDE IS NOT NULL
+  ),
+  spread AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY POI_ID) AS gidx
+    FROM ranked WHERE rn_cell = 1
+  )
+  SELECT :rg,
+         'ST' || LPAD(gidx::VARCHAR, 4, '0'),
+         POI_ID, POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY,
+         CASE WHEN gidx <= 10 THEN 'OWNED' ELSE 'CANDIDATE' END
+  FROM spread WHERE gidx <= 13;
+
+  -- 2. Drive-time bands per store (literal ISOCHRONES calls; range in MINUTES).
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.BANDS;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.BANDS (BAND_MIN) VALUES (10),(15),(20),(25),(30),(45),(60);
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES WHERE REGION = :rg;
+  FOR rec IN store_band_cur DO
+    EXECUTE IMMEDIATE
+      'INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES(REGION,STORE_ID,STORE_ROLE,BAND_MIN,BAND_SEC,GEOG) SELECT '
+      || q || rg || q || ',' || q || rec.STORE_ID || q || ',' || q || rec.STORE_ROLE || q || ','
+      || rec.BAND_MIN || ',' || (rec.BAND_MIN * 60) || ',GEOJSON '
+      || 'FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(' || q || 'driving-car' || q || ','
+      || rec.LON || '::FLOAT,' || rec.LAT || '::FLOAT,' || rec.BAND_MIN || '::INT,' || q || rg || q || ')) WHERE GEOJSON IS NOT NULL';
+  END FOR;
+  SELECT COUNT(*) INTO n_iso FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES WHERE REGION = :rg;
+
+  -- 3. Household proxy cells (H3 res-8 address counts + representative centroid).
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.HH_CELLS (REGION, H3, HH, CENTROID)
+  SELECT :rg,
+         H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS H3,
+         COUNT(*) AS HH,
+         ST_MAKEPOINT(AVG(LONGITUDE), AVG(LATITUDE)) AS CENTROID
+  FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+  WHERE REGION = :rg AND GEOMETRY IS NOT NULL
+  GROUP BY 1, 2;
+
+  -- 4. Synthetic store facts (deterministic HASH; HH_20MIN is real from isochrones).
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    (REGION, STORE_ID, POI_NAME, CATEGORY, STORE_ROLE, LON, LAT, HH_20MIN,
+     AVG_SPEND_PER_HH, ANNUAL_REVENUE, EBITDA_PCT, ANNUAL_EBITDA,
+     HV_PCT, SAMPLE_PCT, WALKIN_PCT, HV_REVENUE, SAMPLE_REVENUE, WALKIN_REVENUE,
+     SQFT, RENT_PSF, ANNUAL_RENT, RATES_PSF, VALUE_PER_COST)
+  WITH h20 AS (
+    SELECT s.STORE_ID, SUM(c.HH) AS HH20
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES i
+    JOIN FLEET_INTELLIGENCE.LOCATION.STORES s
+      ON s.REGION = i.REGION AND s.STORE_ID = i.STORE_ID
+    JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = i.REGION AND ST_WITHIN(c.CENTROID, i.GEOG)
+    WHERE i.REGION = :rg AND i.BAND_MIN = 20
+    GROUP BY s.STORE_ID
+  ),
+  base AS (
+    SELECT s.STORE_ID, s.POI_NAME, s.CATEGORY, s.STORE_ROLE, s.LON, s.LAT,
+           COALESCE(h.HH20, 0) AS HH20,
+           35 + MOD(ABS(HASH(s.STORE_ID, 3)), 66)          AS SPEND,
+           0.20 + MOD(ABS(HASH(s.STORE_ID, 1)), 16) / 100.0 AS HV,
+           0.15 + MOD(ABS(HASH(s.STORE_ID, 2)), 16) / 100.0 AS SAMP,
+           0.08 + MOD(ABS(HASH(s.STORE_ID, 4)), 13) / 100.0 AS EBIT,
+           3000 + MOD(ABS(HASH(s.STORE_ID, 5)), 6001)       AS SQFT,
+           12 + MOD(ABS(HASH(s.STORE_ID, 6)), 29)           AS RENT
+    FROM FLEET_INTELLIGENCE.LOCATION.STORES s
+    LEFT JOIN h20 h ON h.STORE_ID = s.STORE_ID
+    WHERE s.REGION = :rg
+  )
+  SELECT :rg, STORE_ID, POI_NAME, CATEGORY, STORE_ROLE, LON, LAT, HH20,
+         SPEND,
+         HH20 * SPEND                                   AS REVENUE,
+         EBIT,
+         HH20 * SPEND * EBIT                            AS EBITDA,
+         HV, SAMP, (1 - HV - SAMP)                      AS WALKIN,
+         HH20 * SPEND * HV                              AS HV_REV,
+         HH20 * SPEND * SAMP                            AS SAMPLE_REV,
+         HH20 * SPEND * (1 - HV - SAMP)                 AS WALKIN_REV,
+         SQFT, RENT, SQFT * RENT                        AS ANNUAL_RENT,
+         RENT * 0.45                                    AS RATES,
+         CASE WHEN SQFT * RENT > 0 THEN (HH20 * SPEND) / (SQFT * RENT) ELSE 0 END AS VALUE_PER_COST
+  FROM base;
+
+  -- 5. Cannibalisation: candidate-band overlap with each existing store 20-min catchment.
+  --    NOTE: bands are NESTED what-if scenarios, not additive layers (a 30-min band
+  --    subsumes the 20-min band). Consumers must pick ONE band; never SUM TRANSFER_*
+  --    across BAND_MIN for the same (CANDIDATE, EXISTING) pair. Summing across
+  --    EXISTING stores at a FIXED band IS valid (a candidate draws from many stores).
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION
+    (REGION, CANDIDATE_ID, CANDIDATE_NAME, BAND_MIN, EXISTING_STORE_ID, EXISTING_NAME,
+     SHARED_HH, TRANSFER_PCT, TRANSFER_REVENUE, TRANSFER_EBITDA,
+     TRANSFER_HV, TRANSFER_SAMPLE, TRANSFER_WALKIN)
+  WITH cb AS (
+    SELECT STORE_ID AS CAND_ID, BAND_MIN, GEOG
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES
+    WHERE REGION = :rg AND STORE_ROLE = 'CANDIDATE'
+  ),
+  o20 AS (
+    SELECT STORE_ID AS OWN_ID, GEOG
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES
+    WHERE REGION = :rg AND STORE_ROLE = 'OWNED' AND BAND_MIN = 20
+  ),
+  pairs AS (
+    SELECT cb.CAND_ID, cb.BAND_MIN, o20.OWN_ID, cb.GEOG AS CGEOG, o20.GEOG AS OGEOG
+    FROM cb JOIN o20 ON ST_INTERSECTS(cb.GEOG, o20.GEOG)
+  ),
+  shared AS (
+    SELECT p.CAND_ID, p.BAND_MIN, p.OWN_ID, SUM(c.HH) AS SHARED_HH
+    FROM pairs p
+    JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = :rg
+     AND ST_WITHIN(c.CENTROID, p.CGEOG)
+     AND ST_WITHIN(c.CENTROID, p.OGEOG)
+    GROUP BY 1, 2, 3
+  )
+  SELECT :rg, sh.CAND_ID, fc.POI_NAME, sh.BAND_MIN, sh.OWN_ID, fo.POI_NAME,
+         sh.SHARED_HH,
+         sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)                                  AS TRANSFER_PCT,
+         fo.ANNUAL_REVENUE * (sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)) * 0.5      AS TRANSFER_REVENUE,
+         fo.ANNUAL_EBITDA  * (sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)) * 0.5      AS TRANSFER_EBITDA,
+         fo.ANNUAL_REVENUE * (sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)) * 0.5 * fo.HV_PCT     AS TRANSFER_HV,
+         fo.ANNUAL_REVENUE * (sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)) * 0.5 * fo.SAMPLE_PCT AS TRANSFER_SAMPLE,
+         fo.ANNUAL_REVENUE * (sh.SHARED_HH / NULLIF(fo.HH_20MIN, 0)) * 0.5 * fo.WALKIN_PCT AS TRANSFER_WALKIN
+  FROM shared sh
+  JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS fo ON fo.REGION = :rg AND fo.STORE_ID = sh.OWN_ID
+  JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS fc ON fc.REGION = :rg AND fc.STORE_ID = sh.CAND_ID;
+
+  -- 6. Closure reassignment: each closed store 20-min households go to the nearest
+  --    OTHER owned store (smallest drive-time band containing the cell, tie = distance).
+  DELETE FROM FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT
+    (REGION, CLOSED_STORE_ID, CLOSED_NAME, GAINING_STORE_ID, GAINING_NAME,
+     HH_INHERITED, PCT_OF_CLOSED, REVENUE_INHERITED, EBITDA_INHERITED)
+  WITH own20 AS (
+    SELECT STORE_ID AS CLOSED_ID, GEOG
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES
+    WHERE REGION = :rg AND STORE_ROLE = 'OWNED' AND BAND_MIN = 20
+  ),
+  closed_cells AS (
+    SELECT o.CLOSED_ID, c.H3, c.HH, c.CENTROID
+    FROM own20 o
+    JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = :rg AND ST_WITHIN(c.CENTROID, o.GEOG)
+  ),
+  gainers AS (
+    SELECT i.STORE_ID AS GAIN_ID, i.BAND_MIN, i.GEOG, s.LON, s.LAT
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES i
+    JOIN FLEET_INTELLIGENCE.LOCATION.STORES s
+      ON s.REGION = i.REGION AND s.STORE_ID = i.STORE_ID
+    WHERE i.REGION = :rg AND i.STORE_ROLE = 'OWNED'
+  ),
+  assign AS (
+    SELECT cc.CLOSED_ID, cc.H3, cc.HH, g.GAIN_ID
+    FROM closed_cells cc
+    JOIN gainers g
+      ON g.GAIN_ID <> cc.CLOSED_ID AND ST_WITHIN(cc.CENTROID, g.GEOG)
+    QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY cc.CLOSED_ID, cc.H3
+      ORDER BY g.BAND_MIN, ST_DISTANCE(cc.CENTROID, ST_MAKEPOINT(g.LON, g.LAT)), g.GAIN_ID
+    ) = 1
+  ),
+  agg AS (
+    SELECT CLOSED_ID, GAIN_ID, SUM(HH) AS HH_INH
+    FROM assign GROUP BY 1, 2
+  )
+  SELECT :rg, a.CLOSED_ID, fx.POI_NAME, a.GAIN_ID, fg.POI_NAME,
+         a.HH_INH,
+         a.HH_INH / NULLIF(fx.HH_20MIN, 0)                                   AS PCT_OF_CLOSED,
+         fx.ANNUAL_REVENUE * (a.HH_INH / NULLIF(fx.HH_20MIN, 0))             AS REVENUE_INHERITED,
+         fx.ANNUAL_EBITDA  * (a.HH_INH / NULLIF(fx.HH_20MIN, 0))             AS EBITDA_INHERITED
+  FROM agg a
+  JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS fx ON fx.REGION = :rg AND fx.STORE_ID = a.CLOSED_ID
+  JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS fg ON fg.REGION = :rg AND fg.STORE_ID = a.GAIN_ID;
+
+  RETURN 'LOCATION built for ' || rg || ': ' || n_iso || ' isochrone rows';
+END;
+$$;
+
+CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
+
+-- 5b. FLEET_APP neutral-contract views the SA app reads (consumers never bind to
+--     FLEET_INTELLIGENCE directly). Mirrors the generated CATCHMENT pack pattern.
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
+  COMMENT = 'Stable logical layer for the location-diagnostics slice (cannibalisation + closure).';
+
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORES AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORES;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORE_ISOCHRONES AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORE_FACTS AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_CANNIBALISATION AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT AS
+  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT;
+
+-- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
+-- role-less install does not error the whole file.
+GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
+GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
@@ -418,4 +799,9 @@ UNION ALL SELECT 'ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS', COUNT(*) FROM FLEET_
 UNION ALL SELECT 'ROUTE_OPTIMIZATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
 UNION ALL SELECT 'CATCHMENT.POIS', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
 UNION ALL SELECT 'CATCHMENT.CITIES_BY_STATE', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
-UNION ALL SELECT 'CATCHMENT.REGIONAL_ADDRESSES', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES;
+UNION ALL SELECT 'CATCHMENT.REGIONAL_ADDRESSES', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+UNION ALL SELECT 'LOCATION.STORES', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORES
+UNION ALL SELECT 'LOCATION.STORE_ISOCHRONES', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_ISOCHRONES
+UNION ALL SELECT 'LOCATION.STORE_FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+UNION ALL SELECT 'LOCATION.CANNIBALISATION', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.CANNIBALISATION
+UNION ALL SELECT 'LOCATION.CLOSURE_REASSIGNMENT', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.CLOSURE_REASSIGNMENT;
