@@ -3134,8 +3134,7 @@
             "name": "candidate",
             "label": "Candidate site",
             "data": {
-              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE REGION = :region AND STORE_ROLE = 'CANDIDATE' ORDER BY POI_NAME",
-              "params": { "region": "context.region" }
+              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'CANDIDATE' ORDER BY POI_NAME"
             },
             "emits": { "selected_candidate": "selection" }
           },
@@ -3143,8 +3142,7 @@
             "name": "band",
             "label": "Drive-time band",
             "data": {
-              "query": "SELECT DISTINCT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region ORDER BY BAND_MIN",
-              "params": { "region": "context.region" }
+              "query": "SELECT DISTINCT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES ORDER BY BAND_MIN"
             },
             "emits": { "selected_band": "selection" }
           }
@@ -3262,8 +3260,7 @@
             "name": "closed",
             "label": "Store to close",
             "data": {
-              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE REGION = :region AND STORE_ROLE = 'OWNED' ORDER BY POI_NAME",
-              "params": { "region": "context.region" }
+              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'OWNED' ORDER BY POI_NAME"
             },
             "emits": { "selected_closed": "selection" }
           }
