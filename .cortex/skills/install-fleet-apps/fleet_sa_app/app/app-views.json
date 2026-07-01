@@ -3111,7 +3111,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT EXISTING_STORE_ID) AS impacted, COALESCE(SUM(SHARED_HH),0) AS shared_hh, ROUND(COALESCE(SUM(TRANSFER_REVENUE),0)) AS transfer_rev, ROUND(COALESCE(SUM(TRANSFER_EBITDA),0)) AS transfer_ebitda FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate)",
+          "query": "SELECT COUNT(DISTINCT EXISTING_STORE_ID) AS impacted, COALESCE(SUM(SHARED_HH),0) AS shared_hh, ROUND(COALESCE(SUM(TRANSFER_REVENUE),0)) AS transfer_rev, ROUND(COALESCE(SUM(TRANSFER_EBITDA),0)) AS transfer_ebitda FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate)",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -3154,7 +3154,7 @@
         "component": "Table",
         "config": { "title": "Revenue transfer by existing store (selected band)" },
         "data": {
-          "query": "SELECT EXISTING_NAME AS store, SHARED_HH AS households, ROUND(TRANSFER_PCT*100,1) AS transfer_pct, ROUND(TRANSFER_REVENUE) AS revenue, ROUND(TRANSFER_HV) AS home_visit, ROUND(TRANSFER_SAMPLE) AS sample, ROUND(TRANSFER_WALKIN) AS walk_in FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate) ORDER BY revenue DESC LIMIT 20",
+          "query": "SELECT EXISTING_NAME AS store, SHARED_HH AS households, ROUND(TRANSFER_PCT*100,1) AS transfer_pct, ROUND(TRANSFER_REVENUE) AS revenue, ROUND(TRANSFER_HV) AS home_visit, ROUND(TRANSFER_SAMPLE) AS sample_rev, ROUND(TRANSFER_WALKIN) AS walk_in FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate) ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -3181,7 +3181,7 @@
               "lineColor": [41, 181, 232, 200],
               "lineWidth": 2,
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_candidate IS NOT NULL AND STORE_ID = :selected_candidate AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20)",
+                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_candidate IS NOT NULL AND STORE_ID = :selected_candidate AND BAND_MIN = COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20)",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
