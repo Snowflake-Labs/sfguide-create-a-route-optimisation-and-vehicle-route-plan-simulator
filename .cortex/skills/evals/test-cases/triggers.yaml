@@ -140,9 +140,9 @@ dwell-analysis:
 routing-agent:
   should_trigger:
     - "openrouteservice demo"
-    - "routing agent"
-    - "ORS agent"
-    - "routing intelligence"
+    - "routing tools"
+    - "ORS tool procedures"
+    - "routing substrate"
   should_not_trigger:
     - "deploy fleet intelligence"
     - "route deviation analysis"

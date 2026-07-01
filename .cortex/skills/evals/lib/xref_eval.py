@@ -41,15 +41,31 @@ def _check_skill(skill_md: Path, ignore_prefixes: list[str] | None = None) -> di
             if ref_file.name not in text:
                 issues.append(f"Orphaned reference: {ref_file.name} not linked from SKILL.md")
 
-        raw_refs = re.findall(r"references/([^\s)>]+)", text)
+        # Capture an OPTIONAL leading skill-path segment so a legitimate
+        # cross-skill reference like `routing-agent/references/deploy-agent.sql`
+        # is resolved against THAT skill's references/ dir, not this skill's.
+        # Without the optional prefix the bare `references/...` substring is
+        # captured and checked locally, yielding a false "Broken link".
+        skills_root = skill_dir.parent
+        raw_refs = re.findall(r"(?:([A-Za-z0-9_.-]+)/)?references/([^\s)>]+)", text)
         seen = set()
-        for raw in raw_refs:
+        for prefix, raw in raw_refs:
             cleaned = _clean_ref_name(raw)
-            if not cleaned or cleaned in seen:
+            if not cleaned:
                 continue
-            seen.add(cleaned)
-            if not (refs_dir / cleaned).exists():
-                issues.append(f"Broken link: references/{cleaned} does not exist")
+            # Resolve cross-skill references against the sibling skill's dir.
+            if prefix and prefix != folder_name and (skills_root / prefix).is_dir():
+                target = skills_root / prefix / "references" / cleaned
+                key = (prefix, cleaned)
+            else:
+                target = refs_dir / cleaned
+                key = ("", cleaned)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not target.exists():
+                label = f"{prefix}/references/{cleaned}" if key[0] else f"references/{cleaned}"
+                issues.append(f"Broken link: {label} does not exist")
 
     assets_dir = skill_dir / "assets"
     if assets_dir.is_dir():
