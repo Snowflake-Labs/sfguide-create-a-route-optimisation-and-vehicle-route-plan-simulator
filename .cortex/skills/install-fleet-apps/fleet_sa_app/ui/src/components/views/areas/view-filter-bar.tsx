@@ -8,6 +8,7 @@ interface FilterDef {
   label?: string;
   data: {
     query: string;
+    params?: Record<string, string>;
     mapping?: { value: string; label: string };
   };
   emits?: Record<string, string>;
@@ -28,7 +29,7 @@ function FilterSelect({
 }: {
   filter: FilterDef;
 }) {
-  const { data, loading } = useViewData(filter.data.query);
+  const { data, loading } = useViewData(filter.data.query, filter.data.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
