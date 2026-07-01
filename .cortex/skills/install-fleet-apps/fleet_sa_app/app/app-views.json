@@ -3090,6 +3090,247 @@
       }
     }
   },
+  "site_impact": {
+    "label": "Site Impact",
+    "category": "Location",
+    "description": "Cannibalisation what-if: pick a candidate site and a drive-time band to see how much revenue and EBITDA it draws from the existing estate, split by interaction type. Commercial figures are synthetic proxies.",
+    "agentKnowledge": {
+      "preferredTool": "query_location",
+      "keyMetrics": ["cannibalised revenue and EBITDA", "shared households", "existing stores impacted"],
+      "exampleQuestions": ["How much would the candidate site cannibalise within a 20-minute drive?", "Which existing store loses the most revenue to the new site?"],
+      "gotchas": "Drive-time bands are nested what-if scenarios; never sum transfer across bands for the same candidate and store pair. Revenue, EBITDA and Home Visit / Sample / Walk-in splits are synthetic proxies derived from address density, not real sales."
+    },
+    "layout": {
+      "default": {
+        "columns": "360px 1fr",
+        "rows": "auto auto $map",
+        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"transfers map\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT EXISTING_STORE_ID) AS impacted, COALESCE(SUM(SHARED_HH),0) AS shared_hh, ROUND(COALESCE(SUM(TRANSFER_REVENUE),0)) AS transfer_rev, ROUND(COALESCE(SUM(TRANSFER_EBITDA),0)) AS transfer_ebitda FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate)",
+          "params": {
+            "region": "context.region",
+            "selected_band": "viewState.selected_band",
+            "selected_candidate": "viewState.selected_candidate"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "transfer_rev", "label": "Cannibalised revenue", "format": "number" },
+              { "column": "transfer_ebitda", "label": "Cannibalised EBITDA", "format": "number" },
+              { "column": "shared_hh", "label": "Shared households", "format": "number" },
+              { "column": "impacted", "label": "Stores impacted", "format": "number" }
+            ]
+          }
+        }
+      },
+      "controls": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "candidate",
+            "label": "Candidate site",
+            "data": {
+              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE REGION = :region AND STORE_ROLE = 'CANDIDATE' ORDER BY POI_NAME",
+              "params": { "region": "context.region" }
+            },
+            "emits": { "selected_candidate": "selection" }
+          },
+          {
+            "name": "band",
+            "label": "Drive-time band",
+            "data": {
+              "query": "SELECT DISTINCT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region ORDER BY BAND_MIN",
+              "params": { "region": "context.region" }
+            },
+            "emits": { "selected_band": "selection" }
+          }
+        ]
+      },
+      "transfers": {
+        "component": "Table",
+        "config": { "title": "Revenue transfer by existing store (selected band)" },
+        "data": {
+          "query": "SELECT EXISTING_NAME AS store, SHARED_HH AS households, ROUND(TRANSFER_PCT*100,1) AS transfer_pct, ROUND(TRANSFER_REVENUE) AS revenue, ROUND(TRANSFER_HV) AS home_visit, ROUND(TRANSFER_SAMPLE) AS sample, ROUND(TRANSFER_WALKIN) AS walk_in FROM FLEET_APP.LOCATION.VW_CANNIBALISATION WHERE REGION = :region AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20) AND (:selected_candidate IS NULL OR CANDIDATE_ID = :selected_candidate) ORDER BY revenue DESC LIMIT 20",
+          "params": {
+            "region": "context.region",
+            "selected_band": "viewState.selected_band",
+            "selected_candidate": "viewState.selected_candidate"
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "legend": [
+            { "label": "Candidate isochrone", "color": [41, 181, 232, 80] },
+            { "label": "Owned store", "color": [41, 181, 232, 200] },
+            { "label": "Candidate site", "color": [209, 55, 78, 220] },
+            { "label": "Selected candidate", "color": [255, 200, 0, 255] }
+          ],
+          "layers": [
+            {
+              "type": "geojson",
+              "id": "candidate-isochrone",
+              "geojsonColumn": "geo",
+              "fillColor": [41, 181, 232, 60],
+              "lineColor": [41, 181, 232, 200],
+              "lineWidth": 2,
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_candidate IS NOT NULL AND STORE_ID = :selected_candidate AND BAND_MIN = COALESCE(TRY_TO_NUMBER(:selected_band),20)",
+                "params": {
+                  "region": "context.region",
+                  "selected_candidate": "viewState.selected_candidate",
+                  "selected_band": "viewState.selected_band"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "stores",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>{role}",
+              "fillColor": {
+                "base": [41, 181, 232, 200],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "store_id",
+                "whenViewStateEquals": "selected_candidate",
+                "baseColumn": "role",
+                "basePalette": {
+                  "OWNED": [41, 181, 232, 200],
+                  "CANDIDATE": [209, 55, 78, 220]
+                }
+              },
+              "data": {
+                "query": "SELECT STORE_ID AS store_id, POI_NAME AS name, STORE_ROLE AS role, LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region",
+                "params": { "region": "context.region" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "closure_impact": {
+    "label": "Closure Impact",
+    "category": "Location",
+    "description": "Closure what-if: pick an existing store to close and see which surviving stores inherit its households and revenue, based on the next-closest-store (drive-time) approach. Commercial figures are synthetic proxies.",
+    "agentKnowledge": {
+      "preferredTool": "query_location",
+      "keyMetrics": ["households reassigned", "revenue retained by surviving stores", "gaining stores"],
+      "exampleQuestions": ["If we close this store, which store inherits the most sales?", "How many households get reassigned and to where?"],
+      "gotchas": "Reassignment uses the smallest drive-time band of a surviving store that still contains each household cell (nearest by drive time). Households not reachable by any surviving store within 60 minutes are treated as lost. Revenue and EBITDA are synthetic proxies."
+    },
+    "layout": {
+      "default": {
+        "columns": "360px 1fr",
+        "rows": "auto auto $map",
+        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"gainers map\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COALESCE(SUM(HH_INHERITED),0) AS hh_reassigned, ROUND(COALESCE(SUM(REVENUE_INHERITED),0)) AS revenue_retained, COUNT(DISTINCT GAINING_STORE_ID) AS gaining_stores FROM FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT WHERE REGION = :region AND (:selected_closed IS NULL OR CLOSED_STORE_ID = :selected_closed)",
+          "params": {
+            "region": "context.region",
+            "selected_closed": "viewState.selected_closed"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "revenue_retained", "label": "Revenue retained", "format": "number" },
+              { "column": "hh_reassigned", "label": "Households reassigned", "format": "number" },
+              { "column": "gaining_stores", "label": "Gaining stores", "format": "number" }
+            ]
+          }
+        }
+      },
+      "controls": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "closed",
+            "label": "Store to close",
+            "data": {
+              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE REGION = :region AND STORE_ROLE = 'OWNED' ORDER BY POI_NAME",
+              "params": { "region": "context.region" }
+            },
+            "emits": { "selected_closed": "selection" }
+          }
+        ]
+      },
+      "gainers": {
+        "component": "Table",
+        "config": { "title": "Households and revenue inherited by surviving stores" },
+        "data": {
+          "query": "SELECT GAINING_NAME AS gaining_store, HH_INHERITED AS households, ROUND(PCT_OF_CLOSED*100,1) AS pct_of_closed, ROUND(REVENUE_INHERITED) AS revenue, ROUND(EBITDA_INHERITED) AS ebitda FROM FLEET_APP.LOCATION.VW_CLOSURE_REASSIGNMENT WHERE REGION = :region AND (:selected_closed IS NULL OR CLOSED_STORE_ID = :selected_closed) ORDER BY revenue DESC LIMIT 20",
+          "params": {
+            "region": "context.region",
+            "selected_closed": "viewState.selected_closed"
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "legend": [
+            { "label": "Closed-store catchment (20 min)", "color": [209, 55, 78, 80] },
+            { "label": "Surviving store", "color": [41, 181, 232, 200] },
+            { "label": "Closed store", "color": [255, 200, 0, 255] }
+          ],
+          "layers": [
+            {
+              "type": "geojson",
+              "id": "closed-catchment",
+              "geojsonColumn": "geo",
+              "fillColor": [209, 55, 78, 60],
+              "lineColor": [209, 55, 78, 200],
+              "lineWidth": 2,
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(GEOG)::STRING AS geo FROM FLEET_APP.LOCATION.VW_STORE_ISOCHRONES WHERE REGION = :region AND :selected_closed IS NOT NULL AND STORE_ID = :selected_closed AND BAND_MIN = 20",
+                "params": {
+                  "region": "context.region",
+                  "selected_closed": "viewState.selected_closed"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "owned-stores",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "pickable": true,
+              "tooltip": "<b>{name}</b>",
+              "fillColor": {
+                "base": [41, 181, 232, 200],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "store_id",
+                "whenViewStateEquals": "selected_closed"
+              },
+              "data": {
+                "query": "SELECT STORE_ID AS store_id, POI_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region AND STORE_ROLE = 'OWNED'",
+                "params": { "region": "context.region" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
   "asset_velocity": {
     "label": "Asset Velocity",
     "category": "Asset Pool",
