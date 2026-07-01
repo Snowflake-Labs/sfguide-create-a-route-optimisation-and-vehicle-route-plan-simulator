@@ -796,6 +796,10 @@ $$;
 -- existing store" table read from this single function, so the candidate isochrone
 -- is computed once per panel instead of being duplicated inline in each query.
 -- The ST_WITHIN is evaluated once per cell (in incell) before the cross join.
+-- Uses the array + 'time' (seconds) ISOCHRONES overload with LATERAL FLATTEN
+-- (same as LIVE_ZIP_BANDS): it returns in ~1s vs ~70s for the 5-arg scalar
+-- ISOCHRONES(profile, lon, lat, minutes, region) overload, which was the cause
+-- of the 60s statement-timeout on this view.
 CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
 RETURNS TABLE (STORE_ID VARCHAR, POI_NAME VARCHAR, HOUSEHOLDS INT, TRANSFER_PCT NUMBER(6,1),
                REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0),
@@ -805,12 +809,14 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","versio
 AS
 $$
   WITH iso AS (
-    SELECT GEOJSON AS poly
+    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       'driving-car',
-      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-      P_BAND, P_REGION))
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
   ),
   owned AS (
     SELECT STORE_ID, POI_NAME, LON, LAT, ANNUAL_REVENUE, ANNUAL_EBITDA,
