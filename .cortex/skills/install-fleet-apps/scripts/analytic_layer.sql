@@ -789,6 +789,58 @@ $$
   FROM owned o JOIN iso i ON i.grp = o.grp
 $$;
 
+-- Live cannibalisation: ONE ORS call for the selected candidate + band, then the
+-- captured households are assigned to their nearest OWNED store (Voronoi) and the
+-- transfer math (capture 0.5, split by Home Visit / Sample / Walk-in) is done
+-- server-side. Both the Site Impact metrics cards and the "revenue transfer by
+-- existing store" table read from this single function, so the candidate isochrone
+-- is computed once per panel instead of being duplicated inline in each query.
+-- The ST_WITHIN is evaluated once per cell (in incell) before the cross join.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (STORE_ID VARCHAR, POI_NAME VARCHAR, HOUSEHOLDS INT, TRANSFER_PCT NUMBER(6,1),
+               REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0),
+               WALK_IN NUMBER(18,0), EBITDA_TRANSFER NUMBER(18,0))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH iso AS (
+    SELECT GEOJSON AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+      P_BAND, P_REGION))
+  ),
+  owned AS (
+    SELECT STORE_ID, POI_NAME, LON, LAT, ANNUAL_REVENUE, ANNUAL_EBITDA,
+           HV_PCT, SAMPLE_PCT, WALKIN_PCT, REFERENCE_HH
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
+  ),
+  incell AS (
+    SELECT c.H3, c.HH, c.CENTROID
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, iso
+    WHERE c.REGION = P_REGION AND iso.poly IS NOT NULL AND ST_WITHIN(c.CENTROID, iso.poly)
+  ),
+  captured AS (
+    SELECT OWN_ID, SUM(HH) AS cap_hh
+    FROM (
+      SELECT ic.H3, ic.HH, o.STORE_ID AS OWN_ID,
+             ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(o.LON, o.LAT))) rn
+      FROM incell ic CROSS JOIN owned o
+    ) WHERE rn = 1 GROUP BY OWN_ID
+  )
+  SELECT o.STORE_ID, o.POI_NAME, cap.cap_hh AS households,
+         ROUND(100 * cap.cap_hh / NULLIF(o.REFERENCE_HH, 0), 1) AS transfer_pct,
+         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5) AS revenue,
+         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.HV_PCT) AS home_visit,
+         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.SAMPLE_PCT) AS sample_rev,
+         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.WALKIN_PCT) AS walk_in,
+         ROUND(o.ANNUAL_EBITDA * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5) AS ebitda_transfer
+  FROM captured cap JOIN owned o ON o.STORE_ID = cap.OWN_ID
+$$;
+
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
 -- role-less install does not error the whole file.
 GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
@@ -808,6 +860,9 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(VARCHAR, VARCHAR) TO R
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG

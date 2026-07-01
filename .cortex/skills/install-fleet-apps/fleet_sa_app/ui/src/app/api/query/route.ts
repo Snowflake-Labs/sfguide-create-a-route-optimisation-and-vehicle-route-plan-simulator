@@ -94,7 +94,11 @@ async function executeStatement(sql: string, opts: ExecOpts = {}): Promise<State
   const url = `${auth.baseUrl}/api/v2/statements`;
   const body: Record<string, unknown> = {
     statement: sql,
-    timeout: 60,
+    // 80s statement timeout: must stay under the 90s SPCS ingress connection
+    // timeout so a slow-but-valid call (e.g. a live ISOCHRONES/MATRIX op while
+    // ORS is under load) still returns synchronously instead of being canceled
+    // at 60s. Kept in sync with lib/snowflake.ts.
+    timeout: 80,
     warehouse: WAREHOUSE,
     role: ROLE,
   };
