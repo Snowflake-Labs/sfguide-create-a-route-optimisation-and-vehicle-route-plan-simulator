@@ -103,12 +103,28 @@ The household layer uses Overture addresses aggregated to H3 cells, which is reg
 
 Install from `https://app.snowflake.com/marketplace/listing/<global_name>`. Point `HH_CELLS` (or a new postcode table) at Open UPRN / Code-Point Open instead of `CATCHMENT.REGIONAL_ADDRESSES`; the live ISOCHRONES logic is unchanged. These are GB-only and do not apply to non-UK regions (e.g. the default SanFrancisco).
 
+## US / ZIP-code drive-time drill (enabled by default for US regions)
+
+For US regions the build adds a real ZIP layer used by the Site Impact ZIP-by-drive-time table and the drive-time choropleth. It requires two **free** Marketplace listings imported into the account (a fresh install must acquire these; the enrichment step is guarded and skips silently if they are absent):
+
+| Listing | Global name | Imported DB | Use |
+|---|---|---|---|
+| U.S. ZIP Code Metadata with Geometry (SFR Analytics) | `GZTYZ7P39MI` | `U_S__ZIP_CODE_METADATA_WITH_GEOMETRY` | Real ZCTA polygons + centroid + land area |
+| SafeGraph Open Census (2020 CBG) | (free share) | `SAFEGRAPH_OPEN_CENSUS_FREE` | Real population / housing / income, rolled up CBG->ZIP |
+
+Acquire the SFR listing via SQL: `CREATE DATABASE IF NOT EXISTS ZIP_GEOMETRY_SFR FROM LISTING 'GZTYZ7P39MI';` (or Get in Snowsight). SafeGraph Open Census is a free share (Get in Snowsight). `BUILD_LOCATION_ZIP_ENRICHMENT()` then materializes `LOCATION.ZIP_AREAS` (region ZIPs = distinct `CATCHMENT.REGIONAL_ADDRESSES.POSTCODE`, joined to the polygons + a CBG-centroid-in-ZIP demographic rollup). The paid `U.S. ZIP Code Demographics` listing (`GZTYZ7P39MM`) is NOT required - SafeGraph provides the same signals for free.
+
+Live objects (isochrones computed on the fly, no precompute):
+- `FLEET_APP.LOCATION.LIVE_ZIP_BANDS(store_id, region)` - each region ZIP assigned to its smallest drive-time band (one multi-range ORS call) with real population/housing.
+- `FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(band, region)` - every owned store's catchment in one multi-location ORS call (`group_index`->store), for the estate overlap layer.
+
 ## Output
 
-- Tables (non-ORS reference data): `FLEET_INTELLIGENCE.LOCATION.{STORES, BANDS, HH_CELLS, STORE_FACTS}`
-- Contract views: `FLEET_APP.LOCATION.{VW_STORES, VW_STORE_FACTS, VW_HH_CELLS, VW_BANDS}`
+- Tables (non-ORS reference data): `FLEET_INTELLIGENCE.LOCATION.{STORES, BANDS, HH_CELLS, STORE_FACTS, ZIP_AREAS}`
+- Contract views: `FLEET_APP.LOCATION.{VW_STORES, VW_STORE_FACTS, VW_HH_CELLS, VW_BANDS, VW_ZIP_AREAS}`
+- Live UDTFs: `FLEET_APP.LOCATION.{LIVE_ZIP_BANDS, LIVE_OWNED_CATCHMENTS}`
 - Semantic view: `FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION` (agent tool `query_location`) - estate facts only; cannibalisation/closure are live in-app
-- App views: **Site Impact** (live cannibalisation) and **Closure Impact** (live closure) under the Location category
+- App views: **Site Impact** (live cannibalisation + ZIP drive-time drill + overlap choropleth) and **Closure Impact** (live closure) under the Location category
 
 ## Data Studio Extension (optional)
 
