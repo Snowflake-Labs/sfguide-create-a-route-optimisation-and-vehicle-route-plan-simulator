@@ -15,6 +15,7 @@ import type { ParsedViewDef } from '@/components/views/view-renderer';
 const ALLOWED_COMPONENTS = new Set<string>(AREA_COMPONENT_NAMES);
 const MAX_TITLE_LEN = 200;
 const MAX_TEXT_LEN = 2000;
+const MAX_MARKDOWN_LEN = 20000;
 
 export interface ParseOk {
   ok: true;
@@ -94,6 +95,8 @@ export function parseDynamicSpec(raw: unknown, id = '__dynamic__'): ParseResult 
       if (config) {
         if ('title' in config) config.title = clampString(config.title, MAX_TITLE_LEN);
         if ('tooltip' in config) config.tooltip = clampString(config.tooltip, MAX_TEXT_LEN);
+        // Markdown area content (agent-emitted, untrusted): clamp to a sane cap.
+        if ('content' in config) config.content = clampString(config.content, MAX_MARKDOWN_LEN);
       }
       cleanAreas[name] = {
         component: comp,

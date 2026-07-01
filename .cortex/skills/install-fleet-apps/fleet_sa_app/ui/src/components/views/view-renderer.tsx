@@ -11,6 +11,7 @@ import {
   ViewSliderArea,
   ViewClickableTableArea,
   ViewCheckboxArea,
+  MarkdownArea,
 } from './areas';
 import { EntityDetailArea } from './areas/entity-detail';
 import { DetailPanelArea } from './areas/detail-panel';
@@ -66,6 +67,7 @@ const AREA_COMPONENTS: Record<AreaComponentName, AnyAreaComponent> = {
   Checkbox: ViewCheckboxArea,
   EntityDetail: EntityDetailArea,
   DetailPanel: DetailPanelArea,
+  Markdown: MarkdownArea,
 };
 
 // An area pinned as a slide-over drawer (config.position === 'drawer') renders

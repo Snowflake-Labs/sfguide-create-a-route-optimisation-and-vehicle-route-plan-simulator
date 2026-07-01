@@ -7,3 +7,4 @@ export { ViewMapArea } from './view-map';
 export { ViewSliderArea } from './view-slider';
 export { ViewClickableTableArea } from './view-clickable-table';
 export { ViewCheckboxArea } from './view-checkbox';
+export { MarkdownArea } from './markdown-area';
