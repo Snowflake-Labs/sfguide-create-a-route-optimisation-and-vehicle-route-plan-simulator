@@ -1987,6 +1987,138 @@ try {
 $$;
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SOLVE(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
+-- TOOL_SAP_INTROSPECT: read-only SAP + telematics table discovery.
+-- Live, in-app version of sap-fleet-connector/scripts/introspect_sap.sql. Given
+-- a landed SAP database (and optionally a telematics database), scans their
+-- INFORMATION_SCHEMA and returns which SAP fleet objects are present, the CDC
+-- metadata-column fingerprint, and the candidate telematics device/ts/lat/lon
+-- columns - so a user can see which tables can be bound into the FLEET_APP
+-- contract. Pure SELECTs (creates nothing). EXECUTE AS OWNER: the proc owner
+-- must have USAGE on the scanned databases (the mock demo schema and, for a
+-- customer, the co-located SAP/telematics inbound DBs). The DB names are
+-- validated as plain identifiers before being inlined (INFORMATION_SCHEMA is
+-- per-database and cannot be bound), so there is no SQL-injection surface.
+-- Returns { status, sap_objects[], cdc_fingerprint[], telematics_columns[],
+--           suggested:{cdc_tool, join_strategy_hint}, next_step }.
+----------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(
+    P_SAP_DB         VARCHAR,
+    P_TELEMATICS_DB  VARCHAR DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+function validIdent(x) {
+    return typeof x === 'string' && /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/.test(x);
+}
+function rows(sqlText) {
+    var out = [];
+    var st = snowflake.createStatement({ sqlText: sqlText });
+    var rs = st.execute();
+    var n = st.getColumnCount();
+    while (rs.next()) {
+        var o = {};
+        for (var i = 1; i <= n; i++) { o[st.getColumnName(i)] = rs.getColumnValue(i); }
+        out.push(o);
+    }
+    return out;
+}
+try {
+    if (!validIdent(P_SAP_DB)) {
+        return { status: 'FAILED',
+                 error: 'Invalid SAP database name. Provide a single database identifier (letters, digits, _ , $).' };
+    }
+    // NOTE: this file is deployed via `snow sql -f`, whose client templating
+    // strips one '&' from '&&' (logical AND becomes bitwise AND). That is
+    // harmless when both operands are booleans (true & false still yields the
+    // right truthiness), but NOT for string/number operands. So every AND below
+    // is written with boolean-typed operands only.
+    var telDb = null;
+    if (P_TELEMATICS_DB !== null && P_TELEMATICS_DB !== undefined && String(P_TELEMATICS_DB).length > 0) {
+        telDb = String(P_TELEMATICS_DB);
+    }
+    if (telDb !== null && !validIdent(telDb)) {
+        return { status: 'FAILED',
+                 error: 'Invalid telematics database name. Provide a single database identifier or omit it.' };
+    }
+    var sapDb = P_SAP_DB.replace(/"/g, '');
+
+    // 1. SAP fleet objects present (raw tables OR CDS views).
+    var sapObjects = rows(
+        "SELECT table_schema AS TABLE_SCHEMA, table_name AS TABLE_NAME, row_count AS ROW_COUNT, bytes AS BYTES, " +
+        "CASE WHEN table_name ILIKE 'I/_%' ESCAPE '/' OR table_name ILIKE 'C/_%' ESCAPE '/' THEN 'cds_view' " +
+        "     WHEN table_name ILIKE 'Z%' THEN 'custom_cds_or_table' ELSE 'raw_table' END AS EXPOSURE_FORM " +
+        "FROM \"" + sapDb + "\".INFORMATION_SCHEMA.TABLES " +
+        "WHERE UPPER(table_name) REGEXP '.*(EQUI|IFLOT|IMRG|QMEL|AUFK|AFIH|AFRU|LIKP|LIPS|VBAK|VBAP|MSEG|MKPF|BSEG|/SCMTMS/).*' " +
+        "ORDER BY table_schema, table_name");
+
+    // 2. CDC tool fingerprint: which metadata columns exist on the SAP tables?
+    var cdc = rows(
+        "SELECT table_schema AS TABLE_SCHEMA, table_name AS TABLE_NAME, column_name AS COLUMN_NAME " +
+        "FROM \"" + sapDb + "\".INFORMATION_SCHEMA.COLUMNS " +
+        "WHERE UPPER(column_name) IN " +
+        "('MANDT','HEADER__CHANGE_OPER','HEADER__TIMESTAMP','ODQ_CHANGEMODE','ODQ_ENTITYCNTR'," +
+        "'_FIVETRAN_SYNCED','_FIVETRAN_DELETED','LASTCHANGEDATETIME','PSA_CDC_OPERATION') " +
+        "AND table_schema <> 'INFORMATION_SCHEMA' " +
+        "ORDER BY table_schema, table_name, column_name");
+
+    // 3. Telematics fact shape (only when a telematics DB is supplied).
+    var tel = [];
+    if (telDb !== null) {
+        var telDbClean = telDb.replace(/"/g, '');
+        tel = rows(
+            "SELECT table_schema AS TABLE_SCHEMA, table_name AS TABLE_NAME, column_name AS COLUMN_NAME, data_type AS DATA_TYPE " +
+            "FROM \"" + telDbClean + "\".INFORMATION_SCHEMA.COLUMNS " +
+            "WHERE UPPER(column_name) REGEXP '.*(SERIAL|VIN|UNIT|DEVICE|MMSI|IMO|TS|TIME|TIMESTAMP|LAT|LON|LNG|SPEED|HEADING|COURSE|ODOMETER).*' " +
+            "AND table_schema <> 'INFORMATION_SCHEMA' " +
+            "ORDER BY table_schema, table_name, ordinal_position");
+    }
+
+    // Derive a CDC-tool suggestion from the metadata columns found.
+    var cols = {};
+    for (var i = 0; i < cdc.length; i++) { cols[String(cdc[i].COLUMN_NAME).toUpperCase()] = true; }
+    var cdcTool = 'unknown';
+    if (cols['HEADER__CHANGE_OPER'] || cols['HEADER__TIMESTAMP']) cdcTool = 'qlik';
+    else if (cols['ODQ_CHANGEMODE'] || cols['ODQ_ENTITYCNTR']) cdcTool = 'odp';
+    else if (cols['_FIVETRAN_SYNCED'] || cols['_FIVETRAN_DELETED']) cdcTool = 'fivetran';
+    else if (cols['LASTCHANGEDATETIME']) cdcTool = 'slt_raw';
+    else if (cols['MANDT']) cdcTool = 'slt_raw';
+
+    // Derive a join-strategy hint from what is present.
+    var names = {};
+    for (var j = 0; j < sapObjects.length; j++) { names[String(sapObjects[j].TABLE_NAME).toUpperCase()] = true; }
+    var hasEqui = false; for (var k in names) { if (k.indexOf('EQUI') >= 0) hasEqui = true; }
+    var telCols = tel.map(function (r) { return String(r.COLUMN_NAME).toUpperCase(); });
+    var telHasSerial = telCols.some(function (c) { return c.indexOf('SERIAL') >= 0; });
+    var telHasVin    = telCols.some(function (c) { return c.indexOf('VIN') >= 0; });
+    var telHasMmsi   = telCols.some(function (c) { return c.indexOf('MMSI') >= 0 || c.indexOf('IMO') >= 0; });
+    var hint;
+    if (telHasMmsi) hint = 'marine';
+    else if (!hasEqui) hint = 'vin_external (no EQUI found; bind VIN to an external asset master)';
+    else if (hasEqui && telHasSerial) hint = 'native_serial (EQUI present and telematics carries a serial)';
+    else if (hasEqui && telHasVin) hint = 'vin_2hop (EQUI present; telematics identifies device/VIN)';
+    else hint = 'native_serial (default; confirm the telematics join key)';
+
+    return {
+        status: 'SUCCESS',
+        sap_db: P_SAP_DB,
+        telematics_db: telDb,
+        sap_objects: sapObjects,
+        cdc_fingerprint: cdc,
+        telematics_columns: tel,
+        suggested: { cdc_tool: cdcTool, join_strategy_hint: hint },
+        next_step: 'Review the objects, CDC fingerprint, and telematics columns, then set sap-mapping.yaml (sap_schema, telematics_table, cdc.tool, cdc.client/MANDT, join.strategy, region) before binding.'
+    };
+} catch (err) {
+    return { status: 'FAILED', error: err.message };
+}
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-sap-fleet-connector","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
@@ -1994,4 +2126,5 @@ UNION ALL SELECT 'TOOL_POI_IN_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PR
 UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_CATCHMENT';
+UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_CATCHMENT'
+UNION ALL SELECT 'TOOL_SAP_INTROSPECT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_SAP_INTROSPECT';
