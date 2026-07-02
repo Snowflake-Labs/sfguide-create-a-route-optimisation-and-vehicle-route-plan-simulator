@@ -1153,6 +1153,112 @@ $$
   FROM zin LEFT JOIN zcov ON zcov.ZIP = zin.ZIP
 $$;
 
+-- Live closure coverage cells for the Closure Impact H3 heatmap (mirrors
+-- LIVE_OVERLAP_CELLS - the proven-stable Site Impact pattern). For every H3
+-- res-8 household cell whose centroid is inside the CLOSING store's drive-time
+-- catchment, count how many SURVIVING store catchments still reach it. This is
+-- the closure-risk signal: SURVIVOR_COUNT = 0 -> AT_RISK (leakage), > 0 ->
+-- RETAINED. Uses ONLY ST_WITHIN over the pre-rasterized HH_CELLS grid (no
+-- ST_INTERSECTION), so it avoids the fragile polygon-intersection path. Two ORS
+-- calls total via LIVE_OWNED_CATCHMENTS; region ORS must be RESUMED (Tenet 9).
+-- P_RETENTION_RATE is a fraction (0..1). Rendered as a single deck.gl
+-- H3HexagonLayer graded by SURVIVOR_COUNT.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(
+  P_CLOSED_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
+  P_VALUE_PER_HH FLOAT, P_RETENTION_RATE FLOAT)
+RETURNS TABLE (H3 VARCHAR, HOUSEHOLDS INT, SURVIVOR_COUNT INT, STATUS VARCHAR,
+               NEAREST_SURVIVOR VARCHAR, RETAINED_REVENUE NUMBER(18,0), CENTROID GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cats AS (
+    SELECT c.STORE_ID, sf.POI_NAME, sf.LON, sf.LAT, c.GEO
+    FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION)) c
+    JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS sf
+      ON sf.STORE_ID = c.STORE_ID AND sf.REGION = P_REGION
+    WHERE c.GEO IS NOT NULL
+  ),
+  closed_cat AS (SELECT GEO FROM cats WHERE STORE_ID = P_CLOSED_ID),
+  surv AS (SELECT STORE_ID, POI_NAME, LON, LAT, GEO FROM cats WHERE STORE_ID <> P_CLOSED_ID),
+  incell AS (
+    SELECT c.H3, c.HH, c.CENTROID
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, closed_cat
+    WHERE c.REGION = P_REGION AND closed_cat.GEO IS NOT NULL AND ST_WITHIN(c.CENTROID, closed_cat.GEO)
+  ),
+  cov AS (
+    SELECT ic.H3,
+           ANY_VALUE(ic.HH) AS hh,
+           ANY_VALUE(ic.CENTROID) AS centroid,
+           COUNT(s.STORE_ID) AS survivor_count,
+           MIN_BY(s.POI_NAME, ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(s.LON, s.LAT))) AS nearest_survivor
+    FROM incell ic
+    LEFT JOIN surv s ON ST_WITHIN(ic.CENTROID, s.GEO)
+    GROUP BY ic.H3
+  )
+  SELECT H3, hh AS households, survivor_count,
+         CASE WHEN survivor_count > 0 THEN 'RETAINED' ELSE 'AT_RISK' END AS status,
+         nearest_survivor,
+         ROUND(hh * P_VALUE_PER_HH * P_RETENTION_RATE)::NUMBER(18,0) AS retained_revenue,
+         centroid
+  FROM cov
+$$;
+
+-- Closure "gainers" attribution as an owner's-rights UDTF (mirrors the proven
+-- LIVE_CANNIBALISATION pattern). Assigns every H3 household cell inside the
+-- CLOSING store's catchment to its nearest SURVIVING store (closed store
+-- excluded), then rolls up households + user-driven revenue per gaining store.
+-- HV/Sample/Walk-in use the CLOSING store's interaction mix (matching the prior
+-- inline query's semantics). Moving this off the inline app query removes the
+-- fragile caller-side ST_WITHIN-over-raw-isochrone + CROSS JOIN plan that
+-- intermittently tripped Snowflake internal error 300010/000603. Region-scoped;
+-- P_RETENTION_RATE is a fraction (0..1). Region ORS must be RESUMED (Tenet 9).
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(
+  P_CLOSED_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
+  P_VALUE_PER_HH FLOAT, P_RETENTION_RATE FLOAT)
+RETURNS TABLE (GAINING_STORE VARCHAR, HOUSEHOLDS INT, PCT_OF_CLOSED NUMBER(6,1),
+               REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0), WALK_IN NUMBER(18,0))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH closed_cat AS (
+    SELECT GEO FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION))
+    WHERE STORE_ID = P_CLOSED_ID
+  ),
+  csplit AS (
+    SELECT HV_PCT, SAMPLE_PCT, WALKIN_PCT
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CLOSED_ID
+  ),
+  survivors AS (
+    SELECT STORE_ID, POI_NAME, LON, LAT
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED' AND STORE_ID <> P_CLOSED_ID
+  ),
+  incell AS (
+    SELECT c.H3, c.HH, c.CENTROID
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, closed_cat
+    WHERE c.REGION = P_REGION AND closed_cat.GEO IS NOT NULL AND ST_WITHIN(c.CENTROID, closed_cat.GEO)
+  ),
+  tot AS (SELECT SUM(HH) AS total_in FROM incell),
+  assign AS (
+    SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID
+    FROM incell ic CROSS JOIN survivors sv
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON, sv.LAT)), sv.STORE_ID) = 1
+  ),
+  agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1)
+  SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households,
+         ROUND(100 * a.hh_inh / NULLIF((SELECT total_in FROM tot), 0), 1)::NUMBER(6,1) AS pct_of_closed,
+         ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE)::NUMBER(18,0) AS revenue,
+         ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE * cs.HV_PCT)::NUMBER(18,0) AS home_visit,
+         ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE * cs.SAMPLE_PCT)::NUMBER(18,0) AS sample_rev,
+         ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE * cs.WALKIN_PCT)::NUMBER(18,0) AS walk_in
+  FROM agg a
+  JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS g ON g.STORE_ID = a.GAIN_ID AND g.REGION = P_REGION
+  CROSS JOIN csplit cs
+  ORDER BY revenue DESC
+$$;
+
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
 -- role-less install does not error the whole file.
 GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
@@ -1190,6 +1296,12 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(VARCHAR, INT, V
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
 
 -- ===========================================================================
 -- Point-anchored live catchment (drive-time market analysis)
