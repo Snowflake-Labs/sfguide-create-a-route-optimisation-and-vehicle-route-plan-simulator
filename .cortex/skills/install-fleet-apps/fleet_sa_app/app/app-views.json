@@ -3169,8 +3169,7 @@
             { "label": "ZIP <= 25 min", "color": [217, 239, 139, 150] },
             { "label": "ZIP <= 45 min", "color": [253, 174, 97, 160] },
             { "label": "ZIP 60 min", "color": [244, 109, 67, 160] },
-            { "label": "Candidate band ring", "color": [209, 55, 78, 220] },
-            { "label": "Owned store catchment (20 min)", "color": [41, 181, 232, 90] }
+            { "label": "Candidate band ring", "color": [209, 55, 78, 220] }
           ],
           "layers": [
             {
@@ -3198,18 +3197,6 @@
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate"
                 }
-              }
-            },
-            {
-              "type": "geojson",
-              "id": "owned-catchments",
-              "geojsonColumn": "geo",
-              "fillColor": [41, 181, 232, 45],
-              "lineColor": [41, 181, 232, 160],
-              "lineWidth": 1,
-              "data": {
-                "query": "SELECT STORE_ID AS store_id, POI_NAME AS name, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
-                "params": { "region": "context.region" }
               }
             },
             {
