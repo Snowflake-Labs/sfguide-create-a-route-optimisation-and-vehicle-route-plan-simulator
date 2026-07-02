@@ -9,9 +9,11 @@
 --   FLEET_APP_ADMIN -> installer: FLEET_ADMIN_MCP (substrate checks / region)
 -- Hierarchy: ADMIN inherits OPS inherits USER.
 
-CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
-CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
-CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"role-binding"}}';
+
+CREATE ROLE IF NOT EXISTS FLEET_APP_USER  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE ROLE IF NOT EXISTS FLEET_APP_OPS   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 GRANT ROLE FLEET_APP_USER TO ROLE FLEET_APP_OPS;
 GRANT ROLE FLEET_APP_OPS  TO ROLE FLEET_APP_ADMIN;
 GRANT ROLE FLEET_APP_USER TO ROLE SYSADMIN;

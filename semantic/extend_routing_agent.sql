@@ -7,6 +7,8 @@
  * Deploy: snow sql -c fleet_test_evals -f semantic/extend_routing_agent.sql
  */
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"extend-routing-agent"}}';
+
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'

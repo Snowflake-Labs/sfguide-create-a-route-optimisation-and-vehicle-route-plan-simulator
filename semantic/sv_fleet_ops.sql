@@ -14,6 +14,8 @@
 --               attributes (shift, profile). No metrics -> avoids cross-grain errors.
 --   origins   - standalone FACT, one row per origin POI (trip volume by origin).
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-fleet-ops"}}';
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
 
   TABLES (

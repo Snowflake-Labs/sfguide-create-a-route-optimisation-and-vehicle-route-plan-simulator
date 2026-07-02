@@ -3,6 +3,8 @@
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOGRAPHY columns (LAST_LOCATION_GEOM, TERMINAL_GEOM) excluded. Two independent facts.
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-asset-velocity"}}';
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   TABLES (

@@ -17,13 +17,19 @@
 -- (see fleet_sa_app/app/role_binding.sql).
 -- =============================================================================
 
-CREATE DATABASE IF NOT EXISTS ROUTING_PLATFORM
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"engine-agnostic-routing-platform"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"routing-platform"}}';
 
-CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.CONTRACT  COMMENT = 'Engine-agnostic routing API. Consumers depend ONLY on this surface.';
-CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS COMMENT = 'Routing engine adapters + provider registry. ors_internal (live), external (stub).';
-CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ADMIN     COMMENT = 'Engine-neutral region catalog + region->provider default map.';
-CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ROUTING   COMMENT = 'Synapse routing MCP verbs (ROUTING_MCP) new home; OPENROUTESERVICE_APP.ROUTING kept as alias during cutover.';
+CREATE DATABASE IF NOT EXISTS ROUTING_PLATFORM
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Engine-agnostic routing API. Consumers depend ONLY on this surface.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.CONTRACT  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Routing engine adapters + provider registry. ors_internal (live), external (stub).
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Engine-neutral region catalog + region->provider default map.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ADMIN     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Synapse routing MCP verbs (ROUTING_MCP) new home; OPENROUTESERVICE_APP.ROUTING kept as alias during cutover.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ROUTING   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ===== Provider registry =====================================================
 CREATE TABLE IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY (
@@ -32,7 +38,7 @@ CREATE TABLE IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY (
   ENABLED     BOOLEAN NOT NULL DEFAULT FALSE,
   NOTES       VARCHAR,
   UPDATED_AT  TIMESTAMP_NTZ DEFAULT SYSDATE()
-) COMMENT = 'Engine-agnostic routing provider registry. ors_internal live; external adapters stubbed/disabled.';
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 MERGE INTO ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY t
 USING (
@@ -48,7 +54,7 @@ CREATE TABLE IF NOT EXISTS ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP (
   REGION              VARCHAR NOT NULL PRIMARY KEY,
   DEFAULT_PROVIDER_ID VARCHAR NOT NULL,
   UPDATED_AT          TIMESTAMP_NTZ DEFAULT SYSDATE()
-) COMMENT = 'Engine-neutral region -> default routing provider. Per-call provider arg overrides this.';
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Seed every currently-deployed ORS region to ors_internal (no-op if already mapped).
 MERGE INTO ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP t
@@ -59,7 +65,7 @@ WHEN NOT MATCHED THEN INSERT (REGION, DEFAULT_PROVIDER_ID) VALUES (s.REGION, 'or
 -- Provider resolver: explicit per-call provider wins, else region default, else global default.
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION VARCHAR, PROVIDER VARCHAR)
 RETURNS STRING
-COMMENT = 'COALESCE(per-call provider, region default, ors_internal). Validity enforced at dispatch.'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   COALESCE(
     NULLIF(LOWER(TRIM(PROVIDER)), ''),
@@ -72,28 +78,28 @@ $$;
 -- ===== PROVIDERS: ORS internal adapter (thin pass-throughs to the engine) =====
 -- The ONLY place that names the ORS engine. _*_RAW are ORS SPCS service functions.
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_DIRECTIONS_RAW(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR)
-RETURNS VARIANT COMMENT='ORS adapter: directions (locations-variant).'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE._DIRECTIONS_RAW(METHOD, LOCATIONS, REGION) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_ISOCHRONES_RAW(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR)
-RETURNS VARIANT COMMENT='ORS adapter: isochrones (single point/range).'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(METHOD, LON, LAT, RANGE, REGION) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_OPTIMIZATION_RAW(CHALLENGE VARIANT, REGION VARCHAR)
-RETURNS VARIANT COMMENT='ORS adapter: optimization (VROOM challenge).'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(CHALLENGE, REGION) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_MATRIX_RAW(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR)
-RETURNS VARIANT COMMENT='ORS adapter: matrix (options-variant).'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE._MATRIX_RAW(METHOD, OPTIONS, REGION) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_STATUS_RAW(REGION VARCHAR)
-RETURNS VARIANT COMMENT='ORS adapter: engine status.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE._ORS_STATUS_RAW(REGION) $$;
 
 -- External adapter stub: one entrypoint for every disabled external provider.
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED(OPERATION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Stub for not-yet-implemented external routing engines. Returns PROVIDER_NOT_ENABLED.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   OBJECT_CONSTRUCT(
     'status','error',
@@ -107,7 +113,7 @@ $$;
 
 -- ===== CONTRACT: scalar dispatchers (provider CASE over adapters) =============
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_DIRECTIONS(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Engine dispatch for directions.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
     WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_DIRECTIONS_RAW(METHOD, LOCATIONS, REGION)
@@ -116,7 +122,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_ISOCHRONES(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Engine dispatch for isochrones.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
     WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_ISOCHRONES_RAW(METHOD, LON, LAT, RANGE, REGION)
@@ -125,7 +131,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(CHALLENGE VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Engine dispatch for optimization.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
     WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_OPTIMIZATION_RAW(CHALLENGE, REGION)
@@ -134,7 +140,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_MATRIX(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Engine dispatch for matrix.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
     WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_MATRIX_RAW(METHOD, OPTIONS, REGION)
@@ -143,7 +149,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_STATUS(REGION VARCHAR, PROVIDER VARCHAR)
-RETURNS VARIANT COMMENT='Engine dispatch for status.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
     WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_STATUS_RAW(REGION)
@@ -155,7 +161,7 @@ $$;
 -- Canonical response contract: adapters MUST normalize to ORS GeoJSON-style shape.
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.DIRECTIONS(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
 RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
-COMMENT='Engine-agnostic directions. provider NULL -> region default -> ors_internal.'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   SELECT resp AS RESPONSE,
          TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
@@ -166,7 +172,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ISOCHRONES(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
 RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
-COMMENT='Engine-agnostic isochrones. provider NULL -> region default -> ors_internal.'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   SELECT resp AS RESPONSE,
          TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
@@ -175,7 +181,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ISOCHRONES_CLIPPED(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR, PROVIDER VARCHAR DEFAULT NULL)
 RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
-COMMENT='Engine-agnostic isochrones clipped to region boundary (REGION_CATALOG).'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   SELECT resp AS RESPONSE,
          COALESCE(
@@ -193,7 +199,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.OPTIMIZATION(CHALLENGE VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
 RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
-COMMENT='Engine-agnostic optimization. provider NULL -> region default -> ors_internal.'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$
   SELECT resp AS RESPONSE,
          TO_GEOGRAPHY(OBJECT_CONSTRUCT('type','LineString','coordinates', f.value:geometry)) AS GEOJSON,
@@ -205,15 +211,15 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.MATRIX(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
-RETURNS VARIANT COMMENT='Engine-agnostic matrix.'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ ROUTING_PLATFORM.CONTRACT._DISPATCH_MATRIX(METHOD, OPTIONS, REGION, PROVIDER) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS(REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
-RETURNS VARIANT COMMENT='Engine-agnostic routing engine status (neutral rename of ORS_STATUS).'
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ ROUTING_PLATFORM.CONTRACT._DISPATCH_STATUS(REGION, PROVIDER) $$;
 
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_FOR_POINT(LON FLOAT, LAT FLOAT)
-RETURNS OBJECT COMMENT='Engine-neutral smallest-containing-region lookup (passthrough to region catalog).'
+RETURNS OBJECT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS $$ OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON, LAT) $$;
 
 -- Engine-neutral region-validity guard. Lets contract consumers (e.g. the synapse
@@ -223,7 +229,7 @@ AS $$ OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON, LAT) $$;
 -- consumers never read OPENROUTESERVICE_APP.CORE.* directly (Tenet 1).
 CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_EXISTS(REGION VARCHAR)
 RETURNS BOOLEAN
-COMMENT='Engine-neutral check: is REGION a provisioned (DEPLOYED) region? NULL/empty -> TRUE (caller falls back to active region).'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
   REGION IS NULL
@@ -236,7 +242,7 @@ $$;
 
 -- ===== ADMIN: engine-neutral region inventory + provider steering =============
 CREATE OR REPLACE VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS
-  COMMENT='Engine-neutral region inventory + default routing provider.'
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT m.REGION,
        om.DISPLAY_NAME,
@@ -252,7 +258,7 @@ LEFT JOIN ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY r ON r.PROVIDER_ID=m.DEFA
 CREATE OR REPLACE PROCEDURE ROUTING_PLATFORM.ADMIN.SET_REGION_PROVIDER(P_REGION VARCHAR, P_PROVIDER VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT='Set region -> default routing provider (validated against PROVIDER_REGISTRY.ENABLED).'
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 DECLARE

@@ -18,11 +18,11 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-starter-substrate","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.NEUTRAL
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","attributes":{"component":"neutral-substrate"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- LOCATIONS <- DIM_POIS (already neutral; pass the neutral columns through).
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.NEUTRAL.LOCATIONS
-  COMMENT = 'Neutral places of interest (SF slice). Source: DIM_POIS.'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   LOCATION_ID,
@@ -37,7 +37,7 @@ WHERE REGION = 'SanFrancisco';
 
 -- ASSETS <- DIM_FLEET (relabel vehicle -> asset; drop routing/driver vocab).
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.NEUTRAL.ASSETS
-  COMMENT = 'Neutral movable assets (SF slice). Source: DIM_FLEET.'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   VEHICLE_ID        AS ASSET_ID,
@@ -51,7 +51,7 @@ WHERE REGION = 'SanFrancisco';
 
 -- MOVEMENTS <- FACT_TRIPS (relabel trip -> movement; drop vehicle/driver/profile/detour).
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.NEUTRAL.MOVEMENTS
-  COMMENT = 'Neutral origin->destination movements (SF slice). Source: FACT_TRIPS.'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   TRIP_ID             AS MOVEMENT_ID,

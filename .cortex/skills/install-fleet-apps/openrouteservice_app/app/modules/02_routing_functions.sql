@@ -1,5 +1,7 @@
    USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
+   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"02_routing_functions"}}';
+
    -- =============================================================================
    -- REGION_CATALOG bootstrap (Mirror of REGION_CATALOG DDL in 03_region_management.sql; keep in sync.)
    -- Some functions below (DIRECTIONS, ISOCHRONES_CLIPPED, REGION_FOR_POINT,

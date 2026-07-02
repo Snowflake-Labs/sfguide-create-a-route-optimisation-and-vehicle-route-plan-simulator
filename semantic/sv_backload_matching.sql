@@ -5,6 +5,8 @@
 -- PROPOSAL_DECISIONS is written by the Backload Matching / Freight Exchange pages.
 -- Three independent facts; all coordinates exposed as LON/LAT floats (no GEOGRAPHY).
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-backload-matching"}}';
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
 
   TABLES (

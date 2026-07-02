@@ -715,18 +715,23 @@ CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
 -- 5b. FLEET_APP neutral-contract views the SA app reads (consumers never bind to
 --     FLEET_INTELLIGENCE directly). Mirrors the generated CATCHMENT pack pattern.
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
-  COMMENT = 'Stable logical layer for the location-diagnostics slice (cannibalisation + closure).';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORES AS
-  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORES;
-CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORE_FACTS AS
-  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS;
-CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_HH_CELLS AS
-  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS;
-CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_BANDS AS
-  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.BANDS;
-CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_ZIP_AREAS AS
-  SELECT * FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORES
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORES;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORE_FACTS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_HH_CELLS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_BANDS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.BANDS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_ZIP_AREAS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS;
 
 -- Live ZIP drive-time drill: assigns each region ZIP to the smallest drive-time band
 -- whose isochrone (computed LIVE, all bands in one ORS call) contains its centroid,

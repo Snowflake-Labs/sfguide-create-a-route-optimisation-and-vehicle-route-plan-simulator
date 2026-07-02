@@ -4,6 +4,8 @@
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- Two independent facts (offers + lane_history); GEOGRAPHY cols (PICKUP_GEOM/DROPOFF_GEOM) excluded.
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-offers"}}';
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
 
   TABLES (

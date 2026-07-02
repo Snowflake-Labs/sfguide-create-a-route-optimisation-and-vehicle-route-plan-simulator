@@ -9,7 +9,10 @@
 -- NOTE: This is the tier-C template. The live Step-2 deploy runs the objects
 -- directly on the provider account (wgb26798) rather than as an installed app.
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"native-app-setup"}}';
+
 -- 1. Application roles (the consumer grants these to user roles).
+-- (APPLICATION ROLE does not support COMMENT; tracked via the session query_tag above.)
 CREATE APPLICATION ROLE IF NOT EXISTS app_user;   -- consumers: dashboards + agent (User tools + Analyst)
 CREATE APPLICATION ROLE IF NOT EXISTS app_ops;     -- operators: service lifecycle / region / health (Ops bundle)
 CREATE APPLICATION ROLE IF NOT EXISTS app_admin;   -- installer/admin
@@ -20,10 +23,10 @@ CREATE APPLICATION ROLE IF NOT EXISTS app_admin;   -- installer/admin
 --    (provider dispatch: ors_internal -> OPENROUTESERVICE_APP engine; ext_* -> External
 --    Access Integration). The TOOL_* procs route through CONTRACT; consumers/agent are
 --    unchanged. DDL source of truth: routing_platform/setup.sql; grants in role_binding.sql.
-CREATE SCHEMA IF NOT EXISTS synapse_user;
-CREATE SCHEMA IF NOT EXISTS synapse_ops;
-CREATE SCHEMA IF NOT EXISTS synapse_admin;
-CREATE SCHEMA IF NOT EXISTS config;
+CREATE SCHEMA IF NOT EXISTS synapse_user  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS synapse_ops   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS synapse_admin COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS config        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- 3. Consumer access bindings (logical role -> application role).
 --    The end-user agent sees ONLY the routing MCP server (role isolation).
@@ -52,7 +55,7 @@ GRANT USAGE ON SCHEMA synapse_admin TO APPLICATION ROLE app_admin;
 --    prompts here, then restarts the UI service to reload (no image rebuild).
 CREATE STAGE IF NOT EXISTS config.FLEET_APP_STAGE
   DIRECTORY = (ENABLE = TRUE)
-  COMMENT = 'Editable app bundle (dashboards, agent prompts, region context).';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","desc":"editable-app-bundle"}}';
 GRANT READ ON STAGE config.FLEET_APP_STAGE TO APPLICATION ROLE app_user;
 GRANT WRITE ON STAGE config.FLEET_APP_STAGE TO APPLICATION ROLE app_ops;
 

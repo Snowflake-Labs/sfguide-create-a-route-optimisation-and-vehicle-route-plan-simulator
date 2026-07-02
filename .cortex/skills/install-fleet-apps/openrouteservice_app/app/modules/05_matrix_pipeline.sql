@@ -1,5 +1,7 @@
 USE SCHEMA OPENROUTESERVICE_APP.CORE;   
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"05_matrix_pipeline"}}';
+
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS (
     JOB_ID VARCHAR NOT NULL,
     REGION VARCHAR NOT NULL,
