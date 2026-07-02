@@ -131,6 +131,20 @@ export interface MapToggleItem {
     /** Initial checked state seeded into viewState once; defaults to true. */
     default?: boolean;
 }
+/** Wire map clicks into viewState (click-to-anchor). A pick on a data object
+ *  emits `object` = the picked row's `objectColumn` (default poi_name). A click
+ *  on empty map emits `lng`/`lat` = the clicked coordinate and clears `object`,
+ *  so a live-catchment view can anchor on an existing venue OR a greenfield point. */
+export interface MapClickEmits {
+    /** viewState key set to the picked object's value on an object click. */
+    object?: string;
+    /** Row column read from the picked object for the object emit; defaults to poi_name. */
+    objectColumn?: string;
+    /** viewState key set to the clicked longitude on an empty-map click. */
+    lng?: string;
+    /** viewState key set to the clicked latitude on an empty-map click. */
+    lat?: string;
+}
 /** `config` block of a `component: Map` area in an SA view YAML. */
 export interface MapAreaConfig {
     layers: LayerSpec[];
@@ -144,6 +158,8 @@ export interface MapAreaConfig {
     legend?: LegendItem[];
     /** Optional interactive layer-toggle checkboxes rendered as a map overlay. */
     toggles?: MapToggleItem[];
+    /** Optional: route map clicks into viewState (click-to-anchor). */
+    clickEmits?: MapClickEmits;
 }
 export {};
 //# sourceMappingURL=layer-spec.d.ts.map

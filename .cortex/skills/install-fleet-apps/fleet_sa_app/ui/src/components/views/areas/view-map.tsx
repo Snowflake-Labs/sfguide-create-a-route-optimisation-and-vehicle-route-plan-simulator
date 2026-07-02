@@ -9,7 +9,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
-import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem } from '@/lib/map/layer-spec';
+import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
 import { compileLayer, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
@@ -206,6 +206,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
 
   const panelViewState = useAppStore((s) => s.panel.viewState);
   const context = useAppStore((s) => s.context);
+  const updateViewState = useAppStore((s) => s.updateViewState);
   // Merge context (region/vehicle) and viewState so conditional colors
   // (whenViewStateEquals) and clickable-table selections both resolve.
   const viewState = useMemo(
@@ -233,6 +234,33 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
       setHovered((prev) => (prev === null ? prev : null));
     }
   }, []);
+
+  // Click-to-anchor: an object pick emits the picked row's column into viewState;
+  // an empty-map click emits the clicked coordinate (and clears the object key),
+  // so a live-catchment view can anchor on an existing venue OR a greenfield point.
+  const clickEmits: MapClickEmits | undefined = config.clickEmits;
+  const onClick = useCallback((info: any) => {
+    if (!clickEmits) return;
+    const col = clickEmits.objectColumn ?? 'poi_name';
+    if (info?.object && clickEmits.object) {
+      const src = info.object.properties && typeof info.object.properties === 'object'
+        ? { ...info.object, ...info.object.properties } : info.object;
+      const val = src[col] ?? src[col.toUpperCase()] ?? src[col.toLowerCase()];
+      if (val != null) {
+        const patch: Record<string, unknown> = { [clickEmits.object]: val };
+        if (clickEmits.lng) patch[clickEmits.lng] = null;
+        if (clickEmits.lat) patch[clickEmits.lat] = null;
+        updateViewState(patch);
+      }
+      return;
+    }
+    const coord = info?.coordinate as [number, number] | undefined;
+    if (coord && clickEmits.lng && clickEmits.lat) {
+      const patch: Record<string, unknown> = { [clickEmits.lng]: coord[0], [clickEmits.lat]: coord[1] };
+      if (clickEmits.object) patch[clickEmits.object] = null;
+      updateViewState(patch);
+    }
+  }, [clickEmits, updateViewState]);
 
   const onResult = useCallback(
     (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined) => {
@@ -332,6 +360,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         fallbackViewState={fallback}
         getTooltip={getTooltip}
         onHover={onHover}
+        onClick={onClick}
       />
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
       {config.toggles?.length ? <MapToggles toggles={config.toggles} /> : null}
