@@ -46,6 +46,10 @@ interface LayerBase {
   pickable?: boolean;
   /** HTML tooltip template using `{COLUMN}` tokens, e.g. "<b>{COURIER_ID}</b>". */
   tooltip?: string;
+  /** Exclude this layer from selection-driven camera fit. Set on wide context
+   *  layers (e.g. a full ZIP choropleth) so focusing a selection frames the
+   *  selected object + its ring, not the entire context extent. */
+  noFit?: boolean;
 }
 
 export interface ScatterplotLayerSpec extends LayerBase {

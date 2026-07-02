@@ -231,6 +231,29 @@ export function layerFitCoords(spec: LayerSpec, rows: Row[]): [number, number][]
     }
   } else if (spec.type === 'path') {
     for (const seg of pathData(spec, rows)) for (const p of seg.path) out.push([p[0], p[1]]);
+  } else if (spec.type === 'geojson') {
+    // Walk Polygon / MultiPolygon / Line coordinates so polygon layers (e.g. an
+    // isochrone ring) contribute their extent to the camera fit.
+    const s = spec as GeoJsonLayerSpec;
+    const pushCoords = (c: any): void => {
+      if (!Array.isArray(c)) return;
+      if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+        if (Number.isFinite(c[0]) && Number.isFinite(c[1])) out.push([c[0], c[1]]);
+        return;
+      }
+      for (const inner of c) pushCoords(inner);
+    };
+    for (const r of rows) {
+      const raw = r[s.geojsonColumn];
+      if (!raw) continue;
+      try {
+        const geom = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const g = geom?.type === 'Feature' ? geom.geometry
+          : geom?.type === 'FeatureCollection' ? { type: 'GC', coordinates: (geom.features ?? []).map((f: any) => f?.geometry?.coordinates) }
+          : geom;
+        if (g?.coordinates) pushCoords(g.coordinates);
+      } catch { /* skip unparseable */ }
+    }
   } else if (spec.type === 'h3') {
     const s = spec as H3HexagonLayerSpec;
     const sample = 2000;

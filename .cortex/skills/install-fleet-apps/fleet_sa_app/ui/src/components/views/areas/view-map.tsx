@@ -52,6 +52,9 @@ function selectionFitCoords(
   selectionKeys: string[],
 ): LngLat[] {
   if (!rows.length || selectionKeys.length === 0) return [];
+  // Wide context layers opt out of selection framing (e.g. a full ZIP
+  // choropleth), so focusing a candidate frames the candidate + its ring only.
+  if ((layer as { noFit?: boolean }).noFit) return [];
   const isSel = (k: string) => selectionKeys.includes(k);
   const active = (k: string) => viewState[k] != null && viewState[k] !== '';
 
@@ -243,8 +246,14 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     if (!object || !layer) return null;
     const tpl = templates[layer.id];
     if (!tpl) return null;
+    // GeoJsonLayer picks return a Feature; the source row columns live under
+    // `object.properties`, so resolve tokens against properties first, then the
+    // object itself (scatterplot/path picks carry columns on the object).
+    const src = object.properties && typeof object.properties === 'object'
+      ? { ...object, ...object.properties }
+      : object;
     return {
-      html: renderTooltip(tpl, object),
+      html: renderTooltip(tpl, src),
       style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
     };
   }, [templates]);

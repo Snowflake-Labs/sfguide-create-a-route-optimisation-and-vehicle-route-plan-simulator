@@ -791,16 +791,24 @@ $$;
 
 -- Live cannibalisation: ONE ORS call for the selected candidate + band, then the
 -- captured households are assigned to their nearest OWNED store (Voronoi) and the
--- transfer math (capture 0.5, split by Home Visit / Sample / Walk-in) is done
--- server-side. Both the Site Impact metrics cards and the "revenue transfer by
--- existing store" table read from this single function, so the candidate isochrone
--- is computed once per panel instead of being duplicated inline in each query.
--- The ST_WITHIN is evaluated once per cell (in incell) before the cross join.
--- Uses the array + 'time' (seconds) ISOCHRONES overload with LATERAL FLATTEN
--- (same as LIVE_ZIP_BANDS): it returns in ~1s vs ~70s for the 5-arg scalar
--- ISOCHRONES(profile, lon, lat, minutes, region) overload, which was the cause
--- of the 60s statement-timeout on this view.
-CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+-- transfer math is done server-side. Both the Site Impact metrics cards and the
+-- "revenue transfer by existing store" table read from this single function, so
+-- the candidate isochrone is computed once per panel instead of being duplicated
+-- inline in each query. The ST_WITHIN is evaluated once per cell (in incell)
+-- before the cross join. Uses the array + 'time' (seconds) ISOCHRONES overload
+-- with LATERAL FLATTEN (same as LIVE_ZIP_BANDS): it returns in ~1s vs ~70s for the
+-- 5-arg scalar ISOCHRONES overload, which was the cause of the 60s timeout.
+--
+-- Finance is user-driven (not synthetic ANNUAL_REVENUE/ANNUAL_EBITDA): the caller
+-- supplies annual value per household, EBITDA margin, and capture rate, so:
+--   revenue        = captured_hh * P_VALUE_PER_HH * P_CAPTURE_RATE
+--   ebitda_transfer= revenue * P_EBITDA_MARGIN
+--   home/sample/walk= revenue * per-store interaction split (HV/SAMPLE/WALKIN_PCT)
+-- P_EBITDA_MARGIN and P_CAPTURE_RATE are passed as fractions (0..1).
+DROP FUNCTION IF EXISTS FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR);
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
+  P_VALUE_PER_HH FLOAT, P_EBITDA_MARGIN FLOAT, P_CAPTURE_RATE FLOAT)
 RETURNS TABLE (STORE_ID VARCHAR, POI_NAME VARCHAR, HOUSEHOLDS INT, TRANSFER_PCT NUMBER(6,1),
                REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0),
                WALK_IN NUMBER(18,0), EBITDA_TRANSFER NUMBER(18,0))
@@ -819,7 +827,7 @@ $$
       LATERAL FLATTEN(input => resp.RESPONSE:features) f
   ),
   owned AS (
-    SELECT STORE_ID, POI_NAME, LON, LAT, ANNUAL_REVENUE, ANNUAL_EBITDA,
+    SELECT STORE_ID, POI_NAME, LON, LAT,
            HV_PCT, SAMPLE_PCT, WALKIN_PCT, REFERENCE_HH
     FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
     WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
@@ -836,15 +844,21 @@ $$
              ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(o.LON, o.LAT))) rn
       FROM incell ic CROSS JOIN owned o
     ) WHERE rn = 1 GROUP BY OWN_ID
+  ),
+  calc AS (
+    SELECT o.STORE_ID, o.POI_NAME, cap.cap_hh,
+           ROUND(100 * cap.cap_hh / NULLIF(o.REFERENCE_HH, 0), 1) AS transfer_pct,
+           cap.cap_hh * P_VALUE_PER_HH * P_CAPTURE_RATE AS rev,
+           o.HV_PCT, o.SAMPLE_PCT, o.WALKIN_PCT
+    FROM captured cap JOIN owned o ON o.STORE_ID = cap.OWN_ID
   )
-  SELECT o.STORE_ID, o.POI_NAME, cap.cap_hh AS households,
-         ROUND(100 * cap.cap_hh / NULLIF(o.REFERENCE_HH, 0), 1) AS transfer_pct,
-         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5) AS revenue,
-         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.HV_PCT) AS home_visit,
-         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.SAMPLE_PCT) AS sample_rev,
-         ROUND(o.ANNUAL_REVENUE * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5 * o.WALKIN_PCT) AS walk_in,
-         ROUND(o.ANNUAL_EBITDA * (cap.cap_hh / NULLIF(o.REFERENCE_HH, 0)) * 0.5) AS ebitda_transfer
-  FROM captured cap JOIN owned o ON o.STORE_ID = cap.OWN_ID
+  SELECT STORE_ID, POI_NAME, cap_hh AS households, transfer_pct,
+         ROUND(rev)::NUMBER(18,0) AS revenue,
+         ROUND(rev * HV_PCT)::NUMBER(18,0) AS home_visit,
+         ROUND(rev * SAMPLE_PCT)::NUMBER(18,0) AS sample_rev,
+         ROUND(rev * WALKIN_PCT)::NUMBER(18,0) AS walk_in,
+         ROUND(rev * P_EBITDA_MARGIN)::NUMBER(18,0) AS ebitda_transfer
+  FROM calc
 $$;
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
@@ -866,9 +880,9 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_ZIP_BANDS(VARCHAR, VARCHAR) TO R
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
-GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_USER;
-GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
-GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG

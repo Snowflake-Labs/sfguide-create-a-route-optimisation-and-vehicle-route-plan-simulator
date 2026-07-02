@@ -3093,29 +3093,32 @@
   "site_impact": {
     "label": "Site Impact",
     "category": "Location",
-    "description": "Cannibalisation what-if: pick a candidate site and a drive-time band to see how much revenue and EBITDA it draws from the existing estate, split by interaction type. Commercial figures are synthetic proxies.",
+    "description": "Cannibalisation what-if: pick a candidate site and a drive-time band to see how much revenue and EBITDA it draws from the existing estate, split by interaction type. Revenue and EBITDA are driven by your value-per-household, EBITDA-margin and capture-rate inputs.",
     "agentKnowledge": {
       "preferredTool": "query_location",
       "keyMetrics": ["cannibalised revenue and EBITDA", "shared households", "existing stores impacted"],
       "exampleQuestions": ["How much would the candidate site cannibalise within a 20-minute drive?", "Which existing store loses the most revenue to the new site?"],
-      "gotchas": "Drive-time bands are nested what-if scenarios; never sum transfer across bands for the same candidate and store pair. Revenue, EBITDA and Home Visit / Sample / Walk-in splits are synthetic proxies derived from address density, not real sales."
+      "gotchas": "Drive-time bands are nested what-if scenarios; never sum transfer across bands for the same candidate and store pair. Household counts are real (address density); revenue and EBITDA are derived from the user-supplied value per household, capture rate and EBITDA margin, and the Home Visit / Sample / Walk-in split percentages come from the store estate."
     },
     "layout": {
       "default": {
-        "columns": "360px 1fr",
-        "rows": "auto auto $map auto",
-        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"transfers map\"\n\"ziptable ziptable\""
+        "columns": "repeat(6, 1fr)",
+        "rows": "auto auto auto $map auto",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rev rev margin margin capture capture\"\n\"transfers transfers transfers map map map\"\n\"ziptable ziptable ziptable ziptable ziptable ziptable\""
       }
     },
     "areas": {
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT STORE_ID) AS impacted, COALESCE(SUM(HOUSEHOLDS),0) AS shared_hh, COALESCE(SUM(REVENUE),0) AS transfer_rev, COALESCE(SUM(EBITDA_TRANSFER),0) AS transfer_ebitda FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
+          "query": "SELECT COUNT(DISTINCT STORE_ID) AS impacted, COALESCE(SUM(HOUSEHOLDS),0) AS shared_hh, COALESCE(SUM(REVENUE),0) AS transfer_rev, COALESCE(SUM(EBITDA_TRANSFER),0) AS transfer_ebitda FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100))",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
-            "selected_candidate": "viewState.selected_candidate"
+            "selected_candidate": "viewState.selected_candidate",
+            "value_per_hh": "viewState.value_per_hh",
+            "ebitda_margin": "viewState.ebitda_margin",
+            "capture_rate": "viewState.capture_rate"
           },
           "mapping": {
             "metrics": [
@@ -3141,6 +3144,7 @@
           {
             "name": "band",
             "label": "Drive-time band",
+            "required": true,
             "data": {
               "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
             },
@@ -3148,15 +3152,46 @@
           }
         ]
       },
+      "rev": {
+        "component": "Slider",
+        "config": { "label": "Value per household ($/yr)", "min": 50, "max": 5000, "step": 50, "default": 500 },
+        "emits": { "value_per_hh": "filter" }
+      },
+      "margin": {
+        "component": "Slider",
+        "config": { "label": "EBITDA margin (%)", "min": 0, "max": 100, "step": 1, "default": 20 },
+        "emits": { "ebitda_margin": "filter" }
+      },
+      "capture": {
+        "component": "Slider",
+        "config": { "label": "Capture rate (%)", "min": 0, "max": 100, "step": 5, "default": 50 },
+        "emits": { "capture_rate": "filter" }
+      },
       "transfers": {
-        "component": "Table",
-        "config": { "title": "Revenue transfer by existing store (selected band)" },
+        "component": "ClickableTable",
+        "config": {
+          "title": "Revenue transfer by existing store (click to highlight)",
+          "rowKey": "store_id",
+          "columns": [
+            { "field": "store", "header": "Store" },
+            { "field": "households", "header": "Households" },
+            { "field": "transfer_pct", "header": "Transfer %" },
+            { "field": "revenue", "header": "Revenue" },
+            { "field": "home_visit", "header": "Home visit" },
+            { "field": "sample_rev", "header": "Sample" },
+            { "field": "walk_in", "header": "Walk-in" }
+          ]
+        },
+        "emits": { "selected_store": "highlight" },
         "data": {
-          "query": "SELECT POI_NAME AS store, HOUSEHOLDS AS households, TRANSFER_PCT AS transfer_pct, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) ORDER BY revenue DESC LIMIT 20",
+          "query": "SELECT STORE_ID AS store_id, POI_NAME AS store, HOUSEHOLDS AS households, TRANSFER_PCT AS transfer_pct, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
-            "selected_candidate": "viewState.selected_candidate"
+            "selected_candidate": "viewState.selected_candidate",
+            "value_per_hh": "viewState.value_per_hh",
+            "ebitda_margin": "viewState.ebitda_margin",
+            "capture_rate": "viewState.capture_rate"
           }
         }
       },
@@ -3169,7 +3204,10 @@
             { "label": "ZIP <= 25 min", "color": [217, 239, 139, 150] },
             { "label": "ZIP <= 45 min", "color": [253, 174, 97, 160] },
             { "label": "ZIP 60 min", "color": [244, 109, 67, 160] },
-            { "label": "Candidate band ring", "color": [209, 55, 78, 220] }
+            { "label": "Candidate band ring", "color": [41, 181, 232, 230], "shape": "line" },
+            { "label": "Existing store", "color": [41, 181, 232, 200] },
+            { "label": "Candidate site", "color": [29, 78, 137, 255] },
+            { "label": "Selected store", "color": [245, 158, 11, 255] }
           ],
           "layers": [
             {
@@ -3177,6 +3215,7 @@
               "id": "zip-drivetime-choropleth",
               "geojsonColumn": "geo",
               "colorColumn": "band_min",
+              "noFit": true,
               "colorMap": {
                 "10": [26, 152, 80, 150],
                 "15": [102, 189, 99, 150],
@@ -3190,7 +3229,7 @@
               "lineColor": [120, 120, 120, 120],
               "lineWidth": 1,
               "pickable": true,
-              "tooltip": "<b>ZIP {zip}</b><br/>{band_min} min drive<br/>Pop {population}",
+              "tooltip": "<b>ZIP {zip}</b><br/>Within {band_min} min drive<br/>Pop {population}",
               "data": {
                 "query": "SELECT ZIP AS zip, BAND_MIN AS band_min, POPULATION AS population, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
                 "params": {
@@ -3204,10 +3243,12 @@
               "id": "candidate-isochrone",
               "geojsonColumn": "geo",
               "fillColor": [0, 0, 0, 0],
-              "lineColor": [209, 55, 78, 230],
+              "lineColor": [41, 181, 232, 230],
               "lineWidth": 3,
+              "pickable": true,
+              "tooltip": "Drive-time band: <= {band_min} min",
               "data": {
-                "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(TO_GEOGRAPHY(f.value:geometry))::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LON FROM pt),(SELECT LAT FROM pt))),ARRAY_CONSTRUCT((SELECT band FROM pt)*60),'time',(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) resp, LATERAL FLATTEN(input => resp.RESPONSE:features) f WHERE f.value:geometry IS NOT NULL",
+                "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT (SELECT band FROM pt) AS band_min, ST_ASGEOJSON(TO_GEOGRAPHY(f.value:geometry))::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LON FROM pt),(SELECT LAT FROM pt))),ARRAY_CONSTRUCT((SELECT band FROM pt)*60),'time',(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) resp, LATERAL FLATTEN(input => resp.RESPONSE:features) f WHERE f.value:geometry IS NOT NULL",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
@@ -3223,6 +3264,9 @@
               "radius": 120,
               "radiusMinPixels": 4,
               "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 220],
+              "lineWidthMinPixels": 1,
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>{role}",
               "fillColor": {
@@ -3233,12 +3277,30 @@
                 "baseColumn": "role",
                 "basePalette": {
                   "OWNED": [41, 181, 232, 200],
-                  "CANDIDATE": [209, 55, 78, 220]
+                  "CANDIDATE": [29, 78, 137, 255]
                 }
               },
               "data": {
                 "query": "SELECT STORE_ID AS store_id, POI_NAME AS name, STORE_ROLE AS role, LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region",
                 "params": { "region": "context.region" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "selected-store-ring",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 220,
+              "radiusMinPixels": 10,
+              "radiusMaxPixels": 18,
+              "stroked": true,
+              "lineColor": [245, 158, 11, 255],
+              "lineWidthMinPixels": 3,
+              "fillColor": [245, 158, 11, 45],
+              "pickable": false,
+              "data": {
+                "query": "SELECT LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region AND STORE_ID = :selected_store",
+                "params": { "region": "context.region", "selected_store": "viewState.selected_store" }
               }
             }
           ]

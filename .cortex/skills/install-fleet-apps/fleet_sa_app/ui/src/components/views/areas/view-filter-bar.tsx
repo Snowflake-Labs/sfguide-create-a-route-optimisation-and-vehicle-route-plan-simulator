@@ -1,11 +1,15 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 
 interface FilterDef {
   name: string;
   label?: string;
+  // When true, omit the "All" option and seed the first option so a concrete
+  // value is always selected (dependent queries never see a null/empty filter).
+  required?: boolean;
   data: {
     query: string;
     params?: Record<string, string>;
@@ -41,6 +45,16 @@ function FilterSelect({
 
   const options = data?.rows || [];
 
+  // Required filters have no "All" option: once options load, seed the first
+  // value so dependent queries always have a concrete band/candidate.
+  useEffect(() => {
+    if (!filter.required || !emitKey) return;
+    if ((viewState[emitKey] ?? '') !== '') return;
+    const first = options[0]?.[valueField];
+    if (first != null) updateViewState({ [emitKey]: String(first) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter.required, emitKey, options, valueField]);
+
   const handleChange = (value: string) => {
     if (emitKey) {
       updateViewState({ [emitKey]: value || null });
@@ -68,7 +82,7 @@ function FilterSelect({
           outline: 'none',
         }}
       >
-        <option value="">All</option>
+        {!filter.required && <option value="">All</option>}
         {options.map((row, i) => (
           <option key={i} value={String(row[valueField] ?? '')}>
             {String(row[labelField] ?? row[valueField] ?? '')}
