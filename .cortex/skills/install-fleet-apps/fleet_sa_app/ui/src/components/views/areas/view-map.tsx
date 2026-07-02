@@ -5,7 +5,7 @@
 // useViewData (so :params resolve from store context/viewState and auto-refetch
 // on region/vehicle change). Register as `Map` in view-renderer AREA_COMPONENTS.
 
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
@@ -129,30 +129,82 @@ function renderTooltip(template: string, object: Record<string, any>): string {
 
 const WORLD_FALLBACK = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 
-/** Absolutely-positioned legend card overlay, driven by config.legend. */
-function MapLegend({ items }: { items: LegendItem[] }) {
-  const rgba = (c: LegendItem['color']) => `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})`;
+/** Shared card chrome for the map overlays (legend + toggles). Collapsible via a
+ *  clickable header with a chevron. `corner` positions the card. */
+function OverlayCard({
+  title, corner, children,
+}: { title: string; corner: 'bottom-left' | 'top-right'; children: ReactNode }) {
+  const [open, setOpen] = useState(true);
+  const pos =
+    corner === 'bottom-left'
+      ? { bottom: 12, left: 12 }
+      : { top: 12, right: 12 };
   return (
     <div
       style={{
-        position: 'absolute', bottom: 12, left: 12, zIndex: 2,
+        position: 'absolute', zIndex: 2, ...pos,
         background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(4px)',
         border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '8px',
-        boxShadow: '0 1px 4px rgba(15,23,42,0.12)', padding: '8px 10px',
-        fontSize: '11px', color: 'var(--text-secondary, #4b5563)', pointerEvents: 'none',
+        boxShadow: '0 1px 4px rgba(15,23,42,0.12)',
+        fontSize: '11px', color: 'var(--text-secondary, #4b5563)', pointerEvents: 'auto',
+        minWidth: '120px',
       }}
     >
-      {items.map((it, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '2px 0' }}>
-          {it.shape === 'line' ? (
-            <span style={{ width: '16px', height: '3px', borderRadius: '2px', background: rgba(it.color), flex: '0 0 auto' }} />
-          ) : (
-            <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: rgba(it.color), flex: '0 0 auto' }} />
-          )}
-          <span>{it.label}</span>
-        </div>
-      ))}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+          width: '100%', padding: '6px 10px', background: 'transparent', border: 'none',
+          cursor: 'pointer', font: 'inherit', color: 'var(--text-primary, #111827)',
+          fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em', fontSize: '10px',
+        }}
+      >
+        <span>{title}</span>
+        <span style={{ fontSize: '10px' }}>{open ? '\u25be' : '\u25b8'}</span>
+      </button>
+      {open ? <div style={{ padding: '2px 10px 8px' }}>{children}</div> : null}
     </div>
+  );
+}
+
+/** Legend overlay driven by config.legend. Supports discrete dot/line swatches
+ *  and continuous colour-gradient bars (LegendItem.gradient). Collapsible. */
+function MapLegend({ items }: { items: LegendItem[] }) {
+  const rgba = (c: LegendItem['color']) =>
+    c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})` : 'transparent';
+  return (
+    <OverlayCard title="Legend" corner="bottom-left">
+      {items.map((it, i) =>
+        it.gradient?.length ? (
+          <div key={i} style={{ padding: '4px 0' }}>
+            <div style={{ marginBottom: '3px' }}>{it.label}</div>
+            <div
+              style={{
+                width: '124px', height: '10px', borderRadius: '3px',
+                border: '1px solid rgba(15,23,42,0.15)',
+                background: `linear-gradient(to right, ${it.gradient.map((c) => rgba(c)).join(', ')})`,
+              }}
+            />
+            {it.minLabel || it.maxLabel ? (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px', fontSize: '10px', opacity: 0.8 }}>
+                <span>{it.minLabel ?? ''}</span>
+                <span>{it.maxLabel ?? ''}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '2px 0' }}>
+            {it.shape === 'line' ? (
+              <span style={{ width: '16px', height: '3px', borderRadius: '2px', background: rgba(it.color), flex: '0 0 auto' }} />
+            ) : (
+              <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: rgba(it.color), flex: '0 0 auto' }} />
+            )}
+            <span>{it.label}</span>
+          </div>
+        ),
+      )}
+    </OverlayCard>
   );
 }
 
@@ -172,20 +224,12 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div
-      style={{
-        position: 'absolute', top: 12, right: 12, zIndex: 2,
-        background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(4px)',
-        border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '8px',
-        boxShadow: '0 1px 4px rgba(15,23,42,0.12)', padding: '8px 10px',
-        fontSize: '12px', color: 'var(--text-secondary, #4b5563)', pointerEvents: 'auto',
-      }}
-    >
+    <OverlayCard title="Layers" corner="top-right">
       {toggles.map((t) => {
         const v = viewState[t.key];
         const checked = v != null ? v !== false && v !== 'false' : (t.default ?? true);
         return (
-          <label key={t.key} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '3px 0', cursor: 'pointer' }}>
+          <label key={t.key} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '3px 0', cursor: 'pointer', fontSize: '12px' }}>
             <input
               type="checkbox"
               checked={checked}
@@ -196,7 +240,7 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
           </label>
         );
       })}
-    </div>
+    </OverlayCard>
   );
 }
 

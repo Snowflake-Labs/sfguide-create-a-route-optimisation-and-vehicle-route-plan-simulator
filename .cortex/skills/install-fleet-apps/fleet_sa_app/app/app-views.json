@@ -3272,19 +3272,16 @@
           "noPad": true,
           "toggles": [
             { "key": "show_zip", "label": "ZIP drive-time areas", "default": true },
-            { "key": "show_overlap", "label": "Overlap zones", "default": true }
+            { "key": "show_overlap", "label": "Overlap zones", "default": true },
+            { "key": "show_selected_store", "label": "Selected store catchment", "default": true }
           ],
           "legend": [
-            { "label": "ZIP <= 15 min", "color": [102, 189, 99, 150] },
-            { "label": "ZIP <= 25 min", "color": [217, 239, 139, 150] },
-            { "label": "ZIP <= 45 min", "color": [253, 174, 97, 160] },
-            { "label": "ZIP 60 min", "color": [244, 109, 67, 160] },
+            { "label": "ZIP drive-time", "gradient": [[26, 152, 80, 150], [102, 189, 99, 150], [166, 217, 106, 150], [217, 239, 139, 150], [254, 224, 139, 150], [253, 174, 97, 160], [244, 109, 67, 160]], "minLabel": "10 min", "maxLabel": "60 min" },
+            { "label": "Overlap intensity", "gradient": [[254, 224, 210, 190], [165, 15, 21, 210]], "minLabel": "low", "maxLabel": "high" },
             { "label": "Candidate band ring", "color": [41, 181, 232, 230], "shape": "line" },
             { "label": "Existing store", "color": [41, 181, 232, 200] },
             { "label": "Candidate site", "color": [29, 78, 137, 255] },
-            { "label": "Selected store", "color": [245, 158, 11, 255] },
-            { "label": "Overlap intensity (low)", "color": [254, 224, 210, 160] },
-            { "label": "Overlap intensity (high)", "color": [165, 15, 21, 200] },
+            { "label": "Selected store catchment", "color": [124, 58, 237, 255], "shape": "line" },
             { "label": "Selected overlap", "color": [245, 158, 11, 255], "shape": "line" }
           ],
           "layers": [
@@ -3314,24 +3311,6 @@
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate"
-                }
-              }
-            },
-            {
-              "type": "geojson",
-              "id": "candidate-isochrone",
-              "geojsonColumn": "geo",
-              "fillColor": [0, 0, 0, 0],
-              "lineColor": [41, 181, 232, 230],
-              "lineWidth": 3,
-              "pickable": true,
-              "tooltip": "Drive-time band: <= {band_min} min",
-              "data": {
-                "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT (SELECT band FROM pt) AS band_min, ST_ASGEOJSON(TO_GEOGRAPHY(f.value:geometry))::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LON FROM pt),(SELECT LAT FROM pt))),ARRAY_CONSTRUCT((SELECT band FROM pt)*60),'time',(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) resp, LATERAL FLATTEN(input => resp.RESPONSE:features) f WHERE f.value:geometry IS NOT NULL",
-                "params": {
-                  "region": "context.region",
-                  "selected_candidate": "viewState.selected_candidate",
-                  "selected_band": "viewState.selected_band"
                 }
               }
             },
@@ -3380,24 +3359,20 @@
             },
             {
               "type": "geojson",
-              "id": "transfer-store-overlap",
+              "id": "selected-store-isochrone",
               "geojsonColumn": "geo",
               "noFit": true,
-              "visibleWhen": "show_overlap",
-              "fillColor": [245, 158, 11, 55],
-              "lineColor": [217, 119, 6, 255],
+              "visibleWhen": "show_selected_store",
+              "fillColor": [139, 92, 246, 45],
+              "lineColor": [124, 58, 237, 255],
               "lineWidth": 3,
               "pickable": true,
-              "tooltip": "<b>{owned_store}</b><br/>Overlap with selected candidate<br/>Households {households}<br/>Cannibalised revenue {cannibalised_revenue}",
+              "tooltip": "<b>{poi_name}</b><br/>Full drive-time catchment: <= {band_min} min",
               "data": {
-                "query": "SELECT OWNED_STORE AS owned_store, HOUSEHOLDS AS households, CANNIBALISED_REVENUE AS cannibalised_revenue, ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OWNED_STORE_ID = :selected_store",
+                "query": "SELECT POI_NAME AS poi_name, BAND_MIN AS band_min, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE STORE_ID = :selected_store",
                 "params": {
                   "region": "context.region",
-                  "selected_candidate": "viewState.selected_candidate",
                   "selected_band": "viewState.selected_band",
-                  "value_per_hh": "viewState.value_per_hh",
-                  "ebitda_margin": "viewState.ebitda_margin",
-                  "capture_rate": "viewState.capture_rate",
                   "selected_store": "viewState.selected_store"
                 }
               }
@@ -3436,17 +3411,36 @@
               "id": "selected-store-ring",
               "lng": "lng",
               "lat": "lat",
+              "visibleWhen": "show_selected_store",
               "radius": 220,
               "radiusMinPixels": 10,
               "radiusMaxPixels": 18,
               "stroked": true,
-              "lineColor": [245, 158, 11, 255],
+              "lineColor": [124, 58, 237, 255],
               "lineWidthMinPixels": 3,
-              "fillColor": [245, 158, 11, 45],
+              "fillColor": [139, 92, 246, 45],
               "pickable": false,
               "data": {
                 "query": "SELECT LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region AND STORE_ID = :selected_store",
                 "params": { "region": "context.region", "selected_store": "viewState.selected_store" }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "candidate-isochrone",
+              "geojsonColumn": "geo",
+              "fillColor": [0, 0, 0, 0],
+              "lineColor": [41, 181, 232, 230],
+              "lineWidth": 3,
+              "pickable": true,
+              "tooltip": "Drive-time band: <= {band_min} min",
+              "data": {
+                "query": "WITH sel AS (SELECT COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)) AS cid, COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20) AS band), pt AS (SELECT s.LON, s.LAT, x.band FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT (SELECT band FROM pt) AS band_min, ST_ASGEOJSON(TO_GEOGRAPHY(f.value:geometry))::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LON FROM pt),(SELECT LAT FROM pt))),ARRAY_CONSTRUCT((SELECT band FROM pt)*60),'time',(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) resp, LATERAL FLATTEN(input => resp.RESPONSE:features) f WHERE f.value:geometry IS NOT NULL",
+                "params": {
+                  "region": "context.region",
+                  "selected_candidate": "viewState.selected_candidate",
+                  "selected_band": "viewState.selected_band"
+                }
               }
             }
           ]

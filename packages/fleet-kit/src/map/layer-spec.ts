@@ -133,9 +133,16 @@ export interface MapViewStateSpec {
 /** One entry in a map legend: a labeled color swatch. */
 export interface LegendItem {
   label: string;
-  color: ColorRGBA;
+  /** Swatch colour; optional when `gradient` is set (gradient items omit it). */
+  color?: ColorRGBA;
   /** Swatch shape; defaults to 'dot'. */
   shape?: 'dot' | 'line';
+  /** When set, render a horizontal colour-gradient bar instead of a swatch. */
+  gradient?: ColorRGBA[];
+  /** Label shown under the left end of the gradient bar. */
+  minLabel?: string;
+  /** Label shown under the right end of the gradient bar. */
+  maxLabel?: string;
 }
 
 /** One interactive layer-toggle checkbox rendered as a clickable map overlay. */
