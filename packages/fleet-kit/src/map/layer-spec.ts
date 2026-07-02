@@ -138,6 +138,15 @@ export interface LegendItem {
   shape?: 'dot' | 'line';
 }
 
+/** One interactive layer-toggle checkbox rendered as a clickable map overlay. */
+export interface MapToggleItem {
+  /** viewState key written on change (matches a layer's `visibleWhen`). */
+  key: string;
+  label: string;
+  /** Initial checked state seeded into viewState once; defaults to true. */
+  default?: boolean;
+}
+
 /** `config` block of a `component: Map` area in an SA view YAML. */
 export interface MapAreaConfig {
   layers: LayerSpec[];
@@ -149,4 +158,6 @@ export interface MapAreaConfig {
   fallback?: MapViewStateSpec;
   /** Optional legend rendered as an overlay card on the map. */
   legend?: LegendItem[];
+  /** Optional interactive layer-toggle checkboxes rendered as a map overlay. */
+  toggles?: MapToggleItem[];
 }

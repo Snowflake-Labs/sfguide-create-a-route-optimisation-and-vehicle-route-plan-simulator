@@ -9,7 +9,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
-import type { LayerSpec, MapAreaConfig, LegendItem } from '@/lib/map/layer-spec';
+import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem } from '@/lib/map/layer-spec';
 import { compileLayer, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
@@ -156,6 +156,50 @@ function MapLegend({ items }: { items: LegendItem[] }) {
   );
 }
 
+/** Absolutely-positioned interactive layer-toggle overlay (top-right), driven by
+ *  config.toggles. Reads/writes the same viewState keys layers gate on via
+ *  visibleWhen, so ticking a box shows/hides (and stops fetching) that layer. */
+function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
+  const updateViewState = useAppStore((s) => s.updateViewState);
+  const viewState = useAppStore((s) => s.panel.viewState);
+  // Seed each toggle's default into viewState once so gated layers have a value.
+  useEffect(() => {
+    const seed: Record<string, unknown> = {};
+    for (const t of toggles) {
+      if (viewState[t.key] == null) seed[t.key] = t.default ?? true;
+    }
+    if (Object.keys(seed).length) updateViewState(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <div
+      style={{
+        position: 'absolute', top: 12, right: 12, zIndex: 2,
+        background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(4px)',
+        border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '8px',
+        boxShadow: '0 1px 4px rgba(15,23,42,0.12)', padding: '8px 10px',
+        fontSize: '12px', color: 'var(--text-secondary, #4b5563)', pointerEvents: 'auto',
+      }}
+    >
+      {toggles.map((t) => {
+        const v = viewState[t.key];
+        const checked = v != null ? v !== false && v !== 'false' : (t.default ?? true);
+        return (
+          <label key={t.key} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '3px 0', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => updateViewState({ [t.key]: e.target.checked })}
+              style={{ cursor: 'pointer', width: '14px', height: '14px' }}
+            />
+            <span>{t.label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps) {
   const config = areaConfig.config;
   const specs = config.layers ?? [];
@@ -290,6 +334,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         onHover={onHover}
       />
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
+      {config.toggles?.length ? <MapToggles toggles={config.toggles} /> : null}
     </div>
   );
 }
