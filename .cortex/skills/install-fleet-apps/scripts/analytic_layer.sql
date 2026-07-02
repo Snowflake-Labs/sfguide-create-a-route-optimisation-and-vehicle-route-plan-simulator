@@ -1216,7 +1216,7 @@ $$;
 CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(
   P_CLOSED_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
   P_VALUE_PER_HH FLOAT, P_RETENTION_RATE FLOAT)
-RETURNS TABLE (GAINING_STORE VARCHAR, HOUSEHOLDS INT, PCT_OF_CLOSED NUMBER(6,1),
+RETURNS TABLE (GAIN_ID VARCHAR, GAINING_STORE VARCHAR, HOUSEHOLDS INT, PCT_OF_CLOSED NUMBER(6,1),
                REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0), WALK_IN NUMBER(18,0))
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -1247,7 +1247,7 @@ $$
     QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON, sv.LAT)), sv.STORE_ID) = 1
   ),
   agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1)
-  SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households,
+  SELECT a.GAIN_ID AS gain_id, g.POI_NAME AS gaining_store, a.hh_inh AS households,
          ROUND(100 * a.hh_inh / NULLIF((SELECT total_in FROM tot), 0), 1)::NUMBER(6,1) AS pct_of_closed,
          ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE)::NUMBER(18,0) AS revenue,
          ROUND(a.hh_inh * P_VALUE_PER_HH * P_RETENTION_RATE * cs.HV_PCT)::NUMBER(18,0) AS home_visit,

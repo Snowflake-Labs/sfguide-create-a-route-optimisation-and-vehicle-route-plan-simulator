@@ -3620,6 +3620,7 @@
           {
             "name": "closed",
             "label": "Store to close",
+            "required": true,
             "data": {
               "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'OWNED' ORDER BY POI_NAME"
             },
@@ -3628,6 +3629,7 @@
           {
             "name": "closedband",
             "label": "Overlap drive-time band",
+            "required": true,
             "data": {
               "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
             },
@@ -3651,10 +3653,24 @@
         "emits": { "retention_rate": "filter" }
       },
       "gainers": {
-        "component": "Table",
-        "config": { "title": "Households and revenue inherited by surviving stores", "fitRows": 5 },
+        "component": "ClickableTable",
+        "config": {
+          "title": "Households and revenue inherited by surviving stores (click to highlight)",
+          "fitRows": 5,
+          "rowKey": "store_id",
+          "columns": [
+            { "field": "gaining_store", "header": "Surviving store" },
+            { "field": "households", "header": "Households" },
+            { "field": "pct_of_closed", "header": "% of closed" },
+            { "field": "revenue", "header": "Revenue" },
+            { "field": "home_visit", "header": "Home visit" },
+            { "field": "sample_rev", "header": "Sample" },
+            { "field": "walk_in", "header": "Walk-in" }
+          ]
+        },
+        "emits": { "selected_store": "highlight" },
         "data": {
-          "query": "SELECT GAINING_STORE AS gaining_store, HOUSEHOLDS AS households, PCT_OF_CLOSED AS pct_of_closed, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
+          "query": "SELECT GAIN_ID AS store_id, GAINING_STORE AS gaining_store, HOUSEHOLDS AS households, PCT_OF_CLOSED AS pct_of_closed, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -3671,7 +3687,8 @@
           "toggles": [
             { "key": "show_coverage", "label": "Coverage heatmap", "default": true },
             { "key": "show_catchments", "label": "Surviving-store catchments", "default": false },
-            { "key": "show_zip_risk", "label": "Postcode retained / at-risk", "default": false }
+            { "key": "show_zip_risk", "label": "Postcode retained / at-risk", "default": false },
+            { "key": "show_selected_store", "label": "Selected surviving store catchment", "default": true }
           ],
           "legend": [
             { "label": "Surviving-store coverage", "gradient": [[215, 48, 39, 200], [254, 224, 139, 180], [26, 152, 80, 160]], "minLabel": "at risk", "maxLabel": "well covered" },
@@ -3681,6 +3698,7 @@
             { "label": "Postcode at risk", "color": [245, 158, 11, 80] },
             { "label": "Selected overlap", "color": [245, 158, 11, 255], "shape": "line" },
             { "label": "Surviving store (color per store)", "color": [31, 119, 180, 210] },
+            { "label": "Selected surviving store catchment", "color": [124, 58, 237, 255], "shape": "line" },
             { "label": "Closed store", "color": [255, 200, 0, 255] }
           ],
           "layers": [
@@ -3789,6 +3807,48 @@
                   "value_per_hh": "viewState.value_per_hh",
                   "ebitda_margin": "viewState.ebitda_margin",
                   "retention_rate": "viewState.retention_rate"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "selected-survivor-isochrone",
+              "geojsonColumn": "geo",
+              "noFit": true,
+              "visibleWhen": "show_selected_store",
+              "fillColor": [139, 92, 246, 45],
+              "lineColor": [124, 58, 237, 255],
+              "lineWidth": 3,
+              "pickable": true,
+              "tooltip": "<b>{poi_name}</b><br/>Full drive-time catchment: <= {band_min} min",
+              "data": {
+                "query": "SELECT POI_NAME AS poi_name, BAND_MIN AS band_min, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE STORE_ID = :selected_store AND GEO IS NOT NULL",
+                "params": {
+                  "region": "context.region",
+                  "selected_closed_band": "viewState.selected_closed_band",
+                  "selected_store": "viewState.selected_store"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "selected-store-ring",
+              "lng": "lng",
+              "lat": "lat",
+              "visibleWhen": "show_selected_store",
+              "radius": 220,
+              "radiusMinPixels": 10,
+              "radiusMaxPixels": 18,
+              "stroked": true,
+              "lineColor": [124, 58, 237, 255],
+              "lineWidthMinPixels": 3,
+              "fillColor": [139, 92, 246, 45],
+              "pickable": false,
+              "data": {
+                "query": "SELECT LON AS lng, LAT AS lat FROM FLEET_APP.LOCATION.VW_STORES WHERE REGION = :region AND STORE_ID = :selected_store",
+                "params": {
+                  "region": "context.region",
+                  "selected_store": "viewState.selected_store"
                 }
               }
             },
