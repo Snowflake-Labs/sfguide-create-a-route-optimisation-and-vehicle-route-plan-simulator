@@ -2865,57 +2865,41 @@
   "catchment": {
     "label": "Catchment",
     "category": "Location",
-    "description": "Points of interest - filter by category, click a POI to highlight it and its nearby competitors.",
+    "description": "Drive-time catchment and market analysis: pick a candidate site (click a row or a point on the map), then read the live isochrone rings, reachable population / households / median income, and the venues that compete inside each band.",
+    "info": "**How to use**\n\nPick a candidate site by clicking a row in the Candidate sites list or by clicking any point on the map (greenfield). The map draws nested drive-time rings (5 / 10 / 15 min) around it and every stat below is recomputed for that site.\n\n**Live routing**\n\nIsochrones are computed at interaction time by calling OpenRouteService, never precomputed. The region's routing service must be running.\n\n**Sociodemographics**\n\nPopulation, households and median income are the real SafeGraph Census figures used by Site Impact and Closure Impact (ZIP centroids inside the drive-time polygon; income is household-weighted). These are US-only; outside the US those metrics read 0 and the Overture venue and address counts still populate. Bands are cumulative (within X minutes), so do not add rows together.",
+    "agentKnowledge": {
+      "preferredTool": "catchment",
+      "keyMetrics": ["reachable population and households", "median income", "venues in catchment", "catchment area"],
+      "exampleQuestions": ["How many people live within a 10-minute drive of this site?", "How many restaurants compete inside the 15-minute catchment?", "What is the median income of the 5-minute catchment?"],
+      "gotchas": "Drive-time bands are cumulative (within X min); never sum population or venues across band rows. Population, households and median income are real US Census figures (0 outside the US); venue and address counts come from Overture and work in any region. Isochrones are live - the region routing service must be running."
+    },
     "layout": {
       "default": {
-        "columns": "340px 1fr",
-        "rows": "auto auto $map",
-        "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\""
+        "columns": "360px 1fr",
+        "rows": "auto auto $map auto",
+        "grid": "\"metrics metrics\"\n\"filter filter\"\n\"candidates map\"\n\"bands categories\""
       }
     },
     "areas": {
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_APP.CATCHMENT.VW_POIS",
+          "query": "SELECT POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type"
+            "selected_poi": "viewState.selected_poi",
+            "anchor_lng": "viewState.anchor_lng",
+            "anchor_lat": "viewState.anchor_lat"
           },
           "mapping": {
             "metrics": [
-              {
-                "column": "pois",
-                "label": "Total POIs",
-                "format": "number"
-              },
-              {
-                "column": "categories",
-                "label": "Categories",
-                "format": "number"
-              },
-              {
-                "column": "cities",
-                "label": "Cities",
-                "format": "number"
-              },
-              {
-                "column": "states",
-                "label": "States",
-                "format": "number"
-              }
+              { "column": "population", "label": "Population <=15 min", "format": "number" },
+              { "column": "households", "label": "Households <=15 min", "format": "number" },
+              { "column": "median_income", "label": "Median income", "format": "currency" },
+              { "column": "venues", "label": "Venues <=15 min", "format": "number" },
+              { "column": "area_km2", "label": "Catchment area km2", "format": "number_2dp" }
             ]
           }
-        }
-      },
-      "density": {
-        "component": "Checkbox",
-        "config": {
-          "label": "Address density",
-          "default": false
-        },
-        "emits": {
-          "show_density": ""
         }
       },
       "filter": {
@@ -2933,20 +2917,25 @@
           }
         ]
       },
-      "pois": {
+      "candidates": {
         "component": "ClickableTable",
+        "config": {
+          "title": "Candidate sites (click to analyse)",
+          "rowKey": "poi_name",
+          "maxRows": 200,
+          "fitRows": 12,
+          "columns": [
+            { "field": "poi_name", "header": "Site" },
+            { "field": "category", "header": "Category" },
+            { "field": "city", "header": "City" }
+          ]
+        },
         "data": {
-          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 100",
+          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, CITY AS city FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 200",
           "params": {
             "selected_category": "viewState.selected_category",
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type"
+            "region": "context.region"
           }
-        },
-        "config": {
-          "rowKey": "poi_name",
-          "maxRows": 100,
-          "fitRows": 5
         },
         "emits": {
           "selected_poi": "selection"
@@ -2956,43 +2945,22 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "clickEmits": { "object": "selected_poi", "objectColumn": "poi_name", "lng": "anchor_lng", "lat": "anchor_lat" },
+          "toggles": [
+            { "key": "band_5", "label": "5 min", "default": true },
+            { "key": "band_10", "label": "10 min", "default": true },
+            { "key": "band_15", "label": "15 min", "default": true },
+            { "key": "show_density", "label": "Address density", "default": false },
+            { "key": "show_competitors", "label": "Same-category venues", "default": false }
+          ],
           "legend": [
-            {
-              "label": "POI",
-              "color": [
-                41,
-                181,
-                232,
-                160
-              ]
-            },
-            {
-              "label": "Selected POI",
-              "color": [
-                255,
-                200,
-                0,
-                255
-              ]
-            },
-            {
-              "label": "Nearby competitor",
-              "color": [
-                209,
-                55,
-                78,
-                200
-              ]
-            },
-            {
-              "label": "Address density",
-              "color": [
-                255,
-                140,
-                0,
-                200
-              ]
-            }
+            { "label": "5 min drive", "color": [29, 78, 137, 255], "shape": "line" },
+            { "label": "10 min drive", "color": [41, 181, 232, 255], "shape": "line" },
+            { "label": "15 min drive", "color": [140, 210, 240, 255], "shape": "line" },
+            { "label": "Venue", "color": [41, 181, 232, 160] },
+            { "label": "Selected site", "color": [255, 200, 0, 255] },
+            { "label": "Same-category venue", "color": [209, 55, 78, 200] },
+            { "label": "Address density", "color": [255, 140, 0, 200] }
           ],
           "layers": [
             {
@@ -3001,28 +2969,73 @@
               "hexColumn": "h3_index",
               "valueColumn": "addr",
               "extruded": false,
-              "colorScale": [
-                [
-                  255,
-                  230,
-                  180,
-                  90
-                ],
-                [
-                  255,
-                  140,
-                  0,
-                  200
-                ]
-              ],
+              "noFit": true,
+              "visibleWhen": "show_density",
+              "colorScale": [[255, 230, 180, 90], [255, 140, 0, 200]],
               "pickable": true,
               "tooltip": "Addresses: {addr}",
               "data": {
-                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND COALESCE(:show_density,'false') = 'true' GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
+                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES) GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
+                "params": { "region": "context.region" }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "ring-15",
+              "geojsonColumn": "geo",
+              "visibleWhen": "band_15",
+              "fillColor": [140, 210, 240, 16],
+              "lineColor": [140, 210, 240, 235],
+              "lineWidth": 2,
+              "pickable": true,
+              "tooltip": "<b>Within 15 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
                 "params": {
-                  "show_density": "viewState.show_density",
                   "region": "context.region",
-                  "vehicle_type": "context.vehicle_type"
+                  "selected_poi": "viewState.selected_poi",
+                  "anchor_lng": "viewState.anchor_lng",
+                  "anchor_lat": "viewState.anchor_lat"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "ring-10",
+              "geojsonColumn": "geo",
+              "visibleWhen": "band_10",
+              "fillColor": [41, 181, 232, 20],
+              "lineColor": [41, 181, 232, 245],
+              "lineWidth": 2,
+              "pickable": true,
+              "tooltip": "<b>Within 10 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(600), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+                "params": {
+                  "region": "context.region",
+                  "selected_poi": "viewState.selected_poi",
+                  "anchor_lng": "viewState.anchor_lng",
+                  "anchor_lat": "viewState.anchor_lat"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "ring-5",
+              "geojsonColumn": "geo",
+              "visibleWhen": "band_5",
+              "fillColor": [29, 78, 137, 26],
+              "lineColor": [29, 78, 137, 255],
+              "lineWidth": 3,
+              "pickable": true,
+              "tooltip": "<b>Within 5 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+                "params": {
+                  "region": "context.region",
+                  "selected_poi": "viewState.selected_poi",
+                  "anchor_lng": "viewState.anchor_lng",
+                  "anchor_lat": "viewState.anchor_lat"
                 }
               }
             },
@@ -3031,23 +3044,22 @@
               "id": "competitors",
               "lng": "lng",
               "lat": "lat",
-              "fillColor": [
-                209,
-                55,
-                78,
-                200
-              ],
-              "radius": 90,
-              "radiusMinPixels": 3,
-              "radiusMaxPixels": 8,
+              "noFit": true,
+              "visibleWhen": "show_competitors",
+              "fillColor": [209, 55, 78, 200],
+              "radius": 70,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 7,
               "pickable": true,
-              "tooltip": "<b>{poi_name}</b><br/>{category} (competitor)",
+              "tooltip": "<b>{poi_name}</b><br/>{category} (within 10 min)",
               "data": {
-                "query": "SELECT r.POI_NAME AS poi_name, r.BASIC_CATEGORY AS category, r.LONGITUDE AS lng, r.LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS r WHERE :selected_poi IS NOT NULL AND r.POI_NAME <> :selected_poi AND r.LATITUDE IS NOT NULL AND ST_DWITHIN(ST_MAKEPOINT(r.LONGITUDE, r.LATITUDE), (SELECT ST_MAKEPOINT(LONGITUDE, LATITUDE) FROM FLEET_APP.CATCHMENT.VW_POIS WHERE POI_NAME = :selected_poi LIMIT 1), 2000) LIMIT 500",
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, 10, (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS), :selected_category)) LIMIT 3000",
                 "params": {
-                  "selected_poi": "viewState.selected_poi",
                   "region": "context.region",
-                  "vehicle_type": "context.vehicle_type"
+                  "selected_poi": "viewState.selected_poi",
+                  "anchor_lng": "viewState.anchor_lng",
+                  "anchor_lat": "viewState.anchor_lat",
+                  "selected_category": "viewState.selected_category"
                 }
               }
             },
@@ -3057,36 +3069,91 @@
               "lng": "lng",
               "lat": "lat",
               "fillColor": {
-                "base": [
-                  41,
-                  181,
-                  232,
-                  160
-                ],
-                "active": [
-                  255,
-                  200,
-                  0,
-                  255
-                ],
+                "base": [41, 181, 232, 150],
+                "active": [255, 200, 0, 255],
                 "matchColumn": "poi_name",
                 "whenViewStateEquals": "selected_poi"
               },
-              "radius": 60,
+              "radius": 55,
               "radiusMinPixels": 2,
               "radiusMaxPixels": 7,
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category}",
               "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
                 "params": {
                   "selected_category": "viewState.selected_category",
-                  "region": "context.region",
-                  "vehicle_type": "context.vehicle_type"
+                  "region": "context.region"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "anchor",
+              "lng": "lng",
+              "lat": "lat",
+              "stroked": true,
+              "lineColor": [255, 200, 0, 255],
+              "lineWidthMinPixels": 3,
+              "fillColor": [255, 200, 0, 60],
+              "radius": 200,
+              "radiusMinPixels": 9,
+              "radiusMaxPixels": 16,
+              "pickable": false,
+              "data": {
+                "query": "SELECT TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT AS lng, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT AS lat WHERE :anchor_lng IS NOT NULL AND :anchor_lat IS NOT NULL",
+                "params": {
+                  "anchor_lng": "viewState.anchor_lng",
+                  "anchor_lat": "viewState.anchor_lat"
                 }
               }
             }
           ]
+        }
+      },
+      "bands": {
+        "component": "Table",
+        "config": {
+          "title": "Catchment by drive-time band (cumulative)",
+          "fitRows": 4,
+          "columns": [
+            { "field": "drive_time", "header": "Drive time" },
+            { "field": "population", "header": "Population" },
+            { "field": "households", "header": "Households" },
+            { "field": "median_income", "header": "Median income" },
+            { "field": "venues", "header": "Venues" },
+            { "field": "addresses", "header": "Addresses" },
+            { "field": "area_km2", "header": "Area km2" }
+          ]
+        },
+        "data": {
+          "query": "SELECT BAND_MIN || ' min' AS drive_time, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, ADDRESSES AS addresses, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300,600,900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS))) ORDER BY area_km2",
+          "params": {
+            "region": "context.region",
+            "selected_poi": "viewState.selected_poi",
+            "anchor_lng": "viewState.anchor_lng",
+            "anchor_lat": "viewState.anchor_lat"
+          }
+        }
+      },
+      "categories": {
+        "component": "Table",
+        "config": {
+          "title": "Venues by category (<=15 min)",
+          "fitRows": 4,
+          "columns": [
+            { "field": "category", "header": "Category" },
+            { "field": "venues", "header": "Venues" }
+          ]
+        },
+        "data": {
+          "query": "SELECT BASIC_CATEGORY AS category, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, 15, (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS))) LIMIT 15",
+          "params": {
+            "region": "context.region",
+            "selected_poi": "viewState.selected_poi",
+            "anchor_lng": "viewState.anchor_lng",
+            "anchor_lat": "viewState.anchor_lat"
+          }
         }
       }
     }
