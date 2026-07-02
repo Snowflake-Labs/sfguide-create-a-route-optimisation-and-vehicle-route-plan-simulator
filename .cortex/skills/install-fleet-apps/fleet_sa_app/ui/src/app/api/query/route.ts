@@ -70,6 +70,11 @@ function validateDynamicAllowlist(sql: string): void {
 const DYNAMIC_QUERY_TAG =
   '{"origin":"sf_sit-is-fleet","name":"oss-render-view","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
 
+// Attribution tag (AGENTS.md) for the ordinary view-rendering (non-dynamic) read
+// path - the bulk of the SA app's Snowflake traffic (dashboard panels, maps, charts).
+const STATIC_QUERY_TAG =
+  '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
 function resolveParams(sql: string, params?: Record<string, string | null>): string {
   if (!params) return sql;
   let resolved = sql;
@@ -227,7 +232,7 @@ async function handleQuery(request: NextRequest): Promise<Response> {
         queryTag: DYNAMIC_QUERY_TAG,
       });
     } else {
-      result = await executeStatement(sql);
+      result = await executeStatement(sql, { queryTag: STATIC_QUERY_TAG });
     }
     const hadHandle = !!(result.statementHandle && !result.data);
 

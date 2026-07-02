@@ -220,7 +220,7 @@ export async function ensureAssetVelocityViews(
   // Guard: RO.CONFIG must exist and carry the active-preset pointer row.
   try {
     await sqlFn(
-      `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION`,
+      `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION COMMENT = ${TRACK_RO_AV}`,
       'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
     );
     await sqlFn(

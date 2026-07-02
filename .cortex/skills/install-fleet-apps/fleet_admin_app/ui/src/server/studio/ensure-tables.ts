@@ -62,7 +62,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       SHIFT_TYPE VARCHAR(30), ORS_PROFILE VARCHAR(30),
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20),
       JOB_ID VARCHAR
-    ) COMMENT = '"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // Migration: rename legacy table for existing deploys.
     { sql: `ALTER TABLE IF EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES RENAME TO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS (

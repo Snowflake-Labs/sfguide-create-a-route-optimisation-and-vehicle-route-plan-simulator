@@ -9,6 +9,11 @@ const PAT = process.env.SNOWFLAKE_PAT || '';
 const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
 
+// Attribution tag (AGENTS.md): entity CRUD (INSERT/UPDATE) issued by the consumer
+// app is tagged so its write traffic is attributable in QUERY_HISTORY.
+const QUERY_TAG =
+  '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +104,7 @@ async function runSQL(sql: string, bindings?: Record<string, { type: string; val
     timeout: 60,
     warehouse: WAREHOUSE,
     role: ROLE,
+    parameters: { QUERY_TAG },
   };
   if (bindings) body.bindings = bindings;
 

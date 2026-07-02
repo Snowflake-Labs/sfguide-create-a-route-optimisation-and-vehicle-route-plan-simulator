@@ -5,6 +5,11 @@ import { getSnowflakeAuth } from './sf-auth';
 const warehouse = process.env.SNOWFLAKE_WAREHOUSE ?? 'COMPUTE_WH';
 const role = process.env.SNOWFLAKE_ROLE ?? 'ACCOUNTADMIN';
 
+// Attribution tag (AGENTS.md): every statement this helper runs is tagged so the
+// SA app's Snowflake traffic (workflow engine, /api/tool, /api/chat) is attributable
+// in QUERY_HISTORY. Set as a session parameter on every REST call.
+export const QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
 interface SnowflakeResponse {
   statementHandle?: string;
   resultSetMetaData?: { rowType: Array<{ name: string; type: string }> };
@@ -22,7 +27,7 @@ async function callSnowflake(sql: string, bindings?: Record<string, { type: stri
   // under load) still returns synchronously instead of going async + polling
   // past the ingress limit (which surfaces to the browser as a 504
   // "upstream request timeout" that fails JSON.parse).
-  const body: Record<string, unknown> = { statement: sql, timeout: 80, warehouse, role };
+  const body: Record<string, unknown> = { statement: sql, timeout: 80, warehouse, role, parameters: { QUERY_TAG } };
   if (bindings) body.bindings = bindings;
 
   const response = await fetch(`${auth.baseUrl}/api/v2/statements`, {
