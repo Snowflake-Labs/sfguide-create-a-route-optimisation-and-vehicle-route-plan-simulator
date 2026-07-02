@@ -1,9 +1,10 @@
 'use client';
 
-import { Suspense, Component, type ReactNode } from 'react';
+import { Suspense, Component, useState, type ReactNode } from 'react';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import { ViewPicker } from './view-picker';
+import { ViewInfoDialog } from './view-info-dialog';
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -36,11 +37,37 @@ export function ViewPanel() {
   const setDirty = useAppStore((s) => s.setDirty);
 
   const viewDef = activeViewId ? viewRegistry.get(activeViewId) : undefined;
+  const [showInfo, setShowInfo] = useState(false);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <div style={{ flexShrink: 0, padding: '12px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
-        <ViewPicker />
+      <div style={{ flexShrink: 0, padding: '12px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <ViewPicker />
+        </div>
+        {viewDef?.info && (
+          <button
+            onClick={() => setShowInfo(true)}
+            aria-label="About this view"
+            title="About this view"
+            style={{
+              flexShrink: 0,
+              width: '26px',
+              height: '26px',
+              borderRadius: '50%',
+              border: '1px solid var(--border-default, #e5e7eb)',
+              backgroundColor: 'var(--surface-primary, #fff)',
+              color: 'var(--text-secondary, #6b7280)',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: 700,
+              fontStyle: 'italic',
+              lineHeight: 1,
+            }}
+          >
+            i
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, overflow: 'auto' }}>
         {viewDef ? (
@@ -58,6 +85,9 @@ export function ViewPanel() {
           <EmptyPanelState />
         )}
       </div>
+      {showInfo && viewDef?.info && (
+        <ViewInfoDialog title={viewDef.label} content={viewDef.info} onClose={() => setShowInfo(false)} />
+      )}
     </div>
   );
 }

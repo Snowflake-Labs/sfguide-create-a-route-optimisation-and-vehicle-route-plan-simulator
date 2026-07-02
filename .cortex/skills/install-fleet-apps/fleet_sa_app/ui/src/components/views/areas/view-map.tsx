@@ -29,6 +29,9 @@ interface LayerFetcherProps {
   viewState: Record<string, unknown>;
   selectionKeys: string[];
   hovered: { layerId: string; value: unknown } | null;
+  // Whether this layer is currently toggled on (config.visibleWhen). When false
+  // the layer skips its data fetch and reports no compiled layer / fit coords.
+  visible: boolean;
   onResult: (
     index: number,
     layer: Layer | null,
@@ -86,16 +89,23 @@ function selectionFitCoords(
  * Fetches one layer's data and lifts the compiled deck.gl Layer + fit coords to
  * the parent. Renders nothing. One child per layer keeps hook order stable.
  */
-function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, onResult }: LayerFetcherProps) {
-  const { data } = useViewData(layer.data.query, layer.data.params);
+function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult }: LayerFetcherProps) {
+  // Skip the fetch entirely when the layer is toggled off (undefined query
+  // short-circuits useViewData) - avoids wasted (and sometimes expensive, e.g.
+  // live-ORS) queries for hidden layers.
+  const { data } = useViewData(visible ? layer.data.query : undefined, layer.data.params);
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
   useEffect(() => {
+    if (!visible) {
+      onResult(index, null, [], [], undefined);
+      return;
+    }
     const compiled = compileLayer(layer, rows, viewState, index, hovered);
     const fitFull = layerFitCoords(layer, rows) as LngLat[];
     const fitSel = selectionFitCoords(layer, rows, viewState, selectionKeys);
     onResult(index, compiled, fitFull, fitSel, layer.tooltip);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, viewState, selectionKeys, hovered]);
+  }, [rows, viewState, selectionKeys, hovered, visible]);
   return null;
 }
 
@@ -202,7 +212,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   // (excluding context layers); otherwise frame the full set of all layers.
   const fitCoords = useMemo<LngLat[]>(() => {
     // Collapse every layer's coords into a single bounding box (2 corner
-    // points) without spreading large arrays into push() — spreading
+    // points) without spreading large arrays into push() - spreading
     // data-sized arrays overflows the call stack. Downstream fit helpers
     // only ever derive a bounding box from coords, so 2 corners is equivalent.
     const boxFrom = (source: Record<number, LngLat[]>): LngLat[] => {
@@ -262,9 +272,16 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
 
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
-      {specs.map((ls, i) => (
-        <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} onResult={onResult} />
-      ))}
+      {specs.map((ls, i) => {
+        // A layer with config.visibleWhen renders unless its viewState value is
+        // explicitly false/'false' (defaults ON before a toggle seeds).
+        const key = (ls as { visibleWhen?: string }).visibleWhen;
+        const v = key ? viewState[key] : undefined;
+        const visible = !key || (v !== false && v !== 'false');
+        return (
+          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} />
+        );
+      })}
       <MapView
         layers={orderedLayers}
         fitTo={{ coords: fitCoords, regionKey, focusKey }}

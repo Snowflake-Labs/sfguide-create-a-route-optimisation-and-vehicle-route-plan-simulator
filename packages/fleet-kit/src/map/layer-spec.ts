@@ -50,6 +50,10 @@ interface LayerBase {
    *  layers (e.g. a full ZIP choropleth) so focusing a selection frames the
    *  selected object + its ring, not the entire context extent. */
   noFit?: boolean;
+  /** viewState key gating this layer's visibility. The layer renders unless the
+   *  value is explicitly false/'false' (so it defaults ON before a toggle seeds).
+   *  When hidden the layer skips its data fetch entirely (no wasted query). */
+  visibleWhen?: string;
 }
 
 export interface ScatterplotLayerSpec extends LayerBase {

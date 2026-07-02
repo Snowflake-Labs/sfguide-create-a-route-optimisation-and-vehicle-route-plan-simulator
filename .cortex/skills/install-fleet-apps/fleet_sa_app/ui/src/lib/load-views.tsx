@@ -22,6 +22,9 @@ interface YamlViewDef {
   label: string;
   description: string;
   hidden?: boolean;
+  // Optional markdown shown in a per-view info overlay (the "i" button in the
+  // view bar). Use for methodology / attribution notes.
+  info?: string;
   // Nav grouping section (e.g. "Core", "Optimization", "Location"). Omitted => "Core".
   category?: string;
   // Config-driven role tagging (simulated view filter). Omitted => all roles.
@@ -97,6 +100,7 @@ export function registerViewsFromConfig(
       id: view.id,
       label: interpolateTokens(view.label, display),
       description: interpolateTokens(view.description, display),
+      info: view.info ? interpolateTokens(view.info, display) : undefined,
       hidden: view.hidden || gatedOff,
       category: view.category ?? 'Core',
       roles: view.roles,

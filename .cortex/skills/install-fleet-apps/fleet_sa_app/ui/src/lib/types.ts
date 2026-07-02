@@ -53,6 +53,8 @@ export interface ViewDef {
   id: string;
   label: string;
   description: string;
+  // Optional markdown shown in the per-view info overlay ("i" button).
+  info?: string;
   component: LazyExoticComponent<ComponentType<ViewProps>>;
   hidden?: boolean;
   icon?: string;
