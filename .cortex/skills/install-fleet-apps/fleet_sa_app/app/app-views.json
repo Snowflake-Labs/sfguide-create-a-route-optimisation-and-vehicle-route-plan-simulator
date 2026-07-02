@@ -2875,7 +2875,7 @@
     },
     "layout": {
       "default": {
-        "columns": "360px 1fr",
+        "columns": "1fr 1fr",
         "rows": "auto auto $map auto",
         "grid": "\"metrics metrics\"\n\"filter filter\"\n\"candidates map\"\n\"bands categories\""
       }
@@ -2923,7 +2923,7 @@
           "title": "Candidate sites (click to analyse)",
           "rowKey": "poi_name",
           "maxRows": 200,
-          "fitRows": 12,
+          "fitRows": 5,
           "columns": [
             { "field": "poi_name", "header": "Site" },
             { "field": "category", "header": "Category" },
@@ -2950,17 +2950,25 @@
             { "key": "band_5", "label": "5 min", "default": true },
             { "key": "band_10", "label": "10 min", "default": true },
             { "key": "band_15", "label": "15 min", "default": true },
-            { "key": "show_density", "label": "Address density", "default": false },
-            { "key": "show_competitors", "label": "Same-category venues", "default": false }
+            { "key": "show_pois", "label": "Venues", "default": true },
+            { "key": "show_density", "label": "Address density", "default": false }
           ],
           "legend": [
-            { "label": "5 min drive", "color": [29, 78, 137, 255], "shape": "line" },
-            { "label": "10 min drive", "color": [41, 181, 232, 255], "shape": "line" },
-            { "label": "15 min drive", "color": [140, 210, 240, 255], "shape": "line" },
-            { "label": "Venue", "color": [41, 181, 232, 160] },
-            { "label": "Selected site", "color": [255, 200, 0, 255] },
-            { "label": "Same-category venue", "color": [209, 55, 78, 200] },
-            { "label": "Address density", "color": [255, 140, 0, 200] }
+            { "label": "5 min drive", "color": [30, 144, 255, 255], "shape": "line" },
+            { "label": "10 min drive", "color": [255, 140, 0, 255], "shape": "line" },
+            { "label": "15 min drive", "color": [138, 43, 226, 255], "shape": "line" },
+            { "label": "Selected site", "color": [255, 193, 7, 255] },
+            { "label": "Restaurant", "color": [214, 39, 40, 255] },
+            { "label": "Casual eatery", "color": [255, 127, 14, 255] },
+            { "label": "Fast food", "color": [255, 187, 120, 255] },
+            { "label": "Coffee shop", "color": [140, 86, 75, 255] },
+            { "label": "Bar", "color": [148, 103, 189, 255] },
+            { "label": "Gym", "color": [44, 160, 44, 255] },
+            { "label": "Electronics", "color": [31, 119, 180, 255] },
+            { "label": "Specialty store", "color": [23, 190, 207, 255] },
+            { "label": "Gas station", "color": [127, 127, 127, 255] },
+            { "label": "Convenience", "color": [188, 189, 34, 255] },
+            { "label": "Address density", "gradient": [[255, 230, 180, 120], [255, 140, 0, 220]], "minLabel": "Low", "maxLabel": "High" }
           ],
           "layers": [
             {
@@ -2984,8 +2992,8 @@
               "id": "ring-15",
               "geojsonColumn": "geo",
               "visibleWhen": "band_15",
-              "fillColor": [140, 210, 240, 16],
-              "lineColor": [140, 210, 240, 235],
+              "fillColor": [138, 43, 226, 32],
+              "lineColor": [138, 43, 226, 235],
               "lineWidth": 2,
               "pickable": true,
               "tooltip": "<b>Within 15 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
@@ -3004,8 +3012,8 @@
               "id": "ring-10",
               "geojsonColumn": "geo",
               "visibleWhen": "band_10",
-              "fillColor": [41, 181, 232, 20],
-              "lineColor": [41, 181, 232, 245],
+              "fillColor": [255, 140, 0, 38],
+              "lineColor": [255, 140, 0, 235],
               "lineWidth": 2,
               "pickable": true,
               "tooltip": "<b>Within 10 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
@@ -3024,8 +3032,8 @@
               "id": "ring-5",
               "geojsonColumn": "geo",
               "visibleWhen": "band_5",
-              "fillColor": [29, 78, 137, 26],
-              "lineColor": [29, 78, 137, 255],
+              "fillColor": [30, 144, 255, 45],
+              "lineColor": [30, 144, 255, 245],
               "lineWidth": 3,
               "pickable": true,
               "tooltip": "<b>Within 5 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
@@ -3041,38 +3049,28 @@
             },
             {
               "type": "scatterplot",
-              "id": "competitors",
-              "lng": "lng",
-              "lat": "lat",
-              "noFit": true,
-              "visibleWhen": "show_competitors",
-              "fillColor": [209, 55, 78, 200],
-              "radius": 70,
-              "radiusMinPixels": 2,
-              "radiusMaxPixels": 7,
-              "pickable": true,
-              "tooltip": "<b>{poi_name}</b><br/>{category} (within 10 min)",
-              "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, 10, (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS), :selected_category)) LIMIT 3000",
-                "params": {
-                  "region": "context.region",
-                  "selected_poi": "viewState.selected_poi",
-                  "anchor_lng": "viewState.anchor_lng",
-                  "anchor_lat": "viewState.anchor_lat",
-                  "selected_category": "viewState.selected_category"
-                }
-              }
-            },
-            {
-              "type": "scatterplot",
               "id": "pois",
               "lng": "lng",
               "lat": "lat",
+              "visibleWhen": "show_pois",
               "fillColor": {
-                "base": [41, 181, 232, 150],
-                "active": [255, 200, 0, 255],
+                "base": [90, 99, 104, 150],
+                "active": [255, 193, 7, 255],
                 "matchColumn": "poi_name",
-                "whenViewStateEquals": "selected_poi"
+                "whenViewStateEquals": "selected_poi",
+                "baseColumn": "category",
+                "basePalette": {
+                  "restaurant": [214, 39, 40, 170],
+                  "casual_eatery": [255, 127, 14, 170],
+                  "fast_food_restaurant": [255, 187, 120, 185],
+                  "coffee_shop": [140, 86, 75, 185],
+                  "bar": [148, 103, 189, 185],
+                  "gym": [44, 160, 44, 185],
+                  "electronics_store": [31, 119, 180, 185],
+                  "specialty_store": [23, 190, 207, 185],
+                  "gas_station": [127, 127, 127, 185],
+                  "convenience_store": [188, 189, 34, 195]
+                }
               },
               "radius": 55,
               "radiusMinPixels": 2,
@@ -3105,6 +3103,27 @@
                 "params": {
                   "anchor_lng": "viewState.anchor_lng",
                   "anchor_lat": "viewState.anchor_lat"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "selected-site",
+              "lng": "lng",
+              "lat": "lat",
+              "stroked": true,
+              "lineColor": [255, 193, 7, 255],
+              "lineWidthMinPixels": 3,
+              "fillColor": [255, 193, 7, 70],
+              "radius": 160,
+              "radiusMinPixels": 11,
+              "radiusMaxPixels": 18,
+              "pickable": false,
+              "data": {
+                "query": "SELECT LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND POI_NAME=:selected_poi LIMIT 1",
+                "params": {
+                  "selected_poi": "viewState.selected_poi",
+                  "region": "context.region"
                 }
               }
             }
