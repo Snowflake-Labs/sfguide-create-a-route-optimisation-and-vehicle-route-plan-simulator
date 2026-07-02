@@ -102,6 +102,9 @@ export async function runMaterialize(app, argv) {
         `USE DATABASE ${cfg.database};`,
         `USE SCHEMA ${cfg.schema};`,
         '',
+        // Tracking tag (AGENTS.md): attribution for every statement this install.sql runs.
+        `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"synapse-bundle"}}';`,
+        '',
         `SET db = '${cfg.database}';`,
         `SET schema = '${cfg.schema}';`,
     ];

@@ -44,8 +44,11 @@ export function procDDL(proc, opts) {
     // "named arguments [...] do not match any signature" and the agent surfaces a
     // generic "Error parsing response" tool failure. Must be the LAST arg.
     argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL');
+    // Tracking tag (AGENTS.md): attribution + routing-solution-cleanup discovery.
+    const track = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
     return `CREATE OR REPLACE PROCEDURE ${proc.name}(${argEntries.join(', ')})
-RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'} AS
+RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'}
+COMMENT='${track}' AS
 $$
 ${opts.body}
 $$;`;
