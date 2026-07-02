@@ -6,10 +6,15 @@
 // viewState.<key>-parametrized query. Reproduces the control app's FleetMap
 // click-a-courier drilldown.
 
+import { useState } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
 import { FreshnessBadge } from './freshness-badge';
+
+// Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
+const HEADER_PX = 38;
+const ROW_PX = 35;
 
 interface TableColumn {
   field: string;
@@ -32,6 +37,8 @@ interface ViewClickableTableAreaProps {
       exceptionFirst?: { column: string; values: string[] };
       // Show an "updated Ns ago" badge above the table (live operational views).
       showFreshness?: boolean;
+      // Cap the visible height to N data rows (header + N rows) and scroll beyond it.
+      fitRows?: number;
     };
     emits?: Record<string, string>;
   };
@@ -53,6 +60,17 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
+  // Interactive click-to-sort, initialized from the configured defaultSort.
+  const [sortKey, setSortKey] = useState<string | null>(config?.defaultSort?.column ?? null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(config?.defaultSort?.direction ?? 'desc');
+  const handleSort = (key: string) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  };
+
   const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
   const rowKey = config?.rowKey;
   const selected = emitKey ? viewState[emitKey] : null;
@@ -64,11 +82,10 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
     return <div style={{ padding: '16px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   }
   let rows = data?.rows ?? [];
-  // Exception-first triage sort: pin flagged rows to the top, then optional default sort.
+  // Exception-first triage pin, then the active sort (user click, falling back to defaultSort).
   if (rows.length) {
     const exc = config?.exceptionFirst;
-    const ds = config?.defaultSort;
-    if (exc || ds) {
+    if (exc || sortKey) {
       const excSet = exc ? new Set(exc.values.map(String)) : null;
       rows = [...rows].sort((a, b) => {
         if (excSet && exc) {
@@ -76,7 +93,7 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
           const bf = excSet.has(String(b[exc.column])) ? 0 : 1;
           if (af !== bf) return af - bf;
         }
-        if (ds) return compareValues(a[ds.column], b[ds.column], ds.direction ?? 'desc');
+        if (sortKey) return compareValues(a[sortKey], b[sortKey], sortDir);
         return 0;
       });
     }
@@ -96,8 +113,11 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
     updateViewState({ [emitKey]: next });
   };
 
+  const fitRows = config?.fitRows;
+  const maxHeight = fitRows ? `${HEADER_PX + fitRows * ROW_PX}px` : undefined;
+
   return (
-    <div style={{ height: '100%', overflow: 'auto' }}>
+    <div style={{ height: fitRows ? undefined : '100%', maxHeight, overflow: 'auto' }}>
       {config?.showFreshness && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '6px 12px 0' }}>
           <FreshnessBadge fetchedAt={fetchedAt} />
@@ -107,8 +127,11 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
         <thead>
           <tr>
             {columns.map((c) => (
-              <th key={c.field} style={{ textAlign: 'left', padding: '8px 12px', position: 'sticky', top: 0, backgroundColor: 'var(--surface-secondary, #f9fafb)', borderBottom: '1px solid var(--border-default, #e5e7eb)', fontWeight: 600, color: 'var(--text-secondary, #6b7280)' }}>
+              <th key={c.field} onClick={() => handleSort(c.field)} style={{ textAlign: 'left', padding: '8px 12px', position: 'sticky', top: 0, backgroundColor: 'var(--surface-secondary, #f9fafb)', borderBottom: '1px solid var(--border-default, #e5e7eb)', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', userSelect: 'none' }}>
                 {c.header ?? c.field}
+                {sortKey === c.field && (
+                  <span style={{ marginLeft: '4px', fontSize: '10px' }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+                )}
               </th>
             ))}
           </tr>

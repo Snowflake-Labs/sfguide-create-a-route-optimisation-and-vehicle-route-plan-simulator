@@ -2945,7 +2945,8 @@
         },
         "config": {
           "rowKey": "poi_name",
-          "maxRows": 100
+          "maxRows": 100,
+          "fitRows": 5
         },
         "emits": {
           "selected_poi": "selection"
@@ -3191,6 +3192,7 @@
         "component": "ClickableTable",
         "config": {
           "title": "Revenue transfer by existing store (click to highlight)",
+          "fitRows": 5,
           "rowKey": "store_id",
           "columns": [
             { "field": "store", "header": "Store" },
@@ -3410,7 +3412,7 @@
       },
       "ziptable": {
         "component": "Table",
-        "config": { "title": "ZIP codes by drive-time band from the candidate (real population)" },
+        "config": { "title": "ZIP codes by drive-time band from the candidate (real population)", "fitRows": 5 },
         "data": {
           "query": "SELECT BAND_MIN AS drive_time_min, COUNT(*) AS zip_codes, SUM(POPULATION) AS population, SUM(HOUSEHOLDS) AS households, SUM(SUM(POPULATION)) OVER (ORDER BY BAND_MIN) AS cumulative_population FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) GROUP BY BAND_MIN ORDER BY BAND_MIN",
           "params": {
@@ -3423,6 +3425,7 @@
         "component": "ClickableTable",
         "config": {
           "title": "Overlap summary: candidate vs existing store (computed intersection). Click a row for detail.",
+          "fitRows": 5,
           "rowKey": "overlap_id",
           "columns": [
             { "field": "owned_store", "header": "Existing store" },
@@ -3450,7 +3453,7 @@
       },
       "overlapzips": {
         "component": "Table",
-        "config": { "title": "Postcodes (ZIPs) inside the overlap - centroid containment (select an overlap row to filter)" },
+        "config": { "title": "Postcodes (ZIPs) inside the overlap - centroid containment (select an overlap row to filter)", "fitRows": 5 },
         "data": {
           "query": "SELECT OWNED_STORE AS existing_store, ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE (:selected_overlap IS NULL OR OVERLAP_ID = :selected_overlap) ORDER BY population DESC",
           "params": {
@@ -3599,7 +3602,7 @@
       },
       "gainers": {
         "component": "Table",
-        "config": { "title": "Households and revenue inherited by surviving stores" },
+        "config": { "title": "Households and revenue inherited by surviving stores", "fitRows": 5 },
         "data": {
           "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), csplit AS (SELECT HV_PCT, SAMPLE_PCT, WALKIN_PCT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, POI_NAME, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households, ROUND(100*a.hh_inh/NULLIF((SELECT total_in FROM tot),0),1) AS pct_of_closed, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100) AS revenue, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT HV_PCT FROM csplit)) AS home_visit, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT SAMPLE_PCT FROM csplit)) AS sample_rev, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT WALKIN_PCT FROM csplit)) AS walk_in FROM agg a JOIN FLEET_APP.LOCATION.VW_STORE_FACTS g ON g.STORE_ID=a.GAIN_ID ORDER BY revenue DESC LIMIT 20",
           "params": {
@@ -3769,6 +3772,7 @@
         "component": "ClickableTable",
         "config": {
           "title": "Closure overlap summary: closed store vs surviving store (computed intersection). Click a row for detail.",
+          "fitRows": 5,
           "rowKey": "overlap_id",
           "columns": [
             { "field": "surviving_store", "header": "Surviving store" },
@@ -3799,7 +3803,7 @@
       },
       "overlapzips": {
         "component": "Table",
-        "config": { "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk (ZIP centroid containment)" },
+        "config": { "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk (ZIP centroid containment)", "fitRows": 5 },
         "data": {
           "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, REVENUE AS revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY status, revenue DESC",
           "params": {

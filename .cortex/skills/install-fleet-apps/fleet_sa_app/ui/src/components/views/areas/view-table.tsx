@@ -4,6 +4,10 @@ import { useState, useMemo, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 
+// Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
+const HEADER_PX = 38;
+const ROW_PX = 35;
+
 interface ViewTableAreaProps {
   areaConfig: {
     data: {
@@ -13,6 +17,10 @@ interface ViewTableAreaProps {
     rowClick?: {
       viewId: string;
       idField: string;
+    };
+    config?: {
+      // Cap the visible height to N data rows (header + N rows) and scroll beyond it.
+      fitRows?: number;
     };
   };
 }
@@ -96,8 +104,11 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
   }
 
+  const fitRows = areaConfig.config?.fitRows;
+  const maxHeight = fitRows ? `${HEADER_PX + fitRows * ROW_PX}px` : undefined;
+
   return (
-    <div style={{ overflow: 'auto', height: '100%' }}>
+    <div style={{ overflow: 'auto', height: fitRows ? undefined : '100%', maxHeight }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
         <thead>
           <tr>
