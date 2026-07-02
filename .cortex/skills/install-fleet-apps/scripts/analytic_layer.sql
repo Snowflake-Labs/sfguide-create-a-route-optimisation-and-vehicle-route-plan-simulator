@@ -861,6 +861,222 @@ $$
   FROM calc
 $$;
 
+-- ===========================================================================
+-- Isochrone Overlap Mode (computed ST_INTERSECTION, not visual stacking)
+-- ===========================================================================
+-- Live overlap geometry for Site Impact: computes the candidate isochrone with
+-- ONE ORS call, reuses LIVE_OWNED_CATCHMENTS (a second, multi-location ORS call)
+-- for every OWNED store, then ST_INTERSECTIONs the candidate polygon with each
+-- owned polygon to produce EXPLICIT overlap geometries. Households (H3 cell
+-- centroid containment) and ZIPs (ZIP centroid containment) inside each overlap
+-- are attributed and the cannibalisation math is done server-side. Two ORS
+-- calls total; nothing is precomputed (Architecture Tenet 9). Region ORS must be
+-- RESUMED. Finance is user-driven, mirroring LIVE_CANNIBALISATION:
+--   cannibalised_revenue = overlap_hh * P_VALUE_PER_HH * P_CAPTURE_RATE
+--   cannibalised_ebitda  = cannibalised_revenue * P_EBITDA_MARGIN
+-- P_EBITDA_MARGIN and P_CAPTURE_RATE are fractions (0..1).
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
+  P_VALUE_PER_HH FLOAT, P_EBITDA_MARGIN FLOAT, P_CAPTURE_RATE FLOAT)
+RETURNS TABLE (OVERLAP_ID VARCHAR, OWNED_STORE_ID VARCHAR, OWNED_STORE VARCHAR, BAND_MIN INT,
+               OVERLAP_GEO GEOGRAPHY, OVERLAP_AREA_SQKM NUMBER(14,3), HOUSEHOLDS INT,
+               ZIP_COUNT INT, POPULATION INT, CANNIBALISED_REVENUE NUMBER(18,0),
+               CANNIBALISED_EBITDA NUMBER(18,0), TRANSFER_PROB NUMBER(6,3), CONFIDENCE NUMBER(6,3))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cand AS (
+    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  ),
+  owned AS (
+    SELECT STORE_ID, POI_NAME, GEO
+    FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION))
+  ),
+  facts AS (
+    SELECT STORE_ID, REFERENCE_HH
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
+  ),
+  ov AS (
+    SELECT o.STORE_ID, o.POI_NAME, ST_INTERSECTION(c.poly, o.GEO) AS g
+    FROM cand c CROSS JOIN owned o
+    WHERE c.poly IS NOT NULL AND o.GEO IS NOT NULL
+  ),
+  ovf AS (
+    SELECT STORE_ID, POI_NAME, g FROM ov WHERE g IS NOT NULL AND ST_AREA(g) > 0
+  ),
+  hh AS (
+    SELECT ovf.STORE_ID, SUM(c.HH) AS households
+    FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = P_REGION AND ST_WITHIN(c.CENTROID, ovf.g)
+    GROUP BY ovf.STORE_ID
+  ),
+  zp AS (
+    SELECT ovf.STORE_ID, COUNT(*) AS zip_count, SUM(z.POPULATION) AS population
+    FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
+      ON z.REGION = P_REGION AND ST_WITHIN(z.CENTROID, ovf.g)
+    GROUP BY ovf.STORE_ID
+  )
+  SELECT P_CANDIDATE_ID || '~' || ovf.STORE_ID AS overlap_id,
+         ovf.STORE_ID AS owned_store_id, ovf.POI_NAME AS owned_store, P_BAND AS band_min,
+         ovf.g AS overlap_geo,
+         ROUND(ST_AREA(ovf.g) / 1e6, 3)::NUMBER(14,3) AS overlap_area_sqkm,
+         COALESCE(hh.households, 0) AS households,
+         COALESCE(zp.zip_count, 0) AS zip_count,
+         COALESCE(zp.population, 0) AS population,
+         ROUND(COALESCE(hh.households, 0) * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS cannibalised_revenue,
+         ROUND(COALESCE(hh.households, 0) * P_VALUE_PER_HH * P_CAPTURE_RATE * P_EBITDA_MARGIN)::NUMBER(18,0) AS cannibalised_ebitda,
+         LEAST(1, COALESCE(hh.households, 0) / NULLIF(f.REFERENCE_HH, 0))::NUMBER(6,3) AS transfer_prob,
+         ROUND(LEAST(1, COALESCE(zp.zip_count, 0) / 5.0), 3)::NUMBER(6,3) AS confidence
+  FROM ovf
+  LEFT JOIN hh    ON hh.STORE_ID = ovf.STORE_ID
+  LEFT JOIN zp    ON zp.STORE_ID = ovf.STORE_ID
+  LEFT JOIN facts f ON f.STORE_ID = ovf.STORE_ID
+$$;
+
+-- Per-ZIP rows inside each candidate/owned overlap (postcode-in-overlap table +
+-- overlap detail drawer ZIP list). Same 2-ORS-call pattern as LIVE_OVERLAPS.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (OVERLAP_ID VARCHAR, OWNED_STORE_ID VARCHAR, OWNED_STORE VARCHAR,
+               ZIP VARCHAR, POPULATION INT, HOUSEHOLDS INT, MEDIAN_INCOME NUMBER(12,0), GEO GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cand AS (
+    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  ),
+  owned AS (
+    SELECT STORE_ID, POI_NAME, GEO
+    FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION))
+  ),
+  ov AS (
+    SELECT o.STORE_ID, o.POI_NAME, ST_INTERSECTION(c.poly, o.GEO) AS g
+    FROM cand c CROSS JOIN owned o
+    WHERE c.poly IS NOT NULL AND o.GEO IS NOT NULL
+  ),
+  ovf AS (
+    SELECT STORE_ID, POI_NAME, g FROM ov WHERE g IS NOT NULL AND ST_AREA(g) > 0
+  )
+  SELECT P_CANDIDATE_ID || '~' || ovf.STORE_ID AS overlap_id, ovf.STORE_ID AS owned_store_id,
+         ovf.POI_NAME AS owned_store, z.ZIP, z.POPULATION, z.HOUSEHOLDS, z.MEDIAN_INCOME, z.GEOG AS geo
+  FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
+    ON z.REGION = P_REGION AND ST_WITHIN(z.CENTROID, ovf.g)
+$$;
+
+-- Live closure overlap for Closure Impact: intersects the CLOSING store's drive-time
+-- catchment with every SURVIVING store's catchment (all catchments from ONE multi-location
+-- ORS call via LIVE_OWNED_CATCHMENTS). Each row = the shared area a survivor could inherit.
+-- RETAINED_REVENUE/EBITDA prorate the closing store's synthetic ANNUAL_REVENUE/EBITDA by the
+-- overlap's household share of the closing catchment. This is the geometric overlap view; the
+-- existing "gainers" table stays as the nearest-survivor (Voronoi) commercial attribution.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(
+  P_CLOSED_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (OVERLAP_ID VARCHAR, SURVIVING_STORE_ID VARCHAR, SURVIVING_STORE VARCHAR, BAND_MIN INT,
+               OVERLAP_GEO GEOGRAPHY, OVERLAP_AREA_SQKM NUMBER(14,3), HOUSEHOLDS INT, ZIP_COUNT INT,
+               POPULATION INT, RETAINED_REVENUE NUMBER(18,0), RETAINED_EBITDA NUMBER(18,0),
+               TRANSFER_PROB NUMBER(6,3), STATUS VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cats AS (
+    SELECT STORE_ID, POI_NAME, GEO FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION))
+  ),
+  closed_cat AS (SELECT GEO FROM cats WHERE STORE_ID = P_CLOSED_ID),
+  cfact AS (
+    SELECT ANNUAL_REVENUE, ANNUAL_EBITDA
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CLOSED_ID
+  ),
+  tot AS (
+    SELECT SUM(c.HH) AS total_hh
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, closed_cat
+    WHERE c.REGION = P_REGION AND ST_WITHIN(c.CENTROID, closed_cat.GEO)
+  ),
+  surv AS (SELECT STORE_ID, POI_NAME, GEO FROM cats WHERE STORE_ID <> P_CLOSED_ID),
+  ov AS (
+    SELECT s.STORE_ID, s.POI_NAME, ST_INTERSECTION(cc.GEO, s.GEO) AS g
+    FROM surv s CROSS JOIN closed_cat cc
+  ),
+  ovf AS (SELECT STORE_ID, POI_NAME, g FROM ov WHERE g IS NOT NULL AND ST_AREA(g) > 0),
+  hh AS (
+    SELECT ovf.STORE_ID, SUM(c.HH) AS households
+    FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = P_REGION AND ST_WITHIN(c.CENTROID, ovf.g)
+    GROUP BY ovf.STORE_ID
+  ),
+  zp AS (
+    SELECT ovf.STORE_ID, COUNT(*) AS zip_count, SUM(z.POPULATION) AS population
+    FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
+      ON z.REGION = P_REGION AND ST_WITHIN(z.CENTROID, ovf.g)
+    GROUP BY ovf.STORE_ID
+  )
+  SELECT P_CLOSED_ID || '~' || ovf.STORE_ID AS overlap_id, ovf.STORE_ID AS surviving_store_id,
+         ovf.POI_NAME AS surviving_store, P_BAND AS band_min, ovf.g AS overlap_geo,
+         ROUND(ST_AREA(ovf.g) / 1e6, 3)::NUMBER(14,3) AS overlap_area_sqkm,
+         COALESCE(hh.households, 0) AS households, COALESCE(zp.zip_count, 0) AS zip_count,
+         COALESCE(zp.population, 0) AS population,
+         ROUND(cf.ANNUAL_REVENUE * COALESCE(hh.households, 0) / NULLIF(t.total_hh, 0))::NUMBER(18,0) AS retained_revenue,
+         ROUND(cf.ANNUAL_EBITDA * COALESCE(hh.households, 0) / NULLIF(t.total_hh, 0))::NUMBER(18,0) AS retained_ebitda,
+         LEAST(1, COALESCE(hh.households, 0) / NULLIF(t.total_hh, 0))::NUMBER(6,3) AS transfer_prob,
+         'RETAINED' AS status
+  FROM ovf
+  LEFT JOIN hh ON hh.STORE_ID = ovf.STORE_ID
+  LEFT JOIN zp ON zp.STORE_ID = ovf.STORE_ID
+  CROSS JOIN cfact cf
+  CROSS JOIN tot t
+$$;
+
+-- Per-ZIP closure classification: every ZIP whose centroid is inside the closing store's
+-- catchment, flagged RETAINED (also inside at least one surviving store's catchment within the
+-- band) or AT_RISK (no surviving store reaches it within the band). Feeds the ZIP-in-overlap
+-- table + closure detail drawer.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(
+  P_CLOSED_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (ZIP VARCHAR, STATUS VARCHAR, NEAREST_SURVIVOR VARCHAR,
+               POPULATION INT, HOUSEHOLDS INT, MEDIAN_INCOME NUMBER(12,0), GEO GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cats AS (
+    SELECT STORE_ID, POI_NAME, GEO FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(P_BAND, P_REGION))
+  ),
+  closed_cat AS (SELECT GEO FROM cats WHERE STORE_ID = P_CLOSED_ID),
+  surv AS (SELECT STORE_ID, POI_NAME, GEO FROM cats WHERE STORE_ID <> P_CLOSED_ID),
+  zin AS (
+    SELECT z.ZIP, z.POPULATION, z.HOUSEHOLDS, z.MEDIAN_INCOME, z.CENTROID, z.GEOG
+    FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z, closed_cat
+    WHERE z.REGION = P_REGION AND ST_WITHIN(z.CENTROID, closed_cat.GEO)
+  ),
+  zcov AS (
+    SELECT zin.ZIP, ANY_VALUE(s.POI_NAME) AS surv_name, COUNT(*) AS n
+    FROM zin JOIN surv s ON ST_WITHIN(zin.CENTROID, s.GEO)
+    GROUP BY zin.ZIP
+  )
+  SELECT zin.ZIP,
+         CASE WHEN COALESCE(zcov.n, 0) > 0 THEN 'RETAINED' ELSE 'AT_RISK' END AS status,
+         zcov.surv_name AS nearest_survivor,
+         zin.POPULATION, zin.HOUSEHOLDS, zin.MEDIAN_INCOME, zin.GEOG AS geo
+  FROM zin LEFT JOIN zcov ON zcov.ZIP = zin.ZIP
+$$;
+
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql). Guarded so a
 -- role-less install does not error the whole file.
 GRANT USAGE ON SCHEMA FLEET_APP.LOCATION TO ROLE FLEET_APP_USER;
@@ -883,6 +1099,18 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) T
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG

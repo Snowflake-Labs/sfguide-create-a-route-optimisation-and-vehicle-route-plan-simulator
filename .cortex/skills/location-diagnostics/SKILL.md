@@ -122,9 +122,19 @@ Live objects (isochrones computed on the fly, no precompute):
 
 - Tables (non-ORS reference data): `FLEET_INTELLIGENCE.LOCATION.{STORES, BANDS, HH_CELLS, STORE_FACTS, ZIP_AREAS}`
 - Contract views: `FLEET_APP.LOCATION.{VW_STORES, VW_STORE_FACTS, VW_HH_CELLS, VW_BANDS, VW_ZIP_AREAS}`
-- Live UDTFs: `FLEET_APP.LOCATION.{LIVE_ZIP_BANDS, LIVE_OWNED_CATCHMENTS}`
-- Semantic view: `FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION` (agent tool `query_location`) - estate facts only; cannibalisation/closure are live in-app
-- App views: **Site Impact** (live cannibalisation + ZIP drive-time drill + overlap choropleth) and **Closure Impact** (live closure) under the Location category
+- Live UDTFs: `FLEET_APP.LOCATION.{LIVE_ZIP_BANDS, LIVE_OWNED_CATCHMENTS, LIVE_CANNIBALISATION, LIVE_OVERLAPS, LIVE_OVERLAP_ZIPS, LIVE_CLOSURE_OVERLAPS, LIVE_CLOSURE_ZIPS}`
+- Semantic view: `FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION` (agent tool `query_location`) - estate facts only; cannibalisation/closure/overlaps are live in-app
+- App views: **Site Impact** (live cannibalisation + ZIP drive-time drill + Isochrone Overlap Mode) and **Closure Impact** (live closure + Isochrone Overlap Mode) under the Location category
+
+### Isochrone Overlap Mode (Site Impact + Closure Impact)
+
+Both pages expose a computed-overlap capability (not visual polygon stacking): the candidate/closing store's live drive-time isochrone is intersected (`ST_INTERSECTION`) with each existing/surviving store's catchment (`LIVE_OWNED_CATCHMENTS`, 2 ORS calls total), and households (H3 cell-centroid containment) and postcodes (ZIP centroid containment) are attributed to each overlap polygon.
+
+- **Overlap choropleth** shaded by a **Map metric** dropdown (Revenue / EBITDA / Transfer probability / Households). The metric is switched in SQL via a `CASE :map_metric` NTILE(5) `impact_bucket`, so the map re-shades with no TypeScript change.
+- **Overlap summary table** (`ClickableTable`, emits `selected_overlap`) + **ZIP-in-overlap table** + a slide-over **overlap detail drawer** (`DetailPanel` `position:drawer`, `triggerKey: selected_overlap`) with the postcodes inside the selected overlap. Selecting a row highlights the overlap polygon on the map (`selected-overlap-outline` layer).
+- **Attribution-method label** (Markdown) states the method (ST_INTERSECTION + centroid containment) and warns that pairwise overlap rows must not be summed (neighbouring catchments overlap); headline KPIs and the transfer/gainers tables use non-overlapping nearest-store attribution.
+- Closure Impact adds a **drive-time band selector** and overlays the **surviving-store catchments**; its ZIPs are classified RETAINED vs AT_RISK.
+- All overlap objects call ORS live at interaction time (Architecture Tenet 9); the region's ORS service must be RESUMED. Passing a non-OWNED store id to the closure UDTFs returns 0 rows by design.
 
 ## Data Studio Extension (optional)
 

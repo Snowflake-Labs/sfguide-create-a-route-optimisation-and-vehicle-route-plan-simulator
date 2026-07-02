@@ -3103,8 +3103,8 @@
     "layout": {
       "default": {
         "columns": "repeat(6, 1fr)",
-        "rows": "auto auto auto $map auto",
-        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rev rev margin margin capture capture\"\n\"transfers transfers transfers map map map\"\n\"ziptable ziptable ziptable ziptable ziptable ziptable\""
+        "rows": "auto auto auto $map auto auto auto",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rev rev margin margin capture capture\"\n\"transfers transfers transfers map map map\"\n\"overlaps overlaps overlaps overlapzips overlapzips overlapzips\"\n\"ziptable ziptable ziptable ziptable ziptable ziptable\"\n\"attrib attrib attrib attrib attrib attrib\""
       }
     },
     "areas": {
@@ -3149,6 +3149,14 @@
               "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
             },
             "emits": { "selected_band": "selection" }
+          },
+          {
+            "name": "metric",
+            "label": "Map metric",
+            "data": {
+              "query": "SELECT 'revenue' AS value, 'Cannibalised revenue' AS label UNION ALL SELECT 'ebitda','Cannibalised EBITDA' UNION ALL SELECT 'transfer','Transfer probability' UNION ALL SELECT 'households','Households'"
+            },
+            "emits": { "map_metric": "selection" }
           }
         ]
       },
@@ -3207,7 +3215,10 @@
             { "label": "Candidate band ring", "color": [41, 181, 232, 230], "shape": "line" },
             { "label": "Existing store", "color": [41, 181, 232, 200] },
             { "label": "Candidate site", "color": [29, 78, 137, 255] },
-            { "label": "Selected store", "color": [245, 158, 11, 255] }
+            { "label": "Selected store", "color": [245, 158, 11, 255] },
+            { "label": "Overlap (low impact)", "color": [253, 208, 162, 170] },
+            { "label": "Overlap (high impact)", "color": [166, 54, 3, 210] },
+            { "label": "Selected overlap", "color": [245, 158, 11, 255], "shape": "line" }
           ],
           "layers": [
             {
@@ -3253,6 +3264,58 @@
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
                   "selected_band": "viewState.selected_band"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "overlap-choropleth",
+              "geojsonColumn": "geo",
+              "colorColumn": "impact_bucket",
+              "noFit": true,
+              "colorMap": {
+                "1": [255, 245, 235, 150],
+                "2": [253, 208, 162, 170],
+                "3": [253, 141, 60, 185],
+                "4": [230, 85, 13, 200],
+                "5": [166, 54, 3, 215]
+              },
+              "fillColor": [253, 174, 97, 150],
+              "lineColor": [120, 60, 20, 160],
+              "lineWidth": 1,
+              "pickable": true,
+              "tooltip": "<b>{owned_store}</b><br/>Overlap with candidate (computed intersection)<br/>Households {households} | ZIPs {zip_count}<br/>Cannibalised revenue {cannibalised_revenue}<br/>Transfer prob {transfer_prob}",
+              "data": {
+                "query": "SELECT OVERLAP_ID AS overlap_id, OWNED_STORE AS owned_store, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, CANNIBALISED_REVENUE AS cannibalised_revenue, TRANSFER_PROB AS transfer_prob, NTILE(5) OVER (ORDER BY CASE COALESCE(:map_metric,'revenue') WHEN 'ebitda' THEN CANNIBALISED_EBITDA WHEN 'transfer' THEN TRANSFER_PROB WHEN 'households' THEN HOUSEHOLDS ELSE CANNIBALISED_REVENUE END) AS impact_bucket, ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100))",
+                "params": {
+                  "region": "context.region",
+                  "selected_candidate": "viewState.selected_candidate",
+                  "selected_band": "viewState.selected_band",
+                  "value_per_hh": "viewState.value_per_hh",
+                  "ebitda_margin": "viewState.ebitda_margin",
+                  "capture_rate": "viewState.capture_rate",
+                  "map_metric": "viewState.map_metric"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "selected-overlap-outline",
+              "geojsonColumn": "geo",
+              "noFit": true,
+              "fillColor": [245, 158, 11, 40],
+              "lineColor": [245, 158, 11, 255],
+              "lineWidth": 4,
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+                "params": {
+                  "region": "context.region",
+                  "selected_candidate": "viewState.selected_candidate",
+                  "selected_band": "viewState.selected_band",
+                  "value_per_hh": "viewState.value_per_hh",
+                  "ebitda_margin": "viewState.ebitda_margin",
+                  "capture_rate": "viewState.capture_rate",
+                  "selected_overlap": "viewState.selected_overlap"
                 }
               }
             },
@@ -3316,6 +3379,104 @@
             "selected_candidate": "viewState.selected_candidate"
           }
         }
+      },
+      "overlaps": {
+        "component": "ClickableTable",
+        "config": {
+          "title": "Overlap summary: candidate vs existing store (computed intersection). Click a row for detail.",
+          "rowKey": "overlap_id",
+          "columns": [
+            { "field": "owned_store", "header": "Existing store" },
+            { "field": "overlap_area_sqkm", "header": "Overlap km2" },
+            { "field": "zip_count", "header": "ZIPs" },
+            { "field": "households", "header": "Households" },
+            { "field": "cannibalised_revenue", "header": "Cannibalised rev" },
+            { "field": "cannibalised_ebitda", "header": "Cannibalised EBITDA" },
+            { "field": "transfer_pct", "header": "Transfer %" },
+            { "field": "confidence", "header": "Confidence" }
+          ]
+        },
+        "emits": { "selected_overlap": "selection" },
+        "data": {
+          "query": "SELECT OVERLAP_ID AS overlap_id, OWNED_STORE AS owned_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) ORDER BY cannibalised_revenue DESC",
+          "params": {
+            "region": "context.region",
+            "selected_candidate": "viewState.selected_candidate",
+            "selected_band": "viewState.selected_band",
+            "value_per_hh": "viewState.value_per_hh",
+            "ebitda_margin": "viewState.ebitda_margin",
+            "capture_rate": "viewState.capture_rate"
+          }
+        }
+      },
+      "overlapzips": {
+        "component": "Table",
+        "config": { "title": "Postcodes (ZIPs) inside the overlap - centroid containment (select an overlap row to filter)" },
+        "data": {
+          "query": "SELECT OWNED_STORE AS existing_store, ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE (:selected_overlap IS NULL OR OVERLAP_ID = :selected_overlap) ORDER BY population DESC",
+          "params": {
+            "region": "context.region",
+            "selected_candidate": "viewState.selected_candidate",
+            "selected_band": "viewState.selected_band",
+            "selected_overlap": "viewState.selected_overlap"
+          }
+        }
+      },
+      "attrib": {
+        "component": "Markdown",
+        "config": {
+          "content": "**Attribution method:** overlap geometry is the computed ST_INTERSECTION of live drive-time isochrones, not visual polygon stacking. Postcodes (ZIPs) are attributed by ZIP centroid containment; households by H3 cell-centroid containment. Cannibalised revenue and EBITDA are derived from your value-per-household, capture-rate and EBITDA-margin inputs. Overlap rows are pairwise (candidate vs one existing store); do not sum households across overlap rows, because neighbouring store catchments themselves overlap. The headline KPI cards and the transfer table use non-overlapping nearest-store attribution."
+        }
+      },
+      "overlap_drawer": {
+        "component": "DetailPanel",
+        "config": {
+          "triggerKey": "selected_overlap",
+          "position": "drawer",
+          "width": 400,
+          "titleField": "owned_store",
+          "subtitleFields": ["band_label"],
+          "properties": [
+            { "field": "overlap_area_sqkm", "label": "Overlap area (km2)", "format": "number" },
+            { "field": "households", "label": "Households (shared)", "format": "number" },
+            { "field": "zip_count", "label": "ZIPs in overlap", "format": "number" },
+            { "field": "population", "label": "Population", "format": "number" },
+            { "field": "cannibalised_revenue", "label": "Cannibalised revenue", "format": "number" },
+            { "field": "cannibalised_ebitda", "label": "Cannibalised EBITDA", "format": "number" },
+            { "field": "transfer_pct", "label": "Transfer probability %", "format": "number" },
+            { "field": "confidence", "label": "Confidence", "format": "number" }
+          ],
+          "sections": [
+            {
+              "type": "related_table",
+              "title": "Postcodes (ZIPs) inside this overlap",
+              "query": "SELECT ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE OVERLAP_ID = :selected_overlap ORDER BY population DESC",
+              "params": {
+                "selected_candidate": "viewState.selected_candidate",
+                "selected_band": "viewState.selected_band",
+                "selected_overlap": "viewState.selected_overlap"
+              },
+              "columns": [
+                { "field": "zip", "header": "ZIP" },
+                { "field": "population", "header": "Population", "format": "number" },
+                { "field": "households", "header": "Households", "format": "number" },
+                { "field": "median_income", "header": "Median income", "format": "currency" }
+              ]
+            }
+          ]
+        },
+        "data": {
+          "query": "SELECT OWNED_STORE AS owned_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(COALESCE(:selected_candidate,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='CANDIDATE' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+          "params": {
+            "region": "context.region",
+            "selected_candidate": "viewState.selected_candidate",
+            "selected_band": "viewState.selected_band",
+            "value_per_hh": "viewState.value_per_hh",
+            "ebitda_margin": "viewState.ebitda_margin",
+            "capture_rate": "viewState.capture_rate",
+            "selected_overlap": "viewState.selected_overlap"
+          }
+        }
       }
     }
   },
@@ -3332,18 +3493,19 @@
     "layout": {
       "default": {
         "columns": "360px 1fr",
-        "rows": "auto auto $map",
-        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"gainers map\""
+        "rows": "auto auto $map auto auto auto",
+        "grid": "\"metrics metrics\"\n\"controls controls\"\n\"gainers map\"\n\"overlaps overlaps\"\n\"overlapzips overlapzips\"\n\"attrib attrib\""
       }
     },
     "areas": {
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT COALESCE(SUM(a.hh_inh),0) AS hh_reassigned, ROUND(COALESCE(SUM(a.hh_inh),0) * (SELECT rev FROM crev) / NULLIF((SELECT total_in FROM tot),0)) AS revenue_retained, COUNT(DISTINCT a.GAIN_ID) AS gaining_stores FROM agg a",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT COALESCE(SUM(a.hh_inh),0) AS hh_reassigned, ROUND(COALESCE(SUM(a.hh_inh),0) * (SELECT rev FROM crev) / NULLIF((SELECT total_in FROM tot),0)) AS revenue_retained, COUNT(DISTINCT a.GAIN_ID) AS gaining_stores FROM agg a",
           "params": {
             "region": "context.region",
-            "selected_closed": "viewState.selected_closed"
+            "selected_closed": "viewState.selected_closed",
+            "selected_closed_band": "viewState.selected_closed_band"
           },
           "mapping": {
             "metrics": [
@@ -3364,6 +3526,22 @@
               "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'OWNED' ORDER BY POI_NAME"
             },
             "emits": { "selected_closed": "selection" }
+          },
+          {
+            "name": "closedband",
+            "label": "Overlap drive-time band",
+            "data": {
+              "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
+            },
+            "emits": { "selected_closed_band": "selection" }
+          },
+          {
+            "name": "closuremetric",
+            "label": "Map metric",
+            "data": {
+              "query": "SELECT 'retained' AS value, 'Retained revenue' AS label UNION ALL SELECT 'ebitda','Retained EBITDA' UNION ALL SELECT 'transfer','Transfer probability' UNION ALL SELECT 'households','Households'"
+            },
+            "emits": { "closure_metric": "selection" }
           }
         ]
       },
@@ -3371,10 +3549,11 @@
         "component": "Table",
         "config": { "title": "Households and revenue inherited by surviving stores" },
         "data": {
-          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev, ANNUAL_EBITDA AS ebit FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, POI_NAME, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households, ROUND(100*a.hh_inh/NULLIF((SELECT total_in FROM tot),0),1) AS pct_of_closed, ROUND((SELECT rev FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS revenue, ROUND((SELECT ebit FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS ebitda FROM agg a JOIN FLEET_APP.LOCATION.VW_STORE_FACTS g ON g.STORE_ID=a.GAIN_ID ORDER BY revenue DESC LIMIT 20",
+          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid), iso AS (SELECT GEOJSON AS poly FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), crev AS (SELECT ANNUAL_REVENUE AS rev, ANNUAL_EBITDA AS ebit FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, POI_NAME, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households, ROUND(100*a.hh_inh/NULLIF((SELECT total_in FROM tot),0),1) AS pct_of_closed, ROUND((SELECT rev FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS revenue, ROUND((SELECT ebit FROM crev) * a.hh_inh / NULLIF((SELECT total_in FROM tot),0)) AS ebitda FROM agg a JOIN FLEET_APP.LOCATION.VW_STORE_FACTS g ON g.STORE_ID=a.GAIN_ID ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
-            "selected_closed": "viewState.selected_closed"
+            "selected_closed": "viewState.selected_closed",
+            "selected_closed_band": "viewState.selected_closed_band"
           }
         }
       },
@@ -3383,7 +3562,11 @@
         "config": {
           "noPad": true,
           "legend": [
-            { "label": "Closed-store catchment (20 min)", "color": [209, 55, 78, 80] },
+            { "label": "Closed-store catchment", "color": [209, 55, 78, 80] },
+            { "label": "Surviving-store catchment", "color": [41, 181, 232, 150], "shape": "line" },
+            { "label": "Overlap (low retained)", "color": [199, 233, 192, 175] },
+            { "label": "Overlap (high retained)", "color": [0, 109, 44, 210] },
+            { "label": "Selected overlap", "color": [245, 158, 11, 255], "shape": "line" },
             { "label": "Surviving store", "color": [41, 181, 232, 200] },
             { "label": "Closed store", "color": [255, 200, 0, 255] }
           ],
@@ -3396,10 +3579,76 @@
               "lineColor": [209, 55, 78, 200],
               "lineWidth": 2,
               "data": {
-                "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(GEOJSON)::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),20,(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE GEOJSON IS NOT NULL",
+                "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), pt AS (SELECT s.LON, s.LAT FROM sel x JOIN FLEET_APP.LOCATION.VW_STORES s ON s.STORE_ID=x.cid) SELECT ST_ASGEOJSON(GEOJSON)::STRING AS geo FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car',(SELECT LON FROM pt),(SELECT LAT FROM pt),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE GEOJSON IS NOT NULL",
                 "params": {
                   "region": "context.region",
-                  "selected_closed": "viewState.selected_closed"
+                  "selected_closed": "viewState.selected_closed",
+                  "selected_closed_band": "viewState.selected_closed_band"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "survivor-catchments",
+              "geojsonColumn": "geo",
+              "noFit": true,
+              "fillColor": [0, 0, 0, 0],
+              "lineColor": [41, 181, 232, 150],
+              "lineWidth": 1,
+              "pickable": true,
+              "tooltip": "Surviving store reach: {owned_store}",
+              "data": {
+                "query": "SELECT POI_NAME AS owned_store, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE STORE_ID <> COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1))",
+                "params": {
+                  "region": "context.region",
+                  "selected_closed": "viewState.selected_closed",
+                  "selected_closed_band": "viewState.selected_closed_band"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "closure-overlap-choropleth",
+              "geojsonColumn": "geo",
+              "colorColumn": "impact_bucket",
+              "noFit": true,
+              "colorMap": {
+                "1": [237, 248, 233, 160],
+                "2": [199, 233, 192, 175],
+                "3": [116, 196, 118, 190],
+                "4": [49, 163, 84, 200],
+                "5": [0, 109, 44, 215]
+              },
+              "fillColor": [116, 196, 118, 170],
+              "lineColor": [0, 68, 27, 150],
+              "lineWidth": 1,
+              "pickable": true,
+              "tooltip": "<b>{surviving_store}</b><br/>Inherits shared area from closed store<br/>Households {households} | ZIPs {zip_count}<br/>Retained revenue {retained_revenue}<br/>Transfer prob {transfer_prob}",
+              "data": {
+                "query": "SELECT OVERLAP_ID AS overlap_id, SURVIVING_STORE AS surviving_store, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, RETAINED_REVENUE AS retained_revenue, TRANSFER_PROB AS transfer_prob, NTILE(5) OVER (ORDER BY CASE COALESCE(:closure_metric,'retained') WHEN 'ebitda' THEN RETAINED_EBITDA WHEN 'transfer' THEN TRANSFER_PROB WHEN 'households' THEN HOUSEHOLDS ELSE RETAINED_REVENUE END) AS impact_bucket, ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))",
+                "params": {
+                  "region": "context.region",
+                  "selected_closed": "viewState.selected_closed",
+                  "selected_closed_band": "viewState.selected_closed_band",
+                  "closure_metric": "viewState.closure_metric"
+                }
+              }
+            },
+            {
+              "type": "geojson",
+              "id": "closure-selected-overlap-outline",
+              "geojsonColumn": "geo",
+              "noFit": true,
+              "fillColor": [245, 158, 11, 40],
+              "lineColor": [245, 158, 11, 255],
+              "lineWidth": 4,
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE OVERLAP_ID = :selected_overlap",
+                "params": {
+                  "region": "context.region",
+                  "selected_closed": "viewState.selected_closed",
+                  "selected_closed_band": "viewState.selected_closed_band",
+                  "selected_overlap": "viewState.selected_overlap"
                 }
               }
             },
@@ -3425,6 +3674,95 @@
               }
             }
           ]
+        }
+      },
+      "overlaps": {
+        "component": "ClickableTable",
+        "config": {
+          "title": "Closure overlap summary: closed store vs surviving store (computed intersection). Click a row for detail.",
+          "rowKey": "overlap_id",
+          "columns": [
+            { "field": "surviving_store", "header": "Surviving store" },
+            { "field": "overlap_area_sqkm", "header": "Overlap km2" },
+            { "field": "zip_count", "header": "ZIPs" },
+            { "field": "households", "header": "Households" },
+            { "field": "retained_revenue", "header": "Retained rev" },
+            { "field": "retained_ebitda", "header": "Retained EBITDA" },
+            { "field": "transfer_pct", "header": "Transfer %" },
+            { "field": "status", "header": "Status" }
+          ]
+        },
+        "emits": { "selected_overlap": "selection" },
+        "data": {
+          "query": "SELECT OVERLAP_ID AS overlap_id, SURVIVING_STORE AS surviving_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, STATUS AS status FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) ORDER BY retained_revenue DESC",
+          "params": {
+            "region": "context.region",
+            "selected_closed": "viewState.selected_closed",
+            "selected_closed_band": "viewState.selected_closed_band"
+          }
+        }
+      },
+      "overlapzips": {
+        "component": "Table",
+        "config": { "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk (ZIP centroid containment)" },
+        "data": {
+          "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) ORDER BY status, population DESC",
+          "params": {
+            "region": "context.region",
+            "selected_closed": "viewState.selected_closed",
+            "selected_closed_band": "viewState.selected_closed_band"
+          }
+        }
+      },
+      "attrib": {
+        "component": "Markdown",
+        "config": {
+          "content": "**Attribution method:** overlap geometry is the computed ST_INTERSECTION of the closing store's live drive-time catchment with each surviving store's catchment, not visual polygon stacking. Postcodes (ZIPs) are classified RETAINED (a surviving store reaches the ZIP centroid within the band) or AT_RISK (no surviving store reaches it), by ZIP centroid containment. Retained revenue and EBITDA prorate the closing store's synthetic annual figures by each overlap's household share. Overlap rows are pairwise (closed store vs one surviving store); do not sum households across rows, because surviving-store catchments themselves overlap. The headline KPI cards and the gainers table use non-overlapping nearest-surviving-store attribution."
+        }
+      },
+      "closure_drawer": {
+        "component": "DetailPanel",
+        "config": {
+          "triggerKey": "selected_overlap",
+          "position": "drawer",
+          "width": 400,
+          "titleField": "surviving_store",
+          "subtitleFields": ["band_label"],
+          "properties": [
+            { "field": "overlap_area_sqkm", "label": "Overlap area (km2)", "format": "number" },
+            { "field": "households", "label": "Households (shared)", "format": "number" },
+            { "field": "zip_count", "label": "ZIPs in overlap", "format": "number" },
+            { "field": "population", "label": "Population", "format": "number" },
+            { "field": "retained_revenue", "label": "Retained revenue", "format": "number" },
+            { "field": "retained_ebitda", "label": "Retained EBITDA", "format": "number" },
+            { "field": "transfer_pct", "label": "Transfer probability %", "format": "number" }
+          ],
+          "sections": [
+            {
+              "type": "related_table",
+              "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk",
+              "query": "SELECT ZIP AS zip, STATUS AS status, POPULATION AS population, HOUSEHOLDS AS households FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) ORDER BY status, population DESC",
+              "params": {
+                "selected_closed": "viewState.selected_closed",
+                "selected_closed_band": "viewState.selected_closed_band"
+              },
+              "columns": [
+                { "field": "zip", "header": "ZIP" },
+                { "field": "status", "header": "Status" },
+                { "field": "population", "header": "Population", "format": "number" },
+                { "field": "households", "header": "Households", "format": "number" }
+              ]
+            }
+          ]
+        },
+        "data": {
+          "query": "SELECT SURVIVING_STORE AS surviving_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE OVERLAP_ID = :selected_overlap",
+          "params": {
+            "region": "context.region",
+            "selected_closed": "viewState.selected_closed",
+            "selected_closed_band": "viewState.selected_closed_band",
+            "selected_overlap": "viewState.selected_overlap"
+          }
         }
       }
     }
