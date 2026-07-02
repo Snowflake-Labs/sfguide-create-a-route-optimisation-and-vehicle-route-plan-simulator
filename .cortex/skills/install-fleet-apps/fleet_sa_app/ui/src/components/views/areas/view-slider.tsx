@@ -10,6 +10,7 @@
 // turning the hour slider into an animated space-time scrubber.
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppStore } from '@/lib/store';
 
 interface ViewSliderAreaProps {
@@ -34,27 +35,53 @@ function formatTick(value: number, format?: string): string {
   return String(value);
 }
 
-/** Small "i" icon that toggles a popover explaining what the slider controls. */
+/** Small "i" icon that toggles a popover explaining what the slider controls.
+ *  The popover renders in a portal on document.body with fixed positioning so it
+ *  is not clipped by the grid cell's overflow:hidden. */
 function InfoPopover({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const WIDTH = 240;
+
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      const left = Math.min(r.left, window.innerWidth - WIDTH - 8);
+      setPos({ top: r.bottom + 6, left: Math.max(8, left) });
+    }
+    setOpen((o) => !o);
+  };
+
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onDown = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as Node)) return;
+      if (panelRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
     };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    const onReposition = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('resize', onReposition);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('resize', onReposition);
+    };
   }, [open]);
+
   return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-flex', marginLeft: '5px' }}>
+    <>
       <button
+        ref={btnRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         aria-label="What is this?"
         title="What is this?"
         style={{
-          width: '15px', height: '15px', borderRadius: '50%', padding: 0,
+          width: '15px', height: '15px', borderRadius: '50%', padding: 0, marginLeft: '5px',
           border: '1px solid var(--border-default, #cbd5e1)',
           backgroundColor: open ? 'var(--text-secondary, #6b7280)' : 'var(--surface-primary, #fff)',
           color: open ? '#fff' : 'var(--text-secondary, #6b7280)',
@@ -64,11 +91,12 @@ function InfoPopover({ text }: { text: string }) {
       >
         i
       </button>
-      {open && (
+      {open && pos && typeof document !== 'undefined' && createPortal(
         <div
+          ref={panelRef}
           role="tooltip"
           style={{
-            position: 'absolute', top: '20px', left: 0, zIndex: 20, width: '240px',
+            position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999, width: `${WIDTH}px`,
             background: 'var(--surface-primary, #fff)', color: 'var(--text-primary, #111827)',
             border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '8px',
             boxShadow: '0 4px 12px rgba(15,23,42,0.18)', padding: '10px 12px',
@@ -77,9 +105,10 @@ function InfoPopover({ text }: { text: string }) {
           }}
         >
           {text}
-        </div>
+        </div>,
+        document.body,
       )}
-    </span>
+    </>
   );
 }
 
