@@ -3154,17 +3154,17 @@
       },
       "rev": {
         "component": "Slider",
-        "config": { "label": "Value per household ($/yr)", "min": 50, "max": 5000, "step": 50, "default": 500 },
+        "config": { "label": "Value per household ($/yr)", "min": 50, "max": 5000, "step": 50, "default": 500, "info": "Estimated annual revenue a single captured household is worth to a store. Transfer revenue = captured households x this value x capture rate. Raise it to model higher-spend customers." },
         "emits": { "value_per_hh": "filter" }
       },
       "margin": {
         "component": "Slider",
-        "config": { "label": "EBITDA margin (%)", "min": 0, "max": 100, "step": 1, "default": 20 },
+        "config": { "label": "EBITDA margin (%)", "min": 0, "max": 100, "step": 1, "default": 20, "info": "Share of transferred revenue that becomes operating profit (EBITDA). Cannibalised EBITDA = cannibalised revenue x this margin." },
         "emits": { "ebitda_margin": "filter" }
       },
       "capture": {
         "component": "Slider",
-        "config": { "label": "Capture rate (%)", "min": 0, "max": 100, "step": 5, "default": 50 },
+        "config": { "label": "Capture rate (%)", "min": 0, "max": 100, "step": 5, "default": 50, "info": "Fraction of a shared household's spend that actually shifts to the new candidate site. 50% assumes the household splits its spend evenly between the new and existing store." },
         "emits": { "capture_rate": "filter" }
       },
       "transfers": {
