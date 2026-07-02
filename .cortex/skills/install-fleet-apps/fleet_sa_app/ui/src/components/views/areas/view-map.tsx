@@ -133,12 +133,14 @@ const WORLD_FALLBACK = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing:
  *  clickable header with a chevron. `corner` positions the card. */
 function OverlayCard({
   title, corner, children,
-}: { title: string; corner: 'bottom-left' | 'top-right'; children: ReactNode }) {
+}: { title: string; corner: 'bottom-left' | 'top-right' | 'bottom-right'; children: ReactNode }) {
   const [open, setOpen] = useState(true);
   const pos =
     corner === 'bottom-left'
       ? { bottom: 12, left: 12 }
-      : { top: 12, right: 12 };
+      : corner === 'bottom-right'
+        ? { bottom: 12, right: 12 }
+        : { top: 12, right: 12 };
   return (
     <div
       style={{
@@ -169,12 +171,15 @@ function OverlayCard({
 }
 
 /** Legend overlay driven by config.legend. Supports discrete dot/line swatches
- *  and continuous colour-gradient bars (LegendItem.gradient). Collapsible. */
-function MapLegend({ items }: { items: LegendItem[] }) {
+ *  and continuous colour-gradient bars (LegendItem.gradient). Collapsible.
+ *  Reusable via `title`/`corner` (e.g. a separate category color key). */
+function MapLegend({
+  items, title = 'Legend', corner = 'bottom-left',
+}: { items: LegendItem[]; title?: string; corner?: 'bottom-left' | 'top-right' | 'bottom-right' }) {
   const rgba = (c: LegendItem['color']) =>
     c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})` : 'transparent';
   return (
-    <OverlayCard title="Legend" corner="bottom-left">
+    <OverlayCard title={title} corner={corner}>
       {items.map((it, i) =>
         it.gradient?.length ? (
           <div key={i} style={{ padding: '4px 0' }}>
@@ -407,6 +412,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         onClick={onClick}
       />
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
+      {config.categoryLegend?.length ? <MapLegend items={config.categoryLegend} title="Categories" corner="bottom-right" /> : null}
       {config.toggles?.length ? <MapToggles toggles={config.toggles} /> : null}
     </div>
   );

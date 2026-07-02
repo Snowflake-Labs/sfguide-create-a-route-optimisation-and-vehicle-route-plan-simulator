@@ -2923,7 +2923,6 @@
           "title": "Candidate sites (click to analyse)",
           "rowKey": "poi_name",
           "maxRows": 200,
-          "fitRows": 5,
           "columns": [
             { "field": "poi_name", "header": "Site" },
             { "field": "category", "header": "Category" },
@@ -2958,6 +2957,9 @@
             { "label": "10 min drive", "color": [255, 140, 0, 255], "shape": "line" },
             { "label": "15 min drive", "color": [138, 43, 226, 255], "shape": "line" },
             { "label": "Selected site", "color": [255, 193, 7, 255] },
+            { "label": "Address density", "gradient": [[255, 230, 180, 120], [255, 140, 0, 220]], "minLabel": "Low", "maxLabel": "High" }
+          ],
+          "categoryLegend": [
             { "label": "Restaurant", "color": [214, 39, 40, 255] },
             { "label": "Casual eatery", "color": [255, 127, 14, 255] },
             { "label": "Fast food", "color": [255, 187, 120, 255] },
@@ -2967,8 +2969,7 @@
             { "label": "Electronics", "color": [31, 119, 180, 255] },
             { "label": "Specialty store", "color": [23, 190, 207, 255] },
             { "label": "Gas station", "color": [127, 127, 127, 255] },
-            { "label": "Convenience", "color": [188, 189, 34, 255] },
-            { "label": "Address density", "gradient": [[255, 230, 180, 120], [255, 140, 0, 220]], "minLabel": "Low", "maxLabel": "High" }
+            { "label": "Convenience", "color": [188, 189, 34, 255] }
           ],
           "layers": [
             {

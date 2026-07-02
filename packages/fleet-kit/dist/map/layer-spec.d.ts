@@ -163,6 +163,9 @@ export interface MapAreaConfig {
     fallback?: MapViewStateSpec;
     /** Optional legend rendered as an overlay card on the map. */
     legend?: LegendItem[];
+    /** Optional second legend card (e.g. a category color key) rendered as its
+     *  own collapsible overlay, separate from `legend`. */
+    categoryLegend?: LegendItem[];
     /** Optional interactive layer-toggle checkboxes rendered as a map overlay. */
     toggles?: MapToggleItem[];
     /** Optional: route map clicks into viewState (click-to-anchor). */
