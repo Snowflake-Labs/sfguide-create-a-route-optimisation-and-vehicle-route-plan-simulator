@@ -84,12 +84,21 @@ function resolveParams(sql: string, params?: Record<string, string | null>): str
   return resolved;
 }
 
+// Snowflake occasionally returns a transient internal engine error for an
+// otherwise-valid query (notably heavy GEOGRAPHY / live-ISOCHRONES ops): HTTP
+// 422 carrying code 300010 or 000603 ("SQL execution internal error"), with an
+// incident id. It succeeds on a retry. Without one, a single blip surfaces as a
+// permanent panel error (e.g. the Closure Impact gainers table).
+const TRANSIENT_INTERNAL = /(?:"|\b)(300010|000603)(?:"|\b)|SQL execution internal error/i;
+const RETRY_BACKOFF_MS = [300, 700];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 interface ExecOpts {
   bindings?: Record<string, { type: string; value: string }>;
   queryTag?: string;
 }
 
-async function executeStatement(sql: string, opts: ExecOpts = {}): Promise<StatementResponse> {
+async function executeStatement(sql: string, opts: ExecOpts = {}, attempt = 0): Promise<StatementResponse> {
   const auth = getSnowflakeAuth();
   const url = `${auth.baseUrl}/api/v2/statements`;
   const body: Record<string, unknown> = {
@@ -117,6 +126,13 @@ async function executeStatement(sql: string, opts: ExecOpts = {}): Promise<State
 
   if (!res.ok) {
     const text = await res.text();
+    // Retry transient internal engine errors (see TRANSIENT_INTERNAL) a few
+    // times before surfacing; anything else fails fast.
+    if (attempt < RETRY_BACKOFF_MS.length && (res.status === 422 || res.status >= 500) && TRANSIENT_INTERNAL.test(text)) {
+      logger.debug('sf-retry', { attempt: attempt + 1, status: res.status, sql: sql.replace(/\s+/g, ' ').trim().slice(0, 120) });
+      await sleep(RETRY_BACKOFF_MS[attempt]);
+      return executeStatement(sql, opts, attempt + 1);
+    }
     throw new Error(`Snowflake API ${res.status}: ${text}`);
   }
 
@@ -165,6 +181,11 @@ async function pollForResults(handle: string, sqlPreview: string): Promise<State
     }
     const data: StatementResponse = await res.json();
     if (data.data || data.resultSetMetaData) return data;
+    // Surface transient internal engine errors (300010 / 000603) so the caller
+    // can retry the whole statement instead of polling a doomed handle.
+    if (data.message && TRANSIENT_INTERNAL.test(data.message)) {
+      throw new Error(`Snowflake API 422: ${data.message}`);
+    }
     if (data.message?.includes('error') || data.code === '000625') {
       throw new Error(data.message || 'Query failed');
     }
