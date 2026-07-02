@@ -2923,6 +2923,7 @@
           "title": "Candidate sites (click to analyse)",
           "rowKey": "poi_name",
           "maxRows": 200,
+          "autoSelect": "random",
           "columns": [
             { "field": "poi_name", "header": "Site" },
             { "field": "category", "header": "Category" },
@@ -3582,11 +3583,12 @@
       "exampleQuestions": ["If we close this store, which store inherits the most sales?", "How much revenue is at risk if we close this store?", "What is the closure risk score for this store?"],
       "gotchas": "A postcode (ZIP) is RETAINED if at least one surviving store's drive-time catchment reaches its centroid within the band, otherwise AT_RISK (its revenue is the closure leakage). Revenue and EBITDA are derived from the user-supplied value per household, retention rate and EBITDA margin; the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue. Overlap rows are pairwise (closed store vs one surviving store); do not sum households across rows because surviving catchments overlap."
     },
+    "info": "**Attribution method**\n\nThe map shows a household H3 hexagon heatmap of the closing store's drive-time catchment, shaded by how many surviving stores still reach each cell (red = at risk / thin coverage, green = well covered). Coverage is computed from pre-rasterized H3 res-8 household cells tested against live drive-time isochrones, not from stacked polygons.\n\nA postcode (ZIP) is RETAINED if at least one surviving store's catchment reaches its centroid within the band, otherwise AT_RISK (its revenue is the closure leakage). Revenue and EBITDA are user-driven: households x value per household x retention rate, with EBITDA = revenue x margin, and the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue.\n\nThe gainers table assigns each catchment cell to its nearest surviving store (non-overlapping). The overlap-summary rows are pairwise (closed store vs one surviving store); do not sum households across rows, because surviving-store catchments themselves overlap.",
     "layout": {
       "default": {
         "columns": "repeat(6, 1fr)",
-        "rows": "auto auto auto $map auto auto auto",
-        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rev rev margin margin retention retention\"\n\"gainers gainers gainers map map map\"\n\"overlaps overlaps overlaps overlaps overlaps overlaps\"\n\"overlapzips overlapzips overlapzips overlapzips overlapzips overlapzips\"\n\"attrib attrib attrib attrib attrib attrib\""
+        "rows": "auto auto auto $map auto auto",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rev rev margin margin retention retention\"\n\"gainers gainers gainers map map map\"\n\"overlaps overlaps overlaps overlaps overlaps overlaps\"\n\"overlapzips overlapzips overlapzips overlapzips overlapzips overlapzips\""
       }
     },
     "areas": {
@@ -3630,14 +3632,6 @@
               "query": "SELECT BAND_MIN AS value, BAND_MIN || ' min' AS label FROM FLEET_APP.LOCATION.VW_BANDS ORDER BY BAND_MIN"
             },
             "emits": { "selected_closed_band": "selection" }
-          },
-          {
-            "name": "closuremetric",
-            "label": "Map metric",
-            "data": {
-              "query": "SELECT 'retained' AS value, 'Retained revenue' AS label UNION ALL SELECT 'ebitda','Retained EBITDA' UNION ALL SELECT 'transfer','Transfer probability' UNION ALL SELECT 'households','Households'"
-            },
-            "emits": { "closure_metric": "selection" }
           }
         ]
       },
@@ -3660,7 +3654,7 @@
         "component": "Table",
         "config": { "title": "Households and revenue inherited by surviving stores", "fitRows": 5 },
         "data": {
-          "query": "WITH sel AS (SELECT COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AS cid), iso AS (SELECT GEO AS poly FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE STORE_ID=(SELECT cid FROM sel)), incells AS (SELECT c.H3, c.HH, c.CENTROID FROM FLEET_APP.LOCATION.VW_HH_CELLS c, iso WHERE ST_WITHIN(c.CENTROID, iso.poly)), tot AS (SELECT SUM(HH) AS total_in FROM incells), csplit AS (SELECT HV_PCT, SAMPLE_PCT, WALKIN_PCT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ID=(SELECT cid FROM sel)), survivors AS (SELECT STORE_ID, POI_NAME, LON, LAT FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' AND STORE_ID <> (SELECT cid FROM sel)), assign AS (SELECT ic.H3, ic.HH, sv.STORE_ID AS GAIN_ID FROM incells ic CROSS JOIN survivors sv QUALIFY ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(sv.LON,sv.LAT)), sv.STORE_ID)=1), agg AS (SELECT GAIN_ID, SUM(HH) AS hh_inh FROM assign GROUP BY 1) SELECT g.POI_NAME AS gaining_store, a.hh_inh AS households, ROUND(100*a.hh_inh/NULLIF((SELECT total_in FROM tot),0),1) AS pct_of_closed, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100) AS revenue, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT HV_PCT FROM csplit)) AS home_visit, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT SAMPLE_PCT FROM csplit)) AS sample_rev, ROUND(a.hh_inh * COALESCE(:value_per_hh,500)::FLOAT * COALESCE(:retention_rate,50)::FLOAT/100 * (SELECT WALKIN_PCT FROM csplit)) AS walk_in FROM agg a JOIN FLEET_APP.LOCATION.VW_STORE_FACTS g ON g.STORE_ID=a.GAIN_ID ORDER BY revenue DESC LIMIT 20",
+          "query": "SELECT GAINING_STORE AS gaining_store, HOUSEHOLDS AS households, PCT_OF_CLOSED AS pct_of_closed, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -3674,13 +3668,17 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "toggles": [
+            { "key": "show_coverage", "label": "Coverage heatmap", "default": true },
+            { "key": "show_catchments", "label": "Surviving-store catchments", "default": false },
+            { "key": "show_zip_risk", "label": "Postcode retained / at-risk", "default": false }
+          ],
           "legend": [
-            { "label": "Closed-store catchment", "color": [209, 55, 78, 60] },
+            { "label": "Surviving-store coverage", "gradient": [[215, 48, 39, 200], [254, 224, 139, 180], [26, 152, 80, 160]], "minLabel": "at risk", "maxLabel": "well covered" },
+            { "label": "Closed-store catchment", "color": [209, 55, 78, 200], "shape": "line" },
             { "label": "Surviving-store catchment (color per store)", "color": [31, 119, 180, 90] },
             { "label": "Postcode retained", "color": [41, 181, 232, 55] },
             { "label": "Postcode at risk", "color": [245, 158, 11, 80] },
-            { "label": "Overlap (low retained)", "color": [199, 233, 192, 80] },
-            { "label": "Overlap (high retained)", "color": [0, 109, 44, 130] },
             { "label": "Selected overlap", "color": [245, 158, 11, 255], "shape": "line" },
             { "label": "Surviving store (color per store)", "color": [31, 119, 180, 210] },
             { "label": "Closed store", "color": [255, 200, 0, 255] }
@@ -3690,8 +3688,8 @@
               "type": "geojson",
               "id": "closed-catchment",
               "geojsonColumn": "geo",
-              "fillColor": [209, 55, 78, 40],
-              "lineColor": [209, 55, 78, 200],
+              "fillColor": [0, 0, 0, 0],
+              "lineColor": [209, 55, 78, 220],
               "lineWidth": 2,
               "data": {
                 "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))) WHERE STORE_ID = COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)) AND GEO IS NOT NULL",
@@ -3707,6 +3705,7 @@
               "id": "survivor-catchments",
               "geojsonColumn": "geo",
               "noFit": true,
+              "visibleWhen": "show_catchments",
               "colorColumn": "color_key",
               "colorMap": { "0": [31, 119, 180, 55], "1": [255, 127, 14, 55], "2": [44, 160, 44, 55], "3": [148, 103, 189, 55], "4": [23, 190, 207, 55], "5": [227, 119, 194, 55], "6": [140, 86, 75, 55], "7": [127, 127, 127, 55], "8": [188, 189, 34, 55], "9": [23, 165, 137, 55], "10": [99, 110, 250, 55], "11": [171, 99, 250, 55] },
               "fillColor": [150, 150, 150, 40],
@@ -3729,6 +3728,7 @@
               "geojsonColumn": "geo",
               "colorColumn": "status",
               "noFit": true,
+              "visibleWhen": "show_zip_risk",
               "colorMap": {
                 "RETAINED": [41, 181, 232, 55],
                 "AT_RISK": [245, 158, 11, 80]
@@ -3751,32 +3751,22 @@
               }
             },
             {
-              "type": "geojson",
-              "id": "closure-overlap-choropleth",
-              "geojsonColumn": "geo",
-              "colorColumn": "impact_bucket",
+              "type": "h3",
+              "id": "closure-coverage-hex",
+              "hexColumn": "h3",
+              "valueColumn": "survivor_count",
               "noFit": true,
-              "colorMap": {
-                "1": [237, 248, 233, 60],
-                "2": [199, 233, 192, 80],
-                "3": [116, 196, 118, 100],
-                "4": [49, 163, 84, 115],
-                "5": [0, 109, 44, 130]
-              },
-              "fillColor": [116, 196, 118, 90],
-              "lineColor": [0, 68, 27, 110],
-              "lineWidth": 1,
+              "visibleWhen": "show_coverage",
+              "colorScale": [[215, 48, 39, 200], [26, 152, 80, 160]],
               "pickable": true,
-              "tooltip": "<b>{surviving_store}</b><br/>Inherits shared area from closed store<br/>Households {households} | ZIPs {zip_count}<br/>Retained revenue {retained_revenue}<br/>Transfer prob {transfer_prob}",
+              "tooltip": "<b>{status}</b><br/>Surviving stores reaching here: {survivor_count}<br/>Households {households}<br/>Nearest survivor {nearest_survivor}<br/>Retained revenue {retained_revenue}",
               "data": {
-                "query": "SELECT OVERLAP_ID AS overlap_id, SURVIVING_STORE AS surviving_store, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, RETAINED_REVENUE AS retained_revenue, TRANSFER_PROB AS transfer_prob, NTILE(5) OVER (ORDER BY CASE COALESCE(:closure_metric,'retained') WHEN 'ebitda' THEN RETAINED_EBITDA WHEN 'transfer' THEN TRANSFER_PROB WHEN 'households' THEN HOUSEHOLDS ELSE RETAINED_REVENUE END) AS impact_bucket, ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100))",
+                "query": "SELECT H3 AS h3, HOUSEHOLDS AS households, SURVIVOR_COUNT AS survivor_count, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, RETAINED_REVENUE AS retained_revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(COALESCE(:selected_closed,(SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE='OWNED' ORDER BY POI_NAME LIMIT 1)),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
                 "params": {
                   "region": "context.region",
                   "selected_closed": "viewState.selected_closed",
                   "selected_closed_band": "viewState.selected_closed_band",
-                  "closure_metric": "viewState.closure_metric",
                   "value_per_hh": "viewState.value_per_hh",
-                  "ebitda_margin": "viewState.ebitda_margin",
                   "retention_rate": "viewState.retention_rate"
                 }
               }
@@ -3874,12 +3864,6 @@
             "ebitda_margin": "viewState.ebitda_margin",
             "retention_rate": "viewState.retention_rate"
           }
-        }
-      },
-      "attrib": {
-        "component": "Markdown",
-        "config": {
-          "content": "**Attribution method:** overlap geometry is the computed ST_INTERSECTION of the closing store's live drive-time catchment with each surviving store's catchment, not visual polygon stacking. Postcodes (ZIPs) are classified RETAINED (a surviving store reaches the ZIP centroid within the band) or AT_RISK (no surviving store reaches it), by ZIP centroid containment. Revenue and EBITDA are user-driven: households x value per household x retention rate, with EBITDA = revenue x margin, and the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. AT_RISK revenue is the closure leakage; the closure risk score = at-risk revenue / total closing-store revenue. Overlap rows are pairwise (closed store vs one surviving store); do not sum households across rows, because surviving-store catchments themselves overlap. The gainers table uses non-overlapping nearest-surviving-store attribution."
         }
       },
       "closure_drawer": {

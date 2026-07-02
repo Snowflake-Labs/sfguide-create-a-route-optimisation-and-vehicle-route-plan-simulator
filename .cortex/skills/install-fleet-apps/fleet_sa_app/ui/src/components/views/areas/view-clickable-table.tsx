@@ -6,7 +6,7 @@
 // viewState.<key>-parametrized query. Reproduces the control app's FleetMap
 // click-a-courier drilldown.
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
@@ -39,6 +39,9 @@ interface ViewClickableTableAreaProps {
       showFreshness?: boolean;
       // Cap the visible height to N data rows (header + N rows) and scroll beyond it.
       fitRows?: number;
+      // Seed the emitted selection once when data first loads and nothing is selected.
+      // 'first' picks the top row; 'random' picks a random loaded row.
+      autoSelect?: 'first' | 'random';
     };
     emits?: Record<string, string>;
   };
@@ -74,6 +77,28 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
   const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
   const rowKey = config?.rowKey;
   const selected = emitKey ? viewState[emitKey] : null;
+
+  // Auto-select once on load: seed the emitted selection so the view opens with a
+  // highlighted venue (same machinery as an explicit row/map click) instead of the
+  // region-centroid fallback. Fires once per mount; clearing a selection later is
+  // not re-seeded.
+  const autoSelect = config?.autoSelect;
+  const autoSelectedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSelect || !emitKey || !rowKey || autoSelectedRef.current) return;
+    const r = data?.rows ?? [];
+    if (!r.length) return;
+    if (selected != null && selected !== '') {
+      autoSelectedRef.current = true;
+      return;
+    }
+    const idx = autoSelect === 'random' ? Math.floor(Math.random() * r.length) : 0;
+    const val = r[idx]?.[rowKey];
+    if (val != null) {
+      updateViewState({ [emitKey]: val });
+      autoSelectedRef.current = true;
+    }
+  }, [data, autoSelect, emitKey, rowKey, selected, updateViewState]);
 
   if (loading) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>Loading…</div>;
