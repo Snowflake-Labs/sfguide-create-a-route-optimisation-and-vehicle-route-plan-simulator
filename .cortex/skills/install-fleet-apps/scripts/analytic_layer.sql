@@ -1191,6 +1191,141 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCH
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
 
+-- ===========================================================================
+-- Point-anchored live catchment (drive-time market analysis)
+-- ===========================================================================
+-- Powers the redesigned Catchment app view. Unlike the LOCATION.LIVE_* family
+-- (keyed by STORE_ID over the store estate), these are keyed by an ARBITRARY
+-- point (P_LON/P_LAT), so the view can anchor on any selected POI OR a greenfield
+-- map click. Nothing is precomputed (Architecture Tenet 9): each call hits
+-- OPENROUTESERVICE_APP.CORE.ISOCHRONES live via the fast array + 'time' (SECONDS)
+-- overload with LATERAL FLATTEN (~1s vs ~70s for the 5-arg scalar form). The
+-- region's ORS service must be RESUMED. Sociodemographics reuse the SAME real
+-- data as Site Impact / Closure Impact: LOCATION.ZIP_AREAS (SafeGraph population /
+-- households / median income) - US-only; when absent those metrics are 0 and the
+-- Overture venue/address counts still populate. Owner's-rights; consumers need
+-- only USAGE. Schema is created defensively (the catchment pack owns it normally).
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.CATCHMENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- One row per drive-time band (cumulative "within X min"): the reachable polygon
+-- plus real population/households/median income (household-weighted mean of ZIP
+-- medians) and Overture venue + address counts inside it. P_BANDS is an ARRAY of
+-- SECONDS (e.g. ARRAY_CONSTRUCT(300,600,900) for 5/10/15 min); ORS returns one
+-- nested polygon per band. Feeds the KPI strip, per-band stats table, and the
+-- nested-ring map layers.
+CREATE OR REPLACE FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT(
+  P_LON FLOAT, P_LAT FLOAT, P_BANDS ARRAY, P_REGION VARCHAR)
+RETURNS TABLE (BAND_MIN INT, GEO GEOGRAPHY, AREA_SQKM NUMBER(14,3),
+               POPULATION INT, HOUSEHOLDS INT, MEDIAN_INCOME NUMBER(12,0),
+               VENUES INT, ADDRESSES INT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH iso AS (
+    SELECT (f.value:properties:value::INT)/60 AS band_min,
+           TO_GEOGRAPHY(f.value:geometry) AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(P_LON, P_LAT)),
+      P_BANDS, 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  ),
+  zip AS (
+    SELECT i.band_min,
+           SUM(z.POPULATION) AS population,
+           SUM(z.HOUSEHOLDS) AS households,
+           ROUND(SUM(z.MEDIAN_INCOME * z.HOUSEHOLDS) / NULLIF(SUM(z.HOUSEHOLDS), 0)) AS median_income
+    FROM iso i JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
+      ON z.REGION = P_REGION AND i.poly IS NOT NULL AND ST_WITHIN(z.CENTROID, i.poly)
+    GROUP BY i.band_min
+  ),
+  ven AS (
+    SELECT i.band_min, COUNT(*) AS venues
+    FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.POIS p
+      ON p.REGION = P_REGION AND i.poly IS NOT NULL AND ST_WITHIN(p.GEOMETRY, i.poly)
+    GROUP BY i.band_min
+  ),
+  addr AS (
+    SELECT i.band_min, COUNT(*) AS addresses
+    FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES a
+      ON a.REGION = P_REGION AND i.poly IS NOT NULL AND ST_WITHIN(a.GEOMETRY, i.poly)
+    GROUP BY i.band_min
+  )
+  SELECT i.band_min, i.poly AS geo,
+         ROUND(ST_AREA(i.poly) / 1e6, 3)::NUMBER(14,3) AS area_sqkm,
+         COALESCE(zip.population, 0) AS population,
+         COALESCE(zip.households, 0) AS households,
+         COALESCE(zip.median_income, 0)::NUMBER(12,0) AS median_income,
+         COALESCE(ven.venues, 0) AS venues,
+         COALESCE(addr.addresses, 0) AS addresses
+  FROM iso i
+  LEFT JOIN zip  ON zip.band_min  = i.band_min
+  LEFT JOIN ven  ON ven.band_min  = i.band_min
+  LEFT JOIN addr ON addr.band_min = i.band_min
+  ORDER BY i.band_min
+$$;
+
+-- Venue category breakdown within a single band's drive-time polygon.
+CREATE OR REPLACE FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(
+  P_LON FLOAT, P_LAT FLOAT, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (BASIC_CATEGORY VARCHAR, VENUES INT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH iso AS (
+    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(P_LON, P_LAT)),
+      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  )
+  SELECT p.BASIC_CATEGORY, COUNT(*) AS venues
+  FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.POIS p
+    ON p.REGION = P_REGION AND p.BASIC_CATEGORY IS NOT NULL
+   AND i.poly IS NOT NULL AND ST_WITHIN(p.GEOMETRY, i.poly)
+  GROUP BY p.BASIC_CATEGORY
+  ORDER BY venues DESC
+$$;
+
+-- Competitor / nearby venues inside a band's drive-time polygon (drive-time, not a
+-- straight-line buffer). Same category as the anchor when P_CATEGORY is supplied;
+-- all venues when it is NULL (greenfield map-click anchor with no category).
+CREATE OR REPLACE FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(
+  P_LON FLOAT, P_LAT FLOAT, P_BAND INT, P_REGION VARCHAR, P_CATEGORY VARCHAR)
+RETURNS TABLE (POI_NAME VARCHAR, BASIC_CATEGORY VARCHAR, LONGITUDE FLOAT, LATITUDE FLOAT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH iso AS (
+    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      'driving-car',
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(P_LON, P_LAT)),
+      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+  )
+  SELECT p.POI_NAME, p.BASIC_CATEGORY, p.LONGITUDE, p.LATITUDE
+  FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.POIS p
+    ON p.REGION = P_REGION AND i.poly IS NOT NULL AND ST_WITHIN(p.GEOMETRY, i.poly)
+  WHERE (P_CATEGORY IS NULL OR p.BASIC_CATEGORY = P_CATEGORY)
+$$;
+
+-- Grants (owner's-rights UDTFs; consumers only need USAGE).
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT(FLOAT, FLOAT, ARRAY, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT(FLOAT, FLOAT, ARRAY, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT(FLOAT, FLOAT, ARRAY, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(FLOAT, FLOAT, INT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(FLOAT, FLOAT, INT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(FLOAT, FLOAT, INT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(FLOAT, FLOAT, INT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(FLOAT, FLOAT, INT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(FLOAT, FLOAT, INT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
 UNION ALL SELECT 'ROUTE_DEVIATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
