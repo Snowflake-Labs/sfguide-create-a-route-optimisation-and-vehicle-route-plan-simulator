@@ -8,6 +8,8 @@ import sys
 import json
 import time
 import shutil
+import struct
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -393,11 +395,147 @@ def _download_file(url, file_path):
     return _download_file_streaming(url, file_path)
 
 
+# --- PBF integrity validation ---------------------------------------------
+# A corrupt/truncated OSM PBF passes the byte-count check (bytes == server
+# Content-Length) yet makes ORS abort graph init with
+#   RuntimeException "Couldn't process file ...osm.pbf, error: Index N out of
+#   bounds for length 0"
+# which then hangs the SQL provisioning rescue loop for hours. We therefore
+# structurally validate the file HERE, before it is ever handed to ORS, and on
+# failure delete the file + resume state so the next attempt re-downloads clean.
+
+# Reject a completed download whose size is below this fraction of the expected
+# (probed) size. Catches servers that report a truncated Content-Length.
+MIN_SIZE_FRACTION = float(os.getenv('PBF_MIN_SIZE_FRACTION', '0.5'))
+
+
+def _is_pbf_target(file_path):
+    lower = file_path.lower()
+    return lower.endswith('.pbf') or lower.endswith('.osm.pbf')
+
+
+def _validate_pbf_magic(file_path):
+    '''Confirm the file begins with a well-formed OSM PBF header blob.
+
+    PBF layout: 4-byte big-endian BlobHeader length, then a protobuf
+    BlobHeader whose `type` field is the string "OSMHeader" for the first
+    blob. We read the length prefix (must be a small, sane value), then scan
+    the header bytes for the "OSMHeader" marker. This cheaply rejects HTML
+    error pages, gzip'd partials, and truncated/garbage first blocks.
+    '''
+    with open(file_path, 'rb') as f:
+        prefix = f.read(4)
+        if len(prefix) < 4:
+            raise RuntimeError('PBF too short to contain a BlobHeader length')
+        header_len = struct.unpack('>i', prefix)[0]
+        # Real OSM BlobHeaders are tiny (tens of bytes); cap generously at 64 KiB.
+        if header_len <= 0 or header_len > 64 * 1024:
+            raise RuntimeError(
+                'implausible PBF BlobHeader length %d (not a valid PBF)'
+                % header_len)
+        header = f.read(header_len)
+        if len(header) < header_len:
+            raise RuntimeError('PBF truncated inside first BlobHeader')
+        if b'OSMHeader' not in header:
+            raise RuntimeError(
+                'first PBF blob is not an OSMHeader (corrupt or not a PBF)')
+
+
+def _file_md5(file_path):
+    h = hashlib.md5()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(CHUNK_SIZE), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _validate_pbf_md5(url, file_path):
+    '''Best-effort checksum check against Geofabrik's `<url>.md5` sidecar.
+
+    Geofabrik publishes `<pbf>.md5` next to every PBF. If it is reachable we
+    verify it (authoritative corruption detector). If the sidecar is missing
+    or unreachable, we skip -- magic-byte + size-band checks still apply.
+    '''
+    md5_url = url + '.md5'
+    try:
+        r = requests.get(md5_url, timeout=(30, 60), allow_redirects=True)
+        if r.status_code != 200 or not r.text.strip():
+            logger.info('No usable md5 sidecar at %s (HTTP %d); skipping '
+                        'checksum verification', md5_url, r.status_code)
+            return
+        expected = r.text.strip().split()[0].lower()
+    except Exception as exc:
+        logger.info('md5 sidecar fetch failed for %s: %s; skipping checksum',
+                    md5_url, exc)
+        return
+
+    if len(expected) != 32:
+        logger.info('md5 sidecar for %s not a valid hash (%r); skipping',
+                    md5_url, expected)
+        return
+
+    actual = _file_md5(file_path)
+    if actual != expected:
+        raise RuntimeError('md5 mismatch: got %s, expected %s (corrupt download)'
+                           % (actual, expected))
+    logger.info('md5 verified for %s (%s)', file_path, actual)
+
+
+def _validate_download(url, file_path, expected_total):
+    '''Validate a completed PBF download; raise on any integrity failure.'''
+    if not _is_pbf_target(file_path):
+        return
+    size = os.path.getsize(file_path) if os.path.isfile(file_path) else 0
+    if size <= 0:
+        raise RuntimeError('downloaded PBF is empty')
+    if expected_total and size < int(expected_total * MIN_SIZE_FRACTION):
+        raise RuntimeError(
+            'downloaded PBF size %d is below %.0f%% of expected %d '
+            '(truncated download)'
+            % (size, MIN_SIZE_FRACTION * 100, expected_total))
+    _validate_pbf_magic(file_path)
+    _validate_pbf_md5(url, file_path)
+    logger.info('PBF validation passed for %s (%d bytes)', file_path, size)
+
+
+def _purge_download_state(file_path):
+    '''Delete the corrupt final file + all resume state so the next attempt
+    starts a clean re-download instead of treating the bad bytes as success.'''
+    for p in [file_path, _part_path(file_path), _sidecar_path(file_path)]:
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+    idx = 0
+    while True:
+        seg = _seg_path(file_path, idx)
+        if not os.path.exists(seg):
+            break
+        try:
+            os.remove(seg)
+        except OSError:
+            pass
+        idx += 1
+
+
 def _run_download(url, file_path):
     _set_job_status(file_path, 'in_progress')
     try:
-        _download_file(url, file_path)
+        expected_total = _download_file(url, file_path)
+        _validate_download(url, file_path, expected_total)
         _set_job_status(file_path, 'success')
+    except RuntimeError as exc:
+        # Validation failure (or a download error surfaced as RuntimeError from
+        # a corrupt payload). For a validation failure the bytes on disk are bad
+        # and must NOT be treated as resumable success, so purge everything.
+        msg = str(exc)
+        if ('corrupt' in msg or 'mismatch' in msg or 'truncated' in msg
+                or 'not a valid PBF' in msg or 'not a PBF' in msg
+                or 'OSMHeader' in msg or 'PBF' in msg):
+            _purge_download_state(file_path)
+        _set_job_status(file_path, 'error', 'error: %s' % msg)
+        logger.exception('Download failed for %s', file_path)
     except Exception as exc:
         # IMPORTANT: do NOT delete segment files / sidecar here. They are the
         # resume state. The next /download_to_stage trigger resumes, skipping

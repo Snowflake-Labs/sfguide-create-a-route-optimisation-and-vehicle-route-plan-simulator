@@ -129,9 +129,25 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     -- joining REGION_ORS_MAP. PBF_SIZE_GIB is recorded after PBF download.
     COMPUTE_SIZE VARCHAR,
     INSTANCE_FAMILY VARCHAR,
-    PBF_SIZE_GIB FLOAT
+    PBF_SIZE_GIB FLOAT,
+    -- Number of times the rescue task has downgraded this job ERROR->RUNNING.
+    -- Bounds the "container alive but ORS dead" resurrection loop (see
+    -- FINALIZE_PROVISION_ITER); beyond a cap the job is failed terminally.
+    RESCUE_DOWNGRADES INTEGER DEFAULT 0
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
+
+-- Idempotent migration for pre-existing deployments (table created before the
+-- RESCUE_DOWNGRADES column existed). Wrapped in a swallow-on-exists block:
+-- `ADD COLUMN IF NOT EXISTS ... DEFAULT` raises "ambiguous column name" (not a
+-- clean no-op) once the column is present, which would abort a module re-run.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN RESCUE_DOWNGRADES INTEGER DEFAULT 0;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
 
 -- Durable repair telemetry (survives REBUILD_REGION_GRAPHS stage purge).
 -- Used by REPAIR_STUCK_REGION_BUILDS for byte-growth stall detection and
@@ -387,6 +403,66 @@ BEGIN
             WHERE BUILD_ID = :build_id AND PBF_SIZE_GIB IS NULL;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- PBF size-band validation (defense in depth). The downloader validates PBF
+    -- structure (magic byte + md5 sidecar) before this point, but as a belt-and-
+    -- braces guard we also reject a staged file that is implausibly small versus
+    -- the catalog's expected size. A truncated/HTML/empty file that somehow lands
+    -- would otherwise be handed to ORS and abort graph init with
+    -- "Index N out of bounds for length 0", hanging the rescue loop for hours.
+    BEGIN
+        LET pbf_chk_bytes INTEGER DEFAULT 0;
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
+        LET rs_pbf_chk RESULTSET := (SELECT COALESCE("size", 0)::INTEGER AS B
+                                      FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+        LET c_pbf_chk CURSOR FOR rs_pbf_chk;
+        FOR r IN c_pbf_chk DO pbf_chk_bytes := r.B; END FOR;
+
+        LET expected_mb FLOAT DEFAULT 0;
+        BEGIN
+            LET rs_exp RESULTSET := (SELECT COALESCE(MAX(PBF_SIZE_MB), 0)::FLOAT AS M
+                                     FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+                                     WHERE UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+                                        OR UPPER(REGION_KEY)  = UPPER(:P_REGION)
+                                        OR UPPER(REGION_NAME) = UPPER(:P_REGION));
+            LET c_exp CURSOR FOR rs_exp;
+            FOR r IN c_exp DO expected_mb := r.M; END FOR;
+        EXCEPTION WHEN OTHER THEN expected_mb := 0;
+        END;
+
+        -- Absolute floor: any real routable region PBF is well over 1 MB.
+        LET min_bytes INTEGER DEFAULT 1048576;
+        -- Catalog-relative floor: 50% of expected when the catalog knows the size.
+        IF (:expected_mb > 0) THEN
+            min_bytes := GREATEST(:min_bytes, (:expected_mb * 1048576.0 * 0.5)::INTEGER);
+        END IF;
+
+        IF (:pbf_chk_bytes < :min_bytes) THEN
+            LET pbf_err VARCHAR := 'PBF failed size-band validation: staged '
+                || :pbf_chk_bytes || ' bytes < required ' || :min_bytes
+                || ' bytes (expected_mb=' || :expected_mb || '). Corrupt/truncated download.';
+            -- Purge the bad staged file so a retry re-downloads clean instead of
+            -- treating it as a cache hit.
+            BEGIN
+                EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET STATUS='FAILED', STAGE='ERROR', ERROR_MSG=:pbf_err, MESSAGE=:pbf_err,
+                COMPLETED_AT=CAST(CONVERT_TIMEZONE('UTC', CAST(CURRENT_TIMESTAMP() AS TIMESTAMP_TZ(9))) AS TIMESTAMP_NTZ(9))
+            WHERE JOB_ID = :P_JOB_ID;
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+            SET STATUS = 'FAILED', UPDATED_AT = SYSDATE()
+            WHERE REGION = :P_REGION;
+            UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+            SET FINISHED_AT = SYSDATE(),
+                ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
+                EXIT_STATUS = 'ERROR',
+                LOG_URI = :pbf_err
+            WHERE BUILD_ID = :build_id;
+            RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :pbf_err)::VARCHAR;
+        END IF;
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
@@ -3312,6 +3388,93 @@ BEGIN
     EXCEPTION WHEN OTHER THEN is_ready := FALSE;
     END;
     IF (NOT :is_ready) THEN
+        -- FAST-FAIL GUARD (fixes the 35h corrupt-PBF hang): a not-ready
+        -- container was previously ALWAYS resurrected to RUNNING/BUILDING_GRAPH
+        -- as long as the container was merely alive, with no ceiling. A corrupt
+        -- PBF makes ORS abort init ("Index N out of bounds for length 0") while
+        -- the container stays alive, so the job looped RUNNING forever, pinned at
+        -- AUTO_SUSPEND=0, burning compute for days. Before resurrecting, check for
+        -- (a) a fatal ORS init signature in the container logs, (b) an absolute
+        -- wall-clock ceiling scaled by compute size, or (c) too many prior
+        -- resurrections. Any hit => terminal ERROR + release the compute pin.
+        BEGIN
+            LET terminal_reason VARCHAR DEFAULT '';
+            LET svc_full_f VARCHAR := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
+
+            -- (a) Scan the ORS container logs for fatal init signatures.
+            LET logs_txt VARCHAR DEFAULT '';
+            BEGIN
+                rs := (EXECUTE IMMEDIATE 'SELECT SYSTEM$GET_SERVICE_LOGS(''' || :svc_full_f || ''', ''0'', ''ors'', 400) AS L');
+                LET clg CURSOR FOR rs;
+                FOR r IN clg DO logs_txt := COALESCE(r.L, ''); END FOR;
+            EXCEPTION WHEN OTHER THEN logs_txt := '';
+            END;
+            IF (:logs_txt ILIKE '%out of bounds for length 0%'
+                OR :logs_txt ILIKE '%ExecutionException while initializing RoutingProfileManager%'
+                OR :logs_txt ILIKE '%Application run failed%'
+                OR :logs_txt ILIKE '%Couldn''t process file%') THEN
+                terminal_reason := 'ors_init_fatal';
+            END IF;
+
+            -- (b) Absolute wall-clock ceiling (build cap by size + generous grace).
+            IF (:terminal_reason = '') THEN
+                LET elapsed_min INTEGER DEFAULT 0;
+                BEGIN
+                    SELECT TIMESTAMPDIFF(MINUTE, STARTED_AT, SYSDATE()) INTO :elapsed_min
+                    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE JOB_ID = :job_id;
+                EXCEPTION WHEN OTHER THEN elapsed_min := 0;
+                END;
+                LET wall_cap_min INTEGER DEFAULT 120;   -- S: 20m build + grace
+                IF (:compute_size = 'L')   THEN wall_cap_min := 300; END IF;  -- 3h build + 2h
+                IF (:compute_size = 'XXL') THEN wall_cap_min := 600; END IF;  -- 6h build + 4h
+                IF (:elapsed_min > :wall_cap_min) THEN
+                    terminal_reason := 'build_wallclock_exceeded';
+                END IF;
+            END IF;
+
+            -- (c) Resurrection counter ceiling (ERROR<->RUNNING flapping).
+            IF (:terminal_reason = '') THEN
+                LET downgrades INTEGER DEFAULT 0;
+                BEGIN
+                    SELECT COALESCE(RESCUE_DOWNGRADES, 0) INTO :downgrades
+                    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE JOB_ID = :job_id;
+                EXCEPTION WHEN OTHER THEN downgrades := 0;
+                END;
+                IF (:downgrades >= 30) THEN
+                    terminal_reason := 'rescue_retry_exhausted';
+                END IF;
+            END IF;
+
+            IF (:terminal_reason != '') THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                SET STATUS='ERROR', STAGE='ERROR', ERROR_MSG=:terminal_reason,
+                    MESSAGE='Rescue fast-fail (' || :terminal_reason || '): container alive but ORS not serving; stopped monitoring and released compute pin.',
+                    COMPLETED_AT=SYSDATE()
+                WHERE JOB_ID = :job_id;
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                SET STATUS='FAILED', UPDATED_AT=SYSDATE() WHERE REGION = :P_REGION;
+                UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+                SET FINISHED_AT=SYSDATE(),
+                    ELAPSED_MINUTES=TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE())/60.0,
+                    EXIT_STATUS='ERROR', LOG_URI=:terminal_reason
+                WHERE JOB_ID = :job_id AND EXIT_STATUS IN ('IN_PROGRESS','TIMEOUT');
+                -- Release the AUTO_SUSPEND=0 pin so the dead build stops burning compute.
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS ' || :svc_full_f || ' SUSPEND';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS ' || :svc_full_f || ' SET AUTO_SUSPEND_SECS = 14400';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+                RETURN :terminal_reason || ':' || :P_REGION;
+            END IF;
+        END;
+
         -- Container alive but graph not loaded yet. The wrapper may have exited
         -- prematurely (stall detector / wall-clock); leaving STATUS='ERROR' on
         -- the row puts it in the UI's failed-jobs panel even though the build
@@ -3335,7 +3498,8 @@ BEGIN
                     STAGE='BUILDING_GRAPH',
                     MESSAGE='Container alive; graph still loading (rescue task monitoring).',
                     ERROR_MSG=NULL,
-                    COMPLETED_AT=NULL
+                    COMPLETED_AT=NULL,
+                    RESCUE_DOWNGRADES=COALESCE(RESCUE_DOWNGRADES, 0) + 1
                 WHERE JOB_ID = :job_id AND STATUS='ERROR';
                 -- Also reset the matching build_history row. The Region Builder
                 -- "Recent builds" card reads ORS_BUILD_HISTORY directly; without
