@@ -3,7 +3,7 @@
 spec:
   containers:
     - name: downloader
-      image: /openrouteservice_app/core/image_repository/downloader:v0.0.6
+      image: /openrouteservice_app/core/image_repository/downloader:v0.0.7
       env:
         # Parallel byte-range connections for large range-capable downloads.
         # Multiplies effective throughput against per-connection throttling

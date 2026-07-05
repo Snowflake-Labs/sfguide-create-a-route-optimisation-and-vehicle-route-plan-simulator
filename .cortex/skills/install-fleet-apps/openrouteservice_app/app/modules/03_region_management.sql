@@ -405,65 +405,16 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- PBF size-band validation (defense in depth). The downloader validates PBF
-    -- structure (magic byte + md5 sidecar) before this point, but as a belt-and-
-    -- braces guard we also reject a staged file that is implausibly small versus
-    -- the catalog's expected size. A truncated/HTML/empty file that somehow lands
-    -- would otherwise be handed to ORS and abort graph init with
-    -- "Index N out of bounds for length 0", hanging the rescue loop for hours.
-    BEGIN
-        LET pbf_chk_bytes INTEGER DEFAULT 0;
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
-        LET rs_pbf_chk RESULTSET := (SELECT COALESCE("size", 0)::INTEGER AS B
-                                      FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
-        LET c_pbf_chk CURSOR FOR rs_pbf_chk;
-        FOR r IN c_pbf_chk DO pbf_chk_bytes := r.B; END FOR;
-
-        LET expected_mb FLOAT DEFAULT 0;
-        BEGIN
-            LET rs_exp RESULTSET := (SELECT COALESCE(MAX(PBF_SIZE_MB), 0)::FLOAT AS M
-                                     FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
-                                     WHERE UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
-                                        OR UPPER(REGION_KEY)  = UPPER(:P_REGION)
-                                        OR UPPER(REGION_NAME) = UPPER(:P_REGION));
-            LET c_exp CURSOR FOR rs_exp;
-            FOR r IN c_exp DO expected_mb := r.M; END FOR;
-        EXCEPTION WHEN OTHER THEN expected_mb := 0;
-        END;
-
-        -- Absolute floor: any real routable region PBF is well over 1 MB.
-        LET min_bytes INTEGER DEFAULT 1048576;
-        -- Catalog-relative floor: 50% of expected when the catalog knows the size.
-        IF (:expected_mb > 0) THEN
-            min_bytes := GREATEST(:min_bytes, (:expected_mb * 1048576.0 * 0.5)::INTEGER);
-        END IF;
-
-        IF (:pbf_chk_bytes < :min_bytes) THEN
-            LET pbf_err VARCHAR := 'PBF failed size-band validation: staged '
-                || :pbf_chk_bytes || ' bytes < required ' || :min_bytes
-                || ' bytes (expected_mb=' || :expected_mb || '). Corrupt/truncated download.';
-            -- Purge the bad staged file so a retry re-downloads clean instead of
-            -- treating it as a cache hit.
-            BEGIN
-                EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
-            EXCEPTION WHEN OTHER THEN NULL;
-            END;
-            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-            SET STATUS='FAILED', STAGE='ERROR', ERROR_MSG=:pbf_err, MESSAGE=:pbf_err,
-                COMPLETED_AT=CAST(CONVERT_TIMEZONE('UTC', CAST(CURRENT_TIMESTAMP() AS TIMESTAMP_TZ(9))) AS TIMESTAMP_NTZ(9))
-            WHERE JOB_ID = :P_JOB_ID;
-            UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-            SET STATUS = 'FAILED', UPDATED_AT = SYSDATE()
-            WHERE REGION = :P_REGION;
-            UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-            SET FINISHED_AT = SYSDATE(),
-                ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
-                EXIT_STATUS = 'ERROR',
-                LOG_URI = :pbf_err
-            WHERE BUILD_ID = :build_id;
-            RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :pbf_err)::VARCHAR;
-        END IF;
-    END;
+    -- NOTE: PBF integrity is validated by the DOWNLOADER service (magic byte +
+    -- Geofabrik .md5 sidecar + size band) before the file is handed to ORS. On a
+    -- validation failure the downloader sets the download job status to 'error'
+    -- and purges the file, which the download-status poll above already turns
+    -- into a FAILED provision. We intentionally do NOT re-check size here:
+    -- LIST/REMOVE (and GET/PUT) are unsupported statement types inside a stored
+    -- procedure ("Unsupported statement type 'LIST_FILES'"), and there is no
+    -- directory table on ORS_SPCS_STAGE to read size from. Any bad PBF that still
+    -- slips through is caught fast by the rescue task's fatal-log scan + wall-clock
+    -- cap (see FINALIZE_PROVISION_ITER), not by a multi-hour hang.
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
     CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES, :P_COMPUTE_SIZE);
