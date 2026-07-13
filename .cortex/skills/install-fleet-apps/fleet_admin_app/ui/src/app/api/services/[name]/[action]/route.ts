@@ -9,8 +9,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // Services that must never be suspended from within this app (would kill the
-// request mid-flight). Includes both control apps during the parallel phase.
-const SELF_PROTECTED = new Set(['ORS_CONTROL_APP', 'FLEET_ADMIN_APP', 'FLEET_SA_APP']);
+// request mid-flight): the two control apps that serve the UIs.
+const SELF_PROTECTED = new Set(['FLEET_ADMIN_APP', 'FLEET_SA_APP']);
 
 export const POST = withLogging(async (req: NextRequest, ctx?: unknown) => {
   const gate = await requireOps(req);

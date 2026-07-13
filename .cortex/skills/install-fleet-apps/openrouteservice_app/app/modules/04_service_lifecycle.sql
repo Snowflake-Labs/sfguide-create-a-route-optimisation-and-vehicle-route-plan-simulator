@@ -1,4 +1,4 @@
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"04_service_lifecycle"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"04_service_lifecycle"}}';
  USE SCHEMA OPENROUTESERVICE_APP.CORE;   
 
 -- =============================================================================
@@ -8,7 +8,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -72,7 +72,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_services()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 BEGIN
@@ -84,7 +84,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -116,9 +116,6 @@ BEGIN
     LET cur CURSOR FOR rs;
 
     FOR rec IN cur DO
-        IF (UPPER(rec.svc_name) = 'ORS_CONTROL_APP') THEN
-            CONTINUE;
-        END IF;
         IF (rec.svc_status IN ('RUNNING', 'READY')) THEN
             BEGIN
                 EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SUSPEND';
@@ -147,7 +144,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -183,7 +180,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_ORS_INSTANCES INTEGER, P_GATEWAY_INSTANCES INTEGER, P_POOL_NODES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -208,7 +205,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_STATUS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -301,15 +298,14 @@ $$;
 
 -- =============================================================================
 -- Per-service lifecycle procedures
--- Used by the ORS Control App for granular Resume/Suspend operations.
--- ORS_CONTROL_APP is intentionally protected from self-suspension since
--- suspending it would terminate the UI that initiated the request.
+-- Used by the fleet control apps for granular Resume/Suspend operations over
+-- the OPENROUTESERVICE_APP.CORE engine services.
 -- =============================================================================
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(P_NAME VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -352,7 +348,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(P_NAME VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -366,10 +362,6 @@ BEGIN
     LET safe_name VARCHAR := REGEXP_REPLACE(UPPER(P_NAME), '[^A-Z0-9_]', '');
     IF (LENGTH(safe_name) = 0) THEN
         RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'invalid service name')::STRING;
-    END IF;
-
-    IF (safe_name = 'ORS_CONTROL_APP') THEN
-        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'ORS_CONTROL_APP cannot be suspended from itself')::STRING;
     END IF;
 
     -- Best-effort drift repair before suspension.
@@ -419,7 +411,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -736,7 +728,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
 DECLARE

@@ -12,7 +12,7 @@ import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../con
 import { getSpcsToken } from './sanitize';
 import { log } from '../diagnostics';
 
-const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 export function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
   const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);

@@ -26,31 +26,11 @@ Common issues and their solutions when deploying the ORS App.
 **Solution:** Ensure script runs from `openrouteservice_app/` directory
 
 
-## ARM Mac esbuild Crash (ors_control_app)
+## ARM Mac esbuild Crash (app image builds)
 
-**Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`
+**Symptom:** `esbuild` crashes with a QEMU segfault during the frontend build inside `podman build --platform linux/amd64` on Apple Silicon.
 
-**Solution:** Build the React app and server natively on the host (ARM), then run a container build that only copies the pre-built artifacts. Use `--ignorefile` to allow `dist/` into the build context without modifying the default `.dockerignore`:
-
-```bash
-cd openrouteservice_app/services/ors_control_app
-
-# 1. Build locally (native ARM - no QEMU)
-npm ci --legacy-peer-deps
-npm run build
-npx tsc -p tsconfig.server.json
-
-# 2. Build container image using prebuilt ignore file
-podman build --platform linux/amd64 \
-  --ignorefile .dockerignore.prebuilt \
-  -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:vX.Y.Z \
-  .
-
-cd ../../..
-```
-
-The `--ignorefile .dockerignore.prebuilt` flag tells Podman to use an alternative ignore file that does not exclude `dist/` and `dist-server/`. The `Dockerfile.runtime` builder stage uses a conditional guard (`[ -d dist ] || npm run build`) that skips the esbuild/tsc steps when `dist/` already exists in the build context. This means the prebuilt artifacts are copied straight to the runtime stage without triggering the QEMU-incompatible build. Do NOT rename or edit `.dockerignore`.
+**Solution:** Build the app bundle natively on the host (ARM) first, then run a container build that only copies the pre-built artifacts (avoids running esbuild under QEMU). The fleet app deploy scripts (`scripts/deploy_fleet_sa_app.sh`, `scripts/deploy_fleet_admin_app.sh`) drive the build; when a from-source container build segfaults under emulation, pre-build locally and package the artifacts rather than editing the default `.dockerignore`.
 
 ## Podman Registry Auth for Wrong Host
 
@@ -59,7 +39,7 @@ The `--ignorefile .dockerignore.prebuilt` flag tells Podman to use an alternativ
 ```bash
 REGISTRY_URL=$(snow spcs image-repository url openrouteservice_app.core.image_repository -c <connection> | cut -d'/' -f1)
 TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
-podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.28
+podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/openrouteservice:v9.0.0
 ```
 
 ## Services Going PENDING (Resource Exhaustion)

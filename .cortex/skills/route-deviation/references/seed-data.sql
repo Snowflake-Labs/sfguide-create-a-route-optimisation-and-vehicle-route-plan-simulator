@@ -2,7 +2,7 @@
  * seed-data.sql - Route Deviation
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables,
  * then runs ETL CTAS to produce analysis/summary/trends tables.
- * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
+ * Source data is loaded by install-fleet-apps (datasets/ seed).
  * No S3 external stages - all data comes from UNIFIED.
  */
 

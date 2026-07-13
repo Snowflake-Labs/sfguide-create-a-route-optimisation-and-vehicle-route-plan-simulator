@@ -3,7 +3,7 @@
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables,
  * computes GEOFENCE_POLYGONS from views, and inserts SLA_THRESHOLDS inline.
  * Dynamic Tables must be created separately (see sql-pipeline.sql Steps 5-13).
- * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
+ * Source data is loaded by install-fleet-apps (datasets/ seed).
  * No S3 external stages - all data comes from UNIFIED.
  */
 

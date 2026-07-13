@@ -161,7 +161,7 @@ Net effect: the install seed is no longer hand-authored; it is a reproducible Da
 | 4 | `engine/demand.ts` (neutral) + de-hardcode `freight.ts`/`partners.ts` (`NAME_ROOTS`, country maps, equipment lists); optional firmographics only if a good free + semantic-layer source exists | `DEMO_DEMAND_CATALOG` | - |
 | 5 | Regenerate seed from a single Data Studio run; retire `DEMO_*` + CSV | `deploy-demo-data.sql` static path, `synthetic_ebikes` frozen snapshot | Waves 1-4 |
 
-Each wave is independently shippable and reversible (config flag off + keep the legacy seed until parity is proven). Apply edits to the **live** `fleet_admin_app` source; the legacy mirror under `build-routing-solution/.../ors_control_app/server/studio/` is being retired and should not be the edit target.
+Each wave is independently shippable and reversible (config flag off + keep the legacy seed until parity is proven). Apply edits to the **live** `fleet_admin_app` source.
 
 ## 8. Risk register
 

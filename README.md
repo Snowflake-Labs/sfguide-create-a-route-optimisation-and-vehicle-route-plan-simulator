@@ -43,7 +43,8 @@ Five container services run inside your Snowflake account:
 | `vroom_service` | Vehicle Routing Problem (VRP) optimizer |
 | `routing_gateway_service` | Reverse proxy that routes requests to per-region ORS instances |
 | `downloader` | Downloads OSM map files from Geofabrik |
-| `ors_control_app` | Web-based control panel and demo dashboards |
+| `fleet_admin_app` | Web-based build/admin console (region builder, matrix builder, Data Studio, diagnostics) |
+| `fleet_sa_app` | Agent-first analytics app (dashboards + Cortex agent) |
 
 ### SQL functions
 
@@ -146,7 +147,7 @@ Say **"routing-solution-cleanup"** in Cortex Code to discover and remove all Sno
   │   ├── SKILL.md                 # Skill definition (YAML frontmatter + instructions)
   │   ├── references/              # Detailed SQL, code, and documentation
   │   └── assets/                  # Notebooks and other deployable artifacts
-  ├── build-routing-solution/      # Core deployment (ORS app, Docker configs, deploy scripts)
+  ├── install-fleet-apps/          # Primary installer (ORS engine + fleet apps + synapse tools)
   └── evals/                       # Eval framework (trigger, quality, cross-ref)
 datasets/                          # Seed data (parquet files loaded during core deployment)
 docs/                              # Guides and documentation
@@ -159,14 +160,14 @@ AGENTS.md                          # AI assistant project guidance
 
 ```mermaid
 graph TD
-    RP[routing-prerequisites] --> BRS[build-routing-solution]
-    BRS --> RC[routing-customization]
-    BRS --> RO[route-optimization]
-    BRS --> FIT[fleet-intelligence-car]
-    BRS --> FIFD[fleet-intelligence-ebike]
-    BRS --> RET[retail-catchment]
-    BRS --> RD[route-deviation]
-    BRS --> RA[routing-agent]
+    RP[routing-prerequisites] --> IFA[install-fleet-apps]
+    IFA --> RC[routing-customization]
+    IFA --> RO[route-optimization]
+    IFA --> FIT[fleet-intelligence-car]
+    IFA --> FIFD[fleet-intelligence-ebike]
+    IFA --> RET[retail-catchment]
+    IFA --> RD[route-deviation]
+    IFA --> RA[routing-agent]
     RC --> FIT
     RC --> FIFD
     RC --> RD

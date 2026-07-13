@@ -9,7 +9,7 @@
 -- See app/packs/BUSINESS_PROBLEM_TAXONOMY.md.
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE DATABASE IF NOT EXISTS FLEET_APP COMMENT='{"origin":"sf_sit-is-fleet","name":"build-routing-solution","attributes":{"component":"data-contract-app-layer"}}';
+CREATE DATABASE IF NOT EXISTS FLEET_APP COMMENT='{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","attributes":{"component":"data-contract-app-layer"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.EMERGENCY_RESPONSE
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"emergency-response-contract"}}';
 

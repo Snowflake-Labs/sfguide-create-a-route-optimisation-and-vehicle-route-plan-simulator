@@ -4,8 +4,8 @@
 #
 # PRIMARY one-command installer for the vehicle/industry-AGNOSTIC, synapse-based
 # fleet analytics architecture. Installs the COMPLETE agnostic use-case set
-# unconditionally (no per-use-case selection). build-routing-solution is a
-# secondary, delegated provider for the ORS engine only.
+# unconditionally (no per-use-case selection). This skill also builds and
+# provisions the ORS engine itself (Phase C absorbed the engine build here).
 #
 # Layers (detect-and-reuse-else-create throughout):
 #   0 preflight -> 1 infra -> 2 data -> 3 routing contract+engine

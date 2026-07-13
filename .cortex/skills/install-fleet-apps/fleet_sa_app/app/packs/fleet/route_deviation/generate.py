@@ -87,7 +87,7 @@ def main():
                f"source_id={mapping.get('source_id','?')}")
     out.append("-- Neutral app schema the dashboards + SV_ROUTE_DEVIATION bind to. Regenerate to repoint sources.\n")
     out.append(f"CREATE DATABASE IF NOT EXISTS {db} "
-               f"COMMENT='{{\"origin\":\"sf_sit-is-fleet\",\"name\":\"build-routing-solution\",\"attributes\":{{\"component\":\"data-contract-app-layer\"}}}}';")
+               f"COMMENT='{{\"origin\":\"sf_sit-is-fleet\",\"name\":\"install-fleet-apps\",\"attributes\":{{\"component\":\"data-contract-app-layer\"}}}}';")
     out.append(f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='Stable logical layer for the route_deviation pack (generated from data-model + entity-mapping).';\n")
 
     # mapped + context first (derived views depend on them)

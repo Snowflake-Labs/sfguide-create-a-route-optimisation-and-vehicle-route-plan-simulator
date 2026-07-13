@@ -1,4 +1,4 @@
-// Region-aware Zod-validated client for the ors_control_app server. Wraps
+// Region-aware Zod-validated client for the fleet_admin_app server. Wraps
 // utils/safeFetch with typed apiGet / apiPost / apiSse helpers that validate
 // every response payload against a schema before resolving.
 //

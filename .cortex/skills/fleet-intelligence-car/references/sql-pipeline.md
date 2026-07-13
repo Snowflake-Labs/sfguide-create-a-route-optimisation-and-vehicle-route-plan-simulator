@@ -25,7 +25,7 @@ Parse the service spec to find `<REGION_NAME>` from the volume source path: `@OP
 ### 2b - Download ORS Config
 
 ```bash
-snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
+snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
 ```
 
 Read `ors-config.yml` and parse for `profiles:` entries with `enabled: true`.

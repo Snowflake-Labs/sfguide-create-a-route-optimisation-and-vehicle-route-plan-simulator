@@ -26,7 +26,7 @@ import { PROFILE_TEMPLATES, VehicleType } from './profiles';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
-const TRACK = `{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}`;
+const TRACK = `{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}`;
 
 export interface SubtypeShare {
   subtype: string;

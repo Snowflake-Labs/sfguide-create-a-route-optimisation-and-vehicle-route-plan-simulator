@@ -80,7 +80,7 @@ GRANT USAGE ON ALL PROCEDURES IN SCHEMA OPENROUTESERVICE_APP.ROUTING TO ROLE FLE
 -- The TOOL_* procs (EXECUTE AS OWNER) route through CONTRACT, so the consumer
 -- role does not strictly need CONTRACT execute, but we grant it for direct/
 -- least-privilege use and expose the neutral region inventory view.
--- Full DDL source of truth: .cortex/skills/build-routing-solution/routing_platform/setup.sql
+-- Full DDL source of truth: .cortex/skills/install-fleet-apps/routing_platform/setup.sql
 GRANT USAGE ON DATABASE ROUTING_PLATFORM TO ROLE FLEET_APP_USER;
 GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT TO ROLE FLEET_APP_USER;
 GRANT USAGE ON ALL FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT TO ROLE FLEET_APP_USER;

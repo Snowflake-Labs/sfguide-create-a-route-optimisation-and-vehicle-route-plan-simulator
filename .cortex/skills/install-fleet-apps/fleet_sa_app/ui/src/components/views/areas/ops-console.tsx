@@ -220,15 +220,12 @@ export function OpsConsoleView() {
   const renderServiceRow = (fqName: string, displayName: string, svc?: ServiceInfo) => {
     const isRunning = RUNNING(svc?.status);
     const isSuspended = svc?.status === 'SUSPENDED';
-    const isControlApp = displayName.toUpperCase() === 'ORS_CONTROL_APP';
     // Suspending the SA app would terminate the very UI issuing the request.
     const isSelf = displayName.toUpperCase() === 'FLEET_SA_APP' || fqName.toUpperCase() === APP_SERVICE;
-    const noSuspend = isControlApp || isSelf;
-    const noSuspendTitle = isControlApp
-      ? 'ORS_CONTROL_APP cannot suspend itself'
-      : isSelf
-        ? 'FLEET_SA_APP cannot suspend itself (it serves this UI)'
-        : undefined;
+    const noSuspend = isSelf;
+    const noSuspendTitle = isSelf
+      ? 'FLEET_SA_APP cannot suspend itself (it serves this UI)'
+      : undefined;
     const instances = svc?.max_instances != null
       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
       : '-';

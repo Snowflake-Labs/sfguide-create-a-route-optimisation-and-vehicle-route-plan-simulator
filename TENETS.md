@@ -46,7 +46,7 @@ and breaks customer-data and engine swappability.
 audited tool layer. The upstream SA and synapse repos are **read-only references** -
 all shipped code is **vendored into this work repo**.
 
-**How to apply.** Make every change inside `.cortex/skills/build-routing-solution/`
+**How to apply.** Make every change inside `.cortex/skills/install-fleet-apps/`
 (`fleet_sa_app/` for host+bundle, `fleet_tools/` for tools, `routing_platform/` for the
 contract). The synapse framework is vendored at `fleet_tools/vendor/synapse/` (its built
 `dist/` ships; `node_modules` is gitignored) - bundles depend on it via `file:../vendor/synapse`,
@@ -143,7 +143,7 @@ the image build/push pipeline, region lifecycle) lives in the `OPENROUTESERVICE_
 control app. The SA + synapse layer is the **thin typed/audited surface** on top.
 
 **How to apply.** Routing graph sizing, region provisioning, PBF download, and gateway/service
-lifecycle changes go in the control-app skills (`build-routing-solution`, `routing-customization`)
+lifecycle changes go in the control-app skills (`install-fleet-apps`, `routing-customization`)
 and follow the control-app image-deploy rules in `AGENTS.md`. The SA layer calls into the result
 through `ROUTING_PLATFORM.CONTRACT.*`; it does not provision graphs.
 

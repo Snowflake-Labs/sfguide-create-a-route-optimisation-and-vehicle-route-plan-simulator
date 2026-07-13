@@ -60,9 +60,6 @@ build/
 **/_installed/**/package.json
 **/_installed/**/.claude-plugin/
 
-# Native app build output
-**/native_app/output/
-
 # Cortex Code session artifacts
 .snowflake/cortex/plans/
 drafts/FINAL.md

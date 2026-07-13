@@ -52,7 +52,7 @@ Detects the map region/location and routing profiles from the ORS configuration 
 
    **If using Snow CLI (local environment):**
    ```bash
-   snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
    **If using Snowflake Workspace:** Use SQL to read from stage:

@@ -3,7 +3,7 @@
 // over DWELL_ANALYSIS DTs). Mirrors the contents of:
 //   .cortex/skills/backload-matching/references/bootstrap.sql
 //   .cortex/skills/route-optimization/references/asset-velocity-views.sql
-// so a fresh install of build-routing-solution makes both demos work without
+// so a fresh install of install-fleet-apps makes both demos work without
 // requiring a manual `snow sql -f` step.
 
 import { currentRegionScalar } from './region';
@@ -796,7 +796,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         CREDIT_SCORE NUMBER, PAYMENT_DAYS_AVG NUMBER, KYC_STATUS VARCHAR(20),
         BLACKLIST_FLAG BOOLEAN, FOUNDED_YEAR NUMBER,
         JOB_ID VARCHAR
-      ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+      ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
@@ -903,7 +903,7 @@ $$`,
     // are active in the same region.
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT f.*
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
@@ -916,7 +916,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT p.*
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
@@ -928,7 +928,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT f.*
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS f
@@ -941,7 +941,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT p.*
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS p
@@ -954,7 +954,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT h.*
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY h
@@ -967,7 +967,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT t.*
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
@@ -980,7 +980,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT s.*
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE s
@@ -993,7 +993,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT t.*
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
@@ -1459,7 +1459,7 @@ $$`,
       await sqlFn(sql, db, schema);
     } catch (e: any) {
       // Log and continue - most failures are "schema doesn't exist" on first
-      // boot before build-routing-solution finished, which is fine; subsequent
+      // boot before the engine build finished, which is fine; subsequent
       // boots will succeed.
       log('WARN', 'Init', `boot init step failed: ${e?.message?.slice(0, 200)}`);
     }
@@ -1522,7 +1522,7 @@ $$`,
   // should still apply module 08 and `ALTER TASK ... RESUME` the ingest task.
   //
   // Mirrors the contents of:
-  //   .cortex/skills/build-routing-solution/openrouteservice_app/app/modules/08_observability.sql
+  //   .cortex/skills/install-fleet-apps/openrouteservice_app/app/modules/08_observability.sql
   // Edit both together. (Same convention used elsewhere in this file.)
   // -----------------------------------------------------------------
   await ensureObservabilityObjects(sqlFn);

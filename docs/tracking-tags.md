@@ -74,9 +74,9 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 
 ## Per-Skill Object Inventory
 
-### build-routing-solution
+### install-fleet-apps
 
-**Tracking name:** `oss-build-routing-solution-in-snowflake`
+**Tracking name:** `oss-install-fleet-apps`
 
 | Object | Type | Location |
 |--------|------|----------|
@@ -450,13 +450,13 @@ The ORS Control App (React UI running on SPCS) executes SQL queries against Snow
 | Local (development) | `snowSqlLocal()` | Set | Prepended via `ALTER SESSION SET query_tag` in SQL file |
 | SPCS (production) | `snowSqlSpcs()` | Set | Prepended via multi-statement SQL API call |
 
-Both modes set the tracking name `oss-build-routing-solution`.
+Both modes set the tracking name `oss-install-fleet-apps`.
 
 ## Skill Tracking Name Reference
 
 | Skill | Tracking Name |
 |-------|---------------|
-| build-routing-solution | `oss-build-routing-solution-in-snowflake` |
+| install-fleet-apps | `oss-install-fleet-apps` |
 | fleet-intelligence-car | `oss-fleet-intelligence-car` |
 | fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` |
 | retail-catchment | `oss-retail-catchment` |
@@ -466,7 +466,6 @@ Both modes set the tracking name `oss-build-routing-solution`.
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` |
 | travel-time-matrix | `oss-travel-time-matrix` |
 | routing-solution-cleanup | `oss-routing-solution-cleanup` |
-| ORS Control App | `oss-build-routing-solution` |
 
 ## Known Limitations
 

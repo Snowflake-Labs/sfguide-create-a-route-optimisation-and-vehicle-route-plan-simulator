@@ -12,7 +12,7 @@
 -- column identifiers are industry-agnostic. Depot location/region are seeded
 -- in DEMO_DEPOT so the tools read them instead of hardcoding coordinates.
 --
--- Prerequisites: $build-routing-solution and $routing-agent already deployed.
+-- Prerequisites: $install-fleet-apps and $routing-agent already deployed.
 -- Run with WAREHOUSE = ROUTING_ANALYTICS and a role with the privileges
 -- listed in SKILL.md ## Required Privileges.
 -- =============================================================================

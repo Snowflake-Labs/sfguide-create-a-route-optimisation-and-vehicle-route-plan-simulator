@@ -10,7 +10,7 @@
 --        datasets/synthetic_ebikes/ -c fleet_test_evals --recursive
 --------------------------------------------------------------------------------
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
@@ -36,7 +36,7 @@ FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
 WHERE DATASET_ID = $JOB_ID;
 
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- FACT_VEHICLE_TELEMETRY

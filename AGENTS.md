@@ -33,7 +33,6 @@ See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
   │   ├── references/        # Detailed SQL, code, docs (loaded on demand)
   │   └── assets/            # Notebooks and other deployable artifacts
   ├── evals/                 # Eval framework (trigger, quality, xref)
-build-routing-solution/      # RETIRED (Phase C): ORS engine build absorbed into install-fleet-apps; tombstone + legacy control app pending deletion
 docs/                        # Documentation (dev/ and guides/)
 archive/                     # Archived materials
 ```
@@ -68,7 +67,6 @@ No global build/lint step - each skill is independently deployable via its own S
 | Skill | Category | Purpose |
 |-------|----------|---------|
 | `install-fleet-apps` | infrastructure | **PRIMARY** and sole installer for the synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents + (by default; skip with `--no-engine`) the live ORS/VROOM routing engine. Self-owning: relocated artifacts, self-provisioned infra, static seed, and the engine build substrate (SQL modules + 4 engine images + build scripts). |
-| `build-routing-solution` | infrastructure (RETIRED) | Phase C tombstone. The ORS engine build was absorbed into `install-fleet-apps` (engine on by default). This folder only redirects there; its legacy Vite control app awaits deletion after a clean-account e2e. |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
@@ -113,7 +111,7 @@ Key rules:
 **MANDATORY:** Every bug fix or improvement MUST first land in the source artifacts that a fresh, from-scratch deployment consumes, so the next clean install is correct with no manual step. A live-environment hotfix is always secondary and is only valid once the same change exists in the repo source.
 
 - **Data / SQL fixes** -> the skill SQL (`references/*.sql`), `datasets/load-seed-data.sql`, and/or the control app's `init.ts` boot path. NOT just an ad-hoc `snow sql` run against a live account.
-- **App behavior fixes** (React/server) -> the source under `services/ors_control_app/` PLUS an image-version bump (`image-versions.env` + service YAML + `references/snowflake-scripting-guidelines.md`, enforced by `check_image_versions.sh`). NOT just a redeploy of an unchanged image.
+- **App behavior fixes** (React/server) -> the source under `.cortex/skills/install-fleet-apps/fleet_admin_app/` or `fleet_sa_app/` PLUS an image-version bump (`image-versions.env` + service YAML + `references/snowflake-scripting-guidelines.md`, enforced by `check_image_versions.sh`). NOT just a redeploy of an unchanged image.
 - **Config/pointer/seed fixes** -> seed them in the loader or the boot init (data-derived, not hardcoded), so a fresh install never depends on a demo skill or a restart to become correct.
 
 Before considering any fix done, reason through the fresh-install path (`install-fleet-apps` orchestrator layers 0-8, with the routing engine built by default unless `--no-engine`): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
@@ -170,7 +168,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 - Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
   - Examples:
     - `feat(fleet-intelligence-car): add H3 resolution config parameter`
-    - `fix(build-routing-solution): handle ARM Mac esbuild segfault`
+    - `fix(install-fleet-apps): handle ARM Mac esbuild segfault`
     - `docs(AGENTS.md): add commit discipline rule`
 - If a change spans multiple skills, prefer multiple smaller commits over one large one
 - Never amend or force-push commits the user has not explicitly authorized
@@ -216,8 +214,8 @@ If no friction was encountered, the log should still be created with "No frictio
 
 - **Use em dashes or en dashes (the wide Unicode dashes) in ANY text - including your chat/conversational replies to the user** - write plain ASCII hyphens (-) only. This applies to EVERYTHING you produce: your chat responses in the assistant panel, plan text, todo items, commit/PR messages, AND file content (docs, SKILL.md prose, code comments, string literals, friction/error logs). There is NO exception for conversational output - the ban is total. Never paste the wide Unicode dash characters; use a normal hyphen (or reword with a comma/colon/parentheses). This ALSO covers the JSON/JS escaped forms `\u2014` (em) and `\u2013` (en) - e.g. in `app-views.json` / `app-config.json` descriptions - since they decode to the wide dash at runtime; replace those escapes with a plain hyphen too. When auditing for dashes, scan for BOTH the literal codepoints (U+2013/U+2014) AND the `\u2013`/`\u2014` escape sequences.
 - **Inline large SQL blocks in SKILL.md** - put them in `references/*.md` and link
-- **Modify a `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.*` (or any other shared) view in `references/asset-velocity-views.sql` (or its sibling `*.sql` under `references/`) without also updating its parallel definition in `services/ors_control_app/server/lib/init.ts`.** The control app's `init.ts` runs on every container start and `CREATE OR REPLACE`s the views it owns, silently overwriting any out-of-band changes. If the React page references a column that `init.ts` hasn't recreated, `sfQuery` gets a SQL error, swallows it, and the page renders empty data with no obvious failure. When in doubt, search `init.ts` for the view name before changing a reference SQL file. **The four Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) specifically live in the `assetVelocityStmts()` helper consumed by the exported `ensureAssetVelocityViews()` in `init.ts` - that function is the single runtime owner (called both at boot and lazily by `POST /api/asset-velocity/ensure`). Edit `assetVelocityStmts()` and keep `references/asset-velocity-views.sql` in sync.**
-- **Inline JSON in SQL via single-quoted string literals.** Free-text fields (POI names, addresses, listing text) routinely contain apostrophes, backslashes, and double-quotes that break Snowflake's `PARSE_JSON` once the host string is single-quoted. Use the helper `asSqlJsonLiteral(obj)` from `services/ors_control_app/src/lib/sfQuery.ts` (dollar-quoted literal). Pair it with `sfQuery(..., {throwOnError:true})` whenever the call sits behind a user-visible button - silent `[]` returns are the canonical mask for this entire bug class. The two page-level helper modules (`asset-velocity/helpers.ts` and `backload-matching/helpers.ts`) already re-export from `src/lib/sfQuery.ts`; do NOT add a third copy of `sfQuery`.
+- **Modify a `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.*` (or any other shared) view in `references/asset-velocity-views.sql` (or its sibling `*.sql` under `references/`) without also updating its parallel definition in `.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/lib/init.ts`.** The control app's `init.ts` runs on every container start and `CREATE OR REPLACE`s the views it owns, silently overwriting any out-of-band changes. If a page references a column that `init.ts` hasn't recreated, the query fails and the page renders empty data with no obvious failure. When in doubt, search `init.ts` for the view name before changing a reference SQL file. **The Asset Velocity views specifically live in the `assetVelocityStmts()` helper consumed by the exported `ensureAssetVelocityViews()` in `init.ts` - that function is the single runtime owner (called both at boot and lazily by `POST /api/asset-velocity/ensure`). Edit `assetVelocityStmts()` and keep `references/asset-velocity-views.sql` in sync.**
+- **Inline JSON in SQL via single-quoted string literals.** Free-text fields (POI names, addresses, listing text) routinely contain apostrophes, backslashes, and double-quotes that break Snowflake's `PARSE_JSON` once the host string is single-quoted. Emit such payloads as a dollar-quoted (`$$...$$`) literal instead, and make the call throw on error whenever it sits behind a user-visible button - silent `[]` returns are the canonical mask for this entire bug class.
 - **Skip the query tag** - every skill must set the session query tag for attribution tracking:
   ```sql
   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -238,94 +236,6 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Hardcode the user branch name** - always derive the login from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-obielov-sa-synapse-app` into AGENTS.md, skill files, or scripts.
 - **Create a new branch per change** - there is one branch per user per feature (`feat/<GITHUB_LOGIN>-<feat-name>`). No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same feature branch.
 - **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
-
-## Control App Image Deployment (ors_control_app) - LEGACY / pending deletion
-
-> **Note (Phase C):** the live ORS/VROOM **engine** images are now built by
-> `install-fleet-apps` (`references/build-images.md` + `scripts/provision_engine.sh`).
-> The block below covers only the legacy Vite `ors_control_app` UI (superseded by
-> `fleet_admin_app`); it still lives under `build-routing-solution/` and will be
-> deleted after a clean-account engine e2e confirms parity.
-
-When changing any source file (`src/`, `server/`, or config), rebuild and push the Docker image.
-The multi-stage `Dockerfile.runtime` compiles both the React frontend and the server automatically -
-no manual `dist/` or `dist-server/` edits are needed.
-
-**IMPORTANT:** Always use `Dockerfile.runtime` (multi-stage build). Never create a "prebuilt" Dockerfile that copies `dist/` from the host - this conflicts with `.dockerignore` and creates fragile host-build dependencies. The `.dockerignore` intentionally excludes `dist` and `dist-server` because the multi-stage build generates them inside the container. Do not remove those exclusions.
-
-**ARM Mac + Podman:** If `esbuild` crashes with a QEMU segfault during the build stage, build locally first (`npm run build && npx tsc -p tsconfig.server.json`), then use `--ignorefile .dockerignore.prebuilt` when building the image. See `references/troubleshooting.md` for full instructions. Do NOT rename or edit `.dockerignore`.
-
-```bash
-APP_DIR=.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app
-
-snow spcs image-registry login -c <connection>
-REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection>)
-
-# 1. Edit source files only:
-#    - src/components/...  (React frontend)
-#    - server/index.ts     (Express backend)
-
-# 2. Build (bump version from current):
-docker build --platform linux/amd64 \
-  -f $APP_DIR/Dockerfile.runtime \
-  -t $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z \
-  $APP_DIR
-
-# 3. Push:
-docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
-
-# 3b. If `docker push` hangs (single layer stuck at "Waiting" forever):
-#     This is a known SPCS registry token-refresh bug - the bearer token
-#     issued by `snow spcs image-registry login` expires mid-PUT and the
-#     registry rejects the upload with 401. Docker daemon retries auth
-#     silently → re-queues the blob → the layer "Waits" indefinitely.
-#     Symptoms: 8 of 9 layers report "Layer already exists", 1 sits on
-#     "Waiting". Podman shows the explicit error
-#     "unable to retrieve auth token: invalid username/password".
-#
-#     Workaround: use `crane` (from go-containerregistry), which handles
-#     registry token refresh correctly:
-brew install crane
-snow spcs image-registry login -c <connection>   # refreshes ~/.docker/config.json + keychain
-docker save $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z -o /tmp/img.tar
-crane push /tmp/img.tar $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
-#     Expected output: `pushed blob: sha256:<hash>` followed by
-#     `<image>:<tag>: digest: sha256:... size: 1729`. Total ~5 minutes
-#     for a typical 139 MB image with one new layer.
-#
-#     `docker save | podman load | podman push` does NOT help here -
-#     both daemons hit the same registry-side bug. Restarting Docker
-#     Desktop and re-logging in does not help either. Only crane works.
-
-# 4. Update version:
-#    - $APP_DIR/ors_control_app_service.yaml (image tag)
-
-# 5. Upload updated spec to stage:
-snow stage copy $APP_DIR/ors_control_app_service.yaml \
-  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ \
-  -c <connection> --overwrite
-
-# 6. Apply new spec and restart:
-# IMPORTANT: ALTER SERVICE while RUNNING does not reliably cycle the container.
-# Always use the suspend → update spec → resume pattern to guarantee the new image loads.
-```sql
-ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP SUSPEND;
-
-ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
-  FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
-  SPECIFICATION_FILE = 'ors_control_app_service.yaml';
-
--- The service does NOT auto-resume after a spec update. Always resume manually:
-ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP RESUME;
-```
-
-# 7. After the service restarts, always retrieve and display the endpoint URL:
-```sql
-SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
-SELECT 'https://' || ingress_url AS control_app_url
-FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-WHERE name = 'ors-control-app';
-```
 
 ## Skill Dependency Graph
 
@@ -357,7 +267,7 @@ graph TD
 
 **Legend:** Green = primary + sole installer (owns the analytics stack AND the ORS engine build, on by default; skip with `--no-engine`). Blue = configuration/prerequisites. White = legacy demo/feature skills.
 
-`install-fleet-apps` is the single infrastructure skill: it self-provisions infra/data, builds + provisions the live ORS engine by default (skip with `--no-engine`), and owns the FLEET_APP data contract. `build-routing-solution` is retired (Phase C) - a tombstone redirecting here. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) now depend on `install-fleet-apps` and are NOT part of the agnostic installer.
+`install-fleet-apps` is the single infrastructure skill: it self-provisions infra/data, builds + provisions the live ORS engine by default (skip with `--no-engine`), and owns the FLEET_APP data contract. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) now depend on `install-fleet-apps` and are NOT part of the agnostic installer.
 
 ## Common Patterns
 
@@ -377,7 +287,7 @@ graph TD
   - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
   - Studio (Data Studio) generation job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0. The control-app's `captureAndScaleUp()` performs this pinning in-process at job start and `scaleDown()` restores the captured baselines on every exit. `RECONCILE_AUTO_SUSPEND()` is the global safety net for the case where the control-app container restarts mid-run.
   - All other times → services = `14400` (4h), per-region pools = `3600` (1h). `OPENROUTERSERVICE_APP_COMPUTE_POOL` is unrelated to this invariant (its default is `600`).
-  - `ors_control_app` has public endpoints and therefore no `AUTO_SUSPEND_SECS` - it is excluded.
+  - The fleet control apps (`FLEET_SA_APP`, `FLEET_ADMIN_APP`) have public endpoints and therefore no `AUTO_SUSPEND_SECS` - they are excluded.
   - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
   - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%` against `REGION_PROVISION_JOBS`, `MATRIX_BUILD_JOBS`, AND `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
 - **v1.1.4 default-sentinel retirement**: The legacy `region:'default'` sentinel returned by `/api/regions/provisioned` was retired. `LIST_REGIONS()` now returns SanFrancisco as a regular row in `REGION_ORS_MAP` (with new `IS_DEFAULT BOOLEAN` column, seeded `TRUE` for the canonical default). The control-app server no longer synthesizes a `region:'default'` entry, no longer makes 0-arg `ORS_STATUS()` calls, and no longer special-cases `'default'` in studio job pool scaling, ors-readiness, or stage probing. The `isDefault` boolean is preserved as a pure UI hint (dropdown auto-selection + "(Default)" badge) but is decoupled from SQL routing. Inbound API requests passing `'default'` or empty region are still resolved at the gateway boundary via `normalizeRegion()` -> `DEFAULT_REGION_NAME`, but internal contracts assume real region keys.
@@ -466,5 +376,5 @@ t.DESTINATION   -- trip destination
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` - End-to-end deployment quickstart
-- `docs/dev/server-architecture.md` - One-page map of `ors_control_app` server modules (`server/{lib,routes,studio}/`) and decision tree for "where do I add X?"
+- `docs/dev/server-architecture.md` - One-page map of the fleet control-app server modules (`ui/src/server/{lib,studio}/`) and decision tree for "where do I add X?"
 - `docs/README.md` - Full index

@@ -1,5 +1,12 @@
 # `ors_control_app` Server Architecture (One-Page Map)
 
+> DEPRECATED: this page maps the retired legacy Vite/Express ORS Control App,
+> which has been removed from the repo. The current control surfaces are the
+> Next.js `fleet_admin_app` and `fleet_sa_app` under
+> `.cortex/skills/install-fleet-apps/`, whose server code lives in
+> `ui/src/server/{lib,studio}/`. This page is kept only as a historical map of
+> the module boundaries that were ported forward.
+
 This is the post-refactor map of the ORS Control App Express server. After the
 holistic refactor (May 2026), `server/index.ts` is a 128-line bootstrap. All
 real work happens in domain-scoped modules under `server/{lib,routes,studio}/`.
@@ -176,4 +183,4 @@ running - fetch `/api/studio/jobs/:id/logs` or query
 
 - [AGENTS.md](../../AGENTS.md) - repo-wide conventions, commit discipline, deployment
 - [docs/ARCHITECTURE.md](../ARCHITECTURE.md) - full-stack architecture
-- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/references/troubleshooting.md` - image build / deploy issues
+- `.cortex/skills/install-fleet-apps/references/troubleshooting.md` - image build / deploy issues

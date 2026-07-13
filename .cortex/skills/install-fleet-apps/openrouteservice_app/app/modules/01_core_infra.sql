@@ -1,36 +1,36 @@
 -- Data Studio and demo databases required by load-seed-data.sql and all demo skills.
 -- Created here so module execution order is self-contained.
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"01_core_infra"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"01_core_infra"}}';
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    USE SCHEMA OPENROUTESERVICE_APP.CORE;   
    
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
      VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_CARTO_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
      VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
      ALLOWED_NETWORK_RULES = (ORS_OSM_NETWORK_RULE)
      ENABLED = TRUE
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_CARTO_EAI
      ALLOWED_NETWORK_RULES = (ORS_CARTO_NETWORK_RULE)
      ENABLED = TRUE
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    INSTANCE_FAMILY = HIGHMEM_X64_S
@@ -38,7 +38,7 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    MAX_NODES = 5
    AUTO_RESUME = true
    AUTO_SUSPEND_SECS = 600;
-ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- Verify compute pool state. Services queue automatically if pool is STARTING.
 -- No re-run needed; the pool reaches ACTIVE within ~2 minutes and services start.
@@ -82,7 +82,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    SPECIFICATION_FILE = 'downloader_spec.yaml'
    AUTO_SUSPEND_SECS = 14400
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"core"}}';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
@@ -91,7 +91,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    MIN_INSTANCES = 3
    MAX_INSTANCES = 3
    AUTO_SUSPEND_SECS = 14400
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.
 -- install-fleet-apps ships the control surface as FLEET_SA_APP + FLEET_ADMIN_APP
@@ -115,14 +115,13 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VERSION_INFO (
     UPDATED_AT TIMESTAMP_LTZ DEFAULT SYSDATE(),
     CONSTRAINT PK_VERSION_INFO PRIMARY KEY (COMPONENT)
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 MERGE INTO OPENROUTESERVICE_APP.CORE.VERSION_INFO t USING (
     SELECT 'openrouteservice'      AS COMPONENT, 'v9.0.0'  AS VERSION UNION ALL
     SELECT 'downloader'             AS COMPONENT, 'v0.0.4'  AS VERSION UNION ALL
     SELECT 'routing_reverse_proxy'  AS COMPONENT, 'v1.1.2'  AS VERSION UNION ALL
-    SELECT 'vroom_docker'           AS COMPONENT, 'v1.0.4'  AS VERSION UNION ALL
-    SELECT 'ors_control_app'        AS COMPONENT, 'v1.1.54' AS VERSION
+    SELECT 'vroom_docker'           AS COMPONENT, 'v1.0.4'  AS VERSION
 ) s ON t.COMPONENT = s.COMPONENT
 WHEN NOT MATCHED THEN INSERT (COMPONENT, VERSION) VALUES (s.COMPONENT, s.VERSION)
 WHEN MATCHED AND t.VERSION <> s.VERSION THEN UPDATE SET t.VERSION = s.VERSION, t.UPDATED_AT = SYSDATE();
@@ -134,7 +133,7 @@ WHEN MATCHED AND t.VERSION <> s.VERSION THEN UPDATE SET t.VERSION = s.VERSION, t
 -- created by scripts/vehicle_profile_catalog.sql and read by the route_deviation /
 -- dwell packs and analytic_layer.sql via DEVIATION_DISTANCE_RATIO and per-(vehicle,
 -- location) dwell SLA. This legacy table had a single remaining consumer, the retired
--- build-routing-solution dwell/LiveOperations.tsx, so its DDL + seed are removed here
+-- legacy control app dwell/LiveOperations.tsx, so its DDL + seed are removed here
 -- to keep one source of truth. Existing accounts may still carry an orphaned table;
 -- it is unreferenced and safe to drop manually.
 -- =============================================================================

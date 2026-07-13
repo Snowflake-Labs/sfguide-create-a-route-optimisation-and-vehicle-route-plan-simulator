@@ -1,9 +1,9 @@
 # Routing Platform - Admin/Build console service spec (FLEET_ADMIN_APP, R5).
 #
-# The modernized replacement for the legacy Vite ORS_CONTROL_APP, holding ONLY
+# The modernized replacement for the legacy Vite control app, holding ONLY
 # the privileged build tools: region builder, matrix builder, function tester,
 # Data Studio, substrate observability, diagnostics. Built on Next 15 +
-# @fleet-kit/core. Runs in PARALLEL with ORS_CONTROL_APP until the R7 cutover.
+# @fleet-kit/core.
 #
 # The server foundation (ported server/lib + studio) authenticates to Snowflake
 # via the SPCS-injected OAuth token + SNOWFLAKE_HOST, and runs the same

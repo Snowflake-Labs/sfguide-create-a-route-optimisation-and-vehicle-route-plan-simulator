@@ -18,7 +18,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       GPS_ACCURACY_M FLOAT, LOCATION_ID VARCHAR, LOCATION_TYPE VARCHAR(30),
       ORS_PROFILE VARCHAR(30), BATTERY_PCT FLOAT, ODOMETER_KM FLOAT, POINT_INDEX INT,
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS (
       TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
@@ -32,7 +32,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       STATUS VARCHAR(20), ORS_PROFILE VARCHAR(30),
       TRIP_KIND VARCHAR(16),
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // Empty-miles support: tag each trip leg LADEN vs EMPTY (repositioning /
     // deadhead). Idempotent ALTER so existing FACT_TRIPS tables pick the column
     // up; legacy rows default to LADEN so the contract's COALESCE stays correct.
@@ -46,13 +46,13 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       JOB_ID VARCHAR,
       WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2),
       WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2), HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR(16)
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
       LOCATION_ID VARCHAR, REGION VARCHAR(100), NAME VARCHAR,
       LOCATION_TYPE VARCHAR(30), CATEGORY VARCHAR(50),
       LAT FLOAT, LNG FLOAT, POINT_GEOM GEOGRAPHY, SOURCE VARCHAR(20),
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE (
       SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
@@ -62,7 +62,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       SHIFT_TYPE VARCHAR(30), ORS_PROFILE VARCHAR(30),
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20),
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // Migration: rename legacy table for existing deploys.
     { sql: `ALTER TABLE IF EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES RENAME TO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS (
@@ -91,7 +91,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       CREDIT_SCORE NUMBER, PAYMENT_DAYS_AVG NUMBER, KYC_STATUS VARCHAR(20),
       BLACKLIST_FLAG BOOLEAN, FOUNDED_YEAR NUMBER,
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_PARTNER_HISTORY (
       PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORIGIN_COUNTRY VARCHAR(4), DEST_COUNTRY VARCHAR(4),
@@ -195,7 +195,7 @@ $$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
       POINTS_GENERATED INT DEFAULT 0, TRIPS_GENERATED INT DEFAULT 0,
       ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
       COMPLETED_AT TIMESTAMP_NTZ, LOG_TEXT VARIANT
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     { sql: `EXECUTE IMMEDIATE $$
 BEGIN
   ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS PRESET_ID VARCHAR;
@@ -237,7 +237,7 @@ $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
       CREATED_AT    TIMESTAMP_NTZ DEFAULT SYSDATE(),
       ROW_COUNTS    VARIANT,
       NOTES         VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     // Idempotent backfill from existing data. Latest JOB_ID per
     // (REGION, VEHICLE_TYPE) -> IS_ACTIVE = TRUE; older JOB_IDs (if any
     // survived prior cleanRegionScope deletions) -> IS_ACTIVE = FALSE.

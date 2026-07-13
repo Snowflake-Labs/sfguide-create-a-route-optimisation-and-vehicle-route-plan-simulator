@@ -123,7 +123,7 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 
 | Schema | Skill | Key objects |
 |--------|-------|-------------|
-| `CORE` | build-routing-solution | `REGION_REGISTRY`, `GENERATION_JOBS`, `PROVISION_REGION` procedure |
+| `CORE` | install-fleet-apps | `REGION_REGISTRY`, `GENERATION_JOBS`, `PROVISION_REGION` procedure |
 | `FLEET_INTELLIGENCE_CAR` | fleet-intelligence-car | Driver locations, trip summaries, route analytics views |
 | `FLEET_INTELLIGENCE_EBIKE` | fleet-intelligence-ebike | CONFIG, `TRIPS` view, `ORIGINS_ENRICHED` view |
 | `ROUTE_DEVIATION` | route-deviation | CONFIG, 5 projection views, `TRIP_DEVIATION_ANALYSIS`, deviation trends |
@@ -132,22 +132,23 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 | `ROUTE_OPTIMIZATION` | route-optimization | Overture Maps places, CARTO data, VRP notebooks |
 | `ROUTING_TOOLS` | routing-agent | 9 routing/demo TOOL_* procedures (relocated from `ROUTING_AGENT`; standalone Cortex Agent retired in favor of the app-level FLEET_AGENT) |
 
-## ORS Control App
+## Fleet Control Apps
 
-The Control App is a React SPA (Vite + TypeScript) with an Express.js backend:
+The control surfaces are two Next.js (TypeScript) apps served on SPCS:
+`FLEET_ADMIN_APP` (privileged build/admin console) and `FLEET_SA_APP`
+(agent-first analytics app). They share primitives via `@fleet-kit/core`.
 
 ```
-ors_control_app/
-  src/                    # React frontend
-    components/           # Page components (30+ pages)
-    shared/               # Reusable components (MapView, DataTable, and others)
-    hooks/                # useSnowflake, useRegion, useVehicleType
-  server/                 # Express.js backend
-    index.ts              # Core API routes (44 endpoints)
-    studio/               # Data Studio sub-router
+fleet_admin_app/ (and fleet_sa_app/)
+  ui/
+    src/components/       # Page + view components
+    src/server/           # server-side helpers
+      lib/                #   init.ts (boot bootstrap), sql.ts, constants.ts
+      studio/             # Data Studio helpers
+    src/app/api/          # Next.js route handlers
 ```
 
-Deploy flow: `npm run build` then Docker build (linux/amd64), push to SPCS registry, upload spec to stage, and `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
+Deploy flow: `scripts/deploy_fleet_admin_app.sh` / `scripts/deploy_fleet_sa_app.sh` - Docker build (linux/amd64), push to SPCS registry, upload spec to stage, and `CREATE/ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 
 ### Demo pages
 
@@ -194,7 +195,7 @@ The `routing-solution-cleanup` skill queries `INFORMATION_SCHEMA` for objects ma
 
 | Skill | What it does | Invoke with |
 |-------|-------------|-------------|
-| **build-routing-solution** | Builds 5 container images, creates databases and stages, deploys the ORS app, starts SPCS services, loads seed data. Foundation for all other skills. | `build routing solution` |
+| **install-fleet-apps** | Builds the container images, creates databases and stages, deploys the ORS engine + fleet apps on SPCS, starts services, loads seed data. Foundation for all other skills. | `install the fleet apps` |
 | **routing-prerequisites** | Checks local environment: Docker/Podman, Snow CLI, Git, network access to Snowflake registry. | `check build prerequisites` |
 | **routing-customization** | Routes to subskills for changing geographic region, routing profiles, or reading current config. | `change location`, `change routing profile` |
 

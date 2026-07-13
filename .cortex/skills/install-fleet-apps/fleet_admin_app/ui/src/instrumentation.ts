@@ -2,7 +2,7 @@
 // (replaces the Express boot-init in the legacy Vite control app).
 //
 // R5 decision "new app also runs init": this app runs the same idempotent
-// init.ts as the live ORS_CONTROL_APP. All statements are CREATE OR REPLACE /
+// init.ts as the FLEET_SA_APP. All statements are CREATE OR REPLACE /
 // IF NOT EXISTS, so concurrent boots converge with no diff. Guarded by a
 // globalThis once-flag so it never runs twice in a single process (Next dev HMR
 // or multiple route-module loads).

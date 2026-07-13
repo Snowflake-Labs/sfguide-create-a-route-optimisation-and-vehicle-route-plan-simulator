@@ -245,7 +245,6 @@ export function ServiceManagerPage() {
                       : null;
                     const isRunning = svc.status === 'RUNNING' || svc.status === 'READY';
                     const isSuspended = svc.status === 'SUSPENDED';
-                    const isControlApp = svc.name.toUpperCase() === 'ORS_CONTROL_APP';
                     const inFlight = serviceAction?.name === svc.name;
                     const instancesCell = svc.max_instances != null
                       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
@@ -306,9 +305,9 @@ export function ServiceManagerPage() {
                           <button
                             className="btn danger"
                             style={{ padding: '4px 10px', fontSize: 12 }}
-                            disabled={isSuspended || isControlApp || !!serviceAction || !!actionInProgress}
+                            disabled={isSuspended || !!serviceAction || !!actionInProgress}
                             onClick={() => handleServiceAction(svc.name, 'suspend')}
-                            title={isControlApp ? 'ORS_CONTROL_APP cannot suspend itself' : isSuspended ? 'Already suspended' : `Suspend ${svc.name}`}
+                            title={isSuspended ? 'Already suspended' : `Suspend ${svc.name}`}
                           >
                             {inFlight && serviceAction?.op === 'suspend' ? '\u2026' : 'Suspend'}
                           </button>

@@ -37,7 +37,7 @@ This skill routes customization requests to the correct subskills based on what 
 
 ## Workflow
 
-> All file paths in subskills (e.g., `.cortex/skills/build-routing-solution/openrouteservice_app/...`) are relative to the repository root directory.
+> All file paths in subskills (e.g., `.cortex/skills/install-fleet-apps/openrouteservice_app/...`) are relative to the repository root directory.
 
 ### Query Tag
 

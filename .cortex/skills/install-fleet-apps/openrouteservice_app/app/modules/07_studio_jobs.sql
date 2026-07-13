@@ -1,7 +1,7 @@
 -- 07_studio_jobs.sql
 -- Synthetic Data Studio job execution as one-shot SPCS Job Services.
 --
--- Why: keep generation runs alive across ors_control_app rebuilds/redeploys.
+-- Why: keep generation runs alive across control-app rebuilds/redeploys.
 -- Each generation runs as its own short-lived SPCS Job Service (one container,
 -- runs to completion, exits) co-located with the region's ORS pool. The
 -- control app only kicks off the job and polls JOB_EVENTS / GENERATION_JOBS

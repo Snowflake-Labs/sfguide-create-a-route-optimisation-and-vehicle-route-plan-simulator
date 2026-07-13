@@ -27,7 +27,7 @@
 --   * FEMA National Risk Index   (listing GZSTZKU9FH9 -> FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES)
 --   * US ZIP metadata + geometry (U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.*)
 --   * Overture Maps addresses    (OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS)
---   * OPENROUTESERVICE_APP       (build-routing-solution skill: ISOCHRONES + OPTIMIZATION)
+--   * OPENROUTESERVICE_APP       (install-fleet-apps skill: ISOCHRONES + OPTIMIZATION)
 --
 -- Every CREATE includes the COMMENT tracking tag per AGENTS.md.
 -- =============================================================================
@@ -56,7 +56,7 @@ CREATE SCHEMA IF NOT EXISTS EMERGENCY_RESPONSE.PIPELINE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- State -> ORS region key map. Only DEPLOYED regions can route. Add rows here
--- when more state graphs are provisioned by build-routing-solution.
+-- when more state graphs are provisioned by install-fleet-apps.
 CREATE TABLE IF NOT EXISTS EMERGENCY_RESPONSE.CONFIG.STATE_REGION_MAP (
   STATE_CODE   VARCHAR(2) PRIMARY KEY,
   STATE_NAME   VARCHAR,

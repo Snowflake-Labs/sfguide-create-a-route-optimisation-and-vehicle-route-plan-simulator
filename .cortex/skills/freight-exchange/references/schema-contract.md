@@ -7,7 +7,7 @@ The Freight Exchange page reads exclusively from `FLEET_INTELLIGENCE.MARKETPLACE
 Two parallel definitions exist for the MARKETPLACE objects:
 
 - [.cortex/skills/freight-exchange/references/bootstrap.sql](bootstrap.sql) - for greenfield install / audit reruns.
-- `services/ors_control_app/server/lib/init.ts` - runs on every container boot.
+- `.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/lib/init.ts` - runs on every container boot.
 
 When you change a column list, change BOTH. The init.ts copy is the authoritative one - if the two diverge, init.ts wins on the next service restart.
 
