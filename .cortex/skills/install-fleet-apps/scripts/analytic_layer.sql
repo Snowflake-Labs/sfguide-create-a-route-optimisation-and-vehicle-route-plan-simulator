@@ -714,6 +714,10 @@ CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
 
 -- 5b. FLEET_APP neutral-contract views the SA app reads (consumers never bind to
 --     FLEET_INTELLIGENCE directly). Mirrors the generated CATCHMENT pack pattern.
+-- NOTE: this analytic layer (step 3.5) runs BEFORE the packs layer (step 4) that
+-- normally creates FLEET_APP, so create the DB defensively to keep a first run clean.
+CREATE DATABASE IF NOT EXISTS FLEET_APP
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 

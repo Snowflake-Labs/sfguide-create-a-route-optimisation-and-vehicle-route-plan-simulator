@@ -19,6 +19,31 @@
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"projection-views"}}';
 
+-- Ensure the physical FACT_TRIPS carries TRIP_KIND (empty-legs feature) BEFORE the
+-- SELECT t.* projection view below records its column list. scoped_contract.sql
+-- (packs step, runs LATER) also ensures this column, but if it is added AFTER
+-- V_FACT_TRIPS_CURRENT already exists, the SELECT * view goes stale ("declared N
+-- column(s), but view query produces N+1"). Adding it here keeps a fresh install
+-- consistent; the later scoped_contract add then becomes a harmless no-op.
+-- Uses an exception-guarded temp proc: bare ADD COLUMN IF NOT EXISTS + DEFAULT
+-- can trigger Snowflake bug 002028, and snow sql -f cannot parse bare BEGIN..END.
+CREATE OR REPLACE PROCEDURE SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+  ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN TRIP_KIND VARCHAR(16) DEFAULT 'LADEN';
+  RETURN 'added';
+EXCEPTION
+  WHEN OTHER THEN RETURN 'already exists';
+END;
+$$;
+CALL SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING();
+DROP PROCEDURE IF EXISTS SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING();
+
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
