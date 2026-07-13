@@ -334,6 +334,30 @@ else
   step "3.4 region-catalog" SKIPPED
 fi
 
+# ── 3.4b seed the pre-computed travel-time matrix from the baked parquet ──────
+# Same ordering fix as 3.4: the canonical loader CALLs LOAD_SEED_MATRIX in the
+# data step (step 2), but that proc is only created by engine module
+# 06_matrix_ops.sql in step 3 -- so the step-2 call is skipped (guarded) and the
+# seed matrix would otherwise never load on a fresh install. Re-run it here now
+# that the proc exists. Idempotent (the proc CREATE OR REPLACEs the matrix table);
+# the SanFrancisco cycling-electric RES8 parquet was staged in step 2. No live ORS
+# call (pure COPY), so it is safe as soon as module 06 loaded. Best-effort.
+if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_MATRIX' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_MATRIX'; then
+  note "[3.4b] seeding travel-time matrix from baked parquet..."
+  if snow sql -c "$CONNECTION" -q \
+    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');" \
+    >/tmp/ifa_seed_matrix.log 2>&1; then
+    note "  travel-time matrix seeded"
+    step "3.4b seed-matrix" OK
+  else
+    note "  WARN: seed matrix load reported errors (see /tmp/ifa_seed_matrix.log)"
+    step "3.4b seed-matrix" FAILED
+  fi
+else
+  note "[3.4b] LOAD_SEED_MATRIX proc absent (engine skipped via --no-engine?) -> seed matrix not loaded"
+  step "3.4b seed-matrix" SKIPPED
+fi
+
 # ── 3.5 analytic layer (agnostic FLEET_INTELLIGENCE.* objects the packs read) ──
 # Authors the analytic objects the demo packs read that the pack DDL does NOT
 # build itself: DWELL_ANALYSIS.CONFIG, ROUTE_DEVIATION CONFIG + projection views +

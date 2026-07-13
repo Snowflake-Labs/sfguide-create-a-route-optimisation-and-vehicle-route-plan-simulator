@@ -896,12 +896,22 @@ SET POSTED_AT      = DATEADD('SECOND', $OFFER_TS_OFFSET, POSTED_AT),
 -- 5. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)
 --    178 H3 hexagons, 29,402 travel-time pairs.
 --------------------------------------------------------------------------------
-CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
-  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE',
-  'SanFrancisco',
-  'cycling-electric',
-  'RES8'
-);
+-- Guarded for the same reason as LOAD_SEED_CATALOG above: on a fresh
+-- install-fleet-apps run this loader executes BEFORE the engine module
+-- (06_matrix_ops) that creates LOAD_SEED_MATRIX, so a bare CALL aborts with
+-- "Unknown user-defined function ... LOAD_SEED_MATRIX" and bubbles up as the
+-- "canonical loader reported errors" WARN. Skip silently when the proc is
+-- absent; install step 3.4 re-seeds the matrix once the engine is present.
+-- The engine-first path (proc already present) still loads the matrix inline.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
+  RETURN 'seed travel-time matrix loaded';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'LOAD_SEED_MATRIX not present yet; seed matrix loaded later (install step 3.4)';
+END;
+$$;
 
 --------------------------------------------------------------------------------
 -- 6. Anchor the active-preset CONFIG pointers (Asset Velocity + Freight Exchange)
