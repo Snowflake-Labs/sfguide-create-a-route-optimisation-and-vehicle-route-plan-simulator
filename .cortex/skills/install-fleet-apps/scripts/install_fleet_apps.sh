@@ -275,8 +275,14 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   # AFTER the contract and BEFORE the verbs/agents. Idempotent (CREATE OR REPLACE).
   if [ -f "$ROUTING_TOOLS_SQL" ]; then
     note "  deploying ROUTING_TOOLS.TOOL_* substrate (routing verb dependency)..."
-    snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1
-    ROUTING_TOOLS_RC=$?
+    # set -e safe: capture the rc without aborting the whole install on a non-zero
+    # exit (the assertion below downgrades to a WARN). A bare `cmd; RC=$?` would
+    # abort here under `set -euo pipefail` before the rc is ever captured.
+    if snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1; then
+      ROUTING_TOOLS_RC=0
+    else
+      ROUTING_TOOLS_RC=$?
+    fi
     # Assert all 9 TOOL_* procs exist. Non-fatal by design (matches the
     # best-effort routing step), but a shortfall is recorded in ROUTING_SUBSTRATE
     # so the friction log AND the final summary highlight it loudly instead of it
