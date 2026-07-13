@@ -47,8 +47,8 @@ export function procDDL(proc, opts) {
     // Tracking tag (AGENTS.md): attribution + routing-solution-cleanup discovery.
     const track = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
     return `CREATE OR REPLACE PROCEDURE ${proc.name}(${argEntries.join(', ')})
-RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'}
-COMMENT='${track}' AS
+RETURNS OBJECT LANGUAGE JAVASCRIPT COMMENT='${track}' EXECUTE AS ${opts.executeAs ?? 'OWNER'}
+AS
 $$
 ${opts.body}
 $$;`;
