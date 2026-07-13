@@ -119,7 +119,7 @@ In testing (May 2026), `OPENROUTESERVICE_APP.CORE.OPTIMIZATION` returns 0 rows f
 
 USA coordinates (any profile, with or without explicit region) work correctly.
 
-The skill ships with projection views over `SYNTHETIC_DATASETS.UNIFIED.*` filtered by the active Data Studio preset, so once the Germany OPTIMIZATION path is fixed in `build-routing-solution`, simply switch the preset to a Germany dataset - no skill code change required.
+The skill ships with projection views over `SYNTHETIC_DATASETS.UNIFIED.*` filtered by the active Data Studio preset, so once the Germany OPTIMIZATION path is fixed in `install-fleet-apps`, simply switch the preset to a Germany dataset - no skill code change required.
 
 ## 10. Per-preset data architecture (the v2 model)
 

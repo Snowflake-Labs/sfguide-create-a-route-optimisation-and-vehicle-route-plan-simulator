@@ -112,16 +112,9 @@ snow sql -f .cortex/skills/backload-matching/references/backfill-freight-offers.
 
 Idempotent: skips regions that already have offers. New presets generated after v1.0.199 deploy will populate offers natively, so this script is a no-op on greenfield deployments.
 
-### Step 4: Rebuild and Redeploy ORS Control App
+### Step 4: Interactive page (retired host)
 
-The new page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`:
-
-1. Bump image tag in the control-app service YAML (legacy `ors_control_app`; the engine build substrate now lives under `install-fleet-apps/openrouteservice_app/`).
-2. `docker build --platform linux/amd64 -f Dockerfile.runtime -t <repo>/ors_control_app:vX.Y.Z .`
-3. `docker push <repo>/ors_control_app:vX.Y.Z`
-4. `snow stage copy ors_control_app_service.yaml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ -c <ACTIVE_CONNECTION> --overwrite`
-5. SUSPEND -> `ALTER SERVICE ... FROM @stage SPECIFICATION_FILE=...` -> RESUME.
-6. `SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;` -> open `https://<ingress_url>` and click **Backload Matching** in the sidebar.
+> **The legacy Vite control app (`ors_control_app`) that hosted the Backload Matching page has been removed from this repo, and the page was not ported to the current `fleet_sa_app`/`fleet_admin_app`.** Step 2's `bootstrap.sql` (plus the `fleet_admin_app` boot `init.ts`) still creates the full `BACKLOAD_MATCHING.*` projection views, so the objects are queryable and the `OPTIMIZATION`-based solve can be driven from SQL, but there is currently no bundled interactive page in the fleet apps. Take the page source from another repo if you need the UI. The verification steps below describe that retired page.
 
 ### Step 5: Verify
 

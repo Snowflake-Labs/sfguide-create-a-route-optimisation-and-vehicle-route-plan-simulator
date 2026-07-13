@@ -63,7 +63,7 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
 -- Recreate dataset-scoped projection view immediately (do not rely on the next
 -- control-app boot). extend-dim-fleet-hgv.sql drops this view above.
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
 AS
 SELECT f.*
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
