@@ -1,5 +1,5 @@
 -- ============================================================================
--- Per-session scope-arg data contract (R2.1 of APP_RESTRUCTURE_PLAN)
+-- Per-session scope-arg data contract
 -- ============================================================================
 -- Multi-tenant-safe READ layer. Today the consumer app reads
 -- SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT, which resolve the active dataset via a

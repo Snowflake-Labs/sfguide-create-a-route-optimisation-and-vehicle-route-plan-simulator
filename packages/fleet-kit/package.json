@@ -2,7 +2,7 @@
   "name": "@fleet-kit/core",
   "version": "0.1.0",
   "private": true,
-  "description": "Shared, framework-agnostic UI/data primitives for the Routing Platform admin console and the Analytics App (R1 of APP_RESTRUCTURE_PLAN).",
+  "description": "Shared, framework-agnostic UI/data primitives for the Routing Platform admin console and the Analytics App.",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {

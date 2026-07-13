@@ -45,7 +45,7 @@ build/
 !.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/dist/**
 
 # Shared UI kit (@fleet-kit/core): ship its built dist so both apps can consume it
-# from a fresh clone via a relative file: dependency (R1 of APP_RESTRUCTURE_PLAN).
+# from a fresh clone via a relative file: dependency.
 !packages/fleet-kit/dist/
 !packages/fleet-kit/dist/**
 

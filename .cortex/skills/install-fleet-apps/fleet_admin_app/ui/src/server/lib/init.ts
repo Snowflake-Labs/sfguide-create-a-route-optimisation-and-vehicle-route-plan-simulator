@@ -1068,7 +1068,7 @@ $$`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     // -----------------------------------------------------------------
-    // Per-session scope-arg data contract (R2.1 of APP_RESTRUCTURE_PLAN).
+    // Per-session scope-arg data contract.
     // Multi-tenant-safe READ layer: resolve an EXPLICIT (region, dataset_id)
     // instead of the GLOBAL DIM_DATASETS.IS_ACTIVE flag, so concurrent users
     // can view different scopes without clobbering each other. ADDITIVE - the

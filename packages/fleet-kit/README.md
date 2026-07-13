@@ -12,8 +12,8 @@ Today the two apps duplicate the same primitives (deck.gl map DSL, the Snowflake
 client, SPCS OAuth/PAT auth, the SQL JSON-literal helper, chart/metric primitives). This
 package is the deduplicated source of truth so a fix lands once and both apps consume it.
 
-This is part of the "**2 products / 3 surfaces / 1 UI kit**" restructuring. See the phased
-plan at `../../.cortex/skills/install-fleet-apps/fleet_sa_app/APP_RESTRUCTURE_PLAN.md`.
+This is part of the "**2 products / 3 surfaces / 1 UI kit**" restructuring: two
+apps share one deduplicated UI kit so a fix lands once and both apps consume it.
 
 ## Status
 

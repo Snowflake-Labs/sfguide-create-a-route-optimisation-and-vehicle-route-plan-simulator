@@ -33,7 +33,7 @@ MANIFEST = os.path.join(PACKS_DIR, "manifest.yaml")
 GENERATOR = os.path.join(HERE, "generate.py")
 APP_DIR = os.path.dirname(PACKS_DIR)              # .../app
 # Hand-maintained, app-level contract SQL (NOT pack-generated). The per-session
-# scope-arg data contract (R2 of APP_RESTRUCTURE_PLAN): UNIFIED F_*_SCOPED UDTFs
+# scope-arg data contract: UNIFIED F_*_SCOPED UDTFs
 # + the neutral FLEET_APP.UNIFIED_FLEET.F_VW_*_SCOPED wrappers the consumer binds
 # to. Applied AFTER the unified_fleet pack (it owns FLEET_APP.UNIFIED_FLEET).
 CONTRACT_SQL = os.path.join(APP_DIR, "scoped_contract.sql")

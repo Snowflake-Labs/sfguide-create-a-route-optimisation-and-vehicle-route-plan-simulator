@@ -1,5 +1,5 @@
 -- ============================================================================
--- OPS surface primitives (R4 of APP_RESTRUCTURE_PLAN)
+-- OPS surface primitives
 -- ============================================================================
 -- Global active-scope promotion is an OPS/ADMIN-only action (consumers do
 -- per-session selection via the contextBar + F_*_SCOPED functions). This proc is

@@ -14,7 +14,7 @@ const MAX_ENTRIES = 500;
 // globalThis-pinned so the boot-init (instrumentation.ts) and the route handlers
 // share ONE ring buffer + uptime origin, even though Next compiles instrumentation
 // and the server routes as separate bundles (which would otherwise get distinct
-// module instances). See APP_RESTRUCTURE_PLAN R5 (globalThis-pinned singletons).
+// module instances). Uses a globalThis-pinned singleton to share one buffer.
 const __diag = ((globalThis as unknown as { __fleetAdminDiag?: { buffer: LogEntry[]; startTime: number } }).__fleetAdminDiag
   ??= { buffer: [], startTime: Date.now() });
 const buffer: LogEntry[] = __diag.buffer;
