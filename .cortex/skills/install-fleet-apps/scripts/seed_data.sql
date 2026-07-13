@@ -148,7 +148,19 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DHL_NTBO;
 
 -- Verify agnostic core data is present (reuse signal for the orchestrator).
-SELECT
-  (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)            AS datasets,
-  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)          AS trips,
-  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY) AS telemetry;
+-- Guarded: seed_data.sql runs twice - once BEFORE the loader (seedprep pass, when
+-- these tables do not exist yet) and once after (purge pass). A bare SELECT COUNT(*)
+-- on the pre-load pass fails with "object does not exist" and pollutes the log. Wrap
+-- each count in its own handler so a missing table reports -1 instead of erroring.
+EXECUTE IMMEDIATE $$
+DECLARE
+  n_datasets  INT DEFAULT -1;
+  n_trips     INT DEFAULT -1;
+  n_telemetry INT DEFAULT -1;
+BEGIN
+  BEGIN SELECT COUNT(*) INTO n_datasets  FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS;                   EXCEPTION WHEN OTHER THEN n_datasets  := -1; END;
+  BEGIN SELECT COUNT(*) INTO n_trips     FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;                  EXCEPTION WHEN OTHER THEN n_trips     := -1; END;
+  BEGIN SELECT COUNT(*) INTO n_telemetry FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;      EXCEPTION WHEN OTHER THEN n_telemetry := -1; END;
+  RETURN 'datasets=' || n_datasets || ' trips=' || n_trips || ' telemetry=' || n_telemetry;
+END;
+$$;

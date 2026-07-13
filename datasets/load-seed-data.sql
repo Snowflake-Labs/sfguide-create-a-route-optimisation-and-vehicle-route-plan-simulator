@@ -842,9 +842,22 @@ SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","
 -- 3d. REGION_CATALOG (pre-seeded Geofabrik + BBBike catalog)
 --     Skips if catalog already has data.
 --------------------------------------------------------------------------------
-CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(
-  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE'
-);
+-- Guarded: install-fleet-apps runs this loader in its data step (step 2), BEFORE
+-- the engine module (03_region_management) that creates LOAD_SEED_CATALOG. A bare
+-- CALL there aborts with "Unknown user-defined function ... LOAD_SEED_CATALOG"
+-- and bubbles up as the "canonical loader reported errors" WARN. Install step 3.4
+-- re-seeds the catalog once the engine is present, so here we CALL only when the
+-- proc already exists (engine-first path) and silently skip otherwise. Zero WARN
+-- on a fresh install; unchanged behaviour when the engine is already deployed.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
+  RETURN 'region catalog seeded';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'LOAD_SEED_CATALOG not present yet; region catalog seeded later (install step 3.4)';
+END;
+$$;
 
 --------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated
