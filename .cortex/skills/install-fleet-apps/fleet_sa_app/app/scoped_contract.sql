@@ -40,8 +40,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-app-restr
 CREATE OR REPLACE PROCEDURE SYNTHETIC_DATASETS.UNIFIED._ADD_TRIP_KIND_IF_MISSING()
 RETURNS VARCHAR
 LANGUAGE SQL
-EXECUTE AS CALLER
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+EXECUTE AS CALLER
 AS
 $$
 BEGIN

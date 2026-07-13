@@ -2,9 +2,9 @@
 # Data model (logical contract) - Fleet domain pack: route_optimization (SELF-BUILDING)
 # =============================================================================
 # Absorbs the FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION view closure:
-#   TRAILER_COST_OF_IDLENESS  <- IDLE_TRAILERS + FLEET_HGV_PROFILE + CONFIG(rental)
+#   TRAILER_COST_OF_IDLENESS  <- IDLE_TRAILERS + FLEET_VEHICLE_PROFILE + CONFIG(rental)
 #   IDLE_TRAILERS             <- dwell enriched sessions (INTER-PACK) + FLEET_CURRENT
-#   FLEET_HGV_PROFILE         <- FLEET_CURRENT (HASH-synthesized HGV attributes)
+#   FLEET_VEHICLE_PROFILE         <- FLEET_CURRENT (HASH-synthesized HGV attributes)
 #   LANE_DEMAND               <- TRIPS_CURRENT + POIS_CURRENT
 # INTER-PACK DEPENDENCY: the DWELL_ENRICHED leaf binds to the dwell pack's contract
 # object FLEET_APP.DWELL.VW_DWELL_SESSIONS (not the legacy DT) -> install dwell first
@@ -99,7 +99,7 @@ entities:
       JOIN fleet f ON ls.VEHICLE_ID = f.VEHICLE_ID
       WHERE ls.RN = 1
 
-  - name: FLEET_HGV_PROFILE
+  - name: FLEET_VEHICLE_PROFILE
     description: "Synthesized HGV vehicle attributes (subtype, dims, hazmat)."
     access_pattern: derived
     derived_from: FLEET_CURRENT
@@ -134,7 +134,7 @@ entities:
     description: "Per-trailer idleness cost and projected savings."
     access_pattern: derived
     derived_from: IDLE_TRAILERS
-    depends_on: [FLEET_HGV_PROFILE, CONFIG]
+    depends_on: [FLEET_VEHICLE_PROFILE, CONFIG]
     materialization: view
     replaces: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
     columns:

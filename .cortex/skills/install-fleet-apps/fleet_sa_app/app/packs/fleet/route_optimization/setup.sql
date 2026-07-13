@@ -68,7 +68,7 @@ FROM last_session ls
 JOIN fleet f ON ls.VEHICLE_ID = f.VEHICLE_ID
 WHERE ls.RN = 1;
 
-CREATE OR REPLACE VIEW FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE
+CREATE OR REPLACE VIEW FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 WITH filtered AS (
   SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
