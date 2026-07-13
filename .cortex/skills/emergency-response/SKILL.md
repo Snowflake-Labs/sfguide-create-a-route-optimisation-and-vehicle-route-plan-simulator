@@ -153,9 +153,9 @@ SELECT WILDFIRE_LEVEL, COUNT(*) FROM EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK WHER
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;   -- target state's ORS + VROOM RUNNING
 ```
 
-### Step 3 - Deploy the control-app image
+### Step 3 - Interactive page (removed)
 
-The wizard lives in `src/components/emergency/EmergencyResponse.tsx` (+ `helpers.ts`) and appears as the single **Emergency Response** sidebar item. Rebuild and redeploy `ors_control_app` per the AGENTS.md "Control App Image Deployment" section (bump `image-versions.env` + service YAML, `snow stage copy` the spec, suspend → update → resume). Then open the printed endpoint and select **Emergency Response**.
+> **The legacy Vite control app (`ors_control_app`) that hosted the Emergency Response wizard (`src/components/emergency/EmergencyResponse.tsx` + `helpers.ts`) has been removed from this repo, and the page was not ported to the current `fleet_sa_app`/`fleet_admin_app`.** Step 1's pipeline still creates the full `EMERGENCY_RESPONSE.*` objects (`CARECONNECT_CENTERS`, `V_ZIP_RISK`, `ORS_ISOCHRONE_FOR_CENTER`, `STATE_REGION_MAP`), so the risk layer is queryable and the capacitated multi-depot evacuation VRP can be driven from SQL via `OPENROUTESERVICE_APP.CORE.OPTIMIZATION` (with the target state's ORS + VROOM services RUNNING). There is currently no bundled interactive page in the fleet apps; take the page source from another repo if you need the UI. The example steps below describe that retired wizard.
 
 ## Geocoding the centers (build-time only)
 

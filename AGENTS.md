@@ -376,5 +376,5 @@ t.DESTINATION   -- trip destination
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` - End-to-end deployment quickstart
-- `docs/dev/server-architecture.md` - One-page map of the fleet control-app server modules (`ui/src/server/{lib,studio}/`) and decision tree for "where do I add X?"
+- `docs/dev/server-architecture.md` - historical one-page map of the retired `ors_control_app` server module boundaries (kept as reference for what was ported forward into the current `fleet_admin_app`/`fleet_sa_app`, whose server code lives in `ui/src/server/{lib,studio}/`)
 - `docs/README.md` - Full index
