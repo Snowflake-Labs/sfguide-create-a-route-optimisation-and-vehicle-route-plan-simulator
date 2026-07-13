@@ -1868,16 +1868,16 @@ try {
                         'Generate Emergency Response data (hazard + anchors + participants) in Data Studio and ensure ORS is running, then retry.' };
     }
 
-    // Step 2: filter the raw 50km participant sample to those inside ANY isochrone
+    // Step 2: filter the raw participant sample to those inside ANY isochrone
     // (JOIN + DISTINCT), then tag each participant with BOTH the wildfire and flood
     // risk of the hazard zone it sits in (spatial join) so the UI can recolor dots
     // to match the hexagon layer when the hazard toggle flips -- without re-seeding.
     // The map "reachable area" is a TRUE dissolve: ST_UNION_AGG over simplified
     // isochrones (measured ~sub-second for 10 polygons) -> one clean union outline
     // instead of overlapping per-center polygons.
-    // No live MATRIX snap: participants are real Overture addresses (already
-    // on-network), the snap was a fragile extra ORS call that over-filtered to
-    // zero, and evac_solve snaps/validates routability anyway.
+    // No live MATRIX snap: participants are real Overture residential-building
+    // points (already on-network), the snap was a fragile extra ORS call that
+    // over-filtered to zero, and evac_solve snaps/validates routability anyway.
     var sql =
       "WITH iso AS (SELECT g FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO)," +
       " raw AS (SELECT PARTICIPANT_ID, LON, LAT, LOC AS PT, ADDRESS " +
@@ -1907,10 +1907,26 @@ try {
     parts = parts ? ((typeof parts === 'string') ? JSON.parse(parts) : parts) : [];
 
     if (!parts || parts.length === 0) {
+        // Distinguish "no participant data exists for this region" (needs a Data
+        // Studio run) from "data exists but none fall inside the isochrone"
+        // (needs more travel time) so the message is actionable.
+        var rawN = 0;
+        try {
+            var rc = snowflake.createStatement({ sqlText:
+              "SELECT COUNT(*) FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_PARTICIPANTS_SCOPED(?, CAST(NULL AS VARCHAR)))",
+              binds: [region] }).execute();
+            rc.next();
+            rawN = Number(rc.getColumnValue(1) || 0);
+        } catch(e) { rawN = 0; }
+        var emsg = (rawN === 0)
+          ? 'No participant data has been generated for region ' + region +
+            '. Re-run Emergency Response data generation in Data Studio for this region, then retry.'
+          : 'No participants fall inside the ' + mins + '-min isochrone area. ' +
+            'Increase travel time, or regenerate Data Studio data with participants closer to the care centers.';
         return { status: 'FAILED', region: region, hazard_type: hz, range_minutes: mins,
                  union_geojson: ug ? ((typeof ug==='string')?JSON.parse(ug):ug) : null,
-                 participants: [], isochrone_count: nIso,
-                 error: 'No participants from the 50km sample fall inside the ' + mins + '-min isochrone area. Increase travel time, or regenerate Data Studio data with participants closer to the care centers.' };
+                 participants: [], isochrone_count: nIso, raw_participant_count: rawN,
+                 error: emsg };
     }
     return {
         status: 'SUCCESS', region: region, hazard_type: hz, range_minutes: mins,
