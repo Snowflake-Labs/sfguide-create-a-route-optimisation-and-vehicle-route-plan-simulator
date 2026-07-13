@@ -2,14 +2,14 @@
 # Data model (logical contract) - Fleet domain pack: route_optimization (SELF-BUILDING)
 # =============================================================================
 # Absorbs the FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION view closure:
-#   TRAILER_COST_OF_IDLENESS  <- IDLE_TRAILERS + FLEET_VEHICLE_PROFILE + CONFIG(rental)
+#   VEHICLE_COST_OF_IDLENESS  <- IDLE_TRAILERS + FLEET_VEHICLE_PROFILE + CONFIG(rental)
 #   IDLE_TRAILERS             <- dwell enriched sessions (INTER-PACK) + FLEET_CURRENT
 #   FLEET_VEHICLE_PROFILE         <- FLEET_CURRENT (HASH-synthesized HGV attributes)
 #   LANE_DEMAND               <- TRIPS_CURRENT + POIS_CURRENT
 # INTER-PACK DEPENDENCY: the DWELL_ENRICHED leaf binds to the dwell pack's contract
 # object FLEET_APP.DWELL.VW_DWELL_SESSIONS (not the legacy DT) -> install dwell first
 # (declared in packs/manifest.yaml). Swap boundary = shared V_*_CURRENT + dwell contract.
-# Consumer entities TRAILER_COST_OF_IDLENESS + LANE_DEMAND keep their columns (asset_velocity + SV_ASSET_VELOCITY).
+# Consumer entities VEHICLE_COST_OF_IDLENESS + LANE_DEMAND keep their columns (asset_velocity + SV_ASSET_VELOCITY).
 # =============================================================================
 
 pack: route_optimization
@@ -130,8 +130,8 @@ entities:
       FROM filtered f
 
   # ---- Consumer-facing derived primitives -----------------------------------
-  - name: TRAILER_COST_OF_IDLENESS
-    description: "Per-trailer idleness cost and projected savings."
+  - name: VEHICLE_COST_OF_IDLENESS
+    description: "Per-vehicle idleness cost and projected savings."
     access_pattern: derived
     derived_from: IDLE_TRAILERS
     depends_on: [FLEET_VEHICLE_PROFILE, CONFIG]
