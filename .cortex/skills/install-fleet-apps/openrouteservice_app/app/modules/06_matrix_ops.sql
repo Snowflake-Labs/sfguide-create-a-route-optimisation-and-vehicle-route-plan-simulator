@@ -1,6 +1,16 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"06_matrix_ops"}}';
 USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
+-- File format referenced by name in LOAD_SEED_MATRIX (below) when MERGE-ing the
+-- pre-computed matrix_jobs parquet. The canonical loader also creates a
+-- PARQUET_FF, but install-fleet-apps rewrites that reference to the
+-- FLEET_INTELLIGENCE namespace, so the OPENROUTESERVICE_APP.CORE one the proc
+-- hardcodes must be owned by the engine itself. Without this, the step-3.4b
+-- seed-matrix load fails with "File format ... PARQUET_FF does not exist".
+CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF
+  TYPE = PARQUET
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_BUILD_STATUS()
 RETURNS VARCHAR
 LANGUAGE SQL
