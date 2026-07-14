@@ -2,13 +2,13 @@
 
 // Tier-3 showcase: region-generic Emergency Response evacuation wizard.
 //
-// Runs for WHATEVER region/dataset is active (no CA/CO/PA lock). Data comes from
-// the neutral FLEET_APP.EMERGENCY_RESPONSE contract (county FEMA hazard +
+// Runs for WHATEVER region/dataset is active (no country lock). Data comes from
+// the neutral FLEET_APP.EMERGENCY_RESPONSE contract (procedural hazard zones +
 // Overture health-anchor care centers, produced by Data Studio) and the
-// evac_seed / evac_solve User verbs. US-only (FEMA); when the active region has
+// evac_seed / evac_solve User verbs. Works worldwide; when the active region has
 // no hazard/anchor data the wizard shows an actionable empty state.
 //
-// Steps: 1) county risk choropleth  2) seed participants (isochrone union)
+// Steps: 1) hazard-zone risk choropleth  2) seed participants (isochrone union)
 //        3) configure vans  4) solve the capacitated multi-depot evacuation VRP.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -20,7 +20,7 @@ import type { LngLat } from '@/lib/map/map-fit';
 import type { ViewProps } from '@/lib/types';
 
 type Hazard = 'WILDFIRE' | 'FLOOD';
-interface County { county: string; geojson: string; wildfire_level: number; flood_level: number; }
+interface HazardZone { zoneId: string; geojson: string; wildfire_level: number; flood_level: number; }
 interface CareCenter { center_id: string; center_name: string; lon: number; lat: number; }
 interface Participant {
   pid: string; lon: number; lat: number; address: string | null; county: string | null;
@@ -168,7 +168,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const [avail, setAvail] = useState<'checking' | 'ready' | 'unavailable'>('checking');
   const [step, setStep] = useState(1);
   const [hazard, setHazard] = useState<Hazard>('WILDFIRE');
-  const [counties, setCounties] = useState<County[]>([]);
+  const [zones, setZones] = useState<HazardZone[]>([]);
   const [centers, setCenters] = useState<CareCenter[]>([]);
   const [minutes, setMinutes] = useState(15);
   const [targetCount, setTargetCount] = useState(60);
@@ -247,16 +247,16 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
           `SELECT CENTER_ID, CENTER_NAME, LON, LAT FROM ${ER}.VW_CARE_CENTERS`
           + (rgn ? ` WHERE REGION = :region` : ``) + ` LIMIT 200`, rgn ? { region: rgn } : undefined);
         if (cancelled) return;
-        const counties2 = hz.map((r) => ({
-          county: String(r.county ?? ''), geojson: String(r.geojson ?? ''),
+        const zones2 = hz.map((r) => ({
+          zoneId: String(r.county ?? ''), geojson: String(r.geojson ?? ''),
           wildfire_level: Number(r.wildfire_level ?? 0), flood_level: Number(r.flood_level ?? 0),
         })).filter((c) => c.geojson);
         const centers2 = cc.map((r) => ({
           center_id: String(r.center_id ?? ''), center_name: String(r.center_name ?? ''),
           lon: Number(r.lon), lat: Number(r.lat),
         })).filter((c) => Number.isFinite(c.lon) && Number.isFinite(c.lat));
-        setCounties(counties2); setCenters(centers2);
-        setAvail(counties2.length > 0 && centers2.length > 0 ? 'ready' : 'unavailable');
+        setZones(zones2); setCenters(centers2);
+        setAvail(zones2.length > 0 && centers2.length > 0 ? 'ready' : 'unavailable');
       } catch (e) {
         if (!cancelled) { setError(e instanceof Error ? e.message : 'load failed'); setAvail('unavailable'); }
       }
@@ -381,15 +381,15 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   // deck.gl layers per current state.
   const layers = useMemo<Layer[]>(() => {
     const out: Layer[] = [];
-    if (counties.length) {
-      const features = counties.map((c) => {
+    if (zones.length) {
+      const features = zones.map((c) => {
         let g: GeoJSON.Geometry | null = null;
         try { g = JSON.parse(c.geojson); } catch { g = null; }
         const lvl = hazard === 'WILDFIRE' ? c.wildfire_level : c.flood_level;
-        return g ? { type: 'Feature' as const, geometry: g, properties: { county: c.county, lvl } } : null;
+        return g ? { type: 'Feature' as const, geometry: g, properties: { zone: c.zoneId, lvl } } : null;
       }).filter(Boolean) as GeoJSON.Feature[];
       out.push(new GeoJsonLayer({
-        id: 'counties', data: { type: 'FeatureCollection', features },
+        id: 'hazard-zones', data: { type: 'FeatureCollection', features },
         stroked: false, filled: true, getFillColor: (f: any) => [...riskColor(f.properties.lvl), 110] as any,
         pickable: true,
       }));
@@ -461,7 +461,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       }
     }
     return out;
-  }, [counties, hazard, evacLevel, unionGeo, centers, participants, routeGeo, unassignedPids, selectedTripKey, trips]);
+  }, [zones, hazard, evacLevel, unionGeo, centers, participants, routeGeo, unassignedPids, selectedTripKey, trips]);
 
   const fitCoords = useMemo<LngLat[]>(() => {
     const c: LngLat[] = [];
@@ -482,9 +482,9 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         <div style={{ padding: '16px', borderRadius: '8px', backgroundColor: 'var(--surface-warning, #fffbeb)', border: '1px solid var(--border-warning, #fde68a)', fontSize: '13px', color: 'var(--text-primary, #111827)' }}>
           <p style={{ margin: '0 0 8px', fontWeight: 600 }}>No Emergency Response data for {region || 'the active region'}.</p>
           <p style={{ margin: 0 }}>
-            This use case needs county hazard + health-anchor data. In the <strong>Data Studio</strong> (Admin app),
-            run a generation for this region with <strong>Hazard</strong> and <strong>Anchors</strong> enabled, then re-open this page.
-            Hazard data is US-only (FEMA National Risk Index).
+            This use case needs hazard-zone and health-anchor data. In the <strong>Data Studio</strong> (Admin app),
+            run a generation for this region with <strong>Hazard</strong>, <strong>Anchors</strong>, and <strong>Participants</strong> enabled, then re-open this page.
+            Hazard zones are generated per region worldwide (no country restriction).
           </p>
           {error && <p style={{ margin: '8px 0 0', color: 'var(--text-error, #dc2626)' }}>{error}</p>}
         </div>
@@ -498,7 +498,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         <div>
           <h2 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 4px' }}>Emergency Response</h2>
           <p style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', margin: 0 }}>
-            Evacuation planning for <strong>{region || 'active region'}</strong> · {counties.length} counties · {centers.length} care centers
+            Evacuation planning for <strong>{region || 'active region'}</strong> · {zones.length} hazard zones · {centers.length} care centers
           </p>
         </div>
 
