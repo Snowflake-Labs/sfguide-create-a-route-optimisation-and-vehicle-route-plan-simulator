@@ -25,8 +25,8 @@ The operator walks four steps on one map:
    `FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES`.
 2. **Seed participants** - set isochrone minutes + participant count; `evac_seed`
    unions the drive-time isochrones of the region's health-anchor care centers
-   (`VW_CARE_CENTERS`), samples routable Overture addresses inside it
-   (MATRIX snap-filter ≤ 350 m), and tags each with county risk.
+   (`VW_CARE_CENTERS`), samples Overture residential building points inside it,
+   and tags each with county risk.
 3. **Vehicles** - set **vehicles per care center**, per-vehicle capacity, max trips per vehicle, and an **Optimize** mode. Every seeded care center is a depot, so the total fleet = centers x vehicles/center. Optimize = *Fastest completion* caps each trip's pickups (`max_tasks`) so VROOM spreads work across all vehicles in parallel (lowest completion time, more total km); *Fewest vehicles* consolidates into full trips (least total drive, higher completion).
 4. **Plan evacuation** - the wizard builds a capacitated multi-depot, multi-trip
    `pickup:[1]` challenge (every care center is a depot with `vehicles/center` vehicles,
@@ -74,7 +74,7 @@ health anchors replace the curated PACE centers.
 1. ORS app deployed via `install-fleet-apps`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`UsCalifornia`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
 2. **FEMA National Risk Index (Free)** - Marketplace listing `GZSTZKU9FH9` → `FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES` (auto-installed in Step 0a of `references/sql-pipeline.sql`).
 3. **US ZIP metadata + geometry** share → `U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.{ZIP_CODE_META_SHARE, ZIP_CODE_GEOMETRY_SHARE}`.
-4. **Overture Maps addresses** share → `OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS`.
+4. **Overture Maps buildings** share → `OVERTURE_MAPS__BUILDINGS.CARTO.BUILDING` (residential building centroids are the participant/household pool, generated for every region by Data Studio).
 5. **OpenCage secret** `OPENROUTESERVICE_APP.CORE.OPENCAGE_API_KEY` + `ORS_GEOCODE_EAI` external-access integration (egress `api.opencagedata.com:443`). Used **only at build time** to geocode the 18 CareConnect centers lacking coordinates; the resolved coordinates are committed to `datasets/careconnect_centers_geocoded.csv`, so a fresh install needs no runtime geocoding.
 
 ## Required Privileges
@@ -89,7 +89,7 @@ health anchors replace the curated PACE centers.
 | CREATE STAGE | Schema `EMERGENCY_RESPONSE.CONFIG` | `SEED_STAGE` for the committed centers CSV |
 | USAGE ON DATABASE `OPENROUTESERVICE_APP` | DB | Calls ISOCHRONES / OPTIMIZATION / ORS_STATUS |
 | IMPORT SHARE | Account | Install FEMA NRI listing (Step 0a) |
-| IMPORTED PRIVILEGES | Shares | Read NRI, ZIP metadata, Overture addresses |
+| IMPORTED PRIVILEGES | Shares | Read NRI, ZIP metadata, Overture buildings |
 
 > ACCOUNTADMIN is NOT required. Grant the above to `EMERGENCY_RESPONSE_ROLE`.
 
@@ -120,7 +120,7 @@ EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK         (per-ZIP flood/wildfire level 0-5
 
 EMERGENCY_RESPONSE.CORE.CARECONNECT_CENTERS      (20 centers, GEOGRAPHY LOC)
 EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(loc, minutes, region)  -> GEOGRAPHY
-OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS          (participant address pool)
+OVERTURE_MAPS__BUILDINGS.CARTO.BUILDING         (participant/household pool, residential centroids)
 ```
 
 Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) ratings; wildfire = `WFIR_RISKR`. Ratings map to ordinal 1-5 (`Very Low`..`Very High`); `No Rating`/`Insufficient Data`/`Not Applicable` → 0.
