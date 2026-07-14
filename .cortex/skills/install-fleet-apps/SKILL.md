@@ -74,6 +74,14 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 9. **Apps** - `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
 10. **Routing engine + tool substrate** - probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. Then applies the engine-agnostic routing contract (`routing_platform/setup.sql`) and the 9 `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` procedures (from `routing-agent/references/deploy-agent.sql`) that the synapse routing verbs wrap - without this substrate every `FLEET_AGENT` routing request fails ("routing service experiencing issues") even with a healthy engine. The installer asserts all 9 `TOOL_*` procs exist and warns loudly if any are missing. See `references/routing-engine.md`.
 
+## Final output (every run)
+
+At the end of every run the orchestrator prints, and writes into the friction log, a consolidated report with three sections:
+
+- **URLs** - the resolved public SA app (consumer/analytics) and Admin app (build console) endpoints. Endpoints are polled with a short retry loop because SPCS ingress takes ~1-3 min to go public after service RESUME; if one is still provisioning the report shows the exact `SHOW ENDPOINTS` command to fetch it manually.
+- **Summary** - steps OK vs total, routing-substrate status, SAP-mock status, and the friction-log path (plus a loud line if the routing substrate is degraded).
+- **Next steps** - open each app (Snowflake OAuth; a fresh endpoint returns HTTP 302 to login), smoke-test live routing in the SA app agent, and how to re-check endpoints/services.
+
 ## Live routing engine (default; skip with `--no-engine`)
 
 Live routing verbs (directions, isochrones, matrix, VRP optimization, find_poi, catchment) require the ORS/VROOM engine. The analytics stack installs and runs without it; by default the installer builds + provisions the engine in the same run. To skip the heavy engine build (routing verbs install inert):

@@ -87,6 +87,22 @@ obj_exists() {
   snow sql -c "$CONNECTION" --format=CSV -q "$1" 2>/dev/null | grep -qiE "$2"
 }
 
+# helper: resolve a public SPCS endpoint URL, retrying while it provisions.
+# SPCS ingress endpoints take ~1-3 min after service RESUME to become public;
+# a query right after deploy often returns "provisioning in progress" (no URL).
+# args: <fully-qualified-service> <endpoint-name>  -> echoes https://... or "".
+resolve_endpoint() {
+  local svc="$1" ep="$2" tries="${3:-10}" url=""
+  for _ in $(seq 1 "$tries"); do
+    url=$(snow sql -c "$CONNECTION" --format=CSV \
+      -q "SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
+      2>/dev/null | grep -E '^https://[a-z0-9-]+\.' | grep -viE 'provisioning|in progress' | head -1 || true)
+    [ -n "$url" ] && { echo "$url"; return 0; }
+    sleep 18
+  done
+  echo ""
+}
+
 # ── 0. preflight ────────────────────────────────────────────────
 note "[0/8] preflight..."
 for t in snow docker node npm python3; do
@@ -476,8 +492,9 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
     || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
   ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
     || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
-  SA_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-sa-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
-  ADMIN_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-admin-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
+  # Resolve public endpoints (retries while they provision, ~1-3 min post-RESUME).
+  SA_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app)
+  ADMIN_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app)
   step "7 apps" OK
 else
   step "7 apps" SKIPPED
@@ -502,14 +519,19 @@ fi
 
 # ── friction log + summary ──────────────────────────────────────
 ELAPSED=$(( $(date +%s) - START_TS ))
+# Display fallbacks: an empty URL means the SPCS endpoint was still provisioning
+# when we last polled. Give the user the exact command to fetch it themselves.
+SA_URL_DISP="${SA_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP;\"}"
+ADMIN_URL_DISP="${ADMIN_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP;\"}"
+FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
   echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
-  [ -n "$SA_URL" ]    && echo "- SA app:    $SA_URL"
-  [ -n "$ADMIN_URL" ] && echo "- Admin app: $ADMIN_URL"
+  echo "- SA app:    $SA_URL_DISP"
+  echo "- Admin app: $ADMIN_URL_DISP"
   echo
   echo "| Step | Status |"
   echo "|------|--------|"
@@ -525,19 +547,42 @@ ELAPSED=$(( $(date +%s) - START_TS ))
   echo "## SAP mock landscape"
   echo "- MOCK_SAP + MOCK_TELEMATICS (sap-fleet-connector demo example, raw-only): **${SAP_MOCK}**"
   echo
+  echo "## Next steps"
+  echo "1. Open the SA app (consumer/analytics): $SA_URL_DISP"
+  echo "2. Open the Admin app (build console / Data Studio): $ADMIN_URL_DISP"
+  echo "   Both apps require Snowflake OAuth login; a fresh endpoint returns HTTP 302 to the login page."
+  echo "3. Smoke-test live routing: ask the SA app agent \"what can I reach within 10 minutes of downtown SanFrancisco\" (needs the ORS engine RUNNING)."
+  echo "4. Verify services: \`snow sql -c $CONNECTION -q \"SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;\"\` (all should be RUNNING)."
+  echo
   echo "## Friction points"
   echo "_None recorded automatically. Add manual observations here._"
 } > "$FRICTION_LOG"
 
 echo
 echo "================================================================"
-echo " install-fleet-apps complete (${ELAPSED}s)"
-[ -n "$SA_URL" ]    && echo "   SA app:    $SA_URL"
-[ -n "$ADMIN_URL" ] && echo "   Admin app: $ADMIN_URL"
+if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
+  echo " install-fleet-apps FINISHED WITH ${FAILED_STEPS} FAILED STEP(S) (${ELAPSED}s)"
+else
+  echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
+fi
+echo "----------------------------------------------------------------"
+echo " URLs"
+echo "   SA app (consumer/analytics): $SA_URL_DISP"
+echo "   Admin app (build console):   $ADMIN_URL_DISP"
+echo "----------------------------------------------------------------"
+echo " Summary"
+echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS ))/${#STEP_STATUS[@]} OK"
+echo "   routing substrate: $ROUTING_SUBSTRATE"
+echo "   SAP mock:          $SAP_MOCK"
+echo "   friction log:      $FRICTION_LOG"
 case "$ROUTING_SUBSTRATE" in
-  OK*)       echo "   routing substrate: $ROUTING_SUBSTRATE" ;;
-  SKIPPED*)  echo "   routing substrate: $ROUTING_SUBSTRATE" ;;
-  *)         echo "   !! ROUTING SUBSTRATE DEGRADED: $ROUTING_SUBSTRATE" ;;
+  OK*|SKIPPED*) : ;;
+  *) echo "   !! ROUTING SUBSTRATE DEGRADED - see friction log for the restore command" ;;
 esac
-echo "   friction log: $FRICTION_LOG"
+echo "----------------------------------------------------------------"
+echo " Next steps"
+echo "   1. Open the SA app above and log in via Snowflake OAuth."
+echo "   2. Open the Admin app to run Data Studio / provision more regions."
+echo "   3. Smoke-test routing in the SA app agent (e.g. isochrone/directions in SanFrancisco)."
+echo "   4. Endpoints still 'provisioning'? re-run the SHOW ENDPOINTS command shown above in ~1-2 min."
 echo "================================================================"
