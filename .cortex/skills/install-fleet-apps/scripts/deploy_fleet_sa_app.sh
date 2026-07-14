@@ -135,6 +135,7 @@ if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   # First-deploy bootstrap: the service schema + config/spec stage must exist
   # before any stage copy or CREATE SERVICE. Idempotent (IF NOT EXISTS).
   snow sql -c "$CONNECTION" -q "
+    ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE SCHEMA IF NOT EXISTS $SCHEMA_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE STAGE IF NOT EXISTS $STAGE_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_sa_bootstrap.log 2>&1 || { echo "ERROR: schema/stage bootstrap failed"; tail -20 /tmp/fleet_sa_bootstrap.log; exit 1; }
@@ -173,6 +174,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
 
   echo "[6/7] CREATE SERVICE IF NOT EXISTS (first deploy) -> SUSPEND -> ALTER FROM SPEC -> set EAI -> RESUME..."
   snow sql -c "$CONNECTION" -q "
+    ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE SERVICE IF NOT EXISTS $SERVICE_FQN
       IN COMPUTE POOL $COMPUTE_POOL
       FROM ${CONFIG_STAGE}
@@ -180,6 +182,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
       COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_sa_create.log 2>&1 || { echo "ERROR: create service failed"; tail -30 /tmp/fleet_sa_create.log; exit 1; }
   snow sql -c "$CONNECTION" -q "
+    ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     ALTER SERVICE IF EXISTS $SERVICE_FQN SUSPEND;
     ALTER SERVICE $SERVICE_FQN
       FROM ${CONFIG_STAGE}

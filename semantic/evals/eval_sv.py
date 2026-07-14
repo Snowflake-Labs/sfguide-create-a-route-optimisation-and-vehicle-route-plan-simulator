@@ -100,6 +100,8 @@ def main():
     sv_name = spec["sv_name"]
     conn = snowflake.connector.connect(connection_name=args.connection)
     cur = conn.cursor()
+    # Tracking tag (AGENTS.md): attribute every query this eval harness runs.
+    cur.execute("ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-semantic-view\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'")
     cur.execute("SELECT SYSTEM$ALLOWLIST()")
     host = [e["host"] for e in json.loads(cur.fetchone()[0])
             if e.get("type") == "SNOWFLAKE_DEPLOYMENT"][0]

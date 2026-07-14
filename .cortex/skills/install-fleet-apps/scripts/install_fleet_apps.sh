@@ -121,6 +121,7 @@ step "0 preflight" OK
 # downstream GRANT target exists regardless of step ordering.
 note "[0.5/8] pre-creating FLEET_APP_* role names..."
 snow sql -c "$CONNECTION" -q "
+  ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
   CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
   CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
   CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
@@ -430,7 +431,7 @@ fi
 if [ "${SKIP_DEMO:-0}" != "1" ] && [ -f "$AGENT_DEMOS_JSON" ]; then
   if obj_exists "SHOW STAGES LIKE 'ORS_SPCS_STAGE' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'ORS_SPCS_STAGE'; then
     note "[4.6] uploading agent-demos.json to the ORS config stage..."
-    snow sql -c "$CONNECTION" -q "CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE;" >/tmp/ifa_demos.log 2>&1 || true
+    snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE;" >/tmp/ifa_demos.log 2>&1 || true
     snow stage copy "$AGENT_DEMOS_JSON" @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/ --overwrite -c "$CONNECTION" >>/tmp/ifa_demos.log 2>&1 \
       && step "4.6 playground-config" OK \
       || { note "  WARN: agent-demos.json upload failed; see /tmp/ifa_demos.log"; step "4.6 playground-config" FAILED; }

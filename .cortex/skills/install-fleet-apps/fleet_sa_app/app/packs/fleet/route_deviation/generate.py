@@ -23,6 +23,13 @@ except ImportError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROLES = ["FLEET_APP_USER", "FLEET_APP_OPS", "FLEET_APP_ADMIN"]
 
+# Tracking tags (AGENTS.md): every generated SQL file sets a session query_tag and
+# every CREATE carries a JSON COMMENT with origin sf_sit-is-fleet, so the objects are
+# attributed and discoverable by routing-solution-cleanup. Kept as plain constants
+# (not f-strings) to avoid brace-escaping in the DDL templates below.
+QUERY_TAG_JSON = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"pack-setup"}}'
+TRACK_JSON = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+
 
 def view_name(entity: str) -> str:
     return f"VW_{entity}"
@@ -46,7 +53,7 @@ def gen_mapped(schema: str, entity: dict, binding: dict) -> str:
     vn = view_name(entity["name"])
     cols = ",\n  ".join(col_expr(m) for m in binding["mapping"])
     return (
-        f"CREATE OR REPLACE VIEW {schema}.{vn} AS\nSELECT\n  {cols}\n"
+        f"CREATE OR REPLACE VIEW {schema}.{vn}\n  COMMENT='{TRACK_JSON}' AS\nSELECT\n  {cols}\n"
         f"FROM {binding['source_table']};\n"
     )
 
@@ -65,7 +72,7 @@ def gen_derived(schema: str, entity: dict) -> str:
             sel.append(f"NULL AS {c['name']}")
     sel_sql = ",\n  ".join(sel)
     gb_sql = ("\nGROUP BY " + ", ".join(gb)) if gb else ""
-    return f"CREATE OR REPLACE VIEW {schema}.{vn} AS\nSELECT\n  {sel_sql}\nFROM {src_view}{gb_sql};\n"
+    return f"CREATE OR REPLACE VIEW {schema}.{vn}\n  COMMENT='{TRACK_JSON}' AS\nSELECT\n  {sel_sql}\nFROM {src_view}{gb_sql};\n"
 
 
 def main():
@@ -86,9 +93,9 @@ def main():
     out.append(f"-- model={os.path.basename(args.model)} mapping={os.path.basename(args.mapping)} "
                f"source_id={mapping.get('source_id','?')}")
     out.append("-- Neutral app schema the dashboards + SV_ROUTE_DEVIATION bind to. Regenerate to repoint sources.\n")
-    out.append(f"CREATE DATABASE IF NOT EXISTS {db} "
-               f"COMMENT='{{\"origin\":\"sf_sit-is-fleet\",\"name\":\"install-fleet-apps\",\"attributes\":{{\"component\":\"data-contract-app-layer\"}}}}';")
-    out.append(f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='Stable logical layer for the route_deviation pack (generated from data-model + entity-mapping).';\n")
+    out.append(f"ALTER SESSION SET query_tag = '{QUERY_TAG_JSON}';")
+    out.append(f"CREATE DATABASE IF NOT EXISTS {db} COMMENT='{TRACK_JSON}';")
+    out.append(f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='{TRACK_JSON}';\n")
 
     # mapped + context first (derived views depend on them)
     order = {"mapped": 0, "context": 0, "derived": 1}

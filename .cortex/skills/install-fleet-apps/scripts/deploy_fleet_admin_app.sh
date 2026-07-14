@@ -115,11 +115,12 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     grep -nE 'image:' "$STAGE_YAML" || true
     exit 1
   fi
-  snow sql -c "$CONNECTION" -q "CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME;" >/dev/null 2>&1 || true
+  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}'; CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';" >/dev/null 2>&1 || true
   snow stage copy "$STAGE_YAML" "$SPEC_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 
   echo "[5/7] CREATE SERVICE IF NOT EXISTS (first deploy) ..."
   snow sql -c "$CONNECTION" -q "
+    ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE SERVICE IF NOT EXISTS $SERVICE_FQN
       IN COMPUTE POOL $COMPUTE_POOL
       FROM ${SPEC_STAGE}
@@ -129,6 +130,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
 
   echo "[6/7] SUSPEND -> ALTER FROM SPEC -> set EAI -> RESUME..."
   snow sql -c "$CONNECTION" -q "
+    ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     ALTER SERVICE IF EXISTS $SERVICE_FQN SUSPEND;
     ALTER SERVICE $SERVICE_FQN
       FROM ${SPEC_STAGE}
