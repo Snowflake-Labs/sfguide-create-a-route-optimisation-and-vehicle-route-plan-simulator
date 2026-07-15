@@ -104,12 +104,17 @@ Sample data is pre-loaded so dashboards work out of the box:
 | **Dwell Analysis** | 12-step Dynamic Table pipeline: state detection, dwell sessionization, H3 congestion heatmaps, SLA breach alerts, facility utilization, daily trends. | `deploy dwell analysis` |
 | **Route Optimization** | VRP demo using Overture Maps and CARTO Marketplace data with Snowflake notebooks. | `deploy route optimization demo` |
 | **Retail Catchment** | Isochrone-based catchment zones, competitor proximity analysis, and address density metrics. | `deploy retail catchment` |
+| **Location Diagnostics** | Region-agnostic retail site cannibalisation and closure modelling. A POI subset becomes the store estate, and live ORS drive-time bands drive catchment overlap and next-closest-store logic (Site Impact and Closure Impact views). | `location diagnostics` |
+| **Backload Matching** | Fleet-wide VRP that matches idle-bound trailers to internal volumes and external freight-exchange offers, with internal-first priority, empty vs loaded legs, KPI savings, and a Cortex rationale. | `backload matching` |
+| **Freight Exchange** | Dispatcher-grade marketplace cockpit to browse, filter, and inspect freight offers with trust-score and market-rate badges plus partner lane history. | `freight exchange` |
+| **Emergency Response** | Region-generic evacuation-planning wizard: colours the map by flood/wildfire hazard risk, seeds participants inside care-center drive-time isochrones, and solves a capacitated multi-depot evacuation VRP. | `emergency response` |
 
 ### Advanced
 
 | Demo | What it does | Deploy with |
 |------|-------------|-------------|
 | **Routing Agent** | A Snowflake Intelligence (Cortex Agent) that wraps ORS functions as tools. Natural-language route planning with AI-powered geocoding. | `create routing agent` |
+| **SAP Fleet Connector** | Binds landed SAP (EAM/SD/TM) plus fleet telematics into the neutral `FLEET_APP` contract and `SV_FLEET_OPS`, so the dashboards, agent, and Cortex Analyst run on a customer's real SAP data with no edits above the contract. | `SAP connector` |
 
 ## The two apps
 
@@ -149,10 +154,15 @@ Open this repo in Cortex Code and type any of these phrases:
 | Deploy dwell analysis | `deploy dwell analysis` |
 | Deploy retail catchment | `deploy retail catchment` |
 | Deploy route optimization | `deploy route optimization demo` |
+| Deploy location diagnostics | `location diagnostics` |
+| Deploy backload matching | `backload matching` |
+| Deploy freight exchange | `freight exchange` |
+| Deploy emergency response | `emergency response` |
+| Bind real SAP fleet data | `SAP connector` |
 | Create routing agent | `create routing agent` |
 | Clean up everything | `routing-solution-cleanup` |
 
-The `install the fleet apps` command is the primary path and installs the complete agnostic stack. The per-vehicle and per-vertical demo skills (car fleet, e-bike fleet, route deviation, dwell, retail catchment, routing agent) are optional add-ons layered on top.
+The `install the fleet apps` command is the primary path and installs the complete agnostic stack. The per-vehicle and per-vertical demo skills (car fleet, e-bike fleet, route deviation, dwell, retail catchment, location diagnostics, backload matching, freight exchange, emergency response, routing agent) are optional add-ons layered on top. The SAP fleet connector binds a customer's real SAP data to the same contract.
 
 ### Multi-region support
 
@@ -198,8 +208,16 @@ graph TD
     IFA --> FIT[fleet-intelligence-car]
     IFA --> FIFD[fleet-intelligence-ebike]
     IFA --> RET[retail-catchment]
+    IFA --> LD[location-diagnostics]
     IFA --> RD[route-deviation]
     IFA --> RA[routing-agent]
+    IFA --> ER[emergency-response]
+    IFA --> SFC[sap-fleet-connector]
+    RA --> SAP[setup-agent-playground]
+    RO --> BM[backload-matching]
+    IFA --> BM
+    BM --> FX[freight-exchange]
+    IFA --> FX
     RC --> FIT
     RC --> FIFD
     RC --> RD
