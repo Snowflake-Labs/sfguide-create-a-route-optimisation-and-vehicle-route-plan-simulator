@@ -5,7 +5,7 @@
 -- of the existing Phase A/B Freight Exchange schema.
 --
 -- Pre-reqs:
---   - build-routing-solution deployed (OPENROUTESERVICE_APP database)
+--   - install-fleet-apps deployed (OPENROUTESERVICE_APP database)
 --   - freight-exchange Phase A/B bootstrap.sql already run
 --   - backload-matching deployed (provides VW_TRAILERS, PROPOSAL_DECISIONS)
 --
@@ -22,10 +22,10 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-freight-e
 
 ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
   ADD COLUMN IF NOT EXISTS SOURCE_PAGE VARCHAR(40)
-    COMMENT 'BACKLOAD_MATCHING | FREIGHT_EXCHANGE — origin page that recorded the decision';
+    COMMENT 'BACKLOAD_MATCHING | FREIGHT_EXCHANGE - origin page that recorded the decision';
 ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
   ADD COLUMN IF NOT EXISTS DECISION_TYPE VARCHAR(40)
-    COMMENT 'SINGLE | ROUND_TRIP | BUNDLE — kind of decision';
+    COMMENT 'SINGLE | ROUND_TRIP | BUNDLE - kind of decision';
 ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
   ADD COLUMN IF NOT EXISTS BUNDLE_ID VARCHAR
     COMMENT 'NULL except for BUNDLE rows that share a multi-offer solve';
@@ -40,8 +40,8 @@ WHERE SOURCE_PAGE IS NULL OR DECISION_TYPE IS NULL;
 -- =====================================================================
 -- FACT_OFFER_ROUTES caches DIRECTIONS results so the page reads stay
 -- one query and ORS is called only on a periodic refresh (not on every
--- page load). The actual call is performed by the ors_control_app
--- server (Express route /api/fx/refresh-routes).
+-- page load). The actual call is performed by the fleet control app
+-- server (/api/fx/refresh-routes).
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
   OFFER_ID     VARCHAR    NOT NULL,

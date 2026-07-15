@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "default_scenario": "catchment",
+  "max_token_limit": 8000,
+  "scenarios": [
+    {
+      "id": "catchment",
+      "label": "Catchment & Delivery",
+      "icon": "📍",
+      "description": "Catchment analysis, demand signals, and route optimisation",
+      "prompts": [
+        { "label": "1. Catchment analysis", "icon": "📍", "prompt": "Show me the area profile within a 10 minute drive of 498 Castro Street, San Francisco" },
+        { "label": "2. Demand signals", "icon": "📊", "prompt": "Based on that catchment population, which demand segments are highest? Consider the area demographics." },
+        { "label": "3. Directions", "icon": "🗺️", "prompt": "Give me driving directions from 742 Valencia Street, San Francisco to 498 Castro Street" },
+        { "label": "4. Cycling access", "icon": "🚲", "prompt": "Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco" },
+        { "label": "5. Network plan", "icon": "🚚", "prompt": "Plan the full distribution-network delivery from the depot to all key sites using 3 vehicles" }
+      ]
+    },
+    {
+      "id": "retail",
+      "label": "Retail & Catchment",
+      "icon": "🏪",
+      "description": "Retail site analysis - competitor proximity, drive-time catchments, POI discovery",
+      "prompts": [
+        { "label": "1. Store catchment", "icon": "📍", "prompt": "Show me the area reachable within a 10 minute drive from Union Square, San Francisco" },
+        { "label": "2. Nearby competitors", "icon": "🏪", "prompt": "Show me all shops and shopping malls within a 10 minute drive from Union Square, San Francisco" },
+        { "label": "3. Restaurants", "icon": "🍽️", "prompt": "Show me restaurants within a 15 minute drive from the Ferry Building, San Francisco" },
+        { "label": "4. Drive to store", "icon": "🗺️", "prompt": "Get driving directions from 3100 Scott Street, San Francisco to Union Square" },
+        { "label": "5. Multi-store route", "icon": "🚚", "prompt": "Get driving directions from a warehouse at 1 Market Street to Pier 39, then to Fisherman's Wharf, then to Ghirardelli Square, San Francisco" }
+      ]
+    },
+    {
+      "id": "logistics",
+      "label": "Fleet Logistics",
+      "icon": "🚛",
+      "description": "Fleet delivery optimisation - multi-vehicle routing with capacity and skills",
+      "prompts": [
+        { "label": "1. Fleet delivery demo", "icon": "🚚", "prompt": "Run the SF fleet delivery optimization demo" },
+        { "label": "2. HGV directions", "icon": "🚛", "prompt": "Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street" },
+        { "label": "3. Bike courier", "icon": "🚲", "prompt": "Get cycling directions from 1 Market Street to 498 Castro Street, San Francisco" },
+        { "label": "4. Reachability", "icon": "⏱️", "prompt": "Show me the area reachable within 20 minutes by HGV from the Port of San Francisco" },
+        { "label": "5. Custom route", "icon": "📍", "prompt": "I have 2 vehicles starting from 1 Market Street, San Francisco. Optimise routes to deliver to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, and Walgreens 2690 Mission St" }
+      ]
+    }
+  ]
+}

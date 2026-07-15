@@ -1,0 +1,10 @@
+node_modules
+src
+.git
+.next/cache
+tests
+*.md
+.env*
+playwright.config.ts
+tsconfig.json
+next.config.ts

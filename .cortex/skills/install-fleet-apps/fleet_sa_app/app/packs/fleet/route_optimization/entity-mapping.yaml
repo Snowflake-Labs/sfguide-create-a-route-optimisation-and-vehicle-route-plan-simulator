@@ -1,0 +1,43 @@
+# Entity mapping - route_optimization pack - SOURCE: synthetic
+# Leaves project shared SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT (CONFIG-filtered).
+# DWELL_ENRICHED is an INTER-PACK leaf bound to the dwell pack contract object
+# FLEET_APP.DWELL.VW_DWELL_SESSIONS (install dwell first; see packs/manifest.yaml).
+# The cost/lane/idle logic is derived in data-model.yaml.
+source_id: synthetic
+description: "Bundled synthetic route-optimization / asset-velocity data."
+entities:
+  - entity: DWELL_ENRICHED
+    source_table: FLEET_APP.DWELL.VW_DWELL_SESSIONS
+    materialization: view
+    passthrough: true
+
+  - entity: FLEET_CURRENT
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+    materialization: view
+    sql: |
+      SELECT VEHICLE_ID, REGION, VEHICLE_TYPE, HOME_LOCATION_ID,
+             DRIVER_PROFILE, ORS_PROFILE, OPERATING_MODE, JOB_ID
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+      WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1)
+        AND REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1)
+
+  - entity: TRIPS_CURRENT
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+    materialization: view
+    sql: |
+      SELECT TRIP_START, ORIGIN_POI_ID, DESTINATION_POI_ID
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+      WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1)
+        AND REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1)
+
+  - entity: POIS_CURRENT
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+    materialization: view
+    sql: |
+      SELECT LOCATION_ID, REGION, NAME, LOCATION_TYPE, POINT_GEOM, LAT, LNG
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+
+  - entity: CONFIG
+    source_table: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+    materialization: view
+    passthrough: true

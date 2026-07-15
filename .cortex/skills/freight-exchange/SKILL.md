@@ -1,8 +1,8 @@
 ---
 name: freight-exchange
-description: "Deploy the Freight Exchange page: a dispatcher-grade marketplace cockpit that mirrors what users do today on Timocom, WTransnet, Teleroute, B2P (NA: DAT, Truckstop, Convoy, Uber Freight). Adds a parallel React route to the ORS Control App that lets dispatchers browse, filter, and inspect synthesized freight offers per active preset, with trust scores (credit/KYC/blacklist), market-rate badges (vs. weekly p25/p50/p75 USD/km from a RATE_INDEX dynamic table), and partner lane history. Reads from FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data, so switching preset auto-refreshes the page. Use when: setting up the Freight Exchange demo, dispatcher cockpit, freight marketplace, load board, trust-score badges, market-rate badges, Timocom-style UI parity. Do NOT use for: solver-led fleet-wide backload (use backload-matching), route-optimization VRP, route-deviation, retail-catchment, fleet-intelligence taxi/food-delivery demos. Triggers: freight exchange, freight marketplace, load board, dispatcher cockpit, browse offers, filter offers, trust badge, market rate, lane history, partner credit score, Timocom UI, WTransnet UI, Teleroute UI, B2P UI, DAT UI, Truckstop UI, marketplace page, MARKETPLACE schema."
+description: "Deploy the Freight Exchange page: a dispatcher-grade marketplace cockpit that mirrors what users do today on Timocom, WTransnet, Teleroute, B2P (NA: DAT, Truckstop, Convoy, Uber Freight). Adds a parallel React route to the ORS Control App that lets dispatchers browse, filter, and inspect synthesized freight offers per active preset, with trust scores (credit/KYC/blacklist), market-rate badges (vs. weekly p25/p50/p75 USD/km from a RATE_INDEX dynamic table), and partner lane history. Reads from FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data, so switching preset auto-refreshes the page. Use when: setting up the Freight Exchange demo, dispatcher cockpit, freight marketplace, load board, trust-score badges, market-rate badges, Timocom-style UI parity. Do NOT use for: solver-led fleet-wide backload (use backload-matching), route-optimization VRP, route-deviation, retail-catchment, fleet-intelligence car/e-bike demos. Triggers: freight exchange, freight marketplace, load board, dispatcher cockpit, browse offers, filter offers, trust badge, market rate, lane history, partner credit score, Timocom UI, WTransnet UI, Teleroute UI, B2P UI, DAT UI, Truckstop UI, marketplace page, MARKETPLACE schema."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
   - backload-matching
 metadata:
   author: Snowflake SIT-IS
@@ -24,7 +24,7 @@ Phases C (action engine: post / chat / bid / saved searches + alerts) and D (com
 
 ## Prerequisites
 
-- `build-routing-solution` deployed (OPENROUTESERVICE_APP database, all ORS services running). The page reads only from Snowflake; ORS routing functions are not currently called from this page.
+- `install-fleet-apps` deployed (OPENROUTESERVICE_APP database, all ORS services running). The page reads only from Snowflake; ORS routing functions are not currently called from this page.
 - `backload-matching` deployed (provides the FACT_FREIGHT_OFFERS projection pattern this skill builds on).
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` for at least one preset (`DIM_FLEET`, `FACT_FREIGHT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`). Newly-generated presets after this skill ships populate `DIM_PARTNERS` + `FACT_PARTNER_HISTORY` natively. For older presets, re-run a Data Studio job for that preset to seed them.
 - For route previews, `/api/fx/offer-route` is cache-first on `FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT`; Data Studio precomputes this cache for active presets.
@@ -85,15 +85,13 @@ If `DIM_PARTNERS` or `FACT_PARTNER_HISTORY` are empty, run a Data Studio job for
 snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_CONNECTION>
 ```
 
-This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `services/ors_control_app/server/lib/init.ts` and runs on every container start.
+This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/lib/init.ts` and runs on every container start.
 
-> **CRITICAL on a fresh `build-routing-solution` install — run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (build-routing-solution Step 6) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a Step 8 item in build-routing-solution, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
+> **CRITICAL on a fresh `install-fleet-apps` install - run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (install-fleet-apps engine boot) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a post-seed step in install-fleet-apps, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
 
-### Step 4: Rebuild and Redeploy ORS Control App (only for page source changes)
+### Step 4: Interactive page (retired host)
 
-> **Not required in the standard build-routing-solution flow.** The Freight Exchange page already ships in the control-app image (>= v1.1.78), so a fresh install only needs Step 3 (`bootstrap.sql`). Rebuild only when you have changed the page's React/server source.
-
-The page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`.
+> **The legacy Vite control app (`ors_control_app`) that hosted the Freight Exchange page has been removed from this repo, and the page was not ported to the current `fleet_sa_app`/`fleet_admin_app`.** Step 3's `bootstrap.sql` (plus the `fleet_admin_app` boot `init.ts`) still creates the full `MARKETPLACE.*` SQL/data layer, so the objects are queryable, but there is currently no bundled interactive page in the fleet apps. Take the page source from another repo if you need the UI.
 
 ### Step 5: Verify
 
@@ -130,11 +128,11 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX REFRESH;
 | C     | future | Saved searches, Snowflake Alerts -> SSE, posting (trucks + loads), chat, bids |
 | D     | future | OFFER_DOCS + AI_PARSE_DOCUMENT, full cabotage cross-border flags, round-trip toggle UI, tariff calculator |
 
-> **Pending:** UI surfaces for E1–E8 (React grid columns, drawers, map layers) are not yet wired into [FreightExchange.tsx](../build-routing-solution/openrouteservice_app/services/ors_control_app/src/components/FreightExchange.tsx). Server endpoints + SQL objects exist; UI integration is a follow-up.
+> **Pending:** UI surfaces for E1-E8 (React grid columns, drawers, map layers) were never wired into the page. The original `FreightExchange.tsx` component lived in the legacy Vite `ors_control_app`, which has been removed from this repo. Server-side SQL objects exist; UI integration would require re-homing the page in a fleet app.
 
-## Enrichment Bootstrap (E1–E8)
+## Enrichment Bootstrap (E1-E8)
 
-Phase E1–E8 MARKETPLACE objects (`FACT_OFFER_ROUTES`, `FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `OFFER_DRAFTS`, routed columns on `VW_OFFER_ENRICHED`, and `PROPOSAL_DECISIONS` discriminator columns) are created automatically on every `ors_control_app` container boot via `init.ts`. No manual SQL step is required for a normal deploy.
+Phase E1-E8 MARKETPLACE objects (`FACT_OFFER_ROUTES`, `FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `OFFER_DRAFTS`, routed columns on `VW_OFFER_ENRICHED`, and `PROPOSAL_DECISIONS` discriminator columns) are created automatically on every `fleet_admin_app` container boot via `init.ts`. No manual SQL step is required for a normal deploy.
 
 For greenfield audits or out-of-band rebuilds, run:
 
@@ -143,7 +141,7 @@ snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_
 snow sql -f .cortex/skills/freight-exchange/references/bootstrap-enrichment.sql -c <ACTIVE_CONNECTION>
 ```
 
-Then rebuild + redeploy the `ors_control_app` image per the `Control App Image Deployment` block in `AGENTS.md` so the `/api/fx/*` endpoints land.
+The `/api/fx/*` server endpoints were part of the retired Vite `ors_control_app` and are not present in the current fleet apps; only the SQL/data objects above are created on a normal deploy.
 
 ## Cleanup
 
@@ -167,20 +165,20 @@ DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
 
 -- The PROPOSAL_DECISIONS schema additions (SOURCE_PAGE, DECISION_TYPE,
--- BUNDLE_ID) are NOT dropped automatically — backload-matching also writes
+-- BUNDLE_ID) are NOT dropped automatically - backload-matching also writes
 -- to those columns now.
 ```
 
-> Note: the `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, and the new enrichment columns on `FACT_FREIGHT_OFFERS` are owned by `build-routing-solution` (Data Studio output) and shared. Use the `routing-solution-cleanup` skill if you also want to remove those rows.
+> Note: the `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, and the new enrichment columns on `FACT_FREIGHT_OFFERS` are owned by `install-fleet-apps` (Data Studio output) and shared. Use the `routing-solution-cleanup` skill if you also want to remove those rows.
 
 ## Out of Scope
 
 - Live Timocom / WTransnet / Teleroute / B2P / DAT / Truckstop API integration (synthetic only).
-- Reverse posting (free truck / load) — Phase C.
-- Chat / bidding / counter-offers — Phase C.
-- Saved searches + push notifications — Phase C.
-- Document parsing (CMR / POD / ADR certificates) — Phase D.
-- Cross-border / customs flags — Phase D.
-- Round-trip / multi-leg solver — Phase D.
-- Tariff calculator widget — Phase D.
-- i18n (multi-language UI) — out of scope per current product direction.
+- Reverse posting (free truck / load) - Phase C.
+- Chat / bidding / counter-offers - Phase C.
+- Saved searches + push notifications - Phase C.
+- Document parsing (CMR / POD / ADR certificates) - Phase D.
+- Cross-border / customs flags - Phase D.
+- Round-trip / multi-leg solver - Phase D.
+- Tariff calculator widget - Phase D.
+- i18n (multi-language UI) - out of scope per current product direction.

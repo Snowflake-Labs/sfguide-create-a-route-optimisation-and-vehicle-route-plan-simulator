@@ -1,0 +1,332 @@
+-- =============================================================================
+-- ROUTING_PLATFORM - engine-agnostic routing contract (Step 4B.2)
+-- =============================================================================
+-- Source of truth for the engine-agnostic routing layer. Consumers (synapse
+-- ROUTING_MCP verbs, ROUTING_TOOLS.TOOL_* procs, dashboards, agents) depend ONLY
+-- on ROUTING_PLATFORM.CONTRACT.*. The contract dispatches each call to a routing
+-- PROVIDER:
+--   * ors_internal  -> OPENROUTESERVICE_APP (ORS/VROOM SPCS engine, via _*_RAW)
+--   * ext_*          -> external HTTP engines via EXTERNAL ACCESS INTEGRATION
+--                       (stubbed/disabled today; see scaffold at the bottom)
+-- Provider is chosen per call: COALESCE(explicit provider, region default,
+-- 'ors_internal'). OPENROUTESERVICE_APP is reframed as "the ORS provider", not
+-- the routing API. Renaming OPENROUTESERVICE_APP -> a neutral DB is intentionally
+-- deferred; the contract owns the neutral surface.
+--
+-- Idempotent: safe to re-run. Requires roles FLEET_APP_USER/OPS/ADMIN to exist
+-- (see fleet_sa_app/app/role_binding.sql).
+-- =============================================================================
+
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"routing-platform"}}';
+
+CREATE DATABASE IF NOT EXISTS ROUTING_PLATFORM
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Engine-agnostic routing API. Consumers depend ONLY on this surface.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.CONTRACT  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Routing engine adapters + provider registry. ors_internal (live), external (stub).
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Engine-neutral region catalog + region->provider default map.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ADMIN     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Synapse routing MCP verbs (ROUTING_MCP) new home; OPENROUTESERVICE_APP.ROUTING kept as alias during cutover.
+CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.ROUTING   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- ===== Provider registry =====================================================
+CREATE TABLE IF NOT EXISTS ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY (
+  PROVIDER_ID VARCHAR NOT NULL PRIMARY KEY,
+  KIND        VARCHAR NOT NULL,            -- 'internal' | 'external'
+  ENABLED     BOOLEAN NOT NULL DEFAULT FALSE,
+  NOTES       VARCHAR,
+  UPDATED_AT  TIMESTAMP_NTZ DEFAULT SYSDATE()
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY t
+USING (
+  SELECT 'ors_internal' PROVIDER_ID, 'internal' KIND, TRUE  ENABLED, 'OpenRouteService + VROOM SPCS engine in OPENROUTESERVICE_APP (gateway).' NOTES
+  UNION ALL SELECT 'ext_mapbox','external', FALSE, 'Mapbox Directions/Matrix via External Access Integration. Stub - not yet implemented.'
+  UNION ALL SELECT 'ext_here',  'external', FALSE, 'HERE routing via External Access Integration. Stub - not yet implemented.'
+  UNION ALL SELECT 'ext_google','external', FALSE, 'Google Routes API via External Access Integration. Stub - not yet implemented.'
+) s ON t.PROVIDER_ID = s.PROVIDER_ID
+WHEN NOT MATCHED THEN INSERT (PROVIDER_ID, KIND, ENABLED, NOTES) VALUES (s.PROVIDER_ID, s.KIND, s.ENABLED, s.NOTES);
+
+-- ===== Region -> default provider (engine-neutral) ===========================
+CREATE TABLE IF NOT EXISTS ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP (
+  REGION              VARCHAR NOT NULL PRIMARY KEY,
+  DEFAULT_PROVIDER_ID VARCHAR NOT NULL,
+  UPDATED_AT          TIMESTAMP_NTZ DEFAULT SYSDATE()
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Seed every currently-deployed ORS region to ors_internal (no-op if already mapped).
+MERGE INTO ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP t
+USING (SELECT REGION FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE STATUS='DEPLOYED') s
+  ON UPPER(t.REGION) = UPPER(s.REGION)
+WHEN NOT MATCHED THEN INSERT (REGION, DEFAULT_PROVIDER_ID) VALUES (s.REGION, 'ors_internal');
+
+-- Provider resolver: explicit per-call provider wins, else region default, else global default.
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS STRING
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  COALESCE(
+    NULLIF(LOWER(TRIM(PROVIDER)), ''),
+    (SELECT rpm.DEFAULT_PROVIDER_ID FROM ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP rpm
+      WHERE UPPER(rpm.REGION) = UPPER(REGION)),
+    'ors_internal'
+  )
+$$;
+
+-- ===== PROVIDERS: ORS internal adapter (thin pass-throughs to the engine) =====
+-- The ONLY place that names the ORS engine. _*_RAW are ORS SPCS service functions.
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_DIRECTIONS_RAW(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE._DIRECTIONS_RAW(METHOD, LOCATIONS, REGION) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_ISOCHRONES_RAW(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(METHOD, LON, LAT, RANGE, REGION) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_OPTIMIZATION_RAW(CHALLENGE VARIANT, REGION VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(CHALLENGE, REGION) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_MATRIX_RAW(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE._MATRIX_RAW(METHOD, OPTIONS, REGION) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.ORS_STATUS_RAW(REGION VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE._ORS_STATUS_RAW(REGION) $$;
+
+-- External adapter stub: one entrypoint for every disabled external provider.
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED(OPERATION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  OBJECT_CONSTRUCT(
+    'status','error',
+    'code','PROVIDER_NOT_ENABLED',
+    'provider', PROVIDER,
+    'operation', OPERATION,
+    'message', 'External routing provider ''' || PROVIDER || ''' is registered but not enabled. ' ||
+               'Implement an EXTERNAL ACCESS INTEGRATION adapter in ROUTING_PLATFORM.PROVIDERS and enable it in PROVIDER_REGISTRY.'
+  )::VARIANT
+$$;
+
+-- ===== CONTRACT: scalar dispatchers (provider CASE over adapters) =============
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_DIRECTIONS(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
+    WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_DIRECTIONS_RAW(METHOD, LOCATIONS, REGION)
+    ELSE ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED('directions', ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER))
+  END
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_ISOCHRONES(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
+    WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_ISOCHRONES_RAW(METHOD, LON, LAT, RANGE, REGION)
+    ELSE ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED('isochrones', ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER))
+  END
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(CHALLENGE VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
+    WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_OPTIMIZATION_RAW(CHALLENGE, REGION)
+    ELSE ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED('optimization', ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER))
+  END
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_MATRIX(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
+    WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_MATRIX_RAW(METHOD, OPTIONS, REGION)
+    ELSE ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED('matrix', ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER))
+  END
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT._DISPATCH_STATUS(REGION VARCHAR, PROVIDER VARCHAR)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  CASE ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER)
+    WHEN 'ors_internal' THEN ROUTING_PLATFORM.PROVIDERS.ORS_STATUS_RAW(REGION)
+    ELSE ROUTING_PLATFORM.PROVIDERS.EXT_UNSUPPORTED('status', ROUTING_PLATFORM.CONTRACT.RESOLVE_PROVIDER(REGION, PROVIDER))
+  END
+$$;
+
+-- ===== CONTRACT: public typed primitives (provider arg + typed parsing) =======
+-- Canonical response contract: adapters MUST normalize to ORS GeoJSON-style shape.
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.DIRECTIONS(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  SELECT resp AS RESPONSE,
+         TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+         resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+         resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+  FROM (SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_DIRECTIONS(METHOD, LOCATIONS, REGION, PROVIDER) AS resp)
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ISOCHRONES(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  SELECT resp AS RESPONSE,
+         TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+  FROM (SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_ISOCHRONES(METHOD, LON, LAT, RANGE, REGION, PROVIDER) AS resp)
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ISOCHRONES_CLIPPED(METHOD VARCHAR, LON FLOAT, LAT FLOAT, RANGE INT, REGION VARCHAR, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  SELECT resp AS RESPONSE,
+         COALESCE(
+           ST_INTERSECTION(
+             TO_GEOGRAPHY(resp:features[0]:geometry),
+             (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+               WHERE rc.BOUNDARY IS NOT NULL
+                 AND (UPPER(rc.LOOKUP_NAME)=UPPER(REGION) OR UPPER(rc.REGION_KEY)=UPPER(REGION))
+               ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)
+           ),
+           TO_GEOGRAPHY(resp:features[0]:geometry)
+         ) AS GEOJSON
+  FROM (SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_ISOCHRONES(METHOD, LON, LAT, RANGE, REGION, PROVIDER) AS resp)
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.OPTIMIZATION(CHALLENGE VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  SELECT resp AS RESPONSE,
+         TO_GEOGRAPHY(OBJECT_CONSTRUCT('type','LineString','coordinates', f.value:geometry)) AS GEOJSON,
+         f.value:vehicle::INT AS VEHICLE,
+         f.value:duration::INT AS DURATION,
+         f.value:steps::VARIANT AS STEPS
+  FROM (SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(CHALLENGE, REGION, PROVIDER) AS resp),
+       LATERAL FLATTEN(input => resp:routes) f
+$$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.MATRIX(METHOD VARCHAR, OPTIONS VARIANT, REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ ROUTING_PLATFORM.CONTRACT._DISPATCH_MATRIX(METHOD, OPTIONS, REGION, PROVIDER) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS(REGION VARCHAR DEFAULT NULL, PROVIDER VARCHAR DEFAULT NULL)
+RETURNS VARIANT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ ROUTING_PLATFORM.CONTRACT._DISPATCH_STATUS(REGION, PROVIDER) $$;
+
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_FOR_POINT(LON FLOAT, LAT FLOAT)
+RETURNS OBJECT COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$ OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON, LAT) $$;
+
+-- Engine-neutral region-validity guard. Lets contract consumers (e.g. the synapse
+-- optimize_routes verb's validate hook) reject an unknown region up front instead
+-- of failing opaquely deep in the engine. NULL/empty -> TRUE so callers that omit
+-- region keep delegating to the active-region default. Bound to the contract so
+-- consumers never read OPENROUTESERVICE_APP.CORE.* directly (Tenet 1).
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_EXISTS(REGION VARCHAR)
+RETURNS BOOLEAN
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  REGION IS NULL
+  OR TRIM(REGION) = ''
+  OR EXISTS (
+    SELECT 1 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP m
+    WHERE UPPER(m.REGION) = UPPER(REGION) AND m.STATUS = 'DEPLOYED'
+  )
+$$;
+
+-- ===== ADMIN: engine-neutral region inventory + provider steering =============
+CREATE OR REPLACE VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT m.REGION,
+       om.DISPLAY_NAME,
+       om.STATUS                  AS ors_provisioning_status,
+       m.DEFAULT_PROVIDER_ID,
+       r.KIND                     AS provider_kind,
+       r.ENABLED                  AS provider_enabled,
+       m.UPDATED_AT
+FROM ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP m
+LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP om ON UPPER(om.REGION)=UPPER(m.REGION)
+LEFT JOIN ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY r ON r.PROVIDER_ID=m.DEFAULT_PROVIDER_ID;
+
+CREATE OR REPLACE PROCEDURE ROUTING_PLATFORM.ADMIN.SET_REGION_PROVIDER(P_REGION VARCHAR, P_PROVIDER VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  v_ok BOOLEAN;
+BEGIN
+  SELECT COUNT(*) > 0 INTO :v_ok
+    FROM ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY
+    WHERE PROVIDER_ID = :P_PROVIDER AND ENABLED = TRUE;
+  IF (NOT :v_ok) THEN
+    RETURN 'ERROR: provider ''' || :P_PROVIDER || ''' is not a registered, enabled provider.';
+  END IF;
+  MERGE INTO ROUTING_PLATFORM.ADMIN.REGION_PROVIDER_MAP t
+  USING (SELECT :P_REGION AS REGION, :P_PROVIDER AS PID) s
+    ON UPPER(t.REGION) = UPPER(s.REGION)
+  WHEN MATCHED THEN UPDATE SET t.DEFAULT_PROVIDER_ID = s.PID, t.UPDATED_AT = SYSDATE()
+  WHEN NOT MATCHED THEN INSERT (REGION, DEFAULT_PROVIDER_ID) VALUES (s.REGION, s.PID);
+  RETURN 'OK: ' || :P_REGION || ' -> ' || :P_PROVIDER;
+END;
+$$;
+
+-- ===== Grants (additive; roles from fleet_sa_app/app/role_binding.sql) ========
+GRANT USAGE ON DATABASE ROUTING_PLATFORM TO ROLE FLEET_APP_USER;
+GRANT USAGE ON DATABASE ROUTING_PLATFORM TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON DATABASE ROUTING_PLATFORM TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_USER;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.PROVIDERS TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.PROVIDERS TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.ADMIN     TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.ADMIN     TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.ROUTING   TO ROLE FLEET_APP_USER;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_USER;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT  TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA ROUTING_PLATFORM.PROVIDERS TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL TABLES IN SCHEMA ROUTING_PLATFORM.PROVIDERS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL TABLES IN SCHEMA ROUTING_PLATFORM.PROVIDERS TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ROUTING_PLATFORM.ADMIN TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL TABLES IN SCHEMA ROUTING_PLATFORM.ADMIN TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS TO ROLE FLEET_APP_USER;
+GRANT SELECT ON VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON PROCEDURE ROUTING_PLATFORM.ADMIN.SET_REGION_PROVIDER(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON PROCEDURE ROUTING_PLATFORM.ADMIN.SET_REGION_PROVIDER(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+-- =============================================================================
+-- FUTURE: external routing engine adapter scaffold (DISABLED)
+-- =============================================================================
+-- To add a live external engine (e.g. Mapbox), implement an adapter that calls
+-- the third-party HTTP API and normalizes the response to the canonical contract
+-- shape, then enable it in PROVIDER_REGISTRY and point a region at it via
+-- ADMIN.SET_REGION_PROVIDER. Sketch (uncomment + fill in account-specific values):
+--
+-- CREATE OR REPLACE NETWORK RULE ROUTING_PLATFORM.PROVIDERS.MAPBOX_NET_RULE
+--   MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = ('api.mapbox.com:443');
+-- CREATE OR REPLACE SECRET ROUTING_PLATFORM.PROVIDERS.MAPBOX_TOKEN
+--   TYPE = GENERIC_STRING SECRET_STRING = '<mapbox-access-token>';
+-- CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ROUTING_MAPBOX_EAI
+--   ALLOWED_NETWORK_RULES = (ROUTING_PLATFORM.PROVIDERS.MAPBOX_NET_RULE)
+--   ALLOWED_AUTHENTICATION_SECRETS = (ROUTING_PLATFORM.PROVIDERS.MAPBOX_TOKEN)
+--   ENABLED = TRUE;
+-- -- Python UDF (handler) that calls Mapbox and returns ORS-shaped GeoJSON VARIANT:
+-- CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.PROVIDERS.EXT_MAPBOX_DIRECTIONS_RAW(METHOD VARCHAR, LOCATIONS VARIANT, REGION VARCHAR)
+--   RETURNS VARIANT LANGUAGE PYTHON RUNTIME_VERSION=3.11 HANDLER='go'
+--   EXTERNAL_ACCESS_INTEGRATIONS = (ROUTING_MAPBOX_EAI)
+--   SECRETS = ('token' = ROUTING_PLATFORM.PROVIDERS.MAPBOX_TOKEN) PACKAGES=('requests') AS $py$ ... $py$;
+-- -- Then add a WHEN 'ext_mapbox' branch to each CONTRACT._DISPATCH_* and:
+-- UPDATE ROUTING_PLATFORM.PROVIDERS.PROVIDER_REGISTRY SET ENABLED=TRUE WHERE PROVIDER_ID='ext_mapbox';
+-- =============================================================================

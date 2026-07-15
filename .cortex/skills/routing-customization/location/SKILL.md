@@ -1,6 +1,6 @@
 ---
 name: location
-description: "Change the OpenRouteService map region by downloading new OSM data and updating service configuration. Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing ORS map region as part of customization workflow. Do NOT use for: standalone execution, reading current config, or changing routing profiles. Triggers: change location, change map, download map, new region."
+description: "Change the OpenRouteService map region by downloading new OSM data and updating service configuration. Subskill of routing-customization - must be invoked from the router, not independently. Use when: changing ORS map region as part of customization workflow. Do NOT use for: standalone execution, reading current config, or changing routing profiles. Triggers: change location, change map, download map, new region."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -68,7 +68,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
    ```
    - If map exists, ask user if they want to re-download
 
-2. **Run** the download script from `build-routing-solution/scripts/`:
+2. **Run** the download script from `install-fleet-apps/scripts/`:
    ```bash
    python download_map.py \
      "https://download.geofabrik.de/europe/<region>-latest.osm.pbf" \
@@ -110,7 +110,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 **Actions:**
 
-**Option A — Using WRITE_ORS_CONFIG (recommended):**
+**Option A - Using WRITE_ORS_CONFIG (recommended):**
 ```sql
 CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
     '<REGION_NAME>',
@@ -119,15 +119,15 @@ CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
 );
 ```
 
-**Option B — Manual editing (fallback):**
+**Option B - Manual editing (fallback):**
 
-1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`:
+1. **Edit** `.cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`
    - To: `source_file: /home/ors/files/<MAP_NAME>`
 
 2. **Upload** to stage:
    ```bash
-   snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ors-config.yml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated
@@ -138,7 +138,7 @@ CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
 
 **Actions:**
 
-1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml`:
+1. **Edit** `.cortex/skills/install-fleet-apps/openrouteservice_app/services/openrouteservice/openrouteservice.yaml`:
    
    - **Update all volume source paths** to new region:
      ```yaml
@@ -153,7 +153,7 @@ CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
 
 2. **Upload** specification:
    ```bash
-   snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_app.core.ors_spcs_stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/install-fleet-apps/openrouteservice_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_app.core.ors_spcs_stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Update** service with new specification:

@@ -1,8 +1,8 @@
 ---
 name: route-optimization
-description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after ORS app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
+description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after ORS app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-car), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -43,7 +43,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 |-------|---------|---------------------|
 | `dwell-analysis` | Asset Velocity page | Page renders a friendly empty state pointing the user to deploy `dwell-analysis`. The core Route Optimizer (VRP) keeps working. |
 
-## Asset Velocity (Non-Moving Trailer Detection & Action Engine)
+## Asset Velocity (Non-Moving Vehicle Detection & Action Engine)
 
 This skill ships a second React page in the control app, **Asset Velocity**, that materialises an industry-standard ghost-trailer detection workflow. It is fully additive - the existing Route Optimizer (VRP) page is untouched.
 
@@ -51,10 +51,10 @@ It reuses the dwell-analysis Dynamic Tables (no new DTs) and adds four thin view
 
 | View | Purpose |
 |------|---------|
-| `VW_IDLE_TRAILERS` | Latest dwell session per HGV, with idle duration metrics, deterministic dispatcher mapping, and an exception filter that drops `MAINTENANCE` statuses and `OUTLIER` driver profiles. |
+| `VW_IDLE_VEHICLES` | Latest dwell session per HGV, with idle duration metrics, deterministic dispatcher mapping, and an exception filter that drops `MAINTENANCE` statuses and `OUTLIER` driver profiles. |
 | `VW_LANE_DEMAND` | Net outbound trips per terminal over the most recent 30 days of `FACT_TRIPS`. High `DEMAND_SCORE` = trailer-short terminal. |
-| `VW_FLEET_HGV_PROFILE` | (v1.1) Resilient HGV-attribute view (subtype, weight, height, length, axleload, hazmat). Coalesces against deterministic defaults so the page works even after Data Studio regenerates `DIM_FLEET`. |
-| `VW_TRAILER_COST_OF_IDLENESS` | Joins `VW_IDLE_TRAILERS` with `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` and `CONFIG.RENTAL_CAPTURE_RATE` to compute cost-of-idleness, projected savings, and severity bucket. (v1.1) Also exposes per-trailer HGV attrs and CONFIG.MAX_REPOSITION_MINUTES / CONFIG.AVOID_FEATURES so the React page can build trailer-specific ORS profile_params. |
+| `VW_FLEET_VEHICLE_PROFILE` | (v1.1) Resilient HGV-attribute view (subtype, weight, height, length, axleload, hazmat). Coalesces against deterministic defaults so the page works even after Data Studio regenerates `DIM_FLEET`. |
+| `VW_VEHICLE_COST_OF_IDLENESS` | Joins `VW_IDLE_VEHICLES` with `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` and `CONFIG.RENTAL_CAPTURE_RATE` to compute cost-of-idleness, projected savings, and severity bucket. (v1.1) Also exposes per-vehicle profile attrs and CONFIG.MAX_REPOSITION_MINUTES / CONFIG.AVOID_FEATURES so the React page can build vehicle-specific ORS profile_params. |
 
 Full use case framing, cross-vertical applicability, and risk mitigations live in [references/asset-velocity-use-case.md](references/asset-velocity-use-case.md).
 
@@ -72,12 +72,12 @@ The Asset Velocity page now uses real ORS + VROOM features instead of Euclidean 
 
 Known limitations (synthetic data):
 - The wrapped `ISOCHRONES(...)` UDF does not yet pass `profile_params` through, so the polygon is profile-only (the matrix gate is the authoritative filter).
-- `DIM_POIS` has no `OPEN_FROM/OPEN_TO`, so terminal time windows default to 06:00–22:00 UTC.
+- `DIM_POIS` has no `OPEN_FROM/OPEN_TO`, so terminal time windows default to 06:00-22:00 UTC.
 - `LANE_PROFILE` does not exist on terminals; skill-mismatch heuristics treat `RESTAURANT` POIs as REEFER-required and everything else as DRY-friendly.
 
 ### Deploy the Asset Velocity views
 
-> **This is a REQUIRED step of the standard workflow** (see **Step 5b** below), not an optional aside. Without it the Asset Velocity page in the control-app sidebar renders empty. It is preset-agnostic: `VW_IDLE_TRAILERS` pulls `VEHICLE_TYPE` from `ROUTE_OPTIMIZATION.CONFIG`, so on the default SanFrancisco/ebike install it surfaces idle **ebikes** (no HGV data required).
+> **This is a REQUIRED step of the standard workflow** (see **Step 5b** below), not an optional aside. Without it the Asset Velocity page in the control-app sidebar renders empty. It is preset-agnostic: `VW_IDLE_VEHICLES` pulls `VEHICLE_TYPE` from `ROUTE_OPTIMIZATION.CONFIG`, so on the default SanFrancisco/ebike install it surfaces idle **ebikes** (no HGV data required).
 
 Prerequisites: `dwell-analysis` skill deployed (the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time).
 
@@ -88,11 +88,11 @@ snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sq
 
 Verify:
 ```sql
-SELECT 'VW_IDLE_TRAILERS' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+SELECT 'VW_IDLE_VEHICLES' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
 UNION ALL
 SELECT 'VW_LANE_DEMAND',         COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
 UNION ALL
-SELECT 'VW_TRAILER_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+SELECT 'VW_VEHICLE_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS;
 ```
 
 The page will gracefully render an empty state with deployment instructions if `DWELL_ANALYSIS.DT_DWELL_ENRICHED` is missing.
@@ -116,7 +116,7 @@ The page will gracefully render an empty state with deployment instructions if `
 
 ## Execution Rules
 
-1. Never use bulk `sed` or `replace_all` on `.ipynb` files — notebooks are JSON with structured cell arrays. Use targeted replacements on specific cells identified by name.
+1. Never use bulk `sed` or `replace_all` on `.ipynb` files - notebooks are JSON with structured cell arrays. Use targeted replacements on specific cells identified by name.
 2. Replace longer phrases before shorter ones when editing notebook prompts to avoid garbled text.
 3. Replace complete prompt strings, not individual words.
 4. Always validate JSON validity of modified `.ipynb` files before uploading.
@@ -208,11 +208,11 @@ CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
 
 ### Step 5b: Deploy Asset Velocity Page Views (required for the Asset Velocity page)
 
-**Goal:** Create the Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_TRAILER_COST_OF_IDLENESS`, `VW_FLEET_HGV_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
+**Goal:** Create the Asset Velocity views (`VW_IDLE_VEHICLES`, `VW_LANE_DEMAND`, `VW_VEHICLE_COST_OF_IDLENESS`, `VW_FLEET_VEHICLE_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic - shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
 
-**Dependency:** `dwell-analysis` must be deployed first — the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
+**Dependency:** `dwell-analysis` must be deployed first - the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
 
-> **Runtime owner:** the control-app `init.ts` is the source of truth for these four views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) and `CREATE OR REPLACE`s them on every container boot. The `.sql` files below are the keep-in-sync source and the manual-repair path (run them when a boot recreate failed silently, e.g. `DT_DWELL_ENRICHED` was absent at boot). The active-preset pointer they filter on lives in `ROUTE_OPTIMIZATION.CONFIG`, seeded by `datasets/load-seed-data.sql` and by this skill's `seed-data.sql`.
+> **Runtime owner:** the control-app `init.ts` is the source of truth for these four views (`VW_IDLE_VEHICLES`, `VW_LANE_DEMAND`, `VW_FLEET_VEHICLE_PROFILE`, `VW_VEHICLE_COST_OF_IDLENESS`) and `CREATE OR REPLACE`s them on every container boot. The `.sql` files below are the keep-in-sync source and the manual-repair path (run them when a boot recreate failed silently, e.g. `DT_DWELL_ENRICHED` was absent at boot). The active-preset pointer they filter on lives in `ROUTE_OPTIMIZATION.CONFIG`, seeded by `datasets/load-seed-data.sql` and by this skill's `seed-data.sql`.
 
 ```bash
 snow sql -f .cortex/skills/route-optimization/references/extend-dim-fleet-hgv.sql -c <connection>
@@ -221,9 +221,9 @@ snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sq
 
 Verify (all should return > 0 on a seeded install):
 ```sql
-SELECT 'VW_IDLE_TRAILERS' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+SELECT 'VW_IDLE_VEHICLES' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
 UNION ALL SELECT 'VW_LANE_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
-UNION ALL SELECT 'VW_TRAILER_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+UNION ALL SELECT 'VW_VEHICLE_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS;
 ```
 
 **Output:** Asset Velocity page views created and populated for the active preset.
@@ -285,7 +285,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | PB | VARCHAR | RouteOptimization |
 | PC | VARCHAR | RouteOptimization |
 
-### VW_IDLE_TRAILERS (Asset Velocity)
+### VW_IDLE_VEHICLES (Asset Velocity)
 | Column | Type | Used By |
 |--------|------|---------|
 | VEHICLE_ID | VARCHAR | AssetVelocity (trailer id) |
@@ -305,7 +305,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | TERMINAL_LAT / TERMINAL_LNG | FLOAT | AssetVelocity (deck.gl + VRP) |
 | NET_OUTBOUND_TRIPS / DEMAND_SCORE | NUMBER | AssetVelocity (sort + VRP priority) |
 
-### VW_TRAILER_COST_OF_IDLENESS (Asset Velocity)
+### VW_VEHICLE_COST_OF_IDLENESS (Asset Velocity)
 | Column | Type | Used By |
 |--------|------|---------|
 | COST_OF_IDLENESS_USD | NUMBER | AssetVelocity (KPI + sort) |
@@ -372,10 +372,10 @@ To remove all objects created by this skill:
 
 ```sql
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;

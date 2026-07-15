@@ -1,4 +1,4 @@
-fleet-intelligence-food-delivery:
+fleet-intelligence-ebike:
   ignore_prefixes:
     - "assets/react-app/"
     - "assets/streamlit/pages/"

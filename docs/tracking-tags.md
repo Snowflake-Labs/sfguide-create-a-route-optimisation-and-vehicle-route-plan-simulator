@@ -74,9 +74,9 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 
 ## Per-Skill Object Inventory
 
-### build-routing-solution
+### install-fleet-apps
 
-**Tracking name:** `oss-build-routing-solution-in-snowflake`
+**Tracking name:** `oss-install-fleet-apps`
 
 | Object | Type | Location |
 |--------|------|----------|
@@ -92,42 +92,42 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 | `FLEET_INTELLIGENCE` | Database | Account |
 | `FLEET_INTELLIGENCE.CORE` | Schema | Database |
 
-### fleet-intelligence-taxis
+### fleet-intelligence-car
 
-**Tracking name:** `oss-fleet-intelligence-taxis`
-
-| Object | Type | Location |
-|--------|------|----------|
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS` | Schema | Database |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE` | Stage | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY` | View | Schema |
-
-### fleet-intelligence-food-delivery
-
-**Tracking name:** `oss-fleet-intelligence-food-delivery`
+**Tracking name:** `oss-fleet-intelligence-car`
 
 | Object | Type | Location |
 |--------|------|----------|
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY` | Schema | Database |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG` | Table | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES` | View | Schema |
-| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR` | Schema | Database |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.STREAMLIT_STAGE` | Stage | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.CONFIG` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.VEHICLE_LOCATIONS` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.VEHICLE_DRIVERS` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.VEHICLE_LOCATIONS_NUMBERED` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_TRIPS` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_TRIPS_WITH_COORDS` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_ROUTES` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_ROUTES_PARSED` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_ROUTE_GEOMETRIES` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_LOCATIONS` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.DRIVER_LOCATIONS_V` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.TRIPS_ASSIGNED_TO_DRIVERS` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.ROUTE_NAMES` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.TRIP_ROUTE_PLAN` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.TRIP_SUMMARY` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.VW_DRIVER_LOCATIONS` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.VW_TRIP_SUMMARY` | View | Schema |
+
+### fleet-intelligence-ebike
+
+**Tracking name:** `oss-fleet-intelligence-ebike`
+
+| Object | Type | Location |
+|--------|------|----------|
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE` | Schema | Database |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG` | Table | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.TRIPS` | View | Schema |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.ORIGINS_ENRICHED` | View | Schema |
 
 ### retail-catchment
 
@@ -135,12 +135,12 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 
 | Object | Type | Location |
 |--------|------|----------|
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT` | Schema | Database |
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT.STREAMLIT_STAGE` | Stage | Schema |
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS` | Table | Schema |
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE` | Table | Schema |
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES` | Table | Schema |
-| `FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG` | Table | Schema |
+| `FLEET_INTELLIGENCE.CATCHMENT` | Schema | Database |
+| `FLEET_INTELLIGENCE.CATCHMENT.STREAMLIT_STAGE` | Stage | Schema |
+| `FLEET_INTELLIGENCE.CATCHMENT.POIS` | Table | Schema |
+| `FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE` | Table | Schema |
+| `FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES` | Table | Schema |
+| `FLEET_INTELLIGENCE.CATCHMENT.REGION_CONFIG` | Table | Schema |
 
 ### route-deviation
 
@@ -206,11 +206,10 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 
 | Object | Type | Location |
 |--------|------|----------|
-| `FLEET_INTELLIGENCE.ROUTING_AGENT` | Schema | Database |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT` | Cortex Agent | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS` | Schema | Database |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS` | Procedure | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE` | Procedure | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION` | Procedure | Schema |
 
 ### travel-time-matrix
 
@@ -451,15 +450,15 @@ The ORS Control App (React UI running on SPCS) executes SQL queries against Snow
 | Local (development) | `snowSqlLocal()` | Set | Prepended via `ALTER SESSION SET query_tag` in SQL file |
 | SPCS (production) | `snowSqlSpcs()` | Set | Prepended via multi-statement SQL API call |
 
-Both modes set the tracking name `oss-build-routing-solution`.
+Both modes set the tracking name `oss-install-fleet-apps`.
 
 ## Skill Tracking Name Reference
 
 | Skill | Tracking Name |
 |-------|---------------|
-| build-routing-solution | `oss-build-routing-solution-in-snowflake` |
-| fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` |
-| fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` |
+| install-fleet-apps | `oss-install-fleet-apps` |
+| fleet-intelligence-car | `oss-fleet-intelligence-car` |
+| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` |
 | retail-catchment | `oss-retail-catchment` |
 | route-deviation | `oss-route-deviation` |
 | route-optimization | `oss-route-optimization` |
@@ -467,7 +466,6 @@ Both modes set the tracking name `oss-build-routing-solution`.
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` |
 | travel-time-matrix | `oss-travel-time-matrix` |
 | routing-solution-cleanup | `oss-routing-solution-cleanup` |
-| ORS Control App | `oss-build-routing-solution` |
 
 ## Known Limitations
 

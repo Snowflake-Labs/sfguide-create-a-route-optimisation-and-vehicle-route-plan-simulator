@@ -1,0 +1,42 @@
+{
+  "name": "@snowflake/data-apps-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
+    "@deck.gl/aggregation-layers": "~9.2.11",
+    "@deck.gl/core": "~9.2.11",
+    "@deck.gl/extensions": "~9.2.11",
+    "@deck.gl/geo-layers": "~9.2.11",
+    "@deck.gl/layers": "~9.2.11",
+    "@deck.gl/mesh-layers": "~9.2.11",
+    "@deck.gl/react": "~9.2.11",
+    "@deck.gl/widgets": "~9.2.11",
+    "h3-js": "^4.1.0",
+    "js-yaml": "^4.1.1",
+    "next": "^15.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.0",
+    "recharts": "^2.15.4",
+    "remark-gfm": "^4.0.0",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.3.0",
+    "typescript": "^5.7.0"
+  }
+}

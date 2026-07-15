@@ -10,14 +10,33 @@
 --        datasets/synthetic_ebikes/ -c fleet_test_evals --recursive
 --------------------------------------------------------------------------------
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
-SET JOB_ID = '59e656d4-6801-46fc-9209-137f909fbe31';
+-- JOB_ID to export. Defaults to the currently ACTIVE Data Studio dataset for the
+-- target region/vehicle (the dataset you just generated end-to-end and
+-- validated as SEED_READY). To pin a specific dataset instead, replace the
+-- derivation below with: SET JOB_ID = '<dataset-id>';
+SET SEED_REGION = 'SanFrancisco';
+SET SEED_VEHICLE_TYPE = 'ebike';
+SET JOB_ID = (
+  SELECT DATASET_ID
+  FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+  WHERE IS_ACTIVE = TRUE
+    AND REGION = $SEED_REGION
+    AND VEHICLE_TYPE = $SEED_VEHICLE_TYPE
+  ORDER BY CREATED_AT DESC
+  LIMIT 1
+);
+
+-- Sanity: surface the resolved dataset + its seed-readiness note before export.
+SELECT DATASET_ID, REGION, VEHICLE_TYPE, LABEL, NOTES, ROW_COUNTS
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+WHERE DATASET_ID = $JOB_ID;
 
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- FACT_VEHICLE_TELEMETRY
@@ -95,9 +114,9 @@ HEADER = TRUE
 OVERWRITE = TRUE;
 
 --------------------------------------------------------------------------------
--- FACT_FREIGHT_OFFERS
+-- FACT_OFFERS
 --------------------------------------------------------------------------------
-COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_freight_offers/
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offers/
 FROM (
   SELECT
     OFFER_ID, REGION, VEHICLE_TYPE, SOURCE,
@@ -107,8 +126,8 @@ FROM (
     ST_ASWKT(DROPOFF_GEOM) AS DROPOFF_GEOM_WKT,
     PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_USD, HAZMAT,
     LISTING_TEXT, POSTED_AT, JOB_ID,
-    EQUIPMENT, ADR_CLASS, LDM, DISTANCE_KM, PRICE_PER_KM_USD, PARTNER_ID, STATUS
-  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+    VEHICLE_EQUIPMENT, DISTANCE_KM, PRICE_PER_KM_USD, PARTNER_ID, STATUS
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
   WHERE JOB_ID = $JOB_ID
 )
 FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
@@ -208,6 +227,84 @@ COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offer
 FROM (
   SELECT *
   FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_ANCHORS (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_anchors/
+FROM (
+  SELECT
+    ANCHOR_ID, REGION, ANCHOR_TYPE, NAME, CATEGORY, LAT, LNG,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    ADDRESS, CITY, STATE, POSTCODE, SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- FACT_HAZARD_ZONES (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_hazard_zones/
+FROM (
+  SELECT
+    ZONE_ID, REGION, STATE, COUNTY, FIPS, HAZARD_TYPE, RISK_SCORE, RISK_RATING, RISK_LEVEL,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_AREA_DEMOGRAPHICS (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_area_demographics/
+FROM (
+  SELECT
+    AREA_ID, REGION, AREA_TYPE, STATE_FIPS, COUNTY_FIPS, LAT, LNG,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    TOTAL_POPULATION, MEDIAN_AGE, MEDIAN_HOUSEHOLD_INCOME,
+    POP_ELDERLY, POP_CHILDREN, POPULATION_DENSITY, SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_DEMAND_CATALOG (universal-generation; no GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_demand_catalog/
+FROM (
+  SELECT *
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_PARTICIPANTS (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_participants/
+FROM (
+  SELECT
+    PARTICIPANT_ID, REGION, LAT, LNG,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    ADDRESS, CITY, STATE, POSTCODE, NEAREST_ANCHOR_ID, SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS
   WHERE JOB_ID = $JOB_ID
 )
 FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)

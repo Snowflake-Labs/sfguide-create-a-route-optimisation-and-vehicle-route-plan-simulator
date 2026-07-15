@@ -21,11 +21,27 @@ def run(skills_root: str, overrides: dict | None = None) -> list[dict]:
 
 
 def _collect_sql(skill_dir: Path) -> list[tuple[str, str]]:
+    # Skip generated/gitignored build artifacts (compiled output, broken symlinks,
+    # vendored deps). These are never authored skill SQL and can crash read_text.
+    skip_dirs = {"node_modules", ".next", "output", "dist", "dist-server", "__pycache__", ".turbo", ".git"}
+
+    def _read(path: Path) -> str | None:
+        if skip_dirs & set(path.parts):
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return None
+
     texts = []
     for sql_file in skill_dir.rglob("*.sql"):
-        texts.append((str(sql_file.relative_to(skill_dir)), sql_file.read_text(encoding="utf-8")))
+        content = _read(sql_file)
+        if content is not None:
+            texts.append((str(sql_file.relative_to(skill_dir)), content))
     for md_file in skill_dir.rglob("*.md"):
-        content = md_file.read_text(encoding="utf-8")
+        content = _read(md_file)
+        if content is None:
+            continue
         rel = str(md_file.relative_to(skill_dir))
         for m in re.finditer(r"```sql\s*\n(.*?)```", content, re.DOTALL | re.IGNORECASE):
             texts.append((f"{rel}:sql-block", m.group(1)))

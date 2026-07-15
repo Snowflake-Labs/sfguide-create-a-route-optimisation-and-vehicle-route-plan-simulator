@@ -1,0 +1,19 @@
+{
+  "name": "fleet-ops-tools",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "materialize": "synapse materialize"
+  },
+  "dependencies": {
+    "@snowflake/synapse": "file:../vendor/synapse"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

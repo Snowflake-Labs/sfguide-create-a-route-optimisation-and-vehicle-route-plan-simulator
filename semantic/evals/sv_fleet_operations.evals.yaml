@@ -1,0 +1,83 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+# Gold SQL = physical base-table SQL (against the active-dataset V_*_CURRENT views).
+# sv_sql  = hand-written SEMANTIC_VIEW() equivalent.
+# Output column aliases match the SV logical metric names so the comparator can align.
+evals:
+  - question: "What is the total distance driven for each region?"
+    category: group_by
+    gold_sql: |
+      SELECT f.REGION AS REGION, SUM(t.DISTANCE_KM) AS TOTAL_DISTANCE_KM
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = t.VEHICLE_ID
+      GROUP BY 1 ORDER BY TOTAL_DISTANCE_KM DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        DIMENSIONS fleet.region METRICS trips.total_distance_km
+      ) ORDER BY total_distance_km DESC
+
+  - question: "What is the detour rate percentage for each vehicle type?"
+    category: group_by
+    gold_sql: |
+      SELECT f.VEHICLE_TYPE AS VEHICLE_TYPE,
+             DIV0(COUNT_IF(t.IS_DETOUR), COUNT(*)) * 100 AS DETOUR_RATE_PCT
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = t.VEHICLE_ID
+      GROUP BY 1 ORDER BY DETOUR_RATE_PCT DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        DIMENSIONS fleet.vehicle_type METRICS trips.detour_rate_pct
+      ) ORDER BY detour_rate_pct DESC
+
+  - question: "What is the average GPS speed for each driver profile?"
+    category: group_by
+    gold_sql: |
+      SELECT f.DRIVER_PROFILE AS DRIVER_PROFILE, AVG(te.SPEED_KMH) AS AVG_SPEED_KMH
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT te
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = te.VEHICLE_ID
+      GROUP BY 1 ORDER BY AVG_SPEED_KMH DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        DIMENSIONS fleet.driver_profile METRICS telemetry.avg_speed_kmh
+      ) ORDER BY avg_speed_kmh DESC
+
+  - question: "How many trips were there in Germany?"
+    category: filtered_aggregation
+    gold_sql: |
+      SELECT COUNT(DISTINCT t.TRIP_ID) AS TOTAL_TRIPS
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = t.VEHICLE_ID
+      WHERE f.REGION = 'Germany'
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        METRICS trips.total_trips WHERE fleet.region = 'Germany'
+      )
+
+  - question: "How many scheduled trips are there for each region?"
+    category: group_by
+    gold_sql: |
+      SELECT f.REGION AS REGION, COUNT(DISTINCT s.SCHEDULE_ID) AS TOTAL_SCHEDULED_TRIPS
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT s
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = s.VEHICLE_ID
+      GROUP BY 1 ORDER BY TOTAL_SCHEDULED_TRIPS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        DIMENSIONS fleet.region METRICS schedule.total_scheduled_trips
+      ) ORDER BY total_scheduled_trips DESC
+
+  - question: "What is the maximum speed recorded for each vehicle type?"
+    category: group_by
+    gold_sql: |
+      SELECT f.VEHICLE_TYPE AS VEHICLE_TYPE, MAX(te.SPEED_KMH) AS MAX_SPEED_KMH
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT te
+      JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f ON f.VEHICLE_ID = te.VEHICLE_ID
+      GROUP BY 1 ORDER BY MAX_SPEED_KMH DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+        DIMENSIONS fleet.vehicle_type METRICS telemetry.max_speed_kmh
+      ) ORDER BY max_speed_kmh DESC

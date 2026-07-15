@@ -1,9 +1,9 @@
 /*
- * seed-data.sql — Route Optimization Demo
+ * seed-data.sql - Route Optimization Demo
  *
  * Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) and the
  * SEED_ROUTE_OPTIMIZATION_REGION procedure now live inside
- * build-routing-solution (app/modules/15_route_optimization_seed.sql) so
+ * install-fleet-apps (openrouteservice_app/app/modules/15_route_optimization_seed.sql) so
  * they are always present BEFORE any region is provisioned via
  * PROVISION_REGION_WRAPPER. This file is now responsible only for:
  *   1. Seeding the configured demo region (PLACES, LOOKUP, JOB_TEMPLATE,
@@ -27,7 +27,7 @@ SET REGION_NAME = 'SanFrancisco';
 
 --------------------------------------------------------------------
 -- WAREHOUSE + NOTEBOOK STAGE
--- (Database, schema, and tables are created by build-routing-solution
+-- (Database, schema, and tables are created by install-fleet-apps
 -- module 15. Re-creating them here is unnecessary and would just no-op.)
 --------------------------------------------------------------------
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS

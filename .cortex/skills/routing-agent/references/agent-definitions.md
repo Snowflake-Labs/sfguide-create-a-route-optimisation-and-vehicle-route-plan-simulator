@@ -5,12 +5,11 @@ SQL and Python definitions for the OpenRouteService Routing Agent.
 > **Note:** The canonical, deployable definitions live in
 > [`deploy-agent.sql`](deploy-agent.sql). This document captures the core
 > tools (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION) and the
-> base agent spec for reference. Three additional pharma-specific tools
-> (`TOOL_SUPPLY_CHAIN`, `TOOL_PHARMA_OPTIMIZATION`, `TOOL_PHARMA_CATCHMENT`)
-> are also defined in `deploy-agent.sql` and are wired into the same
-> `ROUTING_AGENT` Cortex Agent. They require the
+> base agent spec for reference. Three additional config-driven demo tools
+> (`TOOL_NETWORK_OPTIMIZATION`, `TOOL_DELIVERY_OPTIMIZATION`, `TOOL_CATCHMENT`)
+> are also defined in `deploy-agent.sql`. They require the
 > [`setup-agent-playground`](../../setup-agent-playground/SKILL.md) skill
-> to have run for the SF demo data tables to exist.
+> to have run for the demo data tables to exist.
 
 ---
 
@@ -26,7 +25,7 @@ silent ORS RouteNotFound.
 See [`deploy-agent.sql`](./deploy-agent.sql) for the canonical implementation.
 
 ```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
@@ -113,7 +112,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -123,7 +122,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHA
 Wraps ORS ISOCHRONES with AI geocoding for natural language location input.
 
 ```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -202,7 +201,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -212,7 +211,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER,
 Wraps ORS OPTIMIZATION with AI geocoding for multi-stop delivery routing (Python).
 
 ```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -348,14 +347,21 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
 
-## CREATE AGENT Specification
+## CREATE AGENT Specification (RETIRED - historical reference only)
 
-Creates the Cortex Agent with tool bindings to the three stored procedures.
+> **RETIRED:** The standalone `ROUTING_AGENT` Cortex Agent is no longer created.
+> The app-level `FLEET_AGENT` (created by `install-fleet-apps`) attaches
+> `OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP`, whose verbs wrap the relocated
+> `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` procedures. `deploy-agent.sql` deploys
+> only the procedures. The spec below is kept for historical reference of the
+> tool-binding shape; it is NOT executed.
+
+The (former) Cortex Agent bound to the routing stored procedures.
 
 ```sql
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
@@ -474,17 +480,17 @@ tools:
 tool_resources:
   tool_directions:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_isochrone:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;

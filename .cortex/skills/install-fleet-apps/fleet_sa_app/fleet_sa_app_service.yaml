@@ -1,0 +1,43 @@
+# Fleet Intelligence SA host service spec.
+# The app bundle (app-config.json / app-views.json) is mounted from a stage so
+# Ops can edit views/config and restart the service WITHOUT rebuilding the image
+# (tier-B config-extensibility). The agent runs in agent-object mode against
+# FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT, which exposes OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP.
+#
+# EXTERNAL ACCESS: the map basemap proxy (/api/tiles -> *.basemaps.cartocdn.com)
+# requires the service to have EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI).
+# This is a SERVICE property, NOT part of this spec body; deploy_fleet_sa_app.sh
+# sets it on every ALTER SERVICE. Without it, /api/tiles returns 502 and maps
+# render route geometry but no basemap.
+spec:
+  containers:
+    - name: fleet-sa-app
+      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.62
+      env:
+        HOSTNAME: "0.0.0.0"   # override SPCS pod hostname so Next standalone binds to all interfaces
+        APP_CONFIG: "/app-config/app-config.json"
+        APP_VIEWS_CONFIG: "/app-config/app-views.json"
+        AGENT_MODE: "agent-object"
+        AGENT_DATABASE: "FLEET_INTELLIGENCE"
+        AGENT_SCHEMA: "SYNAPSE_USER"
+        AGENT_NAME: "FLEET_AGENT"
+        SNOWFLAKE_WAREHOUSE: "MY_WH"
+        SNOWFLAKE_ROLE: "ACCOUNTADMIN"
+        NODE_ENV: "production"
+      volumeMounts:
+        - name: appconfig
+          mountPath: /app-config
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
+  endpoints:
+    - name: fleet-sa-app
+      port: 3000
+      public: true
+  volumes:
+    - name: appconfig
+      source: "@FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE/config"

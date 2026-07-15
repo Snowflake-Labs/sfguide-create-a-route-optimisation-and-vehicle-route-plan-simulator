@@ -1,4 +1,4 @@
-# Build Routing Solution — Execution Log
+# Build Routing Solution - Execution Log
 **Date:** 2026-04-14 10:43 UTC
 **Connection:** fleet_test_evals (wgb26798, ACCOUNTADMIN)
 **Container Runtime:** Docker 29.3.1
@@ -11,12 +11,12 @@
 - **Step:** 5 (Build and Push)
 - **What happened:** Pushed all 5 images in parallel. Docker push for ors_control_app showed output with carriage returns but when listing images, only 4 appeared. Had to re-push ors_control_app separately.
 - **Root cause:** Docker push progress output uses carriage returns that are invisible in terminal capture. The push likely didn't finish despite terminal appearing idle.
-- **Skill already warns:** Yes — "Docker push output uses carriage returns that may be invisible when pushing in parallel. Always confirm all 5 images are present."
+- **Skill already warns:** Yes - "Docker push output uses carriage returns that may be invisible when pushing in parallel. Always confirm all 5 images are present."
 - **Suggestion:** The skill's warning is correct. Consider adding a mandatory serial verification after each parallel push completes, or suggesting serial pushes to avoid this.
 
 ### 2. FLEET_INTELLIGENCE.CORE schema creation failed on first attempt
 - **Severity:** Low
-- **Step:** 6 (Deploy Native App — Data Studio databases)
+- **Step:** 6 (Deploy Native App - Data Studio databases)
 - **What happened:** Attempted to create `FLEET_INTELLIGENCE.CORE` schema before creating the `FLEET_INTELLIGENCE` database. Got error: `Database 'FLEET_INTELLIGENCE' does not exist or not authorized.`
 - **Root cause:** The SKILL.md lists the CREATE DATABASE and CREATE SCHEMA statements together, but I issued them in the wrong order (schema before database) when batching parallel SQL calls.
 - **Suggestion:** The SKILL.md is correct (DB comes first). This is agent error, not skill friction. However, the skill could note that the database MUST exist before the schema.
@@ -32,7 +32,7 @@
 - **Severity:** Info
 - **Step:** 9e, 9f
 - **What happened:** Both scripts query large Overture Maps datasets (PLACE, ADDRESS tables). REGIONAL_ADDRESSES alone loaded 2.8M rows.
-- **Root cause:** Expected — querying marketplace datasets with large bounding boxes.
+- **Root cause:** Expected - querying marketplace datasets with large bounding boxes.
 - **Suggestion:** Already documented in retail-catchment SKILL.md. No change needed.
 
 ## Summary

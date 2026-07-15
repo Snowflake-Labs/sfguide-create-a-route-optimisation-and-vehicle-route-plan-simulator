@@ -1,0 +1,28 @@
+{
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "analyst",
+        "description": "Query and analyze the app's data using natural language."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "data_to_chart",
+        "name": "data_to_chart",
+        "description": "Generate visualizations from query results."
+      }
+    }
+  ],
+  "toolResources": {
+    "analyst": {
+      "semantic_view": "DATABASE.SCHEMA.SEMANTIC_VIEW_NAME",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "COMPUTE_WH",
+        "query_timeout": 60
+      }
+    }
+  }
+}

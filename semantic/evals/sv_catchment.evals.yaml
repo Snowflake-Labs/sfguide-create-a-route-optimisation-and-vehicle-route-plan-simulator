@@ -1,0 +1,47 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+evals:
+  - question: "How many POIs are there for each category?"
+    category: group_by
+    gold_sql: |
+      SELECT BASIC_CATEGORY AS BASIC_CATEGORY, COUNT(DISTINCT POI_ID) AS TOTAL_POIS
+      FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+      GROUP BY 1 ORDER BY TOTAL_POIS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+        DIMENSIONS pois.basic_category METRICS pois.total_pois
+      ) ORDER BY total_pois DESC
+
+  - question: "How many POIs are there for each city?"
+    category: group_by
+    gold_sql: |
+      SELECT CITY AS CITY, COUNT(DISTINCT POI_ID) AS TOTAL_POIS
+      FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+      GROUP BY 1 ORDER BY TOTAL_POIS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+        DIMENSIONS pois.city METRICS pois.total_pois
+      ) ORDER BY total_pois DESC
+
+  - question: "How many distinct categories are there in total?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT COUNT(DISTINCT BASIC_CATEGORY) AS UNIQUE_CATEGORIES
+      FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT METRICS pois.unique_categories
+      )
+
+  - question: "What is the total number of POIs across cities for each state?"
+    category: group_by
+    gold_sql: |
+      SELECT STATE AS STATE, SUM(POI_COUNT) AS TOTAL_CITY_POIS
+      FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+      GROUP BY 1 ORDER BY TOTAL_CITY_POIS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+        DIMENSIONS cities.cities_state METRICS cities.total_city_pois
+      ) ORDER BY total_city_pois DESC

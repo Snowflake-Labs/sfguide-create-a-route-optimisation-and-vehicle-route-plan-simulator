@@ -1,0 +1,39 @@
+{
+  "$comment": "Logical->actual role binding for the Fleet Intelligence app. Consumed by the Native App packaging step. synapse emits GRANTs against IDENTIFIER($<logical>_role); the operator remaps logical roles to real account roles here at install time. As of Step 3 all three bundles (user / ops / admin) are ACTIVE with their own MCP servers and (user/ops) Cortex Agents. Production role binding applied on wgb26798 (Phase 3E): FLEET_APP_USER / FLEET_APP_OPS / FLEET_APP_ADMIN.",
+  "appId": "com.snowflake.solution-accelerator.fleet-intelligence",
+  "version": "0.1.0",
+  "roles": {
+    "user": {
+      "description": "End consumer: routing/optimization verbs + Cortex Analyst over the fleet semantic views. This is the ONLY bundle attached to the consumer Cortex Agent.",
+      "logicalRole": "user",
+      "defaultBinding": "FLEET_APP_USER",
+      "mcpServer": "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP",
+      "status": "active"
+    },
+    "ops": {
+      "description": "Operations: service lifecycle (suspend/resume), active region, substrate health. Reachable via the role-gated FLEET_OPS_AGENT and the in-app Ops console (/api/ops). NOT attached to the consumer agent. Heavy provisioning (region/matrix builds, Data Studio) remains in the control app per the hybrid design.",
+      "logicalRole": "ops",
+      "defaultBinding": "FLEET_APP_OPS",
+      "mcpServer": "FLEET_OPS_MCP",
+      "agent": "FLEET_OPS_AGENT",
+      "status": "active"
+    },
+    "admin": {
+      "description": "Installer: app install, agent creation, routing-substrate prereq checks, role binding. Reachable via the role-gated FLEET_ADMIN_AGENT and FLEET_ADMIN_MCP. NOT attached to the consumer agent.",
+      "logicalRole": "admin",
+      "defaultBinding": "FLEET_APP_ADMIN",
+      "mcpServer": "FLEET_ADMIN_MCP",
+      "agent": "FLEET_ADMIN_AGENT",
+      "status": "active"
+    }
+  },
+  "substrate": {
+    "$comment": "Routing substrate is a provisioned prerequisite, not created by app install. Admin bundle verifies/links it.",
+    "database": "FLEET_INTELLIGENCE",
+    "coreSchema": "CORE",
+    "requires": [
+      "FLEET_INTELLIGENCE.CORE routing service functions (DIRECTIONS/ISOCHRONES/OPTIMIZATION/MATRIX)",
+      "ORS/VROOM SPCS services reachable"
+    ]
+  }
+}

@@ -1,13 +1,18 @@
 -- =============================================================================
 -- setup-agent-playground / deploy-demo-data.sql
 --
--- Seeds SF pharma demo data tables consumed by the routing-agent's pharma
--- tools (TOOL_SUPPLY_CHAIN, TOOL_PHARMA_OPTIMIZATION, TOOL_PHARMA_CATCHMENT),
--- updates the 6 fleet CONFIG tables to SanFrancisco/ebike defaults, creates
--- the FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES view, and ensures the
+-- Seeds industry-agnostic SF demo data tables consumed by the routing-agent's
+-- catchment/delivery/network tools (TOOL_NETWORK_OPTIMIZATION,
+-- TOOL_DELIVERY_OPTIMIZATION, TOOL_CATCHMENT), updates the 6 fleet CONFIG
+-- tables to SanFrancisco/ebike defaults, creates the
+-- FLEET_INTELLIGENCE_EBIKE.DELIVERIES view, and ensures the
 -- JSON_FORMAT exists for /api/agent/config to load agent-demos.json.
 --
--- Prerequisites: $build-routing-solution and $routing-agent already deployed.
+-- The demo rows are SF-based (SF is a region, not an industry); table and
+-- column identifiers are industry-agnostic. Depot location/region are seeded
+-- in DEMO_DEPOT so the tools read them instead of hardcoding coordinates.
+--
+-- Prerequisites: $install-fleet-apps and $routing-agent already deployed.
 -- Run with WAREHOUSE = ROUTING_ANALYTICS and a role with the privileges
 -- listed in SKILL.md ## Required Privileges.
 -- =============================================================================
@@ -18,14 +23,14 @@ USE WAREHOUSE ROUTING_ANALYTICS;
 
 -- ===================== STEP 1: Configure Demo Defaults =====================
 
-UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
-UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG          SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
+UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
+UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.CONFIG          SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG                    SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG                   SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG                SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
-UPDATE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG                  SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
+UPDATE FLEET_INTELLIGENCE.CATCHMENT.CONFIG                  SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.DELIVERIES
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
@@ -43,12 +48,12 @@ SELECT
     t.DISTANCE_KM     AS DISTANCE_KM
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON t.ORIGIN_POI_ID = p.LOCATION_ID
-WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
-  AND t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1);
+WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG LIMIT 1)
+  AND t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG LIMIT 1);
 
--- ===================== STEP 2: SF_PHARMA_JOBS (30 rows) =====================
+-- ===================== STEP 2: DEMO_DELIVERY_STOPS (30 rows) =====================
 
-CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS (
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS (
     JOB_ID      NUMBER,
     NAME        VARCHAR,
     ADDRESS     VARCHAR,
@@ -60,44 +65,47 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS 
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS;
+TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS;
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS VALUES
-(1,  'UCSF Parnassus Vaccination Centre', '505 Parnassus Ave, SF',       -122.4584, 37.7630, 1, 'Cold Chain / Vaccines', 1),
-(2,  'Kaiser Permanente Geary',            '2425 Geary Blvd, SF',         -122.4440, 37.7819, 1, 'Cold Chain / Vaccines', 1),
-(3,  'Zuckerberg SF General Hospital',     '1001 Potrero Ave, SF',         -122.4064, 37.7553, 1, 'Cold Chain / Vaccines', 1),
-(4,  'SF VA Medical Center',               '4150 Clement St, SF',          -122.4987, 37.7832, 1, 'Cold Chain / Vaccines', 1),
-(5,  'Chinese Hospital Clinic',            '845 Jackson St, SF',           -122.4073, 37.7956, 1, 'Cold Chain / Vaccines', 1),
-(6,  'St Mary''s Medical Center',          '450 Stanyan St, SF',           -122.4462, 37.7726, 1, 'Cold Chain / Vaccines', 1),
-(7,  'Castro-Davies Medical Center',       '45 Castro St, SF',             -122.4350, 37.7676, 1, 'Cold Chain / Vaccines', 1),
-(8,  'Excelsior Health Clinic',            '4921 Mission St, SF',          -122.4374, 37.7222, 1, 'Cold Chain / Vaccines', 1),
-(9,  'Bayview Child Health Center',        '3801 3rd St, SF',              -122.3900, 37.7407, 1, 'Cold Chain / Vaccines', 1),
-(10, 'Tenderloin Health Clinic',           '311 Turk St, SF',              -122.4175, 37.7820, 1, 'Cold Chain / Vaccines', 1),
-(11, 'Walgreens Castro',                   '498 Castro St, SF',            -122.4312, 37.7616, 2, 'Controlled Substances', 1),
-(12, 'CVS Geary Boulevard',                '2676 Geary Blvd, SF',          -122.4506, 37.7798, 2, 'Controlled Substances', 1),
-(13, 'Walgreens Divisadero',               '3201 Divisadero St, SF',       -122.4431, 37.7925, 2, 'Controlled Substances', 1),
-(14, 'CVS Sacramento Street',              '3700 Sacramento St, SF',       -122.4531, 37.7875, 2, 'Controlled Substances', 1),
-(15, 'Rite Aid Clement Street',            '801 Clement St, SF',           -122.4675, 37.7832, 2, 'Controlled Substances', 1),
-(16, 'Walgreens Mission District',         '2690 Mission St, SF',          -122.4200, 37.7503, 2, 'Controlled Substances', 1),
-(17, 'CVS Market Street',                  '2101 Market St, SF',           -122.4340, 37.7673, 2, 'Controlled Substances', 1),
-(18, 'Walgreens Haight Street',            '1301 Haight St, SF',           -122.4465, 37.7695, 2, 'Controlled Substances', 1),
-(19, 'Rite Aid Taraval',                   '3701 Taraval St, SF',          -122.4842, 37.7422, 2, 'Controlled Substances', 1),
-(20, 'Walgreens Noe Valley',               '4278 24th St, SF',             -122.4334, 37.7507, 2, 'Controlled Substances', 1),
-(21, 'Marina Medical Group',               '3100 Scott St, SF',            -122.4426, 37.8010, 3, 'Standard Medicines',    1),
-(22, 'North Beach Family Medicine',        '620 Columbus Ave, SF',         -122.4094, 37.7989, 3, 'Standard Medicines',    1),
-(23, 'Haight Ashbury Free Clinic',         '558 Clayton St, SF',           -122.4476, 37.7687, 3, 'Standard Medicines',    1),
-(24, 'Richmond District Medical',          '6239 Geary Blvd, SF',          -122.4842, 37.7803, 3, 'Standard Medicines',    1),
-(25, 'Sunset Medical Center',              '3111 Taraval St, SF',          -122.4782, 37.7452, 3, 'Standard Medicines',    1),
-(26, 'Inner Sunset GP Practice',           '1709 Irving St, SF',           -122.4723, 37.7634, 3, 'Standard Medicines',    1),
-(27, 'Mission District Health Center',     '3555 22nd St, SF',             -122.4232, 37.7540, 3, 'Standard Medicines',    1),
-(28, 'South Beach Pharmacy',               '400 Beale St, SF',             -122.3899, 37.7887, 3, 'Standard Medicines',    1),
-(29, 'Dogpatch Medical Clinic',            '2468 3rd St, SF',              -122.3890, 37.7587, 3, 'Standard Medicines',    1),
-(30, 'FiDi Corporate Health',              '580 California St, SF',        -122.4017, 37.7931, 3, 'Standard Medicines',    1);
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS VALUES
+(1,  'UCSF Parnassus Vaccination Centre', '505 Parnassus Ave, SF',       -122.4584, 37.7630, 1, 'Cold Chain', 1),
+(2,  'Kaiser Permanente Geary',            '2425 Geary Blvd, SF',         -122.4440, 37.7819, 1, 'Cold Chain', 1),
+(3,  'Zuckerberg SF General Hospital',     '1001 Potrero Ave, SF',         -122.4064, 37.7553, 1, 'Cold Chain', 1),
+(4,  'SF VA Medical Center',               '4150 Clement St, SF',          -122.4987, 37.7832, 1, 'Cold Chain', 1),
+(5,  'Chinese Hospital Clinic',            '845 Jackson St, SF',           -122.4073, 37.7956, 1, 'Cold Chain', 1),
+(6,  'St Mary''s Medical Center',          '450 Stanyan St, SF',           -122.4462, 37.7726, 1, 'Cold Chain', 1),
+(7,  'Castro-Davies Medical Center',       '45 Castro St, SF',             -122.4350, 37.7676, 1, 'Cold Chain', 1),
+(8,  'Excelsior Health Clinic',            '4921 Mission St, SF',          -122.4374, 37.7222, 1, 'Cold Chain', 1),
+(9,  'Bayview Child Health Center',        '3801 3rd St, SF',              -122.3900, 37.7407, 1, 'Cold Chain', 1),
+(10, 'Tenderloin Health Clinic',           '311 Turk St, SF',              -122.4175, 37.7820, 1, 'Cold Chain', 1),
+(11, 'Walgreens Castro',                   '498 Castro St, SF',            -122.4312, 37.7616, 2, 'Restricted / Controlled', 1),
+(12, 'CVS Geary Boulevard',                '2676 Geary Blvd, SF',          -122.4506, 37.7798, 2, 'Restricted / Controlled', 1),
+(13, 'Walgreens Divisadero',               '3201 Divisadero St, SF',       -122.4431, 37.7925, 2, 'Restricted / Controlled', 1),
+(14, 'CVS Sacramento Street',              '3700 Sacramento St, SF',       -122.4531, 37.7875, 2, 'Restricted / Controlled', 1),
+(15, 'Rite Aid Clement Street',            '801 Clement St, SF',           -122.4675, 37.7832, 2, 'Restricted / Controlled', 1),
+(16, 'Walgreens Mission District',         '2690 Mission St, SF',          -122.4200, 37.7503, 2, 'Restricted / Controlled', 1),
+(17, 'CVS Market Street',                  '2101 Market St, SF',           -122.4340, 37.7673, 2, 'Restricted / Controlled', 1),
+(18, 'Walgreens Haight Street',            '1301 Haight St, SF',           -122.4465, 37.7695, 2, 'Restricted / Controlled', 1),
+(19, 'Rite Aid Taraval',                   '3701 Taraval St, SF',          -122.4842, 37.7422, 2, 'Restricted / Controlled', 1),
+(20, 'Walgreens Noe Valley',               '4278 24th St, SF',             -122.4334, 37.7507, 2, 'Restricted / Controlled', 1),
+(21, 'Marina Medical Group',               '3100 Scott St, SF',            -122.4426, 37.8010, 3, 'Standard',    1),
+(22, 'North Beach Family Medicine',        '620 Columbus Ave, SF',         -122.4094, 37.7989, 3, 'Standard',    1),
+(23, 'Haight Ashbury Free Clinic',         '558 Clayton St, SF',           -122.4476, 37.7687, 3, 'Standard',    1),
+(24, 'Richmond District Medical',          '6239 Geary Blvd, SF',          -122.4842, 37.7803, 3, 'Standard',    1),
+(25, 'Sunset Medical Center',              '3111 Taraval St, SF',          -122.4782, 37.7452, 3, 'Standard',    1),
+(26, 'Inner Sunset GP Practice',           '1709 Irving St, SF',           -122.4723, 37.7634, 3, 'Standard',    1),
+(27, 'Mission District Health Center',     '3555 22nd St, SF',             -122.4232, 37.7540, 3, 'Standard',    1),
+(28, 'South Beach Pharmacy',               '400 Beale St, SF',             -122.3899, 37.7887, 3, 'Standard',    1),
+(29, 'Dogpatch Medical Clinic',            '2468 3rd St, SF',              -122.3890, 37.7587, 3, 'Standard',    1),
+(30, 'FiDi Corporate Health',              '580 California St, SF',        -122.4017, 37.7931, 3, 'Standard',    1);
 
 
--- ===================== STEP 3: SF_HEALTH_DEMOGRAPHICS (55 rows) =====================
+-- ===================== STEP 3: DEMO_AREA_DEMOGRAPHICS (55 rows) =====================
+-- Example demand dataset: per-area population + demand-signal rates. The
+-- demand-signal columns below are illustrative example content for the
+-- catchment demo; they are not part of any tool's neutral contract.
 
-CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS (
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS (
     DEMO_ID             NUMBER,
     NEIGHBORHOOD        VARCHAR,
     LATITUDE            FLOAT,
@@ -116,9 +124,9 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOG
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS;
+TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS;
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS VALUES
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS VALUES
 (1,  'Tenderloin',              37.7840, -122.4141, 28000, 12.1, 8.4,  24.2, 44.1, 18.3, 22.7, 31.2, 'LOW',    15.2, 9),
 (2,  'SoMa North',              37.7795, -122.4005, 22000, 9.8,  6.2,  19.4, 38.7, 15.1, 19.8, 25.4, 'LOW',    22.1, 9),
 (3,  'SoMa South',              37.7741, -122.4003, 18000, 10.2, 5.9,  17.8, 36.2, 14.2, 18.3, 24.1, 'LOW',    24.3, 8),
@@ -175,13 +183,16 @@ INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS VALUES
 (54, 'Lake Street',             37.7831, -122.4756, 9000,  23.4, 9.2,  15.4, 32.8, 12.9, 14.1, 20.8, 'HIGH',   57.9, 7),
 (55, 'Seacliff',                37.7862, -122.4921, 5000,  21.7, 9.8,  12.4, 26.7, 10.2, 11.4, 16.1, 'HIGH',   72.4, 6);
 
--- ===================== STEP 4: SF_DRUG_FORMULARY (25 rows) =====================
+-- ===================== STEP 4: DEMO_DEMAND_CATALOG (25 rows) =====================
+-- Example demand catalog: items grouped by demand SEGMENT, each requiring a
+-- delivery skill tier. SEGMENT values join to the demand-signal columns in
+-- DEMO_AREA_DEMOGRAPHICS. Example content for the network-optimization demo.
 
-CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY (
-    DRUG_ID          NUMBER,
-    CONDITION        VARCHAR,
-    DRUG_NAME        VARCHAR,
-    DRUG_CATEGORY    VARCHAR,
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG (
+    ITEM_ID          NUMBER,
+    SEGMENT          VARCHAR,
+    ITEM_NAME        VARCHAR,
+    ITEM_CATEGORY    VARCHAR,
     DELIVERY_SKILL   NUMBER,
     SKILL_LABEL      VARCHAR,
     UNITS_PER_1000   NUMBER,
@@ -189,39 +200,39 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULA
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY;
+TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG;
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY VALUES
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG VALUES
 (1,  'DIABETES', 'Insulin Glargine (Lantus)',      'Insulin',           1, 'Cold Chain',            45, 1),
-(2,  'DIABETES', 'Metformin 500mg',                'Oral Hypoglycemic', 3, 'Standard Medicines',    120, 3),
+(2,  'DIABETES', 'Metformin 500mg',                'Oral Hypoglycemic', 3, 'Standard',    120, 3),
 (3,  'DIABETES', 'Insulin Lispro (Humalog)',       'Insulin',           1, 'Cold Chain',            30, 1),
-(4,  'DIABETES', 'Glipizide 5mg',                  'Oral Hypoglycemic', 3, 'Standard Medicines',    60, 3),
+(4,  'DIABETES', 'Glipizide 5mg',                  'Oral Hypoglycemic', 3, 'Standard',    60, 3),
 (5,  'DIABETES', 'Ozempic (Semaglutide)',          'GLP-1 Agonist',     1, 'Cold Chain',            25, 2),
-(6,  'HYPERTENSION', 'Lisinopril 10mg',           'ACE Inhibitor',     3, 'Standard Medicines',    90, 2),
-(7,  'HYPERTENSION', 'Amlodipine 5mg',            'Calcium Blocker',   3, 'Standard Medicines',    85, 2),
-(8,  'HYPERTENSION', 'Losartan 50mg',             'ARB',               3, 'Standard Medicines',    70, 3),
-(9,  'HYPERTENSION', 'Metoprolol 25mg',           'Beta Blocker',      3, 'Standard Medicines',    65, 2),
-(10, 'HYPERTENSION', 'Hydrochlorothiazide 25mg',  'Thiazide Diuretic', 3, 'Standard Medicines',    55, 3),
-(11, 'CARDIOVASCULAR', 'Atorvastatin 20mg',       'Statin',            3, 'Standard Medicines',    100, 2),
-(12, 'CARDIOVASCULAR', 'Aspirin 81mg',            'Antiplatelet',      3, 'Standard Medicines',    110, 3),
-(13, 'CARDIOVASCULAR', 'Clopidogrel 75mg',        'Antiplatelet',      2, 'Controlled Substances', 40, 2),
-(14, 'CARDIOVASCULAR', 'Warfarin 5mg',            'Anticoagulant',     2, 'Controlled Substances', 35, 1),
+(6,  'HYPERTENSION', 'Lisinopril 10mg',           'ACE Inhibitor',     3, 'Standard',    90, 2),
+(7,  'HYPERTENSION', 'Amlodipine 5mg',            'Calcium Blocker',   3, 'Standard',    85, 2),
+(8,  'HYPERTENSION', 'Losartan 50mg',             'ARB',               3, 'Standard',    70, 3),
+(9,  'HYPERTENSION', 'Metoprolol 25mg',           'Beta Blocker',      3, 'Standard',    65, 2),
+(10, 'HYPERTENSION', 'Hydrochlorothiazide 25mg',  'Thiazide Diuretic', 3, 'Standard',    55, 3),
+(11, 'CARDIOVASCULAR', 'Atorvastatin 20mg',       'Statin',            3, 'Standard',    100, 2),
+(12, 'CARDIOVASCULAR', 'Aspirin 81mg',            'Antiplatelet',      3, 'Standard',    110, 3),
+(13, 'CARDIOVASCULAR', 'Clopidogrel 75mg',        'Antiplatelet',      2, 'Restricted / Controlled', 40, 2),
+(14, 'CARDIOVASCULAR', 'Warfarin 5mg',            'Anticoagulant',     2, 'Restricted / Controlled', 35, 1),
 (15, 'CARDIOVASCULAR', 'Nitroglycerin Sublingual', 'Nitrate',          1, 'Cold Chain',            20, 1),
-(16, 'RESPIRATORY', 'Albuterol Inhaler',          'Bronchodilator',    3, 'Standard Medicines',    80, 2),
-(17, 'RESPIRATORY', 'Fluticasone Inhaler',        'Corticosteroid',    3, 'Standard Medicines',    60, 3),
-(18, 'RESPIRATORY', 'Montelukast 10mg',           'Leukotriene',       3, 'Standard Medicines',    45, 3),
-(19, 'RESPIRATORY', 'Prednisone 10mg',            'Corticosteroid',    2, 'Controlled Substances', 30, 2),
+(16, 'RESPIRATORY', 'Albuterol Inhaler',          'Bronchodilator',    3, 'Standard',    80, 2),
+(17, 'RESPIRATORY', 'Fluticasone Inhaler',        'Corticosteroid',    3, 'Standard',    60, 3),
+(18, 'RESPIRATORY', 'Montelukast 10mg',           'Leukotriene',       3, 'Standard',    45, 3),
+(19, 'RESPIRATORY', 'Prednisone 10mg',            'Corticosteroid',    2, 'Restricted / Controlled', 30, 2),
 (20, 'RESPIRATORY', 'Budesonide Nebulizer',       'Corticosteroid',    1, 'Cold Chain',            15, 2),
-(21, 'MOBILITY', 'Tramadol 50mg',                'Opioid Analgesic',   2, 'Controlled Substances', 35, 2),
-(22, 'MOBILITY', 'Gabapentin 300mg',             'Neuropathic',        2, 'Controlled Substances', 40, 3),
-(23, 'MOBILITY', 'Celecoxib 200mg',              'NSAID',              3, 'Standard Medicines',    50, 3),
-(24, 'MOBILITY', 'Pregabalin 75mg',              'Neuropathic',        2, 'Controlled Substances', 30, 2),
-(25, 'MOBILITY', 'Diclofenac Gel',               'Topical NSAID',      3, 'Standard Medicines',    25, 3);
+(21, 'MOBILITY', 'Tramadol 50mg',                'Opioid Analgesic',   2, 'Restricted / Controlled', 35, 2),
+(22, 'MOBILITY', 'Gabapentin 300mg',             'Neuropathic',        2, 'Restricted / Controlled', 40, 3),
+(23, 'MOBILITY', 'Celecoxib 200mg',              'NSAID',              3, 'Standard',    50, 3),
+(24, 'MOBILITY', 'Pregabalin 75mg',              'Neuropathic',        2, 'Restricted / Controlled', 30, 2),
+(25, 'MOBILITY', 'Diclofenac Gel',               'Topical NSAID',      3, 'Standard',    25, 3);
 
--- ===================== STEP 5: SF_TOP_PHARMACIES (6 rows) =====================
+-- ===================== STEP 5: DEMO_KEY_SITES (6 rows) =====================
 
-CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES (
-    PHARMACY_ID  NUMBER,
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES (
+    SITE_ID      NUMBER,
     NAME         VARCHAR,
     ADDRESS      VARCHAR,
     LONGITUDE    FLOAT,
@@ -230,15 +241,34 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACI
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES;
+TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES;
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES VALUES
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES VALUES
 (1, 'Walgreens Castro',           '498 Castro St, SF',      -122.4312, 37.7616, 1),
 (2, 'CVS Geary Boulevard',        '2676 Geary Blvd, SF',    -122.4506, 37.7798, 1),
 (3, 'Rite Aid Clement Street',    '801 Clement St, SF',     -122.4675, 37.7832, 2),
 (4, 'Walgreens Mission District', '2690 Mission St, SF',    -122.4200, 37.7503, 1),
 (5, 'CVS Market Street',          '2101 Market St, SF',     -122.4340, 37.7673, 2),
 (6, 'Walgreens Divisadero',       '3201 Divisadero St, SF', -122.4431, 37.7925, 2);
+
+-- ===================== STEP 5b: DEMO_DEPOT (1 row) =====================
+-- Depot + region for the delivery/network demos. The tools read depot
+-- coordinates and region from here instead of hardcoding them, so a fresh
+-- deploy is config-driven and not bound to any single location.
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT (
+    DEPOT_ID   NUMBER,
+    NAME       VARCHAR,
+    LONGITUDE  FLOAT,
+    LATITUDE   FLOAT,
+    REGION     VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT;
+
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT VALUES
+(1, 'Central Supply Depot, 1 Market St', -122.3946, 37.7941, 'SanFrancisco');
 
 -- ===================== STEP 6: JSON_FORMAT (idempotent) =====================
 

@@ -1,0 +1,35 @@
+# Data model (logical contract) - Fleet domain pack: catchment
+pack: catchment
+app_schema: FLEET_APP.CATCHMENT
+entities:
+  - name: POIS
+    description: "Points of interest with category and location."
+    access_pattern: mapped
+    grain: "One row per POI"
+    primary_key: POI_NAME
+    columns:
+      - { name: POI_NAME, type: VARCHAR }
+      - { name: BASIC_CATEGORY, type: VARCHAR }
+      - { name: CITY, type: VARCHAR }
+      - { name: STATE, type: VARCHAR }
+      - { name: LATITUDE, type: FLOAT }
+      - { name: LONGITUDE, type: FLOAT }
+  - name: CITIES_BY_STATE
+    description: "City/state reference used by the catchment semantic view."
+    access_pattern: mapped
+    grain: "One row per city"
+    columns:
+      - { name: CITY, type: VARCHAR }
+      - { name: STATE, type: VARCHAR }
+  - name: REGIONAL_ADDRESSES
+    description: "Address points used for catchment address-density (H3) heatmaps."
+    access_pattern: mapped
+    grain: "One row per address"
+    columns:
+      - { name: REGION, type: VARCHAR }
+      - { name: ID, type: VARCHAR }
+      - { name: GEOMETRY, type: GEOGRAPHY }
+      - { name: LONGITUDE, type: FLOAT }
+      - { name: LATITUDE, type: FLOAT }
+      - { name: CITY, type: VARCHAR }
+      - { name: POSTCODE, type: VARCHAR }

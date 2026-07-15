@@ -1,0 +1,11 @@
+id: com.snowflake.solution-accelerator.fleet-intelligence
+name: "Fleet Intelligence"
+version: "0.1.0"
+description: "Agent-first fleet analytics and routing app: dwell and congestion dashboards, route optimization, isochrones, and POI/catchment analysis over the FLEET_INTELLIGENCE data, with a region/vehicle context and a typed, audited routing tool layer."
+tags:
+  - fleet
+  - routing
+  - optimization
+  - geospatial
+  - logistics
+provider: Snowflake

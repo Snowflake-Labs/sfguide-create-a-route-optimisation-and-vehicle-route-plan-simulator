@@ -1,0 +1,33 @@
+# =============================================================================
+# Entity mapping - NEUTRAL starter pack - SOURCE: neutral SF substrate
+# =============================================================================
+# Binds the logical entities in data-model.yaml to the neutral SF substrate
+# (SYNTHETIC_DATASETS.NEUTRAL.*), which is itself a zero-copy relabeling of the
+# bundled San Francisco synthetic dataset. The substrate columns are ALREADY
+# neutral, so the mapped leaves are pass-throughs.
+#
+# To run the starter on customer data: repoint source_table to a customer
+# source and replace `passthrough: true` with an explicit `mapping:` (+ optional
+# transforms), then regenerate setup.sql. Consumers (dashboards + SV_STARTER)
+# do not change.
+#
+# MOVEMENT_DAILY is NOT mapped from a source: the generator computes it from
+# MOVEMENTS using the `sql` body in data-model.yaml.
+
+source_id: neutral_sf
+description: "Neutral San Francisco substrate (zero-copy relabeling of the bundled synthetic dataset)."
+
+entities:
+  - entity: LOCATIONS
+    source_table: SYNTHETIC_DATASETS.NEUTRAL.LOCATIONS
+    materialization: view
+    passthrough: true
+
+  - entity: MOVEMENTS
+    source_table: SYNTHETIC_DATASETS.NEUTRAL.MOVEMENTS
+    materialization: view
+    passthrough: true
+
+  - entity: MOVEMENT_DAILY
+    source_table: null
+    materialization: derived   # computed from MOVEMENTS (see data-model.yaml)

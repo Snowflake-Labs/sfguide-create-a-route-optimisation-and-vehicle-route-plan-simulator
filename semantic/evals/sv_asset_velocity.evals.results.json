@@ -1,0 +1,50 @@
+{
+  "summary": {
+    "auto": [
+      4,
+      4
+    ],
+    "require": [
+      4,
+      4
+    ],
+    "sv": [
+      4,
+      4
+    ]
+  },
+  "results": [
+    {
+      "question": "How many idle trailers are there for each idle severity level?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the total cost of idleness in USD for each region?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the total projected savings in USD across all idle trailers?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the average idle days for each vehicle subtype?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    }
+  ]
+}

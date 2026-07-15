@@ -1,0 +1,122 @@
+{
+  "locations": {
+    "label": "Locations",
+    "description": "Points of interest by category and location, on a map.",
+    "layout": {
+      "default": {
+        "columns": "1fr 1fr",
+        "rows": "auto 1fr",
+        "grid": "\"metrics metrics\"\n\"bycat map\""
+      },
+      "mobile": {
+        "columns": "1fr",
+        "rows": "auto auto auto",
+        "grid": "\"metrics\"\n\"bycat\"\n\"map\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS locations, COUNT(DISTINCT CATEGORY) AS categories, COUNT(DISTINCT LOCATION_TYPE) AS types FROM STARTER_APP.CORE.VW_LOCATIONS",
+          "mapping": {
+            "metrics": [
+              { "column": "locations", "label": "Total Locations", "format": "number" },
+              { "column": "categories", "label": "Categories", "format": "number" },
+              { "column": "types", "label": "Location Types", "format": "number" }
+            ]
+          }
+        }
+      },
+      "bycat": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT CATEGORY AS category, COUNT(*) AS locations FROM STARTER_APP.CORE.VW_LOCATIONS GROUP BY CATEGORY ORDER BY locations DESC LIMIT 12"
+        },
+        "config": {
+          "title": "Locations by Category",
+          "xAxis": { "field": "category", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "locations", "label": "Locations" } ]
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "legend": [
+            { "label": "Location", "color": [41, 181, 232, 160], "shape": "dot" }
+          ],
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "locations",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [41, 181, 232, 160],
+              "radius": 60,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 6,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>{category}",
+              "data": {
+                "query": "SELECT NAME AS name, CATEGORY AS category, LNG AS lng, LAT AS lat FROM STARTER_APP.CORE.VW_LOCATIONS WHERE LAT IS NOT NULL AND LNG IS NOT NULL LIMIT 5000"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "movements": {
+    "label": "Movements",
+    "description": "Origin-to-destination movements: volume, distance, duration, and daily trend.",
+    "layout": {
+      "default": {
+        "columns": "1fr 1fr",
+        "rows": "auto 1fr",
+        "grid": "\"metrics metrics\"\n\"trend daily\""
+      },
+      "mobile": {
+        "columns": "1fr",
+        "rows": "auto auto auto",
+        "grid": "\"metrics\"\n\"trend\"\n\"daily\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS movements, ROUND(AVG(DISTANCE_KM),2) AS avg_km, ROUND(AVG(DURATION_MINUTES),1) AS avg_min, ROUND(SUM(DISTANCE_KM),0) AS total_km FROM STARTER_APP.CORE.VW_MOVEMENTS",
+          "mapping": {
+            "metrics": [
+              { "column": "movements", "label": "Total Movements", "format": "number" },
+              { "column": "avg_km", "label": "Avg Distance (km)", "format": "number_2dp" },
+              { "column": "avg_min", "label": "Avg Duration (min)", "format": "number_2dp" },
+              { "column": "total_km", "label": "Total Distance (km)", "format": "number" }
+            ]
+          }
+        }
+      },
+      "trend": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT TO_VARCHAR(DAY) AS day, MOVEMENT_COUNT AS movements, TOTAL_DISTANCE_KM AS total_km FROM STARTER_APP.CORE.VW_MOVEMENT_DAILY ORDER BY DAY ASC"
+        },
+        "config": {
+          "title": "Daily Movements",
+          "xAxis": { "field": "day", "fieldType": "category" },
+          "series": [
+            { "type": "line", "field": "movements", "label": "Movements", "color": "#29B5E8" },
+            { "type": "line", "field": "total_km", "label": "Total km", "color": "#FF6B35" }
+          ]
+        }
+      },
+      "daily": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT TO_VARCHAR(DAY) AS day, MOVEMENT_COUNT AS movements, AVG_DISTANCE_KM AS avg_km, AVG_DURATION_MINUTES AS avg_min, TOTAL_DISTANCE_KM AS total_km FROM STARTER_APP.CORE.VW_MOVEMENT_DAILY ORDER BY DAY ASC"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+# Image tag MUST match openrouteservice_app/image-versions.env ($DOWNLOADER_TAG).
+# Run scripts/check_image_versions.sh to verify before uploading this spec to the stage.
+spec:
+  containers:
+    - name: downloader
+      image: /openrouteservice_app/core/image_repository/downloader:v0.0.7
+      env:
+        # Parallel byte-range connections for large range-capable downloads.
+        # Multiplies effective throughput against per-connection throttling
+        # (e.g. Geofabrik ~1 MB/s) so continental PBFs finish under the SQL
+        # provisioning poll ceiling. Capped at 8 in the service code.
+        DOWNLOAD_CONCURRENCY: "6"
+        # Per-segment retry budget. A transient reset resumes the same segment
+        # from its current offset rather than restarting the whole file.
+        DOWNLOAD_MAX_RETRIES: "6"
+      resources:
+        requests:
+          cpu: "0.5"
+          memory: "1Gi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
+      volumeMounts:
+        - name: ors-spcs-stage
+          mountPath: /downloads/ors_spcs_stage
+        - name: ors-graphs-spcs-stage
+          mountPath: /downloads/ors_graphs_spcs_stage
+        - name: ors-elevation-cache-spcs-stage
+          mountPath: /downloads/ors_elevation_cache_spcs_stage
+  endpoints:
+    - name: downloader
+      port: 8081
+      public: false
+  volumes:
+    - name: ors-spcs-stage
+      source: "@CORE.ORS_SPCS_STAGE"
+    - name: ors-graphs-spcs-stage
+      source: "@CORE.ORS_GRAPHS_SPCS_STAGE"
+    - name: ors-elevation-cache-spcs-stage
+      source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE"

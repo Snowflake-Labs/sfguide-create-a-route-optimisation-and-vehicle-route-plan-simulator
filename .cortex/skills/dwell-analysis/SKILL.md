@@ -1,8 +1,8 @@
 ---
 name: dwell-analysis
-description: "Deploy the Dwell & Congestion Analysis demo: create a 12-step Dynamic Table pipeline for state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Works with any vehicle type from SYNTHETIC_DATASETS.UNIFIED, configured via CONFIG table. Use when: setting up dwell analysis demo, congestion analytics, SLA breach monitoring, facility utilization tracking. Do NOT use for: route deviation analysis (use route-deviation), food delivery fleet (use fleet-intelligence-food-delivery), taxi fleet (use fleet-intelligence-taxis). Triggers: deploy dwell analysis, dwell analytics, congestion analysis, SLA alerts, facility utilization, dwell demo, H3 heatmap."
+description: "Deploy the Dwell & Congestion Analysis demo: create a 12-step Dynamic Table pipeline for state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Works with any vehicle type from SYNTHETIC_DATASETS.UNIFIED, configured via CONFIG table. Use when: setting up dwell analysis demo, congestion analytics, SLA breach monitoring, facility utilization tracking. Do NOT use for: route deviation analysis (use route-deviation), e-bike fleet (use fleet-intelligence-ebike), car fleet (use fleet-intelligence-car). Triggers: deploy dwell analysis, dwell analytics, congestion analysis, SLA alerts, facility utilization, dwell demo, H3 heatmap."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
@@ -10,6 +10,21 @@ metadata:
 ---
 
 # Deploy Dwell & Congestion Analysis
+
+> **Two deployment paths.**
+> - **SA + synapse app (preferred for the data-contract app):** dwell ships as a
+>   self-building data-contract pack at
+>   `install-fleet-apps/fleet_sa_app/app/packs/fleet/dwell/`
+>   (`data-model.yaml` + `entity-mapping.yaml`). Its `derived` primitives rebuild the
+>   full DAG (state-detection -> sessionization -> enrichment -> H3/SLA/facility/driver/daily)
+>   into `FLEET_APP.DWELL.*`, verified bit-for-bit against the pipeline below. Deploy it
+>   with the pack installer (`packs/_lib/install.py`), not by hand. To change the
+>   analytics, edit the pack's `data-model.yaml` and regenerate.
+> - **Control-app demo / source-of-truth (below):** the imperative 12-step Dynamic Table
+>   pipeline. This is the canonical reference the pack's derived SQL was distilled from,
+>   and the path the ORS Control App demo uses. Keep `references/sql-pipeline.sql` in sync
+>   when changing dwell logic - it is the spec the pack mirrors.
+
 
 Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type. All data must come from active-dataset projection views (`V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`).
 
@@ -78,7 +93,7 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
 
 ## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), computes GEOFENCE_POLYGONS, and inserts SLA_THRESHOLDS.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `install-fleet-apps` Step 8), computes GEOFENCE_POLYGONS, and inserts SLA_THRESHOLDS.
 
 ### Quick check
 
@@ -154,7 +169,7 @@ Default thresholds in SLA_THRESHOLDS table:
 | DETOUR | 2 | 5 |
 | IDLE | 120 | 240 |
 
-> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. `seed-data.sql` and `sql-pipeline.sql` ship the SAME values (single source of truth) — keep them in sync if you change either. The `IDLE` row makes the long ghost-idle sessions surface as "asset idle too long" alerts; DT_SLA_ALERTS includes both `DWELL_*` and `IDLE` statuses. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min, IDLE: 240/480 min).
+> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. `seed-data.sql` and `sql-pipeline.sql` ship the SAME values (single source of truth) - keep them in sync if you change either. The `IDLE` row makes the long ghost-idle sessions surface as "asset idle too long" alerts; DT_SLA_ALERTS includes both `DWELL_*` and `IDLE` statuses. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min, IDLE: 240/480 min).
 
 Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS will refresh automatically.
 

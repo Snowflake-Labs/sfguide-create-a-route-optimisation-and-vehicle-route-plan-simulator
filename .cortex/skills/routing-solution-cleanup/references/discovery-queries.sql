@@ -86,6 +86,8 @@ WHERE "comment" LIKE '%sf_sit-is-fleet%'
 -- Step 2i: Cortex Agents
 -- Run inside the known agent schema. If SHOW AGENTS fails, skip.
 -- ============================================================================
+-- SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER;
+-- Legacy (pre-relocation) standalone agent, if present:
 -- SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
 
 -- ============================================================================

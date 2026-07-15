@@ -1,0 +1,50 @@
+{
+  "summary": {
+    "auto": [
+      4,
+      4
+    ],
+    "require": [
+      4,
+      4
+    ],
+    "sv": [
+      4,
+      4
+    ]
+  },
+  "results": [
+    {
+      "question": "How many taxi trips were there for each shift type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the average trip distance in km for each shift type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the maximum speed recorded for each driver?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many distinct taxi drivers were active?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    }
+  ]
+}

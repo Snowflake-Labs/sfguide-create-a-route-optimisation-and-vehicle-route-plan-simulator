@@ -1,0 +1,39 @@
+# Routing Platform - Admin/Build console service spec (FLEET_ADMIN_APP, R5).
+#
+# The modernized replacement for the legacy Vite control app, holding ONLY
+# the privileged build tools: region builder, matrix builder, function tester,
+# Data Studio, substrate observability, diagnostics. Built on Next 15 +
+# @fleet-kit/core.
+#
+# The server foundation (ported server/lib + studio) authenticates to Snowflake
+# via the SPCS-injected OAuth token + SNOWFLAKE_HOST, and runs the same
+# idempotent boot-init (instrumentation.ts) as the legacy control app.
+#
+# EXTERNAL ACCESS: the map basemap proxy (/api/tiles -> *.basemaps.cartocdn.com)
+# requires EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI). That is a SERVICE
+# property, NOT part of this spec body; deploy_fleet_admin_app.sh sets it on
+# every ALTER SERVICE. Without it, /api/tiles returns 502 and maps render
+# geometry but no basemap.
+spec:
+  containers:
+    - name: fleet-admin-app
+      image: /openrouteservice_app/core/image_repository/fleet_admin_app:v0.1.16
+      env:
+        HOSTNAME: "0.0.0.0"   # bind Next standalone to all interfaces
+        SNOWFLAKE_DATABASE: "OPENROUTESERVICE_APP"
+        SNOWFLAKE_WAREHOUSE: "MY_WH"
+        SNOWFLAKE_ROLE: "ACCOUNTADMIN"
+        APP_VERSION: "0.1.3"
+        LOG_LEVEL: "info"
+        NODE_ENV: "production"
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
+  endpoints:
+    - name: fleet-admin-app
+      port: 3000
+      public: true

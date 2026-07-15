@@ -1,4 +1,4 @@
-# Build Routing Solution — Execution Log
+# Build Routing Solution - Execution Log
 
 - **Date:** 2026-04-11 02:33
 - **Skill:** build-routing-solution
@@ -39,7 +39,7 @@ Ensure deploy.sh or build scripts auto-sync version tags across all 3 files. The
 
 ### Issue 2: Future grants to APPLICATION are restricted
 
-- **Step:** Step 6 (Deploy Native App — Data Studio grants)
+- **Step:** Step 6 (Deploy Native App - Data Studio grants)
 - **Severity:** WARNING
 - **Category:** SQL_ERROR
 
@@ -164,7 +164,7 @@ Replace `AS ROWS` with `AS ROW_CNT` in the verification query in `references/see
 `snow app run` produced a validation warning: "CREATE Service statement in the setup script should have 'IF NOT EXISTS', 'OR REPLACE', or 'OR ALTER'" at `modules/01_core_infra.sql` line 386.
 
 **Resolution:**
-Warning only — deployment succeeded.
+Warning only - deployment succeeded.
 
 **Suggested fix:**
 Add `IF NOT EXISTS` or `OR ALTER` to the CREATE SERVICE statement in `01_core_infra.sql` line 386.

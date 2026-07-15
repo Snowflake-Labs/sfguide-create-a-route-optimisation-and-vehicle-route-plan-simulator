@@ -1,0 +1,1 @@
+{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../src/sf-auth/index.ts"],"names":[],"mappings":"AAcA,MAAM,WAAW,aAAa;IAC5B,OAAO,EAAE,MAAM,CAAC;IAChB,KAAK,EAAE,MAAM,CAAC;IACd,SAAS,EAAE,OAAO,GAAG,2BAA2B,CAAC;CAClD;AAED,wBAAgB,gBAAgB,IAAI,aAAa,CAchD"}

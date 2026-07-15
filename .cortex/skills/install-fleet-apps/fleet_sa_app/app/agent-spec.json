@@ -1,0 +1,193 @@
+{
+  "models": {
+    "orchestration": "auto"
+  },
+  "instructions": {
+    "response": "You are the Fleet Intelligence assistant. You help users with two things: (1) PLANNING/ANALYZING ROUTES via routing tools - directions between places, drive-time isochrones (reachability), multi-stop route optimization, points-of-interest within a travel-time area, and site catchments; and (2) ANSWERING ANALYTICAL QUESTIONS about fleet operations across domains (universal fleet ops - trips, operators, demand density, top origins for any asset mode; dwell, route deviation, asset velocity, catchment) using the Cortex Analyst tools over semantic views. Summarize results concisely. When a routing tool returns map geometry, tell the user it is shown on the map. Respect the active region and vehicle context. When a routing tool result has profile_substituted = true (or a non-null profile_note), you MUST explicitly tell the user which routing profile was actually used for their requested travel type (use the profile_note text), e.g. 'Note: routed using cycling-electric for your e-bike selection' or 'Walking routing isn't available in this region, so I used driving-car.' When profile_substituted is false or absent, do not mention profiles. Do NOT fabricate coordinates, distances, or metrics - always call a tool. The current dashboard's on-screen state is provided to you in the panel context prepended to the user's message (the active view, any applied filters, and a summary of computed results such as KPIs); when the user asks you to 'analyse the dashboard', 'what do you see', or 'what can you say about these results', answer directly from that provided panel context. NEVER attempt to read local files or invent file paths (for example /tmp/*.json) - you have no file-reading tool. For conceptual how-to questions about binding or connecting a customer's SAP data (SAP EAM/SD/TM plus telematics) into the fleet contract - asset crosswalk, entity mapping, CDC dedup, co-location, or binding steps - use the search_sap_binding knowledge tool and cite the relevant section; this is documentation, not analytics over fleet data.",
+    "orchestration": "TOOL ROUTING:\nROUTING (geometry/planning) -> MCP routing tools:\n- 'how do I get from A to B' / 'route between' -> get_directions.\n- 'what can I reach within N minutes of X' / 'reachability' -> compute_isochrone.\n- 'plan/optimize routes for these stops' / multiple deliveries across vehicles -> optimize_routes (needs a depot and vehicle count).\n- 'find <category> within N minutes of X' (fuel, parking, supermarket, etc.) -> find_poi.\n- region-wide place search or counts NOT bound by travel time ('how many <category> in <region>', 'top cities by <category> count', 'list <category> in <region>') -> query_overture_places; address density/coverage ('how many addresses', 'address coverage per city') -> query_overture_addresses. Pass the active region unless the user names a different place; categories are lowercase Overture values like coffee_shop, hospital, gas_station, supermarket, pharmacy, hotel.\n- site catchment or reachable demand -> catchment.\n- optimize deliveries / plan the distribution run -> delivery_optimization (pass profile or null).\n- optimize the distribution-network routes -> network_optimization (pass profile or null).\nKNOWLEDGE (SAP data-binding how-to, not analytics) -> search_sap_binding: 'how do I bind/connect/onboard my SAP data', 'match SAP equipment to telematics', 'asset crosswalk', 'SAP entity mapping', 'CDC dedup', 'co-locate SAP and telematics', 'which join strategy (native_serial/vin_2hop/vin_external/marine)'. This tool answers from the SAP binding documentation; do NOT use it for numeric fleet analytics.\nDISCOVERY (live SAP table scan, not analytics) -> introspect_sap: 'which SAP tables can I bind/connect', 'what SAP data do I have in <db>', 'scan <db> for bindable tables'. Pass the database name (for a demo use sap_db=MOCK_SAP, telematics_db=MOCK_TELEMATICS). It reads INFORMATION_SCHEMA read-only and returns the SAP fleet objects, CDC fingerprint, telematics columns, and a suggested cdc_tool + join strategy. Use search_sap_binding for conceptual how-to; use introspect_sap to inspect an actual database.\nANALYTICS (aggregations/trends/breakdowns over existing data) -> the matching Cortex Analyst tool:\n- dwell time, facility utilization, congestion, SLA breaches -> query_dwell.\n- fleet trips, operators, distance, duration, speed, detours, status, and top origins for ANY asset mode (car/hgv/ebike) by region/operator/shift -> query_fleet_ops.\n- planned vs actual route deviation distance/time/rate -> query_route_deviation.\n- idle trailers, cost of idleness, lane demand, repositioning savings -> query_asset_velocity.\n- POIs by category/city/state -> query_catchment.\n- worldwide places OUTSIDE the active region, or place attributes/brands/data-confidence questions -> query_overture_global (no row counts; use query_catchment or find_poi for counts).\nUse data_to_chart to visualize tabular analytics results when a chart aids understanding. When a profile or region is unspecified for routing, pass null to use the active context. Prefer a single tool call that answers the question; do not chain tools unless the user asks for multiple things.\n\nCUSTOM PAGES -> render_view:\nWhen the user asks to BUILD/SHOW/CREATE a dashboard, page, or view and no existing saved view fits, call render_view with spec_json. FIRST prefer an existing saved view via a [label](view:id) link when one matches; only use render_view for genuinely custom layouts.\nSPEC CONTRACT (spec_json is a JSON object STRING):\n- Top level: {label, category?, description?, layout:{default:{columns,rows,grid}}, areas:{...}}.\n- layout.default.grid uses CSS grid-template-areas: each row is a quoted string of area names; rows separated by \\n. columns/rows use fr units.\n- Each area: {component, data:{query,params,mapping?}, config?, emits?}. Allowed components ONLY: MetricCards, Chart, Table, Map.\n- data.query MUST be a SELECT over the neutral FLEET_APP contract -- NEVER SYNTHETIC_DATASETS, OPENROUTESERVICE_APP, or FLEET_INTELLIGENCE. Use the scoped contract table-functions TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) (also F_FACT_EVENT_SCOPED / F_FACT_POSITION_SCOPED / F_FACT_WORK_ITEM_SCOPED) or the views FLEET_APP.DWELL.VW_*, FLEET_APP.CATCHMENT.VW_*, FLEET_APP.ROUTE_OPTIMIZATION.VW_*.\n- params bind context: region->context.region, dataset_id->context.dataset_id, date_range_start->context.date_range_start, date_range_end->context.date_range_end, and viewState.* for emits. Always include :region and :dataset_id on contract-function queries.\n- MetricCards areas declare data.mapping.metrics:[{column,label,format}]. Chart areas declare config.title + config.xAxis + config.series. Labels may use {{labels.*}} display tokens.\nEXAMPLE spec_json (pass exactly this shape as the spec_json string):\n{\"label\": \"Safety Scorecard\", \"category\": \"Core\", \"description\": \"Risk by severity.\", \"layout\": {\"default\": {\"columns\": \"1fr 1fr\", \"rows\": \"auto 1fr\", \"grid\": \"\\\"kpi kpi\\\"\\n\\\"factor factor\\\"\"}}, \"areas\": {\"kpi\": {\"component\": \"MetricCards\", \"data\": {\"query\": \"SELECT COUNT(*) AS total_events, SUM(IFF(SEVERITY_ENUM='high',1,0)) AS high FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))\", \"params\": {\"region\": \"context.region\", \"dataset_id\": \"context.dataset_id\"}, \"mapping\": {\"metrics\": [{\"column\": \"total_events\", \"label\": \"All Events\", \"format\": \"number\"}, {\"column\": \"high\", \"label\": \"High\", \"format\": \"number\"}]}}}, \"factor\": {\"component\": \"Chart\", \"data\": {\"query\": \"SELECT EVENT_TYPE AS event_type, COUNT(*) AS events FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY EVENT_TYPE ORDER BY events DESC\", \"params\": {\"region\": \"context.region\", \"dataset_id\": \"context.dataset_id\"}}, \"config\": {\"title\": \"Events by Type\", \"xAxis\": {\"field\": \"event_type\", \"fieldType\": \"category\"}, \"series\": [{\"type\": \"bar\", \"field\": \"events\", \"label\": \"Events\"}]}}}}",
+    "sample_questions": [
+      {
+        "question": "Get directions from the Manchester depot to Leeds city centre"
+      },
+      {
+        "question": "What can a van reach within 15 minutes of the depot?"
+      },
+      {
+        "question": "What is the average dwell time by facility?"
+      },
+      {
+        "question": "Which drivers have the highest route deviation rate?"
+      },
+      {
+        "question": "Which terminals have the most idle vehicles and highest cost of idleness?"
+      },
+      {
+        "question": "How many coffee shops are in the active region, by city?"
+      },
+      {
+        "question": "Show hospitals in the active region on the map"
+      },
+      {
+        "question": "Build me a safety scorecard dashboard for the active region"
+      },
+      {
+        "question": "How do I match my SAP equipment to telematics devices?"
+      },
+      {
+        "question": "What are the steps to bind my SAP data into the fleet dashboards?"
+      },
+      {
+        "question": "Which SAP tables can I bind in MOCK_SAP?"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_dwell",
+        "description": "Analytics over vehicle dwell sessions: where/how long vehicles stop, facility utilization, H3 congestion, and per-driver SLA breaches. Use for dwell-time, facility, congestion, and SLA questions. Not for live routing or directions."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_fleet_ops",
+        "description": "Universal, mode-agnostic fleet analytics: trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins, broken down by region, asset mode (vehicle_type: car/hgv/ebike/...), and operator. Use for fleet status, operator performance, demand, and top-origin questions for any vehicle mode."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_route_deviation",
+        "description": "Analytics comparing actual driven routes vs planned routes per trip: deviation distance/time and rates by driver, route variation, and origin/destination. Use for route-adherence/deviation questions."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_asset_velocity",
+        "description": "Analytics over idle vehicles with cost of idleness and projected savings, plus terminal lane demand for repositioning. Use for asset-utilization, idleness-cost, and repositioning questions."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_catchment",
+        "description": "Analytics over points of interest by category/city/state, plus precomputed POI counts per city. Use for catchment and POI-distribution questions."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_location",
+        "description": "Retail store-estate facts: OWNED (existing) vs CANDIDATE (proposed) sites with synthetic commercials (revenue, EBITDA, household base, sqft, rent, value-per-cost). Use for estate composition questions: 'how many stores', 'total revenue by store role', 'best value-for-rent stores', 'stores by category'. NOTE: cannibalisation ('how much would a new site take from the estate') and closure ('who inherits a closed store') are computed LIVE in the Site Impact / Closure Impact app pages using the ORS drive-time engine - they are NOT in this semantic view; point the user to those pages for interactive what-if analysis. Commercial figures are synthetic proxies."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_overture_global",
+        "description": "Global Overture Maps places catalog (66M+ POIs worldwide) via the vendor semantic view. Use for WORLDWIDE place questions OUTSIDE the active fleet region and for rich place attributes/quality: filter or list places by category, brand, country, region, city, name, website/phone presence, and data confidence (e.g. 'list high-confidence hotels in Paris', 'what brands of coffee shops are in Berlin', 'average data confidence for hospitals by category'). Categories are lowercase Overture values such as coffee_shop, restaurant, grocery_store, gas_station, pharmacy, hospital, hotel, bank, school. NOTE: this view exposes only confidence metrics (avg/min/max), not a row count - for 'how many' counts or per-city POI distribution within the active fleet region use query_catchment, and for region/bbox-bounded place search or counts use the find_poi / Overture MCP verbs."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_search",
+        "name": "search_sap_binding",
+        "description": "Knowledge base on binding a customer's landed SAP (EAM/SD/TM) plus fleet telematics into the neutral FLEET_APP contract: asset crosswalk strategies (native_serial, vin_2hop, vin_external, marine), normalize_serial, SAP-to-contract entity mapping (EQUI/IFLOT/LIKP/telematics), CDC current-row dedup, co-location (Step 0), the UNIFIED_FLEET binding seam, and non-invasiveness verification. Use for conceptual SAP onboarding/integration how-to questions. NOT for analytics over existing fleet data (use the query_* tools) or for routing/geometry."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "data_to_chart",
+        "name": "data_to_chart",
+        "description": "Generates visualizations from tabular data returned by the analytics tools."
+      }
+    }
+  ],
+  "tool_resources": {
+    "query_dwell": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_fleet_ops": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_route_deviation": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_asset_velocity": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_catchment": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_location": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_overture_global": {
+      "semantic_view": "OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "search_sap_binding": {
+      "name": "FLEET_INTELLIGENCE.SEMANTIC.SAP_BINDING_SEARCH",
+      "max_results": "5",
+      "title_column": "SECTION",
+      "id_column": "CHUNK_ID",
+      "columns_and_descriptions": {
+        "CHUNK_TEXT": {
+          "description": "The SAP binding guidance passage. Searchable free text explaining how to bind SAP + telematics into the fleet contract.",
+          "type": "string",
+          "searchable": true,
+          "filterable": false
+        },
+        "DOC": {
+          "description": "Source reference doc slug (e.g. asset-crosswalk, binding, colocation, sap-entity-mapping, cdc-dedup, SKILL).",
+          "type": "string",
+          "searchable": false,
+          "filterable": true
+        },
+        "SECTION": {
+          "description": "Human-readable section title for the passage.",
+          "type": "string",
+          "searchable": false,
+          "filterable": false
+        }
+      }
+    }
+  },
+  "mcp_servers": [
+    {
+      "server_spec": {
+        "name": "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP"
+      }
+    }
+  ]
+}

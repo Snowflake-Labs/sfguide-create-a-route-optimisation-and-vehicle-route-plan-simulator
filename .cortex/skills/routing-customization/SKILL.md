@@ -1,8 +1,8 @@
 ---
 name: routing-customization
-description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile. Do NOT use for: initial ORS deployment (use build-routing-solution), deploying demo apps, or reading ORS config only (use read-ors-configuration subskill directly). Triggers: change location, change map, change vehicle, change routing profile, change routing profiles."
+description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile. Do NOT use for: initial ORS deployment (use install-fleet-apps), deploying demo apps, or reading ORS config only (use read-ors-configuration subskill directly). Triggers: change location, change map, change vehicle, change routing profile, change routing profiles."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -37,7 +37,7 @@ This skill routes customization requests to the correct subskills based on what 
 
 ## Workflow
 
-> All file paths in subskills (e.g., `.cortex/skills/build-routing-solution/openrouteservice_app/...`) are relative to the repository root directory.
+> All file paths in subskills (e.g., `.cortex/skills/install-fleet-apps/openrouteservice_app/...`) are relative to the repository root directory.
 
 ### Query Tag
 
@@ -173,9 +173,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 **Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
 
-**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses — just redeploy.
+**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses - just redeploy.
 
-> **_NOTE:_** The React-based Function Tester in the ORS Control App dynamically loads installed profiles from ORS_STATUS — no hardcoded profile list to update.
+> **_NOTE:_** The React-based Function Tester in the ORS Control App dynamically loads installed profiles from ORS_STATUS - no hardcoded profile list to update.
 
 **Actions:**
 

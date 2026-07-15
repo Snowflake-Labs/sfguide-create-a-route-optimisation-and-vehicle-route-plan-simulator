@@ -1,9 +1,9 @@
 /*
- * seed-data.sql — Route Deviation
+ * seed-data.sql - Route Deviation
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables,
  * then runs ETL CTAS to produce analysis/summary/trends tables.
- * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
- * No S3 external stages — all data comes from UNIFIED.
+ * Source data is loaded by install-fleet-apps (datasets/ seed).
+ * No S3 external stages - all data comes from UNIFIED.
  */
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -157,11 +157,11 @@ SELECT
     ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
                THEN ((t.ACTUAL_DISTANCE_KM / NULLIF(t.EXPECTED_DISTANCE_KM, 0)) - 1) * 100
                ELSE 0 END, 2) AS DURATION_DEVIATION_PCT,
-    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1)
          THEN TRUE ELSE FALSE END AS IS_DISTANCE_DEVIATION,
     CASE WHEN t.IS_DETOUR THEN TRUE ELSE FALSE END AS IS_DURATION_DEVIATION,
     CASE WHEN t.IS_DETOUR
-           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1)
          THEN TRUE ELSE FALSE END AS IS_ROUTE_DEVIATION,
     t.ACTUAL_PATH,
     t.EXPECTED_PATH

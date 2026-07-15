@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "auto": [
+      5,
+      5
+    ],
+    "require": [
+      5,
+      5
+    ],
+    "sv": [
+      5,
+      5
+    ]
+  },
+  "results": [
+    {
+      "question": "What is the total dwell time in minutes for each facility type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many dwell sessions are there for each dwell status?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the average dwell minutes per session for each city?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the total number of SLA breaches for each driver profile?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many distinct vehicles had dwell sessions?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    }
+  ]
+}

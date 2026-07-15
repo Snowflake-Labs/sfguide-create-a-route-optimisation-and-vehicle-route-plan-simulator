@@ -50,12 +50,16 @@ def load_sql_overrides() -> dict:
     return {}
 
 
-def run_trigger_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, list]:
+def run_trigger_evals(skill_filter: str | None, verbose: bool, exclude: set | None = None) -> tuple[int, int, list]:
     from lib import trigger_eval
     triggers = load_triggers()
     if skill_filter:
         triggers = {k: v for k, v in triggers.items() if k == skill_filter}
+    if exclude:
+        triggers = {k: v for k, v in triggers.items() if k not in exclude}
     results = trigger_eval.run(str(SKILLS_ROOT), triggers)
+    if exclude:
+        results = [r for r in results if r["skill"] not in exclude]
     passed = sum(1 for r in results if r["status"] == "pass")
     total = len(results)
     print(f"\n{'='*60}")
@@ -76,13 +80,15 @@ def run_trigger_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int
     return passed, total, results
 
 
-def run_quality_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, list]:
+def run_quality_evals(skill_filter: str | None, verbose: bool, exclude: set | None = None) -> tuple[int, int, list]:
     from lib import quality_eval
     config = load_config()
     overrides = load_overrides()
     results = quality_eval.run(str(SKILLS_ROOT), config, overrides)
     if skill_filter:
         results = [r for r in results if r["skill"] == skill_filter]
+    if exclude:
+        results = [r for r in results if r["skill"] not in exclude]
     threshold = config.get("scoring", {}).get("quality_pass_threshold", 9) if isinstance(config.get("scoring"), dict) else 9
     passed = sum(1 for r in results if r["passed"] >= threshold)
     total = len(results)
@@ -100,12 +106,14 @@ def run_quality_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int
     return passed, total, results
 
 
-def run_xref_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, list]:
+def run_xref_evals(skill_filter: str | None, verbose: bool, exclude: set | None = None) -> tuple[int, int, list]:
     from lib import xref_eval
     overrides = load_xref_overrides()
     results = xref_eval.run(str(SKILLS_ROOT), overrides)
     if skill_filter:
         results = [r for r in results if r["skill"] == skill_filter]
+    if exclude:
+        results = [r for r in results if r["skill"] not in exclude]
     passed = sum(1 for r in results if r["status"] == "pass")
     total = len(results)
     print(f"\n{'='*60}")
@@ -120,12 +128,14 @@ def run_xref_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, l
     return passed, total, results
 
 
-def run_sql_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, list]:
+def run_sql_evals(skill_filter: str | None, verbose: bool, exclude: set | None = None) -> tuple[int, int, list]:
     from lib import sql_eval
     overrides = load_sql_overrides()
     results = sql_eval.run(str(SKILLS_ROOT), overrides)
     if skill_filter:
         results = [r for r in results if r["skill"] == skill_filter]
+    if exclude:
+        results = [r for r in results if r["skill"] not in exclude]
     passed = sum(1 for r in results if r["status"] == "pass")
     total = len(results)
     print(f"\n{'='*60}")
@@ -153,26 +163,34 @@ def main():
     total_passed = 0
     total_total = 0
 
+    # Skills excluded from pass/fail accounting (legacy/retired; see config.yaml).
+    # An explicit --skill always wins so you can still inspect an excluded skill.
+    exclude = set(load_config().get("exclude_skills") or [])
+    if args.skill:
+        exclude.discard(args.skill)
+    if exclude:
+        print(f"(excluding {len(exclude)} legacy/retired skill(s) from accounting: {', '.join(sorted(exclude))})")
+
     if "trigger" in eval_types:
-        p, t, r = run_trigger_evals(args.skill, args.verbose)
+        p, t, r = run_trigger_evals(args.skill, args.verbose, exclude)
         total_passed += p
         total_total += t
         all_results["trigger"] = r
 
     if "quality" in eval_types:
-        p, t, r = run_quality_evals(args.skill, args.verbose)
+        p, t, r = run_quality_evals(args.skill, args.verbose, exclude)
         total_passed += p
         total_total += t
         all_results["quality"] = r
 
     if "xref" in eval_types:
-        p, t, r = run_xref_evals(args.skill, args.verbose)
+        p, t, r = run_xref_evals(args.skill, args.verbose, exclude)
         total_passed += p
         total_total += t
         all_results["xref"] = r
 
     if "sql" in eval_types:
-        p, t, r = run_sql_evals(args.skill, args.verbose)
+        p, t, r = run_sql_evals(args.skill, args.verbose, exclude)
         total_passed += p
         total_total += t
         all_results["sql"] = r

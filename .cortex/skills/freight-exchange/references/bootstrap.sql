@@ -1,10 +1,10 @@
 -- ============================================================================
--- Freight Exchange (Phase A/B) — Bootstrap (projection views over UNIFIED)
+-- Freight Exchange (Phase A/B) - Bootstrap (projection views over UNIFIED)
 -- ============================================================================
 -- Mirrors the DDL embedded in
---   services/ors_control_app/server/lib/init.ts
+--   .cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/lib/init.ts
 -- so a greenfield install or audit run can recreate every object without
--- bouncing the SPCS service. The init.ts copy is the source of truth — keep
+-- bouncing the SPCS service. The init.ts copy is the source of truth - keep
 -- this file in sync when changing column lists.
 --
 -- Creates:
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS (
   BLACKLIST_FLAG BOOLEAN, FOUNDED_YEAR NUMBER,
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY (
   PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY (
   OUTCOME VARCHAR(20),
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ----------------------------------------------------------------------------
 -- 4. Projection views

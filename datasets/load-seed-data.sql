@@ -14,22 +14,25 @@
 --   snow sql -f datasets/load-seed-data.sql
 --------------------------------------------------------------------------------
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 USE WAREHOUSE ROUTING_ANALYTICS;
 
--- Data Studio preset exported via datasets/export-preset.sql
-SET SEED_JOB_ID = '59e656d4-6801-46fc-9209-137f909fbe31';
+-- Data Studio preset exported via datasets/export-preset.sql. SEED_JOB_ID is
+-- derived AFTER the parquet is loaded (from the JOB_ID carried in the data
+-- itself), so this loader is correct for ANY exported dataset with no literal
+-- to edit. The initial value is a placeholder only; it is reassigned below.
+SET SEED_JOB_ID = '';
 
 --------------------------------------------------------------------------------
 -- Stage & File Format
 --------------------------------------------------------------------------------
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF
   TYPE = PARQUET
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- 1. INTRO_TRIPS (Intro page)
@@ -47,7 +50,7 @@ CREATE OR REPLACE TABLE OPENROUTESERVICE_APP.CORE.INTRO_TRIPS (
   ROUTE_GEOJSON OBJECT,
   ROUTE_GEOG GEOGRAPHY
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO OPENROUTESERVICE_APP.CORE.INTRO_TRIPS
 FROM (
@@ -100,7 +103,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY (
   POINT_INDEX INT,
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;
 
@@ -165,7 +168,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS (
   ORS_PROFILE VARCHAR(30),
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;
 
@@ -219,7 +222,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET (
   BATTERY_RANGE_KM FLOAT,
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET;
 
@@ -243,7 +246,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_POIS (
   SOURCE VARCHAR(20),
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_POIS;
 
@@ -266,8 +269,8 @@ FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
 FORCE = TRUE;
 
--- 2e. FACT_FREIGHT_OFFERS (Studio-generated, includes Freight Exchange enrichment cols)
-CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
+-- 2e. FACT_OFFERS (Studio-generated, vehicle-agnostic offers)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS (
   OFFER_ID         VARCHAR,
   REGION           VARCHAR(100),
   VEHICLE_TYPE     VARCHAR(20),
@@ -289,27 +292,23 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
   LISTING_TEXT     VARCHAR,
   POSTED_AT        TIMESTAMP_NTZ,
   JOB_ID           VARCHAR,
-  EQUIPMENT        VARCHAR(20),
-  ADR_CLASS        VARCHAR(8),
-  LDM              FLOAT,
+  VEHICLE_EQUIPMENT VARCHAR(30),
   DISTANCE_KM      FLOAT,
   PRICE_PER_KM_USD FLOAT,
   PARTNER_ID       VARCHAR,
   STATUS           VARCHAR(20)
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS EQUIPMENT VARCHAR(20);
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS ADR_CLASS VARCHAR(8);
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS LDM FLOAT;
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT;
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT;
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR;
-ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS VEHICLE_EQUIPMENT VARCHAR(30);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20);
 
-TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS;
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS;
 
-COPY INTO SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
 FROM (
   SELECT
     $1:OFFER_ID::VARCHAR,
@@ -333,14 +332,12 @@ FROM (
     $1:LISTING_TEXT::VARCHAR,
     $1:POSTED_AT::TIMESTAMP_NTZ,
     $1:JOB_ID::VARCHAR,
-    $1:EQUIPMENT::VARCHAR,
-    $1:ADR_CLASS::VARCHAR,
-    $1:LDM::FLOAT,
+    $1:VEHICLE_EQUIPMENT::VARCHAR,
     $1:DISTANCE_KM::FLOAT,
     $1:PRICE_PER_KM_USD::FLOAT,
     $1:PARTNER_ID::VARCHAR,
     $1:STATUS::VARCHAR
-  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_freight_offers/
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offers/
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -360,7 +357,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS (
   FOUNDED_YEAR NUMBER,
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS;
 
@@ -378,13 +375,13 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY (
   VEHICLE_TYPE VARCHAR(20),
   ORIGIN_COUNTRY VARCHAR(4),
   DEST_COUNTRY VARCHAR(4),
-  EQUIPMENT VARCHAR(20),
+  VEHICLE_EQUIPMENT VARCHAR(30),
   SHIPPED_AT TIMESTAMP_NTZ,
-  EUR_PER_KM FLOAT,
+  COST_PER_KM FLOAT,
   OUTCOME VARCHAR(20),
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY;
 
@@ -415,12 +412,114 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE (
   STATUS VARCHAR(20),
   JOB_ID VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE;
 
 COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE
 FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_trip_schedule/
+FILE_FORMAT = (TYPE = PARQUET)
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+PURGE = FALSE
+FORCE = TRUE;
+
+-- 2h-1. DIM_ANCHORS (universal-generation; GEOGRAPHY exported as WKT)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS (
+  ANCHOR_ID VARCHAR, REGION VARCHAR(100), ANCHOR_TYPE VARCHAR(40),
+  NAME VARCHAR, CATEGORY VARCHAR(60),
+  LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+  ADDRESS VARCHAR, CITY VARCHAR, STATE VARCHAR, POSTCODE VARCHAR,
+  SOURCE VARCHAR(40), JOB_ID VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS;
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS
+FROM (
+  SELECT
+    $1:ANCHOR_ID::VARCHAR, $1:REGION::VARCHAR, $1:ANCHOR_TYPE::VARCHAR,
+    $1:NAME::VARCHAR, $1:CATEGORY::VARCHAR, $1:LAT::FLOAT, $1:LNG::FLOAT,
+    TRY_TO_GEOGRAPHY($1:GEOM_WKT::VARCHAR),
+    $1:ADDRESS::VARCHAR, $1:CITY::VARCHAR, $1:STATE::VARCHAR, $1:POSTCODE::VARCHAR,
+    $1:SOURCE::VARCHAR, $1:JOB_ID::VARCHAR
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_anchors/
+)
+FILE_FORMAT = (TYPE = PARQUET)
+PURGE = FALSE
+FORCE = TRUE;
+
+-- 2h-1b. DIM_PARTICIPANTS (universal-generation; GEOGRAPHY exported as WKT)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS (
+  PARTICIPANT_ID VARCHAR, REGION VARCHAR(100),
+  LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+  ADDRESS VARCHAR, CITY VARCHAR, STATE VARCHAR, POSTCODE VARCHAR,
+  NEAREST_ANCHOR_ID VARCHAR, SOURCE VARCHAR(40), JOB_ID VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS;
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS
+FROM (
+  SELECT
+    $1:PARTICIPANT_ID::VARCHAR, $1:REGION::VARCHAR, $1:LAT::FLOAT, $1:LNG::FLOAT,
+    TRY_TO_GEOGRAPHY($1:GEOM_WKT::VARCHAR),
+    $1:ADDRESS::VARCHAR, $1:CITY::VARCHAR, $1:STATE::VARCHAR, $1:POSTCODE::VARCHAR,
+    $1:NEAREST_ANCHOR_ID::VARCHAR, $1:SOURCE::VARCHAR, $1:JOB_ID::VARCHAR
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_participants/
+)
+FILE_FORMAT = (TYPE = PARQUET)
+PURGE = FALSE
+FORCE = TRUE;
+
+-- 2h-2. FACT_HAZARD_ZONES (universal-generation; GEOGRAPHY exported as WKT)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES (
+  ZONE_ID VARCHAR, REGION VARCHAR(100), STATE VARCHAR, COUNTY VARCHAR, FIPS VARCHAR(10),
+  HAZARD_TYPE VARCHAR(40), RISK_SCORE FLOAT, RISK_RATING VARCHAR(40), RISK_LEVEL INT,
+  GEOM GEOGRAPHY, SOURCE VARCHAR(40), JOB_ID VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES;
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES
+FROM (
+  SELECT
+    $1:ZONE_ID::VARCHAR, $1:REGION::VARCHAR, $1:STATE::VARCHAR, $1:COUNTY::VARCHAR, $1:FIPS::VARCHAR,
+    $1:HAZARD_TYPE::VARCHAR, $1:RISK_SCORE::FLOAT, $1:RISK_RATING::VARCHAR, $1:RISK_LEVEL::INT,
+    TRY_TO_GEOGRAPHY($1:GEOM_WKT::VARCHAR),
+    $1:SOURCE::VARCHAR, $1:JOB_ID::VARCHAR
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_hazard_zones/
+)
+FILE_FORMAT = (TYPE = PARQUET)
+PURGE = FALSE
+FORCE = TRUE;
+
+-- 2h-3. DIM_AREA_DEMOGRAPHICS (universal-generation; GEOGRAPHY exported as WKT)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS (
+  AREA_ID VARCHAR, REGION VARCHAR(100), AREA_TYPE VARCHAR(20),
+  STATE_FIPS VARCHAR(4), COUNTY_FIPS VARCHAR(8),
+  LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+  TOTAL_POPULATION NUMBER, MEDIAN_AGE FLOAT, MEDIAN_HOUSEHOLD_INCOME NUMBER,
+  POP_ELDERLY NUMBER, POP_CHILDREN NUMBER, POPULATION_DENSITY FLOAT,
+  SOURCE VARCHAR(40), JOB_ID VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS;
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS
+FROM (
+  SELECT
+    $1:AREA_ID::VARCHAR, $1:REGION::VARCHAR, $1:AREA_TYPE::VARCHAR,
+    $1:STATE_FIPS::VARCHAR, $1:COUNTY_FIPS::VARCHAR, $1:LAT::FLOAT, $1:LNG::FLOAT,
+    TRY_TO_GEOGRAPHY($1:GEOM_WKT::VARCHAR),
+    $1:TOTAL_POPULATION::NUMBER, $1:MEDIAN_AGE::FLOAT, $1:MEDIAN_HOUSEHOLD_INCOME::NUMBER,
+    $1:POP_ELDERLY::NUMBER, $1:POP_CHILDREN::NUMBER, $1:POPULATION_DENSITY::FLOAT,
+    $1:SOURCE::VARCHAR, $1:JOB_ID::VARCHAR
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_area_demographics/
+)
+FILE_FORMAT = (TYPE = PARQUET)
+PURGE = FALSE
+FORCE = TRUE;
+
+-- 2h-4. DIM_DEMAND_CATALOG (universal-generation; no GEOGRAPHY)
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG (
+  ITEM_ID VARCHAR, REGION VARCHAR(100), CATEGORY VARCHAR(60),
+  DEMAND_TIER INT, TIER_LABEL VARCHAR(40), HANDLING VARCHAR(60), JOB_ID VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG;
+COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG
+FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_demand_catalog/
 FILE_FORMAT = (TYPE = PARQUET)
 MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
 PURGE = FALSE
@@ -477,9 +576,9 @@ FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
 FORCE = TRUE;
 
--- 2k. MARKETPLACE.FACT_OFFER_ROUTES (pre-computed offer routes for Freight Exchange)
+-- 2k. MARKETPLACE.FACT_OFFER_ROUTES (pre-computed delivery routes)
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
   OFFER_ID     VARCHAR    NOT NULL,
@@ -491,7 +590,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
   JOB_ID       VARCHAR,
   CONSTRAINT PK_FACT_OFFER_ROUTES PRIMARY KEY (OFFER_ID)
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES;
 
@@ -525,7 +624,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.REGION_REGISTRY (
   PROVISIONED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
   PRIMARY KEY (REGION_NAME)
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.REGION_REGISTRY;
 
@@ -560,7 +659,7 @@ FORCE = TRUE;
 --          row exists yet for a manually-added region.)
 --------------------------------------------------------------------------------
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.CORE.REGION_REGISTRY_V
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   rr.REGION_NAME,
@@ -593,8 +692,25 @@ SELECT
   rc.COUNTRY           AS CATALOG_COUNTRY
 FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
 LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-  ON rc.LOOKUP_NAME = rr.ORS_REGION_KEY
-  OR rc.REGION_KEY  = rr.ORS_REGION_KEY;
+  ON UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY)
+  OR UPPER(rc.LOOKUP_NAME)  = UPPER(rr.ORS_REGION_KEY)
+  OR UPPER(rc.REGION_NAME)  = UPPER(rr.ORS_REGION_KEY)
+-- REGION_CATALOG holds same-name rows (e.g. country "Mexico" vs the natural-earth
+-- state "México", both LOOKUP_NAME='Mexico'). Resolve to ONE row per region:
+-- exact REGION_KEY match first (unique, authoritative for every deployed region),
+-- then exact LOOKUP_NAME / REGION_NAME, then broader admin LEVEL and larger area.
+-- Without this a bare LEFT JOIN fans out to multiple rows per region and picks an
+-- arbitrary (often the wrong, smaller) BOUNDARY. Mirrors the application helper
+-- server/lib/region-catalog-match.ts.
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY rr.REGION_NAME
+  ORDER BY
+    CASE WHEN UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY) THEN 0
+         WHEN UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY) THEN 1 ELSE 2 END,
+    CASE rc.LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+         WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3 ELSE 4 END,
+    COALESCE(rc.BOUNDARY_AREA_KM2, 0) DESC
+) = 1;
 
 -- 3b. GENERATION_JOBS
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
@@ -614,7 +730,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
   ERROR_MESSAGE VARCHAR,
   CONFIG VARIANT
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- 3a-ter. DIM_DATASETS (active dataset registry for V_*_CURRENT views)
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS (
@@ -627,7 +743,19 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS (
   ROW_COUNTS    VARIANT,
   NOTES         VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Derive the seed dataset identity + scope from the data just loaded (the
+-- parquet carries JOB_ID/REGION/VEHICLE_TYPE per row). After the TRUNCATE+COPY
+-- above, DIM_FLEET holds exactly the seed dataset, so these are unambiguous.
+-- This keeps the loader correct for whatever dataset export-preset.sql produced.
+SET SEED_JOB_ID       = (SELECT MAX(JOB_ID)       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET);
+SET SEED_REGION       = (SELECT MAX(REGION)       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_VEHICLE_TYPE = (SELECT MAX(VEHICLE_TYPE) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_PROFILE      = (SELECT MAX(ORS_PROFILE)  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_NUM_VEHICLES = (SELECT COUNT(*)          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_START        = (SELECT MIN(TS)::DATE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID);
+SET SEED_END          = (SELECT MAX(TS)::DATE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID);
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS;
 
@@ -635,13 +763,30 @@ INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
   (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE, CREATED_AT, ROW_COUNTS, NOTES)
 SELECT
   $SEED_JOB_ID,
-  'SanFrancisco',
-  'ebike',
-  'San Francisco E-Bike 50 @ seed',
+  $SEED_REGION,
+  $SEED_VEHICLE_TYPE,
+  'Seed dataset (' || $SEED_REGION || ' / ' || $SEED_VEHICLE_TYPE || ')',
   TRUE,
   CURRENT_TIMESTAMP(),
-  PARSE_JSON('{"fleet":50,"history":511,"offers":300,"partners":80,"pois":4998,"telemetry":518535,"trips":5685,"trip_schedule":5685,"places":52512,"lookup":5,"routes":300}'),
-  'Seed dataset from Data Studio preset San Francisco E-Bike 50';
+  OBJECT_CONSTRUCT(
+    'fleet',         (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET             WHERE JOB_ID = $SEED_JOB_ID),
+    'pois',          (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS              WHERE JOB_ID = $SEED_JOB_ID),
+    'trips',         (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = $SEED_JOB_ID),
+    'telemetry',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID),
+    'offers',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS           WHERE JOB_ID = $SEED_JOB_ID),
+    'partners',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = $SEED_JOB_ID),
+    'history',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = $SEED_JOB_ID),
+    'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE     WHERE JOB_ID = $SEED_JOB_ID),
+    'places',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES     WHERE JOB_ID = $SEED_JOB_ID),
+    'lookup',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP     WHERE JOB_ID = $SEED_JOB_ID),
+    'routes',        (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = $SEED_JOB_ID),
+    'anchors',       (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS           WHERE JOB_ID = $SEED_JOB_ID),
+    'demographics',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS WHERE JOB_ID = $SEED_JOB_ID),
+    'hazard',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES     WHERE JOB_ID = $SEED_JOB_ID),
+    'demand',        (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG    WHERE JOB_ID = $SEED_JOB_ID),
+    'participants',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS      WHERE JOB_ID = $SEED_JOB_ID)
+  ),
+  'Seed dataset from Data Studio preset (loaded by load-seed-data.sql)';
 
 TRUNCATE TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS;
 
@@ -650,19 +795,25 @@ INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
 SELECT
   $SEED_JOB_ID,
   '',
-  'San Francisco E-Bike 50',
-  'SanFrancisco',
-  'cycling-electric',
-  50,
-  DATEADD('day', -7, CURRENT_DATE()),
-  DATEADD('day', -1, CURRENT_DATE()),
+  'Seed: ' || $SEED_REGION || ' ' || $SEED_VEHICLE_TYPE,
+  $SEED_REGION,
+  $SEED_PROFILE,
+  $SEED_NUM_VEHICLES,
+  $SEED_START,
+  $SEED_END,
   'COMPLETED',
-  518535,
-  5685,
+  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = $SEED_JOB_ID),
+  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS WHERE JOB_ID = $SEED_JOB_ID),
   DATEADD('hour', -2, CURRENT_TIMESTAMP()),
   DATEADD('minute', -5, CURRENT_TIMESTAMP()),
   NULL,
-  PARSE_JSON('{"vehicleType":"ebike","orsProfile":"cycling-electric","numVehicles":50,"days":7,"tripsPerDay":{"min":15,"max":35},"region":"SanFrancisco","source":"seed-data"}')
+  OBJECT_CONSTRUCT(
+    'vehicleType', $SEED_VEHICLE_TYPE,
+    'orsProfile',  $SEED_PROFILE,
+    'numVehicles', $SEED_NUM_VEHICLES,
+    'region',      $SEED_REGION,
+    'source',      'seed-data'
+  )
 ;
 
 --------------------------------------------------------------------------------
@@ -685,15 +836,28 @@ END;
 $$;
 
 ALTER PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR)
-SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- 3d. REGION_CATALOG (pre-seeded Geofabrik + BBBike catalog)
 --     Skips if catalog already has data.
 --------------------------------------------------------------------------------
-CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(
-  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE'
-);
+-- Guarded: install-fleet-apps runs this loader in its data step (step 2), BEFORE
+-- the engine module (03_region_management) that creates LOAD_SEED_CATALOG. A bare
+-- CALL there aborts with "Unknown user-defined function ... LOAD_SEED_CATALOG"
+-- and bubbles up as the "canonical loader reported errors" WARN. Install step 3.4
+-- re-seeds the catalog once the engine is present, so here we CALL only when the
+-- proc already exists (engine-first path) and silently skip otherwise. Zero WARN
+-- on a fresh install; unchanged behaviour when the engine is already deployed.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
+  RETURN 'region catalog seeded';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'LOAD_SEED_CATALOG not present yet; region catalog seeded later (install step 3.4)';
+END;
+$$;
 
 --------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated
@@ -719,11 +883,11 @@ SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
 -- and the grid renders 0/300.
 SET OFFER_TS_OFFSET = (
   SELECT TIMESTAMPDIFF('SECOND',
-    (SELECT MAX(POSTED_AT) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS),
+    (SELECT MAX(POSTED_AT) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS),
     CURRENT_TIMESTAMP())
 );
 
-UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
 SET POSTED_AT      = DATEADD('SECOND', $OFFER_TS_OFFSET, POSTED_AT),
     PICKUP_FROM_TS = DATEADD('SECOND', $OFFER_TS_OFFSET, PICKUP_FROM_TS),
     PICKUP_TO_TS   = DATEADD('SECOND', $OFFER_TS_OFFSET, PICKUP_TO_TS);
@@ -732,19 +896,29 @@ SET POSTED_AT      = DATEADD('SECOND', $OFFER_TS_OFFSET, POSTED_AT),
 -- 5. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)
 --    178 H3 hexagons, 29,402 travel-time pairs.
 --------------------------------------------------------------------------------
-CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
-  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE',
-  'SanFrancisco',
-  'cycling-electric',
-  'RES8'
-);
+-- Guarded for the same reason as LOAD_SEED_CATALOG above: on a fresh
+-- install-fleet-apps run this loader executes BEFORE the engine module
+-- (06_matrix_ops) that creates LOAD_SEED_MATRIX, so a bare CALL aborts with
+-- "Unknown user-defined function ... LOAD_SEED_MATRIX" and bubbles up as the
+-- "canonical loader reported errors" WARN. Skip silently when the proc is
+-- absent; install step 3.4 re-seeds the matrix once the engine is present.
+-- The engine-first path (proc already present) still loads the matrix inline.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
+  RETURN 'seed travel-time matrix loaded';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'LOAD_SEED_MATRIX not present yet; seed matrix loaded later (install step 3.4)';
+END;
+$$;
 
 --------------------------------------------------------------------------------
 -- 6. Anchor the active-preset CONFIG pointers (Asset Velocity + Freight Exchange)
 --------------------------------------------------------------------------------
 -- Both pages read projection views gated by a single-row CONFIG pointer:
---   * FLEET_INTELLIGENCE.MARKETPLACE.CONFIG        -> Freight Exchange (VW_OFFER_ENRICHED)
---   * FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG -> Asset Velocity (VW_IDLE_TRAILERS, etc.)
+--   * FLEET_INTELLIGENCE.MARKETPLACE.CONFIG        -> Offers (VW_OFFER_ENRICHED)
+--   * FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG -> Asset Velocity (VW_IDLE_VEHICLES, etc.)
 -- The control-app's init.ts recreates the views + MERGEs MARKETPLACE.CONFIG on
 -- every boot, but a fresh install boots (Step 6) BEFORE this seed loader runs
 -- (Step 7), so at boot it derives from an empty UNIFIED and leaves both pointers
@@ -758,13 +932,13 @@ CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
 
 -- 6a. MARKETPLACE.CONFIG (guards in case init.ts has not created them yet)
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG (
   VEHICLE_TYPE VARCHAR NOT NULL,
   REGION       VARCHAR NOT NULL
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG;
 INSERT INTO FLEET_INTELLIGENCE.MARKETPLACE.CONFIG (VEHICLE_TYPE, REGION)
@@ -776,13 +950,13 @@ LIMIT 1;
 -- 6b. ROUTE_OPTIMIZATION.CONFIG (guards + cost columns; init.ts is the source of
 -- truth for these column defaults -- see init.ts ~lines 425-443. Keep in sync.)
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
   VEHICLE_TYPE VARCHAR NOT NULL,
   REGION       VARCHAR NOT NULL
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS DAILY_RENTAL_RATE_AVOIDED_USD NUMBER(10,2);
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS RENTAL_CAPTURE_RATE NUMBER(4,3);

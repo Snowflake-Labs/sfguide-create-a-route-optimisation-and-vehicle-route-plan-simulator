@@ -1,6 +1,6 @@
 ---
 name: routing-profiles
-description: "Enable or disable ORS routing profiles (driving-car, driving-hgv, cycling, walking, wheelchair). Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing vehicle types as part of customization workflow. Do NOT use for: standalone execution, changing map region, or deploying demo apps. Triggers: change routing profile, change vehicle type, enable profile, disable profile."
+description: "Enable or disable ORS routing profiles (driving-car, driving-hgv, cycling, walking, wheelchair). Subskill of routing-customization - must be invoked from the router, not independently. Use when: changing vehicle types as part of customization workflow. Do NOT use for: standalone execution, changing map region, or deploying demo apps. Triggers: change routing profile, change vehicle type, enable profile, disable profile."
 metadata:
   author: Snowflake SIT-IS
   version: 1.1.0
@@ -65,10 +65,10 @@ Configure which routing profiles are available in your Routing Solution.
 
 **Actions:**
 
-**Option A — For new cities provisioned via the Cities tab UI:**
+**Option A - For new cities provisioned via the Cities tab UI:**
 Profile selection is built into the RegionBuilder UI. Users select routing profile checkboxes before clicking Deploy. No manual config editing needed.
 
-**Option B — For the default (San Francisco) instance or existing cities:**
+**Option B - For the default (San Francisco) instance or existing cities:**
 
 1. **Determine the PBF filename** for the region (e.g., `SanFrancisco.osm.pbf`)
 
@@ -83,15 +83,15 @@ Profile selection is built into the RegionBuilder UI. Users select routing profi
    
    This generates a complete `ors-config.yml` with only the specified profiles enabled and uploads it to `@CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml`.
 
-**Option C — Manual editing (fallback):**
+**Option C - Manual editing (fallback):**
 
-1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`:
+1. **Edit** `.cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ors-config.yml`:
    - For each profile, set `enabled: true` or `enabled: false`
    - Update `source_file` to match the region's PBF filename
 
 2. **Upload** modified file:
    ```bash
-   snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ors-config.yml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated with new profiles
@@ -105,7 +105,7 @@ After completing all steps in this subskill, return to the **routing-customizati
 | Issue | Solution |
 |-------|----------|
 | `WRITE_ORS_CONFIG` not found | App needs upgrade. Upload latest `setup_script.sql` and run `ALTER APPLICATION ... UPGRADE` |
-| Config file not found locally | Re-download from stage: `snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite` |
+| Config file not found locally | Re-download from stage: `snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/install-fleet-apps/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite` |
 | Stage upload fails | Verify WRITE privilege on stage and correct `--connection` value |
 | Profile name typo | Use exact names from Available Profiles table above |
 

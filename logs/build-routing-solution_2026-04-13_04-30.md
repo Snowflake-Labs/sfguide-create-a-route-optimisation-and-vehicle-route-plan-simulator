@@ -1,4 +1,4 @@
-# Build Routing Solution — 2026-04-13 04:30 PT
+# Build Routing Solution - 2026-04-13 04:30 PT
 
 ## Summary
 Full end-to-end deployment completed successfully. All 7 demo skills deployed on top of the base ORS native app.
@@ -51,7 +51,7 @@ Everything worked first try. The skill instructions were clear and complete. `sn
 **Issue:** The seed-data.sql uses `SET REGION_GEOHASH` / `SET BBOX_*` which are session variables that don't persist across `snowflake_sql_execute` calls. Running via `snow sql -f` works fine, but individual tool calls would require inlining the values.
 **Suggestion:** Already documented in the skill as a known limitation. No change needed.
 
-### 5. Both Podman and Docker available — skill correctly asks user to choose
+### 5. Both Podman and Docker available - skill correctly asks user to choose
 **Severity:** None (working as designed)
 **Note:** The skill correctly handles the case where both container runtimes are available. User pre-approved Docker.
 
