@@ -94,27 +94,37 @@ Sample data is pre-loaded so dashboards work out of the box:
 - **472K GPS telemetry points** for 50 SF electric bikes across 6K trips
 - **5K points of interest** (restaurants, depots, delivery zones)
 
-## Demo use cases
+## What's included
 
-| Demo | What it does | Deploy with |
-|------|-------------|-------------|
-| **Car Fleet** | Realistic vehicle GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable city, fleet size, and shift patterns. | `generate driver locations` |
-| **E-Bike Fleet** | E-bike fleet telemetry with configurable POI density and fleet size. | `setup e-bike fleet` |
-| **Route Deviation** | Compares actual GPS paths against planned routes to detect detours and analyze deviation patterns. | `deploy route deviation` |
-| **Dwell Analysis** | 12-step Dynamic Table pipeline: state detection, dwell sessionization, H3 congestion heatmaps, SLA breach alerts, facility utilization, daily trends. | `deploy dwell analysis` |
-| **Route Optimization** | VRP demo using Overture Maps and CARTO Marketplace data with Snowflake notebooks. | `deploy route optimization demo` |
-| **Retail Catchment** | Isochrone-based catchment zones, competitor proximity analysis, and address density metrics. | `deploy retail catchment` |
-| **Location Diagnostics** | Region-agnostic retail site cannibalisation and closure modelling. A POI subset becomes the store estate, and live ORS drive-time bands drive catchment overlap and next-closest-store logic (Site Impact and Closure Impact views). | `location diagnostics` |
-| **Backload Matching** | Fleet-wide VRP that matches idle-bound trailers to internal volumes and external freight-exchange offers, with internal-first priority, empty vs loaded legs, KPI savings, and a Cortex rationale. | `backload matching` |
-| **Freight Exchange** | Dispatcher-grade marketplace cockpit to browse, filter, and inspect freight offers with trust-score and market-rate badges plus partner lane history. | `freight exchange` |
-| **Emergency Response** | Region-generic evacuation-planning wizard: colours the map by flood/wildfire hazard risk, seeds participants inside care-center drive-time isochrones, and solves a capacitated multi-depot evacuation VRP. | `emergency response` |
+**You do not run a skill per demo.** The single `install the fleet apps` command deploys the platform *and* the analytics app with all of its dashboards. The dashboards below ship with `FLEET_SA_APP` and light up automatically as soon as their data is present. The bundled San Francisco seed activates the core set out of the box; use **Data Studio** in the admin app to generate data for other regions, vehicle types, or scenarios (for example Emergency Response).
 
-### Advanced
+| Dashboard | What it shows |
+|-----------|---------------|
+| **Live Asset Operations** | Real-time asset map and status across the fleet |
+| **Trip Inspector** | Per-trip drill-down: planned vs actual path, stops, dwell, speed |
+| **Operator Performance** | Per-operator scorecards and safety/risk signals |
+| **Demand Density** | Space-time density of activity and top origins |
+| **Dwell & Congestion** | Dwell sessions, facility utilization, and SLA-breach alerts |
+| **Route Deviation** | Actual GPS paths vs planned routes to detect detours |
+| **Asset Velocity / Route Optimization** | Idle-asset cost of idleness plus multi-stop VRP |
+| **Catchment** | Live drive-time catchment zones, competitor proximity, address density |
+| **Location Diagnostics** | Retail site cannibalisation (Site Impact) and closure modelling (Closure Impact) |
+| **Emergency Response** | Evacuation-planning wizard (hazard risk + multi-depot evacuation VRP); appears once a region has hazard data |
 
-| Demo | What it does | Deploy with |
-|------|-------------|-------------|
-| **Routing Agent** | A Snowflake Intelligence (Cortex Agent) that wraps ORS functions as tools. Natural-language route planning with AI-powered geocoding. | `create routing agent` |
-| **SAP Fleet Connector** | Binds landed SAP (EAM/SD/TM) plus fleet telematics into the neutral `FLEET_APP` contract and `SV_FLEET_OPS`, so the dashboards, agent, and Cortex Analyst run on a customer's real SAP data with no edits above the contract. | `SAP connector` |
+On top of the dashboards, the app has a natural-language **Cortex agent** (`FLEET_AGENT`) that answers questions by calling the live routing tools and the semantic views.
+
+## Customize it for your needs
+
+These steps are **optional** and run *after* the base install. Type the phrase into Cortex Code only when you actually need it - none of them are required to see the dashboards above.
+
+| Optional action | When you'd use it | Invoke with |
+|-----------------|-------------------|-------------|
+| Provision another region / change the map | Analyze a city other than San Francisco | `change location to London` |
+| Generate data for a new region or vehicle type | Stand up a POC in the customer's own geography | Data Studio (admin app), or `generate driver locations` |
+| Replace synthetic data with real data | Point the dashboards at a customer's real fleet source (SAP EAM/SD/TM + telematics) | `SAP connector` |
+| Add a natural-language routing-agent playground | Ad-hoc route planning with AI geocoding | `create routing agent` |
+
+> **Not bundled:** the repo also contains freight-marketplace demos (Backload Matching, Freight Exchange). Their SQL objects are created by the install, but their interactive pages lived in the retired standalone control app and are not shipped in the current apps. They remain available as SQL-driven references for developers.
 
 ## The two apps
 
@@ -134,7 +144,7 @@ The privileged console for standing up and operating the platform:
 
 ### FLEET_SA_APP (agent-first analytics)
 
-The consumer-facing analytics app. It presents vehicle/industry-agnostic business-problem views (Fleet/Asset Status, Asset Map, Demand Density, Trip Inspection, Operator Performance, Top Origins, Dwell and Congestion, Route Deviation, Asset Utilization, VRP, Catchment) alongside a natural-language chat backed by `FLEET_AGENT`. Ask a question in plain English and the agent calls the routing tools and semantic views to answer it.
+The consumer-facing analytics app. It presents vehicle/industry-agnostic business-problem dashboards (Live Asset Operations, Trip Inspector, Operator Performance, Demand Density, Top Origins, Dwell and Congestion, Route Deviation, Asset Velocity / Route Optimization, Catchment, Location Diagnostics, Emergency Response) alongside a natural-language chat backed by `FLEET_AGENT`. Ask a question in plain English and the agent calls the routing tools and semantic views to answer it. Each dashboard surfaces automatically once its underlying data is present.
 
 ## How to use
 
@@ -144,25 +154,16 @@ Open this repo in Cortex Code and type any of these phrases:
 
 | What you want | What to say |
 |---------------|-------------|
-| Deploy the full stack (apps, agents, MCP, engine) | `install the fleet apps` |
+| Deploy the full stack (apps, agents, MCP, engine, dashboards) | `install the fleet apps` |
 | Check environment | `check build prerequisites` |
-| Change to London | `change location to London` |
+| Provision another region / change the map | `change location to London` |
 | Enable cycling profile | `change routing profile` |
-| Deploy car fleet demo | `generate driver locations` |
-| Deploy e-bike fleet demo | `setup e-bike fleet` |
-| Deploy route deviation | `deploy route deviation` |
-| Deploy dwell analysis | `deploy dwell analysis` |
-| Deploy retail catchment | `deploy retail catchment` |
-| Deploy route optimization | `deploy route optimization demo` |
-| Deploy location diagnostics | `location diagnostics` |
-| Deploy backload matching | `backload matching` |
-| Deploy freight exchange | `freight exchange` |
-| Deploy emergency response | `emergency response` |
-| Bind real SAP fleet data | `SAP connector` |
-| Create routing agent | `create routing agent` |
+| Generate data for a new region or vehicle type | `generate driver locations` |
+| Replace synthetic data with a real source | `SAP connector` |
+| Add a natural-language routing-agent playground | `create routing agent` |
 | Clean up everything | `routing-solution-cleanup` |
 
-The `install the fleet apps` command is the primary path and installs the complete agnostic stack. The per-vehicle and per-vertical demo skills (car fleet, e-bike fleet, route deviation, dwell, retail catchment, location diagnostics, backload matching, freight exchange, emergency response, routing agent) are optional add-ons layered on top. The SAP fleet connector binds a customer's real SAP data to the same contract.
+`install the fleet apps` is the primary path: it installs the complete agnostic stack **and every dashboard**, so you do not deploy demos one by one. The phrases above the cleanup row are optional customizations you run only when needed (provision a new region, generate data for another geography, bind real data, or add the routing-agent playground). The San Francisco seed activates the core dashboards automatically.
 
 ### Multi-region support
 
@@ -171,7 +172,7 @@ The solution supports multiple geographic regions simultaneously:
 1. Deploy the stack (the engine defaults to San Francisco).
 2. Use **"change location to [city]"** to provision additional regions.
 3. The Region Switcher in each app lets you switch between regions.
-4. Each demo's CONFIG table can be pointed to any provisioned region.
+4. Generate data for the new region in Data Studio; the dashboards follow the active region automatically.
 
 ### Cleanup
 
