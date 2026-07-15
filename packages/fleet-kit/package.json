@@ -1,0 +1,37 @@
+{
+  "name": "@fleet-kit/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared, framework-agnostic UI/data primitives for the Routing Platform admin console and the Analytics App.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./dist/index.js",
+    "./sf-auth": "./dist/sf-auth/index.js",
+    "./sql-utils": "./dist/sql-utils/index.js",
+    "./map": "./dist/map/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "@deck.gl/core": "~9.2.11",
+    "@deck.gl/layers": "~9.2.11",
+    "@deck.gl/geo-layers": "~9.2.11",
+    "h3-js": "^4.1.0"
+  },
+  "devDependencies": {
+    "@deck.gl/core": "~9.2.11",
+    "@deck.gl/layers": "~9.2.11",
+    "@deck.gl/geo-layers": "~9.2.11",
+    "@types/geojson": "^7946.0.14",
+    "@types/node": "^20.0.0",
+    "h3-js": "^4.1.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,5 +1,12 @@
 # `ors_control_app` Server Architecture (One-Page Map)
 
+> DEPRECATED: this page maps the retired legacy Vite/Express ORS Control App,
+> which has been removed from the repo. The current control surfaces are the
+> Next.js `fleet_admin_app` and `fleet_sa_app` under
+> `.cortex/skills/install-fleet-apps/`, whose server code lives in
+> `ui/src/server/{lib,studio}/`. This page is kept only as a historical map of
+> the module boundaries that were ported forward.
+
 This is the post-refactor map of the ORS Control App Express server. After the
 holistic refactor (May 2026), `server/index.ts` is a 128-line bootstrap. All
 real work happens in domain-scoped modules under `server/{lib,routes,studio}/`.
@@ -86,7 +93,7 @@ graph LR
     appIndex --> staticR["routes/static<br>SPA fallback (*)"]
 ```
 
-Mount order matters for `routes/static.ts` — its `*` SPA fallback must be last.
+Mount order matters for `routes/static.ts` - its `*` SPA fallback must be last.
 
 ---
 
@@ -115,7 +122,7 @@ Mount order matters for `routes/static.ts` — its `*` SPA fallback must be last
 | ---------------------------------------------------------- | --------------------------------------------------------------- |
 | Add a new endpoint under an existing domain                | Append handler to matching `routes/*.ts`                        |
 | Add a new endpoint in a new domain                         | New file in `routes/`, mount via `app.use(...)` in `index.ts`   |
-| Add region-aware logic (resolve service name, default region) | `server/lib/region.ts` — never inline `SELECT REGION FROM CONFIG` |
+| Add region-aware logic (resolve service name, default region) | `server/lib/region.ts` - never inline `SELECT REGION FROM CONFIG` |
 | Read or mutate the active-region-override                  | `server/lib/state.ts` (`getActiveRegionOverride / setActiveRegionOverride`) |
 | Run a SQL query                                            | `runSql` / `callProcedure` / `submitSqlAsync` from `server/lib/sql.ts` |
 | Sanitize an identifier / number / string for SQL           | `server/lib/sanitize.ts`                                        |
@@ -139,7 +146,7 @@ Mount order matters for `routes/static.ts` — its `*` SPA fallback must be last
 4. **Shared mutable state lives in `lib/state.ts`** (getter/setter pattern).
    Never reach for module-level globals from another file.
 5. **Big SQL strings stay out of route handlers.** Either factor them into
-   stored procedures (preferred — see AGENTS.md) or into named exports under
+   stored procedures (preferred - see AGENTS.md) or into named exports under
    `server/lib/sql.ts`.
 6. **Every CREATE statement needs a COMMENT tracking tag**, and every session
    needs `query_tag` set. See AGENTS.md "Do NOT" list for the exact JSON.
@@ -154,7 +161,7 @@ recycled by the SPCS public ingress / intermediate proxies even while the job
 is still progressing server-side. The system is designed to be reconnect-safe:
 
 - Server emits `: heartbeat` every **5s** (well under typical 30-60s ingress
-  idle timeouts) — see `server/studio/routes.ts`.
+  idle timeouts) - see `server/studio/routes.ts`.
 - Server holds per-job event buffers and replays them with `_replay:true` on
   reconnect; the client filters those out so the UI does not double-log.
 - Node socket timeouts on the SSE response are fully disabled
@@ -167,13 +174,13 @@ is still progressing server-side. The system is designed to be reconnect-safe:
   retries / 30s exponential backoff cap.
 
 If the viewer reports `Connection lost after 20 retries` the job may still be
-running — fetch `/api/studio/jobs/:id/logs` or query
+running - fetch `/api/studio/jobs/:id/logs` or query
 `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS` to confirm status.
 
 ---
 
 ## Related references
 
-- [AGENTS.md](../../AGENTS.md) — repo-wide conventions, commit discipline, deployment
-- [docs/ARCHITECTURE.md](../ARCHITECTURE.md) — full-stack architecture
-- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/references/troubleshooting.md` — image build / deploy issues
+- [AGENTS.md](../../AGENTS.md) - repo-wide conventions, commit discipline, deployment
+- [docs/ARCHITECTURE.md](../ARCHITECTURE.md) - full-stack architecture
+- `.cortex/skills/install-fleet-apps/references/troubleshooting.md` - image build / deploy issues

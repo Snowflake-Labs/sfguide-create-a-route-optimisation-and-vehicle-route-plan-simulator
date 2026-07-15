@@ -1,4 +1,4 @@
-# build-routing-solution friction log — 2026-05-10 12:32
+# build-routing-solution friction log - 2026-05-10 12:32
 
 ## Summary
 USA deployment with `driving-hgv` profile failed at the `create_region_ors_service` step with:
@@ -25,7 +25,7 @@ Replaced the two assignment expressions with the supported `CALL ... INTO :var` 
 CALL OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY() INTO :instance_family;
 ```
 
-File: [.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql](../.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql) — lines 542 (XXL branch) and 546 (default fallback).
+File: [.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql](../.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql) - lines 542 (XXL branch) and 546 (default fallback).
 
 Module 03 redeployed via `snow sql -f`. Verified:
 - `CALL ...RESOLVE_LARGEST_HIGHMEM_FAMILY()` returns `MEM_X64_G2_192` standalone.

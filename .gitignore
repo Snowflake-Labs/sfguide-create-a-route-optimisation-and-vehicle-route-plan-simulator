@@ -39,9 +39,26 @@ dist-server/
 build/
 *.egg-info/
 
-# Native app build output
-build-routing-solution/Native_app/output/
-**/native_app/output/
+# Vendored synapse framework (tier-C self-containment): ship its built dist so a
+# fresh clone can `synapse materialize` from public npm with no external path.
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/dist/
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/dist/**
+
+# Shared UI kit (@fleet-kit/core): ship its built dist so both apps can consume it
+# from a fresh clone via a relative file: dependency.
+!packages/fleet-kit/dist/
+!packages/fleet-kit/dist/**
+
+# Next.js build output (SA host)
+**/.next/
+
+# synapse materialize generated outputs (install.json is kept as source config)
+**/_installed/**/install.sql
+**/_installed/**/install.json
+**/_installed/**/runtime.js
+**/_installed/**/server.js
+**/_installed/**/package.json
+**/_installed/**/.claude-plugin/
 
 # Cortex Code session artifacts
 .snowflake/cortex/plans/

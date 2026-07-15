@@ -1,0 +1,79 @@
+# =============================================================================
+# Data model (logical contract) - NEUTRAL starter pack
+# =============================================================================
+# A domain-agnostic reference pack built ENTIRELY on the primitives, with NO
+# fleet/vehicle/trailer vocabulary. It proves a non-fleet domain can be authored
+# on the data-contract + app-bundle pattern with zero core code edits.
+#
+# Consumers (the starter dashboards + SV_STARTER) bind to STARTER_APP.CORE.*,
+# never to a physical source. The source is the neutral SF substrate
+# (SYNTHETIC_DATASETS.NEUTRAL.*), itself a zero-copy relabeling of the bundled
+# San Francisco synthetic dataset. Swap the substrate for customer data by
+# repointing entity-mapping.yaml; consumers do not change.
+#
+# access_pattern:
+#   mapped   -> materialized 1:1 from a source via entity-mapping.yaml
+#   derived  -> COMPUTED by the pack from another logical entity
+# =============================================================================
+
+pack: starter
+app_schema: STARTER_APP.CORE
+
+entities:
+  # ---- Places ---------------------------------------------------------------
+  - name: LOCATIONS
+    description: "Points of interest: a named, categorized place with a location."
+    access_pattern: mapped
+    grain: "One row per location"
+    primary_key: LOCATION_ID
+    columns:
+      - { name: LOCATION_ID,   type: VARCHAR, nullable: false }
+      - { name: NAME,          type: VARCHAR }
+      - { name: CATEGORY,      type: VARCHAR }
+      - { name: LOCATION_TYPE, type: VARCHAR }
+      - { name: LAT,           type: FLOAT }
+      - { name: LNG,           type: FLOAT }
+      - { name: POINT_GEOM,    type: GEOGRAPHY, description: "Point location." }
+
+  # ---- Movements ------------------------------------------------------------
+  - name: MOVEMENTS
+    description: "Origin -> destination movements with distance, duration, and timing."
+    access_pattern: mapped
+    grain: "One row per movement"
+    primary_key: MOVEMENT_ID
+    columns:
+      - { name: MOVEMENT_ID,      type: VARCHAR, nullable: false }
+      - { name: ASSET_ID,         type: VARCHAR, description: "The asset that performed the movement." }
+      - { name: ORIGIN_ID,        type: VARCHAR, description: "Origin LOCATION_ID." }
+      - { name: DESTINATION_ID,   type: VARCHAR, description: "Destination LOCATION_ID." }
+      - { name: ORIGIN_GEO,       type: GEOGRAPHY }
+      - { name: DESTINATION_GEO,  type: GEOGRAPHY }
+      - { name: ROUTE_GEO,        type: GEOGRAPHY, description: "Travelled path geometry." }
+      - { name: DISTANCE_KM,      type: FLOAT }
+      - { name: DURATION_MINUTES, type: FLOAT }
+      - { name: STARTED_AT,       type: TIMESTAMP_NTZ }
+      - { name: ENDED_AT,         type: TIMESTAMP_NTZ }
+      - { name: STATUS,           type: VARCHAR }
+
+  # ---- Derived: daily movement trend (computed from MOVEMENTS) --------------
+  - name: MOVEMENT_DAILY
+    description: "Daily movement rollup. Pack-computed from MOVEMENTS."
+    access_pattern: derived
+    grain: "One row per day"
+    primary_key: DAY
+    derived_from: MOVEMENTS
+    sql: |
+      SELECT
+        DATE(STARTED_AT)                 AS DAY,
+        COUNT(*)                         AS MOVEMENT_COUNT,
+        ROUND(AVG(DISTANCE_KM), 2)       AS AVG_DISTANCE_KM,
+        ROUND(AVG(DURATION_MINUTES), 2)  AS AVG_DURATION_MINUTES,
+        ROUND(SUM(DISTANCE_KM), 2)       AS TOTAL_DISTANCE_KM
+      FROM {src}
+      GROUP BY DATE(STARTED_AT)
+    columns:
+      - { name: DAY,                  type: DATE, nullable: false }
+      - { name: MOVEMENT_COUNT,       type: NUMBER }
+      - { name: AVG_DISTANCE_KM,      type: FLOAT }
+      - { name: AVG_DURATION_MINUTES, type: FLOAT }
+      - { name: TOTAL_DISTANCE_KM,    type: FLOAT }

@@ -61,7 +61,7 @@ USING (
   SELECT * FROM VALUES
     ('bicycle',    'cycling-regular',     15,    25,    1,    15,  18,  0.05,  8.0, FALSE,  15, 'bicycle'),
     ('ebike',      'cycling-electric',    25,    40,    2,    25,  22,  0.08, 10.0, FALSE,  25, 'ebike'),
-    ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0, FALSE,   5, 'courier'),
+    ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0, FALSE,   5, 'pedestrian'),
     ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0, FALSE,  80, 'motorcycle'),
     ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0, FALSE,  80, 'car'),
     ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, FALSE, 150, 'van'),
@@ -270,7 +270,7 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
   POSTED_AT        TIMESTAMP_NTZ,
   JOB_ID           VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 INSERT INTO SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
   OFFER_ID, REGION, VEHICLE_TYPE, SOURCE,

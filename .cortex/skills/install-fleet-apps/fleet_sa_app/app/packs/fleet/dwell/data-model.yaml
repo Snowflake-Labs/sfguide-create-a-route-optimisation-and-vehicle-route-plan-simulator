@@ -1,0 +1,301 @@
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: dwell
+# =============================================================================
+# SELF-BUILDING pack: the analytic DAG (state-detection -> sessionization ->
+# enrichment -> H3/SLA/facility/driver/daily rollups) is expressed here as
+# `derived` primitives that compute from sibling FLEET_APP.DWELL.VW_* objects.
+# The pack no longer facades pre-built FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_*
+# tables - it rebuilds them. Source-specific leaf shaping lives in
+# entity-mapping.yaml; the value-add transforms below are source-agnostic.
+#
+# access_pattern:
+#   mapped   -> leaf bound to a source via entity-mapping.yaml (here: projection
+#               views over SYNTHETIC_DATASETS.UNIFIED, shaped by a mapping `sql:`)
+#   derived  -> COMPUTED by the solution from another logical entity via a `sql:`
+#               body ({src}=derived_from view, {schema}=pack schema, siblings as
+#               {schema}.VW_<NAME>). Materialized as plain views (no LAG refresh).
+#   context  -> region/vehicle control row carried through.
+#
+# `replaces:` lets the SV-repoint rebind the old physical DT FQN to this VW_.
+# Consumer entities (DWELL_SESSIONS, H3_CONGESTION, SLA_ALERTS,
+# FACILITY_UTILIZATION, DRIVER_DWELL_SUMMARY, DAILY_TRENDS, CONFIG) keep the
+# SAME names/columns the dashboards + SV_DWELL_ANALYTICS already bind to.
+# =============================================================================
+
+pack: dwell
+app_schema: FLEET_APP.DWELL
+warehouse: ROUTING_ANALYTICS
+dynamic_target_lag: "5 minutes"
+
+entities:
+  # ---- Leaf projections (mapped; source shaping in entity-mapping.yaml) ------
+  - name: VEHICLE_TELEMETRY
+    description: "GPS pings with normalized dwell STATUS, for the active CONFIG vehicle/region."
+    access_pattern: mapped
+    grain: "One row per telemetry ping"
+    primary_key: TELEMETRY_ID
+    columns:
+      - { name: TELEMETRY_ID, type: VARCHAR }
+      - { name: VEHICLE_ID,   type: VARCHAR }
+      - { name: TRIP_ID,      type: VARCHAR }
+      - { name: TS,           type: TIMESTAMP_NTZ }
+      - { name: SPEED_KMH,    type: FLOAT }
+      - { name: STATUS,       type: VARCHAR, description: "Normalized DWELL_* / MOVING / IDLE state" }
+      - { name: LOCATION_ID,  type: VARCHAR }
+      - { name: LOCATION_TYPE, type: VARCHAR }
+      - { name: POINT_GEOM,   type: GEOGRAPHY }
+
+  - name: VEHICLE_FLEET
+    description: "Fleet/driver dimension for the active vehicle/region."
+    access_pattern: mapped
+    grain: "One row per vehicle"
+    primary_key: VEHICLE_ID
+    columns:
+      - { name: VEHICLE_ID,     type: VARCHAR }
+      - { name: VEHICLE_TYPE,   type: VARCHAR }
+      - { name: DRIVER_PROFILE, type: VARCHAR }
+      - { name: OPERATING_MODE, type: VARCHAR }
+      - { name: HOME_BASE_NAME, type: VARCHAR }
+
+  - name: DESTINATIONS
+    description: "Non-rest-stop POIs (warehouses, stores, addresses) for the active region."
+    access_pattern: mapped
+    grain: "One row per POI"
+    primary_key: ID
+    columns:
+      - { name: ID,             type: VARCHAR }
+      - { name: NAME,           type: VARCHAR }
+      - { name: LOCATION_TYPE,  type: VARCHAR }
+      - { name: BASIC_CATEGORY, type: VARCHAR }
+      - { name: CITY,           type: VARCHAR }
+
+  - name: REST_STOPS
+    description: "Rest-stop POIs for the active region."
+    access_pattern: mapped
+    grain: "One row per rest stop"
+    primary_key: REST_STOP_ID
+    columns:
+      - { name: REST_STOP_ID, type: VARCHAR }
+      - { name: NAME,         type: VARCHAR }
+      - { name: REST_TYPE,    type: VARCHAR }
+
+  # ---- Internal derived primitives (not consumer-facing) --------------------
+  - name: STATE_CHANGES
+    description: "Layer 1 primitive: LAG-based state-change detection per vehicle."
+    access_pattern: derived
+    derived_from: VEHICLE_TELEMETRY
+    materialization: view
+    sql: |
+      SELECT
+          TELEMETRY_ID, VEHICLE_ID, TRIP_ID, TS, POINT_GEOM,
+          SPEED_KMH, STATUS, LOCATION_ID, LOCATION_TYPE,
+          LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS PREV_STATUS,
+          CASE WHEN STATUS != LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS)
+               THEN 1 ELSE 0 END AS IS_STATE_CHANGE
+      FROM {src}
+      WHERE STATUS IN ('MOVING','DWELL_WAREHOUSE','DWELL_DESTINATION',
+                       'DWELL_REST_STOP','DWELL_STORE','DWELL_DETOUR','IDLE')
+
+  - name: SESSIONS_RAW
+    description: "Layer 2 primitive: dwell sessionization (CONDITIONAL_CHANGE_EVENT) + H3 centroid."
+    access_pattern: derived
+    derived_from: STATE_CHANGES
+    materialization: view
+    sql: |
+      WITH sessions AS (
+        SELECT *,
+          CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID
+        FROM {src}
+      )
+      SELECT
+        VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID,
+        MIN(TS) AS SESSION_START, MAX(TS) AS SESSION_END,
+        DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SECONDS,
+        ROUND(DATEDIFF('second', MIN(TS), MAX(TS)) / 60.0, 1) AS DWELL_MINUTES,
+        COUNT(*) AS PING_COUNT,
+        ST_CENTROID(ST_COLLECT(POINT_GEOM)) AS AVG_POINT,
+        H3_POINT_TO_CELL_STRING(ST_CENTROID(ST_COLLECT(POINT_GEOM)), 7) AS H3_CELL_R7
+      FROM sessions
+      WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
+      GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID
+
+  # ---- Consumer-facing: enriched sessions (was DT_DWELL_ENRICHED) -----------
+  - name: DWELL_SESSIONS
+    description: "Enriched dwell sessions (location + fleet metadata). Consumer fact for dwell dashboards."
+    access_pattern: derived
+    derived_from: SESSIONS_RAW
+    depends_on: [DESTINATIONS, REST_STOPS, VEHICLE_FLEET]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: SESSION_ID, type: NUMBER }
+      - { name: DWELL_MINUTES, type: FLOAT }
+      - { name: LOCATION_NAME, type: VARCHAR }
+      - { name: FACILITY_TYPE, type: VARCHAR }
+      - { name: H3_CELL_R7, type: VARCHAR }
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+    sql: |
+      SELECT
+        s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
+        s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
+        s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
+        COALESCE(d.NAME, rs.NAME, 'Unknown') AS LOCATION_NAME,
+        COALESCE(d.CITY, 'N/A') AS CITY,
+        COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, s.STATUS) AS FACILITY_TYPE,
+        COALESCE(d.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
+        tf.VEHICLE_TYPE, tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
+      FROM {src} s
+      LEFT JOIN {schema}.VW_DESTINATIONS d ON s.LOCATION_ID = d.ID
+      LEFT JOIN {schema}.VW_REST_STOPS rs ON s.LOCATION_ID = rs.REST_STOP_ID
+      LEFT JOIN {schema}.VW_VEHICLE_FLEET tf ON s.VEHICLE_ID = tf.VEHICLE_ID
+
+  # ---- Consumer-facing rollups (all from DWELL_SESSIONS) --------------------
+  - name: H3_CONGESTION
+    description: "Hourly H3 congestion heatmap."
+    access_pattern: derived
+    derived_from: DWELL_SESSIONS
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION
+    columns:
+      - { name: H3_CELL_R7,   type: VARCHAR }
+      - { name: HOUR_BUCKET,  type: TIMESTAMP_NTZ }
+      - { name: SESSION_COUNT, type: NUMBER }
+      - { name: AVG_DWELL_MIN, type: FLOAT }
+    sql: |
+      SELECT
+        H3_CELL_R7,
+        DATE_TRUNC('hour', SESSION_START) AS HOUR_BUCKET,
+        COUNT(DISTINCT VEHICLE_ID) AS VEHICLE_COUNT,
+        COUNT(*) AS SESSION_COUNT,
+        ROUND(AVG(DWELL_MINUTES), 1) AS AVG_DWELL_MIN,
+        ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN
+      FROM {src}
+      WHERE STATUS LIKE 'DWELL%'
+      GROUP BY H3_CELL_R7, HOUR_BUCKET
+
+  - name: SLA_ALERTS
+    description: "SLA breach alerts (WARNING/CRITICAL). Thresholds are vehicle-type-aware, read from the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA (keyed by VEHICLE_TYPE x LOCATION_TYPE)."
+    access_pattern: derived
+    derived_from: DWELL_SESSIONS
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
+    columns:
+      - { name: VEHICLE_ID,    type: VARCHAR }
+      - { name: LOCATION_NAME, type: VARCHAR }
+      - { name: SLA_STATUS,    type: VARCHAR }
+      - { name: DWELL_MINUTES, type: FLOAT }
+      - { name: MINUTES_OVER_WARNING, type: FLOAT }
+    sql: |
+      SELECT
+        e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID,
+        e.SESSION_START, e.SESSION_END, e.DWELL_SECONDS, e.DWELL_MINUTES,
+        e.PING_COUNT, e.AVG_POINT, e.H3_CELL_R7,
+        e.LOCATION_NAME, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
+        e.HOME_BASE_NAME, e.OPERATING_MODE, e.DRIVER_PROFILE,
+        t.WARNING_MIN AS WARNING_MINUTES, t.CRITICAL_MIN AS CRITICAL_MINUTES,
+        CASE
+          WHEN e.DWELL_MINUTES >= t.CRITICAL_MIN THEN 'CRITICAL'
+          WHEN e.DWELL_MINUTES >= t.WARNING_MIN THEN 'WARNING'
+        END AS SLA_STATUS,
+        ROUND(e.DWELL_MINUTES - t.WARNING_MIN, 1) AS MINUTES_OVER_WARNING
+      FROM {src} e
+      JOIN FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA t
+        ON t.VEHICLE_TYPE = e.VEHICLE_TYPE
+       AND t.LOCATION_TYPE = REPLACE(e.STATUS, 'DWELL_', '')
+      WHERE e.DWELL_MINUTES >= t.WARNING_MIN AND (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
+
+  - name: FACILITY_UTILIZATION
+    description: "Daily facility visit stats."
+    access_pattern: derived
+    derived_from: DWELL_SESSIONS
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION
+    columns:
+      - { name: LOCATION_ID,    type: VARCHAR }
+      - { name: LOCATION_NAME,  type: VARCHAR }
+      - { name: FACILITY_TYPE,  type: VARCHAR }
+      - { name: TOTAL_SESSIONS, type: NUMBER }
+      - { name: TOTAL_DWELL_MIN, type: FLOAT }
+      - { name: AVG_DWELL_MIN,  type: FLOAT }
+      - { name: MAX_DWELL_MIN,  type: FLOAT }
+    sql: |
+      SELECT
+        LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE,
+        DATE_TRUNC('day', SESSION_START)::DATE AS VISIT_DATE,
+        COUNT(DISTINCT VEHICLE_ID) AS UNIQUE_VEHICLES,
+        COUNT(*) AS TOTAL_SESSIONS,
+        ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
+        ROUND(AVG(DWELL_MINUTES), 1) AS AVG_DWELL_MIN,
+        ROUND(MAX(DWELL_MINUTES), 1) AS MAX_DWELL_MIN,
+        ROUND(SUM(DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS
+      FROM {src}
+      WHERE STATUS LIKE 'DWELL%'
+      GROUP BY LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE
+
+  - name: DRIVER_DWELL_SUMMARY
+    description: "Per-driver dwell + SLA breach rollup."
+    access_pattern: derived
+    derived_from: DWELL_SESSIONS
+    depends_on: [SLA_ALERTS]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
+    columns:
+      - { name: VEHICLE_ID,     type: VARCHAR }
+      - { name: DRIVER_PROFILE, type: VARCHAR }
+      - { name: HOME_BASE_NAME, type: VARCHAR }
+      - { name: SLA_BREACH_COUNT, type: NUMBER }
+      - { name: CRITICAL_BREACH_COUNT, type: NUMBER }
+      - { name: AVG_SESSION_MIN, type: FLOAT }
+      - { name: TOTAL_DWELL_HOURS, type: FLOAT }
+    sql: |
+      SELECT
+        e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME,
+        COUNT(*) AS TOTAL_DWELL_SESSIONS,
+        ROUND(SUM(e.DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
+        ROUND(SUM(e.DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS,
+        ROUND(AVG(e.DWELL_MINUTES), 1) AS AVG_SESSION_MIN,
+        COUNT(DISTINCT e.LOCATION_ID) AS UNIQUE_LOCATIONS,
+        SUM(CASE WHEN a.SLA_STATUS IS NOT NULL THEN 1 ELSE 0 END) AS SLA_BREACH_COUNT,
+        SUM(CASE WHEN a.SLA_STATUS = 'CRITICAL' THEN 1 ELSE 0 END) AS CRITICAL_BREACH_COUNT
+      FROM {src} e
+      LEFT JOIN {schema}.VW_SLA_ALERTS a
+        ON e.VEHICLE_ID = a.VEHICLE_ID AND e.SESSION_ID = a.SESSION_ID AND e.STATUS = a.STATUS
+      WHERE e.STATUS LIKE 'DWELL%'
+      GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME
+
+  - name: DAILY_TRENDS
+    description: "Fleet-wide daily dwell trend."
+    access_pattern: derived
+    derived_from: DWELL_SESSIONS
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS
+    columns:
+      - { name: TREND_DATE,     type: DATE }
+      - { name: TOTAL_SESSIONS, type: NUMBER }
+      - { name: ACTIVE_VEHICLES, type: NUMBER }
+    sql: |
+      SELECT
+        DATE_TRUNC('day', SESSION_START)::DATE AS TREND_DATE,
+        COUNT(*) AS TOTAL_SESSIONS,
+        COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES,
+        ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
+        ROUND(SUM(DWELL_MINUTES) / 60.0, 0) AS TOTAL_DWELL_HOURS,
+        ROUND(AVG(DWELL_MINUTES), 1) AS AVG_SESSION_MIN,
+        SUM(CASE WHEN STATUS = 'DWELL_WAREHOUSE' THEN DWELL_MINUTES ELSE 0 END)::INT AS WAREHOUSE_DWELL_MIN,
+        SUM(CASE WHEN STATUS = 'DWELL_DESTINATION' THEN DWELL_MINUTES ELSE 0 END)::INT AS DESTINATION_DWELL_MIN,
+        SUM(CASE WHEN STATUS = 'DWELL_REST_STOP' THEN DWELL_MINUTES ELSE 0 END)::INT AS REST_STOP_DWELL_MIN,
+        SUM(CASE WHEN STATUS = 'DWELL_STORE' THEN DWELL_MINUTES ELSE 0 END)::INT AS STORE_DWELL_MIN,
+        COUNT(DISTINCT H3_CELL_R7) AS UNIQUE_H3_CELLS
+      FROM {src}
+      WHERE STATUS LIKE 'DWELL%'
+      GROUP BY TREND_DATE
+
+  # ---- Context: region/vehicle control row -----------------------------------
+  - name: CONFIG
+    description: "Single-row region/vehicle context for the pack (writable physical control table)."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }

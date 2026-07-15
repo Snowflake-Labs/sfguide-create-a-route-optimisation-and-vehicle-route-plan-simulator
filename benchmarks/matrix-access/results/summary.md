@@ -20,13 +20,13 @@ Result cache disabled at session level.
 - Variants measured: **Standard, Clustered, Interactive (Gen2)**. The **Hybrid (Unistore)** variant was **excluded** at this scale (see below).
 - Probes: 150 W1 point lookups, 40 W2 group lookups (warm-up = 10, discarded). Reduced from the default 1000/200 because point lookups on a 3.2 B-row table run ~2.5 s each on XSMALL, making the full probe set multi-hour.
 - Build warehouse: `BENCH_BUILD_WH` (LARGE). Measurement: `BENCH_STD_WH` (XSMALL standard) for Standard/Clustered; `BENCH_INT_WH` (XSMALL interactive, single cluster) for Interactive.
-- W2 group lookup returns **77,712 rows** per origin (avg dests/origin on RES7) — ~6x the original RES6 study.
+- W2 group lookup returns **77,712 rows** per origin (avg dests/origin on RES7) - ~6x the original RES6 study.
 - `USE_CACHED_RESULT = FALSE`; bind variables used (warm compilation cache). Interactive cache warmed ~100 min before measurement.
 
 ## Key findings
 
 - **Interactive wins both workloads on p50.** W1 point lookup p50 **285.6 ms vs 2449 ms** standard (~8.6x faster). W2 group lookup p50 **2515 ms vs 5276 ms** standard (~2.1x faster).
-- **Interactive W2 tail latency is huge (p95 38.8 s, p99 57.4 s).** Interactive warehouses enforce a hard **5-second query timeout**; the heavier W2 group lookups (77 k rows) that exceed 5 s are auto-cancelled and **retried on the fallback warehouse** (`BENCH_STD_WH`, an XSMALL standard WH that must cold-resume). Those retries dominate the tail. p50 stays low because most warm W2 queries complete under 5 s. This is the documented fallback behavior (`fault_handling_time` in Query Profile), not query failures — zero errors occurred.
+- **Interactive W2 tail latency is huge (p95 38.8 s, p99 57.4 s).** Interactive warehouses enforce a hard **5-second query timeout**; the heavier W2 group lookups (77 k rows) that exceed 5 s are auto-cancelled and **retried on the fallback warehouse** (`BENCH_STD_WH`, an XSMALL standard WH that must cold-resume). Those retries dominate the tail. p50 stays low because most warm W2 queries complete under 5 s. This is the documented fallback behavior (`fault_handling_time` in Query Profile), not query failures - zero errors occurred.
 - **Clustered was not faster than Standard here.** Clustering by `ORIGIN_H3` did not improve point lookups (filter is `ORIGIN_H3 + DEST_H3`) and W2 came out slower, likely clustering/maintenance overhead plus cold micro-partitions at 3.2 B rows. Search Optimization (dropped per request) would be the lever for point lookups on standard tables.
 
 ## Hybrid (Unistore) exclusion

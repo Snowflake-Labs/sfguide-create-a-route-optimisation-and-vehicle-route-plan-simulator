@@ -2,7 +2,7 @@
 
 A reusable Snowflake-native pattern for asset-heavy logistics operators. Turns the "ghost trailer" problem (owned assets idle so long they get forgotten while the network rents external capacity) into a real-time action engine driven entirely by SQL views, Cortex AI, and the bundled VROOM optimizer.
 
-> Note: the Asset Velocity demo dashboard is HGV-tuned via `VW_IDLE_TRAILERS` (`OPERATING_MODE='trucking'`). The underlying long-idle generator works for **any** vehicle type - configure it from Fleet Data Studio's *Long Idle Vehicles* section on any preset (HGV up to 7-day, car/ebike 1-2 day defaults). For a generic dashboard across vehicle types, mirror the views without the HGV filter.
+> Note: the Asset Velocity demo dashboard is HGV-tuned via `VW_IDLE_TRAILERS` (`OPERATING_MODE='regional_hgv'`). The underlying long-idle generator works for **any** vehicle type - configure it from Fleet Data Studio's *Long Idle Vehicles* section on any preset (HGV up to 7-day, car/ebike 1-2 day defaults). For a generic dashboard across vehicle types, mirror the views without the HGV filter.
 
 ## Business problem
 
@@ -45,7 +45,7 @@ SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY   (or any GPS source)
 FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED  (existing dwell pipeline)
             |
             v
-ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS         <-- ghost trailer list (HGV, OPERATING_MODE='trucking', exception filter)
+ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS         <-- ghost trailer list (HGV, OPERATING_MODE='regional_hgv', exception filter)
 ROUTE_OPTIMIZATION.VW_LANE_DEMAND           <-- net outbound trips per terminal, last 30d
 ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS  <-- adds $/day, severity bucket, projected savings
             |

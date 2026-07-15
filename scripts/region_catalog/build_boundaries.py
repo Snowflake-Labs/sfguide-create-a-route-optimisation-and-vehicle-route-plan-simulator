@@ -23,7 +23,7 @@ When to re-run:
     * Geofabrik publishes a meaningful boundary change (rare, ~yearly for
       admin shifts).
     * A new region is added to the catalog (e.g. a city added via the dynamic
-      catalog refresh path - see ors_control_app/server/index.ts which
+      catalog refresh path - see the fleet_admin_app server which
       currently captures bbox only). Re-running this script picks up new
       Geofabrik regions automatically; BBBike additions need a manual
       refresh of the upstream seed.

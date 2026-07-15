@@ -1,6 +1,6 @@
-# Backload Matching Engine — OPTIMIZATION VRP mapping
+# Backload Matching Engine - OPTIMIZATION VRP mapping
 
-This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` and how each visible UI lever maps 1:1 to a real VROOM or ORS field. The new design has **no JS pre-filters or post-filters** — every knob you turn lands inside the solver.
+This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` and how each visible UI lever maps 1:1 to a real VROOM or ORS field. The new design has **no JS pre-filters or post-filters** - every knob you turn lands inside the solver.
 
 ## Vehicles (one per idle-bound trailer)
 
@@ -26,7 +26,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 | Field | UI lever | Why |
 |---|---|---|
 | `start` | `VW_TRAILERS.DROPOFF_LON / DROPOFF_LAT` | Where the trailer becomes idle |
-| `end` | radio: Home / Shared / Open | When `Open`, omit the field — solver lets the trailer finish anywhere |
+| `end` | radio: Home / Shared / Open | When `Open`, omit the field - solver lets the trailer finish anywhere |
 | `profile` | derived from region | ORS routing graph |
 | `capacity` | toggle: multi-dim capacity | `[kg]` or `[kg, pallets, m³]` |
 | `skills` | HAZMAT cert flag | `[1,2,3]` if certified, `[1,2]` otherwise |
@@ -62,7 +62,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 | `time_windows` | **Window slack** (±h) and toggle: multi-window | Widened ±slack; second window synthesised at +8 h when toggled |
 
 ## Top-level options
-- `options.g = true` — return GeoJSON geometry per route. Always on.
+- `options.g = true` - return GeoJSON geometry per route. Always on.
 
 ## Post-solve economics (computed in the React layer, not VROOM)
 
@@ -99,7 +99,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 If the UI surfaces "OPTIMIZATION returned 0 rows", first verify VROOM itself is
 healthy for the region with this minimal probe (replace `$REGION` and the four
 coordinates with values that lie inside the region's boundary). One returned
-row means VROOM works — the issue is then in the payload your code is
+row means VROOM works - the issue is then in the payload your code is
 generating (almost always `max_travel_time` or `max_distance` too tight, or an
 unknown VROOM v1.0.4 field; see compatibility table above).
 
@@ -122,7 +122,7 @@ VROOM v1.0.4 silently drops the entire response (0 rows, no error) when:
 
 - `max_travel_time` is smaller than the shortest feasible tour. The React UI
   computes this from the haversine envelope of the candidate pool times
-  `(2 * maxStops + 1)` legs plus the user's `detourSlackHrs` slider — a fixed
+  `(2 * maxStops + 1)` legs plus the user's `detourSlackHrs` slider - a fixed
   4 h baseline like the legacy formula collapses on continental graphs.
 - `max_distance` is smaller than the shortest feasible tour distance.
 - `costs.per_hour` is set (added in upstream VROOM v1.13). Fold into

@@ -1,15 +1,3 @@
-build-routing-solution:
-  should_trigger:
-    - "build routing solution"
-    - "set up OpenRouteService app"
-    - "build and push SPCS images"
-    - "install openrouteservice app"
-    - "deploy the ORS app to Snowflake"
-  should_not_trigger:
-    - "change the map region"
-    - "deploy route optimization demo"
-    - "generate driver locations"
-
 routing-prerequisites:
   should_trigger:
     - "check build prerequisites"
@@ -101,26 +89,26 @@ retail-catchment:
     - "route optimization"
     - "dwell analysis"
 
-fleet-intelligence-taxis:
+fleet-intelligence-car:
   should_trigger:
     - "generate driver locations"
     - "create driver data"
     - "setup fleet data"
     - "fleet intelligence dashboard"
-    - "taxi fleet simulation"
+    - "car fleet simulation"
   should_not_trigger:
-    - "food delivery simulation"
+    - "e-bike fleet simulation"
     - "route deviation analysis"
     - "route optimization demo"
 
-fleet-intelligence-food-delivery:
+fleet-intelligence-ebike:
   should_trigger:
-    - "generate courier locations"
-    - "create delivery data"
-    - "setup food delivery fleet"
+    - "generate e-bike locations"
+    - "setup e-bike fleet"
+    - "e-bike fleet intelligence"
     - "deploy app"
   should_not_trigger:
-    - "taxi fleet simulation"
+    - "car fleet simulation"
     - "route deviation analysis"
     - "route optimization demo"
 
@@ -133,16 +121,16 @@ dwell-analysis:
     - "H3 heatmap"
   should_not_trigger:
     - "route deviation analysis"
-    - "food delivery fleet"
-    - "taxi fleet simulation"
+    - "e-bike fleet"
+    - "car fleet simulation"
 
 
 routing-agent:
   should_trigger:
     - "openrouteservice demo"
-    - "routing agent"
-    - "ORS agent"
-    - "routing intelligence"
+    - "routing tools"
+    - "ORS tool procedures"
+    - "routing substrate"
   should_not_trigger:
     - "deploy fleet intelligence"
     - "route deviation analysis"

@@ -1,0 +1,32 @@
+# Entity mapping - unified_fleet pack - SOURCE: synthetic (cross-DB SYNTHETIC_DATASETS.UNIFIED)
+source_id: synthetic
+description: "Bundled synthetic unified-fleet current-state views."
+entities:
+  - entity: FACT_TRIPS
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+    materialization: view
+    passthrough: true
+  - entity: FACT_VEHICLE_TELEMETRY
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
+    materialization: view
+    passthrough: true
+  - entity: DIM_TRIP_SCHEDULE
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT
+    materialization: view
+    passthrough: true
+  - entity: DIM_FLEET
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+    materialization: view
+    passthrough: true
+  - entity: DIM_POIS
+    source_table: SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+    materialization: view
+    passthrough: true
+  - entity: VEHICLE_PROFILE
+    source_table: FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
+    materialization: view
+    passthrough: true
+  - entity: VEHICLE_DWELL_SLA
+    source_table: FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA
+    materialization: view
+    passthrough: true

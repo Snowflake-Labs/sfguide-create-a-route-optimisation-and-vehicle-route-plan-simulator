@@ -1,4 +1,4 @@
-# build-routing-solution friction log — 2026-05-10 17:00 (holistic recovery)
+# build-routing-solution friction log - 2026-05-10 17:00 (holistic recovery)
 
 ## Summary
 

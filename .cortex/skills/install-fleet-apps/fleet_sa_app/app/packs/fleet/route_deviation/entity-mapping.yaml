@@ -1,0 +1,86 @@
+# =============================================================================
+# Entity mapping - route_deviation pack - SOURCE: synthetic (sample data)
+# =============================================================================
+# Binds the logical entities in data-model.yaml to a physical SOURCE. This file
+# points at the bundled synthetic data, which is an EMULATION of customer data.
+# To run the solution on real data, copy this file (see entity-mapping.customer-demo.yaml)
+# and repoint source_table / source_column / transform, then regenerate the views
+# (see generate.mjs / setup.sql). Consumers do not change.
+#
+# Per-column fields:
+#   app_column    - logical column from data-model.yaml
+#   source_column - physical column in source_table (null => supply via transform)
+#   transform     - optional SQL expression (use {src} for source_column or write
+#                   a full expression). Default = source_column as-is.
+#
+# Derived entities (DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) are NOT
+# mapped from a source: the generator computes them from TRIP_DEVIATION using the
+# expr/group_by in data-model.yaml.
+
+source_id: synthetic
+description: "Bundled synthetic route-deviation data (sample / emulation of customer data)."
+
+entities:
+  - entity: TRIP_DEVIATION
+    source_table: FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+    materialization: view
+    mapping:
+      - { app_column: TRIP_ID,                   source_column: TRIP_ID }
+      - { app_column: VEHICLE_ID,                source_column: VEHICLE_ID }
+      - { app_column: DRIVER_ID,                 source_column: DRIVER_ID }
+      - { app_column: TRIP_DATE,                 source_column: TRIP_DATE }
+      - { app_column: ROUTE_VARIATION,           source_column: ROUTE_VARIATION }
+      - { app_column: ROUTE_DEVIATION_FACTOR,    source_column: ROUTE_DEVIATION_FACTOR }
+      - { app_column: TRIP_TYPE,                 source_column: TRIP_TYPE }
+      - { app_column: ACTUAL_DISTANCE_KM,        source_column: ACTUAL_DISTANCE_KM }
+      - { app_column: ACTUAL_DURATION_MIN,       source_column: ACTUAL_DURATION_MIN }
+      - { app_column: EXPECTED_DISTANCE_KM,      source_column: EXPECTED_DISTANCE_KM }
+      - { app_column: EXPECTED_DURATION_MIN,     source_column: EXPECTED_DURATION_MIN }
+      - { app_column: STRAIGHT_LINE_DISTANCE_KM, source_column: STRAIGHT_LINE_DISTANCE_KM }
+      - { app_column: ORIGIN_NAME,               source_column: ORIGIN_NAME }
+      - { app_column: ORIGIN_CITY,               source_column: ORIGIN_CITY }
+      - { app_column: DEST_NAME,                 source_column: DEST_NAME }
+      - { app_column: DEST_CITY,                 source_column: DEST_CITY }
+      - { app_column: DISTANCE_DEVIATION_KM,     source_column: DISTANCE_DEVIATION_KM }
+      - { app_column: DISTANCE_DEVIATION_PCT,    source_column: DISTANCE_DEVIATION_PCT }
+      - { app_column: DURATION_DEVIATION_MIN,    source_column: DURATION_DEVIATION_MIN }
+      - { app_column: DURATION_DEVIATION_PCT,    source_column: DURATION_DEVIATION_PCT }
+      # Deviation flags are recomputed from the per-vehicle-type catalog ratio
+      # (FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE.DEVIATION_DISTANCE_RATIO for
+      # the active CONFIG vehicle type) instead of the upstream hardcoded 0.20.
+      # IS_ROUTE_DEVIATION preserves the upstream detour-driven component
+      # (source IS_ROUTE_DEVIATION that was NOT a distance deviation) and ORs in
+      # the new catalog-driven distance deviation.
+      - app_column: IS_DISTANCE_DEVIATION
+        transform: |
+          ((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
+             (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+              WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
+      - { app_column: IS_DURATION_DEVIATION,     source_column: IS_DURATION_DEVIATION }
+      - app_column: IS_ROUTE_DEVIATION
+        transform: |
+          (((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
+              (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+               WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
+           OR (IS_ROUTE_DEVIATION AND NOT IS_DISTANCE_DEVIATION))
+      - { app_column: ACTUAL_PATH,               source_column: ACTUAL_PATH }
+      - { app_column: EXPECTED_PATH,             source_column: EXPECTED_PATH }
+
+  - entity: CONFIG
+    source_table: FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
+    materialization: view
+    mapping:
+      - { app_column: VEHICLE_TYPE, source_column: VEHICLE_TYPE }
+      - { app_column: REGION,       source_column: REGION }
+
+  - entity: DRIVER_DEVIATION_SUMMARY
+    source_table: null
+    materialization: derived   # computed from TRIP_DEVIATION (see data-model.yaml)
+
+  - entity: DAILY_DEVIATION_TRENDS
+    source_table: null
+    materialization: derived   # computed from TRIP_DEVIATION (see data-model.yaml)
+
+  - entity: TRIP_GPS_POINTS
+    source_table: null
+    materialization: derived   # per-point GPS from FACT_VEHICLE_TELEMETRY (see data-model.yaml sql)

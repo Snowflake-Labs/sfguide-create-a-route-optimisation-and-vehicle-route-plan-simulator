@@ -1,8 +1,8 @@
 ---
 name: retail-catchment
-description: "Deploy the Retail Catchment Analysis demo with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis or fleet-intelligence-food-delivery), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
+description: "Deploy the Retail Catchment Analysis demo with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-car or fleet-intelligence-ebike), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -18,7 +18,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
-| `SCHEMA` | `RETAIL_CATCHMENT` | Schema for retail analysis tables |
+| `SCHEMA` | `CATCHMENT` | Schema for catchment analysis tables |
 | `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for queries and data loading |
 
 ## Prerequisites
@@ -35,8 +35,8 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
-| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates RETAIL_CATCHMENT schema |
-| CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates CONFIG, RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
+| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates CATCHMENT schema |
+| CREATE TABLE | Schema (FLEET_INTELLIGENCE.CATCHMENT) | Creates CONFIG, POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
 | USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS isochrone functions |
@@ -66,7 +66,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 **Pre-check: If data already exists, skip to Step 6.** Run:
 ```sql
-SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.CATCHMENT.POIS;
 ```
 If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Verify) as needed.
 
@@ -91,7 +91,7 @@ If any services are SUSPENDED, resume them:
 CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
 ```
 
-**STOP** if ORS is not installed. Direct user to `build-routing-solution` skill.
+**STOP** if ORS is not installed. Direct user to `install-fleet-apps` skill.
 
 ### Step 3: Get Carto Overture Datasets from Marketplace
 
@@ -118,7 +118,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1;
 
 > See `references/sql-pipeline.md` Step 4.
 
-**Output:** Database `FLEET_INTELLIGENCE`, schema `RETAIL_CATCHMENT` created with CONFIG table.
+**Output:** Database `FLEET_INTELLIGENCE`, schema `CATCHMENT` created with CONFIG table.
 
 ### Step 5: Create Optimized Data Tables
 
@@ -127,7 +127,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1;
 > **Important:** Step 5 uses SQL session variables (`SET REGION_KEY`, `SET BBOX_*`). Execute all Step 5 sub-steps in a single session (e.g., via `snow sql -f`) or prepend the SET statements to each sub-step's SQL block when using `snowflake_sql_execute`.
 
 1. Set region key and bounding box configuration (customize for target region)
-2. Create and populate filtered POI table (`RETAIL_POIS`)
+2. Create and populate filtered POI table (`POIS`)
 3. Create and populate pre-aggregated cities table (`CITIES_BY_STATE`)
 4. Create and populate addresses table (`REGIONAL_ADDRESSES`)
 5. Store region configuration (`REGION_CONFIG`)
@@ -155,7 +155,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | VEHICLE_TYPE | VARCHAR | Global vehicle type selector |
 | REGION | VARCHAR | Global region selector (updated by server on region switch) |
 
-### RETAIL_POIS
+### POIS
 | Column | Type | Used By |
 |--------|------|---------|
 | REGION | VARCHAR | RetailCatchment (region filter) |
@@ -200,8 +200,8 @@ The deployed app provides:
 |-------|----------|
 | "No stores found" | Verify Overture Maps Places dataset is accessible |
 | Isochrone fails | Check ORS services are RUNNING |
-| Dashboard shows no data | Verify RETAIL_POIS table has rows; check column BASIC_CATEGORY, CITY exist |
-| RETAIL_POIS table empty | Check bounding box config and Overture Maps Places access |
+| Dashboard shows no data | Verify POIS table has rows; check column BASIC_CATEGORY, CITY exist |
+| POIS table empty | Check bounding box config and Overture Maps Places access |
 | REGIONAL_ADDRESSES table empty | Check bounding box config and Overture Maps Addresses access |
 | "Object does not exist" on table | Ensure Step 5 completed successfully before Step 6 |
 
@@ -209,21 +209,21 @@ The deployed app provides:
 
 Deployed resources:
 - Database: `FLEET_INTELLIGENCE`
-- Schema: `FLEET_INTELLIGENCE.RETAIL_CATCHMENT`
+- Schema: `FLEET_INTELLIGENCE.CATCHMENT`
 - Warehouse: `ROUTING_ANALYTICS`
-- Tables: `CONFIG`, `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
+- Tables: `CONFIG`, `POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.CONFIG;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.REGION_CONFIG;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.POIS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CATCHMENT;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

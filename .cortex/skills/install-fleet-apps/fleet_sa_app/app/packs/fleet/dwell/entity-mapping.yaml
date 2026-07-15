@@ -1,0 +1,79 @@
+# Entity mapping - dwell pack - SOURCE: synthetic
+# Self-building: leaf projections are shaped from SYNTHETIC_DATASETS.UNIFIED via
+# `sql:` bodies (source-specific WHERE/QUALIFY/CASE). The derived analytic DAG is
+# defined source-agnostically in data-model.yaml. A customer swap replaces the
+# four leaf `sql:` bindings (or supplies column mappings) and regenerates; the
+# derived primitives and all consumers stay unchanged.
+#
+# Region/vehicle filter reads the writable control table
+# FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (the /api/region + CORE.SET_ACTIVE_REGION
+# write target) - kept as the single region source of truth.
+source_id: synthetic
+description: "Bundled synthetic dwell data (projection views over SYNTHETIC_DATASETS.UNIFIED)."
+entities:
+  - entity: VEHICLE_TELEMETRY
+    source_table: SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
+    materialization: view
+    sql: |
+      SELECT
+          t.TELEMETRY_ID, t.VEHICLE_ID, t.TRIP_ID, t.TS, t.SPEED_KMH,
+          t.HEADING_DEG, t.GPS_ACCURACY_M,
+          CASE
+              WHEN t.STATUS = 'DWELL_ORIGIN' AND t.LOCATION_TYPE IN ('WAREHOUSE', 'LOGISTICS') THEN 'DWELL_WAREHOUSE'
+              WHEN t.STATUS = 'DWELL_ORIGIN' AND t.LOCATION_TYPE IN ('RESTAURANT', 'STORE', 'ADDRESS') THEN 'DWELL_STORE'
+              WHEN t.STATUS = 'DWELL_ORIGIN' THEN 'DWELL_DESTINATION'
+              WHEN t.STATUS = 'DWELL_REST' THEN 'DWELL_REST_STOP'
+              WHEN t.STATUS = 'DWELL_RECHARGE' THEN 'DWELL_REST_STOP'
+              WHEN t.STATUS = 'DWELL_DETOUR' THEN 'DWELL_DETOUR'
+              ELSE t.STATUS
+          END AS STATUS,
+          t.IS_SPEEDING, t.IS_HOS_VIOLATION, t.IS_DETOUR,
+          t.LOCATION_ID, t.LOCATION_TYPE, t.POINT_INDEX, t.ODOMETER_KM,
+          t.POINT_GEOM, t.VEHICLE_TYPE, t.REGION
+      FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
+      WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+        AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1
+
+  - entity: VEHICLE_FLEET
+    source_table: SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+    materialization: view
+    sql: |
+      SELECT
+          f.VEHICLE_ID, f.HOME_LOCATION_ID AS HOME_BASE_ID,
+          f.DRIVER_PROFILE, f.OPERATING_MODE, f.SHIFT_TYPE, f.BASE_SPEED_KMH,
+          f.VEHICLE_TYPE, f.REGION, f.REGION AS HOME_BASE_NAME
+      FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+      WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+        AND f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1
+
+  - entity: DESTINATIONS
+    source_table: SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+    materialization: view
+    sql: |
+      SELECT
+          p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
+          p.CATEGORY AS BASIC_CATEGORY, p.REGION AS CITY,
+          p.POINT_GEOM AS GEOMETRY, p.REGION
+      FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+      WHERE p.LOCATION_TYPE NOT IN ('REST_STOP')
+        AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1
+
+  - entity: REST_STOPS
+    source_table: SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+    materialization: view
+    sql: |
+      SELECT
+          p.LOCATION_ID AS REST_STOP_ID, p.NAME,
+          p.CATEGORY AS REST_TYPE, p.POINT_GEOM AS CENTER_POINT, p.REGION
+      FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+      WHERE p.LOCATION_TYPE = 'REST_STOP'
+        AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1
+
+  - entity: CONFIG
+    source_table: FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
+    materialization: view
+    passthrough: true

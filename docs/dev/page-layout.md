@@ -15,7 +15,7 @@ To make (2) trivial and consistent, use the `PageContainer` wrapper.
 ## When to use `PageContainer`
 
 Use it for any page that lays out vertical content (dashboards, lists, forms,
-chart grids, tables) — especially under a full-width tab. It adds:
+chart grids, tables) - especially under a full-width tab. It adds:
 
 - `width: 100%; height: 100%`
 - `min-height: 0` (so the flex chain works)
@@ -30,7 +30,7 @@ export default function MyPage() {
   return (
     <PageContainer width="wide">
       <h3>My Page</h3>
-      {/* charts, tables, anything tall — all reachable by scrolling */}
+      {/* charts, tables, anything tall - all reachable by scrolling */}
     </PageContainer>
   );
 }
@@ -49,7 +49,7 @@ padding:
 ## When NOT to use `PageContainer`
 
 - Pure map / canvas pages where the map fills 100% of the area (e.g. Emergency
-  Response, Retail Catchment, Fleet Taxis Routes/Heatmap, Dwell Congestion Map,
+  Response, Retail Catchment, Car Fleet Routes/Heatmap, Dwell Congestion Map,
   Route Deviation Comparison, Agent Playground). Those manage their own
   layout intentionally.
 - Pages already known to scroll correctly under non-full-width `.app-main`
@@ -65,5 +65,5 @@ anything taller than the viewport should adopt it from day one.
 
 - Use `height: calc(100vh - 120px)` or similar magic numbers in new code.
 - Set `overflow: hidden` on a page root unless the page is a map/canvas.
-- Forget `min-height: 0` somewhere in the flex chain — it is the most common
+- Forget `min-height: 0` somewhere in the flex chain - it is the most common
   reason an inner `overflow-y: auto` silently fails to scroll.

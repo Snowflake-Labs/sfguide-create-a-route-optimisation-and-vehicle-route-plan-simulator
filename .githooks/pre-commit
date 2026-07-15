@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
-SKILL_DIR=".cortex/skills/build-routing-solution"
+SKILL_DIR=".cortex/skills/install-fleet-apps"
 CHECK_SCRIPT="$SKILL_DIR/scripts/check_image_versions.sh"
 
 if [ ! -x "$CHECK_SCRIPT" ] && [ ! -f "$CHECK_SCRIPT" ]; then
@@ -15,7 +15,7 @@ fi
 STAGED=$(git diff --cached --name-only)
 needs_check=0
 for path in \
-  "$SKILL_DIR/openrouteservice_app/image-versions.env" \
+  "$SKILL_DIR/image-versions.env" \
   "$SKILL_DIR/openrouteservice_app/services/" \
   "$SKILL_DIR/openrouteservice_app/app/modules/" \
   "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; do

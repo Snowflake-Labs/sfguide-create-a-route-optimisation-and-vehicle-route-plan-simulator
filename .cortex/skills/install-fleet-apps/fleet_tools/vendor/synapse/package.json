@@ -1,0 +1,58 @@
+{
+  "name": "@snowflake/synapse",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
+    },
+    "./runtime/sproc": {
+      "types": "./dist/runtime/sproc.d.ts",
+      "import": "./dist/runtime/sproc.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./build": {
+      "types": "./dist/build/index.d.ts",
+      "import": "./dist/build/index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    }
+  },
+  "bin": {
+    "synapse": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --dir tests/unit",
+    "dev": "vitest --dir tests/unit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "esbuild": "^0.20.2",
+    "snowflake-sdk": "^1.11.0",
+    "acorn": "^8.11.3",
+    "acorn-walk": "^8.3.2",
+    "astring": "^1.8.6",
+    "tsx": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/snowflake-sdk": "^1.6.24",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

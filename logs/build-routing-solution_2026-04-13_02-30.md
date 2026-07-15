@@ -51,9 +51,9 @@
 ### 5. Routing Agent: 3 Procedure Bugs (FRICTION - High)
 - **Step:** 9 (Routing Agent)
 - **Description:** All 3 tool procedures in `agent-definitions.md` had SQL type bugs:
-  1. `TOOL_DIRECTIONS`: DIRECTIONS function rejects OBJECT type — needs `::VARIANT` cast
-  2. `TOOL_ISOCHRONE`: `geo` alias not usable in TABLE() function — must use `geocoded_result`; bind variable needs `::NUMBER` cast
-  3. `TOOL_OPTIMIZATION`: OPTIMIZATION function rejects VARIANT from `PARSE_JSON()` — needs `::ARRAY` cast
+  1. `TOOL_DIRECTIONS`: DIRECTIONS function rejects OBJECT type - needs `::VARIANT` cast
+  2. `TOOL_ISOCHRONE`: `geo` alias not usable in TABLE() function - must use `geocoded_result`; bind variable needs `::NUMBER` cast
+  3. `TOOL_OPTIMIZATION`: OPTIMIZATION function rejects VARIANT from `PARSE_JSON()` - needs `::ARRAY` cast
 - **Impact:** Agent would fail on all 3 tools without fixes
 - **Resolution:** Fixed in the deployed procedures; `agent-definitions.md` was also updated
 

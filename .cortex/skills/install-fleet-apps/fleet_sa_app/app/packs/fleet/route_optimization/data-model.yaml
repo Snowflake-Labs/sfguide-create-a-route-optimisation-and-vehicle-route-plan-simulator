@@ -1,0 +1,223 @@
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: route_optimization (SELF-BUILDING)
+# =============================================================================
+# Absorbs the FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION view closure:
+#   VEHICLE_COST_OF_IDLENESS  <- IDLE_TRAILERS + FLEET_VEHICLE_PROFILE + CONFIG(rental)
+#   IDLE_TRAILERS             <- dwell enriched sessions (INTER-PACK) + FLEET_CURRENT
+#   FLEET_VEHICLE_PROFILE         <- FLEET_CURRENT (HASH-synthesized HGV attributes)
+#   LANE_DEMAND               <- TRIPS_CURRENT + POIS_CURRENT
+# INTER-PACK DEPENDENCY: the DWELL_ENRICHED leaf binds to the dwell pack's contract
+# object FLEET_APP.DWELL.VW_DWELL_SESSIONS (not the legacy DT) -> install dwell first
+# (declared in packs/manifest.yaml). Swap boundary = shared V_*_CURRENT + dwell contract.
+# Consumer entities VEHICLE_COST_OF_IDLENESS + LANE_DEMAND keep their columns (asset_velocity + SV_ASSET_VELOCITY).
+# =============================================================================
+
+pack: route_optimization
+app_schema: FLEET_APP.ROUTE_OPTIMIZATION
+
+entities:
+  # ---- Leaves (mapped) -------------------------------------------------------
+  - name: DWELL_ENRICHED
+    description: "Dwell enriched sessions (INTER-PACK leaf: dwell contract output)."
+    access_pattern: mapped
+    grain: "One row per dwell session"
+    columns: [ { name: VEHICLE_ID, type: VARCHAR } ]
+  - name: FLEET_CURRENT
+    description: "Current fleet snapshot for active vehicle/region."
+    access_pattern: mapped
+    grain: "One row per vehicle"
+    primary_key: VEHICLE_ID
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: HOME_LOCATION_ID, type: VARCHAR }
+      - { name: DRIVER_PROFILE, type: VARCHAR }
+      - { name: ORS_PROFILE, type: VARCHAR }
+      - { name: OPERATING_MODE, type: VARCHAR }
+      - { name: JOB_ID, type: VARCHAR }
+  - name: TRIPS_CURRENT
+    description: "Current trips for lane-demand flows."
+    access_pattern: mapped
+    grain: "One row per trip"
+    columns:
+      - { name: TRIP_START, type: TIMESTAMP_NTZ }
+      - { name: ORIGIN_POI_ID, type: VARCHAR }
+      - { name: DESTINATION_POI_ID, type: VARCHAR }
+  - name: POIS_CURRENT
+    description: "Current POIs for terminal naming/geo."
+    access_pattern: mapped
+    primary_key: LOCATION_ID
+    columns:
+      - { name: LOCATION_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
+      - { name: NAME, type: VARCHAR }
+      - { name: LOCATION_TYPE, type: VARCHAR }
+      - { name: POINT_GEOM, type: GEOGRAPHY }
+      - { name: LAT, type: FLOAT }
+      - { name: LNG, type: FLOAT }
+
+  # ---- Internal derived primitives ------------------------------------------
+  - name: IDLE_TRAILERS
+    description: "Idle trailers: last dwell session per vehicle + dispatcher synthesis."
+    access_pattern: derived
+    derived_from: DWELL_ENRICHED
+    depends_on: [FLEET_CURRENT]
+    materialization: view
+    sql: |
+      WITH last_session AS (
+        SELECT
+          e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID, e.LOCATION_NAME,
+          e.CITY, e.FACILITY_TYPE, e.LOC_TYPE, e.SESSION_START, e.SESSION_END,
+          e.DWELL_MINUTES, e.AVG_POINT, e.HOME_BASE_NAME, e.OPERATING_MODE, e.DRIVER_PROFILE,
+          ROW_NUMBER() OVER (PARTITION BY e.VEHICLE_ID ORDER BY e.SESSION_END DESC) AS RN
+        FROM {src} e
+        WHERE (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
+          AND COALESCE(UPPER(e.STATUS), '') NOT LIKE '%MAINTENANCE%'
+          AND COALESCE(UPPER(e.DRIVER_PROFILE), 'COMPLIANT') <> 'OUTLIER'
+      ),
+      fleet AS (
+        SELECT VEHICLE_ID, REGION, HOME_LOCATION_ID, DRIVER_PROFILE
+        FROM {schema}.VW_FLEET_CURRENT
+      )
+      SELECT
+        ls.VEHICLE_ID, f.REGION,
+        ls.LOCATION_ID    AS LAST_LOCATION_ID,
+        ls.LOCATION_NAME  AS LAST_LOCATION_NAME,
+        ls.LOC_TYPE       AS LAST_LOCATION_TYPE,
+        ls.AVG_POINT      AS LAST_LOCATION_GEOM,
+        ST_X(ls.AVG_POINT) AS LAST_LNG,
+        ST_Y(ls.AVG_POINT) AS LAST_LAT,
+        ls.SESSION_START  AS IDLE_SINCE,
+        ls.DWELL_MINUTES  AS IDLE_MINUTES,
+        ROUND(ls.DWELL_MINUTES / 60.0, 1)        AS IDLE_HOURS,
+        ROUND(ls.DWELL_MINUTES / 60.0 / 24.0, 2) AS IDLE_DAYS,
+        ls.HOME_BASE_NAME,
+        'DISP-' || LPAD(MOD(ABS(HASH(ls.VEHICLE_ID)), 12) + 1, 2, '0') AS ASSIGNED_DISPATCHER,
+        ls.DRIVER_PROFILE
+      FROM last_session ls
+      JOIN fleet f ON ls.VEHICLE_ID = f.VEHICLE_ID
+      WHERE ls.RN = 1
+
+  - name: FLEET_VEHICLE_PROFILE
+    description: "Synthesized HGV vehicle attributes (subtype, dims, hazmat)."
+    access_pattern: derived
+    derived_from: FLEET_CURRENT
+    materialization: view
+    sql: |
+      WITH filtered AS (
+        SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
+        FROM {src} f
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
+      )
+      SELECT
+        f.VEHICLE_ID, f.REGION, f.VEHICLE_TYPE, f.ORS_PROFILE, f.OPERATING_MODE,
+        CASE
+          WHEN f.OPERATING_MODE <> 'regional_hgv' THEN NULL
+          WHEN f.BKT <  60 THEN 'DRY'
+          WHEN f.BKT <  85 THEN 'REEFER'
+          WHEN f.BKT <  97 THEN 'FLAT'
+          ELSE 'TANKER'
+        END AS VEHICLE_SUBTYPE,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' AND f.BKT = 99 THEN TRUE ELSE FALSE END AS HAZMAT,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv'
+             THEN ROUND(38 + (MOD(ABS(HASH(f.VEHICLE_ID || '_w')), 600) / 100.0), 2)
+             ELSE 2.0 END AS WEIGHT_TONS,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 4.00 ELSE 2.00 END AS HEIGHT_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 16.50 ELSE 4.50 END AS LENGTH_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 2.55 ELSE 1.85 END AS WIDTH_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 11.50 ELSE 1.20 END AS AXLELOAD_T
+      FROM filtered f
+
+  # ---- Consumer-facing derived primitives -----------------------------------
+  - name: VEHICLE_COST_OF_IDLENESS
+    description: "Per-vehicle idleness cost and projected savings."
+    access_pattern: derived
+    derived_from: IDLE_TRAILERS
+    depends_on: [FLEET_VEHICLE_PROFILE, CONFIG]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: IDLE_SEVERITY, type: VARCHAR }
+      - { name: COST_OF_IDLENESS_USD, type: FLOAT }
+      - { name: PROJECTED_SAVINGS_USD, type: FLOAT }
+    sql: |
+      SELECT
+        t.VEHICLE_ID, t.REGION, t.LAST_LOCATION_NAME, t.LAST_LOCATION_TYPE,
+        t.LAST_LNG, t.LAST_LAT, t.LAST_LOCATION_GEOM,
+        t.IDLE_SINCE, t.IDLE_MINUTES, t.IDLE_HOURS, t.IDLE_DAYS,
+        t.ASSIGNED_DISPATCHER, t.DRIVER_PROFILE,
+        c.DAILY_RENTAL_RATE_AVOIDED_USD, c.RENTAL_CAPTURE_RATE,
+        c.MAX_REPOSITION_MINUTES, c.AVOID_FEATURES,
+        hgv.VEHICLE_SUBTYPE, hgv.HAZMAT, hgv.WEIGHT_TONS, hgv.HEIGHT_M,
+        hgv.LENGTH_M, hgv.WIDTH_M, hgv.AXLELOAD_T, hgv.ORS_PROFILE,
+        ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD, 2) AS COST_OF_IDLENESS_USD,
+        ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD * c.RENTAL_CAPTURE_RATE, 2) AS PROJECTED_SAVINGS_USD,
+        CASE
+          WHEN t.IDLE_DAYS >= 14 THEN 'CRITICAL'
+          WHEN t.IDLE_DAYS >= 7  THEN 'WARNING'
+          WHEN t.IDLE_DAYS >= 3  THEN 'WATCH'
+          ELSE 'OK'
+        END AS IDLE_SEVERITY
+      FROM {src} t
+      LEFT JOIN {schema}.VW_FLEET_VEHICLE_PROFILE hgv ON hgv.VEHICLE_ID = t.VEHICLE_ID
+      CROSS JOIN (SELECT MAX(DAILY_RENTAL_RATE_AVOIDED_USD) AS DAILY_RENTAL_RATE_AVOIDED_USD,
+                         MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE,
+                         MAX(MAX_REPOSITION_MINUTES)       AS MAX_REPOSITION_MINUTES,
+                         MAX(AVOID_FEATURES)               AS AVOID_FEATURES
+                  FROM {schema}.VW_CONFIG) c
+
+  - name: LANE_DEMAND
+    description: "Per-terminal lane demand (outbound/inbound flows, demand score)."
+    access_pattern: derived
+    derived_from: TRIPS_CURRENT
+    depends_on: [POIS_CURRENT]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
+    columns:
+      - { name: TERMINAL_ID, type: VARCHAR }
+      - { name: OUTBOUND, type: NUMBER }
+      - { name: INBOUND, type: NUMBER }
+      - { name: NET_OUTBOUND_TRIPS, type: NUMBER }
+      - { name: DEMAND_SCORE, type: NUMBER }
+    sql: |
+      WITH window_bounds AS (
+        SELECT MAX(TRIP_START) AS MAX_TS FROM {src}
+      ),
+      recent_trips AS (
+        SELECT t.* FROM {src} t, window_bounds w
+        WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
+      ),
+      flows AS (
+        SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
+        UNION ALL
+        SELECT DESTINATION_POI_ID AS POI_ID, 0 AS OUT_CNT, COUNT(*) AS IN_CNT FROM recent_trips GROUP BY 1
+      ),
+      agg AS (
+        SELECT POI_ID, SUM(OUT_CNT) AS OUTBOUND, SUM(IN_CNT) AS INBOUND
+        FROM flows WHERE POI_ID IS NOT NULL GROUP BY POI_ID
+      )
+      SELECT
+        p.LOCATION_ID AS TERMINAL_ID, p.REGION, p.NAME AS TERMINAL_NAME,
+        p.LOCATION_TYPE, p.POINT_GEOM AS TERMINAL_GEOM,
+        p.LAT AS TERMINAL_LAT, p.LNG AS TERMINAL_LNG,
+        a.OUTBOUND, a.INBOUND, (a.OUTBOUND - a.INBOUND) AS NET_OUTBOUND_TRIPS,
+        GREATEST(0, a.OUTBOUND - a.INBOUND)
+          + ROUND(GREATEST(0, a.OUTBOUND - a.INBOUND) * 0.25, 0) AS DEMAND_SCORE
+      FROM agg a
+      JOIN {schema}.VW_POIS_CURRENT p ON p.LOCATION_ID = a.POI_ID
+      WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','STORE','RESTAURANT')
+        AND (a.OUTBOUND - a.INBOUND) > 0
+
+  - name: CONFIG
+    description: "Region/vehicle + rental params control row."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }
+      - { name: DAILY_RENTAL_RATE_AVOIDED_USD, type: FLOAT }
+      - { name: RENTAL_CAPTURE_RATE, type: FLOAT }
+      - { name: MAX_REPOSITION_MINUTES, type: NUMBER }
+      - { name: AVOID_FEATURES, type: VARCHAR }

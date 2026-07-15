@@ -1,0 +1,47 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
+evals:
+  - question: "How many idle trailers are there for each idle severity level?"
+    category: group_by
+    gold_sql: |
+      SELECT IDLE_SEVERITY AS IDLE_SEVERITY, COUNT(DISTINCT VEHICLE_ID) AS IDLE_VEHICLE_COUNT
+      FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+      GROUP BY 1 ORDER BY IDLE_VEHICLE_COUNT DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
+        DIMENSIONS idle.idle_severity METRICS idle.idle_vehicle_count
+      ) ORDER BY idle_vehicle_count DESC
+
+  - question: "What is the total cost of idleness in USD for each region?"
+    category: group_by
+    gold_sql: |
+      SELECT REGION AS REGION, SUM(COST_OF_IDLENESS_USD) AS TOTAL_COST_OF_IDLENESS
+      FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+      GROUP BY 1 ORDER BY TOTAL_COST_OF_IDLENESS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
+        DIMENSIONS idle.region METRICS idle.total_cost_of_idleness
+      ) ORDER BY total_cost_of_idleness DESC
+
+  - question: "What is the total projected savings in USD across all idle trailers?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT SUM(PROJECTED_SAVINGS_USD) AS TOTAL_PROJECTED_SAVINGS
+      FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY METRICS idle.total_projected_savings
+      )
+
+  - question: "What is the average idle days for each vehicle subtype?"
+    category: group_by
+    gold_sql: |
+      SELECT VEHICLE_SUBTYPE AS VEHICLE_SUBTYPE, AVG(IDLE_DAYS) AS AVG_IDLE_DAYS
+      FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+      GROUP BY 1 ORDER BY AVG_IDLE_DAYS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
+        DIMENSIONS idle.vehicle_subtype METRICS idle.avg_idle_days
+      ) ORDER BY avg_idle_days DESC

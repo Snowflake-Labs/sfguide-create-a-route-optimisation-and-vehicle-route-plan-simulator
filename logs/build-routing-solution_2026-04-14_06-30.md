@@ -11,7 +11,7 @@
 ### 1. `snow app run` output flushing extremely slow (HIGH)
 - **Symptom**: After "Creating new application object" message, CLI appeared completely stuck for 10+ minutes with zero output.
 - **Reality**: The CREATE APPLICATION query was actually running (confirmed via `INFORMATION_SCHEMA.QUERY_HISTORY()`). It completed in ~2 minutes.
-- **Impact**: Very confusing — looks like a hang. User might kill the process thinking it's stuck.
+- **Impact**: Very confusing - looks like a hang. User might kill the process thinking it's stuck.
 - **Workaround**: Polled `QUERY_HISTORY()` to check actual query status.
 - **Suggestion**: Add a progress spinner or periodic status messages to `snow app run`.
 
@@ -36,11 +36,11 @@
 
 ### 5. Docker build platform warning on ARM Macs (LOW)
 - **Symptom**: Building linux/amd64 images on ARM Mac triggers platform mismatch warnings.
-- **Reality**: Expected behavior — SPCS requires linux/amd64.
+- **Reality**: Expected behavior - SPCS requires linux/amd64.
 - **Impact**: Minimal, but noisy output.
 
 ### 6. Control App requires local npm build before Docker build (MEDIUM)
-- **Symptom**: ORS Control App image build differs from other images — requires `npm install && npm run build` locally before running `docker build` with `Dockerfile.runtime`.
+- **Symptom**: ORS Control App image build differs from other images - requires `npm install && npm run build` locally before running `docker build` with `Dockerfile.runtime`.
 - **Impact**: Different workflow from other 4 images. Easy to miss if following the same pattern.
 - **Suggestion**: Document this prominently or consider a multi-stage Dockerfile that handles the npm build internally.
 

@@ -1,6 +1,6 @@
 # scripts/
 
-Maintainer-only helper scripts. **Not** part of the installer or runtime — these are one-shot tools used to (re)generate seed artifacts that ship in `datasets/`.
+Maintainer-only helper scripts. **Not** part of the installer or runtime - these are one-shot tools used to (re)generate seed artifacts that ship in `datasets/`.
 
 ## Inventory
 

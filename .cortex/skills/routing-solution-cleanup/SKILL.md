@@ -71,23 +71,23 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-s
 
 ## Step 2: Discover All Objects
 
-Run the discovery queries from [`references/discovery-queries.sql`](references/discovery-queries.sql).
+Run the discovery queries from [references/discovery-queries.sql](references/discovery-queries.sql).
 
 Execute each query and collect results. Some queries use `SHOW` + `RESULT_SCAN` patterns; these must be run as two consecutive statements in the same session or via `snowflake_sql_execute`.
 
-> **Tip:** If `SHOW AGENTS` fails with a syntax error, the account may not have Cortex Agents enabled — skip that object type.
+> **Tip:** If `SHOW AGENTS` fails with a syntax error, the account may not have Cortex Agents enabled - skip that object type.
 
 ## Step 3: Generate DROP Statements
 
-Based on discovery results, generate DROP statements in **strict dependency order** (most-dependent first):
+Based on discovery results, generate DROP statements in **strict dependency order** (most-dependent first). The canonical ordered teardown is in [references/drop-order.sql](references/drop-order.sql); use it as the template and keep only the objects that discovery actually found.
 
-### Phase 1 — App (stops SPCS services)
+### Phase 1 - App (stops SPCS services)
 
 ```sql
 DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 ```
 
-### Phase 2 — Compute Pools (if not already dropped by CASCADE)
+### Phase 2 - Compute Pools (if not already dropped by CASCADE)
 
 ```sql
 -- 3. Stop and drop any compute pools created by the app
@@ -96,7 +96,7 @@ ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
 ```
 
-### Phase 3 — External Access Integrations & Network Rules
+### Phase 3 - External Access Integrations & Network Rules
 
 ```sql
 -- 4. Drop external access integrations
@@ -105,7 +105,7 @@ DROP INTEGRATION IF EXISTS ORS_CARTO_EAI;
 
 ```
 
-### Phase 4 — Cortex Agents, Tasks, Dynamic Tables, Notebooks, Streamlits
+### Phase 4 - Cortex Agents, Tasks, Dynamic Tables, Notebooks, Streamlits
 
 ```sql
 -- 5. Drop Cortex agents
@@ -130,25 +130,25 @@ DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA;
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
 ```
 
-### Phase 5 — Procedures, Functions, Views, Tables
+### Phase 5 - Procedures, Functions, Views, Tables
 
 For each tagged object found in discovery, generate the appropriate DROP. Use the full signature for procedures and functions.
 
 ```sql
--- 9. Drop procedures (example — actual list comes from discovery)
+-- 9. Drop procedures (example - actual list comes from discovery)
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, FLOAT, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, VARCHAR);
 
--- 11. Drop views (from all schemas — discovery-driven)
+-- 11. Drop views (from all schemas - discovery-driven)
 -- Example:
 -- DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY;
 -- DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY;
 
--- 12. Drop tables (from all schemas — discovery-driven)
+-- 12. Drop tables (from all schemas - discovery-driven)
 -- Example:
--- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
+-- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.POIS;
 -- DROP TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;
 
 -- 13. Drop stages
@@ -164,24 +164,24 @@ DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
 DROP FILE FORMAT IF EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF;
 ```
 
-### Phase 6 — Schemas, Warehouses, Databases
+### Phase 6 - Schemas, Warehouses, Databases
 
 ```sql
 -- 16. Drop schemas (CASCADE handles any remaining objects)
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CATCHMENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CORE CASCADE;
 
 -- 18. Suspend and drop warehouse
 ALTER WAREHOUSE IF EXISTS ROUTING_ANALYTICS SUSPEND;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 
--- 19. Drop marketplace databases (no tracking tag — match by name and origin)
+-- 19. Drop marketplace databases (no tracking tag - match by name and origin)
 DROP DATABASE IF EXISTS OVERTURE_MAPS__PLACES;
 DROP DATABASE IF EXISTS OVERTURE_MAPS__ADDRESSES;
 
@@ -264,27 +264,27 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 
 | Skill | Tracking Name | Key Objects |
 |-------|--------------|-------------|
-| build-routing-solution | `oss-build-routing-solution` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs |
-| fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` | FLEET_INTELLIGENCE_TAXIS schema, 10+ tables, views, CONFIG |
-| fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
+| install-fleet-apps | `oss-install-fleet-apps` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs (pre-Phase-C installs may carry the legacy `oss-build-routing-solution` tag) |
+| fleet-intelligence-car | `oss-fleet-intelligence-car` | FLEET_INTELLIGENCE_CAR schema, 10+ tables, views, CONFIG |
+| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` | FLEET_INTELLIGENCE_EBIKE schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |
 | dwell-analysis | `oss-dwell-analysis` | DWELL_ANALYSIS schema, 8 dynamic tables, task, geofence/SLA tables, views |
-| retail-catchment | `oss-retail-catchment` | RETAIL_CATCHMENT schema, POIs, addresses, cities, region config |
+| retail-catchment | `oss-retail-catchment` | CATCHMENT schema, POIs, addresses, cities, region config |
 | route-optimization | `oss-route-optimization` | ROUTE_OPTIMIZATION schema, notebooks, CONFIG, PLACES, LOOKUP |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` | ROUTING_AGENT schema, Cortex agent, tool procedures |
 
-> **Note:** `build-routing-solution` is the foundation skill. Dropping its objects (databases, warehouse) will cascade to all downstream skills. Only drop it when tearing down the entire environment.
+> **Note:** `install-fleet-apps` is the foundation skill. Dropping its objects (databases, warehouse) will cascade to all downstream skills. Only drop it when tearing down the entire environment.
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|---------|
 | No objects found | Check you're using ACCOUNTADMIN role: `USE ROLE ACCOUNTADMIN;` |
-| Cannot drop compute pool — active nodes | `ALTER COMPUTE POOL <name> STOP ALL;` then wait 30s before DROP |
-| Cannot drop table — has dependents | Drop dynamic tables and views first (follow phase order) |
+| Cannot drop compute pool - active nodes | `ALTER COMPUTE POOL <name> STOP ALL;` then wait 30s before DROP |
+| Cannot drop table - has dependents | Drop dynamic tables and views first (follow phase order) |
 | Schema not empty after drops | Some objects may lack COMMENT tags. Use `DROP SCHEMA ... CASCADE` |
 | Warehouse in use | `ALTER WAREHOUSE <name> SUSPEND;` first, then DROP |
 | DROP APPLICATION fails | Ensure all services are stopped: `SHOW SERVICES IN APPLICATION <name>` |
 | Integration still exists after app drop | EAIs are account-level; drop them explicitly in Phase 3 |
-| SHOW AGENTS syntax error | Account may not have Cortex Agents enabled — skip that type |
-| Marketplace DB won't drop | Run `DROP DATABASE IF EXISTS <name>;` — this detaches the listing automatically |
+| SHOW AGENTS syntax error | Account may not have Cortex Agents enabled - skip that type |
+| Marketplace DB won't drop | Run `DROP DATABASE IF EXISTS <name>;` - this detaches the listing automatically |

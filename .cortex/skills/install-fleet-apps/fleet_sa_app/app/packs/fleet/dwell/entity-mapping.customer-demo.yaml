@@ -1,0 +1,65 @@
+# Entity mapping - dwell pack - SOURCE: customer-demo (LEAF-SWAP proof)
+# In the self-building dwell pack, a customer rebinds only the LEAF entities
+# (telemetry + dimensions). The value-add DAG (state-detection -> sessionization
+# -> enrichment -> H3/SLA/facility/driver/daily) is defined in data-model.yaml and
+# is UNCHANGED by a swap. This mock source has differently-named columns, speed in
+# m/s, and a Unix-epoch timestamp - normalized back to the contract via `sql:`/transform.
+#   python3 ../../_lib/generate.py --model fleet/dwell/data-model.yaml \
+#     --mapping fleet/dwell/entity-mapping.customer-demo.yaml --out /tmp/dwell_cust.sql
+# Illustrative (mechanism identical to the live-verified route_deviation swap).
+source_id: customer-demo
+description: "Mock customer telemetry/dims with a different shape; only leaves are remapped."
+entities:
+  - entity: VEHICLE_TELEMETRY
+    source_table: CUSTOMER_RAW_DEMO.DWELL.RAW_PINGS
+    materialization: view
+    sql: |
+      SELECT
+          PING_PK            AS TELEMETRY_ID,
+          ASSET_CODE         AS VEHICLE_ID,
+          JOB_REF            AS TRIP_ID,
+          TO_TIMESTAMP_NTZ(EPOCH_S) AS TS,
+          SPEED_MS * 3.6     AS SPEED_KMH,
+          HEADING            AS HEADING_DEG,
+          NULL               AS GPS_ACCURACY_M,
+          DWELL_STATE        AS STATUS,
+          FALSE AS IS_SPEEDING, FALSE AS IS_HOS_VIOLATION, FALSE AS IS_DETOUR,
+          SITE_ID            AS LOCATION_ID,
+          SITE_KIND          AS LOCATION_TYPE,
+          SEQ                AS POINT_INDEX,
+          ODO_M / 1000.0     AS ODOMETER_KM,
+          TO_GEOGRAPHY(WKT)  AS POINT_GEOM,
+          'hgv' AS VEHICLE_TYPE, 'Europe' AS REGION
+      FROM CUSTOMER_RAW_DEMO.DWELL.RAW_PINGS
+
+  - entity: VEHICLE_FLEET
+    source_table: CUSTOMER_RAW_DEMO.DWELL.RAW_ASSETS
+    materialization: view
+    mapping:
+      - { app_column: VEHICLE_ID,     source_column: ASSET_CODE }
+      - { app_column: DRIVER_PROFILE, source_column: OPERATOR_CLASS }
+      - { app_column: OPERATING_MODE, source_column: MODE }
+      - { app_column: HOME_BASE_NAME, source_column: DEPOT_NAME }
+
+  - entity: DESTINATIONS
+    source_table: CUSTOMER_RAW_DEMO.DWELL.RAW_SITES
+    materialization: view
+    sql: |
+      SELECT SITE_ID AS ID, SITE_NAME AS NAME, SITE_KIND AS LOCATION_TYPE,
+             CATEGORY AS BASIC_CATEGORY, CITY, TO_GEOGRAPHY(WKT) AS GEOMETRY, 'Europe' AS REGION
+      FROM CUSTOMER_RAW_DEMO.DWELL.RAW_SITES
+      WHERE SITE_KIND <> 'REST_STOP'
+
+  - entity: REST_STOPS
+    source_table: CUSTOMER_RAW_DEMO.DWELL.RAW_SITES
+    materialization: view
+    sql: |
+      SELECT SITE_ID AS REST_STOP_ID, SITE_NAME AS NAME, CATEGORY AS REST_TYPE,
+             TO_GEOGRAPHY(WKT) AS CENTER_POINT, 'Europe' AS REGION
+      FROM CUSTOMER_RAW_DEMO.DWELL.RAW_SITES
+      WHERE SITE_KIND = 'REST_STOP'
+
+  - entity: CONFIG
+    source_table: FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
+    materialization: view
+    passthrough: true

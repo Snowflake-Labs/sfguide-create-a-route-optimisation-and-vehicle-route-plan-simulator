@@ -119,11 +119,11 @@ In testing (May 2026), `OPENROUTESERVICE_APP.CORE.OPTIMIZATION` returns 0 rows f
 
 USA coordinates (any profile, with or without explicit region) work correctly.
 
-The skill ships with projection views over `SYNTHETIC_DATASETS.UNIFIED.*` filtered by the active Data Studio preset, so once the Germany OPTIMIZATION path is fixed in `build-routing-solution`, simply switch the preset to a Germany dataset - no skill code change required.
+The skill ships with projection views over `SYNTHETIC_DATASETS.UNIFIED.*` filtered by the active Data Studio preset, so once the Germany OPTIMIZATION path is fixed in `install-fleet-apps`, simply switch the preset to a Germany dataset - no skill code change required.
 
 ## 10. Per-preset data architecture (the v2 model)
 
-The skill no longer ships its own seed file. Instead, Data Studio's per-preset generation pipeline writes a sixth UNIFIED table: `FACT_FREIGHT_OFFERS`. The skill's projection views (`VW_TRAILERS`, `VW_INTERNAL_VOLUMES`, `VW_EXTERNAL_OFFERS`) read from UNIFIED filtered by `CONFIG (VEHICLE_TYPE, REGION)` - same pattern as `dwell-analysis` and `fleet-intelligence-food-delivery`.
+The skill no longer ships its own seed file. Instead, Data Studio's per-preset generation pipeline writes a sixth UNIFIED table: `FACT_FREIGHT_OFFERS`. The skill's projection views (`VW_TRAILERS`, `VW_INTERNAL_VOLUMES`, `VW_EXTERNAL_OFFERS`) read from UNIFIED filtered by `CONFIG (VEHICLE_TYPE, REGION)` - same pattern as `dwell-analysis` and `fleet-intelligence-ebike`.
 
 DatasetPicker preset switch -> server `CONFIG_SCHEMAS` array -> `UPDATE BACKLOAD_MATCHING.CONFIG` -> projection views auto-refresh.
 

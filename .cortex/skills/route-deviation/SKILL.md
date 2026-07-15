@@ -2,7 +2,7 @@
 name: route-deviation
 description: "Deploy the Route Deviation Analysis demo: create projection views from SYNTHETIC_DATASETS.UNIFIED, run 3-step ETL pipeline, and register React dashboard pages. Works with any vehicle type configured via CONFIG table. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
@@ -56,7 +56,7 @@ CRITICAL: Verify these before starting:
 
 ## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), then runs ETL to produce analysis tables. No Data Studio generation needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `install-fleet-apps` Step 8), then runs ETL to produce analysis tables. No Data Studio generation needed.
 
 ### Quick check
 

@@ -1,5 +1,5 @@
 -- ============================================================================
--- FULL TEARDOWN SCRIPT — Drops all objects created by routing solution skills
+-- FULL TEARDOWN SCRIPT - Drops all objects created by routing solution skills
 -- ============================================================================
 -- Usage: snow sql -f .cortex/skills/routing-solution-cleanup/references/drop-order.sql -c <connection>
 --
@@ -35,6 +35,8 @@ DROP DATABASE IF EXISTS OPENROUTESERVICE_NATIVE_APP_APP_DATA;
 -- ============================================================================
 -- PHASE 4: Cortex Agents
 -- ============================================================================
+-- Legacy standalone agent (retired; relocated TOOL_* now live in ROUTING_TOOLS).
+-- Kept for cleanup of pre-relocation installs where the agent still exists.
 DROP AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
 
 -- ============================================================================
@@ -44,7 +46,7 @@ ALTER TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS SUSPEND;
 DROP TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS;
 
 -- ============================================================================
--- PHASE 6: Dynamic Tables (reverse pipeline order — downstream first)
+-- PHASE 6: Dynamic Tables (reverse pipeline order - downstream first)
 -- ============================================================================
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY;
@@ -65,9 +67,9 @@ DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_
 -- PHASE 8: Procedures
 -- ============================================================================
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, FLOAT, VARCHAR);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(VARCHAR, FLOAT, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, VARCHAR);
 
 -- ============================================================================
 -- PHASE 9: Warehouse

@@ -1,4 +1,4 @@
-# Build Routing Solution — Execution Log
+# Build Routing Solution - Execution Log
 
 - **Date:** 2026-04-14 00:47
 - **Skill:** build-routing-solution
@@ -70,7 +70,7 @@ Fix `native_app/services/downloader/downloader_spec.yaml` volume sources to use 
 **What happened:**
 The `check_image_versions.sh` script reported "PASSED" even though 3 service YAMLs had completely wrong image repository paths (`fleet_intelligence_setup/public/fleet_intel_repo` instead of `openrouteservice_setup/public/image_repository`). The script only validates version tags, not the full image path.
 
-**Resolution:** N/A — the script passed, but deployment failed later.
+**Resolution:** N/A - the script passed, but deployment failed later.
 
 **Suggested fix:**
 Enhance `check_image_versions.sh` to also verify that the repository path portion of each image reference matches across all files (manifest.yml, service YAMLs).

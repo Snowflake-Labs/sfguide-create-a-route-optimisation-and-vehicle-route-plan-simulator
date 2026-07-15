@@ -1,0 +1,201 @@
+{
+  "name": "Fleet Intelligence",
+  "domainPack": "fleet",
+  "style": {
+    "rowHeights": { "kpi": 96, "content": 360, "map": 440, "heroMap": 460 },
+    "chart": { "palette": ["#29B5E8", "#11567F", "#16A34A", "#D97706", "#7C3AED", "#DC2626", "#06B6D4", "#EC4899"] },
+    "table": { "defaultMaxRows": 50, "boardMaxRows": 100 }
+  },
+  "description": "Agent-first fleet analytics and routing, organized by business problem and applicable to any asset mode (car, HGV, e-bike, and beyond). Inspect fleet status, demand density, trips, operator performance, and top origins; analyze dwell, route deviation, and asset utilization; optimize multi-stop routes and compute drive-time isochrones - all scoped to a selectable region and dataset.",
+  "targetUsers": [
+    "Fleet Operations Analyst",
+    "Logistics / Route Planner",
+    "Dispatch & Field Operations"
+  ],
+  "capabilities": [
+    "Inspect fleet status, demand density, trips, operator performance, and top origins for any asset mode",
+    "Analyze dwell and congestion hotspots, route deviation, and asset utilization by region",
+    "Optimize multi-stop routes, compute drive-time isochrones, and analyze fleet operations",
+    "Switch the active region and dataset (mode) across every dashboard and routing tool"
+  ],
+  "sampleQuestions": [
+    "How many trips and operators are active for the current fleet?",
+    "Which operators have the highest average speed?",
+    "What are the busiest origin locations this week?",
+    "Where are the worst dwell hotspots and congestion by hour?",
+    "How many coffee shops are in the active region, by city?",
+    "Show hospitals in the active region on the map",
+    "Which cities have the most gas stations?"
+  ],
+  "snowflake": {
+    "database": "FLEET_INTELLIGENCE",
+    "schema": "DWELL_ANALYSIS"
+  },
+  "adminApp": {
+    "serviceFqn": "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP",
+    "endpointName": "fleet-admin-app"
+  },
+  "tools": {
+    "schema": "OPENROUTESERVICE_APP.ROUTING",
+    "verbs": {
+      "optimize_routes": 5,
+      "compute_isochrone": 3,
+      "get_directions": 2,
+      "find_poi": 5,
+      "catchment": 3,
+      "delivery_optimization": 1,
+      "network_optimization": 1,
+      "evac_seed": 4,
+      "evac_solve": 2
+    },
+    "mapTools": [
+      "get_directions",
+      "optimize_routes",
+      "compute_isochrone",
+      "find_poi",
+      "catchment",
+      "delivery_optimization",
+      "network_optimization",
+      "evac_seed",
+      "evac_solve",
+      "query_overture_places",
+      "query_overture_addresses"
+    ]
+  },
+  "ops": {
+    "schema": "FLEET_INTELLIGENCE.SYNAPSE_OPS",
+    "verbs": {
+      "set_active_region": 1,
+      "set_active_context": 2,
+      "activate_dataset": 1,
+      "service_control": 2,
+      "service_status": 1,
+      "service_inventory": 0,
+      "healthcheck": 0,
+      "recent_verb_attempts": 3
+    }
+  },
+  "admin": {
+    "schema": "FLEET_INTELLIGENCE.SYNAPSE_ADMIN",
+    "verbs": {
+      "set_active_region": 1,
+      "check_substrate": 0
+    }
+  },
+  "roleAccess": {
+    "user": {
+      "schemas": ["FLEET_APP.* (read)"],
+      "contract": ["ROUTING_PLATFORM.CONTRACT.* (call: DIRECTIONS, ISOCHRONES, OPTIMIZATION, MATRIX, ROUTING_STATUS)"]
+    },
+    "ops": {
+      "schemas": ["FLEET_APP.* (read)", "FLEET_INTELLIGENCE.SYNAPSE_OPS (call)"],
+      "contract": ["ROUTING_PLATFORM.PROVIDERS (read)", "ROUTING_PLATFORM.ADMIN.SET_REGION_PROVIDER (call)"]
+    },
+    "admin": {
+      "schemas": ["FLEET_INTELLIGENCE.SYNAPSE_ADMIN (call)"],
+      "contract": ["ROUTING_PLATFORM.ADMIN.* (full CRUD: region-to-provider map)"]
+    }
+  },
+  "region": {
+    "database": "FLEET_INTELLIGENCE",
+    "schemas": ["DWELL_ANALYSIS", "ROUTE_DEVIATION", "ROUTE_OPTIMIZATION"]
+  },
+  "hasWorkflows": false,
+  "contextBar": [
+
+    {
+      "id": "dataset_id",
+      "type": "dataset",
+      "label": "Dataset"
+    },
+    {
+      "id": "date_range_start",
+      "type": "date_range",
+      "label": "Date range",
+      "default": "last_365_days"
+    },
+    {
+      "id": "deviation_threshold",
+      "type": "enum",
+      "label": "Deviation threshold",
+      "default": "0.10",
+      "options": [
+        { "value": "0.05", "label": "more than 5%" },
+        { "value": "0.10", "label": "more than 10%" },
+        { "value": "0.15", "label": "more than 15%" },
+        { "value": "0.20", "label": "more than 20%" },
+        { "value": "0.25", "label": "more than 25%" }
+      ]
+    }
+  ],
+  "display": {
+    "labels": {
+      "entity": "Vehicle",
+      "entity_plural": "Vehicles",
+      "operator": "Driver",
+      "operator_plural": "Drivers",
+      "site": "Facility",
+      "site_plural": "Facilities",
+      "journey": "Trip",
+      "journey_plural": "Trips",
+      "stop": "Stop",
+      "plan": "Route Plan",
+      "work_item": "Scheduled Trip",
+      "dwell": "Dwell",
+      "idle": "Idle",
+      "deviation": "Route Deviation"
+    },
+    "units": {
+      "distance": "km",
+      "speed": "km/h",
+      "duration": "min",
+      "currency": "USD",
+      "currency_symbol": "$",
+      "capacity": "t"
+    },
+    "thresholds": {
+      "dwell_duration": { "good": 1800, "warn": 3600, "critical": 7200, "higherIsBetter": false },
+      "on_time_pct": { "good": 0.95, "warn": 0.85, "critical": 0.75, "higherIsBetter": true },
+      "utilization_pct": { "good": 0.85, "warn": 0.65, "critical": 0.50, "higherIsBetter": true },
+      "route_adherence_pct": { "good": 0.95, "warn": 0.85, "critical": 0.70, "higherIsBetter": true },
+      "safety_score": { "good": 80, "warn": 60, "critical": 40, "higherIsBetter": true },
+      "eta_variance": { "good": 300, "warn": 900, "critical": 1800, "higherIsBetter": false }
+    },
+    "statusEnums": {
+      "motion_status": {
+        "moving": { "label": "Moving", "color": "#22c55e" },
+        "idle": { "label": "Idle", "color": "#f59e0b" },
+        "stopped": { "label": "Stopped", "color": "#9ca3af" },
+        "offline": { "label": "Offline", "color": "#ef4444" }
+      },
+      "sla_status": {
+        "ok": { "label": "On Time", "color": "#22c55e" },
+        "at_risk": { "label": "At Risk", "color": "#f59e0b" },
+        "breached": { "label": "Breached", "color": "#ef4444" }
+      }
+    },
+    "icons": {
+      "hgv": "truck",
+      "car": "car",
+      "ebike": "bike",
+      "cycling-regular": "bike",
+      "vessel": "ship",
+      "aircraft": "plane"
+    },
+    "defaultWindows": {
+      "operations": "last_7_days",
+      "executive": "last_30_days",
+      "density": "last_30_days",
+      "safety": "last_30_days"
+    }
+  },
+  "personas": {
+    "dispatcher": { "label": "Dispatcher / Control Room", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization"] },
+    "fleet_manager": { "label": "Fleet / Operations Manager", "defaultView": "dwell_overview", "categories": ["Core", "Asset Pool"] },
+    "safety_officer": { "label": "Safety Officer", "defaultView": "safety_risk_scorecard", "categories": ["Core"] },
+    "maintenance_lead": { "label": "Maintenance Lead", "defaultView": "asset_velocity", "categories": ["Core", "Asset Pool"] },
+    "planner": { "label": "Planner / Optimizer", "defaultView": "plan_vs_actual_performance", "categories": ["Core", "Optimization"] },
+    "executive": { "label": "Executive", "defaultView": "dwell_overview", "categories": ["Core"] },
+    "admin": { "label": "Admin / Solution Owner", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization", "Location", "Asset Pool", "Admin"] }
+  }
+}

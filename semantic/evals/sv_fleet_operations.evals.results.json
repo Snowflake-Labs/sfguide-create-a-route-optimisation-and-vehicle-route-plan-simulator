@@ -1,0 +1,66 @@
+{
+  "summary": {
+    "auto": [
+      6,
+      6
+    ],
+    "require": [
+      6,
+      6
+    ],
+    "sv": [
+      6,
+      6
+    ]
+  },
+  "results": [
+    {
+      "question": "What is the total distance driven for each region?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the detour rate percentage for each vehicle type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the average GPS speed for each driver profile?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many trips were there in Germany?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many scheduled trips are there for each region?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the maximum speed recorded for each vehicle type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    }
+  ]
+}

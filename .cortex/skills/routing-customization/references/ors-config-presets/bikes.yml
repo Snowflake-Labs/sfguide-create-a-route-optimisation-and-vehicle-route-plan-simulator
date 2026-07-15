@@ -1,7 +1,7 @@
 ################################################################################
 # Preset: bikes (cycling + foot)
 #
-# Use when: fleet-intelligence-food-delivery, retail-catchment, last-mile
+# Use when: fleet-intelligence-ebike, retail-catchment, last-mile
 # delivery demos that exercise cycling, e-bike, and walking profiles.
 #
 # Differences vs standard.yml:
@@ -50,7 +50,7 @@ ors:
       maximum_routes: 2000000
       maximum_routes_flexible: 2000000
     isochrones:
-      maximum_locations: 2
+      maximum_locations: 50
       maximum_intervals: 10
       maximum_range_distance:
         - profiles: cycling-regular, cycling-road, cycling-electric, foot-walking
