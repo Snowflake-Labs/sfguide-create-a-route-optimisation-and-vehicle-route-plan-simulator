@@ -1,0 +1,80 @@
+# Agent behavioral eval cases.
+#
+# Each case runs the deployed agent on `prompt`, then grades its assertions.
+# Assertion types:
+#   verb  - a VERB_ATTEMPT audit row exists for one of `verbs` with the given
+#           outcome (default 'ok') since the turn started. Proves the synapse
+#           envelope path and, for ORS-backed verbs, a LIVE engine call.
+#   sql   - `text` is a read-only SELECT that must return a single OK column.
+#           Substitutions: {{verb_attempt}} (audit table), {{start_ts}} (turn
+#           start timestamp).
+#   judge - `text` is a natural-language claim graded by CORTEX.COMPLETE over
+#           the captured transcript (assistant text + tool calls + errors).
+#
+# These target the User MCP bundle and the two load-bearing tenets:
+# auditability (every verb writes VERB_ATTEMPT) and live routing (isochrone /
+# optimization must call ORS, not read a precomputed table).
+
+agent_database: FLEET_INTELLIGENCE
+agent_schema: SYNAPSE_USER
+agent_name: FLEET_AGENT
+verb_attempt_table: OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT
+judge_model: claude-3-5-sonnet
+
+cases:
+  - id: directions-sf
+    prompt: >-
+      Give me driving directions from the Ferry Building to Golden Gate Park
+      in San Francisco.
+    assertions:
+      - type: verb
+        verbs: [get_directions]
+        description: get_directions verb was audited with outcome ok
+      - type: sql
+        description: no verb errored during this turn
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE OUTCOME = 'error' AND ACTOR = CURRENT_USER()
+          AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant's answer describes a driving route and states both a
+          distance and a travel time (duration).
+
+  - id: isochrone-live
+    prompt: >-
+      Show me the area reachable within a 10 minute drive from Union Square
+      in San Francisco.
+    assertions:
+      - type: verb
+        verbs: [compute_isochrone]
+        description: compute_isochrone verb was audited (proves live ORS call, not a precomputed table)
+      - type: sql
+        description: the isochrone verb call succeeded (no error outcome)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'compute_isochrone' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant returned a drive-time / reachability (isochrone) area
+          for roughly a 10 minute threshold, not a straight-line radius.
+
+  - id: optimize-routes
+    prompt: >-
+      Optimize a single-vehicle route that visits these San Francisco stops:
+      Ferry Building, Coit Tower, Painted Ladies, and the Palace of Fine Arts.
+    assertions:
+      - type: verb
+        verbs: [optimize_routes]
+        description: optimize_routes verb was audited with outcome ok
+      - type: sql
+        description: the optimization verb produced no error_code this turn
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'optimize_routes' AND ERROR_CODE IS NOT NULL
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant's answer presents an optimized visiting order for the
+          multiple stops (a route plan), not just directions between two points.

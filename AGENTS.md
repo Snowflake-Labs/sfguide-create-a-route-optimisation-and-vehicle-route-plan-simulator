@@ -43,6 +43,15 @@ archive/                     # Archived materials
 # Run skill evals (trigger accuracy, quality checks, cross-ref validation)
 python3 .cortex/skills/evals/run_evals.py
 
+# Run agent behavioral evals (executes the deployed FLEET_AGENT end to end and
+# grades verb-audit / ground-truth SQL / LLM-judge assertions). Requires a live
+# deployed stack, the target region's ORS services RUNNING, and a PAT:
+#   export FLEET_EVAL_PAT=<programmatic access token>
+#   python3 .cortex/skills/evals/run_agent_evals.py
+# Kept separate from run_evals.py because it needs the live stack and must not
+# block the static skill gate. Read-only: issues only SELECT/SHOW, creates no
+# Snowflake objects. Cases live in test-cases/agent-cases.yaml.
+
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
@@ -185,6 +194,22 @@ Rules:
 - After a successful deploy, run the verified-and-tested change through the normal commit+push flow right away (one logical commit, pushed to `$USER_BRANCH`).
 - Do NOT keep deploying newer image tags on top of still-uncommitted source - every deployed tag should correspond to a pushed commit.
 - If you discover deployed-but-uncommitted source has been reverted on disk, you can usually recover it: the last local `.next/server/chunks/*.js` from the build (minified, not clean source) plus the conversation edit history let you reconstruct the file; then `tsc`/build to verify and cross-check distinctive strings against the built bundle to confirm parity with what is deployed, and commit immediately.
+
+### Post-deploy agent smoke check (recommended, non-blocking)
+
+After an **app-surface** deploy that could affect the agent (SA/admin app redeploy, synapse bundle redeploy, agent recreate), run the fast agent smoke check so a broken agent->MCP->verb->audit chain is caught before a human hits it. This is a RECOMMENDATION, not a blocking gate: it is never wired inline into `install_fleet_apps.sh`, it does not run during the heavy engine build, and it must not stall a deploy.
+
+```bash
+export FLEET_EVAL_PAT=<programmatic access token>
+# Single-case, deterministic smoke (~30-90s): skips the LLM judge, checks the
+# verb fired and was audited with no error. Proves the whole chain is alive.
+python3 .cortex/skills/evals/run_agent_evals.py --case directions-sf --fast
+```
+
+Notes:
+- The check requires the target region's ORS services `RUNNING`; on a suspended region it triggers a resume (and briefly defeats auto-suspend), which is why it is opt-in rather than automatic. Skip the pre-flight with `--skip-ors-check` only if you have already confirmed ORS is up.
+- `--fast` omits `judge` (CORTEX.COMPLETE) assertions - use it for the routine post-deploy check to keep it deterministic and credit-cheap. Drop `--fast` and omit `--case` to run the full suite (verb + sql + judge) on demand.
+- Read-only: issues only SELECT/SHOW, creates no Snowflake objects, sets the standard `query_tag`.
 
 ## Friction Logging
 

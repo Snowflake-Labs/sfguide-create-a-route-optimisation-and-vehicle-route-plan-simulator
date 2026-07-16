@@ -75,3 +75,6 @@ drafts/v2.md
 /docs/old
 benchmarks/matrix-access/results/blogpost-blurb.md
 /tmp
+
+# Agent behavioral eval run artifacts
+.cortex/skills/evals/results/agent/
