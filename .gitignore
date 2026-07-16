@@ -2,8 +2,11 @@
 /Native_app/output
 
 # Log files (ad-hoc redirects, build output)
-# Note: logs/ directory is committed but contains only .md files, so this is safe.
 *.log
+
+# Per-run friction/error logs are local artifacts, not source. Keep README.md.
+**/logs/*.md
+!**/logs/README.md
 
 # Environment and secrets
 .env
@@ -68,7 +71,6 @@ drafts/v1-critique.md
 drafts/v1.md
 drafts/v2-critique.md
 drafts/v2.md
-logs/friction-log_2026-05-03_01-10.md
 /docs/blogpost
 /docs/old
 benchmarks/matrix-access/results/blogpost-blurb.md
