@@ -13,6 +13,7 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from '../views/areas/map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
+import { decimateGeometry } from '@/lib/map/layer-compiler';
 
 function looksLikeGeoJSONString(s: string): boolean {
   const t = s.trim();
@@ -56,8 +57,15 @@ export function RouteMapInline(props: Record<string, unknown>) {
     return out;
   }, [props]);
 
+  // Decimate line geometry so a heavy directions/VRP result (thousands of road
+  // vertices) does not freeze the inline map; points/polygons pass through.
   const fc = useMemo<GeoJSON.FeatureCollection>(
-    () => ({ type: 'FeatureCollection', features }),
+    () => ({
+      type: 'FeatureCollection',
+      features: features.map((f) =>
+        f?.geometry ? { ...f, geometry: decimateGeometry(f.geometry as any) as any } : f,
+      ),
+    }),
     [features],
   );
 

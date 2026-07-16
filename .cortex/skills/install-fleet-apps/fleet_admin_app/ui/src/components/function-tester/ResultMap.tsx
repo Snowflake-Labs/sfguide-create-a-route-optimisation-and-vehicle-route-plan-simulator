@@ -13,6 +13,7 @@ import { useFitMap, isFiniteVS } from '@/components/shared/useFitMap';
 import RecenterButton from '@/components/shared/RecenterButton';
 import { useRegion } from '@/hooks/useRegion';
 import { coordsFromGeoJSON, type LngLat } from '@/components/shared/mapFit';
+import { decimateGeometry, decimateLineCoords } from '@fleet-kit/core/map';
 
 interface RegionBbox { min_lat: number; max_lat: number; min_lon: number; max_lon: number }
 
@@ -37,9 +38,17 @@ export function ResultMap({
 
   const geojsonLayer = useMemo(() => {
     if (!geo.geojson) return null;
+    // Decimate line geometry so heavy directions/route results do not freeze the
+    // map; points/polygons are left intact (shared @fleet-kit decimation).
+    const data = {
+      ...geo.geojson,
+      features: geo.geojson.features.map((f: any) =>
+        f?.geometry ? { ...f, geometry: decimateGeometry(f.geometry) } : f,
+      ),
+    };
     return new GeoJsonLayer({
       id: 'result-geojson',
-      data: geo.geojson,
+      data,
       pickable: true,
       stroked: true,
       filled: true,
@@ -176,7 +185,7 @@ export function ResultMap({
       id: 'optimization-paths',
       data: optimization.vehicles.filter(v => v.path.length > 1),
       pickable: true,
-      getPath: (v: any) => v.path,
+      getPath: (v: any) => decimateLineCoords(v.path) as any,
       getColor: (v: any) => OPTIMIZATION_PALETTE[(v.vehicleId - 1) % OPTIMIZATION_PALETTE.length],
       getWidth: 5,
       widthMinPixels: 4,

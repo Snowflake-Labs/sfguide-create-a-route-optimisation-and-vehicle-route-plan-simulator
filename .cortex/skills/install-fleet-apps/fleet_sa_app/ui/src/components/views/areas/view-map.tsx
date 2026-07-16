@@ -5,12 +5,12 @@
 // useViewData (so :params resolve from store context/viewState and auto-refetch
 // on region/vehicle change). Register as `Map` in view-renderer AREA_COMPONENTS.
 
-import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useEffect, startTransition, type ReactNode } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
-import { compileLayer, layerFitCoords } from '@/lib/map/layer-compiler';
+import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 
@@ -47,12 +47,17 @@ interface LayerFetcherProps {
  * conditional fillColor highlights by a selection key. Context layers (neither)
  * contribute no focus coords. Returns [] when no selection is active so the
  * caller falls back to framing the full set.
+ *
+ * `fitFull` is the layer's already-parsed full fit coords (from
+ * compileLayerWithFit), reused for the query-bound case so no re-parse happens;
+ * only the color-bound branch re-derives fit from the matched subset.
  */
-function selectionFitCoords(
+function selectionFit(
   layer: LayerSpec,
   rows: Record<string, any>[],
   viewState: Record<string, unknown>,
   selectionKeys: string[],
+  fitFull: LngLat[],
 ): LngLat[] {
   if (!rows.length || selectionKeys.length === 0) return [];
   // Wide context layers opt out of selection framing (e.g. a full ZIP
@@ -67,10 +72,8 @@ function selectionFitCoords(
     const m = /^viewState\.(.+)$/.exec(ref);
     return m != null && isSel(m[1]) && active(m[1]);
   });
-  if (queryBoundActive) {
-    // Rows are already narrowed by the SQL filter.
-    return layerFitCoords(layer, rows) as LngLat[];
-  }
+  // Rows are already narrowed by the SQL filter, so the full fit == selection fit.
+  if (queryBoundActive) return fitFull;
 
   // Color-bound: conditional fillColor highlights rows matching the selection.
   const fc = (layer as any).fillColor;
@@ -88,6 +91,11 @@ function selectionFitCoords(
 /**
  * Fetches one layer's data and lifts the compiled deck.gl Layer + fit coords to
  * the parent. Renders nothing. One child per layer keeps hook order stable.
+ *
+ * The heavy compile (GeoJSON parse + decimation) is deferred to an idle frame so
+ * the basemap paints first, and its result is committed inside startTransition
+ * so it is a non-urgent update. This keeps the basemap and UI responsive even
+ * when a layer carries multi-MB route geometry.
  */
 function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult }: LayerFetcherProps) {
   // Skip the fetch entirely when the layer is toggled off (undefined query
@@ -100,10 +108,32 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
       onResult(index, null, [], [], undefined);
       return;
     }
-    const compiled = compileLayer(layer, rows, viewState, index, hovered);
-    const fitFull = layerFitCoords(layer, rows) as LngLat[];
-    const fitSel = selectionFitCoords(layer, rows, viewState, selectionKeys);
-    onResult(index, compiled, fitFull, fitSel, layer.tooltip);
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      // Single parse: layer data + full fit coords derived from one pass.
+      const { layer: compiled, fitCoords } = compileLayerWithFit(layer, rows, viewState, index, hovered);
+      const fitFull = fitCoords as LngLat[];
+      const fitSel = selectionFit(layer, rows, viewState, selectionKeys, fitFull);
+      startTransition(() => {
+        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip);
+      });
+    };
+    const ric = (typeof window !== 'undefined'
+      ? (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback
+      : undefined);
+    let idleId: number | undefined;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    if (ric) idleId = ric(run, { timeout: 300 });
+    else timerId = setTimeout(run, 0);
+    return () => {
+      cancelled = true;
+      const cic = typeof window !== 'undefined'
+        ? (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback
+        : undefined;
+      if (idleId != null && cic) cic(idleId);
+      if (timerId != null) clearTimeout(timerId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, viewState, selectionKeys, hovered, visible]);
   return null;
