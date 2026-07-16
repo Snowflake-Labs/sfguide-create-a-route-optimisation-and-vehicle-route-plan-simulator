@@ -5,7 +5,7 @@
 // useViewData (so :params resolve from store context/viewState and auto-refetch
 // on region/vehicle change). Register as `Map` in view-renderer AREA_COMPONENTS.
 
-import { useState, useCallback, useMemo, useEffect, startTransition, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, startTransition, type ReactNode } from 'react';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
@@ -13,6 +13,7 @@ import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
 
 interface ViewMapAreaProps {
   areaConfig: {
@@ -38,6 +39,7 @@ interface LayerFetcherProps {
     fitFull: LngLat[],
     fitSel: LngLat[],
     template: string | undefined,
+    count: number,
   ) => void;
 }
 
@@ -105,7 +107,7 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
   useEffect(() => {
     if (!visible) {
-      onResult(index, null, [], [], undefined);
+      onResult(index, null, [], [], undefined, 0);
       return;
     }
     let cancelled = false;
@@ -116,7 +118,7 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
       const fitFull = fitCoords as LngLat[];
       const fitSel = selectionFit(layer, rows, viewState, selectionKeys, fitFull);
       startTransition(() => {
-        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip);
+        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length);
       });
     };
     const ric = (typeof window !== 'undefined'
@@ -159,6 +161,19 @@ function renderTooltip(template: string, object: Record<string, any>): string {
 
 const WORLD_FALLBACK = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 
+/** Column a layer colors features by, when it encodes color from data (used only
+ *  for the agent's map summary). Returns undefined for static-color layers. */
+function colorFieldOf(spec: LayerSpec): string | undefined {
+  const s = spec as Record<string, any>;
+  const fc = s.fillColor;
+  if (fc && typeof fc === 'object') {
+    if (typeof fc.column === 'string') return fc.column;          // categorical
+    if (typeof fc.baseColumn === 'string') return fc.baseColumn;  // conditional + palette
+  }
+  if (typeof s.colorColumn === 'string') return s.colorColumn;    // geojson
+  if (typeof s.valueColumn === 'string') return s.valueColumn;    // h3
+  return undefined;
+}
 /** Shared card chrome for the map overlays (legend + toggles). Collapsible via a
  *  clickable header with a chevron. `corner` positions the card. */
 function OverlayCard({
@@ -286,6 +301,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const panelViewState = useAppStore((s) => s.panel.viewState);
   const context = useAppStore((s) => s.context);
   const updateViewState = useAppStore((s) => s.updateViewState);
+  const setMapState = useAppStore((s) => s.setMapState);
   // Merge context (region/vehicle) and viewState so conditional colors
   // (whenViewStateEquals) and clickable-table selections both resolve.
   const viewState = useMemo(
@@ -294,6 +310,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   );
 
   const [layers, setLayers] = useState<Record<number, Layer | null>>({});
+  const [counts, setCounts] = useState<Record<number, number>>({});
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
   const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
@@ -342,8 +359,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   }, [clickEmits, updateViewState]);
 
   const onResult = useCallback(
-    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined) => {
+    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined, count: number) => {
       setLayers((prev) => ({ ...prev, [index]: layer }));
+      setCounts((prev) => (prev[index] === count ? prev : { ...prev, [index]: count }));
       setFitsFull((prev) => ({ ...prev, [index]: fitFull }));
       setFitsSel((prev) => ({ ...prev, [index]: fitSel }));
       if (template) {
@@ -397,6 +415,59 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     () => selectionKeys.map((k) => String(panelViewState[k] ?? '')).filter(Boolean).join('|'),
     [selectionKeys, panelViewState],
   );
+
+  // Compact summary of what the map is showing, surfaced to the chat agent so it
+  // reasons about visible layers / blank layers instead of guessing. Scalar-only
+  // (counts, ids, bbox, selection) - never per-feature rows.
+  const mapDescriptor = useMemo<MapStateDescriptor>(() => {
+    const layerDescs: MapLayerDescriptor[] = specs.map((ls, i) => {
+      const key = (ls as { visibleWhen?: string }).visibleWhen;
+      const v = key ? viewState[key] : undefined;
+      const visible = !key || (v !== false && v !== 'false');
+      const compiled = layers[i];
+      const id = compiled?.id ?? (ls as { id?: string }).id ?? `spec-layer-${i}`;
+      return {
+        id,
+        type: (ls as { type?: string }).type ?? 'unknown',
+        featureCount: counts[i] ?? 0,
+        colorBy: colorFieldOf(ls),
+        rendered: !!compiled,
+        gated: !visible,
+      };
+    });
+    const emptyLayers = layerDescs.filter((l) => !l.rendered || l.gated).map((l) => l.id);
+    const bbox: [number, number, number, number] | undefined =
+      fitCoords.length === 2
+        ? [fitCoords[0][0], fitCoords[0][1], fitCoords[1][0], fitCoords[1][1]]
+        : undefined;
+    const selection: Record<string, unknown> = {};
+    for (const k of selectionKeys) {
+      const val = panelViewState[k];
+      if (val != null && val !== '') selection[k] = val;
+    }
+    const legendItems = config.legend ?? config.categoryLegend;
+    const legend = legendItems?.map((l) => l.label).filter(Boolean);
+    return {
+      layerCount: layerDescs.length,
+      layers: layerDescs,
+      emptyLayers,
+      bbox,
+      selection: Object.keys(selection).length ? selection : undefined,
+      legend: legend && legend.length ? legend : undefined,
+    };
+  }, [specs, layers, counts, viewState, fitCoords, selectionKeys, panelViewState, config.legend, config.categoryLegend]);
+
+  // Publish the descriptor only when it actually changes (signature guard avoids
+  // a render loop), and clear it on unmount so the next view starts clean.
+  const lastSigRef = useRef<string>('');
+  useEffect(() => {
+    const sig = JSON.stringify(mapDescriptor);
+    if (sig !== lastSigRef.current) {
+      lastSigRef.current = sig;
+      setMapState(mapDescriptor);
+    }
+  }, [mapDescriptor, setMapState]);
+  useEffect(() => () => setMapState(null), [setMapState]);
 
   const fallback = useMemo(
     () => config.fallback ?? WORLD_FALLBACK,

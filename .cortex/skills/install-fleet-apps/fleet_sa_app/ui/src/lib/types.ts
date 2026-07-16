@@ -34,12 +34,46 @@ export interface AgentKnowledge {
   gotchas?: string;
 }
 
+// Compact summary of one rendered map layer, surfaced to the chat agent so it can
+// reason about what is actually on screen (counts, blank layers) instead of guessing.
+// Carries only scalar metadata - never per-feature rows - so it stays cheap and safe.
+export interface MapLayerDescriptor {
+  // Stable layer id (spec id, or spec-layer-<index> fallback).
+  id: string;
+  // Layer kind: scatterplot | path | h3 | geojson | arc.
+  type: string;
+  // Rows fetched for this layer's query under the current scope/filters.
+  featureCount: number;
+  // Column driving per-feature color, when the layer colors by a data column.
+  colorBy?: string;
+  // True when the layer compiled to a visible deck.gl layer (non-empty rows).
+  rendered: boolean;
+  // True when a visibleWhen toggle is currently hiding the layer.
+  gated?: boolean;
+}
+
+// Snapshot of the map area currently open, folded into panel context for the agent.
+export interface MapStateDescriptor {
+  layerCount: number;
+  layers: MapLayerDescriptor[];
+  // Ids of layers that show nothing right now (zero rows or gated off).
+  emptyLayers: string[];
+  // Framed extent as [minLng, minLat, maxLng, maxLat].
+  bbox?: [number, number, number, number];
+  // Active selection keys -> values (map anchor / clicked object).
+  selection?: Record<string, unknown>;
+  // Legend item labels, in order.
+  legend?: string[];
+}
+
 export interface PanelContext {
   activeView: { id: string; label: string; description: string; agentKnowledge?: AgentKnowledge } | null;
   viewState: Record<string, unknown>;
   availableViews: Array<{ label: string; description: string }>;
   context: Record<string, unknown>;
   hasUnsavedChanges: boolean;
+  // Present only when a map area is open; null otherwise.
+  mapState?: MapStateDescriptor | null;
 }
 
 export interface ViewProps {
