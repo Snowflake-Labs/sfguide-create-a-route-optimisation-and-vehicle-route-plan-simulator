@@ -211,13 +211,38 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     return c;
   }, [participants, hazard]);
 
+  // Participant ADDRESSES grouped by ACTIVE-hazard risk band, so the agent can
+  // answer "give me the addresses of the Very High points". risk_bands only
+  // carries per-band COUNTS and the trip roster only carries seated addresses
+  // (untagged) - neither joins address<->risk at the participant level, so we
+  // surface that join here directly from the same `participants` state that
+  // draws the colored map dots.
+  const addressesByBand = useMemo(() => {
+    const groups: string[][] = [[], [], [], [], [], []];
+    for (const p of participants) {
+      const lvl = hazard === 'WILDFIRE' ? p.wfLvl : p.flLvl;
+      const band = Math.max(0, Math.min(5, Math.round(lvl || 0)));
+      groups[band].push(p.address || p.pid);
+    }
+    return groups;
+  }, [participants, hazard]);
+
   // Compact, agent-facing scalars/strings describing the solved plan. viewState
   // is flattened to key=value in the panel-context prefix, so the trip roster and
   // gap lists MUST be pre-formatted strings (an array would serialize to
   // "[object Object]"). Fields are null before a solve so they drop from context.
   const planContext = useMemo(() => {
     const addrByPid: Record<string, string> = {};
-    for (const p of participants) addrByPid[p.pid] = p.address || p.pid;
+    const bandByPid: Record<string, number> = {};
+    for (const p of participants) {
+      addrByPid[p.pid] = p.address || p.pid;
+      const lvl = hazard === 'WILDFIRE' ? p.wfLvl : p.flLvl;
+      bandByPid[p.pid] = Math.max(0, Math.min(5, Math.round(lvl || 0)));
+    }
+    // Address + compact risk-band marker ("[bN]", matching the risk_bands legend)
+    // so the seated roster is self-describing and the agent can say which stops
+    // are Very High without a second lookup.
+    const stopLabel = (pid: string) => `${addrByPid[pid] || pid} [b${bandByPid[pid] ?? 0}]`;
     const unassignedAddrs = unassignedPids.map((pid) => addrByPid[pid] || pid);
     const base = {
       unassigned_count: unassignedPids.length || null,
@@ -232,7 +257,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       };
     }
     const rosterLines = trips.map((t) => {
-      const stops = boundedList(t.stops.map((s) => addrByPid[s.pid] || s.pid), 6);
+      const stops = boundedList(t.stops.map((s) => stopLabel(s.pid)), 6);
       return `${t.vehicleLabel} T${t.tripNumber}: ${t.load}/${t.capacity} seats, ${Math.round(t.durationSec / 60)}m, stops: ${stops}`;
     });
     const totalStops = trips.reduce((a, t) => a + t.stops.length, 0);
@@ -249,10 +274,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       total_stops_assigned: totalStops,
       avg_stops_per_trip: Math.round((totalStops / trips.length) * 10) / 10,
       selected_trip: sel
-        ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => addrByPid[s.pid] || s.pid), 12)}`
+        ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => stopLabel(s.pid)), 12)}`
         : null,
     };
-  }, [trips, participants, unassignedPids, selectedTripKey]);
+  }, [trips, participants, unassignedPids, selectedTripKey, hazard]);
 
   // Publish a compact, scalar-only summary of the on-screen state into panel
   // context so the left-side agent can answer "analyse results in dashboard"
@@ -270,6 +295,13 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     participants_seeded: participants.length,
     risk_threshold: `${RISK_LABELS[evacLevel]} (level ${evacLevel})`,
     risk_bands: participants.length ? RISK_LABELS.map((l, i) => `${l}(${i}):${riskBandBreakdown[i]}`).join(', ') : null,
+    addresses_by_band: participants.length
+      ? RISK_LABELS.map((l, i) => [l, i] as const)
+          .filter(([, i]) => addressesByBand[i].length)
+          .sort((a, b) => b[1] - a[1])
+          .map(([l, i]) => `${l}(${i}): ${boundedList(addressesByBand[i], 10)}`)
+          .join(' | ')
+      : null,
     at_or_above_threshold: participants.length ? riskBandBreakdown.slice(evacLevel).reduce((a, b) => a + b, 0) : null,
     center_names: centers.length ? boundedList(centers.map((c) => c.center_name).filter(Boolean), 12) : null,
     vans_per_center: numVehicles,
@@ -287,7 +319,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     ...planContext,
     step,
     availability: avail,
-  }), [region, hazard, minutes, participants.length, evacLevel, riskBandBreakdown, centers, numVehicles, capacity, maxTrips, optimizeMode, planStats, planContext, step, avail, depotCount]);
+  }), [region, hazard, minutes, participants.length, evacLevel, riskBandBreakdown, addressesByBand, centers, numVehicles, capacity, maxTrips, optimizeMode, planStats, planContext, step, avail, depotCount]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;

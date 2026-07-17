@@ -36,16 +36,18 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
         'evacuees and evacuated (assigned) counts',
         'number of trips and completion time in minutes',
         'per-risk-band participant counts for the active hazard (risk_bands)',
+        'participant addresses grouped by risk band for the active hazard (addresses_by_band)',
         'unassigned / overflow participants that could not be seated',
       ],
       exampleQuestions: [
         'how many evacuation trips are there?',
         'list the evacuation trips and their stops',
         'how many participants are in the Very High risk band?',
+        'what are the addresses of the Very High risk participants?',
         'which participants were not seated?',
         'what is on the map right now, and is any layer blank?',
       ],
-      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context (trips_detail, risk_bands, unassigned_addresses, and the map layer summary). There is no SQL or verb tool that returns the solved trips, so answer from the panel context and never invent stops, counts, or risk bands. Re-seeding or changing the risk threshold updates the numbers.',
+      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context (trips_detail, risk_bands, addresses_by_band, unassigned_addresses, and the map layer summary). addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop in trips_detail carries a "[bN]" risk-band marker matching the risk_bands legend (b5 = Very High) - so address-by-risk-band questions ARE answerable from context. There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, or risk bands. Re-seeding or changing the risk threshold updates the numbers.',
     },
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({
