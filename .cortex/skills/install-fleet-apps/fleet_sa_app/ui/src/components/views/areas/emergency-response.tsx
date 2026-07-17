@@ -17,7 +17,7 @@ import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
 import type { LngLat } from '@/lib/map/map-fit';
-import type { ViewProps } from '@/lib/types';
+import type { ViewProps, MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
 
 type Hazard = 'WILDFIRE' | 'FLOOD';
 interface HazardZone { zoneId: string; geojson: string; wildfire_level: number; flood_level: number; }
@@ -42,6 +42,13 @@ const ROUTE_PALETTE: [number, number, number][] = [
 
 // Hard ceiling on virtual trips per van when auto-scaling capacity.
 const CEIL_TRIPS = 12;
+
+// Join a list into a bounded string for agent context, appending "(+N more)"
+// when truncated so the injected panel-context line stays small.
+function boundedList(items: string[], max: number): string {
+  if (items.length <= max) return items.join('; ');
+  return items.slice(0, max).join('; ') + `; (+${items.length - max} more)`;
+}
 
 interface PlanStop { seq: number; lon: number; lat: number; pid: string; }
 interface PlanTrip {
@@ -164,6 +171,7 @@ const ER = 'FLEET_APP.EMERGENCY_RESPONSE';
 
 export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
+  const setMapState = useAppStore((s) => s.setMapState);
 
   const [avail, setAvail] = useState<'checking' | 'ready' | 'unavailable'>('checking');
   const [step, setStep] = useState(1);
@@ -191,6 +199,61 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   // van count PER center, so total fleet = centers x vans.
   const depotCount = centers.length;
 
+  // Per-band participant counts for the ACTIVE hazard (matches the colored dots
+  // on the map) so the agent can answer "how many are in the Very High band"
+  // without a re-seed.
+  const riskBandBreakdown = useMemo(() => {
+    const c = [0, 0, 0, 0, 0, 0];
+    for (const p of participants) {
+      const lvl = hazard === 'WILDFIRE' ? p.wfLvl : p.flLvl;
+      c[Math.max(0, Math.min(5, Math.round(lvl || 0)))]++;
+    }
+    return c;
+  }, [participants, hazard]);
+
+  // Compact, agent-facing scalars/strings describing the solved plan. viewState
+  // is flattened to key=value in the panel-context prefix, so the trip roster and
+  // gap lists MUST be pre-formatted strings (an array would serialize to
+  // "[object Object]"). Fields are null before a solve so they drop from context.
+  const planContext = useMemo(() => {
+    const addrByPid: Record<string, string> = {};
+    for (const p of participants) addrByPid[p.pid] = p.address || p.pid;
+    const unassignedAddrs = unassignedPids.map((pid) => addrByPid[pid] || pid);
+    const base = {
+      unassigned_count: unassignedPids.length || null,
+      unassigned_addresses: unassignedPids.length ? boundedList(unassignedAddrs, 12) : null,
+    };
+    if (!trips.length) {
+      return {
+        ...base,
+        trips_detail: null, vans_used: null, longest_trip_min: null,
+        shortest_trip_min: null, total_stops_assigned: null, avg_stops_per_trip: null,
+        selected_trip: null,
+      };
+    }
+    const rosterLines = trips.map((t) => {
+      const stops = boundedList(t.stops.map((s) => addrByPid[s.pid] || s.pid), 6);
+      return `${t.vehicleLabel} T${t.tripNumber}: ${t.load}/${t.capacity} seats, ${Math.round(t.durationSec / 60)}m, stops: ${stops}`;
+    });
+    const totalStops = trips.reduce((a, t) => a + t.stops.length, 0);
+    const vans = new Set(trips.map((t) => t.physIndex)).size;
+    let longest = 0, shortest = Number.POSITIVE_INFINITY;
+    for (const t of trips) { const m = Math.round(t.durationSec / 60); if (m > longest) longest = m; if (m < shortest) shortest = m; }
+    const sel = selectedTripKey ? trips.find((t) => t.tripKey === selectedTripKey) : undefined;
+    return {
+      ...base,
+      trips_detail: boundedList(rosterLines, 12),
+      vans_used: vans,
+      longest_trip_min: longest,
+      shortest_trip_min: Number.isFinite(shortest) ? shortest : null,
+      total_stops_assigned: totalStops,
+      avg_stops_per_trip: Math.round((totalStops / trips.length) * 10) / 10,
+      selected_trip: sel
+        ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => addrByPid[s.pid] || s.pid), 12)}`
+        : null,
+    };
+  }, [trips, participants, unassignedPids, selectedTripKey]);
+
   // Publish a compact, scalar-only summary of the on-screen state into panel
   // context so the left-side agent can answer "analyse results in dashboard"
   // directly from injected context (no tool call, no misroute). Geometry and
@@ -203,8 +266,12 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     region: region ?? null,
     hazard,
     isochrone_minutes: minutes,
+    reachable_minutes: minutes,
     participants_seeded: participants.length,
     risk_threshold: `${RISK_LABELS[evacLevel]} (level ${evacLevel})`,
+    risk_bands: participants.length ? RISK_LABELS.map((l, i) => `${l}(${i}):${riskBandBreakdown[i]}`).join(', ') : null,
+    at_or_above_threshold: participants.length ? riskBandBreakdown.slice(evacLevel).reduce((a, b) => a + b, 0) : null,
+    center_names: centers.length ? boundedList(centers.map((c) => c.center_name).filter(Boolean), 12) : null,
     vans_per_center: numVehicles,
     depot_count: depotCount,
     total_vans: depotCount * numVehicles,
@@ -217,9 +284,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     completion_min: planStats?.completionMin ?? null,
     total_drive_min: planStats?.totalMin ?? null,
     overflow: planStats?.overflow ?? null,
+    ...planContext,
     step,
     availability: avail,
-  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, optimizeMode, planStats, step, avail, depotCount]);
+  }), [region, hazard, minutes, participants.length, evacLevel, riskBandBreakdown, centers, numVehicles, capacity, maxTrips, optimizeMode, planStats, planContext, step, avail, depotCount]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -469,6 +537,59 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     if (!participants.length) for (const ce of centers) c.push([ce.lon, ce.lat]);
     return c;
   }, [participants, centers]);
+
+  // Publish a scalar-only descriptor of the deck.gl layers actually on screen so
+  // the agent answers "what is on the map / why is layer X blank" from real
+  // state (mirrors the generic view-map.tsx map-awareness channel, which this
+  // custom view does not otherwise feed). Per-feature rows are intentionally
+  // excluded - the trip roster travels via the viewState summary instead.
+  const mapDescriptor = useMemo<MapStateDescriptor>(() => {
+    const routeFeatures = routeGeo?.features?.length ?? 0;
+    const selStops = selectedTripKey ? (trips.find((t) => t.tripKey === selectedTripKey)?.stops.length ?? 0) : 0;
+    const defs: MapLayerDescriptor[] = [
+      { id: 'hazard-zones', type: 'GeoJsonLayer', featureCount: zones.length, colorBy: hazard === 'WILDFIRE' ? 'wildfire risk' : 'flood risk', rendered: zones.length > 0, gated: false },
+      { id: 'iso-union', type: 'GeoJsonLayer', featureCount: unionGeo ? 1 : 0, rendered: !!unionGeo, gated: false },
+      { id: 'centers', type: 'ScatterplotLayer', featureCount: centers.length, rendered: centers.length > 0, gated: false },
+      { id: 'participants', type: 'ScatterplotLayer', featureCount: participants.length, colorBy: 'risk level', rendered: participants.length > 0, gated: false },
+      { id: 'routes', type: 'GeoJsonLayer', featureCount: routeFeatures, colorBy: 'van', rendered: routeFeatures > 0, gated: false },
+      { id: 'unassigned', type: 'ScatterplotLayer', featureCount: unassignedPids.length, rendered: unassignedPids.length > 0, gated: false },
+      { id: 'selected-stops', type: 'ScatterplotLayer', featureCount: selStops, rendered: selStops > 0, gated: false },
+    ];
+    const emptyLayers = defs.filter((l) => l.featureCount === 0).map((l) => l.id);
+    let bbox: [number, number, number, number] | undefined;
+    if (fitCoords.length) {
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      for (const [lng, lat] of fitCoords) {
+        if (lng < minLng) minLng = lng; if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng; if (lat > maxLat) maxLat = lat;
+      }
+      bbox = [minLng, minLat, maxLng, maxLat];
+    }
+    const sel = selectedTripKey ? trips.find((t) => t.tripKey === selectedTripKey) : undefined;
+    return {
+      layerCount: defs.length,
+      layers: defs,
+      emptyLayers,
+      bbox,
+      selection: sel ? { selected_trip: `${sel.vehicleLabel} Trip ${sel.tripNumber}` } : undefined,
+      legend: [...RISK_LABELS, 'Reachable area', 'Care center', 'Participant'],
+    };
+  }, [zones.length, unionGeo, centers.length, participants.length, routeGeo, unassignedPids.length, selectedTripKey, trips, hazard, fitCoords]);
+
+  const lastMapSigRef = useRef<string>('');
+  useEffect(() => {
+    // Only advertise a map while the view actually renders one (avail === 'ready');
+    // otherwise clear so the agent does not see phantom all-blank layers.
+    if (avail !== 'ready') {
+      if (lastMapSigRef.current !== '') { lastMapSigRef.current = ''; setMapState(null); }
+      return;
+    }
+    const sig = JSON.stringify(mapDescriptor);
+    if (sig === lastMapSigRef.current) return;
+    lastMapSigRef.current = sig;
+    setMapState(mapDescriptor);
+  }, [mapDescriptor, setMapState, avail]);
+  useEffect(() => () => setMapState(null), [setMapState]);
 
   const labelStyle = { fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, marginBottom: '4px', display: 'block' };
   const subLabelStyle = { fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, letterSpacing: '0.02em', marginBottom: '4px', display: 'block', whiteSpace: 'nowrap' as const };

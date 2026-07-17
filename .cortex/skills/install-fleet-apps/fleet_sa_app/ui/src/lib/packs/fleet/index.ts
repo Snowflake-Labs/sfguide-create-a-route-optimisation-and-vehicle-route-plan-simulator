@@ -31,6 +31,22 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Emergency Response',
     description: 'Plan a capacitated multi-depot evacuation for the active region: hazard-zone risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.',
     category: 'Optimization',
+    agentKnowledge: {
+      keyMetrics: [
+        'evacuees and evacuated (assigned) counts',
+        'number of trips and completion time in minutes',
+        'per-risk-band participant counts for the active hazard (risk_bands)',
+        'unassigned / overflow participants that could not be seated',
+      ],
+      exampleQuestions: [
+        'how many evacuation trips are there?',
+        'list the evacuation trips and their stops',
+        'how many participants are in the Very High risk band?',
+        'which participants were not seated?',
+        'what is on the map right now, and is any layer blank?',
+      ],
+      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context (trips_detail, risk_bands, unassigned_addresses, and the map layer summary). There is no SQL or verb tool that returns the solved trips, so answer from the panel context and never invent stops, counts, or risk bands. Re-seeding or changing the risk threshold updates the numbers.',
+    },
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({
         default: mod.EmergencyResponseView,
