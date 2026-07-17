@@ -186,3 +186,54 @@ then optionally apply the live hotfix.
 **Anti-pattern.** Fixing only the running SPCS service, agent spec, or config stage and leaving
 the repo source stale - the next clean deploy regresses. (This mirrors the existing
 "Fix Discipline (new-deployment-first)" rule in `AGENTS.md`, extended to the SA/synapse stack.)
+
+---
+
+## 9. Live routing, not precomputed
+
+**Tenet.** Analytics that depend on drive-time reachability, catchments, travel-time matrices,
+or optimization MUST call the live routing functions (`ROUTING_PLATFORM.CONTRACT.*`, i.e.
+`OPENROUTESERVICE_APP.CORE.ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION`) **at
+interaction time** - never read materialized or precomputed ORS output. The routing engine is
+the thing being demoed; caching its output hides it.
+
+**How to apply.** Resolve the interactive selection into literal, scalar-subquery, or bind args
+(ORS SQL functions do not evaluate against correlated per-row columns; `ISOCHRONES` range is in
+MINUTES). Guard every call with `COALESCE(:selection, <default>)` so nothing is invoked with a
+NULL arg. Every ORS call requires the region's service RESUMED (a suspended service returns an
+embedded error, not a throw). Precomputed **non-ORS** reference data (Overture POI subsets,
+address/household density, synthetic commercials) is fine - the rule is specifically about not
+caching ORS engine output.
+
+**Anti-pattern.** Caching isochrone polygons, travel-time matrices, or optimization results into
+a table and reading them back in a view. It hides the routing engine, goes stale when the
+estate/region/params change, and diverges from what a customer would actually build.
+
+---
+
+## 10. Agent-aware by construction
+
+**Tenet.** Every consumer-facing view - new or changed - must be answerable by the left-panel
+Cortex agent. The on-screen numbers, rankings, and the map's meaning must reach the agent through
+the panel-context channels; a view that renders data the agent cannot see or reason about is
+incomplete. The three grounding channels are injected in
+`fleet_sa_app/ui/src/app/api/chat/route.ts`: **Channel A** - `viewState` flattened to `key=value`
+(publish bounded, pre-joined STRING memos under the reserved `__memo_<area>` key); **Channel B** -
+`mapState` (layer counts, blank-layer diagnosis, bbox, legend, and one clicked `selectedFeature`
+that only populates when the layer has `clickEmits`); **Channel C** - `agentKnowledge` in
+`app-views.json` (`preferredTool` + `keyMetrics` + `exampleQuestions` + `gotchas`).
+
+**How to apply.** When adding or altering a view: (1) publish its headline metrics as a bounded,
+pre-joined STRING under `__memo_<area>` in `viewState` (a nested object serializes to
+`[object Object]`) - `MetricCardsArea` does this generically; custom/table views publish via
+`updateViewState` / `onStateChange`. (2) Add or refresh an `agentKnowledge` block naming the
+verified tool-to-semantic-view pairing; if no semantic view models the data (e.g. safety events,
+work-items), OMIT `preferredTool` and say so in `gotchas` rather than implying a tool can answer.
+(3) Add `clickEmits` to the primary point/choropleth layer so "tell me about the one I clicked"
+works. (4) Sanity-check by asking the agent a representative question about the on-screen result.
+Keep every memo bounded (top-N rows, key columns, capped length).
+
+**Anti-pattern.** Shipping a view whose KPIs, table rows, or chart values exist only client-side
+with no channel; an `agentKnowledge.preferredTool` pointed at a semantic view that does not model
+the data, so the agent invents numbers or misroutes; or dumping raw rows/objects into `viewState`
+(which breaks the Channel A `key=value` flattening).
