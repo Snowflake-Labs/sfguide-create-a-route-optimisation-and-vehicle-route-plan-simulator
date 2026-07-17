@@ -61,6 +61,7 @@ export async function POST(request: NextRequest) {
     emptyLayers?: string[];
     bbox?: [number, number, number, number];
     selection?: Record<string, unknown>;
+    selectedFeature?: { key: string; value: unknown; attrs: Record<string, string | number | boolean> };
     legend?: string[];
   } | undefined;
   if (mapState && (mapState.layerCount ?? 0) > 0 && Array.isArray(mapState.layers)) {
@@ -81,8 +82,12 @@ export async function POST(request: NextRequest) {
       const sel = Object.entries(mapState.selection).map(([k, v]) => `${k}=${v}`).join(', ');
       mapParts.push(`Selected: ${sel}.`);
     }
+    if (mapState.selectedFeature?.attrs && Object.keys(mapState.selectedFeature.attrs).length) {
+      const a = Object.entries(mapState.selectedFeature.attrs).map(([k, v]) => `${k}=${v}`).join(', ');
+      mapParts.push(`Selected feature attributes: ${a}.`);
+    }
     if (mapState.legend?.length) mapParts.push(`Legend: ${mapState.legend.join(', ')}.`);
-    mapParts.push('Answer only about what is actually rendered. If a layer the user asks about is blank/empty or hidden, diagnose the likely cause (active filter or selection, zero rows for the current region/vehicle/date scope, a toggle that is off, or an unset selection anchor) before answering; do not describe features that are not on the map.]');
+    mapParts.push('Answer only about what is actually rendered. If a layer the user asks about is blank/empty or hidden, diagnose the likely cause (active filter or selection, zero rows for the current region/vehicle/date scope, a toggle that is off, or an unset selection anchor) before answering; do not describe features that are not on the map. When the user refers to "this" or "the selected" feature, use the Selected feature attributes above; for any field, metric, or nearby data not listed there, query the semantic view or a routing tool rather than guessing - the attribute list is a bounded snapshot, not the full row.]');
     contextPrefix += mapParts.join(' ') + '\n\n';
   }
   if (availableViews.length > 0) {

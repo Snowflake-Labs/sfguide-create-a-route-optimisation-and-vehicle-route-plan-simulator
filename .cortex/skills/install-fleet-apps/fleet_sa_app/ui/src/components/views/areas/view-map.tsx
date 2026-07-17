@@ -174,6 +174,30 @@ function colorFieldOf(spec: LayerSpec): string | undefined {
   if (typeof s.valueColumn === 'string') return s.valueColumn;    // h3
   return undefined;
 }
+/** Bounded, scalar-only snapshot of a clicked feature's columns for the agent's
+ *  map summary. Keeps only string/number/boolean values (drops nulls, empties,
+ *  nested objects/arrays), truncates long strings, and caps the key count so the
+ *  chat context stays cheap - never a full per-feature row dump. */
+function sanitizeAttrs(src: Record<string, unknown>): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  let n = 0;
+  for (const [k, v] of Object.entries(src)) {
+    if (n >= 20) break;
+    if (v == null) continue;
+    const t = typeof v;
+    if (t === 'number' || t === 'boolean') {
+      out[k] = v as number | boolean;
+      n++;
+    } else if (t === 'string') {
+      const str = v as string;
+      if (str === '') continue;
+      out[k] = str.length > 80 ? str.slice(0, 80) + '...' : str;
+      n++;
+    }
+    // objects / arrays / functions are intentionally skipped
+  }
+  return out;
+}
 /** Shared card chrome for the map overlays (legend + toggles). Collapsible via a
  *  clickable header with a chevron. `corner` positions the card. */
 function OverlayCard({
@@ -316,6 +340,11 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const [templates, setTemplates] = useState<Record<string, string>>({});
   // Path hovered in the map -> widen the matching journey (see compileLayer).
   const [hovered, setHovered] = useState<{ layerId: string; value: unknown } | null>(null);
+  // Attributes of the last map-picked feature, surfaced to the chat agent so it
+  // can answer "the one I selected" questions. Cleared on an empty-map click.
+  const [selectedFeature, setSelectedFeature] = useState<
+    { key: string; value: unknown; attrs: Record<string, string | number | boolean> } | null
+  >(null);
 
   const onHover = useCallback((info: any) => {
     if (info?.layer && info.object) {
@@ -347,6 +376,8 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         if (clickEmits.lng) patch[clickEmits.lng] = null;
         if (clickEmits.lat) patch[clickEmits.lat] = null;
         updateViewState(patch);
+        // Capture the picked row's attributes for the agent's map context.
+        setSelectedFeature({ key: clickEmits.object, value: val, attrs: sanitizeAttrs(src) });
       }
       return;
     }
@@ -355,6 +386,8 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
       const patch: Record<string, unknown> = { [clickEmits.lng]: coord[0], [clickEmits.lat]: coord[1] };
       if (clickEmits.object) patch[clickEmits.object] = null;
       updateViewState(patch);
+      // Greenfield/empty-map click clears any prior picked-feature attributes.
+      setSelectedFeature(null);
     }
   }, [clickEmits, updateViewState]);
 
@@ -447,15 +480,22 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     }
     const legendItems = config.legend ?? config.categoryLegend;
     const legend = legendItems?.map((l) => l.label).filter(Boolean);
+    // Include the picked feature only while it is still the active anchor, so a
+    // table-driven selection change or a clear drops the stale map pick.
+    const activeSelectedFeature =
+      selectedFeature && selection[selectedFeature.key] === selectedFeature.value
+        ? selectedFeature
+        : undefined;
     return {
       layerCount: layerDescs.length,
       layers: layerDescs,
       emptyLayers,
       bbox,
       selection: Object.keys(selection).length ? selection : undefined,
+      selectedFeature: activeSelectedFeature,
       legend: legend && legend.length ? legend : undefined,
     };
-  }, [specs, layers, counts, viewState, fitCoords, selectionKeys, panelViewState, config.legend, config.categoryLegend]);
+  }, [specs, layers, counts, viewState, fitCoords, selectionKeys, panelViewState, selectedFeature, config.legend, config.categoryLegend]);
 
   // Publish the descriptor only when it actually changes (signature guard avoids
   // a render loop), and clear it on unmount so the next view starts clean.

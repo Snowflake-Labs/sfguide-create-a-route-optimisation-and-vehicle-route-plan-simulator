@@ -62,6 +62,11 @@ export interface MapStateDescriptor {
   bbox?: [number, number, number, number];
   // Active selection keys -> values (map anchor / clicked object).
   selection?: Record<string, unknown>;
+  // Attributes of the feature the user clicked (bounded, scalar-only). This one
+  // picked row is the deliberate exception to the layer-level "never per-feature
+  // rows" rule; present only while a map-picked selection is active and still
+  // matches the anchor value.
+  selectedFeature?: { key: string; value: unknown; attrs: Record<string, string | number | boolean> };
   // Legend item labels, in order.
   legend?: string[];
 }
