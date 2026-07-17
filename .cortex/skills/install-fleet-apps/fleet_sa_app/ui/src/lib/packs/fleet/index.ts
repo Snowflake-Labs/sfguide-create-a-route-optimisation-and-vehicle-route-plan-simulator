@@ -34,20 +34,24 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     agentKnowledge: {
       keyMetrics: [
         'evacuees and evacuated (assigned) counts',
-        'number of trips and completion time in minutes',
-        'per-risk-band participant counts for the active hazard (risk_bands)',
+        'number of trips, completion time in minutes, and total/longest route distance in km (total_km, longest_trip_km)',
+        'per-risk-band participant counts for the active hazard (risk_bands) and the other hazard (other_hazard_bands), plus high_on_both_hazards',
         'participant addresses grouped by risk band for the active hazard (addresses_by_band)',
+        'hazard zones (counties) with both wildfire and flood risk levels (hazard_zones) and per-county participant rollup (participants_by_county)',
+        'per-care-center workload (centers_workload) and van seat utilization (seat_utilization)',
         'unassigned / overflow participants that could not be seated',
       ],
       exampleQuestions: [
-        'how many evacuation trips are there?',
+        'how many evacuation trips are there, and what is the total distance in km?',
         'list the evacuation trips and their stops',
-        'how many participants are in the Very High risk band?',
         'what are the addresses of the Very High risk participants?',
-        'which participants were not seated?',
+        'which counties are Very High wildfire risk?',
+        'which county has the most at-risk participants?',
+        'how many participants are high risk for both flood and wildfire?',
+        'which care center is handling the most evacuees?',
         'what is on the map right now, and is any layer blank?',
       ],
-      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context (trips_detail, risk_bands, addresses_by_band, unassigned_addresses, and the map layer summary). addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop in trips_detail carries a "[bN]" risk-band marker matching the risk_bands legend (b5 = Very High) - so address-by-risk-band questions ARE answerable from context. There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, or risk bands. Re-seeding or changing the risk threshold updates the numbers.',
+      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context. Risk<->address join: addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop in trips_detail carries a "[bN]" risk-band marker matching the risk_bands legend (b5 = Very High). Area risk: hazard_zones lists each county with BOTH wildfire and flood band levels (WF bN/FL bN), and participants_by_county rolls up seeded vs at/above-threshold counts per county. Cross-hazard: risk_bands is the ACTIVE hazard, other_hazard_bands is the other one, and high_on_both_hazards counts people at/above threshold for both. Plan rollups: centers_workload (per depot), seat_utilization, total_km/longest_trip_km (null if the router did not return distance). There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, risk bands, or distances. Re-seeding or changing the risk threshold or hazard updates the numbers.',
     },
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({

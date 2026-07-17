@@ -54,6 +54,7 @@ interface PlanStop { seq: number; lon: number; lat: number; pid: string; }
 interface PlanTrip {
   tripKey: string; physIndex: number; vehicleLabel: string; vehicleId: number;
   tripNumber: number; stops: PlanStop[]; load: number; capacity: number; durationSec: number;
+  centerName: string; distanceM: number;
 }
 interface PlanStats { evacuees: number; assigned: number; trips: number; totalMin: number; completionMin: number; overflow: number; autoTrips: number; splitForSpeed: boolean; tripCap: number; }
 // All vans at a center are identical to VROOM (same depot/capacity); the physical
@@ -77,7 +78,7 @@ function parseRoutes(
 ): { trips: PlanTrip[]; assigned: number } {
   const byPid: Record<string, Participant> = {};
   for (const p of evacuees) byPid[p.pid] = p;
-  type Raw = { centerIndex: number; centerName: string; capacity: number; vehicleId: number; stops: PlanStop[]; durationSec: number };
+  type Raw = { centerIndex: number; centerName: string; capacity: number; vehicleId: number; stops: PlanStop[]; durationSec: number; distanceM: number };
   const raws: Raw[] = [];
   const assigned = new Set<number>();
   for (const route of routes || []) {
@@ -95,7 +96,7 @@ function parseRoutes(
       const p = pid ? byPid[pid] : undefined;
       if (p) stops.push({ seq: i + 1, lon: p.lon, lat: p.lat, pid: p.pid });
     });
-    raws.push({ centerIndex: meta.centerIndex, centerName: meta.centerName, capacity: meta.capacity, vehicleId: vid, stops, durationSec: Number(route?.duration) || 0 });
+    raws.push({ centerIndex: meta.centerIndex, centerName: meta.centerName, capacity: meta.capacity, vehicleId: vid, stops, durationSec: Number(route?.duration) || 0, distanceM: Number(route?.distance) || 0 });
   }
   // Group routes by originating center, then LPT-schedule across that center's vans.
   const groups: Record<number, Raw[]> = {};
@@ -117,6 +118,7 @@ function parseRoutes(
         tripKey: `${centerIndex}:${b}:${tripNumber}`, physIndex,
         vehicleLabel: `${r.centerName} - Vehicle ${b + 1}`, vehicleId: r.vehicleId,
         tripNumber, stops: r.stops, load: r.stops.length, capacity: r.capacity, durationSec: r.durationSec,
+        centerName: r.centerName, distanceM: r.distanceM,
       });
     }
   }
@@ -227,6 +229,52 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     return groups;
   }, [participants, hazard]);
 
+  // Hazard-zone (county) risk roster for the choropleth on the map. Each zone
+  // carries BOTH hazard levels, so the agent can answer "which counties are Very
+  // High wildfire risk" / "high flood but low wildfire" even though only the
+  // active hazard is currently colored. Sorted by the active-hazard level desc.
+  const hazardZonesText = useMemo(() => {
+    if (!zones.length) return null;
+    const lvlOf = (z: HazardZone) => (hazard === 'WILDFIRE' ? z.wildfire_level : z.flood_level);
+    const sorted = zones.slice().sort((a, b) => lvlOf(b) - lvlOf(a));
+    return boundedList(sorted.map((z) => `${z.zoneId} (WF b${z.wildfire_level}/FL b${z.flood_level})`), 15);
+  }, [zones, hazard]);
+
+  // Per-county participant rollup for the active hazard: total seeded and how
+  // many are at/above the evacuation threshold, so the agent can answer "which
+  // county has the most at-risk people". Sorted by total desc.
+  const participantsByCounty = useMemo(() => {
+    if (!participants.length) return null;
+    const agg: Record<string, { total: number; atRisk: number }> = {};
+    for (const p of participants) {
+      const key = p.county || 'Unknown';
+      const lvl = Math.round((hazard === 'WILDFIRE' ? p.wfLvl : p.flLvl) || 0);
+      const e = (agg[key] ||= { total: 0, atRisk: 0 });
+      e.total += 1;
+      if (lvl >= evacLevel) e.atRisk += 1;
+    }
+    const rows = Object.entries(agg)
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(([c, v]) => `${c}: ${v.total} (${v.atRisk} at/above)`);
+    return boundedList(rows, 15);
+  }, [participants, hazard, evacLevel]);
+
+  // Counts for the NON-active hazard (mirrors risk_bands) plus how many
+  // participants are at/above threshold for BOTH hazards, so the agent can
+  // compare flood vs wildfire without the user toggling the hazard control.
+  const otherHazardBreakdown = useMemo(() => {
+    const c = [0, 0, 0, 0, 0, 0];
+    for (const p of participants) {
+      const lvl = hazard === 'WILDFIRE' ? p.flLvl : p.wfLvl;
+      c[Math.max(0, Math.min(5, Math.round(lvl || 0)))]++;
+    }
+    return c;
+  }, [participants, hazard]);
+  const highOnBoth = useMemo(
+    () => participants.filter((p) => Math.round(p.wfLvl || 0) >= evacLevel && Math.round(p.flLvl || 0) >= evacLevel).length,
+    [participants, evacLevel],
+  );
+
   // Compact, agent-facing scalars/strings describing the solved plan. viewState
   // is flattened to key=value in the panel-context prefix, so the trip roster and
   // gap lists MUST be pre-formatted strings (an array would serialize to
@@ -253,7 +301,8 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         ...base,
         trips_detail: null, vans_used: null, longest_trip_min: null,
         shortest_trip_min: null, total_stops_assigned: null, avg_stops_per_trip: null,
-        selected_trip: null,
+        selected_trip: null, centers_workload: null, total_km: null, longest_trip_km: null,
+        seat_utilization: null,
       };
     }
     const rosterLines = trips.map((t) => {
@@ -264,6 +313,30 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     const vans = new Set(trips.map((t) => t.physIndex)).size;
     let longest = 0, shortest = Number.POSITIVE_INFINITY;
     for (const t of trips) { const m = Math.round(t.durationSec / 60); if (m > longest) longest = m; if (m < shortest) shortest = m; }
+    // Per-center workload rollup: seated evacuees, trip count, and distinct vans
+    // used at each depot, so "which center is busiest" is answerable directly.
+    const byCenter: Record<string, { evac: number; trips: number; vans: Set<number> }> = {};
+    for (const t of trips) {
+      const e = (byCenter[t.centerName] ||= { evac: 0, trips: 0, vans: new Set() });
+      e.evac += t.stops.length; e.trips += 1; e.vans.add(t.physIndex);
+    }
+    const centersWorkload = boundedList(
+      Object.entries(byCenter)
+        .sort((a, b) => b[1].evac - a[1].evac)
+        .map(([c, v]) => `${c}: ${v.evac} evacuees, ${v.trips} trips, ${v.vans.size} vans`),
+      12,
+    );
+    // Route distance (km). VROOM returns distance per route; if absent (all 0)
+    // we publish null rather than a misleading 0.
+    const totalMeters = trips.reduce((a, t) => a + (t.distanceM || 0), 0);
+    const maxMeters = trips.reduce((a, t) => Math.max(a, t.distanceM || 0), 0);
+    const totalKm = totalMeters > 0 ? Math.round(totalMeters / 100) / 10 : null;
+    const longestKm = maxMeters > 0 ? Math.round(maxMeters / 100) / 10 : null;
+    // Seat utilization: assigned pickups vs total seats offered across trips.
+    const seatsOffered = trips.reduce((a, t) => a + t.capacity, 0);
+    const seatUtil = seatsOffered > 0
+      ? `${totalStops}/${seatsOffered} seats (${Math.round((totalStops / seatsOffered) * 100)}% full)`
+      : null;
     const sel = selectedTripKey ? trips.find((t) => t.tripKey === selectedTripKey) : undefined;
     return {
       ...base,
@@ -273,6 +346,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       shortest_trip_min: Number.isFinite(shortest) ? shortest : null,
       total_stops_assigned: totalStops,
       avg_stops_per_trip: Math.round((totalStops / trips.length) * 10) / 10,
+      centers_workload: centersWorkload,
+      total_km: totalKm,
+      longest_trip_km: longestKm,
+      seat_utilization: seatUtil,
       selected_trip: sel
         ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => stopLabel(s.pid)), 12)}`
         : null,
@@ -303,6 +380,12 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
           .join(' | ')
       : null,
     at_or_above_threshold: participants.length ? riskBandBreakdown.slice(evacLevel).reduce((a, b) => a + b, 0) : null,
+    other_hazard: hazard === 'WILDFIRE' ? 'FLOOD' : 'WILDFIRE',
+    other_hazard_bands: participants.length ? RISK_LABELS.map((l, i) => `${l}(${i}):${otherHazardBreakdown[i]}`).join(', ') : null,
+    high_on_both_hazards: participants.length ? highOnBoth : null,
+    participants_by_county: participantsByCounty,
+    zone_count: zones.length || null,
+    hazard_zones: hazardZonesText,
     center_names: centers.length ? boundedList(centers.map((c) => c.center_name).filter(Boolean), 12) : null,
     vans_per_center: numVehicles,
     depot_count: depotCount,
@@ -319,7 +402,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     ...planContext,
     step,
     availability: avail,
-  }), [region, hazard, minutes, participants.length, evacLevel, riskBandBreakdown, addressesByBand, centers, numVehicles, capacity, maxTrips, optimizeMode, planStats, planContext, step, avail, depotCount]);
+  }), [region, hazard, minutes, participants.length, evacLevel, riskBandBreakdown, addressesByBand, otherHazardBreakdown, highOnBoth, participantsByCounty, zones.length, hazardZonesText, centers, numVehicles, capacity, maxTrips, optimizeMode, planStats, planContext, step, avail, depotCount]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
