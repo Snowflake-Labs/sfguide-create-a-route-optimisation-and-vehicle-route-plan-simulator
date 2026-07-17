@@ -602,6 +602,23 @@
     "label": "{{labels.journey}} Inspector",
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "journey distance vs planned distance",
+        "duration and average speed",
+        "stop count and total dwell minutes",
+        "deviation percentage",
+        "safety event count"
+      ],
+      "exampleQuestions": [
+        "How far did this journey deviate from the plan?",
+        "What was the average speed on this trip?",
+        "How many stops and how much dwell time?",
+        "Were there any safety events on this journey?"
+      ],
+      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1369,6 +1386,23 @@
     "label": "{{labels.operator}} Performance",
     "category": "Core",
     "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "operator (driver) count",
+        "total journeys",
+        "average trip distance",
+        "deviated journeys",
+        "safety events per operator"
+      ],
+      "exampleQuestions": [
+        "Who has the most safety events?",
+        "Which operator covers the most distance?",
+        "How does operator X compare to operator Y?",
+        "What is the safety event rate per journey?"
+      ],
+      "gotchas": "query_fleet_ops (SV_FLEET_OPS) covers operator trip counts, distance, speed, shift, and driver profile. The per-operator safety-event counts in the table and chart come from the safety event data, which is NOT in the semantic view; quote those from the on-screen metric values or state they are event-derived rather than implying the tool can rank them. The leaderboard is sorted by safety events descending."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1509,6 +1543,21 @@
     "label": "Space-Time Density",
     "category": "Core",
     "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "activity density by H3 hex",
+        "time spent (dwell minutes) per hex",
+        "distinct vehicles per hex",
+        "top places and drivers by dwell"
+      ],
+      "exampleQuestions": [
+        "Where does fleet activity concentrate?",
+        "What are the top places by dwell?",
+        "Which hour of day is busiest?"
+      ],
+      "gotchas": "The H3 hex heatmap and the hour-of-day animation are computed client-side from vehicle telemetry and are not in a semantic view. query_fleet_ops answers trip and origin volume aggregates, not per-hex or per-hour density. The filters selected_metric (time or entities), selected_hour, and aggregate_all describe what is currently rendered on the map."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1817,6 +1866,23 @@
     "label": "Dispatch Execution Board",
     "category": "Core",
     "description": "Manage scheduled {{labels.work_item}}s against plan - jobs list, resource board, and planned-vs-actual by day.",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "scheduled work items",
+        "distinct entities (vehicles)",
+        "assigned operators",
+        "destination sites",
+        "on-time vs missed / late / delayed status"
+      ],
+      "exampleQuestions": [
+        "How many scheduled jobs are there?",
+        "Are there any missed or late jobs?",
+        "Which entity has the most jobs?",
+        "Which site receives the most jobs?"
+      ],
+      "gotchas": "The KPI counts (scheduled, entities, operators, destination sites) are published as on-screen metric values; quote those. Dispatch/work-item status (MISSED, LATE, DELAYED), plan adherence, and planned-vs-actual-by-day are NOT modeled in any semantic view. query_fleet_ops (SV_FLEET_OPS) only covers trips, operators, and origins, so answer status and adherence questions from the on-screen metric values and the jobs table rather than implying the tool can compute them."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2039,6 +2105,19 @@
     "label": "Safety / Risk Scorecard",
     "category": "Core",
     "description": "Operational risk by severity - click a KPI tile to filter, review the event queue, and map hot spots.",
+    "agentKnowledge": {
+      "keyMetrics": [
+        "total safety / risk events",
+        "high, medium, and low severity counts",
+        "event types (speeding, harsh braking, and similar)"
+      ],
+      "exampleQuestions": [
+        "How many high-severity events are there?",
+        "How do high, medium, and low counts compare?",
+        "What severity filter is active?"
+      ],
+      "gotchas": "Safety events (severity, event type, per-driver counts) live in the scoped event data and are NOT modeled in any semantic view, so there is no Cortex Analyst tool that can recompute them. Answer count and severity-breakdown questions from the on-screen metric values (total events and high/medium/low counts published to panel context) and never invent event types, per-driver counts, or trends. The filters selected_severity and selected_entity show the active tile and row. A dedicated safety-event semantic view would be required to answer event-type rankings or trends via a tool."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2261,6 +2340,22 @@
     "label": "Dwell Overview",
     "category": "Core",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
+    "agentKnowledge": {
+      "preferredTool": "query_dwell",
+      "keyMetrics": [
+        "total dwell sessions",
+        "average dwell minutes",
+        "SLA compliance rate",
+        "active drivers"
+      ],
+      "exampleQuestions": [
+        "What is the average dwell time?",
+        "What is the SLA compliance rate?",
+        "Which facility has the most visits?",
+        "Are dwells trending up or down?"
+      ],
+      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2371,6 +2466,22 @@
     "label": "Facility Utilization",
     "category": "Core",
     "description": "Dwell load by facility and facility type - where vehicles spend the most time.",
+    "agentKnowledge": {
+      "preferredTool": "query_dwell",
+      "keyMetrics": [
+        "distinct facilities",
+        "total visits",
+        "average dwell minutes",
+        "maximum single-session dwell",
+        "facility type mix"
+      ],
+      "exampleQuestions": [
+        "Which facility has the longest total dwell?",
+        "Which facility type gets the most visits?",
+        "How many total visits across all facilities?"
+      ],
+      "gotchas": "The four headline KPIs (facilities, total visits, avg dwell, max dwell) are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) answers facility-level and facility-type rankings. This view shows utilization only and has no geographic data; for facility locations on a map, use the SLA Alerts view."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2747,6 +2858,21 @@
     "label": "Top Origins",
     "category": "Core",
     "description": "Busiest origin locations by trip volume - where journeys begin (any origin type).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "distinct origin locations",
+        "total trips from origins",
+        "average trip duration",
+        "distinct location types"
+      ],
+      "exampleQuestions": [
+        "Which origin has the most trips?",
+        "What are the top 5 origins by trip count?",
+        "How many distinct location types are there?"
+      ],
+      "gotchas": "Only origins with more than zero trips are shown, and the map is capped at 2000 dots, so the map feature count is not the true origin total; quote the origins count from the on-screen metric values. query_fleet_ops (SV_FLEET_OPS) explicitly covers top origins and trip volume by origin for ranking questions."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -3987,6 +4113,23 @@
     "label": "Asset Velocity",
     "category": "Asset Pool",
     "description": "Idle {{labels.entity_plural}}, cost of idleness, and where they are parked - set a minimum idle threshold and click a {{labels.entity}} to highlight it.",
+    "agentKnowledge": {
+      "preferredTool": "query_asset_velocity",
+      "keyMetrics": [
+        "idle vehicle count",
+        "total cost of idleness (USD)",
+        "projected savings (USD)",
+        "average idle days",
+        "lane demand"
+      ],
+      "exampleQuestions": [
+        "Which vehicle has the highest cost of idleness?",
+        "What is the total cost of idleness?",
+        "Which dispatcher has the most idle vehicles?",
+        "How many CRITICAL-severity vehicles are there?"
+      ],
+      "gotchas": "query_asset_velocity (SV_ASSET_VELOCITY) is the dedicated tool for idle vehicles, cost of idleness, projected savings, and lane demand; use it for ranking and breakdown questions. The four headline KPIs are published as on-screen metric values. idle_min is the active idle-day threshold and selected_vehicle is the clicked row. The AI repositioning rationale is generated on screen and is not in panel context."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
