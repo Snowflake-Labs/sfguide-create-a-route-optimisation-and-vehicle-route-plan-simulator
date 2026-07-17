@@ -66,9 +66,24 @@ def query(sql: str, connection: str | None = None, timeout: int = 180) -> list[d
     if proc.returncode != 0:
         raise SqlError(proc.stderr.strip() or proc.stdout.strip() or "snow sql failed")
     result = _extract_last_json(proc.stdout)
+    return _rows_from(result)
+
+
+def _rows_from(result) -> list[dict]:
+    """Normalize a parsed snow-CLI JSON result to a flat list of row dicts.
+
+    `snow sql -q` runs the query_tag ALTER plus the real query as a multi-
+    statement batch and emits one JSON array per statement, nested:
+        [[{"status": "..."}], [{"OK": true}]]
+    In that case the rows we care about are the LAST statement's array. A
+    single-statement result is a flat list of dicts (or one dict).
+    """
     if isinstance(result, dict):
         return [result]
     if isinstance(result, list):
+        if result and all(isinstance(x, list) for x in result):
+            last = result[-1]
+            return [r for r in last if isinstance(r, dict)]
         return [r for r in result if isinstance(r, dict)]
     return []
 
