@@ -171,6 +171,81 @@ async function apiTool(verb: string, args: unknown[]): Promise<Record<string, un
 
 const ER = 'FLEET_APP.EMERGENCY_RESPONSE';
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Call an OPS-bundle synapse verb via /api/ops (service_status / service_control).
+// Resuming a service is an ops action; a pure consumer (no FLEET_APP_OPS/ADMIN)
+// gets HTTP 403, which we surface as { forbidden:true } so the caller can fall
+// back to an accurate message + manual command instead of throwing. Other
+// non-ok responses (and a "does not exist" 500) throw so the caller can classify.
+async function apiOps(verb: string, args: unknown[]): Promise<{ forbidden: boolean; result: Record<string, unknown> }> {
+  const res = await fetch('/api/ops', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ verb, args }),
+  });
+  if (res.status === 403) return { forbidden: true, result: {} };
+  const body = await parseJsonOrThrow(res);
+  return { forbidden: false, result: (body.result as Record<string, unknown>) ?? {} };
+}
+
+// Classify a service_status result. SYSTEM$GET_SERVICE_STATUS returns a JSON array
+// of per-instance objects with a `status` field; an empty array / missing json
+// means the service exists but has no running instances (suspended). A truly
+// non-existent service makes the ops call THROW ("does not exist"), handled by
+// the caller, so this never returns MISSING.
+function parseSvcStatus(raw: Record<string, unknown>): 'RUNNING' | 'SUSPENDED' | 'UNKNOWN' {
+  const js = raw?.status_json as string | undefined;
+  if (js == null || js === '') return 'SUSPENDED';
+  try {
+    const arr = JSON.parse(js);
+    if (Array.isArray(arr)) {
+      if (!arr.length) return 'SUSPENDED';
+      const statuses = arr.map((i: { status?: string }) => String(i?.status ?? '').toUpperCase());
+      if (statuses.every((s) => s === 'RUNNING' || s === 'READY')) return 'RUNNING';
+      return 'SUSPENDED'; // PENDING / starting -> keep waiting
+    }
+  } catch { /* fall through */ }
+  return 'UNKNOWN';
+}
+
+type EnsureOutcome = 'running' | 'resumed' | 'timeout' | 'missing' | 'forbidden';
+
+// Ensure a region's VROOM optimization service is RUNNING: probe status, resume
+// if suspended, and poll until ready (cap ~150s). Returns a typed outcome the
+// wizard maps to a message or a solve retry. `missing` = service not provisioned
+// for the region; `forbidden` = caller lacks ops rights (degrade to manual).
+async function ensureOptimizationService(svc: string): Promise<EnsureOutcome> {
+  const isMissing = (e: unknown) => /does not exist|not exist|not authorized|unknown (service|object)/i.test(String((e as Error)?.message ?? ''));
+  // 1. Probe current status.
+  try {
+    const s = await apiOps('service_status', [svc]);
+    if (s.forbidden) return 'forbidden';
+    if (parseSvcStatus(s.result) === 'RUNNING') return 'running';
+  } catch (e) {
+    if (isMissing(e)) return 'missing';
+    // transient / unknown -> fall through to a resume attempt
+  }
+  // 2. Resume (idempotent; ALTER SERVICE IF EXISTS RESUME).
+  try {
+    const c = await apiOps('service_control', [svc, 'RESUME']);
+    if (c.forbidden) return 'forbidden';
+  } catch (e) {
+    if (isMissing(e)) return 'missing';
+    throw e;
+  }
+  // 3. Poll until RUNNING or ~150s.
+  const deadline = Date.now() + 150000;
+  while (Date.now() < deadline) {
+    await sleep(5000);
+    try {
+      const s = await apiOps('service_status', [svc]);
+      if (s.forbidden) return 'forbidden';
+      if (parseSvcStatus(s.result) === 'RUNNING') return 'resumed';
+    } catch { /* GET_SERVICE_STATUS is flaky during startup; keep polling */ }
+  }
+  return 'timeout';
+}
+
 export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
   const setMapState = useAppStore((s) => s.setMapState);
@@ -196,6 +271,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const [unassignedPids, setUnassignedPids] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Every loaded/seeded care center is a depot (no cap); the "Vans" input is the
   // van count PER center, so total fleet = centers x vans.
@@ -305,10 +381,6 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         seat_utilization: null,
       };
     }
-    const rosterLines = trips.map((t) => {
-      const stops = boundedList(t.stops.map((s) => stopLabel(s.pid)), 6);
-      return `${t.vehicleLabel} T${t.tripNumber}: ${t.load}/${t.capacity} seats, ${Math.round(t.durationSec / 60)}m, stops: ${stops}`;
-    });
     const totalStops = trips.reduce((a, t) => a + t.stops.length, 0);
     const vans = new Set(trips.map((t) => t.physIndex)).size;
     let longest = 0, shortest = Number.POSITIVE_INFINITY;
@@ -326,6 +398,26 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         .map(([c, v]) => `${c}: ${v.evac} evacuees, ${v.trips} trips, ${v.vans.size} vans`),
       12,
     );
+    // Trip-by-trip roster GROUPED BY CENTER, centers ordered by workload (desc, to
+    // match centers_workload) so the busiest depots - the ones users ask about -
+    // are listed first and stay complete under truncation. Each center block lists
+    // its trips (per-van label, minutes, load/capacity, risk-tagged stops). The
+    // roster's total stop tokens ~= assigned participants, so a full grouping is
+    // small enough to inject; caps keep it bounded at large solves with "(+N more)".
+    const MAX_CENTERS_LISTED = 10;
+    const MAX_TRIPS_PER_CENTER = 20;
+    const MAX_STOPS_PER_TRIP = 15;
+    const tripsByCenter: Record<string, PlanTrip[]> = {};
+    for (const t of trips) (tripsByCenter[t.centerName] ||= []).push(t);
+    const centerBlocks = Object.entries(byCenter)
+      .sort((a, b) => b[1].evac - a[1].evac)
+      .map(([c, agg]) => {
+        const lines = tripsByCenter[c].map(
+          (t) => `T${t.tripNumber} ${t.vehicleLabel.replace(`${c} - `, '')} ${Math.round(t.durationSec / 60)}m [${t.load}/${t.capacity}]: ${boundedList(t.stops.map((s) => stopLabel(s.pid)), MAX_STOPS_PER_TRIP)}`,
+        );
+        return `${c} (${agg.evac} evacuees, ${agg.trips} trips, ${agg.vans.size} vans): ${boundedList(lines, MAX_TRIPS_PER_CENTER)}`;
+      });
+    const tripsDetail = boundedList(centerBlocks, MAX_CENTERS_LISTED);
     // Route distance (km). VROOM returns distance per route; if absent (all 0)
     // we publish null rather than a misleading 0.
     const totalMeters = trips.reduce((a, t) => a + (t.distanceM || 0), 0);
@@ -340,7 +432,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
     const sel = selectedTripKey ? trips.find((t) => t.tripKey === selectedTripKey) : undefined;
     return {
       ...base,
-      trips_detail: boundedList(rosterLines, 12),
+      trips_detail: tripsDetail,
       vans_used: vans,
       longest_trip_min: longest,
       shortest_trip_min: Number.isFinite(shortest) ? shortest : null,
@@ -351,7 +443,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       longest_trip_km: longestKm,
       seat_utilization: seatUtil,
       selected_trip: sel
-        ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => stopLabel(s.pid)), 12)}`
+        ? `${sel.vehicleLabel} Trip ${sel.tripNumber}: ${sel.load}/${sel.capacity} seats, ${Math.round(sel.durationSec / 60)}m, stops: ${boundedList(sel.stops.map((s) => stopLabel(s.pid)), MAX_STOPS_PER_TRIP)}`
         : null,
     };
   }, [trips, participants, unassignedPids, selectedTripKey, hazard]);
@@ -480,7 +572,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       setError(`No participants at or above ${RISK_LABELS[evacLevel]} (level ${evacLevel}) for this hazard. Lower the threshold or re-seed.`);
       return;
     }
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setNotice(null);
     setTrips([]); setPlanStats(null); setSelectedTripKey(null); setUnassignedPids([]);
     try {
       // Every seeded/loaded care center is a depot holding `vansPerCenter` vans.
@@ -530,8 +622,52 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         return { id: i + 1, location: [p.lon, p.lat], pickup: [1], description: p.pid };
       });
       const challenge = JSON.stringify({ vehicles, jobs });
-      const r = await apiTool('evac_solve', [challenge, region ?? null]);
-      if (r.status !== 'SUCCESS') throw new Error(String(r.error || 'Solve failed'));
+      const regionLbl = region ?? 'the active region';
+      const defaultSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_'
+        + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+      let r = await apiTool('evac_solve', [challenge, region ?? null]);
+      let ensured = false;
+      // The proc returns reason 'OPTIMIZATION_UNAVAILABLE' when the region's VROOM
+      // service is suspended or cold-starting. Resume it, wait, and retry rather
+      // than blaming participant routability.
+      if (r.status !== 'SUCCESS' && r.reason === 'OPTIMIZATION_UNAVAILABLE') {
+        const svc = String(r.vroom_service || defaultSvc);
+        setNotice(`Starting the route optimization service for ${regionLbl}. This can take up to ~2 minutes...`);
+        const outcome = await ensureOptimizationService(svc);
+        if (outcome === 'forbidden') {
+          setNotice(null);
+          setError(`The route optimization service for ${regionLbl} is not running. Ask an operator to resume it, or run:  ALTER SERVICE ${svc} RESUME;  then click Plan evacuation again.`);
+          return;
+        }
+        if (outcome === 'missing') {
+          setNotice(null);
+          setError(`Route optimization is not provisioned for ${regionLbl}. Provision it in the Admin app Region Builder, then retry.`);
+          return;
+        }
+        if (outcome === 'timeout') {
+          setNotice(null);
+          setError(`The route optimization service for ${regionLbl} is still starting. Wait a moment and click Plan evacuation again.`);
+          return;
+        }
+        // running / resumed: give a freshly-resumed engine a moment to warm its
+        // graph, then retry (once more on a slow cold start).
+        ensured = true;
+        setNotice('Optimization service is ready. Planning routes...');
+        await sleep(outcome === 'resumed' ? 8000 : 2000);
+        r = await apiTool('evac_solve', [challenge, region ?? null]);
+        if (r.status !== 'SUCCESS' && r.reason === 'OPTIMIZATION_UNAVAILABLE') {
+          await sleep(8000);
+          r = await apiTool('evac_solve', [challenge, region ?? null]);
+        }
+        setNotice(null);
+      }
+      if (r.status !== 'SUCCESS') {
+        // VROOM confirmed reachable but still no plan -> genuine routability.
+        if (ensured && r.reason === 'OPTIMIZATION_UNAVAILABLE') {
+          throw new Error('The optimization service is running but returned no routes. Some participants may be off the road network for this region.');
+        }
+        throw new Error(String(r.error || 'Solve failed'));
+      }
       const geo = r.geometry as GeoJSON.FeatureCollection | GeoJSON.Geometry | null;
       const fc: GeoJSON.FeatureCollection = geo && (geo as GeoJSON.FeatureCollection).type === 'FeatureCollection'
         ? (geo as GeoJSON.FeatureCollection)
@@ -558,7 +694,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       });
       setStep(4);
     } catch (e) { setError(e instanceof Error ? e.message : 'Solve failed'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setNotice(null); }
   }, [centers, numVehicles, maxTrips, capacity, participants, hazard, evacLevel, region, optimizeMode]);
 
   // deck.gl layers per current state.
@@ -795,7 +931,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
                   : 'Packs vehicles full to minimise total driving - fewer, longer trips and a higher completion time.'}
               </div>
             </div>
-            <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? 'Solving…' : '4 · Plan evacuation'}</button>
+            <button style={btn(!busy)} disabled={busy} onClick={solve}>{busy ? (notice ? 'Working…' : 'Solving…') : '4 · Plan evacuation'}</button>
           </>
         )}
 
@@ -849,6 +985,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             )}
           </>
         )}
+        {notice && <div style={{ padding: '10px', borderRadius: '6px', backgroundColor: 'var(--surface-info, #eff6ff)', border: '1px solid var(--border-info, #bfdbfe)', fontSize: '12px', color: 'var(--text-info, #1d4ed8)' }}>{notice}</div>}
         {error && <div style={{ padding: '10px', borderRadius: '6px', backgroundColor: 'var(--surface-error, #fef2f2)', border: '1px solid var(--border-error, #fecaca)', fontSize: '12px', color: 'var(--text-error, #dc2626)' }}>{error}</div>}
       </div>
 
