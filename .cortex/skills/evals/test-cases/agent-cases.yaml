@@ -10,16 +10,23 @@
 #           start timestamp).
 #   judge - `text` is a natural-language claim graded by CORTEX.COMPLETE over
 #           the captured transcript (assistant text + tool calls + errors).
+#   active-verify - `sql` is a read-only ground-truth SELECT (same {{...}} subs
+#           as `sql`); its result is fed to CORTEX.COMPLETE which decides whether
+#           the assistant's answer matches `claim` within optional `tolerance`.
+#           Catches confidently-wrong numbers on text-to-SQL surfaces. Skipped
+#           under --fast like judge.
 #
 # These target the User MCP bundle and the two load-bearing tenets:
 # auditability (every verb writes VERB_ATTEMPT) and live routing (isochrone /
-# optimization must call ORS, not read a precomputed table).
+# optimization must call ORS, not read a precomputed table). The analyst cases
+# additionally exercise the Cortex Analyst text-to-SQL tools (which do NOT write
+# VERB_ATTEMPT, so they are graded by active-verify + judge, not verb).
 
 agent_database: FLEET_INTELLIGENCE
 agent_schema: SYNAPSE_USER
 agent_name: FLEET_AGENT
 verb_attempt_table: OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT
-judge_model: claude-3-5-sonnet
+judge_model: claude-4-sonnet
 
 cases:
   - id: directions-sf
@@ -78,3 +85,59 @@ cases:
         text: >-
           The assistant's answer presents an optimized visiting order for the
           multiple stops (a route plan), not just directions between two points.
+
+  # --- Cortex Analyst text-to-SQL coverage (no VERB_ATTEMPT; graded by
+  #     active-verify + judge) ---
+  - id: analyst-fleet-ops-count
+    prompt: >-
+      Across the entire active dataset, how many trips are there in total?
+      Give me the exact number.
+    assertions:
+      - type: judge
+        text: >-
+          The assistant answered with a specific total trip count and did not
+          refuse or ask a clarifying question instead of answering.
+      - type: active-verify
+        description: stated total trip count matches the SV_FLEET_OPS source view
+        claim: >-
+          The assistant states a total number of trips. That number must equal
+          the ground-truth trip count (the single value in the result).
+        tolerance: exact integer match
+        sql: >-
+          SELECT COUNT(DISTINCT TRIP_ID) AS GROUND_TRUTH_TRIPS
+          FROM FLEET_APP.FLEET_OPS.VW_TRIPS
+
+  - id: analyst-catchment-pois
+    prompt: >-
+      How many points of interest (POIs) are in the catchment dataset in
+      total? Give me the exact count.
+    assertions:
+      - type: judge
+        text: >-
+          The assistant answered with a specific total POI count and did not
+          refuse or ask a clarifying question instead of answering.
+      - type: active-verify
+        description: stated POI count matches the SV_CATCHMENT source table
+        claim: >-
+          The assistant states a total number of POIs. That number must equal
+          the ground-truth POI count (the single value in the result).
+        tolerance: exact integer match
+        sql: >-
+          SELECT COUNT(DISTINCT POI_ID) AS GROUND_TRUTH_POIS
+          FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+
+  # --- render_view dynamic dashboard coverage (render_view IS a synapse verb) ---
+  - id: render-view-custom
+    prompt: >-
+      Build me a custom one-off dashboard: a metric card showing the total
+      number of trips, and a bar chart of trip count broken down by region.
+      Render it as a new view; do not just link me to an existing page.
+    assertions:
+      - type: verb
+        verbs: [render_view]
+        description: render_view verb was audited with outcome ok
+      - type: judge
+        text: >-
+          The assistant returned a dashboard / view specification (a layout with
+          at least one area that has a component and a data query), rather than
+          only a plain-text answer or only a link to an existing view.

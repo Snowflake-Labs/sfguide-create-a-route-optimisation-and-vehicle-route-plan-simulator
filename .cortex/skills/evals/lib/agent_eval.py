@@ -10,6 +10,11 @@ Grades a completed agent turn against three assertion types:
           Ground-truth checks: not empty, row count, tolerance, no error.
   judge - SNOWFLAKE.CORTEX.COMPLETE grades a natural-language claim over the
           captured transcript and returns strict JSON {passed, evidence}.
+  active-verify - runs a caller-supplied ground-truth SELECT, then asks
+          CORTEX.COMPLETE whether the assistant's stated answer is consistent
+          with that independently computed result (within an optional
+          tolerance). Bridges the sql/judge gap: sql cannot see the answer,
+          judge cannot recompute the truth. Skipped under --fast like judge.
 
 All SQL is read-only.
 """
@@ -108,6 +113,63 @@ def eval_judge(assertion: dict, turn: dict, judge_model: str,
     }
 
 
+def eval_active_verify(assertion: dict, turn: dict, subs: dict, judge_model: str,
+                       connection: str | None) -> dict:
+    """Verify the agent's stated answer against independently computed ground truth.
+
+    Runs `assertion['sql']` (a read-only SELECT, with {{...}} subs applied) to
+    get the ground-truth result, then asks CORTEX.COMPLETE whether the agent's
+    turn is consistent with it within an optional `tolerance`. This catches the
+    confidently-wrong-number failure mode that neither `sql` (blind to the
+    answer) nor `judge` (never recomputes) can catch on its own.
+    """
+    gt_sql_text = assertion.get("sql")
+    claim = assertion.get("claim")
+    if not gt_sql_text:
+        return {"passed": False, "evidence": "No ground-truth sql in assertion."}
+    if not claim:
+        return {"passed": False, "evidence": "No claim in assertion."}
+    gt_sql = _apply_subs(gt_sql_text, subs)
+    try:
+        gt_rows = sf.query(gt_sql, connection=connection)
+    except Exception as exc:
+        return {
+            "passed": False,
+            "evidence": f"Ground-truth SQL failed: {exc}",
+            "commands_run": [gt_sql],
+        }
+    tolerance = assertion.get("tolerance")
+    transcript = {
+        "assistant_text": turn.get("text", ""),
+        "tool_calls": turn.get("tool_calls", []),
+    }
+    ground_truth = json.dumps(gt_rows, default=str)[:2000]
+    tol_line = f"Allowed tolerance: {tolerance}.\n" if tolerance else ""
+    grading_prompt = (
+        "You grade whether an AI assistant's answer is consistent with an "
+        "independently computed ground-truth result. The ground truth is "
+        "authoritative. Use ONLY the data below. Respond with STRICT JSON and "
+        'nothing else: {"passed": true|false, "evidence": "<one sentence>"}.\n\n'
+        f"Claim to verify: {claim}\n"
+        f"{tol_line}\n"
+        f"Ground-truth SQL result JSON:\n{ground_truth}\n\n"
+        f"Assistant transcript JSON:\n{json.dumps(transcript, default=str)}"
+    )
+    safe_prompt = sf.escape_dollar(grading_prompt)
+    safe_model = judge_model.replace("'", "''")
+    sql = (
+        f"SELECT SNOWFLAKE.CORTEX.COMPLETE('{safe_model}', $${safe_prompt}$$) AS OUT"
+    )
+    rows = sf.query(sql, connection=connection)
+    raw = rows[0].get("OUT", "") if rows else ""
+    verdict = _parse_judge_json(raw)
+    return {
+        "passed": bool(verdict.get("passed", False)),
+        "evidence": str(verdict.get("evidence", "No evidence returned.")),
+        "commands_run": [gt_sql, f"CORTEX.COMPLETE({judge_model}, <verify prompt>)"],
+    }
+
+
 def _parse_judge_json(raw: str) -> dict:
     """Extract the {passed, evidence} object from a model completion."""
     text = (raw or "").strip()
@@ -130,15 +192,15 @@ def grade_case(turn: dict, case: dict, subs: dict, judge_model: str,
                connection: str | None, skip_judge: bool = False) -> dict:
     """Evaluate every assertion in a case and return a grading summary.
 
-    When skip_judge is set, judge assertions are omitted entirely (not counted
-    toward the total) so a fast post-deploy smoke run stays deterministic and
-    avoids CORTEX.COMPLETE latency/credits.
+    When skip_judge is set, judge and active-verify assertions are omitted
+    entirely (not counted toward the total) so a fast post-deploy smoke run
+    stays deterministic and avoids CORTEX.COMPLETE latency/credits.
     """
     results = []
     skipped = 0
     for assertion in case.get("assertions", []):
         a_type = assertion.get("type")
-        if skip_judge and a_type == "judge":
+        if skip_judge and a_type in ("judge", "active-verify"):
             skipped += 1
             continue
         try:
@@ -148,6 +210,8 @@ def grade_case(turn: dict, case: dict, subs: dict, judge_model: str,
                 res = eval_sql(assertion, subs, connection)
             elif a_type == "judge":
                 res = eval_judge(assertion, turn, judge_model, connection)
+            elif a_type == "active-verify":
+                res = eval_active_verify(assertion, turn, subs, judge_model, connection)
             else:
                 res = {"passed": False, "evidence": f"Unknown assertion type '{a_type}'."}
         except Exception as exc:  # keep grading the rest of the suite
