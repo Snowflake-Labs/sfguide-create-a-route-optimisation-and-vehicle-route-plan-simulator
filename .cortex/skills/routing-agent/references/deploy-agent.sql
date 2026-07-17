@@ -1963,6 +1963,12 @@ try {
             if (rr.next()) region = rr.getColumnValue(1); } catch(e) {}
         if (!region) region = 'SanFrancisco';
     }
+    // Fully-qualified per-region VROOM service (naming: VROOM_SERVICE_<UPPER key>,
+    // spaces/punctuation stripped, e.g. SanFrancisco -> VROOM_SERVICE_SANFRANCISCO).
+    // Returned in the FAILED payload so the wizard can resume the right service
+    // without re-deriving the name client-side.
+    var vroomSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' +
+                   String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
     // OPTIMIZATION flattens resp:routes -> one row per vehicle, each with that
     // vehicle's GEOJSON LineString. RESPONSE (full VROOM JSON: routes/unassigned/
     // summary) is identical on every row. Aggregate ALL per-vehicle geometries
@@ -1988,7 +1994,15 @@ try {
         }
     }
     if (rowCount === 0) {
-        return { status: 'FAILED', region: region, error: 'OPTIMIZATION returned no results (check participant routability / region graph).' };
+        // Zero rows almost always means the region's VROOM optimization service
+        // is suspended or still cold-starting (a suspended VROOM makes the gateway
+        // return an empty/error body). Surface a typed reason + the service name so
+        // the wizard can resume it and retry, instead of blaming participant
+        // routability. If VROOM is confirmed RUNNING and this still returns 0, the
+        // caller re-reports it as a genuine routability failure.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: vroomSvc,
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting). Resume it and retry.' };
     }
     if (response === null) response = {};
     return {
@@ -1998,10 +2012,16 @@ try {
         geometry: { type: 'FeatureCollection', features: features }
     };
 } catch(err) {
-    return { status: 'FAILED', error: err.message };
+    // A thrown error here (gateway unreachable, service resolution failure) is
+    // also almost always a suspended/starting VROOM. Return the same typed reason
+    // so the wizard resume+retry path handles it uniformly.
+    return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+             vroom_service: vroomSvc,
+             error: 'Route optimization service for ' + region + ' is not responding (' +
+                    (err && err.message ? err.message : 'unknown error') + '). Resume it and retry.' };
 }
 $$;
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SOLVE(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SOLVE(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_SAP_INTROSPECT: read-only SAP + telematics table discovery.
