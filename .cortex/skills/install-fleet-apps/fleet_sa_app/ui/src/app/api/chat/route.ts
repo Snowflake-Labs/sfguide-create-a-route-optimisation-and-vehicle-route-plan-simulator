@@ -35,11 +35,23 @@ export async function POST(request: NextRequest) {
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
     if (vs && Object.keys(vs).length > 0) {
-      const activeFilters = Object.entries(vs)
-        .filter(([, v]) => v != null)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(', ');
+      // Keys prefixed __memo_ carry bounded, pre-joined KPI/metric strings that an
+      // area published for the agent (Gap 1). Render them under their own label so
+      // headline metric values are not mislabeled as active filters.
+      const entries = Object.entries(vs).filter(([, v]) => v != null);
+      const memoEntries = entries.filter(([k]) => k.startsWith('__memo_'));
+      const filterEntries = entries.filter(([k]) => !k.startsWith('__memo_'));
+      const activeFilters = filterEntries.map(([k, v]) => `${k}=${v}`).join(', ');
       if (activeFilters) parts.push(`Active filters: ${activeFilters}.`);
+      if (memoEntries.length) {
+        const memoText = memoEntries
+          .map(([k, v]) => {
+            const group = k.slice('__memo_'.length);
+            return memoEntries.length > 1 ? `${group}: ${v}` : String(v);
+          })
+          .join(' | ');
+        parts.push(`On-screen metric values: ${memoText}.`);
+      }
     }
     const ak = view.agentKnowledge;
     if (ak) {

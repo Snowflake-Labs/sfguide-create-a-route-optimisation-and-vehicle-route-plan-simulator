@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useMemo, useRef } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
@@ -28,6 +29,10 @@ interface MetricCardsAreaProps {
     // card's emit value, so downstream areas filter on the selected KPI.
     emits?: Record<string, string>;
   };
+  // The area's own key in the view layout, supplied by the renderer. Used to
+  // namespace this area's KPI memo so a view with more than one MetricCards area
+  // (e.g. journey_inspector's vsummary + kpi) does not overwrite a sibling's memo.
+  areaName?: string;
 }
 
 function formatValue(value: unknown, format?: string): string {
@@ -57,13 +62,52 @@ function formatValue(value: unknown, format?: string): string {
   }
 }
 
-export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
+export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) {
   const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const display = useDisplayConfig();
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
   const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
   const metrics = areaConfig.data.mapping?.metrics || [];
+
+  // Gap 1: publish the computed headline metrics to panel context so the chat
+  // agent can quote the exact on-screen KPI values (route.ts Channel A flattens
+  // viewState). The memo MUST be a bounded, pre-joined STRING - a nested object
+  // would serialize to "[object Object]". Keyed per area (__memo_<areaName>) so a
+  // view with more than one MetricCards area does not clobber a sibling's memo.
+  const kpiMemo = useMemo(() => {
+    const row = data?.rows?.[0];
+    if (!row || metrics.length === 0) return '';
+    const MAX_LEN = 600;
+    const pairs: string[] = [];
+    for (const m of metrics) {
+      const label = interpolateTokens(m.label, display);
+      const suffix = unitSuffix(display, m.unit);
+      const val = formatValue(row[m.column], m.format) + (suffix ? suffix : '');
+      pairs.push(`${label}=${val}`);
+    }
+    let out = '';
+    let truncated = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      const next = out ? `${out}; ${pairs[i]}` : pairs[i];
+      if (next.length > MAX_LEN) { truncated = pairs.length - i; break; }
+      out = next;
+    }
+    if (truncated > 0) out += `; (+${truncated} more)`;
+    return out;
+  }, [data, metrics, display]);
+
+  // Signature-guarded publish so this never loops with the store write-back. Deps
+  // are the memo string + area name only (NOT viewState), so the emitKey-selection
+  // read below cannot retrigger it.
+  const memoKey = `__memo_${areaName ?? 'kpi'}`;
+  const lastMemoRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!kpiMemo) return;
+    if (lastMemoRef.current === kpiMemo) return;
+    lastMemoRef.current = kpiMemo;
+    updateViewState({ [memoKey]: kpiMemo });
+  }, [kpiMemo, memoKey, updateViewState]);
 
   if (loading) {
     return (
