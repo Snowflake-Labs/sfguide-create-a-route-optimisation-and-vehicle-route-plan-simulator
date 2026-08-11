@@ -449,3 +449,54 @@ Conventions:
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
 IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
 ;
+
+-- ============ SV_SOURCING (FLEET_APP.SOURCING.*) ============
+-- SV_SOURCING - freight sourcing ESTATE semantic view (customers + current freight).
+-- Source: FLEET_APP.SOURCING.VW_SOURCING_FACTS (customers, product demand, current
+-- source plant, and a DATA-ONLY straight-line current annual freight estimate).
+-- Deploy target: FLEET_INTELLIGENCE.SEMANTIC.
+-- NOTE: the plant-to-customer "location swap" (cheapest source + savings) is computed
+-- LIVE by the Freight Sourcing Optimizer app page (calling ORS MATRIX_TABULAR on each
+-- interaction; see Architecture Tenet 9), so there is no materialized swap table for
+-- Cortex Analyst. This view covers the estate (how many customers, current freight
+-- spend, demand by product) which the agent CAN answer via SQL. Freight figures here
+-- are straight-line estimates; the app uses live road distance for precise savings.
+
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_SOURCING
+
+  TABLES (
+    sourcing AS FLEET_APP.SOURCING.VW_SOURCING_FACTS
+      PRIMARY KEY (REGION, CUSTOMER_ID)
+  )
+
+  FACTS (
+    sourcing.annual_truckloads AS ANNUAL_TRUCKLOADS COMMENT = 'Annual truckloads shipped to the customer'
+    , sourcing.tons_per_load AS TONS_PER_LOAD COMMENT = 'Tons per truckload'
+    , sourcing.current_distance_km AS CURRENT_DISTANCE_KM COMMENT = 'Straight-line distance from current source plant (km)'
+    , sourcing.current_annual_freight AS CURRENT_ANNUAL_FREIGHT COMMENT = 'Data-only estimated current annual freight spend (USD)'
+  )
+
+  DIMENSIONS (
+    sourcing.customer_id AS CUSTOMER_ID WITH SYNONYMS ('customer', 'account') COMMENT = 'Customer identifier'
+    , sourcing.customer_name AS CUSTOMER_NAME WITH SYNONYMS ('customer name') COMMENT = 'Customer name'
+    , sourcing.product AS PRODUCT WITH SYNONYMS ('glass product', 'product type') COMMENT = 'Product ordered (FLOAT, COATED, MIRROR)'
+    , sourcing.current_plant AS CURRENT_PLANT WITH SYNONYMS ('source plant', 'supplying plant') COMMENT = 'Current source plant name'
+    , sourcing.sourcing_region AS REGION COMMENT = 'Region'
+  )
+
+  METRICS (
+    sourcing.customer_count AS COUNT(DISTINCT CUSTOMER_ID) WITH SYNONYMS ('number of customers', 'customer count') COMMENT = 'Distinct customers'
+    , sourcing.total_annual_truckloads AS SUM(annual_truckloads) WITH SYNONYMS ('total truckloads', 'total shipments') COMMENT = 'Total annual truckloads'
+    , sourcing.total_current_annual_freight AS SUM(current_annual_freight) WITH SYNONYMS ('total freight spend', 'current freight cost') COMMENT = 'Total estimated current annual freight spend'
+    , sourcing.avg_current_distance_km AS AVG(current_distance_km) WITH SYNONYMS ('average distance', 'avg haul') COMMENT = 'Average straight-line haul distance from current source'
+  )
+
+  COMMENT = 'Freight sourcing estate: customers with product demand, current source plant, and a data-only current annual freight estimate. The cheapest-source location swap and savings are computed live in-app (ORS road distance), not modeled here.'
+
+  AI_SQL_GENERATION 'Freight-sourcing ESTATE semantic view (customer-level facts only).
+- sourcing (VW_SOURCING_FACTS): one row per customer. product = FLOAT/COATED/MIRROR; current_plant = the plant currently supplying the customer. Use customer_count/total_annual_truckloads/total_current_annual_freight/avg_current_distance_km grouped by product or current_plant. Freight is a straight-line estimate (synthetic).
+Conventions:
+- "how many customers" -> customer_count; "total freight spend" -> total_current_annual_freight grouped by current_plant or product.
+- "which plant supplies the most customers" -> customer_count grouped by current_plant.
+IMPORTANT: the "location swap" analysis ("where would swapping the source plant reduce freight cost", "how much can we save") is computed LIVE in the Freight Sourcing Optimizer app page (ORS road distance via MATRIX_TABULAR), not in this view. Direct such questions to that page / the routing tools; this view answers current-estate composition and spend only.'
+;

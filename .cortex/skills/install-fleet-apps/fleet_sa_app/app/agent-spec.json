@@ -87,6 +87,13 @@
     {
       "tool_spec": {
         "type": "cortex_analyst_text_to_sql",
+        "name": "query_sourcing",
+        "description": "Freight-sourcing estate facts: customers with product demand (FLOAT/COATED/MIRROR), their current source plant, and a data-only current annual freight estimate. Use for current-estate composition and spend questions: 'how many customers', 'total freight spend by plant', 'which plant supplies the most customers', 'demand by product'. NOTE: the 'location swap' recommendation ('where would swapping the source plant reduce freight cost', 'how much can we save') is computed LIVE in the Freight Sourcing Optimizer app page using the ORS road-distance engine - it is NOT in this semantic view; point the user to that page for the interactive optimizer. Freight figures here are straight-line estimates (synthetic)."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
         "name": "query_overture_global",
         "description": "Global Overture Maps places catalog (66M+ POIs worldwide) via the vendor semantic view. Use for WORLDWIDE place questions OUTSIDE the active fleet region and for rich place attributes/quality: filter or list places by category, brand, country, region, city, name, website/phone presence, and data confidence (e.g. 'list high-confidence hotels in Paris', 'what brands of coffee shops are in Berlin', 'average data confidence for hospitals by category'). Categories are lowercase Overture values such as coffee_shop, restaurant, grocery_store, gas_station, pharmacy, hospital, hotel, bank, school. NOTE: this view exposes only confidence metrics (avg/min/max), not a row count - for 'how many' counts or per-city POI distribution within the active fleet region use query_catchment, and for region/bbox-bounded place search or counts use the find_poi / Overture MCP verbs."
       }
@@ -144,6 +151,13 @@
     },
     "query_location": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    },
+    "query_sourcing": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_SOURCING",
       "execution_environment": {
         "type": "warehouse",
         "warehouse": "MY_WH"
