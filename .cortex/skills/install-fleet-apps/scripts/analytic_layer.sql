@@ -2185,6 +2185,91 @@ $$
   FROM direct d JOIN plants sp ON sp.PLANT_ID = d.src_id CROSS JOIN custrow cu
 $$;
 
+-- ===========================================================================
+-- Road-based lane geometry (batched live DIRECTIONS)
+-- ===========================================================================
+-- The swap/mix maps default to straight O-D arcs. These two owner's-rights
+-- UDTFs return the ACTUAL road route per lane so the map can draw road-based
+-- paths instead of arcs. DIRECTIONS is a TABLE function, so it supports a
+-- per-row LATERAL invocation (implicit CROSS JOIN) - this batches N routings
+-- into ONE set-based statement (one SQL round-trip for the app), while still
+-- calling ORS live per lane (Tenet 9, nothing precomputed). Consumers only
+-- need USAGE here; the ORS grant lives with the function owner.
+
+-- Proposed + selected swap lanes as road paths. When P_ONLY_CUSTOMER IS NULL,
+-- returns the road path best_plant->customer for every savings lane (the green
+-- "proposed" layer, only a handful). When P_ONLY_CUSTOMER is set, returns just
+-- that customer's best-plant road path regardless of savings (the focused
+-- "selected" layer, so a no-change customer still road-routes). GEOJSON is the
+-- parsed route geometry from DIRECTIONS; DISTANCE is meters, DURATION seconds.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_PRODUCT_FILTER VARCHAR, P_ONLY_CUSTOMER VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, SAVINGS_PER_LOAD NUMBER(18,2),
+               ROAD_KM NUMBER(14,2), ROAD_MIN NUMBER(14,1), ROUTE_GEOJSON VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH reg AS (
+    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
+  ),
+  swap AS (
+    SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
+    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    WHERE BEST_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
+      AND ( (P_ONLY_CUSTOMER IS NULL AND SAVINGS_PER_LOAD > 0)
+            OR (P_ONLY_CUSTOMER IS NOT NULL AND CUSTOMER_ID = P_ONLY_CUSTOMER) )
+  )
+  SELECT s.CUSTOMER_ID, s.SAVINGS_PER_LOAD,
+         ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
+         ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
+  FROM swap s, reg,
+       TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+               P_PROFILE,
+               ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
+               ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
+               reg.r)) d
+$$;
+
+-- Product-mix flow legs as road paths for the selected customer's order. Wraps
+-- LIVE_MIX_FLOWS and road-routes each TRANSFER/OUTBOUND/DIRECT leg. Skips
+-- zero-length legs (a hub that makes the product is a distance-0 self leg).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (LEG_KIND VARCHAR, PRODUCT VARCHAR, TONS INT,
+               ROAD_KM NUMBER(14,2), ROAD_MIN NUMBER(14,1), ROUTE_GEOJSON VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH reg AS (
+    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
+  ),
+  flows AS (
+    SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
+    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
+                 P_HANDLING_PER_TON, P_CUSTOMER_ID))
+    WHERE FROM_LON IS NOT NULL AND FROM_LAT IS NOT NULL
+      AND TO_LON IS NOT NULL AND TO_LAT IS NOT NULL
+      AND NOT (FROM_LON = TO_LON AND FROM_LAT = TO_LAT)
+  )
+  SELECT f.LEG_KIND, f.PRODUCT, f.TONS,
+         ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
+         ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
+  FROM flows f, reg,
+       TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+               P_PROFILE,
+               ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
+               ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
+               reg.r)) d
+$$;
+
 -- Grants (additive; guarded so a role-less install does not error the file).
 GRANT USAGE ON SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
@@ -2210,6 +2295,12 @@ GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, F
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG

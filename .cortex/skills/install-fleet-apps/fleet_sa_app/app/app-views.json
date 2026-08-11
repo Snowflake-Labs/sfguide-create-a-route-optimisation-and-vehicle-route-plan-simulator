@@ -3832,15 +3832,15 @@
               }
             },
             {
-              "type": "arc",
+              "type": "path",
               "id": "proposed-lanes",
-              "source": { "lng": "from_lng", "lat": "from_lat" },
-              "target": { "lng": "to_lng", "lat": "to_lat" },
-              "sourceColor": [16, 185, 129, 230],
-              "targetColor": [16, 185, 129, 230],
+              "geojsonColumn": "route_geojson",
+              "color": [16, 185, 129, 230],
+              "width": 5,
+              "widthMinPixels": 3,
               "pickable": false,
               "data": {
-                "query": "SELECT ST_X(BEST_PLANT_GEOG) AS from_lng, ST_Y(BEST_PLANT_GEOG) AS from_lat, ST_X(CUSTOMER_GEOG) AS to_lng, ST_Y(CUSTOMER_GEOG) AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) WHERE SAVINGS_PER_LOAD > 0",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,NULL::VARCHAR))",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
@@ -3850,15 +3850,15 @@
               }
             },
             {
-              "type": "arc",
+              "type": "path",
               "id": "selected-proposed-lane",
-              "source": { "lng": "from_lng", "lat": "from_lat" },
-              "target": { "lng": "to_lng", "lat": "to_lat" },
-              "sourceColor": [245, 158, 11, 255],
-              "targetColor": [245, 158, 11, 255],
+              "geojsonColumn": "route_geojson",
+              "color": [245, 158, 11, 255],
+              "width": 6,
+              "widthMinPixels": 4,
               "pickable": false,
               "data": {
-                "query": "SELECT ST_X(BEST_PLANT_GEOG) AS from_lng, ST_Y(BEST_PLANT_GEOG) AS from_lat, ST_X(CUSTOMER_GEOG) AS to_lng, ST_Y(CUSTOMER_GEOG) AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) WHERE CUSTOMER_ID = :selected_customer",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,COALESCE(NULLIF(:selected_customer,''),'__NONE__')::VARCHAR))",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
@@ -4067,15 +4067,15 @@
           ],
           "layers": [
             {
-              "type": "arc",
+              "type": "path",
               "id": "direct-legs",
-              "source": { "lng": "from_lon", "lat": "from_lat" },
-              "target": { "lng": "to_lon", "lat": "to_lat" },
-              "sourceColor": [148, 163, 184, 170],
-              "targetColor": [148, 163, 184, 170],
+              "geojsonColumn": "route_geojson",
+              "color": [148, 163, 184, 200],
+              "width": 4,
+              "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='DIRECT'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='DIRECT'",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
@@ -4086,15 +4086,15 @@
               }
             },
             {
-              "type": "arc",
+              "type": "path",
               "id": "transfer-legs",
-              "source": { "lng": "from_lon", "lat": "from_lat" },
-              "target": { "lng": "to_lon", "lat": "to_lat" },
-              "sourceColor": [245, 158, 11, 230],
-              "targetColor": [245, 158, 11, 230],
+              "geojsonColumn": "route_geojson",
+              "color": [245, 158, 11, 230],
+              "width": 5,
+              "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='TRANSFER'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='TRANSFER'",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
@@ -4105,15 +4105,15 @@
               }
             },
             {
-              "type": "arc",
+              "type": "path",
               "id": "outbound-leg",
-              "source": { "lng": "from_lon", "lat": "from_lat" },
-              "target": { "lng": "to_lon", "lat": "to_lat" },
-              "sourceColor": [16, 185, 129, 230],
-              "targetColor": [16, 185, 129, 230],
+              "geojsonColumn": "route_geojson",
+              "color": [16, 185, 129, 230],
+              "width": 6,
+              "widthMinPixels": 3,
               "pickable": false,
               "data": {
-                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='OUTBOUND'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='OUTBOUND'",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
