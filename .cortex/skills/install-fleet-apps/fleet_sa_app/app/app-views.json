@@ -3955,6 +3955,261 @@
       }
     }
   },
+  "mix_sourcing": {
+    "label": "Product Mix Sourcing",
+    "description": "For each customer's mixed-product order, compare shipping every product from its own cheapest plant (ship direct) against transferring the missing products into one hub plant and shipping a single consolidated truckload (consolidate). Shows the freight saving and the handling penalty of consolidating.",
+    "category": "Location",
+    "info": "**Method**\n\nAll plant-to-customer and plant-to-plant road distances are computed LIVE with ORS MATRIX_TABULAR (two calls), not precomputed. freight = distance_km x rate per km + tons x distance_km x rate per ton-km.\n\nShip direct: each product line ships from its cheapest capable plant straight to the customer. Consolidate: pick a hub plant, transfer the products the hub cannot make in from the nearest capable plant (adding a handling-per-ton penalty), then ship one consolidated load from the hub. The cheaper of the two is recommended.\n\nSingle-line orders show near-zero savings (nothing to consolidate). Region note: all plants and customers must sit inside one provisioned ORS region graph.",
+    "agentKnowledge": {
+      "preferredTool": "query_sourcing",
+      "keyMetrics": ["total consolidation savings", "orders where consolidation wins", "orders better shipped direct", "total handling cost paid to consolidate"],
+      "exampleQuestions": ["For customers buying several glass products, is it cheaper to consolidate at one plant or ship from several?", "Which orders should we consolidate to cut freight cost?", "How much handling cost do we pay to consolidate?"],
+      "gotchas": "Consolidation adds a handling-per-ton penalty on every transferred product, so it only wins when the saved outbound freight beats that penalty. Single-line orders show ~0 savings. Costs use live road distance from ORS. The semantic view (query_sourcing) reports current customers/products/spend only; this consolidate-vs-direct tradeoff is computed live on this page."
+    },
+    "layout": {
+      "default": {
+        "columns": "repeat(6, 1fr)",
+        "rows": "auto auto auto $heroMap",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls rkm rkm rtonkm rtonkm\"\n\"handling handling handling handling handling handling\"\n\"orders orders orders map map map\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COALESCE(SUM(CASE WHEN SAVINGS>0 THEN SAVINGS END),0) AS total_savings, COUNT(CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 END) AS consolidate_orders, COUNT(CASE WHEN RECOMMENDATION='SHIP DIRECT' THEN 1 END) AS direct_orders, COALESCE(SUM(HANDLING_COST),0) AS total_handling FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL))",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "total_savings", "label": "Consolidation savings", "format": "currency" },
+              { "column": "consolidate_orders", "label": "Orders: consolidate", "format": "number" },
+              { "column": "direct_orders", "label": "Orders: ship direct", "format": "number" },
+              { "column": "total_handling", "label": "Handling cost paid", "format": "currency" }
+            ]
+          }
+        }
+      },
+      "controls": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "profile",
+            "label": "Routing profile",
+            "required": false,
+            "data": {
+              "query": "SELECT 'driving-car' AS value, 'Car (driving-car)' AS label UNION ALL SELECT 'driving-hgv', 'Truck (driving-hgv)'"
+            },
+            "emits": { "profile": "selection" }
+          }
+        ]
+      },
+      "rkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/km per load)", "min": 0.5, "max": 5, "step": 0.1, "default": 1.5, "info": "Cost per kilometre for a full truckload, independent of weight." },
+        "emits": { "rate_per_km": "filter" }
+      },
+      "rtonkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/ton-km)", "min": 0, "max": 0.5, "step": 0.01, "default": 0.05, "info": "Additional cost per ton per kilometre, scaling with load weight." },
+        "emits": { "rate_per_ton_km": "filter" }
+      },
+      "handling": {
+        "component": "Slider",
+        "config": { "label": "Inter-plant handling ($/ton)", "min": 0, "max": 50, "step": 1, "default": 15, "info": "Handling and breakage cost per ton for moving product between plants to consolidate a load. Raise it to penalize inter-plant transfers (glass is fragile); at 0, consolidation is judged on freight distance alone." },
+        "emits": { "handling_per_ton": "filter" }
+      },
+      "orders": {
+        "component": "ClickableTable",
+        "config": {
+          "title": "Consolidate vs ship direct by customer order (click to show flows on the map)",
+          "fitRows": 8,
+          "rowKey": "customer_id",
+          "columns": [
+            { "field": "customer", "header": "Customer" },
+            { "field": "product_lines", "header": "Products" },
+            { "field": "total_tons", "header": "Tons" },
+            { "field": "cost_multi_plant", "header": "Ship direct $" },
+            { "field": "cost_consolidated", "header": "Consolidate $" },
+            { "field": "best_hub", "header": "Hub plant" },
+            { "field": "handling_cost", "header": "Handling $" },
+            { "field": "savings", "header": "Saving" },
+            { "field": "recommendation", "header": "Recommend" }
+          ]
+        },
+        "emits": { "selected_customer": "selection" },
+        "data": {
+          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings, RECOMMENDATION AS recommendation FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL)) ORDER BY savings DESC",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton"
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "clickEmits": { "object": "selected_customer", "objectColumn": "customer_id" },
+          "legend": [
+            { "label": "Plant", "color": [29, 78, 137, 255] },
+            { "label": "Order: consolidate", "color": [16, 185, 129, 220] },
+            { "label": "Order: ship direct", "color": [148, 163, 184, 200] },
+            { "label": "Transfer leg (into hub)", "color": [245, 158, 11, 230], "shape": "line" },
+            { "label": "Consolidated outbound", "color": [16, 185, 129, 230], "shape": "line" },
+            { "label": "Direct leg", "color": [148, 163, 184, 200], "shape": "line" }
+          ],
+          "layers": [
+            {
+              "type": "arc",
+              "id": "direct-legs",
+              "source": { "lng": "from_lon", "lat": "from_lat" },
+              "target": { "lng": "to_lon", "lat": "to_lat" },
+              "sourceColor": [148, 163, 184, 170],
+              "targetColor": [148, 163, 184, 170],
+              "pickable": false,
+              "data": {
+                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='DIRECT'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "arc",
+              "id": "transfer-legs",
+              "source": { "lng": "from_lon", "lat": "from_lat" },
+              "target": { "lng": "to_lon", "lat": "to_lat" },
+              "sourceColor": [245, 158, 11, 230],
+              "targetColor": [245, 158, 11, 230],
+              "pickable": false,
+              "data": {
+                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='TRANSFER'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "arc",
+              "id": "outbound-leg",
+              "source": { "lng": "from_lon", "lat": "from_lat" },
+              "target": { "lng": "to_lon", "lat": "to_lat" },
+              "sourceColor": [16, 185, 129, 230],
+              "targetColor": [16, 185, 129, 230],
+              "pickable": false,
+              "data": {
+                "query": "SELECT FROM_LON AS from_lon, FROM_LAT AS from_lat, TO_LON AS to_lon, TO_LAT AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='OUTBOUND'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "plants",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 260,
+              "radiusMinPixels": 7,
+              "radiusMaxPixels": 16,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 230],
+              "lineWidthMinPixels": 2,
+              "fillColor": [29, 78, 137, 255],
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Plant",
+              "data": {
+                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)",
+                "params": {}
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "customers",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 220],
+              "lineWidthMinPixels": 1,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Recommend: {recommendation}<br/>Saving: {savings}",
+              "fillColor": {
+                "base": [148, 163, 184, 200],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "customer_id",
+                "whenViewStateEquals": "selected_customer",
+                "baseColumn": "consolidate",
+                "basePalette": {
+                  "1": [16, 185, 129, 220],
+                  "0": [148, 163, 184, 200]
+                }
+              },
+              "data": {
+                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, RECOMMENDATION AS recommendation, SAVINGS AS savings, CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 ELSE 0 END AS consolidate, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "order_drawer": {
+        "component": "DetailPanel",
+        "config": {
+          "triggerKey": "selected_customer",
+          "position": "drawer",
+          "width": 400,
+          "titleField": "customer",
+          "subtitleFields": ["recommendation"],
+          "properties": [
+            { "field": "product_lines", "label": "Product lines", "format": "number" },
+            { "field": "total_tons", "label": "Total tons", "format": "number" },
+            { "field": "cost_multi_plant", "label": "Ship direct cost", "format": "currency" },
+            { "field": "cost_consolidated", "label": "Consolidate cost", "format": "currency" },
+            { "field": "best_hub", "label": "Best hub plant" },
+            { "field": "handling_cost", "label": "Handling cost", "format": "currency" },
+            { "field": "savings", "label": "Saving (direct - consolidate)", "format": "currency" }
+          ]
+        },
+        "data": {
+          "query": "SELECT CUSTOMER_NAME AS customer, RECOMMENDATION AS recommendation, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF((SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer))",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton",
+            "selected_customer": "viewState.selected_customer"
+          }
+        }
+      }
+    }
+  },
   "closure_impact": {
     "label": "Closure Impact",
     "category": "Location",

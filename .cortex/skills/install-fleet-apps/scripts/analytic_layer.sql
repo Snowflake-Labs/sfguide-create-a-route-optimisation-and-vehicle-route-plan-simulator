@@ -1551,6 +1551,16 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE (
   RATE_PER_TON_KM  NUMBER(10,4)        -- USD per ton-km
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Mixed-product order basket per customer (Phase 2: product-mix / inter-plant
+-- transfer). One or more product lines per customer, each with tons. Powers the
+-- consolidate-at-a-hub vs ship-direct tradeoff. HASH-seeded, synthetic.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.ORDER_MIX (
+  REGION      VARCHAR NOT NULL,
+  CUSTOMER_ID VARCHAR NOT NULL,
+  PRODUCT     VARCHAR,            -- FLOAT | COATED | MIRROR
+  TONS        INT                 -- synthetic tons for this product line
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Build procedure: materializes the plant estate + customers + synthetic facts
 -- for the active region. NO ORS calls (the matrix is computed live by the app).
 -- Owner's rights. Idempotent per region.
@@ -1676,6 +1686,28 @@ BEGIN
   SELECT :rg, CUSTOMER_ID, product, annual_truckloads, tons_per_load, PLANT_ID
   FROM capable WHERE rn = 1;
 
+  -- 6. Mixed-product order basket (1-3 lines/customer). Always the primary
+  --    product (same HASH as CUSTOMER_DEMAND.PRODUCT), plus each other product
+  --    included on a HASH coin-flip. Tons HASH-seeded per (customer, product).
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.ORDER_MIX (REGION, CUSTOMER_ID, PRODUCT, TONS)
+  WITH prods AS (
+    SELECT 'FLOAT' AS product, 0 AS pk
+    UNION ALL SELECT 'COATED', 1
+    UNION ALL SELECT 'MIRROR', 2
+  ),
+  cust AS (
+    SELECT CUSTOMER_ID,
+           CASE MOD(ABS(HASH(CUSTOMER_ID, 1)), 3)
+             WHEN 0 THEN 'FLOAT' WHEN 1 THEN 'COATED' ELSE 'MIRROR' END AS primary_product
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = :rg
+  )
+  SELECT :rg, c.CUSTOMER_ID, p.product,
+         8 + MOD(ABS(HASH(c.CUSTOMER_ID, p.pk, 9)), 15) AS tons
+  FROM cust c CROSS JOIN prods p
+  WHERE p.product = c.primary_product
+     OR MOD(ABS(HASH(c.CUSTOMER_ID, p.pk, 10)), 2) = 0;
+
   RETURN 'SOURCING built for ' || rg || ' (live-routing model; no precomputed matrix)';
 END;
 $$;
@@ -1702,6 +1734,9 @@ CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND
 CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_FREIGHT_RATE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ORDER_MIX
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX;
 
 -- Estate-only facts view for the semantic view (SV_SOURCING). Current annual
 -- freight here is a DATA-ONLY straight-line estimate (no ORS), suitable for the
@@ -1833,6 +1868,276 @@ $$
   ORDER BY annual_savings DESC
 $$;
 
+-- ===========================================================================
+-- Phase 2: product-mix / inter-plant transfer (consolidate vs ship direct)
+-- ===========================================================================
+-- Live plant-to-plant road matrix (ONE MATRIX_TABULAR call, plants as both
+-- origins and destinations). Used for the inter-plant transfer legs. Diagonal
+-- (plant to itself) is 0. Same VARIANT distances[i][j] indexing + ARRAY_AGG
+-- ordering alignment as LIVE_SOURCING_LANES. Nothing precomputed (Tenet 9).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(
+  P_REGION VARCHAR, P_PROFILE VARCHAR)
+RETURNS TABLE (FROM_PLANT_ID VARCHAR, FROM_PLANT VARCHAR, TO_PLANT_ID VARCHAR, TO_PLANT VARCHAR,
+               DISTANCE_KM NUMBER(14,2), DURATION_MIN NUMBER(14,1),
+               FROM_GEOG GEOGRAPHY, TO_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH mtx AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+      P_REGION) AS m
+  ),
+  a AS (
+    SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
+  ),
+  b AS (
+    SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS bi
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
+  )
+  SELECT a.PLANT_ID, a.PLANT_NAME, b.PLANT_ID, b.PLANT_NAME,
+         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2) AS distance_km,
+         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1) AS duration_min,
+         a.GEOG, b.GEOG
+  FROM mtx, a CROSS JOIN b
+  WHERE mtx.m:distances[a.ai][b.bi] IS NOT NULL
+$$;
+
+-- Live product-mix tradeoff per customer order (basket of product lines):
+--   Option B (SHIP DIRECT): each line from its cheapest capable plant direct to
+--     the customer -> cost_multi_plant = sum over lines of min direct freight.
+--   Option A (CONSOLIDATE): pick a hub plant, transfer the products the hub
+--     cannot make in from the nearest capable plant (+ handling per ton), then
+--     ship ONE consolidated load hub->customer. cost_consolidated = min over
+--     hubs of (transfer_in + outbound). Because transfer cost is monotonic in
+--     road distance, the cheapest transfer source = the nearest capable plant,
+--     and a hub that itself makes the product appears as a distance-0 source
+--     (so no transfer / no handling for that line).
+-- freight(a,b,tons) = dist_km*rate_per_km + tons*dist_km*rate_per_ton_km.
+-- Uses LIVE_SOURCING_LANES (plant->customer distances) + LIVE_PLANT_MATRIX
+-- (plant->plant distances); two live ORS calls, nothing precomputed. Customers
+-- whose order cannot be fully covered (an unreachable required leg) are dropped.
+-- P_CUSTOMER_ID optional (NULL = all customers).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, CUSTOMER_NAME VARCHAR, PRODUCT_LINES INT, TOTAL_TONS INT,
+               COST_MULTI_PLANT NUMBER(18,2), COST_CONSOLIDATED NUMBER(18,2), BEST_HUB VARCHAR,
+               HANDLING_COST NUMBER(18,2), SAVINGS NUMBER(18,2), RECOMMENDATION VARCHAR,
+               CUSTOMER_GEOG GEOGRAPHY, BEST_HUB_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH pc AS (
+    SELECT PLANT_ID, CUSTOMER_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_SOURCING_LANES(P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM))
+  ),
+  pp AS (
+    SELECT FROM_PLANT_ID, TO_PLANT_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(P_REGION, P_PROFILE))
+  ),
+  orders AS (
+    SELECT CUSTOMER_ID, PRODUCT, TONS
+    FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX
+    WHERE REGION = P_REGION AND (P_CUSTOMER_ID IS NULL OR CUSTOMER_ID = P_CUSTOMER_ID)
+  ),
+  plant_products AS (
+    SELECT pf.PLANT_ID, f.value::VARCHAR AS PRODUCT
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf,
+         LATERAL FLATTEN(input => pf.PRODUCT_CAPABILITY) f
+    WHERE pf.REGION = P_REGION
+  ),
+  lines AS (SELECT CUSTOMER_ID, COUNT(*) AS product_lines FROM orders GROUP BY CUSTOMER_ID),
+  ct AS (SELECT CUSTOMER_ID, SUM(TONS) AS total_tons FROM orders GROUP BY CUSTOMER_ID),
+  custname AS (SELECT CUSTOMER_ID, CUSTOMER_NAME, GEOG FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
+  hubs AS (SELECT PLANT_ID, PLANT_NAME, GEOG FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+  -- per (hub, product): min road distance from a capable source plant (0 when the hub itself makes it)
+  transfer_basis AS (
+    SELECT pp.TO_PLANT_ID AS hub_id, cpp.PRODUCT, MIN(pp.DISTANCE_KM) AS min_dist
+    FROM pp JOIN plant_products cpp ON cpp.PLANT_ID = pp.FROM_PLANT_ID
+    GROUP BY pp.TO_PLANT_ID, cpp.PRODUCT
+  ),
+  transfer_line AS (
+    SELECT o.CUSTOMER_ID, tb.hub_id, o.PRODUCT, o.TONS, tb.min_dist,
+           CASE WHEN tb.min_dist > 0
+                THEN tb.min_dist * P_RATE_PER_KM + o.TONS * tb.min_dist * P_RATE_PER_TON_KM + P_HANDLING_PER_TON * o.TONS
+                ELSE 0 END AS line_transfer_cost
+    FROM orders o
+    JOIN transfer_basis tb ON tb.PRODUCT = o.PRODUCT
+  ),
+  transfer_in AS (
+    SELECT CUSTOMER_ID, hub_id,
+           SUM(line_transfer_cost) AS transfer_cost,
+           SUM(CASE WHEN min_dist > 0 THEN P_HANDLING_PER_TON * TONS ELSE 0 END) AS handling_cost,
+           COUNT(*) AS covered_lines
+    FROM transfer_line GROUP BY CUSTOMER_ID, hub_id
+  ),
+  optionA AS (
+    SELECT ti.CUSTOMER_ID, ti.hub_id, ti.handling_cost,
+           ti.transfer_cost + (pc.DISTANCE_KM * P_RATE_PER_KM + ct.total_tons * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS cost_a
+    FROM transfer_in ti
+    JOIN ct ON ct.CUSTOMER_ID = ti.CUSTOMER_ID
+    JOIN lines ln ON ln.CUSTOMER_ID = ti.CUSTOMER_ID AND ti.covered_lines = ln.product_lines
+    JOIN pc ON pc.PLANT_ID = ti.hub_id AND pc.CUSTOMER_ID = ti.CUSTOMER_ID
+  ),
+  bestA AS (
+    SELECT CUSTOMER_ID, hub_id AS best_hub_id, cost_a AS cost_consolidated, handling_cost
+    FROM optionA
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY cost_a, hub_id) = 1
+  ),
+  lineB AS (
+    SELECT o.CUSTOMER_ID, o.PRODUCT, o.TONS,
+           MIN(pc.DISTANCE_KM * P_RATE_PER_KM + o.TONS * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS line_direct_cost
+    FROM orders o
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pc ON pc.PLANT_ID = cpp.PLANT_ID AND pc.CUSTOMER_ID = o.CUSTOMER_ID
+    GROUP BY o.CUSTOMER_ID, o.PRODUCT, o.TONS
+  ),
+  costB AS (
+    SELECT CUSTOMER_ID, SUM(line_direct_cost) AS cost_multi, COUNT(*) AS covered_lines
+    FROM lineB GROUP BY CUSTOMER_ID
+  ),
+  -- Feasible direct plan = every line has a direct lane (covers the whole basket).
+  costB_ok AS (
+    SELECT cb.CUSTOMER_ID, cb.cost_multi
+    FROM costB cb JOIN lines ln ON ln.CUSTOMER_ID = cb.CUSTOMER_ID
+    WHERE cb.covered_lines = ln.product_lines
+  ),
+  -- Customer spine: keep a customer if EITHER plan is feasible (bestA already
+  -- requires a fully-covering hub; costB_ok requires a full direct plan). This
+  -- surfaces consolidation-only and direct-only customers instead of dropping
+  -- them (they show a NULL cost on the infeasible side).
+  spine AS (
+    SELECT CUSTOMER_ID FROM bestA
+    UNION
+    SELECT CUSTOMER_ID FROM costB_ok
+  )
+  SELECT cn.CUSTOMER_ID, cn.CUSTOMER_NAME, ln.product_lines, ct.total_tons,
+         ROUND(cb.cost_multi, 2)::NUMBER(18,2) AS cost_multi_plant,
+         ROUND(ba.cost_consolidated, 2)::NUMBER(18,2) AS cost_consolidated,
+         hb.PLANT_NAME AS best_hub,
+         ROUND(ba.handling_cost, 2)::NUMBER(18,2) AS handling_cost,
+         ROUND(cb.cost_multi - ba.cost_consolidated, 2)::NUMBER(18,2) AS savings,
+         CASE
+           WHEN ba.CUSTOMER_ID IS NULL THEN 'SHIP DIRECT'
+           WHEN cb.CUSTOMER_ID IS NULL THEN 'CONSOLIDATE'
+           WHEN cb.cost_multi - ba.cost_consolidated > 0 THEN 'CONSOLIDATE'
+           ELSE 'SHIP DIRECT'
+         END AS recommendation,
+         cn.GEOG AS customer_geog, hb.GEOG AS best_hub_geog
+  FROM spine s
+  JOIN custname cn ON cn.CUSTOMER_ID = s.CUSTOMER_ID
+  JOIN lines ln ON ln.CUSTOMER_ID = s.CUSTOMER_ID
+  JOIN ct ON ct.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN bestA ba ON ba.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN costB_ok cb ON cb.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN hubs hb ON hb.PLANT_ID = ba.best_hub_id
+  ORDER BY savings DESC NULLS LAST
+$$;
+
+-- Live flow legs for ONE customer's order, for the map: the CONSOLIDATE plan
+-- (transfer-in legs from the nearest capable source into the best hub, plus the
+-- consolidated outbound leg hub->customer) and the SHIP DIRECT plan (each line
+-- from its nearest capable plant direct to the customer). LEG_KIND in
+-- ('TRANSFER','OUTBOUND','DIRECT'). Recomputes the best hub the same way as
+-- LIVE_MIX_TRADEOFF. Two live ORS calls; region ORS must be RESUMED.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (LEG_KIND VARCHAR, PRODUCT VARCHAR, TONS INT,
+               FROM_LON FLOAT, FROM_LAT FLOAT, TO_LON FLOAT, TO_LAT FLOAT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH pc AS (
+    SELECT PLANT_ID, CUSTOMER_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_SOURCING_LANES(P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM))
+    WHERE CUSTOMER_ID = P_CUSTOMER_ID
+  ),
+  pp AS (
+    SELECT FROM_PLANT_ID, TO_PLANT_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(P_REGION, P_PROFILE))
+  ),
+  orders AS (
+    SELECT PRODUCT, TONS FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX
+    WHERE REGION = P_REGION AND CUSTOMER_ID = P_CUSTOMER_ID
+  ),
+  plant_products AS (
+    SELECT pf.PLANT_ID, f.value::VARCHAR AS PRODUCT
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf,
+         LATERAL FLATTEN(input => pf.PRODUCT_CAPABILITY) f
+    WHERE pf.REGION = P_REGION
+  ),
+  total AS (SELECT SUM(TONS) AS tt, COUNT(*) AS nlines FROM orders),
+  custrow AS (SELECT GEOG FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION AND CUSTOMER_ID = P_CUSTOMER_ID),
+  plants AS (SELECT PLANT_ID, GEOG FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+  -- recompute the best hub (mirror of LIVE_MIX_TRADEOFF option A)
+  transfer_basis AS (
+    SELECT pp.TO_PLANT_ID AS hub_id, cpp.PRODUCT, MIN(pp.DISTANCE_KM) AS min_dist
+    FROM pp JOIN plant_products cpp ON cpp.PLANT_ID = pp.FROM_PLANT_ID
+    GROUP BY pp.TO_PLANT_ID, cpp.PRODUCT
+  ),
+  transfer_line AS (
+    SELECT tb.hub_id, o.PRODUCT, o.TONS, tb.min_dist,
+           CASE WHEN tb.min_dist > 0
+                THEN tb.min_dist * P_RATE_PER_KM + o.TONS * tb.min_dist * P_RATE_PER_TON_KM + P_HANDLING_PER_TON * o.TONS
+                ELSE 0 END AS line_transfer_cost
+    FROM orders o JOIN transfer_basis tb ON tb.PRODUCT = o.PRODUCT
+  ),
+  optionA AS (
+    SELECT tl.hub_id,
+           SUM(tl.line_transfer_cost) + (pc.DISTANCE_KM * P_RATE_PER_KM + total.tt * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS cost_a
+    FROM transfer_line tl
+    JOIN pc ON pc.PLANT_ID = tl.hub_id
+    CROSS JOIN total
+    GROUP BY tl.hub_id, pc.DISTANCE_KM, total.tt
+    HAVING COUNT(*) = (SELECT nlines FROM total)
+  ),
+  best AS (
+    SELECT hub_id FROM optionA QUALIFY ROW_NUMBER() OVER (ORDER BY cost_a, hub_id) = 1
+  ),
+  -- nearest capable source plant for each product into the best hub
+  src AS (
+    SELECT o.PRODUCT, o.TONS, b.hub_id, pp.FROM_PLANT_ID AS src_id, pp.DISTANCE_KM AS d
+    FROM orders o
+    CROSS JOIN best b
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pp ON pp.FROM_PLANT_ID = cpp.PLANT_ID AND pp.TO_PLANT_ID = b.hub_id
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY o.PRODUCT ORDER BY pp.DISTANCE_KM, pp.FROM_PLANT_ID) = 1
+  ),
+  -- nearest capable plant direct to the customer for each product
+  direct AS (
+    SELECT o.PRODUCT, o.TONS, cpp.PLANT_ID AS src_id
+    FROM orders o
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pc ON pc.PLANT_ID = cpp.PLANT_ID
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY o.PRODUCT ORDER BY pc.DISTANCE_KM, cpp.PLANT_ID) = 1
+  )
+  SELECT 'TRANSFER' AS leg_kind, src.PRODUCT, src.TONS,
+         ST_X(sp.GEOG) AS from_lon, ST_Y(sp.GEOG) AS from_lat,
+         ST_X(hp.GEOG) AS to_lon, ST_Y(hp.GEOG) AS to_lat
+  FROM src
+  JOIN plants sp ON sp.PLANT_ID = src.src_id
+  JOIN plants hp ON hp.PLANT_ID = src.hub_id
+  WHERE src.d > 0
+  UNION ALL
+  SELECT 'OUTBOUND', NULL, (SELECT tt FROM total),
+         ST_X(hp.GEOG), ST_Y(hp.GEOG), ST_X(cu.GEOG), ST_Y(cu.GEOG)
+  FROM best b JOIN plants hp ON hp.PLANT_ID = b.hub_id CROSS JOIN custrow cu
+  UNION ALL
+  SELECT 'DIRECT', d.PRODUCT, d.TONS,
+         ST_X(sp.GEOG), ST_Y(sp.GEOG), ST_X(cu.GEOG), ST_Y(cu.GEOG)
+  FROM direct d JOIN plants sp ON sp.PLANT_ID = d.src_id CROSS JOIN custrow cu
+$$;
+
 -- Grants (additive; guarded so a role-less install does not error the file).
 GRANT USAGE ON SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
@@ -1849,6 +2154,15 @@ GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR,
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
@@ -1863,4 +2177,5 @@ UNION ALL SELECT 'LOCATION.HH_CELLS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.
 UNION ALL SELECT 'LOCATION.STORE_FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
 UNION ALL SELECT 'SOURCING.PLANTS', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS
 UNION ALL SELECT 'SOURCING.CUSTOMERS', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS
-UNION ALL SELECT 'SOURCING.CUSTOMER_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND;
+UNION ALL SELECT 'SOURCING.CUSTOMER_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND
+UNION ALL SELECT 'SOURCING.ORDER_MIX', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX;
