@@ -322,110 +322,142 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES (
   POSTCODE  VARCHAR
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- Single-row driver: active region key + bbox (from the active dataset's DIM_POIS
--- extent, +0.1deg margin -- engine-independent, data-derived, not hardcoded) +
--- boundary polygon from REGION_CATALOG when the engine is present (NULL-safe refine).
-CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.CATCHMENT._AL_REGION AS
-WITH active AS (
-  SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1
-),
-ext AS (
-  SELECT MIN(p.LNG) AS MNLON, MIN(p.LAT) AS MNLAT, MAX(p.LNG) AS MXLON, MAX(p.LAT) AS MXLAT
-  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
-  JOIN active a ON p.REGION = a.REGION
-),
-bnd AS (
-  SELECT TO_GEOGRAPHY(ST_ASWKT(rc.BOUNDARY)) AS BOUNDARY
-  FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-  JOIN active a ON (UPPER(rc.LOOKUP_NAME) = UPPER(a.REGION) OR UPPER(rc.REGION_KEY) = UPPER(a.REGION))
-  WHERE rc.BOUNDARY IS NOT NULL
-  ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
-  LIMIT 1
-),
--- Dominant ISO country code of the region's Overture places within the bbox.
--- Lets the address ingest prune by COUNTRY (fast) while staying region-agnostic
--- (resolves 'US' for SanFrancisco, 'GB' for London, 'DE' for Berlin, etc.).
-ctry AS (
-  SELECT p.ADDRESSES[0]:country::VARCHAR AS CC
-  FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p, ext e
-  WHERE p.ADDRESSES[0]:country IS NOT NULL
-    AND ST_X(p.GEOMETRY) BETWEEN COALESCE(e.MNLON, -123.0) - 0.1 AND COALESCE(e.MXLON, -121.5) + 0.1
-    AND ST_Y(p.GEOMETRY) BETWEEN COALESCE(e.MNLAT,   36.8) - 0.1 AND COALESCE(e.MXLAT,   38.5) + 0.1
-  GROUP BY 1
-  ORDER BY COUNT(*) DESC
-  LIMIT 1
-)
-SELECT
-  a.REGION                                   AS REGION_KEY,
-  COALESCE(e.MNLON, -123.0) - 0.1            AS BBOX_MIN_LON,
-  COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
-  COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
-  COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
-  (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY,
-  (SELECT CC FROM ctry)                      AS COUNTRY
-FROM active a CROSS JOIN ext e;
+-- Per-region CATCHMENT builder (factored from the former inline ingest so it can
+-- run for ANY region on demand, not just the install region). Builds POIS +
+-- CITIES_BY_STATE + REGIONAL_ADDRESSES for P_REGION from the Overture shares.
+-- Region-scoped and build-if-missing: returns early if the region already has
+-- POIs unless P_FORCE = TRUE. NO ORS calls (pure Snowflake SQL over Overture).
+-- Driver: region key + bbox (from that region's DIM_POIS extent, +0.1deg, data-
+-- derived) + boundary polygon from REGION_CATALOG + dominant Overture country.
+-- Idempotent per region (DELETE-by-region + INSERT) so other regions are kept.
+-- Called at install (CONFIG region), from Data Studio region-sync, and from the
+-- admin region-switch endpoint.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(P_REGION VARCHAR, P_FORCE BOOLEAN DEFAULT FALSE)
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  n INT DEFAULT 0;
+BEGIN
+  IF (P_REGION IS NULL) THEN
+    RETURN 'no region supplied';
+  END IF;
+  SELECT COUNT(*) INTO n FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION = :P_REGION;
+  IF (n > 0 AND NOT P_FORCE) THEN
+    RETURN 'catchment already built for ' || P_REGION || ' (' || n || ' pois); pass force=TRUE to rebuild';
+  END IF;
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
-SELECT
-    d.REGION_KEY AS REGION,
-    p.ID AS POI_ID,
-    p.NAMES:primary::VARCHAR AS POI_NAME,
-    p.BASIC_CATEGORY,
-    ST_X(p.GEOMETRY) AS LONGITUDE,
-    ST_Y(p.GEOMETRY) AS LATITUDE,
-    p.GEOMETRY,
-    COALESCE(p.ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
-    p.ADDRESSES[0]:locality::VARCHAR AS CITY,
-    p.ADDRESSES[0]:region::VARCHAR AS STATE,
-    p.ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
-FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
-CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
-WHERE p.BASIC_CATEGORY IN (
-    'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
-    'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
-    'clothing_store', 'electronics_store', 'specialty_store', 'gym',
-    'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
-)
-AND p.GEOMETRY IS NOT NULL
-AND p.ADDRESSES[0]:region IS NOT NULL
-AND ST_X(p.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
-AND ST_Y(p.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
-AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, d.BOUNDARY));
+  CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.CATCHMENT._AL_REGION AS
+  WITH active AS (
+    SELECT :P_REGION AS REGION
+  ),
+  ext AS (
+    SELECT MIN(p.LNG) AS MNLON, MIN(p.LAT) AS MNLAT, MAX(p.LNG) AS MXLON, MAX(p.LAT) AS MXLAT
+    FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+    JOIN active a ON p.REGION = a.REGION
+  ),
+  bnd AS (
+    SELECT TO_GEOGRAPHY(ST_ASWKT(rc.BOUNDARY)) AS BOUNDARY
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+    JOIN active a ON (UPPER(rc.LOOKUP_NAME) = UPPER(a.REGION) OR UPPER(rc.REGION_KEY) = UPPER(a.REGION))
+    WHERE rc.BOUNDARY IS NOT NULL
+    ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+    LIMIT 1
+  ),
+  -- Dominant ISO country code of the region's Overture places within the bbox.
+  -- Lets the address ingest prune by COUNTRY (fast) while staying region-agnostic
+  -- (resolves 'US' for SanFrancisco, 'GB' for London, 'DE' for Berlin, etc.).
+  ctry AS (
+    SELECT p.ADDRESSES[0]:country::VARCHAR AS CC
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p, ext e
+    WHERE p.ADDRESSES[0]:country IS NOT NULL
+      AND ST_X(p.GEOMETRY) BETWEEN COALESCE(e.MNLON, -123.0) - 0.1 AND COALESCE(e.MXLON, -121.5) + 0.1
+      AND ST_Y(p.GEOMETRY) BETWEEN COALESCE(e.MNLAT,   36.8) - 0.1 AND COALESCE(e.MXLAT,   38.5) + 0.1
+    GROUP BY 1
+    ORDER BY COUNT(*) DESC
+    LIMIT 1
+  )
+  SELECT
+    a.REGION                                   AS REGION_KEY,
+    COALESCE(e.MNLON, -123.0) - 0.1            AS BBOX_MIN_LON,
+    COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
+    COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
+    COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
+    (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY,
+    (SELECT CC FROM ctry)                      AS COUNTRY
+  FROM active a CROSS JOIN ext e;
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
-SELECT
-    REGION, STATE, CITY, COUNT(*) AS POI_COUNT
-FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
-WHERE CITY IS NOT NULL
-  AND REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1)
-GROUP BY REGION, STATE, CITY
-HAVING COUNT(*) > 10
-ORDER BY STATE, POI_COUNT DESC;
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
+  SELECT
+      d.REGION_KEY AS REGION,
+      p.ID AS POI_ID,
+      p.NAMES:primary::VARCHAR AS POI_NAME,
+      p.BASIC_CATEGORY,
+      ST_X(p.GEOMETRY) AS LONGITUDE,
+      ST_Y(p.GEOMETRY) AS LATITUDE,
+      p.GEOMETRY,
+      COALESCE(p.ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
+      p.ADDRESSES[0]:locality::VARCHAR AS CITY,
+      p.ADDRESSES[0]:region::VARCHAR AS STATE,
+      p.ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
+  FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+  CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+  WHERE p.BASIC_CATEGORY IN (
+      'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+      'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+      'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+      'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
+  )
+  AND p.GEOMETRY IS NOT NULL
+  AND p.ADDRESSES[0]:region IS NOT NULL
+  AND ST_X(p.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+  AND ST_Y(p.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+  AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, d.BOUNDARY));
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
-SELECT
-    d.REGION_KEY AS REGION,
-    a.ID,
-    a.GEOMETRY,
-    ST_X(a.GEOMETRY) AS LONGITUDE,
-    ST_Y(a.GEOMETRY) AS LATITUDE,
-    a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
-    a.POSTCODE
-FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
-CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
--- Region-agnostic: prune by the region's dominant country (partition-friendly),
--- then the bbox + boundary polygon scope the geography precisely.
-WHERE (d.COUNTRY IS NULL OR a.COUNTRY = d.COUNTRY)
-AND a.GEOMETRY IS NOT NULL
-AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
-AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
-AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+  SELECT
+      REGION, STATE, CITY, COUNT(*) AS POI_COUNT
+  FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+  WHERE CITY IS NOT NULL
+    AND REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1)
+  GROUP BY REGION, STATE, CITY
+  HAVING COUNT(*) > 10
+  ORDER BY STATE, POI_COUNT DESC;
+
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+  SELECT
+      d.REGION_KEY AS REGION,
+      a.ID,
+      a.GEOMETRY,
+      ST_X(a.GEOMETRY) AS LONGITUDE,
+      ST_Y(a.GEOMETRY) AS LATITUDE,
+      a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
+      a.POSTCODE
+  FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
+  CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+  -- Region-agnostic: prune by the region's dominant country (partition-friendly),
+  -- then the bbox + boundary polygon scope the geography precisely.
+  WHERE (d.COUNTRY IS NULL OR a.COUNTRY = d.COUNTRY)
+  AND a.GEOMETRY IS NOT NULL
+  AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+  AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+  AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+
+  RETURN 'catchment built for ' || P_REGION;
+END;
+$$;
+
+-- Install-time build for the active CONFIG region (force = TRUE for a clean rebuild).
+CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
+  (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
 
 -- =============================================================================
 -- 5. LOCATION DIAGNOSTICS  (cannibalisation + closure vertical slice)
@@ -1564,7 +1596,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.ORDER_MIX (
 -- Build procedure: materializes the plant estate + customers + synthetic facts
 -- for the active region. NO ORS calls (the matrix is computed live by the app).
 -- Owner's rights. Idempotent per region.
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS()
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS(P_REGION VARCHAR DEFAULT NULL)
   RETURNS VARCHAR
   LANGUAGE SQL
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -1573,9 +1605,15 @@ $$
 DECLARE
   rg VARCHAR;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  -- Region resolution: explicit arg wins (region-sync / admin switch pass it);
+  -- otherwise fall back to the single active CATCHMENT.CONFIG region (install path).
+  IF (P_REGION IS NOT NULL) THEN
+    rg := P_REGION;
+  ELSE
+    SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  END IF;
   IF (rg IS NULL) THEN
-    RETURN 'no active region in CATCHMENT.CONFIG';
+    RETURN 'no region (arg NULL and no active CATCHMENT.CONFIG)';
   END IF;
 
   -- 1. Plant estate: deterministic subset of the region most-spread category,
@@ -1737,6 +1775,15 @@ CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_FREIGHT_RATE
 CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ORDER_MIX
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX;
+-- Active-region pointer for the app: the single region the SOURCING estate was
+-- built for. Reflects CATCHMENT.CONFIG, which region creation (Data Studio
+-- region-sync) and region switch (admin regions/active) both update, and which
+-- BUILD_SOURCING_DIAGNOSTICS builds against - so the sourcing views always
+-- resolve to the same region their data was built for. Owner's-rights ownership
+-- chain (ACCOUNTADMIN owns both) lets FLEET_APP roles read it via the view grant.
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_REGION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
 
 -- Estate-only facts view for the semantic view (SV_SOURCING). Current annual
 -- freight here is a DATA-ONLY straight-line estimate (no ORS), suitable for the
