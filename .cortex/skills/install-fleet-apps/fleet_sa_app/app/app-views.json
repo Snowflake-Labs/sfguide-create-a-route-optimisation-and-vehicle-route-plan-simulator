@@ -3810,19 +3810,20 @@
             { "label": "Customer (cheaper source available)", "color": [16, 185, 129, 220] },
             { "label": "Customer (no change)", "color": [148, 163, 184, 200] },
             { "label": "Current source lane", "color": [148, 163, 184, 180], "shape": "line" },
-            { "label": "Proposed source lane", "color": [16, 185, 129, 230], "shape": "line" }
+            { "label": "Proposed source lane", "color": [16, 185, 129, 230], "shape": "line" },
+            { "label": "Selected lane", "color": [245, 158, 11, 255], "shape": "line" }
           ],
           "layers": [
             {
-              "type": "arc",
+              "type": "path",
               "id": "current-lanes",
-              "source": { "lng": "from_lng", "lat": "from_lat" },
-              "target": { "lng": "to_lng", "lat": "to_lat" },
-              "sourceColor": [148, 163, 184, 160],
-              "targetColor": [148, 163, 184, 160],
+              "geojsonColumn": "route_geojson",
+              "color": [148, 163, 184, 200],
+              "width": 3,
+              "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT ST_X(CURRENT_PLANT_GEOG) AS from_lng, ST_Y(CURRENT_PLANT_GEOG) AS from_lat, ST_X(CUSTOMER_GEOG) AS to_lng, ST_Y(CUSTOMER_GEOG) AS to_lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
                 "params": {
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
