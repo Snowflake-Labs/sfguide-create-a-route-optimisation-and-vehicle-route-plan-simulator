@@ -1795,8 +1795,8 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND WHERE REGION = P_REGION
   )
   SELECT p.PLANT_ID, p.PLANT_NAME, c.CUSTOMER_ID, c.CUSTOMER_NAME,
-         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0, 2) AS distance_km,
-         ROUND((mtx.m:durations[p.pi][c.ci]::FLOAT) / 60.0, 1) AS duration_min,
+         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((mtx.m:durations[p.pi][c.ci]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          COALESCE(d.TONS_PER_LOAD, 22) AS tons,
          ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_KM
                + COALESCE(d.TONS_PER_LOAD, 22) * (mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
@@ -1902,8 +1902,8 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
   )
   SELECT a.PLANT_ID, a.PLANT_NAME, b.PLANT_ID, b.PLANT_NAME,
-         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2) AS distance_km,
-         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1) AS duration_min,
+         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          a.GEOG, b.GEOG
   FROM mtx, a CROSS JOIN b
   WHERE mtx.m:distances[a.ai][b.bi] IS NOT NULL
