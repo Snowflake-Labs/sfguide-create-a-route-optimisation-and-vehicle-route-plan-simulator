@@ -3809,6 +3809,7 @@
             { "label": "Plant", "color": [29, 78, 137, 255] },
             { "label": "Customer (cheaper source available)", "color": [16, 185, 129, 220] },
             { "label": "Customer (no change)", "color": [148, 163, 184, 200] },
+            { "label": "Selected customer", "color": [255, 200, 0, 255] },
             { "label": "Current source lane", "color": [148, 163, 184, 180], "shape": "line" },
             { "label": "Proposed source lane", "color": [16, 185, 129, 230], "shape": "line" },
             { "label": "Selected lane", "color": [245, 158, 11, 255], "shape": "line" }
