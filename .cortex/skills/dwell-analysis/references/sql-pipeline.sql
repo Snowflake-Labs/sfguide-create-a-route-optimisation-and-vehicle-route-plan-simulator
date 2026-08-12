@@ -382,6 +382,12 @@ AS
     tgt.SLA_STATUS = src.SLA_STATUS, tgt.MINUTES_OVER_WARNING = src.MINUTES_OVER_WARNING,
     tgt.SESSION_END = src.SESSION_END, tgt.ALERT_TS = CURRENT_TIMESTAMP();
 
-ALTER TASK FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS RESUME;
+-- Cost-safe default: the task is created SUSPENDED and is NOT auto-resumed.
+-- It fires every 5 minutes and wakes ROUTING_ANALYTICS, so on an idle demo
+-- account it is a pure cost with no viewer. The SLA_ALERT_LOG is a demo
+-- convenience (the DT_SLA_ALERTS dynamic table already holds live alerts). To
+-- populate the persistent log during an active demo, resume it manually:
+--   ALTER TASK FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS RESUME;
+-- and suspend it again when finished.
 
 

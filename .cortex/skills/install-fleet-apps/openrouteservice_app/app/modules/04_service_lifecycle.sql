@@ -62,6 +62,13 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Re-arm the self-gating rescue task so the prewarm flag just set above is
+    -- drained on the next cycle (the task suspends itself when idle).
+    BEGIN
+        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     RETURN OBJECT_CONSTRUCT(
         'resumed', resumed_count,
         'already_running', already_running
