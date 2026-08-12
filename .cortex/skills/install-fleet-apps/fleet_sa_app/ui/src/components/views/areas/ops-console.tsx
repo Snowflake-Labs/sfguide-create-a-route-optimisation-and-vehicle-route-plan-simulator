@@ -11,6 +11,7 @@
 // control app per the hybrid decision and is linked out below.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 // The app's own service lives in FLEET_INTELLIGENCE.SYNAPSE_USER, not in
 // OPENROUTESERVICE_APP.CORE. The service_inventory verb now appends the Fleet
@@ -105,9 +106,10 @@ export function OpsConsoleView() {
 
   useEffect(() => {
     fetchInventory();
-    const interval = setInterval(fetchInventory, 15000);
-    return () => clearInterval(interval);
   }, [fetchInventory]);
+
+  // Poll only while the tab is visible (Tier E cost hygiene).
+  useVisiblePolling(fetchInventory, 15000);
 
   // Reads the synapse audit trail via the recent_verb_attempts ops verb. Until
   // this view existed, VERB_ATTEMPT was written on every verb call but never read

@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { StatusResponse, ServiceInfo, OrsRegionReadiness, ComputePoolInfo, OrsGraphInfo } from '@/lib/types';
 import PhasePips from '@/components/shared/phase-pips';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 export function ServiceManagerPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -74,10 +75,11 @@ export function ServiceManagerPage() {
     checkHealth();
     fetchOrsReadiness();
     fetchHibernate();
-    const interval = setInterval(fetchStatus, 15000);
-    const readinessInterval = setInterval(fetchOrsReadiness, 30000);
-    return () => { clearInterval(interval); clearInterval(readinessInterval); };
   }, [fetchStatus, checkHealth, fetchOrsReadiness, fetchHibernate]);
+
+  // Poll only while the tab is visible (Tier E cost hygiene).
+  useVisiblePolling(fetchStatus, 15000);
+  useVisiblePolling(fetchOrsReadiness, 30000);
 
   const handleAction = async (action: string, body?: any) => {
     setActionInProgress(action);
