@@ -37,10 +37,15 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 -- 1. Shared analytic schemas (also created by the routing engine when present).
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Accelerator data is synthetic / rebuildable: disable Time Travel (DB-level,
+-- inherited) to avoid Time-Travel + Fail-safe storage cost. Co-located ALTER
+-- because CREATE ... IF NOT EXISTS is a no-op on an existing DB.
+ALTER DATABASE SYNTHETIC_DATASETS SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_INTELLIGENCE SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
@@ -61,6 +66,7 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
 --     own `CREATE TABLE IF NOT EXISTS` + LOAD_SEED_CATALOG later reuse/populate it.
 CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (

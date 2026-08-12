@@ -40,6 +40,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_INTELLIGENCE SET DATA_RETENTION_TIME_IN_DAYS = 0;
 
 -- =============================================================================
 -- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
@@ -750,6 +751,7 @@ CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
 -- normally creates FLEET_APP, so create the DB defensively to keep a first run clean.
 CREATE DATABASE IF NOT EXISTS FLEET_APP
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 

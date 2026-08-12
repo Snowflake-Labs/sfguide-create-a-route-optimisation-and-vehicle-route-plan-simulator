@@ -64,6 +64,20 @@ CALL OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES();
 -- Optional: verify nothing is left RUNNING
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
 
+-- -----------------------------------------------------------------------------
+-- 4. Disable Time Travel on the accelerator databases (storage cost)
+-- -----------------------------------------------------------------------------
+-- The accelerator's data is synthetic / rebuildable, so Time Travel (and the
+-- 7-day Fail-safe that rides on any non-zero retention) is pure storage cost.
+-- Setting DB-level retention to 0 is inherited by all existing and future
+-- schemas/tables/stages and takes effect immediately. IF EXISTS makes this safe
+-- to run regardless of which databases are present.
+ALTER DATABASE IF EXISTS FLEET_INTELLIGENCE   SET DATA_RETENTION_TIME_IN_DAYS = 0;
+ALTER DATABASE IF EXISTS SYNTHETIC_DATASETS   SET DATA_RETENTION_TIME_IN_DAYS = 0;
+ALTER DATABASE IF EXISTS OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
+ALTER DATABASE IF EXISTS FLEET_APP            SET DATA_RETENTION_TIME_IN_DAYS = 0;
+ALTER DATABASE IF EXISTS ROUTING_PLATFORM     SET DATA_RETENTION_TIME_IN_DAYS = 0;
+
 -- =============================================================================
 -- RESUME BLOCK - run this before your next demo to bring the stack back
 -- =============================================================================

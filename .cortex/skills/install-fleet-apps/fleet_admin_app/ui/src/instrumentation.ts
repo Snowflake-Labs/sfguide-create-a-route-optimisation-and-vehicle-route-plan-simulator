@@ -21,6 +21,25 @@ export async function register(): Promise<void> {
     const { log } = await import('@/server/diagnostics');
 
     const t0 = Date.now();
+
+    // Cost: the accelerator's data is synthetic / rebuildable, so Time Travel
+    // (and the 7-day Fail-safe that rides on non-zero retention) is pure storage
+    // cost. Converge every accelerator database to DATA_RETENTION_TIME_IN_DAYS=0
+    // at boot so an ALREADY-DEPLOYED account (created before this change) is
+    // fixed on the next restart, not just fresh installs. Best-effort + IF
+    // EXISTS: a missing DB or permission gap never blocks boot.
+    try {
+      for (const db of ['FLEET_INTELLIGENCE', 'SYNTHETIC_DATASETS', 'OPENROUTESERVICE_APP', 'FLEET_APP', 'ROUTING_PLATFORM']) {
+        try {
+          await runSql(`ALTER DATABASE IF EXISTS ${db} SET DATA_RETENTION_TIME_IN_DAYS = 0`);
+        } catch { /* per-db best-effort */ }
+      }
+    } catch (err) {
+      log('WARN', 'BootInit', `retention convergence failed: ${
+        (err as Error)?.message?.slice(0, 200)
+      }`);
+    }
+
     try {
       // Shared SQL substrate: UNIFIED base tables + DIM_DATASETS, V_*_CURRENT
       // dataset-versioning views, scoped-contract UDTFs, backload/marketplace
