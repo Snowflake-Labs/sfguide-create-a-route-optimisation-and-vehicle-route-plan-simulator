@@ -274,6 +274,142 @@ BEGIN
 END;
 $$;
 
+-- =============================================================================
+-- AUTO-HIBERNATE (Tier B): quiet an unattended account with no human action.
+-- -----------------------------------------------------------------------------
+-- A single-row settings table drives an hourly serverless task that calls
+-- COST_SAFE_MODE after N idle hours, and auto-resumes the dynamic tables
+-- (RESUME_FLEET) when activity returns. "Activity" = the most recent of the
+-- synapse VERB_ATTEMPT audit rows (real-time, per agent verb) and the ORS
+-- request log (per routing call, ~1 min ingest lag). Query history is NOT used
+-- (too laggy, and the task's own queries would falsely count as activity).
+-- The task is deliberately absent from COST_SAFE_MODE's task-suspend list so it
+-- keeps running while hibernated and can wake the fleet on renewed activity.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.COST_SETTINGS (
+    SETTING_KEY          VARCHAR NOT NULL PRIMARY KEY,
+    HIBERNATE_ENABLED    BOOLEAN,
+    HIBERNATE_IDLE_HOURS NUMBER,
+    UPDATED_AT           TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-settings"}}';
+
+-- Seed the default row once (MERGE so re-running the module never clobbers a
+-- user's saved toggle). Default: enabled, 4-hour idle threshold.
+MERGE INTO FLEET_INTELLIGENCE.CORE.COST_SETTINGS t
+USING (SELECT 'GLOBAL' AS SETTING_KEY) s ON t.SETTING_KEY = s.SETTING_KEY
+WHEN NOT MATCHED THEN INSERT (SETTING_KEY, HIBERNATE_ENABLED, HIBERNATE_IDLE_HOURS)
+    VALUES ('GLOBAL', TRUE, 4);
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    enabled BOOLEAN DEFAULT TRUE;
+    idle_hours NUMBER DEFAULT 4;
+    la TIMESTAMP_LTZ DEFAULT NULL;
+    idle_min FLOAT DEFAULT 999999;
+    active_jobs INTEGER DEFAULT 0;
+    suspended_dts INTEGER DEFAULT 0;
+    action VARCHAR DEFAULT 'noop';
+    tmp VARCHAR DEFAULT '';
+BEGIN
+    -- Settings (best-effort; defaults enabled/4h if the table is missing).
+    BEGIN
+        SELECT COALESCE(HIBERNATE_ENABLED, TRUE), COALESCE(HIBERNATE_IDLE_HOURS, 4)
+          INTO :enabled, :idle_hours
+        FROM FLEET_INTELLIGENCE.CORE.COST_SETTINGS WHERE SETTING_KEY = 'GLOBAL' LIMIT 1;
+    EXCEPTION WHEN OTHER THEN enabled := TRUE; idle_hours := 4;
+    END;
+    IF (NOT COALESCE(:enabled, TRUE)) THEN RETURN 'auto-hibernate: disabled'; END IF;
+
+    -- last_activity = GREATEST across the synapse audit tables + ORS request log.
+    -- Each source is independently guarded (a bundle table may not exist).
+    FOR src IN (
+        SELECT COLUMN1 AS Q FROM VALUES
+            ('SELECT MAX(at) AS M FROM OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT'),
+            ('SELECT MAX(at) AS M FROM FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT'),
+            ('SELECT MAX(at) AS M FROM FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT'),
+            ('SELECT MAX(REQUEST_TS) AS M FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG')
+    ) DO
+        BEGIN
+            LET t TIMESTAMP_LTZ := NULL;
+            LET rs RESULTSET := (EXECUTE IMMEDIATE src.Q);
+            LET c CURSOR FOR rs;
+            FOR r IN c DO t := r.M::TIMESTAMP_LTZ; END FOR;
+            IF (:t IS NOT NULL AND (:la IS NULL OR :t > :la)) THEN la := :t; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    IF (:la IS NOT NULL) THEN
+        idle_min := DATEDIFF('minute', :la, CURRENT_TIMESTAMP());
+    END IF;
+
+    -- Never hibernate while a provision / matrix / studio job is in flight.
+    BEGIN
+        SELECT
+            (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS IN ('PENDING','RUNNING'))
+          + (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE STATUS IN ('PENDING','RUNNING') AND STAGE NOT IN ('COMPLETE','ERROR'))
+          + (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE STATUS IN ('PENDING','RUNNING'))
+        INTO :active_jobs;
+    EXCEPTION WHEN OTHER THEN active_jobs := 0;
+    END;
+
+    IF (:idle_min >= :idle_hours * 60) THEN
+        IF (:active_jobs = 0) THEN
+            BEGIN
+                CALL OPENROUTESERVICE_APP.CORE.COST_SAFE_MODE() INTO :tmp;
+                action := 'hibernated';
+            EXCEPTION WHEN OTHER THEN action := 'hibernate-failed';
+            END;
+        ELSE
+            action := 'idle-but-jobs-active';
+        END IF;
+    ELSE
+        -- Recent activity: if a prior hibernate left fleet dynamic tables
+        -- suspended, wake them (services resume lazily on first query).
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE FLEET_INTELLIGENCE';
+            SELECT COUNT(*) INTO :suspended_dts
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            WHERE UPPER(COALESCE("scheduling_state", '')) LIKE '%SUSPEND%';
+        EXCEPTION WHEN OTHER THEN suspended_dts := 0;
+        END;
+        IF (:suspended_dts > 0) THEN
+            BEGIN
+                CALL OPENROUTESERVICE_APP.CORE.RESUME_FLEET() INTO :tmp;
+                action := 'resumed';
+            EXCEPTION WHEN OTHER THEN action := 'resume-failed';
+            END;
+        ELSE
+            action := 'active';
+        END IF;
+    END IF;
+
+    RETURN 'auto-hibernate: action=' || :action
+        || ' idle_min=' || :idle_min
+        || ' idle_hours=' || :idle_hours
+        || ' active_jobs=' || :active_jobs;
+END;
+$$;
+
+CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK
+    SCHEDULE = '60 MINUTE'
+    USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate-task"}}'
+AS
+    CALL OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE();
+
+-- Enabled by default (the whole point of Tier B). Toggle off at runtime via the
+-- COST_SETTINGS.HIBERNATE_ENABLED flag (admin app) - the task keeps ticking but
+-- the proc returns early, which is cheaper than suspend/resume churn.
+ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK RESUME;
+
+
 
 RETURNS STRING
 LANGUAGE SQL
