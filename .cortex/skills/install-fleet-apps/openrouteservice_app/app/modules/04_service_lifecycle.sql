@@ -148,7 +148,133 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
+-- =============================================================================
+-- COST_SAFE_MODE / RESUME_FLEET
+-- -----------------------------------------------------------------------------
+-- One-shot cost control for an idle deployment. COST_SAFE_MODE quiets every
+-- recurring compute source so an unattended account (e.g. over a weekend)
+-- consumes ~nothing:
+--   1. suspends all fleet dynamic tables (stops scheduled refresh scans on
+--      ROUTING_ANALYTICS) across FLEET_INTELLIGENCE, FLEET_APP, SYNTHETIC_DATASETS;
+--   2. suspends the non-essential recurring tasks (LOG_SLA_ALERTS, STUDIO_JOB_GC,
+--      the observability tasks, and the self-gating RESCUE task);
+--   3. calls SUSPEND_ALL_SERVICES (suspends SPCS routing services + reconciles
+--      AUTO_SUSPEND / warehouse-size drift).
+-- Every statement is best-effort (a missing object or a permission gap on one
+-- object never aborts the rest). RESUME_FLEET is the inverse for a demo: it
+-- resumes the dynamic tables (SPCS services resume lazily on first query, so
+-- they are intentionally left suspended). Tasks stay suspended - they are demo
+-- conveniences / self-arming, so they are not blanket-resumed here.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.COST_SAFE_MODE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-safe"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    dt_suspended INTEGER DEFAULT 0;
+    task_suspended INTEGER DEFAULT 0;
+    svc_msg VARCHAR DEFAULT '';
+BEGIN
+    -- 1. Suspend all fleet dynamic tables across the known databases.
+    FOR db IN (
+        SELECT COLUMN1 AS DB FROM VALUES ('FLEET_INTELLIGENCE'), ('FLEET_APP'), ('SYNTHETIC_DATASETS')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE ' || db.DB;
+            LET rs RESULTSET := (
+                SELECT "database_name" AS D, "schema_name" AS S, "name" AS N,
+                       "scheduling_state" AS ST
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+            LET c CURSOR FOR rs;
+            FOR r IN c DO
+                IF (UPPER(COALESCE(r.ST, '')) NOT LIKE '%SUSPEND%') THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER DYNAMIC TABLE "' || r.D || '"."' || r.S
+                            || '"."' || r.N || '" SUSPEND';
+                        dt_suspended := :dt_suspended + 1;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- 2. Suspend the recurring tasks (best-effort; IF EXISTS on each).
+    FOR t IN (
+        SELECT COLUMN1 AS TSK FROM VALUES
+            ('FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS'),
+            ('OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK'),
+            ('OPENROUTESERVICE_APP.CORE.STUDIO_JOB_GC'),
+            ('OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK'),
+            ('OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER TASK IF EXISTS ' || t.TSK || ' SUSPEND';
+            task_suspended := :task_suspended + 1;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- 3. Suspend SPCS services + reconcile AUTO_SUSPEND / warehouse-size drift.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES() INTO :svc_msg;
+    EXCEPTION WHEN OTHER THEN svc_msg := 'services: skipped';
+    END;
+
+    RETURN 'cost-safe: suspended ' || :dt_suspended || ' dynamic tables, '
+        || :task_suspended || ' tasks; ' || :svc_msg;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_FLEET()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"resume-fleet"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    dt_resumed INTEGER DEFAULT 0;
+BEGIN
+    -- Resume all fleet dynamic tables. SPCS routing services are intentionally
+    -- NOT resumed here - they resume lazily on the first routing query, so a
+    -- resume before a demo does not need to pay for idle service time.
+    FOR db IN (
+        SELECT COLUMN1 AS DB FROM VALUES ('FLEET_INTELLIGENCE'), ('FLEET_APP'), ('SYNTHETIC_DATASETS')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE ' || db.DB;
+            LET rs RESULTSET := (
+                SELECT "database_name" AS D, "schema_name" AS S, "name" AS N,
+                       "scheduling_state" AS ST
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+            LET c CURSOR FOR rs;
+            FOR r IN c DO
+                IF (UPPER(COALESCE(r.ST, '')) LIKE '%SUSPEND%') THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER DYNAMIC TABLE "' || r.D || '"."' || r.S
+                            || '"."' || r.N || '" RESUME';
+                        dt_resumed := :dt_resumed + 1;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    RETURN 'resume-fleet: resumed ' || :dt_resumed
+        || ' dynamic tables (SPCS services resume lazily on first query)';
+END;
+$$;
+
+
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
