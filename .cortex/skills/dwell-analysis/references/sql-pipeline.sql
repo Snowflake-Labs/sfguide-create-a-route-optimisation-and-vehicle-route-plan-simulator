@@ -171,7 +171,7 @@ WHERE NOT EXISTS (
 
 -- Step 5: Dynamic Table Layer 1 - State Change Detection (LAG)
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
-  TARGET_LAG = '5 minutes'
+  TARGET_LAG = DOWNSTREAM
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -187,7 +187,7 @@ WHERE STATUS IN ('MOVING','DWELL_WAREHOUSE','DWELL_DESTINATION',
 
 -- Step 6: Dynamic Table Layer 2 - Dwell Sessionization (CONDITIONAL_CHANGE_EVENT)
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS
-  TARGET_LAG = '5 minutes'
+  TARGET_LAG = DOWNSTREAM
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -210,7 +210,7 @@ GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID;
 
 -- Step 7: Dynamic Table Layer 3 - Enriched Dwell (location + fleet metadata)
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
-  TARGET_LAG = '5 minutes'
+  TARGET_LAG = DOWNSTREAM
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -230,7 +230,7 @@ LEFT JOIN FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_FLEET tf ON s.VEHICLE_ID 
 
 -- Step 8: H3 Congestion Heatmap
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION
-  TARGET_LAG = '10 minutes'
+  TARGET_LAG = '1 hour'
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -247,7 +247,7 @@ GROUP BY H3_CELL_R7, HOUR_BUCKET;
 
 -- Step 9: SLA Alerts
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
-  TARGET_LAG = '5 minutes'
+  TARGET_LAG = '1 hour'
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -279,7 +279,7 @@ WHERE e.DWELL_MINUTES >= t.WARNING_MINUTES AND (e.STATUS LIKE 'DWELL%' OR e.STAT
 
 -- Step 10: Facility Utilization
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION
-  TARGET_LAG = '10 minutes'
+  TARGET_LAG = '1 hour'
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -298,7 +298,7 @@ GROUP BY LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE;
 
 -- Step 11: Driver Dwell Summary
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
-  TARGET_LAG = '10 minutes'
+  TARGET_LAG = '1 hour'
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -319,7 +319,7 @@ GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME;
 
 -- Step 12: Daily Trends
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS
-  TARGET_LAG = '10 minutes'
+  TARGET_LAG = '1 hour'
   WAREHOUSE = ROUTING_ANALYTICS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS

@@ -1336,7 +1336,7 @@ $$`,
     },
     {
       sql: `CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX
-        TARGET_LAG = '15 minutes'
+        TARGET_LAG = '1 hour'
         WAREHOUSE = ROUTING_ANALYTICS
         COMMENT = ${TRACK_FX}
         AS
