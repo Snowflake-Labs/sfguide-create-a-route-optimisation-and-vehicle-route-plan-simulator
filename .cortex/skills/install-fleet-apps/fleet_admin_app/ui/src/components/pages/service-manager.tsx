@@ -392,6 +392,30 @@ export function ServiceManagerPage() {
         </button>
       </div>
 
+      <h3>Cost-safe mode</h3>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        For an idle deployment: suspends all fleet dynamic tables and recurring
+        tasks (SLA logger, studio GC, observability, rescue) and then all SPCS
+        routing services, so background credit consumption stops. Resume rebuilds
+        the dynamic tables; routing services resume automatically on first query.
+      </div>
+      <div className="action-row">
+        <button
+          className="btn secondary"
+          onClick={() => handleAction('cost-safe')}
+          disabled={!!actionInProgress || !!serviceAction}
+        >
+          {actionInProgress === 'cost-safe' ? 'Entering cost-safe mode...' : 'Enter cost-safe mode'}
+        </button>
+        <button
+          className="btn secondary"
+          onClick={() => handleAction('resume-fleet')}
+          disabled={!!actionInProgress || !!serviceAction}
+        >
+          {actionInProgress === 'resume-fleet' ? 'Resuming...' : 'Resume for demo'}
+        </button>
+      </div>
+
       <h3>Scale</h3>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
         Sets replica count for the main routing service and gateway.
