@@ -40,10 +40,15 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
 
 CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    INSTANCE_FAMILY = HIGHMEM_X64_S
-   MIN_NODES = 5
+   MIN_NODES = 1
    MAX_NODES = 5
    AUTO_RESUME = true
    AUTO_SUSPEND_SECS = 600;
+-- Cost: MIN_NODES=1 (was 5) so an idle pool holds a single highmem node and
+-- suspends 600s after its services stop; it auto-scales up to MAX_NODES=5 to
+-- fit the gateway (up to 3 instances) + downloader under load. Existing
+-- deployments are converged by the boot ALTER in the admin app's
+-- instrumentation.ts.
 ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- Verify compute pool state. Services queue automatically if pool is STARTING.
@@ -90,13 +95,20 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"core"}}';
 
+-- Gateway receives DIRECT app/agent HTTP calls, so its auto-suspend idle timer
+-- reflects real usage (unlike city/ORS services, which only see gateway-routed
+-- traffic and therefore stay at 14400 - see snowflake-scripting-guidelines.md).
+-- A 1h idle window here lets the shared core pool collapse ~3h sooner after the
+-- last request. During builds RECONCILE_AUTO_SUSPEND pins the gateway to 0, so
+-- this never suspends mid-build. MIN_INSTANCES=1 (was 3) with MAX_INSTANCES=3
+-- keeps one warm instance idle and scales up under load.
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
    FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway
    SPECIFICATION_FILE = 'routing-gateway-service.yaml'
-   MIN_INSTANCES = 3
+   MIN_INSTANCES = 1
    MAX_INSTANCES = 3
-   AUTO_SUSPEND_SECS = 14400
+   AUTO_SUSPEND_SECS = 3600
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.

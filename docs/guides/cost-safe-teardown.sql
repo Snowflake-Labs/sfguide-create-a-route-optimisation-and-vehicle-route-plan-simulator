@@ -78,6 +78,19 @@ ALTER DATABASE IF EXISTS OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 
 ALTER DATABASE IF EXISTS FLEET_APP            SET DATA_RETENTION_TIME_IN_DAYS = 0;
 ALTER DATABASE IF EXISTS ROUTING_PLATFORM     SET DATA_RETENTION_TIME_IN_DAYS = 0;
 
+-- -----------------------------------------------------------------------------
+-- 5. Right-size the shared routing compute pool + gateway (one-time)
+-- -----------------------------------------------------------------------------
+-- Permanent config change (not a suspend): the core pool defaulted to
+-- MIN_NODES=5 on HIGHMEM_X64_S, holding five high-memory nodes whenever the
+-- pool is up. Drop the idle floor to 1 (scales to 5 under load) and let the
+-- gateway idle-suspend after 1h instead of 4h. City/ORS + VROOM services keep
+-- their 4h window on purpose (gateway-routed traffic does not reset their idle
+-- timer). Safe to run any time; RECONCILE_AUTO_SUSPEND re-pins to 0 during builds.
+ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL SET MIN_NODES = 1 MAX_NODES = 5;
+ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET MIN_INSTANCES = 1 MAX_INSTANCES = 3;
+ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+
 -- =============================================================================
 -- RESUME BLOCK - run this before your next demo to bring the stack back
 -- =============================================================================

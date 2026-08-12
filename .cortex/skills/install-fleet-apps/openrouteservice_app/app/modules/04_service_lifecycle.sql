@@ -603,7 +603,11 @@ BEGIN
             ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 0;
             left_zero := left_zero + 1;
         ELSE
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+            -- Gateway idle window = 1h (was 4h). Direct-traffic service, pinned to
+            -- 0 while busy above, so a shorter window collapses the shared core
+            -- pool sooner without risking mid-build suspension. City/ORS services
+            -- keep 14400 (gateway-routed traffic does not reset their idle timer).
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
             reconciled := reconciled + 1;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;

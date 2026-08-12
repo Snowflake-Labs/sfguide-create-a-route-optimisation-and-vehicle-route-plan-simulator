@@ -40,6 +40,19 @@ export async function register(): Promise<void> {
       }`);
     }
 
+    // Cost: converge the core routing pool + gateway to their right-sized shape
+    // on already-deployed accounts (fresh installs get this from
+    // 01_core_infra.sql). Pool MIN_NODES 5 -> 1 (holds a single idle highmem
+    // node, scales to 5 under load); gateway MIN_INSTANCES 3 -> 1 (scales to 3).
+    // The gateway's 1h idle window is converged separately by RECONCILE_AUTO_SUSPEND.
+    // Best-effort: never blocks boot.
+    try {
+      await runSql(`ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL SET MIN_NODES = 1 MAX_NODES = 5`);
+    } catch { /* pool may be mid-operation */ }
+    try {
+      await runSql(`ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET MIN_INSTANCES = 1 MAX_INSTANCES = 3`);
+    } catch { /* service may be suspended/updating */ }
+
     try {
       // Shared SQL substrate: UNIFIED base tables + DIM_DATASETS, V_*_CURRENT
       // dataset-versioning views, scoped-contract UDTFs, backload/marketplace
