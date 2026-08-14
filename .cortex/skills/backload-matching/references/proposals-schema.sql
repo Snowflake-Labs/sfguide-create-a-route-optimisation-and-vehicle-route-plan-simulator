@@ -9,7 +9,7 @@
 --   FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES (own waiting loads)
 --   FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS  (external offers)
 --
--- This script adds the DHL-neutral "Backload Proposals" cockpit layer:
+-- This script adds the industry-neutral "Backload Proposals" cockpit layer:
 --   VW_LOADS             union of internal volumes + external offers into ONE
 --                        demand pool (IS_INTERNAL flag + priority), pickup /
 --                        delivery GEOGRAPHY constructed from the lon/lat cols.

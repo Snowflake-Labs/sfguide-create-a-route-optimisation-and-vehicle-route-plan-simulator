@@ -7,7 +7,7 @@
 // strategies agreed, and - given dispatcher weights - produces a composite score
 // and a ranked list. Splitting "score the pairs" (depends on proposals+params)
 // from "rank by weights" (depends only on weights) lets the UI re-rank instantly
-// when a slider moves, with no server round-trip. Ported from the DHL Backload
+// when a slider moves, with no server round-trip. Ported from an internal Backload
 // Proposals cockpit and made brand-neutral (LOAD_ID, neutral param keys).
 
 export type EnsembleDimension =
