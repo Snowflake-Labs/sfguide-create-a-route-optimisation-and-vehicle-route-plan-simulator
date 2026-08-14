@@ -314,10 +314,7 @@ SELECT
   'OFF-' || LPAD(S::VARCHAR, 6, '0')                                                            AS OFFER_ID,
   REGION,
   VEHICLE_TYPE,
-  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-  END                                                                                            AS SOURCE,
+  DECODE(MOD(S, 4), 0,'EXCHANGE_A', 1,'EXCHANGE_B', 2,'EXCHANGE_C', 3,'EXCHANGE_D')             AS SOURCE,
   P_ID                                                                                           AS PICKUP_POI_ID,
   P_LAT                                                                                          AS PICKUP_LAT,
   P_LON                                                                                          AS PICKUP_LON,
@@ -333,10 +330,8 @@ SELECT
                     3,'Beverages', 4,'Furniture', 5,'Bulk paper')                                 AS PRODUCT,
   (400 + MOD(ABS(HASH(Q_ID || P_ID)), 4000))::NUMBER                                              AS PRICE_USD,
   MOD(S, 13) = 0                                                                                  AS HAZMAT,
-  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-  END || ' ' || P_NAME || ' -> ' || Q_NAME                                                        AS LISTING_TEXT,
+  DECODE(MOD(S, 4), 0,'EXCHANGE_A', 1,'EXCHANGE_B', 2,'EXCHANGE_C', 3,'EXCHANGE_D')
+    || ' ' || P_NAME || ' -> ' || Q_NAME                                                          AS LISTING_TEXT,
   CURRENT_TIMESTAMP()                                                                             AS POSTED_AT,
   JOB_ID
 FROM pairs;
