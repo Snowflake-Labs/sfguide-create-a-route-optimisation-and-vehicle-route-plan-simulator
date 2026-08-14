@@ -77,6 +77,39 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     ),
   });
 
+  // Backload Proposals: the advanced multi-strategy cockpit built on the same
+  // neutral FLEET_APP.BACKLOAD_MATCHING views. Runs Quick scan / Per-load VRP /
+  // Fleet 1:1 / Profit-max, fuses them via client-side ensemble scoring into a
+  // graded proposal per vehicle, shows per-constraint pass/fail chips from
+  // VW_CANDIDATES_SCORED, and a Cortex rationale. Solves via /api/backload/solve.
+  viewRegistry.register({
+    id: 'backload_proposals',
+    label: 'Backload Proposals',
+    description: 'Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.',
+    category: 'Optimization',
+    agentKnowledge: {
+      keyMetrics: [
+        'vehicles_matched, internal_matched, total_empty_km, avg_composite (0-100 ensemble score)',
+        'per-vehicle graded proposal (trailer -> load), its strategy family, and how many of the 4 strategies agree',
+        'eligible_pairs (trailer/load pairs passing distance/pickup-time/horizon/capacity/hazmat), and accepted/rejected counts (session-only)',
+        'the top ranked proposals are published as __memo_backload (trailer->load, grade, strategy, empty km, internal/external)',
+      ],
+      exampleQuestions: [
+        'which vehicles have the best backload proposals?',
+        'how many empty km does the plan reclaim?',
+        'how many internal loads were filled versus external offers?',
+        'why is a load ineligible for a vehicle?',
+        'what is on the map right now?',
+      ],
+      gotchas: 'Proposals are computed in this view (client-side) after Run: Quick scan is great-circle nearest-load (no solve); Per-load VRP / Fleet 1:1 / Profit-max each call the routing engine once via /api/backload/solve, and ensemble mode fuses all four. Numbers are null until Run and change with the strategy, max vehicles/loads, and (in ensemble mode) the ranking weights. Accept/Reject/Flag is session-only and not persisted. There is no semantic view for this cockpit, so answer from the injected __memo_backload / summary context and never invent trailer ids, loads, grades, or km. Requires the active region routing/VROOM service to be running for the VRP strategies.',
+    },
+    component: lazy(() =>
+      import('@/components/views/areas/backload-proposals').then((mod) => ({
+        default: mod.BackloadProposalsView,
+      })),
+    ),
+  });
+
   // Ops console: operator-only platform control (service lifecycle, region, health).
   // Reaches the OPS synapse verbs via /api/ops; data-layer access is gated by the
   // app role (FLEET_APP_OPS) in production (Phase 3E).
