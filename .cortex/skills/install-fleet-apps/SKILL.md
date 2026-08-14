@@ -126,6 +126,8 @@ Cost controls that ship enabled by default: dynamic tables use `DOWNSTREAM`/hour
 
 For a HARD ceiling + spend alerting, apply the optional `references/cost-guardrails.sql`: a `RESOURCE MONITOR` on the `ROUTING_ANALYTICS` warehouse plus a `SNOWFLAKE.CORE.BUDGET` covering the compute pools + warehouse. This is opt-in and NOT run by the installer because it needs ACCOUNTADMIN (or a role granted `CREATE RESOURCE MONITOR ON ACCOUNT` and `CREATE SNOWFLAKE.CORE.BUDGET`) plus a deployment-specific credit budget. Edit the two placeholders (`MONTHLY_CREDIT_QUOTA`, `BUDGET_NOTIFY_EMAIL`) and run it as such a role.
 
+The admin app's Observability page also shows a "Daily consumption (last 3 weeks)" chart (accelerator credits per day: `ROUTING_ANALYTICS` + the routing/app SPCS pools) read from `SNOWFLAKE.ACCOUNT_USAGE`. The admin app's service-owner role needs the narrow `SNOWFLAKE.USAGE_VIEWER` database role for this - the same `references/cost-guardrails.sql` includes that grant (step 3). Until granted, the widget renders a "grant required" notice with the exact statement instead of the chart.
+
 ## Cleanup
 
 ```sql

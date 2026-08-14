@@ -74,6 +74,21 @@ CALL FLEET_INTELLIGENCE.COST_GOVERNANCE.FLEET_BUDGET!ADD_RESOURCE(SYSTEM$REFEREN
 CALL FLEET_INTELLIGENCE.COST_GOVERNANCE.FLEET_BUDGET!ADD_RESOURCE(SYSTEM$REFERENCE('WAREHOUSE', 'ROUTING_ANALYTICS', 'SESSION', 'APPLYBUDGET'));
 
 -- ---------------------------------------------------------------------------
+-- 3. Consumption widget access grant (admin app "Daily consumption" chart)
+-- ---------------------------------------------------------------------------
+-- The admin app's Observability page renders a daily accelerator-credit chart
+-- from SNOWFLAKE.ACCOUNT_USAGE (WAREHOUSE_METERING_HISTORY +
+-- SNOWPARK_CONTAINER_SERVICES_HISTORY). The admin app executes SQL as its
+-- SPCS service-owner role, which cannot read ACCOUNT_USAGE by default. Grant the
+-- narrow USAGE_VIEWER database role (metering/usage views only - not full
+-- IMPORTED PRIVILEGES). Without this the widget shows a "grant required" notice
+-- instead of erroring. Identify the service-owner role via:
+--   SHOW SERVICES LIKE 'FLEET_ADMIN_APP' IN ACCOUNT;   -- "owner" column
+-- then replace FLEET_APP_ADMIN below with it (it is the role that ran the
+-- install / owns the app). Plain literal - edit before running.
+GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE FLEET_APP_ADMIN;   -- <== set to the FLEET_ADMIN_APP service-owner role
+
+-- ---------------------------------------------------------------------------
 -- Verify
 -- ---------------------------------------------------------------------------
 SHOW RESOURCE MONITORS LIKE 'FLEET_ROUTING_ANALYTICS_MONITOR';
@@ -87,3 +102,4 @@ SELECT SYSTEM$SHOW_BUDGETS();
 -- DROP SNOWFLAKE.CORE.BUDGET IF EXISTS FLEET_INTELLIGENCE.COST_GOVERNANCE.FLEET_BUDGET;
 -- DROP NOTIFICATION INTEGRATION IF EXISTS FLEET_BUDGET_NOTIFICATIONS;
 -- DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.COST_GOVERNANCE;
+-- REVOKE DATABASE ROLE SNOWFLAKE.USAGE_VIEWER FROM ROLE FLEET_APP_ADMIN;
