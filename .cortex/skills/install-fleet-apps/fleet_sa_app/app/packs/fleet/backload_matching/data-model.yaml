@@ -1,0 +1,213 @@
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: backload_matching (SELF-BUILDING)
+# =============================================================================
+# Neutral, industry-agnostic backload-matching contract. Rebuilds the three
+# consumer facts the Backload Matching page (TSX) + SV_BACKLOAD_MATCHING bind to,
+# entirely from the shared synthetic substrate (SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT):
+#   TRAILERS          <- V_DIM_FLEET_CURRENT + last drop-off from V_FACT_TRIPS_CURRENT
+#   INTERNAL_VOLUMES  <- 120 most-recent V_FACT_TRIPS_CURRENT rows (waiting internal loads)
+#   EXTERNAL_OFFERS   <- V_FACT_OFFERS_CURRENT (external freight offers), weight rescaled
+# Two context leaves bind to physical control/reference tables in
+# FLEET_INTELLIGENCE.BACKLOAD_MATCHING (created + seeded by scripts/analytic_layer.sql):
+#   CONFIG                 - single active (VEHICLE_TYPE, REGION) preset row
+#   VEHICLE_CLASS          - per-vehicle-class capacity / cost / label profile
+#   PROPOSAL_DECISIONS     - dispatcher write-back audit (real table; the page writes via /api/write)
+# Swap boundary = the shared V_*_CURRENT projection views + these control tables.
+# No third-party / vendor branding anywhere: offer SOURCE + LISTING_TEXT are neutral.
+# =============================================================================
+
+pack: backload_matching
+app_schema: FLEET_APP.BACKLOAD_MATCHING
+
+entities:
+  # ---- Context / reference leaves (mapped from physical control tables) -------
+  - name: CONFIG
+    description: "Active (VEHICLE_TYPE, REGION) preset that filters every backload view."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }
+
+  - name: VEHICLE_CLASS
+    description: "Per-vehicle-class capacity, cost, ORS profile and UI label profile."
+    access_pattern: context
+    grain: "One row per vehicle class"
+    primary_key: VEHICLE_TYPE
+    columns:
+      - { name: VEHICLE_TYPE,    type: VARCHAR }
+      - { name: ORS_PROFILE,     type: VARCHAR }
+      - { name: PAYLOAD_KG_TYP,  type: NUMBER }
+      - { name: PAYLOAD_KG_MAX,  type: NUMBER }
+      - { name: SHIPMENT_KG_MIN, type: NUMBER }
+      - { name: SHIPMENT_KG_MAX, type: NUMBER }
+      - { name: AVG_SPEED_KMH,   type: NUMBER }
+      - { name: COST_PER_KM,     type: FLOAT }
+      - { name: COST_PER_HR,     type: FLOAT }
+      - { name: HOME_RANGE_KM,   type: NUMBER }
+      - { name: LABEL_NOUN,      type: VARCHAR }
+
+  - name: PROPOSAL_DECISIONS
+    description: "Dispatcher decision audit (accept/reject a trailer<->load match)."
+    access_pattern: context
+    grain: "One row per decision"
+    primary_key: DECISION_ID
+    columns:
+      - { name: DECISION_ID, type: VARCHAR }
+      - { name: TRAILER_ID,  type: VARCHAR }
+      - { name: OFFER_ID,    type: VARCHAR }
+      - { name: SOURCE,      type: VARCHAR }
+      - { name: SCORE,       type: FLOAT }
+      - { name: EMPTY_KM,    type: FLOAT }
+      - { name: NET_BENEFIT_USD, type: FLOAT }
+      - { name: DECIDED_BY,  type: VARCHAR }
+      - { name: DECIDED_AT,  type: TIMESTAMP_NTZ }
+      - { name: RATIONALE,   type: VARCHAR }
+
+  # ---- Consumer-facing derived facts -----------------------------------------
+  - name: TRAILERS
+    description: "Idle / returning trailers with home depot, last drop-off and capacity."
+    access_pattern: derived
+    depends_on: [CONFIG, VEHICLE_CLASS]
+    materialization: view
+    columns:
+      - { name: TRAILER_ID,     type: VARCHAR }
+      - { name: OPERATING_COUNTRY, type: VARCHAR }
+      - { name: MAX_PAYLOAD_KG, type: NUMBER }
+      - { name: ETA_MIN,        type: NUMBER }
+      - { name: EV_RANGE_KM,    type: NUMBER }
+    sql: |
+      WITH last_drop AS (
+        SELECT VEHICLE_ID,
+               MAX_BY(DESTINATION_LON, TRIP_END)    AS DROPOFF_LON,
+               MAX_BY(DESTINATION_LAT, TRIP_END)    AS DROPOFF_LAT,
+               MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
+               MAX(TRIP_END)                        AS LAST_TRIP_END
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+        WHERE REGION       = (SELECT REGION       FROM {schema}.VW_CONFIG LIMIT 1)
+          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+        GROUP BY VEHICLE_ID
+      ),
+      home_anchor AS (
+        SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+        WHERE REGION = (SELECT REGION FROM {schema}.VW_CONFIG LIMIT 1)
+      ),
+      cls AS (
+        SELECT * FROM {schema}.VW_VEHICLE_CLASS
+        WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+      )
+      SELECT
+        f.VEHICLE_ID                                        AS TRAILER_ID,
+        f.REGION                                            AS OPERATING_COUNTRY,
+        COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
+        COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
+        COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+        f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
+        COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+        ld.DROPOFF_LON                                      AS DROPOFF_LON,
+        ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+        ld.LAST_TRIP_END                                    AS ETA_TS,
+        DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
+        'IN_TRANSIT'                                        AS STATUS,
+        FALSE                                               AS HAZMAT_CERT,
+        (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+        NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
+      JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT h ON h.LOCATION_ID = f.HOME_LOCATION_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
+      WHERE f.REGION       = (SELECT REGION       FROM {schema}.VW_CONFIG LIMIT 1)
+        AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+        AND EXISTS (SELECT 1 FROM cls)
+
+  - name: INTERNAL_VOLUMES
+    description: "Recent internal loads waiting for a backhaul (class-clamped weight, future pickup window)."
+    access_pattern: derived
+    depends_on: [CONFIG, VEHICLE_CLASS]
+    materialization: view
+    columns:
+      - { name: ID,        type: VARCHAR }
+      - { name: WEIGHT_KG, type: NUMBER }
+    sql: |
+      WITH cls AS (
+        SELECT * FROM {schema}.VW_VEHICLE_CLASS
+        WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+      )
+      SELECT
+        'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
+        COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+        t.ORIGIN_LON                                                                AS PICKUP_LON,
+        t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+        COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+        t.DESTINATION_LON                                                           AS DROPOFF_LON,
+        t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+        GREATEST(
+          t.TRIP_START,
+          DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+        )                                                                           AS PICKUP_FROM_TS,
+        DATEADD(hour, 4,
+          GREATEST(
+            t.TRIP_START,
+            DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+          )
+        )                                                                           AS PICKUP_TO_TS,
+        (
+          (SELECT SHIPMENT_KG_MIN FROM cls)
+          + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
+        )::NUMBER                                                                   AS WEIGHT_KG,
+        'B2B pallets'                                                               AS PRODUCT,
+        FALSE                                                                       AS HAZMAT
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+      WHERE t.REGION       = (SELECT REGION       FROM {schema}.VW_CONFIG LIMIT 1)
+        AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+        AND EXISTS (SELECT 1 FROM cls)
+      QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120
+
+  - name: EXTERNAL_OFFERS
+    description: "External freight-exchange offers for the active region, weight rescaled into the class band. Neutral SOURCE / LISTING_TEXT (no vendor branding)."
+    access_pattern: derived
+    depends_on: [CONFIG, VEHICLE_CLASS]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+    columns:
+      - { name: OFFER_ID,  type: VARCHAR }
+      - { name: SOURCE,    type: VARCHAR }
+      - { name: WEIGHT_KG, type: NUMBER }
+      - { name: PRICE_USD, type: NUMBER }
+    sql: |
+      WITH cls AS (
+        SELECT * FROM {schema}.VW_VEHICLE_CLASS
+        WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+      )
+      SELECT
+        f.OFFER_ID,
+        f.SOURCE,
+        COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
+        COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
+        COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+        f.PICKUP_LON,
+        f.PICKUP_LAT,
+        COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+        f.DROPOFF_LON,
+        f.DROPOFF_LAT,
+        f.PICKUP_FROM_TS,
+        f.PICKUP_TO_TS,
+        LEAST(
+          (SELECT SHIPMENT_KG_MAX FROM cls),
+          GREATEST(
+            (SELECT SHIPMENT_KG_MIN FROM cls),
+            ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+          )
+        )                                        AS WEIGHT_KG,
+        COALESCE(f.PRODUCT, 'General freight')   AS PRODUCT,
+        f.PRICE_USD                              AS PRICE_USD,
+        COALESCE(f.HAZMAT, FALSE)                AS HAZMAT,
+        f.SOURCE || ' load: ' || COALESCE(p.NAME, 'Pickup') || ' -> ' || COALESCE(d.NAME, 'Dropoff') AS LISTING_TEXT
+      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+      WHERE f.REGION = (SELECT REGION FROM {schema}.VW_CONFIG LIMIT 1)
+        AND EXISTS (SELECT 1 FROM cls)

@@ -148,9 +148,9 @@ CREATE FILE FORMAT IF NOT EXISTS FLEET_INTELLIGENCE.CORE.PARQUET_FF
 --    Offers (FACT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY + the
 --    MARKETPLACE projection views) are now VEHICLE-AGNOSTIC -- Data Studio
 --    generates vehicle-appropriate offers for every fleet type -- so they
---    are RETAINED. Only the still-vertical Backload Matching and DHL NTBO
---    showcase schemas are dropped.
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING;
+--    are RETAINED. Backload Matching is also vehicle-agnostic (neutral,
+--    DHL-free) and its control tables are seeded by scripts/analytic_layer.sql,
+--    so it is RETAINED. Only the still-vertical DHL NTBO showcase is dropped.
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DHL_NTBO;
 
 -- Verify agnostic core data is present (reuse signal for the orchestrator).

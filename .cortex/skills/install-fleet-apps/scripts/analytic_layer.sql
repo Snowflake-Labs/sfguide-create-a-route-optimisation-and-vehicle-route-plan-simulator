@@ -251,6 +251,75 @@ WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG)
 QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
 
 -- =============================================================================
+-- 3b. BACKLOAD_MATCHING control / reference / audit tables (safety-net)
+--     The backload_matching pack's FLEET_APP.BACKLOAD_MATCHING.VW_* views bind to
+--     these physical tables. Created + seeded idempotently here so a fresh install
+--     never needs a demo skill or app restart to populate them. Seed CONFIG ONLY
+--     when empty so a live preset switch (/api/region) is never clobbered.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+-- Per-vehicle-class capacity / cost / label profile (single source of truth for the page).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VEHICLE_CLASS_PROFILE (
+  VEHICLE_TYPE      VARCHAR PRIMARY KEY,
+  ORS_PROFILE       VARCHAR NOT NULL,
+  PAYLOAD_KG_TYP    NUMBER  NOT NULL,
+  PAYLOAD_KG_MAX    NUMBER  NOT NULL,
+  SHIPMENT_KG_MIN   NUMBER  NOT NULL,
+  SHIPMENT_KG_MAX   NUMBER  NOT NULL,
+  AVG_SPEED_KMH     NUMBER  NOT NULL,
+  COST_PER_KM       FLOAT   NOT NULL,
+  COST_PER_HR       FLOAT   NOT NULL,
+  HOME_RANGE_KM     NUMBER  NOT NULL,
+  LABEL_NOUN        VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VEHICLE_CLASS_PROFILE tgt
+USING (
+  SELECT * FROM VALUES
+    ('bicycle',    'cycling-regular',     15,    25,    1,    15,  18,  0.05,  8.0,  15, 'bicycle'),
+    ('ebike',      'cycling-electric',    25,    40,    2,    25,  22,  0.08, 10.0,  25, 'ebike'),
+    ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0,   5, 'courier'),
+    ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0,  80, 'motorcycle'),
+    ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0,  80, 'car'),
+    ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, 150, 'van'),
+    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, 200, 'trailer'),
+    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, 200, 'truck')
+  AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_PER_KM, COST_PER_HR, HOME_RANGE_KM, LABEL_NOUN)
+) src
+ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_PER_KM, COST_PER_HR, HOME_RANGE_KM, LABEL_NOUN)
+  VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.PAYLOAD_KG_TYP, src.PAYLOAD_KG_MAX, src.SHIPMENT_KG_MIN, src.SHIPMENT_KG_MAX, src.AVG_SPEED_KMH, src.COST_PER_KM, src.COST_PER_HR, src.HOME_RANGE_KM, src.LABEL_NOUN);
+
+-- Dispatcher decision write-back audit (the Backload Matching page writes here via /api/write).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS (
+  DECISION_ID     VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  TRAILER_ID      VARCHAR,
+  OFFER_ID        VARCHAR,
+  SOURCE          VARCHAR,
+  SCORE           FLOAT,
+  EMPTY_KM        FLOAT,
+  NET_BENEFIT_USD FLOAT,
+  DECIDED_BY      VARCHAR,
+  DECIDED_AT      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+  RATIONALE       VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- =============================================================================
 -- 4. CATCHMENT  (Overture Marketplace; real ADDRESS/CITY/STATE/POSTCODE, no synth)
 --    Runs LAST: depends on the two Overture listings + (optionally) REGION_CATALOG.
 --    A failure here (no Overture coverage / engine absent) does NOT block 1-3.
