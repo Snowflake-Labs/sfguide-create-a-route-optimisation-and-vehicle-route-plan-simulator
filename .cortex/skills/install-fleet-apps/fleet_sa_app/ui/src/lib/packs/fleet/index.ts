@@ -7,8 +7,9 @@ import { viewRegistry } from '@/lib/view-registry';
 //
 // This pack is vehicle/industry-AGNOSTIC: the routing/ops showcases
 // (vrp_simulator, emergency_wizard, ops_console) are tool-driven and always
-// register. Industry-vertical showcases (freight exchange, backload matching,
-// DHL) are intentionally excluded from this installer.
+// register. Backload Matching is a neutral, DHL-free showcase gated by its
+// pack probe (FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS). The remaining
+// industry-vertical showcases (freight exchange, DHL NTBO) stay excluded.
 //
 // This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
 // it generically via the configured `domainPacks` array - there is no fleet
@@ -57,6 +58,21 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({
         default: mod.EmergencyResponseView,
+      })),
+    ),
+  });
+
+  // Backload Matching: neutral (DHL-free) backhaul optimizer. Loads idle trailers
+  // + internal loads + external offers from the FLEET_APP.BACKLOAD_MATCHING pack,
+  // builds a VROOM challenge, and solves via /api/backload/solve (contract seam).
+  viewRegistry.register({
+    id: 'backload_matching',
+    label: 'Backload Matching',
+    description: 'Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.',
+    category: 'Optimization',
+    component: lazy(() =>
+      import('@/components/views/areas/backload-matching').then((mod) => ({
+        default: mod.BackloadMatchingView,
       })),
     ),
   });
