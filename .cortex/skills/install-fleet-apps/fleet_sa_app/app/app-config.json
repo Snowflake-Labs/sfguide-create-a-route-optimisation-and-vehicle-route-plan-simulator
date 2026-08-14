@@ -46,7 +46,8 @@
       "delivery_optimization": 1,
       "network_optimization": 1,
       "evac_seed": 4,
-      "evac_solve": 2
+      "evac_solve": 2,
+      "vrp_solve": 2
     },
     "mapTools": [
       "get_directions",
@@ -58,6 +59,7 @@
       "network_optimization",
       "evac_seed",
       "evac_solve",
+      "vrp_solve",
       "query_overture_places",
       "query_overture_addresses"
     ]
