@@ -20,6 +20,23 @@
   --border-default: #e5e7eb;
   --border-accent: #2563eb;
   --border-error: #fecaca;
+
+  /* Cockpit alias tokens (consumed by the Backload Proposals dispatcher
+     cockpit components). Mapped onto the existing palette so ported inline
+     styles resolve identically to the reference design. */
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --border: #e5e7eb;
+  --text: #111827;
+  --accent: #29b5e8;
+  --accent-strong: #2563eb;
+  --red: #dc2626;
+  --green: #0db048;
+  --text-warning: #d97706;
+  --sf-border: #d0d7de;
+  --sf-accent: #29b5e8;
+  --sf-surface: #ffffff;
+  --sf-text: #333333;
 }
 
 html,
@@ -95,4 +112,196 @@ body {
 .markdown-body th {
   background-color: var(--surface-secondary);
   font-weight: 600;
+}
+
+/* ============================================================================
+   Backload Proposals dispatcher cockpit utilities
+   Additive utility classes shared by the cockpit components (filter bar, KPI
+   strip, status/decision badges, buttons, selects). Kept generic + theme-token
+   based so they match the rest of the app and never leak vendor styling.
+   ========================================================================== */
+
+/* --- control / filter bar --- */
+.control-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+.control-bar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.control-bar-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.control-bar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.control-bar-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* --- form controls --- */
+.sf-select,
+.sf-input {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  line-height: 1.2;
+}
+.sf-select:focus,
+.sf-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* --- KPI strip --- */
+.kpi-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  padding: 8px 2px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.kpi-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+}
+.kpi-stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.kpi-stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.kpi-stat-sub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* --- status / decision badges --- */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+.status-badge.neutral {
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.status-badge.success {
+  background: var(--surface-success);
+  color: #157a3a;
+  border-color: #b7e4c7;
+}
+.status-badge.caution {
+  background: #fff7ed;
+  color: #b45309;
+  border-color: #fed7aa;
+}
+.status-badge.critical {
+  background: var(--surface-error);
+  color: var(--red);
+  border-color: var(--border-error);
+}
+.status-badge.info {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+/* --- buttons --- */
+.btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover:not(:disabled) {
+  background: var(--surface-secondary);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+.btn.secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+.btn.small {
+  font-size: 11px;
+  padding: 3px 9px;
+}
+
+/* --- overflow / menu items --- */
+.overflow-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.overflow-menu-item:hover:not(:disabled) {
+  background: var(--surface-secondary);
+}
+.overflow-menu-item:disabled {
+  color: var(--text-secondary);
+  cursor: default;
 }

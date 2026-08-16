@@ -1,45 +1,42 @@
 'use client';
 
-// Tier-3 showcase: Backload Proposals cockpit (neutral, industry-agnostic).
+// Backload Proposals - dispatcher cockpit (neutral, industry-agnostic).
 //
-// The advanced sibling of Backload Matching. Instead of a single solve it runs a
-// selectable set of optimizer STRATEGIES over the same neutral, synthetic-backed
-// FLEET_APP.BACKLOAD_MATCHING views, then (in ensemble mode) fuses them into one
-// graded recommendation per vehicle:
-//   - Quick scan     nearest waiting load per idle vehicle (client-side, no solve)
-//   - Per-load VRP   VROOM, one load per vehicle (max_tasks=1)
-//   - Fleet 1:1      VROOM shipments, internal-first priority
-//   - Profit-max     VROOM, multi-stop consolidation + revenue-scaled priority
-// Ensemble scoring (backload-ensemble.ts) de-duplicates to one pair per
-// (vehicle, load), scores 7 dimensions, grades A..F, and re-ranks instantly on
-// dispatcher weight sliders. Per-constraint pass/fail chips come from
-// VW_CANDIDATES_SCORED; a Cortex rationale explains the top matches. Accept /
-// Reject / Flag decisions are session-only (no write-back). Solves reuse the
-// robust /api/backload/solve raw-scalar contract seam. No vendor branding.
+// The advanced sibling of Backload Matching. Runs a selectable set of optimizer
+// strategies over the neutral, synthetic-backed FLEET_APP.BACKLOAD_MATCHING
+// views, scores every (vehicle, load) pair on seven dimensions client-side
+// (backload-ensemble.ts), and presents the result in a Freight-Exchange-style
+// cockpit: compact KPI strip + status bar + 2-row filter/strategy bar +
+// perspective toggle (Vehicles / Loads / Ensemble) + a master list beside a map
+// and a detail drawer. Weight sliders re-rank instantly. Accept/Reject/Flag are
+// session-only (no write-back). Solves reuse the /api/backload/solve seam; the
+// selected route follows roads via a lazily-fetched ORS DIRECTIONS path. No
+// vendor branding.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RouteMapInline } from '@/components/inline/route-map-inline';
 import { useAppStore } from '@/lib/store';
 import type { ViewProps } from '@/lib/types';
 import {
   computeScoredPairs, rankByWeights, groupByTrailer, loadWeights, saveWeights,
-  WEIGHT_PRESETS, DEFAULT_WEIGHTS, DIMENSIONS, DIMENSION_LABELS, FAMILY_LABELS,
-  familyOf, gradeColor,
+  DEFAULT_WEIGHTS, FAMILY_LABELS,
   type ProposalRow, type ParamRow, type TrailerLoc, type EnsembleWeights,
-  type RankedTrailer, type StrategyFamily,
+  type StrategyFamily,
 } from './backload-ensemble';
+import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
+import StatusBar from './backload-proposals/StatusBar';
+import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
+import WeightSliders from './backload-proposals/WeightSliders';
+import EnsembleList from './backload-proposals/EnsembleList';
+import VehicleList from './backload-proposals/VehicleList';
+import LoadList from './backload-proposals/LoadList';
+import DetailDrawer from './backload-proposals/DetailDrawer';
+import ProposalMap, { type MapVehicle, type MapLoad, type MapLink, type MapStop } from './backload-proposals/ProposalMap';
+import LegendOverlay, { LegendSection } from './backload-proposals/LegendOverlay';
+import { COLOR_VEHICLE, COLOR_INTERNAL, COLOR_EXTERNAL, COLOR_LEG_EMPTY, COLOR_LEG_LOADED, COLOR_LEG_NEXT } from './backload-proposals/constants';
+import { INITIAL_FILTERS, type FilterState, type Perspective, type EnsembleBasis, type Decision, type DecisionState, type ChipDef } from './backload-proposals/types';
 
 const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 const PHYS = 'FLEET_INTELLIGENCE.BACKLOAD_MATCHING';
-
-type StrategyKey = StrategyFamily | 'ensemble';
-const STRATEGY_OPTIONS: { key: StrategyKey; label: string; hint: string }[] = [
-  { key: 'ensemble', label: 'Ensemble (all strategies)', hint: 'Run every strategy and fuse into one graded recommendation per vehicle.' },
-  { key: 'baseline', label: 'Quick scan', hint: 'Nearest waiting load per idle vehicle (great-circle, no solve).' },
-  { key: 'vrp', label: 'Per-load VRP', hint: 'VROOM road solve, one load per vehicle.' },
-  { key: 'fleet', label: 'Fleet 1:1', hint: 'VROOM road solve, internal loads ranked first.' },
-  { key: 'bpmp', label: 'Profit-max backhaul', hint: 'VROOM multi-stop consolidation, revenue-scaled priority.' },
-];
 
 interface Trailer {
   TRAILER_ID: string; OPERATING_COUNTRY: string;
@@ -64,15 +61,16 @@ interface ScoredCandidate {
   DIST_CHECK: boolean; TIME_CHECK: boolean; HORIZON_CHECK: boolean;
   CAP_CHECK: boolean; HAZMAT_CHECK: boolean; ELIGIBLE: boolean;
 }
-type Decision = 'ACCEPT' | 'REJECT' | 'FLAG';
 
 const COST_SCALE = 100;
 
-// Map marker/leg colors (read per-feature by RouteMapInline).
-const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
-const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
-const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
-const COL_ROUTE_SEL: [number, number, number, number] = [29, 78, 216, 255];
+// Single-strategy options (non-ensemble perspectives).
+const STRATEGY_OPTIONS: StrategyOption[] = [
+  { key: 'baseline', label: 'Quick scan - nearest load' },
+  { key: 'vrp', label: 'Per-load VRP (road)' },
+  { key: 'fleet', label: 'Fleet 1:1 (road)' },
+  { key: 'bpmp', label: 'Profit-max backhaul (road)' },
+];
 
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const R = 6371, toRad = (x: number) => (x * Math.PI) / 180;
@@ -88,9 +86,6 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
   });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  // /api/query returns column keys lowercased; normalize to UPPERCASE so the
-  // view's uppercase field access (t.EMPTY_LON, l.LOAD_ID etc.) resolves.
-  // Without this, coords read as undefined -> NaN -> VROOM "Invalid start array".
   const rows = (body.rows as Record<string, unknown>[]) || [];
   return rows.map((r) => {
     const o: Record<string, unknown> = {};
@@ -109,13 +104,10 @@ async function apiSolve(challenge: object, region: string): Promise<Record<strin
   return (body.result as Record<string, unknown>) ?? null;
 }
 
-// Road path for a single pair via ORS DIRECTIONS through [empty, pickup, delivery].
-// Returns [lon,lat][] (GeoJSON is already lon,lat) or null on any failure so the
-// caller can fall back to straight legs. Waypoints are numeric-only -> the inlined
-// array literal is injection-safe. Works for every strategy incl. Quick scan.
-async function fetchRouteCoords(
-  profile: string, waypoints: [number, number][], region: string,
-): Promise<[number, number][] | null> {
+// Road path for a single pair via ORS DIRECTIONS through [empty, pickup,
+// delivery]. Returns [lon,lat][] or null on any failure (caller falls back to
+// straight legs). Waypoints are numeric-only -> injection-safe.
+async function fetchRouteCoords(profile: string, waypoints: [number, number][], region: string): Promise<[number, number][] | null> {
   const pts = waypoints.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
   if (pts.length < 2) return null;
   const locs = JSON.stringify(pts);
@@ -135,6 +127,7 @@ async function fetchRouteCoords(
 }
 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
 
 export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
@@ -147,24 +140,28 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [params, setParams] = useState<ParamRow[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
-  const [strategy, setStrategy] = useState<StrategyKey>('ensemble');
+  const [perspective, setPerspective] = useState<Perspective>('ensemble');
+  const [strategy, setStrategy] = useState<string>('baseline');
+  const [ensembleBasis, setEnsembleBasis] = useState<EnsembleBasis>('road');
   const [maxVehicles, setMaxVehicles] = useState(20);
   const [maxLoads, setMaxLoads] = useState(120);
   const [weights, setWeights] = useState<EnsembleWeights>(DEFAULT_WEIGHTS);
-  const [preset, setPreset] = useState<string>('Balanced');
+  const [weightsOpen, setWeightsOpen] = useState(true);
 
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  // Cache of road paths per proposal key (lazy ORS DIRECTIONS fetch on select).
   const [routeGeo, setRouteGeo] = useState<Record<string, [number, number][]>>({});
-  const [decisions, setDecisions] = useState<Record<string, Decision>>({});
-  const [rationale, setRationale] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
+  const [reasonFor, setReasonFor] = useState<string | null>(null);
+  const [rationaleByKey, setRationaleByKey] = useState<Record<string, string>>({});
   const [explaining, setExplaining] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(false);
 
   useEffect(() => { setWeights(loadWeights()); }, []);
 
@@ -196,14 +193,16 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   useEffect(() => { load(); }, [load]);
 
-  // Slack (hours) lookup per (trailer, load) from the scored candidates - drives
-  // the feasibility dimension in the ensemble scorer.
-  const slackByPair = useMemo(() => {
-    const m = new Map<string, number>();
-    // scored view is filtered to ELIGIBLE here; slack is not selected, so we
-    // approximate feasibility=true for eligible pairs and leave slack null.
+  const trailerById = useMemo(() => {
+    const m = new Map<string, Trailer>();
+    for (const t of trailers) m.set(t.TRAILER_ID, t);
     return m;
-  }, [scored]);
+  }, [trailers]);
+  const loadByLid = useMemo(() => {
+    const m = new Map<string, Load>();
+    for (const l of loads) m.set(l.LOAD_ID, l);
+    return m;
+  }, [loads]);
 
   const eligibleSet = useMemo(() => {
     const s = new Set<string>();
@@ -211,8 +210,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return s;
   }, [scored]);
 
-  // Build the VROOM challenge for a strategy. Returns the challenge plus the
-  // id->trailer / id->load lookups so the response can be parsed back to pairs.
+  // Build the VROOM challenge for a strategy family.
   const buildChallenge = useCallback((fam: StrategyFamily) => {
     if (!cls) return null;
     const profile = cls.ORS_PROFILE;
@@ -220,11 +218,11 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     const effPerKm = cls.COST_EUR_PER_KM || 0.85;
     const maxStops = fam === 'bpmp' ? 4 : fam === 'vrp' ? 1 : 2;
 
-    const trailerById = new Map<number, Trailer>();
+    const idToTrailer = new Map<number, Trailer>();
     const vehicles = trailers.slice(0, maxVehicles).map((t, i) => {
       const id = i + 1;
-      trailerById.set(id, t);
-      const veh: Record<string, unknown> = {
+      idToTrailer.set(id, t);
+      return {
         id, profile,
         start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
         end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
@@ -232,18 +230,16 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
         costs: { fixed: 120 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) },
-      };
-      return veh;
+      } as Record<string, unknown>;
     });
 
-    const loadById = new Map<number, Load>();
+    const idToLoad = new Map<number, Load>();
     let nextId = 1000;
     const shipments: Record<string, unknown>[] = [];
     for (const l of loads.slice(0, maxLoads)) {
       const id = nextId++;
-      loadById.set(id, l);
+      idToLoad.set(id, l);
       const kg = Math.min(num(l.WEIGHT_KG), classCapacityKg);
-      // Priority: internal-first for fleet; revenue-scaled for profit-max; flat otherwise.
       let priority = l.IS_INTERNAL ? 90 : 10;
       if (fam === 'bpmp') {
         const rev = l.PRICE_USD != null ? num(l.PRICE_USD) : num(l.APPROX_DISTANCE_KM) * 1.1;
@@ -257,34 +253,25 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
         priority,
       });
     }
-    const challenge = { vehicles, shipments, options: { g: true } };
-    return { challenge, trailerById, loadById };
+    return { challenge: { vehicles, shipments, options: { g: true } }, idToTrailer, idToLoad };
   }, [cls, trailers, loads, maxVehicles, maxLoads]);
 
-  // Parse a VROOM response into ProposalRows for a family. STOP_SEQ tracks the
-  // multi-stop position (profit-max). Distances are great-circle (consistent
-  // with the Backload Matching view) so cards never depend on step km echoes.
   const parseSolve = useCallback((
     resp: Record<string, unknown> | null, fam: StrategyFamily,
-    trailerById: Map<number, Trailer>, loadById: Map<number, Load>,
+    idToTrailer: Map<number, Trailer>, idToLoad: Map<number, Load>,
   ): ProposalRow[] => {
     const basis = fam === 'vrp' ? 'vrp_road' : fam === 'fleet' ? 'fleet_vrp' : fam === 'bpmp' ? 'bpmp' : 'great_circle';
     const routes = Array.isArray(resp?.routes) ? (resp!.routes as Record<string, unknown>[]) : [];
     const out: ProposalRow[] = [];
     for (const route of routes) {
-      const t = trailerById.get(Number(route.vehicle));
+      const t = idToTrailer.get(Number(route.vehicle));
       if (!t) continue;
-      // Actual road path for this vehicle's whole tour ([lon,lat][], decoded by
-      // the routing gateway). Shared by every proposal derived from this route;
-      // null-guarded so a geometry-less response falls back to straight legs.
-      const geom = Array.isArray(route.geometry) && (route.geometry as unknown[]).length > 1
-        ? (route.geometry as [number, number][])
-        : null;
+      const geom = Array.isArray(route.geometry) && (route.geometry as unknown[]).length > 1 ? (route.geometry as [number, number][]) : null;
       const steps = Array.isArray(route.steps) ? (route.steps as Record<string, unknown>[]) : [];
       const pickups = steps.filter((s) => s.type === 'pickup');
       let seq = 0;
       for (const s of pickups) {
-        const l = loadById.get(Number(s.id));
+        const l = idToLoad.get(Number(s.id));
         if (!l) continue;
         seq += 1;
         const emptyKm = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
@@ -309,7 +296,6 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return out;
   }, []);
 
-  // Quick scan: nearest eligible load per vehicle, purely client-side.
   const baselineProposals = useCallback((): ProposalRow[] => {
     const out: ProposalRow[] = [];
     for (const t of trailers.slice(0, maxVehicles)) {
@@ -338,58 +324,78 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return out;
   }, [trailers, loads, maxVehicles, maxLoads, eligibleSet]);
 
-  const run = useCallback(async () => {
+  const runFamilies = useCallback(async (families: StrategyFamily[]) => {
     if (!cfg || !cls) return;
-    setBusy(true); setSolveError(null); setRationale(null); setNotice(null);
-    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({});
+    setBusy('Generating proposals\u2026'); setSolveError(null); setInfo(null);
+    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({});
     try {
-      const families: StrategyFamily[] = strategy === 'ensemble'
-        ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
       const all: ProposalRow[] = [];
       for (const fam of families) {
         if (fam === 'baseline') { all.push(...baselineProposals()); continue; }
         const built = buildChallenge(fam);
         if (!built || !built.challenge.vehicles.length || !built.challenge.shipments.length) continue;
-        setNotice(`Solving ${FAMILY_LABELS[fam]}...`);
+        setBusy(`Solving ${FAMILY_LABELS[fam]}\u2026`);
         const resp = await apiSolve(built.challenge, cfg.region);
-        all.push(...parseSolve(resp, fam, built.trailerById, built.loadById));
+        all.push(...parseSolve(resp, fam, built.idToTrailer, built.idToLoad));
       }
-      if (!all.length) setSolveError('No proposals produced. Ensure the routing service is running for this region and that trailers/loads exist for the active preset.');
+      if (!all.length) setSolveError('No proposals produced. Ensure the routing service is running for this region and that vehicles/loads exist for the active preset.');
+      else setInfo(families.length > 1 ? `Ensemble complete - ${families.length} strategies graded. Tune the scoring weights to re-rank instantly.` : 'Match complete.');
       setProposals(all);
       setRanAt(Date.now());
     } catch (e) {
       setSolveError(e instanceof Error ? e.message : 'Solve failed');
-    } finally { setBusy(false); setNotice(null); }
-  }, [cfg, cls, strategy, baselineProposals, buildChallenge, parseSolve]);
+    } finally { setBusy(null); }
+  }, [cfg, cls, baselineProposals, buildChallenge, parseSolve]);
+
+  const onRun = useCallback(() => runFamilies([strategy as StrategyFamily]), [runFamilies, strategy]);
+  const onRunEnsemble = useCallback(() => runFamilies(ensembleBasis === 'road' ? ['baseline', 'vrp', 'fleet', 'bpmp'] : ['baseline']), [runFamilies, ensembleBasis]);
 
   // Ensemble scoring pipeline (client-side, re-ranks on weight change).
-  const trailerLocs = useMemo<TrailerLoc[]>(
-    () => trailers.map((t) => ({ TRAILER_ID: t.TRAILER_ID, EMPTY_FROM_TS: t.EMPTY_FROM_TS })), [trailers]);
-  const scoredPairs = useMemo(
-    () => computeScoredPairs(proposals, params, trailerLocs), [proposals, params, trailerLocs]);
-  const ranked = useMemo(() => groupByTrailer(rankByWeights(scoredPairs, weights)), [scoredPairs, weights]);
+  const trailerLocs = useMemo<TrailerLoc[]>(() => trailers.map((t) => ({ TRAILER_ID: t.TRAILER_ID, EMPTY_FROM_TS: t.EMPTY_FROM_TS })), [trailers]);
+  const scoredPairs = useMemo(() => computeScoredPairs(proposals, params, trailerLocs), [proposals, params, trailerLocs]);
+  const rankedAll = useMemo(() => rankByWeights(scoredPairs, weights), [scoredPairs, weights]);
+  const consolidationActive = useMemo(() => scoredPairs.some((p) => p.scores.consolidation != null), [scoredPairs]);
 
-  // Auto-select the top-ranked proposal so exactly one route is shown after a run
-  // (and keep the selection valid when weights re-rank the list).
+  // Country options from operating countries.
+  const countries = useMemo(() => Array.from(new Set(trailers.map((t) => t.OPERATING_COUNTRY).filter(Boolean))).sort(), [trailers]);
+  const maxEmptyKmDefault = useMemo(() => {
+    const v = Number(params.find((p) => p.PARAM_KEY === 'MAX_EMPTY_KM')?.PARAM_VALUE);
+    return Number.isFinite(v) ? v : 100;
+  }, [params]);
+
+  // Apply cockpit filters to the ranked pairs.
+  const ranked = useMemo(() => rankedAll.filter((p) => {
+    if (filters.country && p.pickupCountry !== filters.country) return false;
+    if (filters.source === 'internal' && !p.isInternal) return false;
+    if (filters.source === 'external' && p.isInternal) return false;
+    if (filters.feasibleOnly && p.feasible === false) return false;
+    if (typeof filters.maxEmptyKm === 'number' && p.emptyKm != null && Number(p.emptyKm) > filters.maxEmptyKm) return false;
+    if (filters.hideSameOriginDest && p.emptyCity && p.pickupCity && p.emptyCity === p.pickupCity) return false;
+    if (filters.decision !== 'ANY') {
+      const d = decisions[p.key];
+      if (filters.decision === 'UNDECIDED') { if (d) return false; }
+      else if (!d || d.action !== filters.decision) return false;
+    }
+    return true;
+  }), [rankedAll, filters, decisions]);
+
+  const grouped = useMemo(() => groupByTrailer(ranked), [ranked]);
+  const uniqueLoads = useMemo(() => new Set(ranked.map((p) => p.loadId)).size, [ranked]);
+
+  // Auto-select the top-ranked pair so exactly one route is shown after a run.
   useEffect(() => {
     if (!ranked.length) return;
-    if (!selectedKey || !ranked.some((r) => r.best.key === selectedKey)) {
-      setSelectedKey(ranked[0].best.key);
-    }
+    if (!selectedKey || !ranked.some((r) => r.key === selectedKey)) setSelectedKey(ranked[0].key);
   }, [ranked, selectedKey]);
 
-  // Lazily fetch the selected pair's actual road path (empty -> pickup -> delivery)
-  // via ORS DIRECTIONS, so the drawn route follows roads for EVERY strategy
-  // (incl. Quick scan, which has no VROOM geometry). Cached per key; straight
-  // fallback stays until this resolves and on failure.
+  const selectedPair = useMemo(() => ranked.find((r) => r.key === selectedKey) ?? null, [ranked, selectedKey]);
+
+  // Lazily fetch the selected pair's road path.
   useEffect(() => {
-    if (!selectedKey || !cls || !cfg) return;
+    if (!selectedKey || !cls || !cfg || !selectedPair) return;
     if (routeGeo[selectedKey]) return;
-    const rt = ranked.find((r) => r.best.key === selectedKey);
-    if (!rt) return;
-    const p = rt.best;
-    const t = trailers.find((x) => x.TRAILER_ID === p.trailerId);
-    const l = loads.find((x) => x.LOAD_ID === p.loadId);
+    const t = trailerById.get(selectedPair.trailerId);
+    const l = loadByLid.get(selectedPair.loadId);
     if (!t || !l) return;
     const key = selectedKey;
     const wp: [number, number][] = [
@@ -403,76 +409,18 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setRouteGeo((prev) => (prev[key] ? prev : { ...prev, [key]: coords }));
     });
     return () => { cancelled = true; };
-  }, [selectedKey, cls, cfg, ranked, trailers, loads, routeGeo]);
+  }, [selectedKey, cls, cfg, selectedPair, trailerById, loadByLid, routeGeo]);
 
-  const applyPreset = useCallback((name: string) => {
-    setPreset(name);
-    const w = WEIGHT_PRESETS[name] ?? DEFAULT_WEIGHTS;
-    setWeights(w); saveWeights(w);
-  }, []);
-  const setWeight = useCallback((d: keyof EnsembleWeights, v: number) => {
-    setPreset('Custom');
-    setWeights((prev) => { const next = { ...prev, [d]: v }; saveWeights(next); return next; });
+  const applyWeights = useCallback((w: EnsembleWeights) => { setWeights(w); saveWeights(w); }, []);
+
+  // --- decisions (session-only) ---
+  const onDecide = useCallback((key: string, action: Decision, reason?: string) => {
+    setDecisions((p) => ({ ...p, [key]: { action, reason } }));
+    setReasonFor(null);
   }, []);
 
-  // Map: empty + loaded legs for the best pair of each vehicle.
-  // Map: ALWAYS show colored base markers (idle vehicles, internal loads,
-  // external offers) so the estate is visible on open; overlay the best-pair
-  // empty (grey) + loaded (blue) legs once proposals are ranked. RouteMapInline
-  // reads properties.color / properties.lineColor per feature.
-  // Map: ALWAYS show colored base markers (idle vehicles, internal loads,
-  // external offers) so the estate is visible on open; overlay ONLY the selected
-  // proposal's route (never all of them). The route follows actual roads via the
-  // lazily-fetched DIRECTIONS path (routeGeo), falling back to the VROOM tour
-  // geometry, then to straight legs. RouteMapInline reads properties per feature.
-  const mapResult = useMemo(() => {
-    const features: GeoJSON.Feature[] = [];
-    const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
-    for (const t of trailers) {
-      const lon = num(t.EMPTY_LON), lat = num(t.EMPTY_LAT);
-      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'vehicle', name: t.TRAILER_ID, color: COL_TRAILER }, geometry: { type: 'Point', coordinates: [lon, lat] } });
-    }
-    for (const l of loads) {
-      const lon = num(l.PICKUP_LON), lat = num(l.PICKUP_LAT);
-      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: l.IS_INTERNAL ? 'internal' : 'offer', name: l.PICKUP_CITY, category: l.SOURCE, color: l.IS_INTERNAL ? COL_INTERNAL : COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
-    }
-    if (selectedKey) {
-      const rt = ranked.find((r) => r.best.key === selectedKey);
-      const p = rt?.best;
-      const l = p ? loads.find((x) => x.LOAD_ID === p.loadId) : undefined;
-      const t = p ? trailers.find((x) => x.TRAILER_ID === p.trailerId) : undefined;
-      if (p && l && t) {
-        const coords = routeGeo[selectedKey] && routeGeo[selectedKey].length > 1
-          ? routeGeo[selectedKey]
-          : (p.pathCoords && p.pathCoords.length > 1
-            ? p.pathCoords
-            : [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]]);
-        features.push({
-          type: 'Feature',
-          properties: { leg: 'route', name: `${p.trailerId} -> ${p.loadId}`, selKey: p.key, lineColor: COL_ROUTE_SEL, lineWidth: 5 },
-          geometry: { type: 'LineString', coordinates: coords },
-        });
-      }
-    }
-    return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [ranked, loads, trailers, selectedKey, routeGeo]);
-
-  // Camera-fit override: frame the selected route only (prefer the road path).
-  const selectedCoords = useMemo<[number, number][] | undefined>(() => {
-    if (!selectedKey) return undefined;
-    if (routeGeo[selectedKey] && routeGeo[selectedKey].length > 1) return routeGeo[selectedKey];
-    const rt = ranked.find((r) => r.best.key === selectedKey);
-    if (!rt) return undefined;
-    const p = rt.best;
-    if (p.pathCoords && p.pathCoords.length > 1) return p.pathCoords;
-    const l = loads.find((x) => x.LOAD_ID === p.loadId);
-    const t = trailers.find((x) => x.TRAILER_ID === p.trailerId);
-    if (!l || !t) return undefined;
-    return [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]];
-  }, [selectedKey, ranked, loads, trailers, routeGeo]);
-
-  // Per-pair constraint chips from the scored candidates (eligible-only load).
-  const chipsFor = useCallback((trailerId: string, loadId: string) => {
+  // --- per-pair constraint chips ---
+  const chipsFor = useCallback((trailerId: string, loadId: string): ChipDef[] => {
     const c = scored.find((x) => x.TRAILER_ID === trailerId && x.LOAD_ID === loadId);
     if (!c) return [];
     return [
@@ -481,54 +429,110 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       { label: 'Hazmat', ok: c.HAZMAT_CHECK },
     ];
   }, [scored]);
+  const selectedChips = useMemo(() => selectedPair ? chipsFor(selectedPair.trailerId, selectedPair.loadId) : [], [selectedPair, chipsFor]);
 
-  const kpis = useMemo(() => {
-    const n = ranked.length;
-    const internal = ranked.filter((r) => r.best.isInternal).length;
-    const totalEmpty = ranked.reduce((s, r) => s + (r.best.emptyKm ?? 0), 0);
-    const avgGrade = n ? ranked.reduce((s, r) => s + r.composite, 0) / n : 0;
-    return { n, internal, totalEmpty, avgGrade };
-  }, [ranked]);
-
-  const explain = useCallback(async () => {
-    if (!ranked.length) return;
+  // --- Cortex explain for one pair ---
+  const explain = useCallback(async (key: string) => {
+    const p = ranked.find((r) => r.key === key);
+    if (!p) return;
     setExplaining(true);
     try {
-      const top = ranked.slice(0, 8).map((r) =>
-        `${r.trailerId} -> ${r.best.loadId} (${FAMILY_LABELS[r.best.bestSource]}, ${r.grade}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km${r.best.isInternal ? ', internal' : ''})`).join('; ');
-      const prompt = `You are a fleet dispatch assistant. In 3 short sentences, explain why these backload proposals reduce empty running and improve asset utilization, and note the internal-first preference: ${top}`.replace(/'/g, "''");
+      const desc = `${p.trailerId} -> ${p.loadId} (${FAMILY_LABELS[p.bestSource]}, grade ${p.grade}, empty ${(p.emptyKm ?? 0).toFixed(0)}km${p.isInternal ? ', internal' : ', external'})`;
+      const prompt = `You are a fleet dispatch assistant. In 2 short sentences, explain why this backload proposal reduces empty running and improves asset utilization, and note the internal-first preference: ${desc}`.replace(/'/g, "''");
       const rows = await sfRead(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt}') AS R`);
-      setRationale(String((rows[0] as { R?: string })?.R ?? '').trim());
+      const text = String((rows[0] as { R?: string })?.R ?? '').trim();
+      setRationaleByKey((prev) => ({ ...prev, [key]: text }));
     } catch (e) {
-      setRationale(e instanceof Error ? e.message : 'Rationale unavailable');
+      setRationaleByKey((prev) => ({ ...prev, [key]: e instanceof Error ? e.message : 'Rationale unavailable' }));
     } finally { setExplaining(false); }
   }, [ranked]);
 
-  // Publish a compact, scalar-only summary into panel context for the agent.
+  // --- KPIs ---
+  const kpis = useMemo(() => {
+    const n = grouped.length;
+    const internal = grouped.filter((r) => r.best.isInternal).length;
+    const totalEmpty = grouped.reduce((s, r) => s + (r.best.emptyKm ?? 0), 0);
+    const avg = n ? grouped.reduce((s, r) => s + r.composite, 0) / n : 0;
+    return { n, internal, totalEmpty, avg };
+  }, [grouped]);
+
+  const internalCount = useMemo(() => loads.filter((l) => l.IS_INTERNAL).length, [loads]);
+  const externalCount = loads.length - internalCount;
+  const labelNoun = cls?.LABEL_NOUN ?? 'vehicle';
+
+  const kpiStats = useMemo<KpiStat[]>(() => {
+    const out: KpiStat[] = [
+      { label: `Idle ${labelNoun}s`, value: trailers.length },
+      { label: 'Internal loads', value: internalCount },
+      { label: 'External offers', value: externalCount },
+      { label: 'Eligible pairs', value: eligibleSet.size },
+    ];
+    if (grouped.length) {
+      out.push({ label: `${labelNoun}s matched`, value: kpis.n, sub: `${ranked.length} graded pairs` });
+      out.push({ label: 'Internal filled', value: kpis.internal });
+      out.push({ label: 'Empty km (best)', value: kpis.totalEmpty.toFixed(0) });
+      out.push({ label: 'Avg score', value: kpis.avg.toFixed(0) });
+    }
+    return out;
+  }, [labelNoun, trailers.length, internalCount, externalCount, eligibleSet.size, grouped.length, kpis, ranked.length]);
+
+  // --- map data ---
+  const mapVehicles = useMemo<MapVehicle[]>(() => trailers
+    .filter((t) => okPt(num(t.EMPTY_LON), num(t.EMPTY_LAT)))
+    .map((t) => ({ id: t.TRAILER_ID, lon: num(t.EMPTY_LON), lat: num(t.EMPTY_LAT) })), [trailers]);
+  const mapLoads = useMemo<MapLoad[]>(() => loads
+    .filter((l) => okPt(num(l.PICKUP_LON), num(l.PICKUP_LAT)))
+    .map((l) => ({ id: l.LOAD_ID, lon: num(l.PICKUP_LON), lat: num(l.PICKUP_LAT), internal: l.IS_INTERNAL, city: l.PICKUP_CITY, source: l.SOURCE })), [loads]);
+  const mapLinks = useMemo<MapLink[]>(() => {
+    const out: MapLink[] = [];
+    for (const rt of grouped) {
+      const t = trailerById.get(rt.best.trailerId);
+      const l = loadByLid.get(rt.best.loadId);
+      if (!t || !l) continue;
+      const from: [number, number] = [num(t.EMPTY_LON), num(t.EMPTY_LAT)];
+      const to: [number, number] = [num(l.PICKUP_LON), num(l.PICKUP_LAT)];
+      if (okPt(from[0], from[1]) && okPt(to[0], to[1])) out.push({ from, to, key: rt.best.key });
+    }
+    return out;
+  }, [grouped, trailerById, loadByLid]);
+  const mapStops = useMemo<MapStop[]>(() => {
+    if (!selectedPair) return [];
+    const t = trailerById.get(selectedPair.trailerId);
+    const l = loadByLid.get(selectedPair.loadId);
+    if (!t || !l) return [];
+    const s: MapStop[] = [];
+    if (okPt(num(t.EMPTY_LON), num(t.EMPTY_LAT))) s.push({ idx: s.length + 1, kind: 'start', pos: [num(t.EMPTY_LON), num(t.EMPTY_LAT)], city: t.EMPTY_CITY });
+    if (okPt(num(l.PICKUP_LON), num(l.PICKUP_LAT))) s.push({ idx: s.length + 1, kind: 'pickup', pos: [num(l.PICKUP_LON), num(l.PICKUP_LAT)], city: l.PICKUP_CITY });
+    if (okPt(num(l.DELIVERY_LON), num(l.DELIVERY_LAT))) s.push({ idx: s.length + 1, kind: 'delivery', pos: [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)], city: l.DELIVERY_CITY });
+    return s;
+  }, [selectedPair, trailerById, loadByLid]);
+  const routePath = useMemo<[number, number][] | null>(() => {
+    if (selectedKey && routeGeo[selectedKey] && routeGeo[selectedKey].length > 1) return routeGeo[selectedKey];
+    if (selectedPair?.pathCoords && selectedPair.pathCoords.length > 1) return selectedPair.pathCoords;
+    return null;
+  }, [selectedKey, routeGeo, selectedPair]);
+
+  // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
-    const topList = ranked.slice(0, 12).map((r) =>
-      `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km${r.best.isInternal ? ', internal' : ', external'})`).join('; ');
+    const topList = grouped.slice(0, 12).map((r) => `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km${r.best.isInternal ? ', internal' : ', external'})`).join('; ');
     const acc = Object.values(decisions);
     return {
       view: 'backload_proposals', region: region ?? null,
-      strategy, vehicle_type: cfg?.vehicleType ?? null,
-      trailers_loaded: trailers.length, loads_loaded: loads.length,
+      perspective, strategy: perspective === 'ensemble' ? 'ensemble' : strategy,
+      vehicle_type: cfg?.vehicleType ?? null,
+      vehicles_loaded: trailers.length, loads_loaded: loads.length,
       eligible_pairs: eligibleSet.size || null,
       proposals_run: proposals.length || null,
       vehicles_matched: kpis.n || null,
-      internal_matched: ranked.length ? kpis.internal : null,
-      total_empty_km: ranked.length ? Math.round(kpis.totalEmpty) : null,
-      avg_composite: ranked.length ? Math.round(kpis.avgGrade) : null,
-      accepted: acc.filter((d) => d === 'ACCEPT').length || null,
-      rejected: acc.filter((d) => d === 'REJECT').length || null,
-      __memo_backload: ranked.length ? topList : null,
+      internal_matched: grouped.length ? kpis.internal : null,
+      total_empty_km: grouped.length ? Math.round(kpis.totalEmpty) : null,
+      avg_composite: grouped.length ? Math.round(kpis.avg) : null,
+      accepted: acc.filter((d) => d.action === 'ACCEPT').length || null,
+      rejected: acc.filter((d) => d.action === 'REJECT').length || null,
+      __memo_backload: grouped.length ? topList : null,
     };
-  }, [ranked, decisions, region, strategy, cfg, trailers.length, loads.length, eligibleSet.size, proposals.length, kpis]);
+  }, [grouped, decisions, region, perspective, strategy, cfg, trailers.length, loads.length, eligibleSet.size, proposals.length, kpis]);
 
-  // onStateChange is held in a ref (its identity changes every render, since the
-  // panel passes a fresh inline fn), and we only publish when the serialized
-  // summary actually changes. This avoids the store write-back -> re-render ->
-  // effect loop that otherwise throws React #185 (max update depth).
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
   const lastSentRef = useRef<string>('');
@@ -539,185 +543,172 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     onStateChangeRef.current?.(summary);
   }, [summary]);
 
-  // ---- styles ----
-  const label = { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, marginBottom: 2, display: 'block' };
-  const card: React.CSSProperties = { padding: 12, borderRadius: 8, border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)' };
-  const btn = (enabled: boolean): React.CSSProperties => ({ padding: '8px 16px', fontSize: 13, fontWeight: 600, borderRadius: 6, border: 'none', cursor: enabled ? 'pointer' : 'not-allowed', backgroundColor: 'var(--surface-accent-strong, #2563eb)', color: '#fff', opacity: enabled ? 1 : 0.6 });
-  const inputStyle: React.CSSProperties = { width: '100%', padding: '8px 10px', fontSize: 13, borderRadius: 6, border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)', color: 'var(--text-primary, #111827)' };
+  const runDisabled = !cls || trailers.length === 0;
+  const swatch = (c: [number, number, number]) => ({ width: 12, height: 12, borderRadius: 3, background: `rgb(${c[0]},${c[1]},${c[2]})`, display: 'inline-block', flexShrink: 0 });
+  const dataReady = trailers.length > 0 || loads.length > 0;
 
-  const strategyHint = STRATEGY_OPTIONS.find((s) => s.key === strategy)?.hint ?? '';
-
-  // Shared height for the 50/50 results row: scrollable proposal list (left) and
-  // map (right) are the same height; the list scrolls internally.
-  const SPLIT_H = 560;
-
-  const legend = (
-    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
-      {([['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Route', COL_ROUTE_SEL]] as [string, number[]][]).map(([lbl, c]) => (
-        <span key={lbl} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c[0]},${c[1]},${c[2]})`, display: 'inline-block' }} />
-          {lbl}
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflow: 'auto' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 20, lineHeight: '24px', fontWeight: 700 }}>Backload Proposals</h2>
+        {cfg && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.vehicleType} {'\u00B7'} {cfg.region}</span>}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button type="button" className="btn secondary" disabled={!!busy} onClick={() => { setInfo(null); setSolveError(null); load(); }}>Refresh</button>
+          <button type="button" className="btn secondary" onClick={() => setLegendOpen(true)}>Legend</button>
         </span>
-      ))}
-    </div>
-  );
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 16, height: '100%', overflow: 'auto' }}>
-      <div>
-        <h2 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 4px' }}>Backload Proposals</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-secondary, #6b7280)', margin: 0 }}>
-          Multi-strategy backhaul recommendations for idle {cls?.LABEL_NOUN ?? 'vehicles'}: run one strategy or fuse them all into a graded, internal-first proposal per vehicle
-          {cfg ? ` (${cfg.vehicleType} / ${cfg.region})` : ''}.
-        </p>
       </div>
 
-      {loadErr && <div style={{ ...card, borderColor: 'var(--border-error, #fecaca)', backgroundColor: 'var(--surface-error, #fef2f2)', color: 'var(--text-error, #dc2626)', fontSize: 13 }}>{loadErr}</div>}
-
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
-        <span><strong>{trailers.length}</strong> idle vehicles</span>
-        <span><strong>{loads.filter((l) => l.IS_INTERNAL).length}</strong> internal loads</span>
-        <span><strong>{loads.filter((l) => !l.IS_INTERNAL).length}</strong> external offers</span>
-        <span><strong>{eligibleSet.size}</strong> eligible pairs</span>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: 12, alignItems: 'end' }}>
-        <div>
-          <label style={label}>Strategy</label>
-          <select style={inputStyle} value={strategy} onChange={(e) => setStrategy(e.target.value as StrategyKey)}>
-            {STRATEGY_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={label}>Max vehicles</label>
-          <input type="number" min={1} max={Math.max(1, trailers.length)} style={inputStyle} value={maxVehicles} onChange={(e) => setMaxVehicles(Number(e.target.value))} />
-        </div>
-        <div>
-          <label style={label}>Max loads</label>
-          <input type="number" min={1} max={Math.max(1, loads.length)} style={inputStyle} value={maxLoads} onChange={(e) => setMaxLoads(Number(e.target.value))} />
-        </div>
-        <button onClick={run} disabled={busy || !cls} style={btn(!busy && !!cls)}>{busy ? 'Running…' : 'Run proposals'}</button>
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)', marginTop: -8 }}>{strategyHint}</div>
-
-      {strategy === 'ensemble' && proposals.length > 0 && (
-        <div style={{ ...card }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>Ranking weights</div>
-            <select style={{ ...inputStyle, width: 'auto' }} value={preset} onChange={(e) => applyPreset(e.target.value)}>
-              {Object.keys(WEIGHT_PRESETS).map((n) => <option key={n} value={n}>{n}</option>)}
-              <option value="Custom">Custom</option>
-            </select>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            {DIMENSIONS.map((d) => (
-              <div key={d}>
-                <label style={label}>{DIMENSION_LABELS[d]}: {Math.round((weights[d] ?? 0) * 100)}</label>
-                <input type="range" min={0} max={0.5} step={0.01} value={weights[d] ?? 0} onChange={(e) => setWeight(d, Number(e.target.value))} style={{ width: '100%' }} />
-              </div>
-            ))}
-          </div>
-        </div>
+      {loadErr && (
+        <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border-error)', background: 'var(--surface-error)', color: 'var(--text-error)', fontSize: 13 }}>{loadErr}</div>
       )}
 
-      {notice && <div style={{ ...card, backgroundColor: 'var(--surface-info, #eff6ff)', borderColor: 'var(--border-info, #bfdbfe)', color: 'var(--text-info, #1d4ed8)', fontSize: 12 }}>{notice}</div>}
-      {solveError && <div style={{ ...card, borderColor: 'var(--border-error, #fecaca)', backgroundColor: 'var(--surface-error, #fef2f2)', color: 'var(--text-error, #dc2626)', fontSize: 13 }}>{solveError}</div>}
+      {/* KPI strip */}
+      <KpiStrip stats={kpiStats} />
 
-      {ranked.length > 0 && (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-            <div style={card}><div style={label}>Vehicles matched</div><div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.n}</div></div>
-            <div style={card}><div style={label}>Internal filled</div><div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.internal}</div></div>
-            <div style={card}><div style={label}>Empty km</div><div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.totalEmpty.toFixed(0)}</div></div>
-            <div style={card}><div style={label}>Avg score</div><div style={{ fontSize: 22, fontWeight: 700 }}>{kpis.avgGrade.toFixed(0)}</div></div>
-          </div>
+      {/* Filter + strategy bar */}
+      <FilterBar
+        filters={filters}
+        setFilters={setFilters}
+        countries={countries}
+        filteredCount={ranked.length}
+        totalCount={rankedAll.length}
+        maxEmptyKmDefault={maxEmptyKmDefault}
+        perspective={perspective}
+        onPerspective={setPerspective}
+        strategies={STRATEGY_OPTIONS}
+        strategy={strategy}
+        onStrategyChange={setStrategy}
+        onRun={onRun}
+        onRunEnsemble={onRunEnsemble}
+        busy={!!busy}
+        runDisabled={runDisabled}
+        ensembleBasis={ensembleBasis}
+        onEnsembleBasisChange={setEnsembleBasis}
+        ensembleCount={ranked.length}
+        uniqueLoads={uniqueLoads}
+      />
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={explain} disabled={explaining} style={btn(!explaining)}>{explaining ? 'Explaining…' : 'Explain (Cortex)'}</button>
-          </div>
-          {rationale && <div style={{ ...card, fontSize: 13, lineHeight: 1.5 }}>{rationale}</div>}
-        </>
-      )}
-
-      {/* 50/50 results row: scrollable proposal list (left) + map (right), equal height. */}
-      {(trailers.length > 0 || loads.length > 0) && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, height: SPLIT_H }}>
-          <div style={{ minWidth: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
-            {ranked.length > 0 ? (
-              ranked.map((rt) => <TrailerCard key={rt.trailerId} rt={rt} expanded={expanded === rt.trailerId}
-                selected={selectedKey === rt.best.key}
-                onToggle={() => { setExpanded(expanded === rt.trailerId ? null : rt.trailerId); setSelectedKey(selectedKey === rt.best.key ? null : rt.best.key); }}
-                chipsFor={chipsFor} decision={decisions[rt.best.key]} setDecision={(d) => setDecisions((p) => ({ ...p, [rt.best.key]: d }))} />)
-            ) : (
-              <div style={{ ...card, fontSize: 13, color: 'var(--text-secondary, #6b7280)' }}>
-                {ranAt > 0 && !solveError
-                  ? 'No proposals for the active preset. Try raising Max vehicles / loads or check the region routing service.'
-                  : 'Run proposals to generate ranked recommendations.'}
-              </div>
-            )}
-          </div>
-          <div style={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {legend}
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <RouteMapInline result={mapResult} height="100%" fitCoords={selectedCoords} focusKey={selectedKey ? `sel:${selectedKey}` : ''} />
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TrailerCard({ rt, expanded, selected, onToggle, chipsFor, decision, setDecision }: {
-  rt: RankedTrailer; expanded: boolean; selected: boolean; onToggle: () => void;
-  chipsFor: (t: string, l: string) => { label: string; ok: boolean }[];
-  decision: Decision | undefined; setDecision: (d: Decision) => void;
-}) {
-  const card: React.CSSProperties = { padding: 12, borderRadius: 8, border: `1px solid ${selected ? 'var(--surface-accent-strong, #2563eb)' : 'var(--border-default, #e5e7eb)'}`, backgroundColor: selected ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-primary, #fff)' };
-  const chip = (ok: boolean): React.CSSProperties => ({ fontSize: 10, padding: '1px 6px', borderRadius: 4, marginRight: 4, backgroundColor: ok ? 'var(--surface-success, #dcfce7)' : 'var(--surface-error, #fee2e2)', color: ok ? 'var(--text-success, #16a34a)' : 'var(--text-error, #dc2626)' });
-  const b = rt.best;
-  const dbtn = (d: Decision, lbl: string): React.CSSProperties => ({ fontSize: 11, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border-default, #e5e7eb)', background: decision === d ? 'var(--surface-accent, #dbeafe)' : 'transparent', color: 'var(--text-primary, #111827)' });
-  return (
-    <div style={card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, cursor: 'pointer' }} onClick={onToggle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ width: 30, height: 30, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: '#fff', background: gradeColor(rt.grade) }}>{rt.grade}</span>
-          <div>
-            <div style={{ fontSize: 13 }}><strong>{rt.trailerId}</strong> &rarr; {b.loadId}
-              <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, fontSize: 11, backgroundColor: b.isInternal ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-secondary, #f3f4f6)' }}>{b.isInternal ? 'INTERNAL' : (b.pickupCountry ? 'EXTERNAL' : 'EXTERNAL')}</span>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>{b.emptyCity} &rarr; {b.pickupCity} &rarr; {b.deliveryCity} · {FAMILY_LABELS[b.bestSource]} · {b.agreement}/{4} strategies agree</div>
-          </div>
-        </div>
-        <div style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12 }}>
-          <div>empty {(b.emptyKm ?? 0).toFixed(0)} km · loaded {(b.loadedKm ?? 0).toFixed(0)} km</div>
-          <div style={{ fontWeight: 600 }}>score {rt.composite.toFixed(0)}{rt.orderCount > 1 ? ` · ${rt.orderCount} options` : ''}</div>
-        </div>
+      {/* Vehicle / load count caps */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'end' }}>
+        <label className="control-bar-group">
+          <span className="control-bar-label">Max vehicles</span>
+          <input type="number" className="sf-input" style={{ width: 72 }} min={1} max={Math.max(1, trailers.length)} value={maxVehicles} onChange={(e) => setMaxVehicles(Number(e.target.value))} />
+        </label>
+        <label className="control-bar-group">
+          <span className="control-bar-label">Max loads</span>
+          <input type="number" className="sf-input" style={{ width: 72 }} min={1} max={Math.max(1, loads.length)} value={maxLoads} onChange={(e) => setMaxLoads(Number(e.target.value))} />
+        </label>
       </div>
-      {expanded && (
-        <div style={{ marginTop: 10, borderTop: '1px solid var(--border-default, #e5e7eb)', paddingTop: 10 }}>
-          <div style={{ marginBottom: 8 }}>
-            {chipsFor(rt.trailerId, b.loadId).map((c) => <span key={c.label} style={chip(c.ok)}>{c.label} {c.ok ? '✓' : '✗'}</span>)}
-          </div>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-            {(['ACCEPT', 'REJECT', 'FLAG'] as Decision[]).map((d) => (
-              <button key={d} style={dbtn(d, d)} onClick={() => setDecision(d)}>{d[0] + d.slice(1).toLowerCase()}</button>
-            ))}
-            {decision && <span style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)', alignSelf: 'center' }}>({decision.toLowerCase()} · session only)</span>}
-          </div>
-          {rt.orderCount > 1 && (
-            <div style={{ fontSize: 12 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Alternative loads</div>
-              {rt.orders.slice(1, 5).map((o) => (
-                <div key={o.key} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: 'var(--text-secondary, #6b7280)' }}>
-                  <span>{o.loadId} · {o.pickupCity} &rarr; {o.deliveryCity} ({FAMILY_LABELS[o.bestSource]})</span>
-                  <span>score {o.composite.toFixed(0)} · empty {(o.emptyKm ?? 0).toFixed(0)} km</span>
-                </div>
-              ))}
-            </div>
+
+      {/* Status bar */}
+      <StatusBar
+        busy={busy}
+        error={solveError}
+        info={info}
+        onClearError={() => setSolveError(null)}
+        onClearInfo={() => setInfo(null)}
+        onClearBusy={() => setBusy(null)}
+      />
+
+      {/* Weight sliders - ensemble only */}
+      {perspective === 'ensemble' && (
+        <WeightSliders weights={weights} onChange={applyWeights} open={weightsOpen} onToggle={() => setWeightsOpen((o) => !o)} consolidationActive={consolidationActive} />
+      )}
+
+      {/* Cockpit: master list (left) + map/legend/drawer (right) */}
+      {dataReady && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, height: 'min(760px, calc(100vh - 320px))', minHeight: 460 }}>
+          {perspective === 'ensemble' ? (
+            <EnsembleList
+              rows={grouped}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+              decisions={decisions}
+              reasonFor={reasonFor}
+              onOpenReason={setReasonFor}
+              onDecide={onDecide}
+              onExplain={explain}
+              chipsFor={chipsFor}
+              busy={!!busy}
+              consolidationActive={consolidationActive}
+              labelNoun={labelNoun}
+              ranAt={ranAt}
+            />
+          ) : perspective === 'loads' ? (
+            <LoadList
+              rows={ranked}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+              decisions={decisions}
+              reasonFor={reasonFor}
+              onOpenReason={setReasonFor}
+              onDecide={onDecide}
+              onExplain={explain}
+              busy={!!busy}
+              ranAt={ranAt}
+            />
+          ) : (
+            <VehicleList
+              rows={grouped}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+              expanded={expanded}
+              onToggleExpand={(id) => setExpanded((e) => (e === id ? null : id))}
+              decisions={decisions}
+              reasonFor={reasonFor}
+              onOpenReason={setReasonFor}
+              onDecide={onDecide}
+              onExplain={explain}
+              chipsFor={chipsFor}
+              busy={!!busy}
+              labelNoun={labelNoun}
+              ranAt={ranAt}
+            />
           )}
+
+          <div style={{ display: 'grid', gridTemplateRows: 'minmax(0,1fr) auto minmax(0,1fr)', gap: 8, minHeight: 0 }}>
+            <ProposalMap
+              vehicles={mapVehicles}
+              loads={mapLoads}
+              links={mapLinks}
+              stops={mapStops}
+              routePath={routePath}
+              focusKey={selectedKey ?? ''}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn small secondary" onClick={() => setLegendOpen(true)}>Legend</button>
+            </div>
+            <DetailDrawer
+              pair={selectedPair}
+              chips={selectedChips}
+              decision={selectedPair ? decisions[selectedPair.key] : undefined}
+              reasonFor={reasonFor}
+              onOpenReason={setReasonFor}
+              onDecide={onDecide}
+              onExplain={explain}
+              rationale={selectedPair ? rationaleByKey[selectedPair.key] ?? null : null}
+              explaining={explaining}
+              busy={!!busy}
+              labelNoun={labelNoun}
+            />
+          </div>
         </div>
       )}
+
+      <LegendOverlay open={legendOpen} onClose={() => setLegendOpen(false)} title="Legend">
+        <LegendSection title="Map symbols">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_VEHICLE)} />Idle {labelNoun} (empty)</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_INTERNAL)} />Internal load</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_EXTERNAL)} />External offer</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_EMPTY.join(',')})`, display: 'inline-block' }} />Empty leg - repositioning (no revenue)</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_LOADED.join(',')})`, display: 'inline-block' }} />Loaded leg - pickup to delivery (revenue)</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_NEXT.join(',')})`, display: 'inline-block' }} />Onward leg - to next start</span>
+            <span>Selected route stops: (1) start {'\u2192'} (2) pickup {'\u2192'} (3) delivery.</span>
+          </div>
+        </LegendSection>
+      </LegendOverlay>
     </div>
   );
 }
