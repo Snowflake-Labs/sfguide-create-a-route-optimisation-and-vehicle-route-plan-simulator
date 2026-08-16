@@ -72,7 +72,8 @@ const COST_SCALE = 100;
 const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
 const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
 const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
-const COL_EMPTY: [number, number, number, number] = [120, 120, 130, 220];
+const COL_ROUTE: [number, number, number, number] = [37, 99, 235, 150];
+const COL_ROUTE_SEL: [number, number, number, number] = [29, 78, 216, 255];
 
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const R = 6371, toRad = (x: number) => (x * Math.PI) / 180;
@@ -134,6 +135,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [rationale, setRationale] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
@@ -246,6 +248,12 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     for (const route of routes) {
       const t = trailerById.get(Number(route.vehicle));
       if (!t) continue;
+      // Actual road path for this vehicle's whole tour ([lon,lat][], decoded by
+      // the routing gateway). Shared by every proposal derived from this route;
+      // null-guarded so a geometry-less response falls back to straight legs.
+      const geom = Array.isArray(route.geometry) && (route.geometry as unknown[]).length > 1
+        ? (route.geometry as [number, number][])
+        : null;
       const steps = Array.isArray(route.steps) ? (route.steps as Record<string, unknown>[]) : [];
       const pickups = steps.filter((s) => s.type === 'pickup');
       let seq = 0;
@@ -268,6 +276,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
           PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
           DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
           IS_INTERNAL: l.IS_INTERNAL, SOURCE: l.SOURCE,
+          PATH_COORDS: geom,
         });
       }
     }
@@ -297,6 +306,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
         PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
         DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
         IS_INTERNAL: l.IS_INTERNAL, SOURCE: l.SOURCE,
+        PATH_COORDS: null,
       });
     }
     return out;
@@ -305,7 +315,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const run = useCallback(async () => {
     if (!cfg || !cls) return;
     setBusy(true); setSolveError(null); setRationale(null); setNotice(null);
-    setProposals([]); setDecisions({});
+    setProposals([]); setDecisions({}); setSelectedKey(null);
     try {
       const families: StrategyFamily[] = strategy === 'ensemble'
         ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
@@ -361,14 +371,39 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     }
     const loadByIdMap = new Map(loads.map((l) => [l.LOAD_ID, l]));
     const trailerByIdMap = new Map(trailers.map((t) => [t.TRAILER_ID, t]));
+    const hasSel = selectedKey != null;
     for (const rt of ranked) {
       const p = rt.best; const l = loadByIdMap.get(p.loadId); const t = trailerByIdMap.get(p.trailerId);
       if (!l || !t) continue;
-      features.push({ type: 'Feature', properties: { leg: 'empty', name: p.trailerId, lineColor: COL_EMPTY }, geometry: { type: 'LineString', coordinates: [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)]] } });
-      features.push({ type: 'Feature', properties: { leg: 'loaded', name: p.loadId, lineColor: COL_TRAILER }, geometry: { type: 'LineString', coordinates: [[num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]] } });
+      const sel = selectedKey === p.key;
+      const coords = p.pathCoords && p.pathCoords.length > 1
+        ? p.pathCoords
+        : [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]];
+      features.push({
+        type: 'Feature',
+        properties: {
+          leg: 'route', name: `${p.trailerId} -> ${p.loadId}`, selKey: p.key,
+          lineColor: sel ? COL_ROUTE_SEL : (hasSel ? [37, 99, 235, 70] : COL_ROUTE),
+          lineWidth: sel ? 6 : 3,
+        },
+        geometry: { type: 'LineString', coordinates: coords },
+      });
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [ranked, loads, trailers]);
+  }, [ranked, loads, trailers, selectedKey]);
+
+  // Camera-fit override: when a proposal is selected, frame its route only.
+  const selectedCoords = useMemo<[number, number][] | undefined>(() => {
+    if (!selectedKey) return undefined;
+    const rt = ranked.find((r) => r.best.key === selectedKey);
+    if (!rt) return undefined;
+    const p = rt.best;
+    if (p.pathCoords && p.pathCoords.length > 1) return p.pathCoords;
+    const l = loads.find((x) => x.LOAD_ID === p.loadId);
+    const t = trailers.find((x) => x.TRAILER_ID === p.trailerId);
+    if (!l || !t) return undefined;
+    return [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]];
+  }, [selectedKey, ranked, loads, trailers]);
 
   // Per-pair constraint chips from the scored candidates (eligible-only load).
   const chipsFor = useCallback((trailerId: string, loadId: string) => {
@@ -452,7 +487,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   const legend = (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
-      {([['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Empty leg', COL_EMPTY]] as [string, number[]][]).map(([lbl, c]) => (
+      {([['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Route', COL_ROUTE_SEL]] as [string, number[]][]).map(([lbl, c]) => (
         <span key={lbl} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
           <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c[0]},${c[1]},${c[2]})`, display: 'inline-block' }} />
           {lbl}
@@ -544,7 +579,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
           <div style={{ minWidth: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
             {ranked.length > 0 ? (
               ranked.map((rt) => <TrailerCard key={rt.trailerId} rt={rt} expanded={expanded === rt.trailerId}
-                onToggle={() => setExpanded(expanded === rt.trailerId ? null : rt.trailerId)}
+                selected={selectedKey === rt.best.key}
+                onToggle={() => { setExpanded(expanded === rt.trailerId ? null : rt.trailerId); setSelectedKey(selectedKey === rt.best.key ? null : rt.best.key); }}
                 chipsFor={chipsFor} decision={decisions[rt.best.key]} setDecision={(d) => setDecisions((p) => ({ ...p, [rt.best.key]: d }))} />)
             ) : (
               <div style={{ ...card, fontSize: 13, color: 'var(--text-secondary, #6b7280)' }}>
@@ -557,7 +593,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
           <div style={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {legend}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <RouteMapInline result={mapResult} height="100%" />
+              <RouteMapInline result={mapResult} height="100%" fitCoords={selectedCoords} focusKey={selectedKey ? `sel:${selectedKey}` : ''} />
             </div>
           </div>
         </div>
@@ -566,12 +602,12 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   );
 }
 
-function TrailerCard({ rt, expanded, onToggle, chipsFor, decision, setDecision }: {
-  rt: RankedTrailer; expanded: boolean; onToggle: () => void;
+function TrailerCard({ rt, expanded, selected, onToggle, chipsFor, decision, setDecision }: {
+  rt: RankedTrailer; expanded: boolean; selected: boolean; onToggle: () => void;
   chipsFor: (t: string, l: string) => { label: string; ok: boolean }[];
   decision: Decision | undefined; setDecision: (d: Decision) => void;
 }) {
-  const card: React.CSSProperties = { padding: 12, borderRadius: 8, border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)' };
+  const card: React.CSSProperties = { padding: 12, borderRadius: 8, border: `1px solid ${selected ? 'var(--surface-accent-strong, #2563eb)' : 'var(--border-default, #e5e7eb)'}`, backgroundColor: selected ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-primary, #fff)' };
   const chip = (ok: boolean): React.CSSProperties => ({ fontSize: 10, padding: '1px 6px', borderRadius: 4, marginRight: 4, backgroundColor: ok ? 'var(--surface-success, #dcfce7)' : 'var(--surface-error, #fee2e2)', color: ok ? 'var(--text-success, #16a34a)' : 'var(--text-error, #dc2626)' });
   const b = rt.best;
   const dbtn = (d: Decision, lbl: string): React.CSSProperties => ({ fontSize: 11, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border-default, #e5e7eb)', background: decision === d ? 'var(--surface-accent, #dbeafe)' : 'transparent', color: 'var(--text-primary, #111827)' });

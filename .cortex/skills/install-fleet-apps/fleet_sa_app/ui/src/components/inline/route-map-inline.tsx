@@ -55,6 +55,12 @@ export function RouteMapInline(props: Record<string, unknown>) {
   // parent (e.g. a 50/50 split panel). Backward-compatible: existing callers
   // (chat inline map, etc.) omit it and keep the 360px height.
   const height = (props.height as number | string) ?? 360;
+  // Optional camera-fit overrides. When a caller passes fitCoords (a non-empty
+  // [lon,lat][]), the map frames those coords and re-frames whenever focusKey
+  // changes to a non-empty value - used to zoom to a freshly selected route.
+  // Omitted by default callers, which keep the derived fit-to-all behavior.
+  const fitOverride = props.fitCoords as LngLat[] | undefined;
+  const focusOverride = props.focusKey as string | undefined;
   const features = useMemo(() => {
     const out: GeoJSON.Feature[] = [];
     collectFeatures(props, out);
@@ -73,17 +79,21 @@ export function RouteMapInline(props: Record<string, unknown>) {
     [features],
   );
 
-  const fitCoords = useMemo<LngLat[]>(() => coordsFromGeoJSON(fc), [fc]);
+  const derivedFitCoords = useMemo<LngLat[]>(() => coordsFromGeoJSON(fc), [fc]);
 
   // A stable token for the current result geometry. Each new computed result
   // (directions / isochrone / VRP) changes the token, which makes MapView
   // re-frame the camera on the fresh result even after the user has panned.
-  const focusKey = useMemo(() => {
-    if (fitCoords.length === 0) return '';
-    const first = fitCoords[0];
-    const last = fitCoords[fitCoords.length - 1];
-    return `${fitCoords.length}:${first[0]},${first[1]}:${last[0]},${last[1]}`;
-  }, [fitCoords]);
+  const derivedFocusKey = useMemo(() => {
+    if (derivedFitCoords.length === 0) return '';
+    const first = derivedFitCoords[0];
+    const last = derivedFitCoords[derivedFitCoords.length - 1];
+    return `${derivedFitCoords.length}:${first[0]},${first[1]}:${last[0]},${last[1]}`;
+  }, [derivedFitCoords]);
+
+  // A caller-supplied fit (e.g. the selected route) wins; otherwise fit to all.
+  const fitCoords = fitOverride && fitOverride.length > 0 ? fitOverride : derivedFitCoords;
+  const focusKey = focusOverride !== undefined ? focusOverride : derivedFocusKey;
 
   const layers = useMemo<Layer[]>(() => {
     if (features.length === 0) return [];
@@ -107,7 +117,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
         pickable: true,
         getFillColor: (f: GeoJSON.Feature) => asRGBA(f?.properties?.color, [41, 181, 232, 60]),
         getLineColor: (f: GeoJSON.Feature) => asRGBA(f?.properties?.lineColor ?? f?.properties?.color, [41, 181, 232, 220]),
-        getLineWidth: 3,
+        getLineWidth: (f: GeoJSON.Feature) => Number((f?.properties as Record<string, unknown> | null | undefined)?.lineWidth) || 3,
         lineWidthMinPixels: 2,
         pointType: 'circle',
         getPointRadius: 60,
@@ -116,6 +126,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
         updateTriggers: {
           getFillColor: [features],
           getLineColor: [features],
+          getLineWidth: [features],
         },
       }),
     ];

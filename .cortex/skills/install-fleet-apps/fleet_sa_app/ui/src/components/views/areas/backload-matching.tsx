@@ -43,6 +43,7 @@ interface Assignment {
   emptyKm: number; loadedKm: number; nDeliveries: number;
   revenueUsd: number; costUsd: number; netBenefitUsd: number; score: number;
   product: string; pickupCity: string; dropoffCity: string;
+  pathCoords: [number, number][] | null;
 }
 
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
@@ -98,6 +99,7 @@ export function BackloadMatchingView() {
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [rationale, setRationale] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoadErr(null);
@@ -133,6 +135,7 @@ export function BackloadMatchingView() {
     setUnassigned([]);
     setConfirmMsg(null);
     setRationale(null);
+    setSelectedId(null);
 
     const profile = cls.ORS_PROFILE;
     const speedKmh = cls.AVG_SPEED_KMH || 50;
@@ -244,6 +247,12 @@ export function BackloadMatchingView() {
         : loaded * USD_PER_LOADED_KM;
       const cost = (empty + loaded) * effPerKm + fixedDispatch;
       const net = revenue - cost;
+      // Actual road path for this vehicle's tour, as [lon,lat][] (the routing
+      // gateway decodes VROOM's polyline before returning). Null-guarded so a
+      // geometry-less response falls back to straight legs on the map.
+      const geom = Array.isArray(route.geometry) && (route.geometry as unknown[]).length > 1
+        ? (route.geometry as [number, number][])
+        : null;
       out.push({
         id: `${t.TRAILER_ID}__${ent.kind === 'INTERNAL' ? (row as Volume).ID : (row as Offer).OFFER_ID}`,
         trailerId: t.TRAILER_ID,
@@ -256,6 +265,7 @@ export function BackloadMatchingView() {
         revenueUsd: revenue, costUsd: cost, netBenefitUsd: net,
         score: Math.round(Math.max(0, 100 - empty)),
         product: row.PRODUCT, pickupCity: row.PICKUP_CITY, dropoffCity: row.DROPOFF_CITY,
+        pathCoords: geom,
       });
     }
     out.sort((a, b) => b.netBenefitUsd - a.netBenefitUsd);
@@ -266,13 +276,14 @@ export function BackloadMatchingView() {
 
   // Build a GeoJSON FeatureCollection for the map. ALWAYS include colored base
   // markers (idle trailers, waiting internal loads, external offers) so the map
-  // shows the estate on open; overlay empty (grey) + loaded (blue) legs after a
-  // solve. Colors are read per-feature by RouteMapInline via properties.color /
-  // properties.lineColor.
+  // shows the estate on open; overlay the actual road route per assignment after
+  // a solve (VROOM geometry, straight fallback). The selected assignment's route
+  // is thickened/brightened. Colors/width are read per-feature by RouteMapInline.
   const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
   const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
   const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
-  const COL_EMPTY: [number, number, number, number] = [120, 120, 130, 220];
+  const COL_ROUTE: [number, number, number, number] = [37, 99, 235, 150];
+  const COL_ROUTE_SEL: [number, number, number, number] = [29, 78, 216, 255];
   const mapResult = useMemo(() => {
     const features: GeoJSON.Feature[] = [];
     const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
@@ -288,16 +299,38 @@ export function BackloadMatchingView() {
       const lon = Number(o.PICKUP_LON), lat = Number(o.PICKUP_LAT);
       if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'offer', name: o.PICKUP_CITY, category: o.SOURCE, color: COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
     }
+    const hasSel = selectedId != null;
     for (const a of assignments) {
-      features.push({ type: 'Feature', properties: { leg: 'empty', name: a.trailerId, lineColor: COL_EMPTY }, geometry: { type: 'LineString', coordinates: [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat]] } });
-      features.push({ type: 'Feature', properties: { leg: 'loaded', name: a.offerId, lineColor: COL_TRAILER }, geometry: { type: 'LineString', coordinates: [[a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]] } });
+      const sel = selectedId === a.id;
+      const coords = a.pathCoords && a.pathCoords.length > 1
+        ? a.pathCoords
+        : [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]];
+      features.push({
+        type: 'Feature',
+        properties: {
+          leg: 'route', name: `${a.trailerId} -> ${a.offerId}`, selKey: a.id,
+          lineColor: sel ? COL_ROUTE_SEL : (hasSel ? [37, 99, 235, 70] : COL_ROUTE),
+          lineWidth: sel ? 6 : 3,
+        },
+        geometry: { type: 'LineString', coordinates: coords },
+      });
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [trailers, internal, external, assignments]);
+  }, [trailers, internal, external, assignments, selectedId]);
+
+  // Camera-fit override: when an assignment is selected, frame its route only.
+  const selectedCoords = useMemo<[number, number][] | undefined>(() => {
+    if (!selectedId) return undefined;
+    const a = assignments.find((x) => x.id === selectedId);
+    if (!a) return undefined;
+    return a.pathCoords && a.pathCoords.length > 1
+      ? a.pathCoords
+      : [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]];
+  }, [selectedId, assignments]);
 
   const legend = (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
-      {[['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Empty leg', COL_EMPTY]].map(([lbl, c]) => (
+      {[['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Route', COL_ROUTE_SEL]].map(([lbl, c]) => (
         <span key={lbl as string} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
           <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${(c as number[])[0]},${(c as number[])[1]},${(c as number[])[2]})`, display: 'inline-block' }} />
           {lbl as string}
@@ -425,7 +458,9 @@ export function BackloadMatchingView() {
           <div style={{ minWidth: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
             {assignments.length > 0 ? (
               assignments.map((a) => (
-                <div key={a.id} style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                <div key={a.id}
+                  onClick={() => setSelectedId(selectedId === a.id ? null : a.id)}
+                  style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, cursor: 'pointer', borderColor: selectedId === a.id ? 'var(--surface-accent-strong, #2563eb)' : 'var(--border-default, #e5e7eb)', backgroundColor: selectedId === a.id ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-primary, #fff)' }}>
                   <div>
                     <strong>{a.trailerId}</strong> &rarr; {a.offerId}
                     <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, fontSize: 11, backgroundColor: a.source === 'INTERNAL' ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-secondary, #f3f4f6)' }}>{a.source}</span>
@@ -449,7 +484,7 @@ export function BackloadMatchingView() {
           <div style={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {legend}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <RouteMapInline result={mapResult} height="100%" />
+              <RouteMapInline result={mapResult} height="100%" fitCoords={selectedCoords} focusKey={selectedId ? `sel:${selectedId}` : ''} />
             </div>
           </div>
         </div>

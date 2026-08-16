@@ -33,6 +33,10 @@ export interface ProposalRow {
   PICKUP_CITY: string | null; PICKUP_COUNTRY: string | null;
   DELIVERY_CITY: string | null; EMPTY_CITY: string | null;
   IS_INTERNAL?: boolean; SOURCE?: string | null;
+  // Road geometry ([lon,lat][]) for this proposal's route, captured from the
+  // VROOM solve response (already decoded by the routing gateway). Null for the
+  // baseline quick-scan (great-circle, no solve).
+  PATH_COORDS?: [number, number][] | null;
 }
 export interface ParamRow { PARAM_KEY: string; PARAM_VALUE: string | null; }
 export interface TrailerLoc { TRAILER_ID: string; EMPTY_FROM_TS: string | null; }
@@ -49,6 +53,7 @@ export interface ScoredPair {
   feasible: boolean | null; isInternal: boolean;
   pickupCity: string | null; pickupCountry: string | null;
   deliveryCity: string | null; emptyCity: string | null;
+  pathCoords: [number, number][] | null;
   scores: Record<EnsembleDimension, number | null>;
   grades: Record<EnsembleDimension, LetterGrade | null>;
 }
@@ -311,6 +316,7 @@ export function computeScoredPairs(
       isInternal: best.IS_INTERNAL === true,
       pickupCity: best.PICKUP_CITY, pickupCountry: best.PICKUP_COUNTRY,
       deliveryCity: best.DELIVERY_CITY, emptyCity: best.EMPTY_CITY,
+      pathCoords: best.PATH_COORDS ?? null,
       scores: { costEff: null, revenue: null, margin: null, feasibility: null, utilization: null, consolidation: null, urgency: null },
       grades: { costEff: null, revenue: null, margin: null, feasibility: null, utilization: null, consolidation: null, urgency: null },
     });
