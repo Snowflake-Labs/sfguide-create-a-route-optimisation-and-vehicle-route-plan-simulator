@@ -17,7 +17,7 @@
 // Reject / Flag decisions are session-only (no write-back). Solves reuse the
 // robust /api/backload/solve raw-scalar contract seam. No vendor branding.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RouteMapInline } from '@/components/inline/route-map-inline';
 import { useAppStore } from '@/lib/store';
 import type { ViewProps } from '@/lib/types';
@@ -407,7 +407,19 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     };
   }, [ranked, decisions, region, strategy, cfg, trailers.length, loads.length, eligibleSet.size, proposals.length, kpis]);
 
-  useEffect(() => { onStateChange?.(summary); }, [summary, onStateChange]);
+  // onStateChange is held in a ref (its identity changes every render, since the
+  // panel passes a fresh inline fn), and we only publish when the serialized
+  // summary actually changes. This avoids the store write-back -> re-render ->
+  // effect loop that otherwise throws React #185 (max update depth).
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const lastSentRef = useRef<string>('');
+  useEffect(() => {
+    const json = JSON.stringify(summary);
+    if (json === lastSentRef.current) return;
+    lastSentRef.current = json;
+    onStateChangeRef.current?.(summary);
+  }, [summary]);
 
   // ---- styles ----
   const label = { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, marginBottom: 2, display: 'block' };
