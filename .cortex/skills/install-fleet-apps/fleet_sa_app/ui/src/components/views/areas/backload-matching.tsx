@@ -73,6 +73,31 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
 
 const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
+// Road path for a single assignment via ORS DIRECTIONS through [dropoff, pickup,
+// delivery]. Returns [lon,lat][] (GeoJSON is already lon,lat) or null on failure
+// so the caller falls back to straight legs. Numeric-only waypoints -> the inlined
+// array literal is injection-safe.
+async function fetchRouteCoords(
+  profile: string, waypoints: [number, number][], region: string,
+): Promise<[number, number][] | null> {
+  const pts = waypoints.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
+  if (pts.length < 2) return null;
+  const locs = JSON.stringify(pts);
+  const prof = profile.replace(/[^a-z0-9-]/gi, '');
+  const reg = region.replace(/'/g, "''");
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', PARSE_JSON('${locs}'), '${reg}'))`;
+  try {
+    const rows = await sfRead(sql);
+    const g = (rows[0] as { G?: string } | undefined)?.G;
+    if (!g) return null;
+    const parsed = JSON.parse(g) as { coordinates?: [number, number][] };
+    const coords = parsed?.coordinates;
+    return Array.isArray(coords) && coords.length > 1 ? coords : null;
+  } catch {
+    return null;
+  }
+}
+
 export function BackloadMatchingView() {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
@@ -100,6 +125,8 @@ export function BackloadMatchingView() {
   const [rationale, setRationale] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Cache of road paths per assignment id (lazy ORS DIRECTIONS fetch on select).
+  const [routeGeo, setRouteGeo] = useState<Record<string, [number, number][]>>({});
 
   const load = useCallback(async () => {
     setLoadErr(null);
@@ -136,6 +163,7 @@ export function BackloadMatchingView() {
     setConfirmMsg(null);
     setRationale(null);
     setSelectedId(null);
+    setRouteGeo({});
 
     const profile = cls.ORS_PROFILE;
     const speedKmh = cls.AVG_SPEED_KMH || 50;
@@ -274,6 +302,34 @@ export function BackloadMatchingView() {
     setSolving(false);
   }, [cls, cfg, trailers, internal, external, maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct, internalFirstWeight]);
 
+  // Auto-select the top assignment so exactly one route is shown after a solve.
+  useEffect(() => {
+    if (!assignments.length) return;
+    if (!selectedId || !assignments.some((a) => a.id === selectedId)) {
+      setSelectedId(assignments[0].id);
+    }
+  }, [assignments, selectedId]);
+
+  // Lazily fetch the selected assignment's actual road path (dropoff -> pickup ->
+  // delivery) via ORS DIRECTIONS, so the drawn route follows roads. Cached per id;
+  // straight fallback stays until this resolves and on failure.
+  useEffect(() => {
+    if (!selectedId || !cls || !cfg) return;
+    if (routeGeo[selectedId]) return;
+    const a = assignments.find((x) => x.id === selectedId);
+    if (!a) return;
+    const id = selectedId;
+    const wp: [number, number][] = [
+      [a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat],
+    ];
+    let cancelled = false;
+    fetchRouteCoords(cls.ORS_PROFILE, wp, cfg.region).then((coords) => {
+      if (cancelled || !coords) return;
+      setRouteGeo((prev) => (prev[id] ? prev : { ...prev, [id]: coords }));
+    });
+    return () => { cancelled = true; };
+  }, [selectedId, cls, cfg, assignments, routeGeo]);
+
   // Build a GeoJSON FeatureCollection for the map. ALWAYS include colored base
   // markers (idle trailers, waiting internal loads, external offers) so the map
   // shows the estate on open; overlay the actual road route per assignment after
@@ -282,7 +338,6 @@ export function BackloadMatchingView() {
   const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
   const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
   const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
-  const COL_ROUTE: [number, number, number, number] = [37, 99, 235, 150];
   const COL_ROUTE_SEL: [number, number, number, number] = [29, 78, 216, 255];
   const mapResult = useMemo(() => {
     const features: GeoJSON.Feature[] = [];
@@ -299,34 +354,34 @@ export function BackloadMatchingView() {
       const lon = Number(o.PICKUP_LON), lat = Number(o.PICKUP_LAT);
       if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'offer', name: o.PICKUP_CITY, category: o.SOURCE, color: COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
     }
-    const hasSel = selectedId != null;
-    for (const a of assignments) {
-      const sel = selectedId === a.id;
-      const coords = a.pathCoords && a.pathCoords.length > 1
-        ? a.pathCoords
-        : [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]];
-      features.push({
-        type: 'Feature',
-        properties: {
-          leg: 'route', name: `${a.trailerId} -> ${a.offerId}`, selKey: a.id,
-          lineColor: sel ? COL_ROUTE_SEL : (hasSel ? [37, 99, 235, 70] : COL_ROUTE),
-          lineWidth: sel ? 6 : 3,
-        },
-        geometry: { type: 'LineString', coordinates: coords },
-      });
+    if (selectedId) {
+      const a = assignments.find((x) => x.id === selectedId);
+      if (a) {
+        const coords = routeGeo[selectedId] && routeGeo[selectedId].length > 1
+          ? routeGeo[selectedId]
+          : (a.pathCoords && a.pathCoords.length > 1
+            ? a.pathCoords
+            : [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]]);
+        features.push({
+          type: 'Feature',
+          properties: { leg: 'route', name: `${a.trailerId} -> ${a.offerId}`, selKey: a.id, lineColor: COL_ROUTE_SEL, lineWidth: 5 },
+          geometry: { type: 'LineString', coordinates: coords },
+        });
+      }
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [trailers, internal, external, assignments, selectedId]);
+  }, [trailers, internal, external, assignments, selectedId, routeGeo]);
 
-  // Camera-fit override: when an assignment is selected, frame its route only.
+  // Camera-fit override: frame the selected assignment's route only (prefer road path).
   const selectedCoords = useMemo<[number, number][] | undefined>(() => {
     if (!selectedId) return undefined;
+    if (routeGeo[selectedId] && routeGeo[selectedId].length > 1) return routeGeo[selectedId];
     const a = assignments.find((x) => x.id === selectedId);
     if (!a) return undefined;
     return a.pathCoords && a.pathCoords.length > 1
       ? a.pathCoords
       : [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]];
-  }, [selectedId, assignments]);
+  }, [selectedId, assignments, routeGeo]);
 
   const legend = (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>

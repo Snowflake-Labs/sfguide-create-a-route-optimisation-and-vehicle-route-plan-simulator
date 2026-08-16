@@ -72,7 +72,6 @@ const COST_SCALE = 100;
 const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
 const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
 const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
-const COL_ROUTE: [number, number, number, number] = [37, 99, 235, 150];
 const COL_ROUTE_SEL: [number, number, number, number] = [29, 78, 216, 255];
 
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
@@ -110,6 +109,31 @@ async function apiSolve(challenge: object, region: string): Promise<Record<strin
   return (body.result as Record<string, unknown>) ?? null;
 }
 
+// Road path for a single pair via ORS DIRECTIONS through [empty, pickup, delivery].
+// Returns [lon,lat][] (GeoJSON is already lon,lat) or null on any failure so the
+// caller can fall back to straight legs. Waypoints are numeric-only -> the inlined
+// array literal is injection-safe. Works for every strategy incl. Quick scan.
+async function fetchRouteCoords(
+  profile: string, waypoints: [number, number][], region: string,
+): Promise<[number, number][] | null> {
+  const pts = waypoints.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
+  if (pts.length < 2) return null;
+  const locs = JSON.stringify(pts);
+  const prof = profile.replace(/[^a-z0-9-]/gi, '');
+  const reg = region.replace(/'/g, "''");
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', PARSE_JSON('${locs}'), '${reg}'))`;
+  try {
+    const rows = await sfRead(sql);
+    const g = (rows[0] as { G?: string } | undefined)?.G;
+    if (!g) return null;
+    const parsed = JSON.parse(g) as { coordinates?: [number, number][] };
+    const coords = parsed?.coordinates;
+    return Array.isArray(coords) && coords.length > 1 ? coords : null;
+  } catch {
+    return null;
+  }
+}
+
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}) {
@@ -136,6 +160,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Cache of road paths per proposal key (lazy ORS DIRECTIONS fetch on select).
+  const [routeGeo, setRouteGeo] = useState<Record<string, [number, number][]>>({});
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [rationale, setRationale] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
@@ -315,7 +341,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const run = useCallback(async () => {
     if (!cfg || !cls) return;
     setBusy(true); setSolveError(null); setRationale(null); setNotice(null);
-    setProposals([]); setDecisions({}); setSelectedKey(null);
+    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({});
     try {
       const families: StrategyFamily[] = strategy === 'ensemble'
         ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
@@ -343,6 +369,42 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     () => computeScoredPairs(proposals, params, trailerLocs), [proposals, params, trailerLocs]);
   const ranked = useMemo(() => groupByTrailer(rankByWeights(scoredPairs, weights)), [scoredPairs, weights]);
 
+  // Auto-select the top-ranked proposal so exactly one route is shown after a run
+  // (and keep the selection valid when weights re-rank the list).
+  useEffect(() => {
+    if (!ranked.length) return;
+    if (!selectedKey || !ranked.some((r) => r.best.key === selectedKey)) {
+      setSelectedKey(ranked[0].best.key);
+    }
+  }, [ranked, selectedKey]);
+
+  // Lazily fetch the selected pair's actual road path (empty -> pickup -> delivery)
+  // via ORS DIRECTIONS, so the drawn route follows roads for EVERY strategy
+  // (incl. Quick scan, which has no VROOM geometry). Cached per key; straight
+  // fallback stays until this resolves and on failure.
+  useEffect(() => {
+    if (!selectedKey || !cls || !cfg) return;
+    if (routeGeo[selectedKey]) return;
+    const rt = ranked.find((r) => r.best.key === selectedKey);
+    if (!rt) return;
+    const p = rt.best;
+    const t = trailers.find((x) => x.TRAILER_ID === p.trailerId);
+    const l = loads.find((x) => x.LOAD_ID === p.loadId);
+    if (!t || !l) return;
+    const key = selectedKey;
+    const wp: [number, number][] = [
+      [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
+      [num(l.PICKUP_LON), num(l.PICKUP_LAT)],
+      [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)],
+    ];
+    let cancelled = false;
+    fetchRouteCoords(cls.ORS_PROFILE, wp, cfg.region).then((coords) => {
+      if (cancelled || !coords) return;
+      setRouteGeo((prev) => (prev[key] ? prev : { ...prev, [key]: coords }));
+    });
+    return () => { cancelled = true; };
+  }, [selectedKey, cls, cfg, ranked, trailers, loads, routeGeo]);
+
   const applyPreset = useCallback((name: string) => {
     setPreset(name);
     const w = WEIGHT_PRESETS[name] ?? DEFAULT_WEIGHTS;
@@ -358,6 +420,11 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   // external offers) so the estate is visible on open; overlay the best-pair
   // empty (grey) + loaded (blue) legs once proposals are ranked. RouteMapInline
   // reads properties.color / properties.lineColor per feature.
+  // Map: ALWAYS show colored base markers (idle vehicles, internal loads,
+  // external offers) so the estate is visible on open; overlay ONLY the selected
+  // proposal's route (never all of them). The route follows actual roads via the
+  // lazily-fetched DIRECTIONS path (routeGeo), falling back to the VROOM tour
+  // geometry, then to straight legs. RouteMapInline reads properties per feature.
   const mapResult = useMemo(() => {
     const features: GeoJSON.Feature[] = [];
     const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
@@ -369,32 +436,31 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       const lon = num(l.PICKUP_LON), lat = num(l.PICKUP_LAT);
       if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: l.IS_INTERNAL ? 'internal' : 'offer', name: l.PICKUP_CITY, category: l.SOURCE, color: l.IS_INTERNAL ? COL_INTERNAL : COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
     }
-    const loadByIdMap = new Map(loads.map((l) => [l.LOAD_ID, l]));
-    const trailerByIdMap = new Map(trailers.map((t) => [t.TRAILER_ID, t]));
-    const hasSel = selectedKey != null;
-    for (const rt of ranked) {
-      const p = rt.best; const l = loadByIdMap.get(p.loadId); const t = trailerByIdMap.get(p.trailerId);
-      if (!l || !t) continue;
-      const sel = selectedKey === p.key;
-      const coords = p.pathCoords && p.pathCoords.length > 1
-        ? p.pathCoords
-        : [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]];
-      features.push({
-        type: 'Feature',
-        properties: {
-          leg: 'route', name: `${p.trailerId} -> ${p.loadId}`, selKey: p.key,
-          lineColor: sel ? COL_ROUTE_SEL : (hasSel ? [37, 99, 235, 70] : COL_ROUTE),
-          lineWidth: sel ? 6 : 3,
-        },
-        geometry: { type: 'LineString', coordinates: coords },
-      });
+    if (selectedKey) {
+      const rt = ranked.find((r) => r.best.key === selectedKey);
+      const p = rt?.best;
+      const l = p ? loads.find((x) => x.LOAD_ID === p.loadId) : undefined;
+      const t = p ? trailers.find((x) => x.TRAILER_ID === p.trailerId) : undefined;
+      if (p && l && t) {
+        const coords = routeGeo[selectedKey] && routeGeo[selectedKey].length > 1
+          ? routeGeo[selectedKey]
+          : (p.pathCoords && p.pathCoords.length > 1
+            ? p.pathCoords
+            : [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]]);
+        features.push({
+          type: 'Feature',
+          properties: { leg: 'route', name: `${p.trailerId} -> ${p.loadId}`, selKey: p.key, lineColor: COL_ROUTE_SEL, lineWidth: 5 },
+          geometry: { type: 'LineString', coordinates: coords },
+        });
+      }
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [ranked, loads, trailers, selectedKey]);
+  }, [ranked, loads, trailers, selectedKey, routeGeo]);
 
-  // Camera-fit override: when a proposal is selected, frame its route only.
+  // Camera-fit override: frame the selected route only (prefer the road path).
   const selectedCoords = useMemo<[number, number][] | undefined>(() => {
     if (!selectedKey) return undefined;
+    if (routeGeo[selectedKey] && routeGeo[selectedKey].length > 1) return routeGeo[selectedKey];
     const rt = ranked.find((r) => r.best.key === selectedKey);
     if (!rt) return undefined;
     const p = rt.best;
@@ -403,7 +469,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     const t = trailers.find((x) => x.TRAILER_ID === p.trailerId);
     if (!l || !t) return undefined;
     return [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]];
-  }, [selectedKey, ranked, loads, trailers]);
+  }, [selectedKey, ranked, loads, trailers, routeGeo]);
 
   // Per-pair constraint chips from the scored candidates (eligible-only load).
   const chipsFor = useCallback((trailerId: string, loadId: string) => {
