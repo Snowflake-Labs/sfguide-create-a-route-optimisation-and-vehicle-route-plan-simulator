@@ -4156,17 +4156,21 @@ BEGIN
     -- (resume_region_ors, RESUME_ALL_SERVICES, APPLY_ORS_LIMITS, DOWNSIZE). The
     -- deploy-time RESUME stays; the first idle cycle after deploy self-suspends.
     BEGIN
-        LET work_left INTEGER := 0;
-        SELECT (
-            (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-              WHERE STATUS IN ('PENDING','RUNNING')
-                 OR (STATUS = 'ERROR'
-                     AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable')
-                     AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE()))))
-          + (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-              WHERE NEEDS_PREWARM = TRUE)
-        ) INTO :work_left;
-        IF (:work_left = 0) THEN
+        LET jobs_left INTEGER := 0;
+        LET prewarm_left INTEGER := 0;
+        -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
+        -- count each source separately (idiomatic pattern used elsewhere here)
+        -- and sum, rather than a FROM-less SELECT of scalar subqueries.
+        SELECT COUNT(*) INTO :jobs_left
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING')
+             OR (STATUS = 'ERROR'
+                 AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable')
+                 AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE())));
+        SELECT COUNT(*) INTO :prewarm_left
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+          WHERE NEEDS_PREWARM = TRUE;
+        IF ((:jobs_left + :prewarm_left) = 0) THEN
             ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
