@@ -82,7 +82,15 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
   });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return (body.rows as Record<string, unknown>[]) || [];
+  // /api/query returns column keys lowercased; normalize to UPPERCASE so the
+  // view's uppercase field access (t.EMPTY_LON, l.LOAD_ID etc.) resolves.
+  // Without this, coords read as undefined -> NaN -> VROOM "Invalid start array".
+  const rows = (body.rows as Record<string, unknown>[]) || [];
+  return rows.map((r) => {
+    const o: Record<string, unknown> = {};
+    for (const k of Object.keys(r)) o[k.toUpperCase()] = r[k];
+    return o;
+  });
 }
 
 async function apiSolve(challenge: object, region: string): Promise<Record<string, unknown> | null> {
