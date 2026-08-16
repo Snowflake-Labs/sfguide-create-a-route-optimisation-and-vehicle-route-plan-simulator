@@ -361,6 +361,10 @@ export function BackloadMatchingView() {
     </div>
   );
 
+  // Shared height for the 50/50 results row: scrollable assignments list (left)
+  // and map (right) are the same height; the list scrolls internally.
+  const SPLIT_H = 560;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 16, height: '100%', overflow: 'auto' }}>
       <div>
@@ -415,34 +419,39 @@ export function BackloadMatchingView() {
 
       {rationale && <div style={{ ...card, fontSize: 13, lineHeight: 1.5 }}>{rationale}</div>}
 
+      {/* 50/50 results row: scrollable assignments list (left) + map (right), equal height. */}
       {(trailers.length > 0 || assignments.length > 0) && (
-        <>
-          {legend}
-          <RouteMapInline result={mapResult} />
-        </>
-      )}
-
-      {assignments.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {assignments.map((a) => (
-            <div key={a.id} style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
-              <div>
-                <strong>{a.trailerId}</strong> &rarr; {a.offerId}
-                <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, fontSize: 11, backgroundColor: a.source === 'INTERNAL' ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-secondary, #f3f4f6)' }}>{a.source}</span>
-                <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: 12 }}>{a.pickupCity} &rarr; {a.dropoffCity} · {a.product}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, height: SPLIT_H }}>
+          <div style={{ minWidth: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+            {assignments.length > 0 ? (
+              assignments.map((a) => (
+                <div key={a.id} style={{ ...card, display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                  <div>
+                    <strong>{a.trailerId}</strong> &rarr; {a.offerId}
+                    <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, fontSize: 11, backgroundColor: a.source === 'INTERNAL' ? 'var(--surface-accent, #dbeafe)' : 'var(--surface-secondary, #f3f4f6)' }}>{a.source}</span>
+                    <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: 12 }}>{a.pickupCity} &rarr; {a.dropoffCity} · {a.product}</div>
+                  </div>
+                  <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <div>empty {a.emptyKm.toFixed(0)} km · loaded {a.loadedKm.toFixed(0)} km</div>
+                    <div style={{ fontWeight: 600, color: a.netBenefitUsd >= 0 ? 'var(--text-success, #16a34a)' : 'var(--text-error, #dc2626)' }}>net ${a.netBenefitUsd.toFixed(0)}</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ ...card, fontSize: 13, color: 'var(--text-secondary, #6b7280)' }}>Match backloads to generate assignments.</div>
+            )}
+            {unassigned.length > 0 && (
+              <div style={{ ...card, fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
+                <strong>{unassigned.length}</strong> loads unassigned{unassigned[0]?.reason ? ` (e.g. ${unassigned[0].reason})` : ''}.
               </div>
-              <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                <div>empty {a.emptyKm.toFixed(0)} km · loaded {a.loadedKm.toFixed(0)} km</div>
-                <div style={{ fontWeight: 600, color: a.netBenefitUsd >= 0 ? 'var(--text-success, #16a34a)' : 'var(--text-error, #dc2626)' }}>net ${a.netBenefitUsd.toFixed(0)}</div>
-              </div>
+            )}
+          </div>
+          <div style={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {legend}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <RouteMapInline result={mapResult} height="100%" />
             </div>
-          ))}
-        </div>
-      )}
-
-      {unassigned.length > 0 && (
-        <div style={{ ...card, fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
-          <strong>{unassigned.length}</strong> loads unassigned{unassigned[0]?.reason ? ` (e.g. ${unassigned[0].reason})` : ''}.
+          </div>
         </div>
       )}
     </div>
