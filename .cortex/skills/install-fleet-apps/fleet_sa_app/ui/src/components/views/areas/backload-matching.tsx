@@ -85,7 +85,7 @@ async function fetchRouteCoords(
   const locs = JSON.stringify(pts);
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const reg = region.replace(/'/g, "''");
-  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', PARSE_JSON('${locs}'), '${reg}'))`;
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {
     const rows = await sfRead(sql);
     const g = (rows[0] as { G?: string } | undefined)?.G;
