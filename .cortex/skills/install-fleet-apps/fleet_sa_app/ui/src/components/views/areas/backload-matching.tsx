@@ -83,7 +83,7 @@ export function BackloadMatchingView() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   // Solver controls (the "full matcher" knobs).
-  const [maxVehicles, setMaxVehicles] = useState(8);
+  const [maxVehicles, setMaxVehicles] = useState(40);
   const [maxInternal, setMaxInternal] = useState(40);
   const [maxExternal, setMaxExternal] = useState(60);
   const [maxStops, setMaxStops] = useState(2);
@@ -148,16 +148,24 @@ export function BackloadMatchingView() {
       const emptyKm = hasHome
         ? haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), Number(t.HOME_LON), Number(t.HOME_LAT))
         : cls.HOME_RANGE_KM;
-      const baseDurSec = Math.round((emptyKm / speedKmh) * 3600);
       const baseDistM = Math.round(emptyKm * 1000);
+      // Guardrail (not a tight realism limit): base the per-vehicle allowance on
+      // the class round-trip range, not the tiny dropoff->home distance. Basing
+      // it on the home distance pinned max_distance at the 10km floor while
+      // loaded legs are 7-25km, so VROOM dropped almost every candidate (1 match
+      // / 198 unassigned). range x3 covers empty + loaded + return; the sliders
+      // still let a dispatcher tighten it.
+      const rangeM = Math.max(20000, (cls.HOME_RANGE_KM || 50) * 1000);
+      const maxDistanceM = Math.round(Math.max(rangeM * 3, baseDistM * (1 + deviationPct / 100)));
+      const maxTravelSec = Math.max(3600, Math.round((maxDistanceM / 1000 / speedKmh) * 3600) + Math.round(detourSlackHrs * 3600));
       const veh: Record<string, unknown> = {
         id, profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
         capacity: [Number(t.MAX_PAYLOAD_KG) || classCapacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
-        max_travel_time: Math.max(1800, baseDurSec + Math.round(detourSlackHrs * 3600)),
-        max_distance: Math.max(10000, Math.round(baseDistM * (1 + deviationPct / 100))),
+        max_travel_time: maxTravelSec,
+        max_distance: maxDistanceM,
         costs: { fixed: Math.round(fixedDispatch * COST_SCALE), per_km: Math.round(effPerKm * COST_SCALE) },
       };
       if (hasHome) veh.end = [Number(t.HOME_LON), Number(t.HOME_LAT)];
@@ -256,17 +264,47 @@ export function BackloadMatchingView() {
     setSolving(false);
   }, [cls, cfg, trailers, internal, external, maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct, internalFirstWeight]);
 
-  // Build a GeoJSON FeatureCollection (empty + loaded legs, points) for the map.
+  // Build a GeoJSON FeatureCollection for the map. ALWAYS include colored base
+  // markers (idle trailers, waiting internal loads, external offers) so the map
+  // shows the estate on open; overlay empty (grey) + loaded (blue) legs after a
+  // solve. Colors are read per-feature by RouteMapInline via properties.color /
+  // properties.lineColor.
+  const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
+  const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
+  const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
+  const COL_EMPTY: [number, number, number, number] = [120, 120, 130, 220];
   const mapResult = useMemo(() => {
     const features: GeoJSON.Feature[] = [];
+    const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
+    for (const t of trailers) {
+      const lon = Number(t.DROPOFF_LON), lat = Number(t.DROPOFF_LAT);
+      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'trailer', name: t.TRAILER_ID, color: COL_TRAILER }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+    }
+    for (const v of internal) {
+      const lon = Number(v.PICKUP_LON), lat = Number(v.PICKUP_LAT);
+      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'internal', name: v.PICKUP_CITY, color: COL_INTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+    }
+    for (const o of external) {
+      const lon = Number(o.PICKUP_LON), lat = Number(o.PICKUP_LAT);
+      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'offer', name: o.PICKUP_CITY, category: o.SOURCE, color: COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+    }
     for (const a of assignments) {
-      features.push({ type: 'Feature', properties: { leg: 'empty', trailer: a.trailerId }, geometry: { type: 'LineString', coordinates: [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat]] } });
-      features.push({ type: 'Feature', properties: { leg: 'loaded', offer: a.offerId }, geometry: { type: 'LineString', coordinates: [[a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]] } });
-      features.push({ type: 'Feature', properties: { kind: 'pickup', city: a.pickupCity }, geometry: { type: 'Point', coordinates: [a.pickupLon, a.pickupLat] } });
-      features.push({ type: 'Feature', properties: { kind: 'trailer', id: a.trailerId }, geometry: { type: 'Point', coordinates: [a.trailerLon, a.trailerLat] } });
+      features.push({ type: 'Feature', properties: { leg: 'empty', name: a.trailerId, lineColor: COL_EMPTY }, geometry: { type: 'LineString', coordinates: [[a.trailerLon, a.trailerLat], [a.pickupLon, a.pickupLat]] } });
+      features.push({ type: 'Feature', properties: { leg: 'loaded', name: a.offerId, lineColor: COL_TRAILER }, geometry: { type: 'LineString', coordinates: [[a.pickupLon, a.pickupLat], [a.dropoffLon, a.dropoffLat]] } });
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
-  }, [assignments]);
+  }, [trailers, internal, external, assignments]);
+
+  const legend = (
+    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
+      {[['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Empty leg', COL_EMPTY]].map(([lbl, c]) => (
+        <span key={lbl as string} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${(c as number[])[0]},${(c as number[])[1]},${(c as number[])[2]})`, display: 'inline-block' }} />
+          {lbl as string}
+        </span>
+      ))}
+    </div>
+  );
 
   const kpis = useMemo(() => {
     const n = assignments.length;
@@ -377,7 +415,12 @@ export function BackloadMatchingView() {
 
       {rationale && <div style={{ ...card, fontSize: 13, lineHeight: 1.5 }}>{rationale}</div>}
 
-      {assignments.length > 0 && <RouteMapInline result={mapResult} />}
+      {(trailers.length > 0 || assignments.length > 0) && (
+        <>
+          {legend}
+          <RouteMapInline result={mapResult} />
+        </>
+      )}
 
       {assignments.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

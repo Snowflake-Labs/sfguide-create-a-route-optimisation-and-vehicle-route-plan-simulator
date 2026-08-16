@@ -83,6 +83,17 @@ export function RouteMapInline(props: Record<string, unknown>) {
 
   const layers = useMemo<Layer[]>(() => {
     if (features.length === 0) return [];
+    // Per-feature color: honor properties.color (fill/point) and
+    // properties.lineColor (RGBA arrays) when a caller sets them (e.g. the
+    // backload views color trailers/internal/external/legs); fall back to the
+    // default Snowflake blue so existing callers (directions/isochrone/POI) are
+    // unchanged.
+    const asRGBA = (v: unknown, fb: [number, number, number, number]): [number, number, number, number] => {
+      if (Array.isArray(v) && v.length >= 3 && v.every((n) => typeof n === 'number')) {
+        return [v[0], v[1], v[2], (v[3] as number) ?? 255] as [number, number, number, number];
+      }
+      return fb;
+    };
     return [
       new GeoJsonLayer({
         id: 'inline-geojson',
@@ -90,14 +101,18 @@ export function RouteMapInline(props: Record<string, unknown>) {
         filled: true,
         stroked: true,
         pickable: true,
-        getFillColor: [41, 181, 232, 60],
-        getLineColor: [41, 181, 232, 220],
+        getFillColor: (f: GeoJSON.Feature) => asRGBA(f?.properties?.color, [41, 181, 232, 60]),
+        getLineColor: (f: GeoJSON.Feature) => asRGBA(f?.properties?.lineColor ?? f?.properties?.color, [41, 181, 232, 220]),
         getLineWidth: 3,
         lineWidthMinPixels: 2,
         pointType: 'circle',
         getPointRadius: 60,
         pointRadiusMinPixels: 4,
         pointRadiusMaxPixels: 10,
+        updateTriggers: {
+          getFillColor: [features],
+          getLineColor: [features],
+        },
       }),
     ];
   }, [features, fc]);

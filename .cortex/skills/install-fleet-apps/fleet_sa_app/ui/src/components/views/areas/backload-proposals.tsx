@@ -68,6 +68,12 @@ type Decision = 'ACCEPT' | 'REJECT' | 'FLAG';
 
 const COST_SCALE = 100;
 
+// Map marker/leg colors (read per-feature by RouteMapInline).
+const COL_TRAILER: [number, number, number, number] = [37, 99, 235, 200];
+const COL_INTERNAL: [number, number, number, number] = [22, 163, 74, 200];
+const COL_EXTERNAL: [number, number, number, number] = [217, 119, 6, 200];
+const COL_EMPTY: [number, number, number, number] = [120, 120, 130, 220];
+
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const R = 6371, toRad = (x: number) => (x * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
@@ -338,17 +344,28 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   }, []);
 
   // Map: empty + loaded legs for the best pair of each vehicle.
+  // Map: ALWAYS show colored base markers (idle vehicles, internal loads,
+  // external offers) so the estate is visible on open; overlay the best-pair
+  // empty (grey) + loaded (blue) legs once proposals are ranked. RouteMapInline
+  // reads properties.color / properties.lineColor per feature.
   const mapResult = useMemo(() => {
     const features: GeoJSON.Feature[] = [];
+    const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
+    for (const t of trailers) {
+      const lon = num(t.EMPTY_LON), lat = num(t.EMPTY_LAT);
+      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: 'vehicle', name: t.TRAILER_ID, color: COL_TRAILER }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+    }
+    for (const l of loads) {
+      const lon = num(l.PICKUP_LON), lat = num(l.PICKUP_LAT);
+      if (okPt(lon, lat)) features.push({ type: 'Feature', properties: { kind: l.IS_INTERNAL ? 'internal' : 'offer', name: l.PICKUP_CITY, category: l.SOURCE, color: l.IS_INTERNAL ? COL_INTERNAL : COL_EXTERNAL }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+    }
     const loadByIdMap = new Map(loads.map((l) => [l.LOAD_ID, l]));
     const trailerByIdMap = new Map(trailers.map((t) => [t.TRAILER_ID, t]));
     for (const rt of ranked) {
       const p = rt.best; const l = loadByIdMap.get(p.loadId); const t = trailerByIdMap.get(p.trailerId);
       if (!l || !t) continue;
-      features.push({ type: 'Feature', properties: { leg: 'empty', trailer: p.trailerId }, geometry: { type: 'LineString', coordinates: [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)]] } });
-      features.push({ type: 'Feature', properties: { leg: 'loaded', load: p.loadId, internal: l.IS_INTERNAL }, geometry: { type: 'LineString', coordinates: [[num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]] } });
-      features.push({ type: 'Feature', properties: { kind: 'pickup', name: l.PICKUP_CITY }, geometry: { type: 'Point', coordinates: [num(l.PICKUP_LON), num(l.PICKUP_LAT)] } });
-      features.push({ type: 'Feature', properties: { kind: 'vehicle', name: p.trailerId }, geometry: { type: 'Point', coordinates: [num(t.EMPTY_LON), num(t.EMPTY_LAT)] } });
+      features.push({ type: 'Feature', properties: { leg: 'empty', name: p.trailerId, lineColor: COL_EMPTY }, geometry: { type: 'LineString', coordinates: [[num(t.EMPTY_LON), num(t.EMPTY_LAT)], [num(l.PICKUP_LON), num(l.PICKUP_LAT)]] } });
+      features.push({ type: 'Feature', properties: { leg: 'loaded', name: p.loadId, lineColor: COL_TRAILER }, geometry: { type: 'LineString', coordinates: [[num(l.PICKUP_LON), num(l.PICKUP_LAT)], [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)]] } });
     }
     return { type: 'FeatureCollection', features } as GeoJSON.FeatureCollection;
   }, [ranked, loads, trailers]);
@@ -429,6 +446,17 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   const strategyHint = STRATEGY_OPTIONS.find((s) => s.key === strategy)?.hint ?? '';
 
+  const legend = (
+    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
+      {([['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Empty leg', COL_EMPTY]] as [string, number[]][]).map(([lbl, c]) => (
+        <span key={lbl} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c[0]},${c[1]},${c[2]})`, display: 'inline-block' }} />
+          {lbl}
+        </span>
+      ))}
+    </div>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 16, height: '100%', overflow: 'auto' }}>
       <div>
@@ -490,6 +518,13 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       {notice && <div style={{ ...card, backgroundColor: 'var(--surface-info, #eff6ff)', borderColor: 'var(--border-info, #bfdbfe)', color: 'var(--text-info, #1d4ed8)', fontSize: 12 }}>{notice}</div>}
       {solveError && <div style={{ ...card, borderColor: 'var(--border-error, #fecaca)', backgroundColor: 'var(--surface-error, #fef2f2)', color: 'var(--text-error, #dc2626)', fontSize: 13 }}>{solveError}</div>}
 
+      {(trailers.length > 0 || loads.length > 0) && (
+        <>
+          {legend}
+          <RouteMapInline result={mapResult} />
+        </>
+      )}
+
       {ranked.length > 0 && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
@@ -503,8 +538,6 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
             <button onClick={explain} disabled={explaining} style={btn(!explaining)}>{explaining ? 'Explaining…' : 'Explain (Cortex)'}</button>
           </div>
           {rationale && <div style={{ ...card, fontSize: 13, lineHeight: 1.5 }}>{rationale}</div>}
-
-          <RouteMapInline result={mapResult} />
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {ranked.map((rt) => <TrailerCard key={rt.trailerId} rt={rt} expanded={expanded === rt.trailerId}
