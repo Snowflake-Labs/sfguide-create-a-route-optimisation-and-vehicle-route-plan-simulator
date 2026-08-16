@@ -421,7 +421,9 @@ AS
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK RESUME;
 
 
-
+-- Two-arg overload: scale the default ORS + gateway to [MIN,MAX] instances and
+-- size the current-db compute pool to fit (called by the admin app /api/scale).
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
