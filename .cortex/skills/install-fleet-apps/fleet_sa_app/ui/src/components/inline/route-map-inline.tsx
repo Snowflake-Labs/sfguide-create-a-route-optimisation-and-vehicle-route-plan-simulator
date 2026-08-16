@@ -51,6 +51,10 @@ function collectFeatures(node: unknown, out: GeoJSON.Feature[], depth = 0): void
 }
 
 export function RouteMapInline(props: Record<string, unknown>) {
+  // Optional container height (default 360) so callers can make the map fill a
+  // parent (e.g. a 50/50 split panel). Backward-compatible: existing callers
+  // (chat inline map, etc.) omit it and keep the 360px height.
+  const height = (props.height as number | string) ?? 360;
   const features = useMemo(() => {
     const out: GeoJSON.Feature[] = [];
     collectFeatures(props, out);
@@ -140,7 +144,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
   }
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: 360, borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-default, #e5e7eb)' }}>
+    <div style={{ position: 'relative', width: '100%', height, borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-default, #e5e7eb)' }}>
       <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey }} getTooltip={getTooltip} />
     </div>
   );

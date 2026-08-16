@@ -446,6 +446,10 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   const strategyHint = STRATEGY_OPTIONS.find((s) => s.key === strategy)?.hint ?? '';
 
+  // Shared height for the 50/50 results row: scrollable proposal list (left) and
+  // map (right) are the same height; the list scrolls internally.
+  const SPLIT_H = 560;
+
   const legend = (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary, #6b7280)', margin: '2px 0' }}>
       {([['Idle vehicle', COL_TRAILER], ['Internal load', COL_INTERNAL], ['External offer', COL_EXTERNAL], ['Empty leg', COL_EMPTY]] as [string, number[]][]).map(([lbl, c]) => (
@@ -518,13 +522,6 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       {notice && <div style={{ ...card, backgroundColor: 'var(--surface-info, #eff6ff)', borderColor: 'var(--border-info, #bfdbfe)', color: 'var(--text-info, #1d4ed8)', fontSize: 12 }}>{notice}</div>}
       {solveError && <div style={{ ...card, borderColor: 'var(--border-error, #fecaca)', backgroundColor: 'var(--surface-error, #fef2f2)', color: 'var(--text-error, #dc2626)', fontSize: 13 }}>{solveError}</div>}
 
-      {(trailers.length > 0 || loads.length > 0) && (
-        <>
-          {legend}
-          <RouteMapInline result={mapResult} />
-        </>
-      )}
-
       {ranked.length > 0 && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
@@ -538,17 +535,32 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
             <button onClick={explain} disabled={explaining} style={btn(!explaining)}>{explaining ? 'Explaining…' : 'Explain (Cortex)'}</button>
           </div>
           {rationale && <div style={{ ...card, fontSize: 13, lineHeight: 1.5 }}>{rationale}</div>}
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {ranked.map((rt) => <TrailerCard key={rt.trailerId} rt={rt} expanded={expanded === rt.trailerId}
-              onToggle={() => setExpanded(expanded === rt.trailerId ? null : rt.trailerId)}
-              chipsFor={chipsFor} decision={decisions[rt.best.key]} setDecision={(d) => setDecisions((p) => ({ ...p, [rt.best.key]: d }))} />)}
-          </div>
         </>
       )}
 
-      {ranAt > 0 && !ranked.length && !solveError && (
-        <div style={{ ...card, fontSize: 13, color: 'var(--text-secondary, #6b7280)' }}>No proposals for the active preset. Try raising Max vehicles / loads or check the region routing service.</div>
+      {/* 50/50 results row: scrollable proposal list (left) + map (right), equal height. */}
+      {(trailers.length > 0 || loads.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, height: SPLIT_H }}>
+          <div style={{ minWidth: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+            {ranked.length > 0 ? (
+              ranked.map((rt) => <TrailerCard key={rt.trailerId} rt={rt} expanded={expanded === rt.trailerId}
+                onToggle={() => setExpanded(expanded === rt.trailerId ? null : rt.trailerId)}
+                chipsFor={chipsFor} decision={decisions[rt.best.key]} setDecision={(d) => setDecisions((p) => ({ ...p, [rt.best.key]: d }))} />)
+            ) : (
+              <div style={{ ...card, fontSize: 13, color: 'var(--text-secondary, #6b7280)' }}>
+                {ranAt > 0 && !solveError
+                  ? 'No proposals for the active preset. Try raising Max vehicles / loads or check the region routing service.'
+                  : 'Run proposals to generate ranked recommendations.'}
+              </div>
+            )}
+          </div>
+          <div style={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {legend}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <RouteMapInline result={mapResult} height="100%" />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
