@@ -351,11 +351,22 @@ BEGIN
 
     -- Never hibernate while a provision / matrix / studio job is in flight.
     BEGIN
-        SELECT
-            (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS IN ('PENDING','RUNNING'))
-          + (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE STATUS IN ('PENDING','RUNNING') AND STAGE NOT IN ('COMPLETE','ERROR'))
-          + (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE STATUS IN ('PENDING','RUNNING'))
-        INTO :active_jobs;
+        LET prov_jobs INTEGER := 0;
+        LET matrix_jobs INTEGER := 0;
+        LET gen_jobs INTEGER := 0;
+        -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
+        -- count each source separately and sum, rather than a FROM-less SELECT
+        -- of scalar subqueries (which raises "INTO clause is not allowed here").
+        SELECT COUNT(*) INTO :prov_jobs
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING');
+        SELECT COUNT(*) INTO :matrix_jobs
+          FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING') AND STAGE NOT IN ('COMPLETE','ERROR');
+        SELECT COUNT(*) INTO :gen_jobs
+          FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING');
+        active_jobs := :prov_jobs + :matrix_jobs + :gen_jobs;
     EXCEPTION WHEN OTHER THEN active_jobs := 0;
     END;
 
