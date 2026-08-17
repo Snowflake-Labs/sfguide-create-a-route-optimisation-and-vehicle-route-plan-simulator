@@ -32,6 +32,16 @@
 -- its last drop-off (EMPTY = DROPOFF_*, EMPTY_FROM_TS = ETA_TS) and biases back
 -- toward its home depot (NEXT_START = HOME_*), so the solver's end location
 -- encodes the direction-to-home preference.
+--
+-- CO-OWNED SOURCE OF TRUTH: the fleet admin app boot init recreates this exact
+-- cockpit layer on every container start, in
+--   .cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/lib/init.ts
+--   (ensureBackloadAndAssetVelocityObjects -> the BACKLOAD_MATCHING cockpit block).
+-- That is what makes a fresh install work without running this file by hand.
+-- Keep the two in lockstep: any change to MATCH_PARAMS / VW_LOADS /
+-- VW_TRAILERS_GEO / VW_CANDIDATES / VW_CANDIDATES_SCORED here MUST be mirrored
+-- into init.ts (init.ts CREATE-OR-REPLACEs these on boot and will silently
+-- overwrite an out-of-band change made only here).
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"backload-proposals"}}';

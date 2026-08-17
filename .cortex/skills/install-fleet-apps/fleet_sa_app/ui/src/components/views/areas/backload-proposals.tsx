@@ -187,7 +187,14 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setScored(scRows as unknown as ScoredCandidate[]);
       setParams(pRows as unknown as ParamRow[]);
     } catch (e) {
-      setLoadErr(e instanceof Error ? e.message : 'Failed to load backload data');
+      const msg = e instanceof Error ? e.message : 'Failed to load backload data';
+      // The cockpit data layer (VW_LOADS / VW_CANDIDATES_SCORED / MATCH_PARAMS in
+      // FLEET_INTELLIGENCE.BACKLOAD_MATCHING) is provisioned by the admin app boot
+      // init. Until it has run for the active dataset those objects do not exist;
+      // show a clear, neutral message instead of the raw Snowflake 422.
+      setLoadErr(/does not exist or not authorized/i.test(msg)
+        ? 'Backload Proposals data is still provisioning for the active dataset. The admin app recreates it at boot from a generated dataset - generate/select a dataset for this region, then use Refresh.'
+        : msg);
     }
   }, [region]);
 
