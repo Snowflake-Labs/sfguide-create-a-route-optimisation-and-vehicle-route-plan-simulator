@@ -27,6 +27,7 @@ export function RegionBuilderPage() {
   // Provision-form state stays here so build-history "Rerun" can mutate it.
   const [sourceTab, setSourceTab] = useState<SourceTab>('bbbike');
   const [search, setSearch] = useState('');
+  const [levelFilter, setLevelFilter] = useState<string>('all');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
   const [computeSize, setComputeSize] = useState<ComputeSize>('L');
@@ -174,9 +175,11 @@ export function RegionBuilderPage() {
         refreshing={cat.refreshing}
         onRefreshCatalog={cat.refreshCatalog}
         sourceTab={sourceTab}
-        onSourceTabChange={setSourceTab}
+        onSourceTabChange={(t) => { setSourceTab(t); setLevelFilter('all'); }}
         search={search}
         onSearchChange={setSearch}
+        levelFilter={levelFilter}
+        onLevelFilterChange={setLevelFilter}
         selectedRegion={selectedRegion}
         onSelectRegion={(r) => {
           setSelectedRegion(r);
