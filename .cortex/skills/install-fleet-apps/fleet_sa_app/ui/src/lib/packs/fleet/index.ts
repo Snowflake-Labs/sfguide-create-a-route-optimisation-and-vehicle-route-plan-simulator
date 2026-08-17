@@ -104,16 +104,17 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     category: 'Optimization',
     agentKnowledge: {
       keyMetrics: [
-        'vehicles_matched, internal_matched, total_empty_km, avg_composite (0-100 ensemble score)',
+        'vehicles_matched, internal_matched, total_empty_km, total_margin_usd (revenue minus empty-leg cost across the plan), avg_composite (0-100 ensemble score)',
         'per-vehicle graded proposal (trailer -> load), its strategy family, and how many of the 4 strategies agree',
         'eligible_pairs (trailer/load pairs passing distance/pickup-time/horizon/capacity/hazmat), and accepted/rejected counts (session-only)',
-        'the top ranked proposals are published as __memo_backload (trailer->load, grade, strategy, empty km, internal/external)',
+        'the top ranked proposals are published as __memo_backload (trailer->load, grade, strategy, pickup->delivery cities, empty km, loaded km, margin USD, internal/external)',
       ],
       exampleQuestions: [
         'which vehicles have the best backload proposals?',
         'how many empty km does the plan reclaim?',
         'how many internal loads were filled versus external offers?',
         'why is a load ineligible for a vehicle?',
+        'give me a list of proposals with delivery and revenue details for each',
         'what is on the map right now?',
       ],
       gotchas: 'Proposals are computed in this view (client-side) after Run: Quick scan is great-circle nearest-load (no solve); Per-load VRP / Fleet 1:1 / Profit-max each call the routing engine once via /api/backload/solve, and ensemble mode fuses all four. Numbers are null until Run and change with the strategy, max vehicles/loads, and (in ensemble mode) the ranking weights. Accept/Reject/Flag is session-only and not persisted. There is no semantic view for this cockpit, so answer from the injected __memo_backload / summary context and never invent trailer ids, loads, grades, or km. Requires the active region routing/VROOM service to be running for the VRP strategies.',

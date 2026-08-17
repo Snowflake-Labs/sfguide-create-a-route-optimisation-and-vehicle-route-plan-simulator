@@ -523,7 +523,12 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
-    const topList = grouped.slice(0, 12).map((r) => `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km${r.best.isInternal ? ', internal' : ', external'})`).join('; ');
+    const MAX_TRIPS = 12;
+    const topList = grouped.slice(0, MAX_TRIPS).map((r) => {
+      const margin = r.best.marginUsd != null ? `${r.best.marginUsd >= 0 ? '+' : ''}$${Math.round(r.best.marginUsd)}` : 'n/a';
+      const loaded = (r.best.loadedKm ?? r.best.loadedKmEst ?? 0).toFixed(0);
+      return `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}) ${r.best.pickupCity || '?'}->${r.best.deliveryCity || '?'}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km loaded ${loaded}km, margin ${margin}${r.best.isInternal ? ', internal' : ', external'}`;
+    }).join('; ') + (grouped.length > MAX_TRIPS ? ` (+${grouped.length - MAX_TRIPS} more)` : '');
     const acc = Object.values(decisions);
     return {
       view: 'backload_proposals', region: region ?? null,
@@ -535,6 +540,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       vehicles_matched: kpis.n || null,
       internal_matched: grouped.length ? kpis.internal : null,
       total_empty_km: grouped.length ? Math.round(kpis.totalEmpty) : null,
+      total_margin_usd: grouped.length ? Math.round(grouped.reduce((s, r) => s + (r.best.marginUsd ?? 0), 0)) : null,
       avg_composite: grouped.length ? Math.round(kpis.avg) : null,
       accepted: acc.filter((d) => d.action === 'ACCEPT').length || null,
       rejected: acc.filter((d) => d.action === 'REJECT').length || null,
