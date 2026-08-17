@@ -6,17 +6,21 @@
 import type { CSSProperties } from 'react';
 import type { StrategyFamily } from '../backload-ensemble';
 
-// deck.gl marker colours (RGB). Idle vehicle = blue, internal load = green,
-// external offer = amber.
-export const COLOR_VEHICLE: [number, number, number] = [37, 99, 235];
-export const COLOR_INTERNAL: [number, number, number] = [22, 163, 74];
-export const COLOR_EXTERNAL: [number, number, number] = [217, 119, 6];
+// deck.gl marker colours (RGB), aligned to the Backload Matching map so the two
+// dashboards read identically: idle vehicle = green (white ring), internal load
+// = Snowflake blue, external offer = grey (grey ring).
+export const COLOR_VEHICLE: [number, number, number] = [22, 163, 74];
+export const COLOR_INTERNAL: [number, number, number] = [41, 181, 232];
+export const COLOR_EXTERNAL: [number, number, number] = [200, 200, 200];
+// Marker strokes (match Matching: white ring on vehicles, grey ring on external).
+export const COLOR_VEHICLE_STROKE: [number, number, number] = [255, 255, 255];
+export const COLOR_EXTERNAL_STROKE: [number, number, number] = [120, 120, 120];
 
 // Per-leg route colours for the selected proposal on the map:
-//   empty -> pickup    = grey  (repositioning, no revenue)
+//   empty -> pickup    = dashed grey (repositioning, no revenue)
 //   pickup -> delivery = green (loaded, revenue leg)
 //   delivery -> next    = blue  (onward to the vehicle's next start)
-export const COLOR_LEG_EMPTY: [number, number, number] = [120, 120, 130];
+export const COLOR_LEG_EMPTY: [number, number, number] = [110, 110, 110];
 export const COLOR_LEG_LOADED: [number, number, number] = [22, 127, 55];
 export const COLOR_LEG_NEXT: [number, number, number] = [37, 99, 235];
 

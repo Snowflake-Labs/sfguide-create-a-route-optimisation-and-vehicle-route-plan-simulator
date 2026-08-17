@@ -33,7 +33,7 @@ import LoadList from './backload-proposals/LoadList';
 import DetailDrawer from './backload-proposals/DetailDrawer';
 import ProposalMap, { type MapVehicle, type MapLoad, type MapLink, type MapStop } from './backload-proposals/ProposalMap';
 import LegendOverlay, { LegendSection } from './backload-proposals/LegendOverlay';
-import { COLOR_VEHICLE, COLOR_INTERNAL, COLOR_EXTERNAL, COLOR_LEG_EMPTY, COLOR_LEG_LOADED, COLOR_LEG_NEXT } from './backload-proposals/constants';
+import { COLOR_VEHICLE, COLOR_INTERNAL, COLOR_EXTERNAL, COLOR_LEG_EMPTY } from './backload-proposals/constants';
 import { INITIAL_FILTERS, type FilterState, type Perspective, type EnsembleBasis, type Decision, type DecisionState, type ChipDef } from './backload-proposals/types';
 
 const BM = 'FLEET_APP.BACKLOAD_MATCHING';
@@ -711,9 +711,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_VEHICLE)} />Idle {labelNoun} (empty)</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_INTERNAL)} />Internal load</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={swatch(COLOR_EXTERNAL)} />External offer</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_EMPTY.join(',')})`, display: 'inline-block' }} />Empty leg - repositioning (no revenue)</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_LOADED.join(',')})`, display: 'inline-block' }} />Loaded leg - pickup to delivery (revenue)</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: `rgb(${COLOR_LEG_NEXT.join(',')})`, display: 'inline-block' }} />Onward leg - to next start</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 0, borderTop: `3px dashed rgb(${COLOR_LEG_EMPTY.join(',')})`, display: 'inline-block' }} />Empty leg - repositioning (no revenue)</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ width: 16, height: 3, background: 'rgb(29,78,216)', display: 'inline-block' }} />Loaded route - pickup to delivery (revenue)</span>
             <span>Selected route stops: (1) start {'\u2192'} (2) pickup {'\u2192'} (3) delivery.</span>
           </div>
         </LegendSection>
