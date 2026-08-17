@@ -2,6 +2,13 @@ import { NextResponse } from 'next/server';
 import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
+import { requireUser } from '@/lib/ingress-identity';
+
+// Max serialized challenge size forwarded to the solver. VROOM's own body-parser
+// limit is 50mb (for large precomputed matrices), but a matrix-free challenge
+// posted from the UI is tiny; cap well under that to reject abusive/oversized
+// payloads before they reach the contract.
+const MAX_CHALLENGE_BYTES = 2_000_000;
 
 // Backload Matching solver endpoint.
 //
@@ -20,6 +27,14 @@ import { withLogging } from '@/lib/api-handler';
 // Returns: { ok: true, result: <raw VROOM response> } | { error }
 
 async function handlePost(req: Request) {
+  // Solver path: require an authenticated ingress identity (fail-closed when
+  // deployed) so the routing engine cannot be driven anonymously.
+  const g = await requireUser(req);
+  if (!g.ok) {
+    logger.warn('backload-solve-denied', { user: g.user, reason: g.reason });
+    return NextResponse.json({ error: g.reason ?? 'Forbidden' }, { status: g.status });
+  }
+
   let body: { challenge?: unknown; region?: unknown };
   try {
     body = await req.json();
@@ -31,13 +46,20 @@ async function handlePost(req: Request) {
   if (!challenge || typeof challenge !== 'object') {
     return NextResponse.json({ error: 'challenge (VROOM object) is required' }, { status: 400 });
   }
+  const challengeJson = JSON.stringify(challenge);
+  if (challengeJson.length > MAX_CHALLENGE_BYTES) {
+    return NextResponse.json(
+      { error: `challenge too large (${challengeJson.length} bytes, max ${MAX_CHALLENGE_BYTES})` },
+      { status: 413 },
+    );
+  }
   const region =
     typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
   try {
     const rows = await query(
       `SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP`,
-      [JSON.stringify(challenge), region],
+      [challengeJson, region],
     );
     const raw = rows[0] ? (Object.values(rows[0])[0] as unknown) : null;
     let result: unknown = raw;

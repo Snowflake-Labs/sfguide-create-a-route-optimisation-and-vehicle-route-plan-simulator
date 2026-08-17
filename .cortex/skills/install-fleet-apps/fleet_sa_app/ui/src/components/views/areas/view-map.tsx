@@ -13,6 +13,7 @@ import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { escapeHtml } from '@/lib/html';
 import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
 
 interface ViewMapAreaProps {
@@ -155,7 +156,9 @@ function renderTooltip(template: string, object: Record<string, any>): string {
       }
       v = lower[String(col).toLowerCase()];
     }
-    return v == null ? '' : String(v);
+    // Escaped: this string is returned in a deck.gl tooltip `html` field
+    // (rendered via innerHTML), and column values can be arbitrary free text.
+    return v == null ? '' : escapeHtml(v);
   });
 }
 

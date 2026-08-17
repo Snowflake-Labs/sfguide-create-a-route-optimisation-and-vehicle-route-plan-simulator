@@ -126,9 +126,18 @@ export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: numb
 export function synthPallets(kg: number): number { return Math.max(1, Math.round(kg / 750)); }
 export function synthVolumeM3(kg: number): number { return Math.max(1, Math.round(kg / 250)); }
 
+// Robust single-quoted SQL string-literal escaping. Snowflake honors backslash
+// escape sequences inside string constants, so doubling single quotes alone is
+// not enough (a trailing/embedded backslash can still break out of the literal).
+// Escape backslashes first, then double single quotes. Reads here go through the
+// SELECT-only /api/query proxy, so this is defense in depth on a read-only path.
+export function sqlLiteral(s: string): string {
+  return String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
 export async function fetchVehicleClass(vt: string): Promise<VehicleClass | null> {
   if (!vt) return null;
-  const safe = vt.replace(/'/g, "''");
+  const safe = sqlLiteral(vt);
   const rows = await sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${safe}' LIMIT 1`);
   if (!rows.length) return null;
   const r = rows[0] as Record<string, unknown>;
@@ -160,7 +169,7 @@ export async function buildVroomMatrix(
   if (!locations || locations.length < 2) return null;
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const locsJson = JSON.stringify(locations.map(([lon, lat]) => [Number(lon), Number(lat)]));
-  const regionLit = region ? `'${String(region).replace(/'/g, "''")}'` : 'NULL';
+  const regionLit = region ? `'${sqlLiteral(String(region))}'` : 'NULL';
   const sql = `SELECT ROUTING_PLATFORM.CONTRACT.MATRIX('${prof}', PARSE_JSON('${locsJson}')::VARIANT, ${regionLit}, NULL) AS M`;
   const rows = await sfRead(sql, opts);
   const raw = (rows[0] as { M?: unknown } | undefined)?.M;
@@ -284,7 +293,7 @@ export async function fetchEmptyLegGeoJSON(
   const pts = [from, to].filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
   if (pts.length < 2) return null;
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
-  const reg = region.replace(/'/g, "''");
+  const reg = sqlLiteral(region);
   const locs = JSON.stringify(pts.map(([lon, lat]) => [Number(lon), Number(lat)]));
   const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {

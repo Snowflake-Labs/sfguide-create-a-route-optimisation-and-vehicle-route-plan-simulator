@@ -22,6 +22,7 @@ import {
   type ProposalRow, type ParamRow, type TrailerLoc, type EnsembleWeights,
   type StrategyFamily,
 } from './backload-ensemble';
+import { sqlLiteral } from './backload-matching/helpers';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
 import StatusBar from './backload-proposals/StatusBar';
 import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
@@ -112,7 +113,7 @@ async function fetchRouteCoords(profile: string, waypoints: [number, number][], 
   if (pts.length < 2) return null;
   const locs = JSON.stringify(pts);
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
-  const reg = region.replace(/'/g, "''");
+  const reg = sqlLiteral(region);
   const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {
     const rows = await sfRead(sql);
@@ -175,7 +176,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setCfg({ vehicleType, region: cfgRegion });
 
       const [clsRows, tRows, lRows, scRows, pRows] = await Promise.all([
-        sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${vehicleType.replace(/'/g, "''")}' LIMIT 1`),
+        sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vehicleType)}' LIMIT 1`),
         sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO`),
         sfRead(`SELECT LOAD_ID, IS_INTERNAL, SOURCE, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DELIVERY_CITY, DELIVERY_LON, DELIVERY_LAT, REQUESTED_PICKUP_TS, WEIGHT_KG, PRODUCT, HAZMAT, PRICE_USD, APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS`),
         sfRead(`SELECT TRAILER_ID, LOAD_ID, DIST_CHECK, TIME_CHECK, HORIZON_CHECK, CAP_CHECK, HAZMAT_CHECK, ELIGIBLE FROM ${PHYS}.VW_CANDIDATES_SCORED WHERE ELIGIBLE = TRUE`),
@@ -445,8 +446,9 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     setExplaining(true);
     try {
       const desc = `${p.trailerId} -> ${p.loadId} (${FAMILY_LABELS[p.bestSource]}, grade ${p.grade}, empty ${(p.emptyKm ?? 0).toFixed(0)}km${p.isInternal ? ', internal' : ', external'})`;
-      const prompt = `You are a fleet dispatch assistant. In 2 short sentences, explain why this backload proposal reduces empty running and improves asset utilization, and note the internal-first preference: ${desc}`.replace(/'/g, "''");
-      const rows = await sfRead(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt}') AS R`);
+      const prompt = `You are a fleet dispatch assistant. In 2 short sentences, explain why this backload proposal reduces empty running and improves asset utilization, and note the internal-first preference: ${desc}`;
+      const promptLit = sqlLiteral(prompt);
+      const rows = await sfRead(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${promptLit}') AS R`);
       const text = String((rows[0] as { R?: string })?.R ?? '').trim();
       setRationaleByKey((prev) => ({ ...prev, [key]: text }));
     } catch (e) {

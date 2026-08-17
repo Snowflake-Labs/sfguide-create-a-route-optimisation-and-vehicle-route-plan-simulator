@@ -17,13 +17,14 @@ import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
+import { escapeHtml } from '@/lib/html';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import InfoTip from './backload-matching/InfoTip';
 import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
-  sfRead, haversineKm, synthPallets, synthVolumeM3,
+  sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLegGeoJSON,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   type VehicleClass, type EmptyLegBaseline,
@@ -505,8 +506,8 @@ export function BackloadMatchingView() {
     setRationaleLoading(true);
     try {
       const idleCity = trailers.find((t) => t.TRAILER_ID === a.TRAILER_ID)?.DROPOFF_CITY || '';
-      const prompt = `You are a fleet dispatcher coach. In two short sentences, explain why vehicle ${a.TRAILER_ID} (idle in ${idleCity}) is a good match for ${a.SOURCE} offer ${a.OFFER_ID} (${a.PICKUP_CITY} -> ${a.PROPOSAL_DROPOFF_CITY}, ${Math.round(a.EMPTY_KM)} km empty, net $${Math.round(a.NET_BENEFIT_USD || 0)}, ${a.PRODUCT}). Mention empty km saved, profitability, and direction-to-home if relevant.`.replace(/'/g, "''");
-      const rows = await sfRead(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt}') AS R`);
+      const prompt = `You are a fleet dispatcher coach. In two short sentences, explain why vehicle ${a.TRAILER_ID} (idle in ${idleCity}) is a good match for ${a.SOURCE} offer ${a.OFFER_ID} (${a.PICKUP_CITY} -> ${a.PROPOSAL_DROPOFF_CITY}, ${Math.round(a.EMPTY_KM)} km empty, net $${Math.round(a.NET_BENEFIT_USD || 0)}, ${a.PRODUCT}). Mention empty km saved, profitability, and direction-to-home if relevant.`;
+      const rows = await sfRead(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${sqlLiteral(prompt)}') AS R`);
       const text = String((rows[0] as { R?: string })?.R ?? '').trim();
       setRationale((prev) => ({ ...prev, [a.ASSIGNMENT_ID]: text || '(no rationale returned)' }));
     } catch (e) {
@@ -671,19 +672,19 @@ export function BackloadMatchingView() {
       const labelMap: Record<string, string> = { start: 'START', pickup: 'PICKUP', dropoff: 'DROPOFF', end: 'END', break: 'BREAK' };
       const members = (Array.isArray(object._members) && object._members.length ? object._members : [object]) as Record<string, unknown>[];
       const blocks = members.map((m) => {
-        const lines: string[] = [`<b>#${m._idx} of ${m._total} - ${labelMap[m.kind as string]}</b>`];
-        if (m.city) lines.push(String(m.city));
-        if (m.label && m.label !== m.city) lines.push(String(m.label));
-        if (m.product) { const wt = m.weightKg ? ` - ${(Number(m.weightKg) / 1000).toFixed(1)} t` : ''; lines.push(`${m.product}${wt}`); }
+        const lines: string[] = [`<b>#${escapeHtml(m._idx)} of ${escapeHtml(m._total)} - ${escapeHtml(labelMap[m.kind as string])}</b>`];
+        if (m.city) lines.push(escapeHtml(m.city));
+        if (m.label && m.label !== m.city) lines.push(escapeHtml(m.label));
+        if (m.product) { const wt = m.weightKg ? ` - ${(Number(m.weightKg) / 1000).toFixed(1)} t` : ''; lines.push(`${escapeHtml(m.product)}${wt}`); }
         if (m.kind === 'break' && m.serviceSec) lines.push(`Driver break - ${Math.round(Number(m.serviceSec) / 60)} min`);
         if (m.waitSec) lines.push(`Wait ${Math.round(Number(m.waitSec) / 60)} min`);
         return lines.filter(Boolean).join('<br/>');
       });
       return { html: blocks.join('<hr style="border:none;border-top:1px solid #444;margin:4px 0"/>'), style };
     }
-    if (object.TRAILER_ID) return { html: `<b>${object.TRAILER_ID}</b><br/>Idle in: ${object.DROPOFF_CITY}<br/>Home: ${object.HOME_DEPOT}<br/>HAZMAT: ${object.HAZMAT_CERT ? 'yes' : 'no'}`, style };
-    if (object.OFFER_ID) return { html: `<b>${object.SOURCE} ${object.OFFER_ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}<br/>$${object.PRICE_USD}`, style };
-    if (object.ID) return { html: `<b>Internal ${object.ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}`, style };
+    if (object.TRAILER_ID) return { html: `<b>${escapeHtml(object.TRAILER_ID)}</b><br/>Idle in: ${escapeHtml(object.DROPOFF_CITY)}<br/>Home: ${escapeHtml(object.HOME_DEPOT)}<br/>HAZMAT: ${object.HAZMAT_CERT ? 'yes' : 'no'}`, style };
+    if (object.OFFER_ID) return { html: `<b>${escapeHtml(object.SOURCE)} ${escapeHtml(object.OFFER_ID)}</b><br/>${escapeHtml(object.PICKUP_CITY)} -> ${escapeHtml(object.DROPOFF_CITY)}<br/>${escapeHtml(object.WEIGHT_KG)} kg - ${escapeHtml(object.PRODUCT)}<br/>$${escapeHtml(object.PRICE_USD)}`, style };
+    if (object.ID) return { html: `<b>Internal ${escapeHtml(object.ID)}</b><br/>${escapeHtml(object.PICKUP_CITY)} -> ${escapeHtml(object.DROPOFF_CITY)}<br/>${escapeHtml(object.WEIGHT_KG)} kg - ${escapeHtml(object.PRODUCT)}`, style };
     return null;
   }, []);
 

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
+import { requireUser } from '@/lib/ingress-identity';
 
 // Backload Matching decision write-back.
 //
@@ -24,6 +25,15 @@ interface Decision {
 }
 
 async function handlePost(req: Request) {
+  // Write-back path: require an authenticated ingress identity (fail-closed when
+  // deployed) so a consumer cannot write decisions anonymously. No role gate -
+  // any authenticated app user may record a decision.
+  const g = await requireUser(req);
+  if (!g.ok) {
+    logger.warn('backload-decide-denied', { user: g.user, reason: g.reason });
+    return NextResponse.json({ error: g.reason ?? 'Forbidden' }, { status: g.status });
+  }
+
   let body: { decisions?: Decision[]; decidedBy?: string };
   try {
     body = await req.json();

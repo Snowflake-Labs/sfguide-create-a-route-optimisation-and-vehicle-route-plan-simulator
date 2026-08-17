@@ -14,6 +14,7 @@ import { ScatterplotLayer, LineLayer, GeoJsonLayer, PathLayer, TextLayer } from 
 import MapView from '../map-view';
 import { COLOR_VEHICLE, COLOR_INTERNAL, COLOR_EXTERNAL, COLOR_LEG_EMPTY, COLOR_LEG_LOADED, COLOR_LEG_NEXT } from './constants';
 import { place } from './format';
+import { escapeHtml } from '@/lib/html';
 
 export interface MapVehicle { id: string; lon: number; lat: number; }
 export interface MapLoad { id: string; lon: number; lat: number; internal: boolean; city: string | null; source: string | null; }
@@ -131,13 +132,13 @@ export default function ProposalMap({ vehicles, loads, links, stops, routePath, 
     const o: any = info?.object;
     if (!o) return null;
     if (o.kind && STOP_LABEL[o.kind as StopKind]) {
-      return { html: `<div style="font-size:12px"><b>#${o.idx} ${STOP_LABEL[o.kind as StopKind]}</b>${o.city ? `<br/>${o.city}` : ''}</div>` };
+      return { html: `<div style="font-size:12px"><b>#${escapeHtml(o.idx)} ${escapeHtml(STOP_LABEL[o.kind as StopKind])}</b>${o.city ? `<br/>${escapeHtml(o.city)}` : ''}</div>` };
     }
     if (o.internal !== undefined && o.id) {
-      return { html: `<div style="font-size:12px"><b>Load ${o.id}</b> (${o.internal ? 'internal' : 'external'})${o.city ? `<br/>${place(o.city)}` : ''}${o.source ? `<br/>${o.source}` : ''}</div>` };
+      return { html: `<div style="font-size:12px"><b>Load ${escapeHtml(o.id)}</b> (${o.internal ? 'internal' : 'external'})${o.city ? `<br/>${escapeHtml(place(o.city))}` : ''}${o.source ? `<br/>${escapeHtml(o.source)}` : ''}</div>` };
     }
     if (o.id && o.lon !== undefined) {
-      return { html: `<div style="font-size:12px"><b>Vehicle ${o.id}</b> (idle)</div>` };
+      return { html: `<div style="font-size:12px"><b>Vehicle ${escapeHtml(o.id)}</b> (idle)</div>` };
     }
     return null;
   };
