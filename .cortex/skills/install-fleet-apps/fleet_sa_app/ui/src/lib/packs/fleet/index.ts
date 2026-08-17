@@ -70,6 +70,21 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Backload Matching',
     description: 'Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.',
     category: 'Optimization',
+    agentKnowledge: {
+      keyMetrics: [
+        'assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count',
+        'trailers / internal_volumes / external_offers loaded for the active preset, and selected_trailer',
+        'the full per-trip list is published as __memo_backload_matching: trailer id, source (INTERNAL/external), pickup->dropoff city, the delivery points (dropoff cities), delivery count, empty/loaded km, and revenue/cost/net USD',
+      ],
+      exampleQuestions: [
+        'give me a list of assignments with delivery and revenue details for each',
+        'which trips deliver where?',
+        'how much net benefit does the plan reclaim?',
+        'how many internal vs external loads were matched?',
+        'which trailer has the most profitable backload?',
+      ],
+      gotchas: 'Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. There is no semantic view for a live solve, so answer ONLY from the injected __memo_backload_matching / summary panel context and never invent trailer ids, offers, cities, km, or dollars. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The list is capped at the top 12 net-desc trips with a "(+N more)" suffix. Requires the active region routing/VROOM service to be running.',
+    },
     component: lazy(() =>
       import('@/components/views/areas/backload-matching').then((mod) => ({
         default: mod.BackloadMatchingView,

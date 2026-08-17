@@ -18,6 +18,7 @@ import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
@@ -50,7 +51,7 @@ function clampPayload(v: number, i: number, e: number, budget: number): { v: num
   return { v: Math.max(1, Math.floor(v * scale)), i: Math.max(0, Math.floor(i * scale)), e: Math.max(0, Math.floor(e * scale)), clamped: true };
 }
 
-export function BackloadMatchingView() {
+export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
@@ -558,6 +559,51 @@ export function BackloadMatchingView() {
 
   const selected = visibleAssignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment) || null;
   const stopsPanelRef = useRef<HTMLDivElement | null>(null);
+
+  // ---- agent grounding (Channel A; ref-guarded publish on change only) ----
+  // Custom views keep results in local state, so the left-panel Cortex agent is
+  // blind to the solved plan unless we surface it. Publish the on-screen
+  // assignments as a bounded, pre-joined __memo_ STRING (viewState flattens
+  // nested objects to "[object Object]"), plus scalar KPIs. MUST use the
+  // ref+lastSent gate with deps [summary] only, or view-panel's fresh inline
+  // onStateChange loops (React #185).
+  const summary = useMemo(() => {
+    const MAX_TRIPS = 12;
+    const memo = visibleAssignments.length
+      ? visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
+          const drops = Array.isArray(a.STOPS)
+            ? a.STOPS.filter((s) => s.kind === 'dropoff').map((s) => s.city || s.label).filter(Boolean)
+            : [];
+          const dropStr = drops.length ? drops.join(', ') : (a.PROPOSAL_DROPOFF_CITY || '?');
+          return `${a.TRAILER_ID} ${a.SOURCE} ${a.PICKUP_CITY || '?'}->${a.PROPOSAL_DROPOFF_CITY || '?'} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km loaded ${Math.round(a.LOADED_KM || 0)}km, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
+        }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
+      : null;
+    return {
+      view: 'backload_matching',
+      region: cfg?.region ?? region ?? null,
+      vehicle_type: cfg?.vehicleType ?? null,
+      trailers: trailers.length,
+      internal_volumes: internal.length,
+      external_offers: external.length,
+      assignments_count: visibleAssignments.length || null,
+      internal_matched: visibleAssignments.length ? internalCount : null,
+      internal_pct: visibleAssignments.length ? internalPct : null,
+      net_benefit_usd: visibleAssignments.length ? totalNetBenefit : null,
+      unassigned_count: unassigned.length || null,
+      selected_trailer: selected?.TRAILER_ID ?? null,
+      __memo_backload_matching: memo,
+    };
+  }, [cfg, region, trailers.length, internal.length, external.length, visibleAssignments, internalCount, internalPct, totalNetBenefit, unassigned.length, selected]);
+
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const lastSentRef = useRef<string>('');
+  useEffect(() => {
+    const json = JSON.stringify(summary);
+    if (json === lastSentRef.current) return;
+    lastSentRef.current = json;
+    onStateChangeRef.current?.(summary);
+  }, [summary]);
 
   // ---- deck.gl layers (bespoke, mirrors the reference dashboard) ----
   const layers = useMemo<Layer[]>(() => {
