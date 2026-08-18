@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import MetricCard from '@/components/shared/MetricCard';
+import { safeFetchJson } from '@/utils/safeFetch';
 
 import {
   Preset, ProfileTemplate, SKILL_MAP, VEHICLE_LABELS,
@@ -113,24 +114,27 @@ export function FleetDataStudioPage() {
             },
             preset_name: editName,
           };
-      const res = await fetch('/api/studio/generate', {
+      const res = await safeFetchJson<{ job_id: string }>('/api/studio/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (res.status === 409) {
-        const err = await res.json();
-        stream.setLogLines((prev) => [...prev, `Cannot start: ${err.error}`]);
+        stream.setLogLines((prev) => [...prev, `Cannot start: ${res.error}`]);
         stream.setGenerating(false);
         return;
       }
       if (!res.ok) {
-        const err = await res.json();
-        stream.setLogLines((prev) => [...prev, `Error: ${err.error || res.statusText}`]);
+        stream.setLogLines((prev) => [...prev, `Error: ${res.error}`]);
         stream.setGenerating(false);
         return;
       }
-      const { job_id } = await res.json();
+      const job_id = res.data?.job_id;
+      if (!job_id) {
+        stream.setLogLines((prev) => [...prev, 'Error: server did not return a job id']);
+        stream.setGenerating(false);
+        return;
+      }
       stream.setLogLines((prev) => [...prev, `Job started: ${job_id}`]);
       stream.connectSSE(job_id);
       jobsHook.fetchJobs();
@@ -168,10 +172,9 @@ export function FleetDataStudioPage() {
     if (!confirm(`Delete all generated data for this job? This cannot be undone.`)) return;
     setDeletingJob(jobId);
     try {
-      const res = await fetch(`/api/studio/jobs/${jobId}`, { method: 'DELETE' });
+      const res = await safeFetchJson<{ ok?: boolean }>(`/api/studio/jobs/${jobId}`, { method: 'DELETE' });
       if (!res.ok) {
-        const err = await res.json();
-        alert(`Delete failed: ${err.error}`);
+        alert(`Delete failed: ${res.error}`);
         return;
       }
       jobsHook.fetchJobs(); catalog.fetchStats(); catalog.fetchCoverage();
