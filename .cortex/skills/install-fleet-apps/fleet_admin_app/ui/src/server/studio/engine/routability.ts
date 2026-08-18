@@ -6,6 +6,7 @@ import type { POI, SnowSqlFn } from './types';
 import { GenerationConfig, uuid } from '../profiles';
 import { log } from '../../diagnostics';
 import { regionCatalogMatch } from '../../lib/region-catalog-match';
+import { h3ResForArea } from './spatial';
 
 // Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
 // When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
@@ -176,6 +177,15 @@ export async function loadPOIs(
       AND p.ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
     : '';
   const mBoundary = regionCatalogMatch('rc', `'${config.region.replace(/'/g, "''")}'`);
+  // Spatially fair pool sample. A plain `LIMIT 5000` returns Overture's first
+  // scan-order rows, which cluster in one corner for a continent-sized bbox
+  // (e.g. Europe: 49% of POIs landed in a single H3 cell). Instead, number each
+  // candidate within its H3 cell by RANDOM(), then round-robin over cells
+  // (ORDER BY _rn, RANDOM()): take the 1st POI from every populated cell, then
+  // the 2nd from every cell, etc. This spreads the pool across the whole region,
+  // always fills to the cap when enough candidates exist, and inherently caps
+  // dense metros with no tuning constant. Cell size adapts to region area.
+  const h3Res = h3ResForArea(config.region_area_km2);
   const sql = `
     WITH region_boundary AS (
       SELECT BOUNDARY
@@ -184,19 +194,28 @@ export async function loadPOIs(
         AND ${mBoundary.predicate}
       ORDER BY ${mBoundary.rank}
       LIMIT 1
+    ),
+    candidates AS (
+      SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,
+             p.BASIC_CATEGORY AS CATEGORY,
+             ST_Y(p.GEOMETRY) AS LAT, ST_X(p.GEOMETRY) AS LNG,
+             ROW_NUMBER() OVER (
+               PARTITION BY H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${h3Res})
+               ORDER BY RANDOM()
+             ) AS _RN
+      FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+        LEFT JOIN region_boundary rb ON TRUE
+      WHERE ST_Y(p.GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
+        AND ST_X(p.GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
+        AND p.BASIC_CATEGORY IN (${catFilter})${countryFilter}
+        AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
     )
-    SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,
-           p.BASIC_CATEGORY AS CATEGORY,
-           ST_Y(p.GEOMETRY) AS LAT, ST_X(p.GEOMETRY) AS LNG
-    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
-      LEFT JOIN region_boundary rb ON TRUE
-    WHERE ST_Y(p.GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
-      AND ST_X(p.GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
-      AND p.BASIC_CATEGORY IN (${catFilter})${countryFilter}
-      AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
+    SELECT LOCATION_ID, NAME, CATEGORY, LAT, LNG
+    FROM candidates
+    ORDER BY _RN, RANDOM()
     LIMIT 5000`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
-    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, sql: sql.trim().replace(/\s+/g, ' ') },
+    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, h3Res, sql: sql.trim().replace(/\s+/g, ' ') },
   });
   try {
     const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
