@@ -145,6 +145,14 @@ async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown>>
   return body;
 }
 
+// True when an error is the SPCS-ingress timeout class (the 504 "busy (timed
+// out)" surfaced by parseJsonOrThrow, or an upstream/gateway timeout). Used to
+// decide whether a routing call is worth a warm-up + retry vs a hard failure.
+function isTimeoutError(e: unknown): boolean {
+  const m = String((e as Error)?.message ?? '');
+  return /busy \(timed out\)|timed out|upstream|gateway|\b504\b/i.test(m);
+}
+
 async function apiQuery(sql: string, params?: Record<string, string | null>): Promise<Record<string, unknown>[]> {
   const res = await fetch('/api/query', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -540,10 +548,37 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   }, [region]);
 
   const seed = useCallback(async () => {
-    setBusy(true); setError(null); setRouteGeo(null);
+    setBusy(true); setError(null); setNotice(null); setRouteGeo(null);
     setTrips([]); setPlanStats(null); setSelectedTripKey(null); setUnassignedPids([]);
     try {
-      const r = await apiTool('evac_seed', [region ?? null, hazard, minutes, targetCount]);
+      // The seed's multi-center isochrone call over a large region can spike past
+      // the SPCS ingress ceiling on a cold/rescheduled ORS instance, surfacing as
+      // a 504 "busy (timed out)". Mirror the solve path: on a timeout, warm the
+      // region's ORS service and retry ONCE instead of dead-ending on a transient
+      // spike (warm, the whole seed completes in ~10s).
+      const seedArgs = [region ?? null, hazard, minutes, targetCount];
+      const regionLbl = region ?? 'the active region';
+      let r: Record<string, unknown>;
+      try {
+        r = await apiTool('evac_seed', seedArgs);
+      } catch (e) {
+        if (!isTimeoutError(e)) throw e;
+        setNotice(`Routing engine is warming up for ${regionLbl}. Retrying...`);
+        const orsSvc = 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
+          + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        let outcome: EnsureOutcome = 'timeout';
+        try { outcome = await ensureOptimizationService(orsSvc); } catch { /* best-effort warm; retry regardless */ }
+        await sleep(outcome === 'resumed' ? 8000 : 3000);
+        try {
+          r = await apiTool('evac_seed', seedArgs);
+        } catch (e2) {
+          if (isTimeoutError(e2)) {
+            throw new Error(`Routing engine is still busy for ${regionLbl}. The region road graph may be warming up - wait ~30s and try again, or reduce the travel time.`);
+          }
+          throw e2;
+        }
+        setNotice(null);
+      }
       if (r.status !== 'SUCCESS') throw new Error(String(r.error || 'Seeding failed'));
       setUnionGeo((r.union_geojson as GeoJSON.Geometry) ?? null);
       // Proc returns snake_case + both hazard levels per participant so dots can
@@ -558,7 +593,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       })));
       setStep(3);
     } catch (e) { setError(e instanceof Error ? e.message : 'Seeding failed'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setNotice(null); }
   }, [region, hazard, minutes, targetCount]);
 
   const solve = useCallback(async () => {
@@ -892,7 +927,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
             <input type="number" min={1} max={300} style={inputStyle} value={targetCount} onChange={(e) => setTargetCount(Number(e.target.value))} />
           </div>
         </div>
-        <button style={btn(!busy)} disabled={busy} onClick={seed}>{busy ? 'Seeding…' : 'Seed participants'}</button>
+        <button style={btn(!busy)} disabled={busy} onClick={seed}>{busy ? (notice ? 'Working…' : 'Seeding…') : 'Seed participants'}</button>
 
         {participants.length > 0 && (
           <>
