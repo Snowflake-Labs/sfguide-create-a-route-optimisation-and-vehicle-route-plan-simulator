@@ -6,7 +6,7 @@ import type { POI, SnowSqlFn } from './types';
 import { GenerationConfig, uuid } from '../profiles';
 import { log } from '../../diagnostics';
 import { regionCatalogMatch } from '../../lib/region-catalog-match';
-import { h3ResForArea } from './spatial';
+import { h3ResForArea, poiCapForArea } from './spatial';
 
 // Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
 // When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
@@ -52,6 +52,55 @@ function snapThresholdForProfile(profile: string): number {
   return SNAP_THRESHOLD_M_BY_PROFILE[profile] ?? 2000;
 }
 
+// Find a MATRIX source point that actually snaps to a road on the active graph.
+// `snapped_distance` is a per-destination property, so ONE snappable source is
+// enough to read every destination's snap distance. The previous implementation
+// used the bbox centroid, which for a continent-sized/irregular region lands in
+// the ocean (e.g. Europe: ~55.7N/7.0E, the North Sea) - an unsnappable source
+// makes MATRIX return nulls for every POI, so the filter dropped all 5000 and
+// silently fell back to the unfiltered list. The loaded POIs are real Overture
+// places on land near roads, so we probe a handful of evenly-spread candidates
+// (tiny self-matrix per candidate) and use the first that snaps. No dependency
+// on any polygon interior-point function (Snowflake has no ST_POINTONSURFACE,
+// and ST_CENTROID of a multipolygon can also fall in water).
+async function findRoutableSource(
+  pois: POI[],
+  profileEsc: string,
+  regionEsc: string,
+  snowSql: SnowSqlFn,
+): Promise<{ lng: number; lat: number } | null> {
+  if (pois.length === 0) return null;
+  const MAX_CANDIDATES = 5;
+  const stride = Math.max(1, Math.floor(pois.length / MAX_CANDIDATES));
+  const candidates: POI[] = [];
+  for (let i = 0; i < pois.length && candidates.length < MAX_CANDIDATES; i += stride) {
+    candidates.push(pois[i]);
+  }
+  for (const c of candidates) {
+    const pt = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${c.lng}, ${c.lat}))`;
+    const sql = `
+      SELECT TO_VARCHAR(M:durations[0]) AS DURATIONS
+      FROM (
+        SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+          '${profileEsc}', ${pt}, ${pt}, '${regionEsc}'
+        ) AS M
+      )`;
+    try {
+      const rows = await snowSql(sql);
+      const rawDur = rows?.[0]?.DURATIONS;
+      if (!rawDur) continue;
+      const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
+      const d = Array.isArray(durations) ? durations[0] : null;
+      if (d != null && Number.isFinite(Number(d))) {
+        return { lng: c.lng, lat: c.lat };
+      }
+    } catch {
+      // Try the next candidate; a single bad probe is non-fatal.
+    }
+  }
+  return null;
+}
+
 async function filterRoutablePois(
   pois: POI[],
   profile: string,
@@ -62,11 +111,17 @@ async function filterRoutablePois(
 ): Promise<POI[]> {
   if (pois.length === 0) return pois;
 
-  const centerLat = (bbox.min_lat + bbox.max_lat) / 2;
-  const centerLng = (bbox.min_lng + bbox.max_lng) / 2;
-  const sourcesArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${centerLng}, ${centerLat}))`;
   const profileEsc = profile.replace(/'/g, "''");
   const regionEsc = region.replace(/'/g, "''");
+
+  // Source the reachability probe from a real, snappable POI (see
+  // findRoutableSource). Fall back to the bbox centroid only if no candidate
+  // POI snapped - in that case the graph/region is likely broken and the
+  // "too aggressive" guard below will return the unfiltered list anyway.
+  const source = await findRoutableSource(pois, profileEsc, regionEsc, snowSql);
+  const centerLng = source ? source.lng : (bbox.min_lng + bbox.max_lng) / 2;
+  const centerLat = source ? source.lat : (bbox.min_lat + bbox.max_lat) / 2;
+  const sourcesArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${centerLng}, ${centerLat}))`;
 
   const BATCH_SIZE = 1000;
   const SNAP_THRESHOLD_M = snapThresholdForProfile(profile);
@@ -136,11 +191,12 @@ async function filterRoutablePois(
   const filtered = pois.filter((_p, i) => reachable[i]);
   const dropped = pois.length - filtered.length;
   log('INFO', 'Studio', `POI routability filter: ${filtered.length}/${pois.length} routable`, {
-    detail: { dropped, droppedNullDuration, droppedFarSnap, profile, region, source: [centerLng, centerLat], snapThresholdM: SNAP_THRESHOLD_M },
+    detail: { dropped, droppedNullDuration, droppedFarSnap, profile, region, source: [centerLng, centerLat], sourceFromPoi: source != null, snapThresholdM: SNAP_THRESHOLD_M },
   });
 
   if (filtered.length < Math.max(50, Math.floor(pois.length * 0.5))) {
-    const msg = `POI filter dropped too many (${dropped}/${pois.length}); falling back to unfiltered list (probable bbox-centroid mismatch with graph)`;
+    const msg = `POI filter dropped too many (${dropped}/${pois.length}); falling back to unfiltered list ` +
+      (source ? `(source POI [${centerLng},${centerLat}] snapped but most POIs unreachable)` : `(no candidate POI snapped to the graph - probable region/graph mismatch)`);
     log('WARN', 'Studio', msg);
     onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable - too aggressive, using unfiltered list`);
     return pois;
@@ -186,6 +242,7 @@ export async function loadPOIs(
   // always fills to the cap when enough candidates exist, and inherently caps
   // dense metros with no tuning constant. Cell size adapts to region area.
   const h3Res = h3ResForArea(config.region_area_km2);
+  const poiCap = poiCapForArea(config.region_area_km2);
   const sql = `
     WITH region_boundary AS (
       SELECT BOUNDARY
@@ -213,9 +270,9 @@ export async function loadPOIs(
     SELECT LOCATION_ID, NAME, CATEGORY, LAT, LNG
     FROM candidates
     ORDER BY _RN, RANDOM()
-    LIMIT 5000`;
+    LIMIT ${poiCap}`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
-    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, h3Res, sql: sql.trim().replace(/\s+/g, ' ') },
+    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, h3Res, poiCap, sql: sql.trim().replace(/\s+/g, ' ') },
   });
   try {
     const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
