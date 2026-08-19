@@ -23,6 +23,7 @@ import { loadPOIs } from './engine/routability';
 import {
   fetchRoute, fetchDetourRoute, pickDestination,
   pickNearestRoutableNeighbor, pickDetourWaypoint, probeRoutability,
+  clearRouteCache, routeCacheStats,
 } from './engine/routing';
 import { interpolateRoute } from './engine/interpolate';
 import { emitDwell, emitLongIdleDwell } from './engine/dwell';
@@ -74,6 +75,9 @@ export async function* generateTelemetry(
   const vt = resolveVehicleType(config);
   const PARALLELISM = Math.max(1, Math.floor(config.parallelism ?? 8));
   const STREAM_FLUSH_THRESHOLD = 2000;
+
+  // Fresh per-job route cache so hit-rate stats and memory are scoped to this run.
+  clearRouteCache();
 
   log('INFO', 'Studio', `Starting generation for ${config.region}`, {
     detail: {
@@ -131,7 +135,11 @@ export async function* generateTelemetry(
   const busyUntil = new Map<string, number>();
   const MAX_CONSECUTIVE_FAILURES = 25;
   const MIN_ATTEMPTS_BEFORE_STOP = 20;
-  const MAX_ROUTE_RETRIES = 3;
+  // Fewer retries on continent-scale regions: each retry is a full ORS call, and
+  // once the POI pool is routable (filter fix) genuine unroutable picks are rare,
+  // so 3 retries mostly burns calls. Small regions keep 3 for robustness.
+  const isLargeRegion = (config.region_area_km2 ?? 0) >= 1_000_000;
+  const MAX_ROUTE_RETRIES = isLargeRegion ? 2 : 3;
   const RECOVERY_THRESHOLD = 10;
   const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
   let lastRecoveryMs = 0;
@@ -322,17 +330,26 @@ export async function* generateTelemetry(
         lifecycle.vehicle.battery_pct = 100;
       }
 
+      // Prefer destinations not already known to be unroutable, so as the run
+      // learns dead POIs it stops picking them on the FIRST attempt (not just in
+      // the retry loop). Rebuilt once per trip; falls back to the full list if
+      // filtering leaves too few candidates.
+      const routableCandidates = unroutablePoiIds.size > 0
+        ? pois.filter(p => !unroutablePoiIds.has(p.location_id))
+        : pois;
+      const pickPool = routableCandidates.length > 10 ? routableCandidates : pois;
+
       // Reposition to the next pickup as an EMPTY leg (deadhead). The pickup is
       // chosen independently of the previous drop-off so the move is a visible
       // routed movement, not a teleport. The first job (t===0) starts at home.
       if (emptyLegsEnabled && t > 0) {
-        const pickupPoi = pickDestination(currentOriginPoi, pois, config, memberRng);
+        const pickupPoi = pickDestination(currentOriginPoi, pickPool, config, memberRng);
         if (await emitEmptyLeg(pickupPoi)) {
           currentOriginPoi = pickupPoi;
         }
       }
 
-      let destPoi = pickDestination(currentOriginPoi, pois, config, memberRng);
+      let destPoi = pickDestination(currentOriginPoi, pickPool, config, memberRng);
       const tripId = uuid(memberRng);
       const tripStartTime = new Date(lifecycle.currentTime);
 
@@ -652,6 +669,8 @@ export async function* generateTelemetry(
     }
 
     const unroutableSuffix = unroutableSkips > 0 ? `, ${unroutableSkips} unroutable POI skips (${unroutablePoiIds.size} unique)` : '';
+    const rc = routeCacheStats();
+    const cacheSuffix = ` [route cache ${(rc.hitRate * 100).toFixed(0)}% hit, ${rc.size} entries]`;
     onProgress?.({
       day: dayOffset + 1,
       totalDays,
@@ -662,7 +681,7 @@ export async function* generateTelemetry(
       routeFailures,
       unroutableSkips,
       unroutablePois: unroutablePoiIds.size,
-      status: `Day ${dayOffset + 1}/${totalDays} complete: ${totalTrips} trips total${unroutableSuffix}`,
+      status: `Day ${dayOffset + 1}/${totalDays} complete: ${totalTrips} trips total${unroutableSuffix}${cacheSuffix}`,
     });
   }
 }
