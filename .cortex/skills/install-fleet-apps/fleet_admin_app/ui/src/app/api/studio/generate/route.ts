@@ -3,7 +3,7 @@ import { withLogging } from '@/lib/api-handler';
 import { runSql } from '@/server/lib/sql';
 import { startGeneration } from '@/server/studio/jobs';
 import { GenerationConfig, defaultDistanceDistributionForArea } from '@/server/studio/profiles';
-import { bboxAreaKm2 } from '@/server/studio/engine/spatial';
+import { bboxAreaKm2, parallelismForArea } from '@/server/studio/engine/spatial';
 import { resolveRegionBbox, resolveRegionAreaKm2, checkOrsReadiness } from '@/server/studio/route-helpers';
 import { requireOps } from '@/lib/ingress-identity';
 import { log } from '@/server/diagnostics';
@@ -41,6 +41,11 @@ export const POST = withLogging(async (req: NextRequest) => {
 
     const areaKm2 = (await resolveRegionAreaKm2(config.region, runSql)) ?? bboxAreaKm2(config.bbox);
     config.region_area_km2 = areaKm2;
+    // Concurrency knob: honor an explicit config.parallelism (preset/UI), else
+    // derive an area-adaptive default so large regions saturate ORS better.
+    if (config.parallelism == null || !Number.isFinite(config.parallelism) || config.parallelism < 1) {
+      config.parallelism = parallelismForArea(areaKm2);
+    }
     if (!config.spatial_spread) {
       config.spatial_spread = { enabled: true, bin_deg: null, min_bins_required: 3 };
     } else {
