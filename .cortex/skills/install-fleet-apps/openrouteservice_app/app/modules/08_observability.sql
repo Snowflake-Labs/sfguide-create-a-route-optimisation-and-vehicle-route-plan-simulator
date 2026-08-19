@@ -11,7 +11,7 @@
 --   * Schema/Table: OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
 --   * Aggregation view: V_ORS_METRICS_SUMMARY (last hour / 24h windows)
 --   * Ingest procedure: INGEST_ORS_METRICS(window_minutes)
---   * Scheduled task: ORS_METRICS_INGEST_TASK (every 1 minute, USER_TASK)
+--   * Scheduled task: ORS_METRICS_INGEST_TASK (every 5 minutes, USER_TASK)
 --
 -- The Python gateway writes a structured `[ORS_METRIC] {json}` line to stdout
 -- for every routing call (see services/gateway/routing_service.py). The
@@ -207,18 +207,23 @@ END;
 $$;
 
 
--- Scheduled task: runs every minute via SERVERLESS_TASK on the
--- ROUTING_ANALYTICS warehouse already used by the matrix pipeline.
+-- Scheduled task: runs every 5 minutes via SERVERLESS_TASK on the
+-- ROUTING_ANALYTICS warehouse already used by the matrix pipeline. A 5-minute
+-- cadence (was 1 minute) lets ROUTING_ANALYTICS auto-suspend between runs
+-- during active-but-quiet periods instead of being pinned awake 24/7; the
+-- 6-minute ingest window (> the 5-minute schedule) guarantees gap-free coverage
+-- even if a run is delayed, and the NOT EXISTS dedupe on (REQUEST_ID,REQUEST_TS)
+-- makes the 1-minute overlap harmless.
 -- The task is paused at create time; the deploy script (or operator) runs
 --   ALTER TASK ORS_METRICS_INGEST_TASK RESUME;
 -- after the gateway image emitting [ORS_METRIC] lines is rolled out, so
 -- ingest does not start producing zero-row noise before the producer ships.
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK
     WAREHOUSE = ROUTING_ANALYTICS
-    SCHEDULE = '1 MINUTE'
+    SCHEDULE = '5 MINUTE'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-    CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(5);
+    CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(6);
 
 ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK SUSPEND;
 
