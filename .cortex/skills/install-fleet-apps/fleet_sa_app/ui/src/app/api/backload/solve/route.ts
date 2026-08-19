@@ -71,7 +71,15 @@ async function handlePost(req: Request) {
     const errObj = result as { error?: unknown; message?: unknown } | null;
     if (errObj && typeof errObj === 'object' && 'error' in errObj && errObj.error) {
       const msg = typeof errObj.message === 'string' ? errObj.message : String(errObj.error);
-      return NextResponse.json({ error: `solver: ${msg}`, result }, { status: 502 });
+      // VROOM code 3 aborts the whole solve when a single location cannot be
+      // routed (e.g. a point snapped onto a disconnected road component). It
+      // names the offending coordinate: "Unfound route(s) from location
+      // [lon,lat]". Parse it structurally so the page can drop just that
+      // shipment/vehicle and re-solve the remainder instead of failing wholesale.
+      let unroutable: { lon: number; lat: number } | undefined;
+      const m = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(msg);
+      if (m) unroutable = { lon: Number(m[1]), lat: Number(m[2]) };
+      return NextResponse.json({ error: `solver: ${msg}`, result, unroutable }, { status: 502 });
     }
     return NextResponse.json({ ok: true, result });
   } catch (err) {

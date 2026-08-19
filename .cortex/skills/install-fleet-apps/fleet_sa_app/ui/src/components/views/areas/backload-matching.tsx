@@ -41,6 +41,17 @@ const BM_INTERNAL_MIN = 0, BM_INTERNAL_MAX = 80;
 const BM_EXTERNAL_MIN = 0, BM_EXTERNAL_MAX = 60;
 const BM_MAX_MATRIX_LOCATIONS = 500;
 const BM_SOLVE_TIMEOUT_MS = 180_000;
+// A single VROOM code-3 unroutable location aborts the whole solve. We drop the
+// offending shipment/vehicle and re-solve; cap the retries so a pathological
+// dataset can never loop forever.
+const BM_MAX_UNROUTABLE_RETRIES = 8;
+
+// VROOM echoes the failing coordinate rounded to ~6dp, so match with a small
+// epsilon rather than exact equality.
+function coordNear(a: number, b: number): boolean { return Math.abs(a - b) < 1e-4; }
+function locMatchesCoord(loc: unknown, lon: number, lat: number): boolean {
+  return Array.isArray(loc) && coordNear(Number(loc[0]), lon) && coordNear(Number(loc[1]), lat);
+}
 
 type EndMode = 'home' | 'shared' | 'open';
 
@@ -327,32 +338,94 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     const ac = new AbortController();
     solveAbortRef.current = ac;
-    const deadlineHandle = setTimeout(() => ac.abort(), BM_SOLVE_TIMEOUT_MS);
 
-    // Let the routing gateway pre-compute the matrix (options.g=true).
-    const challenge = { vehicles: vrpVehicles, shipments: vrpShipments, options: { g: true } };
-    setSolverLog('Calling OPTIMIZATION...');
+    // Solve, dropping any VROOM code-3 unroutable location and re-solving the
+    // remainder. A single point snapped onto a disconnected road component
+    // otherwise aborts the whole solve ("Unfound route(s) from location
+    // [lon,lat]"). VROOM names the offending coordinate, so we drop the matching
+    // shipment/vehicle (a shipment needs BOTH endpoints routable) and retry.
+    let workVehicles = vrpVehicles;
+    let workShipments = vrpShipments;
+    const excludedLabels: string[] = [];
+    const droppedCoords: string[] = [];
     let respObj: Record<string, unknown> | null = null;
-    try {
-      const res = await fetch('/api/backload/solve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challenge, region: cfg.region }), signal: ac.signal,
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      respObj = body.result as Record<string, unknown>;
-    } catch (e) {
+    let fatal: string | null = null;
+
+    for (let attempt = 0; attempt <= BM_MAX_UNROUTABLE_RETRIES; attempt++) {
+      const deadlineHandle = setTimeout(() => ac.abort(), BM_SOLVE_TIMEOUT_MS);
+      // Let the routing gateway pre-compute the matrix (options.g=true).
+      const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: true } };
+      setSolverLog(attempt === 0
+        ? 'Calling OPTIMIZATION...'
+        : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
+      let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
+      let ok = false;
+      try {
+        const res = await fetch('/api/backload/solve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge, region: cfg.region }), signal: ac.signal,
+        });
+        body = await res.json();
+        ok = res.ok;
+      } catch (e) {
+        clearTimeout(deadlineHandle);
+        solveAbortRef.current = null;
+        const err = e as { name?: string; message?: string };
+        setSolveError(err?.name === 'AbortError'
+          ? `Solve cancelled or timed out after ${Math.round(BM_SOLVE_TIMEOUT_MS / 1000)}s. Try lowering Max stops, deviation %, or disabling Multi-window pickups.`
+          : `OPTIMIZATION call failed: ${err?.message || e}`);
+        setSolving(false);
+        return;
+      }
       clearTimeout(deadlineHandle);
-      solveAbortRef.current = null;
-      const err = e as { name?: string; message?: string };
-      setSolveError(err?.name === 'AbortError'
-        ? `Solve cancelled or timed out after ${Math.round(BM_SOLVE_TIMEOUT_MS / 1000)}s. Try lowering Max stops, deviation %, or disabling Multi-window pickups.`
-        : `OPTIMIZATION call failed: ${err?.message || e}`);
+
+      if (ok) { respObj = body.result as Record<string, unknown>; break; }
+
+      // Extract the unroutable coordinate (structured field, else parse the msg).
+      let bad = body.unroutable ?? null;
+      if (!bad && typeof body.error === 'string') {
+        const m = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(body.error);
+        if (m) bad = { lon: Number(m[1]), lat: Number(m[2]) };
+      }
+      const badKey = bad ? `${bad.lon.toFixed(4)},${bad.lat.toFixed(4)}` : null;
+      if (!bad || (badKey && droppedCoords.includes(badKey))) {
+        // Not a parseable unroutable point, or dropping it made no progress.
+        fatal = body.error || 'Solver returned an error.';
+        break;
+      }
+      droppedCoords.push(badKey!);
+
+      // Drop every vehicle (start/end) and shipment (pickup/delivery) that sits
+      // on the offending coordinate, recording a human label for each.
+      workVehicles = workVehicles.filter((veh) => {
+        const hit = locMatchesCoord(veh.start, bad!.lon, bad!.lat) || locMatchesCoord(veh.end, bad!.lon, bad!.lat);
+        if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
+        return !hit;
+      });
+      workShipments = workShipments.filter((s) => {
+        const pu = (s.pickup as { location?: unknown } | undefined)?.location;
+        const dl = (s.delivery as { location?: unknown } | undefined)?.location;
+        const hitPickup = locMatchesCoord(pu, bad!.lon, bad!.lat);
+        const hitDelivery = locMatchesCoord(dl, bad!.lon, bad!.lat);
+        if (hitPickup || hitDelivery) {
+          const sid = Number((s.pickup as { id?: unknown } | undefined)?.id);
+          const ent = offerById.get(sid);
+          const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
+          excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
+        }
+        return !(hitPickup || hitDelivery);
+      });
+
+      if (!workVehicles.length) { fatal = 'All trailers are at unroutable locations for this region. Regenerate the preset data or pick another region.'; break; }
+      if (!workShipments.length) { fatal = 'Every load pickup/dropoff is unroutable for this region. Regenerate the preset data or pick another region.'; break; }
+    }
+    solveAbortRef.current = null;
+
+    if (!respObj) {
+      setSolveError(fatal || `Solver could not find a routable plan after excluding ${excludedLabels.length} stop(s).`);
       setSolving(false);
       return;
     }
-    clearTimeout(deadlineHandle);
-    solveAbortRef.current = null;
 
     const vroomRoutes = Array.isArray(respObj?.routes) ? (respObj!.routes as Record<string, unknown>[]) : [];
     const vroomUnassigned = Array.isArray(respObj?.unassigned) ? (respObj!.unassigned as Record<string, unknown>[]) : [];
@@ -464,7 +537,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     setUnassigned(newUnassigned);
     const avgDetour = newAssignments.length ? Math.round(newAssignments.reduce((s, a) => s + (a.DETOUR_KM || 0), 0) / newAssignments.length) : 0;
     const totalNet = Math.round(newAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0));
-    setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external). Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
+    const excludedNote = excludedLabels.length
+      ? ` Excluded ${excludedLabels.length} unroutable stop(s): ${excludedLabels.slice(0, 6).join('; ')}${excludedLabels.length > 6 ? ` (+${excludedLabels.length - 6} more)` : ''}.`
+      : '';
+    setSolverLog(`Sent ${workVehicles.length} vehicles, ${workShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external).${excludedNote} Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
 
     if (vroomError) {
       setSolveError(`Routing gateway / VROOM error: ${vroomError}`);
