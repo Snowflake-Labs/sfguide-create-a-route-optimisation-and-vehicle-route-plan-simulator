@@ -153,9 +153,13 @@ async function insertDemographicsProcedural(
     ),
     pop AS (
       SELECT H3, GEOM, LAT, LON, AREA_KM2, dens_n,
-        -- people/km^2: rural ~20-120, urban hotspots up to ~4000 (dens_n^2 skews low).
-        (20 + POW(dens_n,2)*3980) AS DENSITY,
-        ROUND((20 + POW(dens_n,2)*3980) * AREA_KM2) AS TOTPOP
+        -- Avg people/km^2 over the WHOLE hex (which can be ~1770 km^2 at res 4),
+        -- so the scale is deliberately low and cubic-skewed: most hexes are rural
+        -- (~8-40/km^2), metro-containing hexes peak ~700/km^2 average. Keeps total
+        -- population per hex plausible (~tens-to-hundreds of thousands) instead of
+        -- applying point-urban density across a whole region.
+        (8 + POW(dens_n,3)*700) AS DENSITY,
+        ROUND((8 + POW(dens_n,3)*700) * AREA_KM2) AS TOTPOP
       FROM dens
     )
     SELECT
