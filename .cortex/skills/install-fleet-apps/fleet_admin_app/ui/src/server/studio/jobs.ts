@@ -9,6 +9,7 @@ import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './s
 import { ensureTables } from './ensure-tables';
 import { syncRegionRegistryAndConfig } from './region-sync';
 import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactOffers, insertDimPartners, insertFactPartnerHistory } from './inserters';
+import { fetchRoute } from './engine/routing';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -249,41 +250,79 @@ async function precomputeOfferRoutes(
     `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
     'FLEET_INTELLIGENCE', 'MARKETPLACE',
   );
-  await snowSql(
-    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
-     USING (
-       SELECT
-         o.OFFER_ID,
-         ${escVal(jobId)} AS JOB_ID,
-         d.DISTANCE / 1000.0 AS ROAD_KM,
-         d.DURATION / 60.0 AS ROAD_MIN,
-         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS GEOMETRY,
-         ${escVal(profile)} AS PROFILE
-       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS o,
-            TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-              ${escVal(profile)},
-              ARRAY_CONSTRUCT(o.PICKUP_LON, o.PICKUP_LAT),
-              ARRAY_CONSTRUCT(o.DROPOFF_LON, o.DROPOFF_LAT),
-              ${escVal(region)}
-            )) d
-       WHERE o.JOB_ID = ${escVal(jobId)}
-         AND o.PICKUP_LON IS NOT NULL
-         AND o.PICKUP_LAT IS NOT NULL
-         AND o.DROPOFF_LON IS NOT NULL
-         AND o.DROPOFF_LAT IS NOT NULL
-     ) src
-     ON tgt.OFFER_ID = src.OFFER_ID AND tgt.JOB_ID = src.JOB_ID
-     WHEN MATCHED THEN UPDATE SET
-       ROAD_KM = src.ROAD_KM,
-       ROAD_MIN = src.ROAD_MIN,
-       GEOMETRY = src.GEOMETRY,
-       PROFILE = src.PROFILE,
-       JOB_ID = src.JOB_ID,
-       COMPUTED_AT = CURRENT_TIMESTAMP()
-     WHEN NOT MATCHED THEN INSERT (JOB_ID, OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
-       VALUES (src.JOB_ID, src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, CURRENT_TIMESTAMP())`,
-    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  // Resilient per-offer routing. The previous implementation ran DIRECTIONS as a
+  // single lateral TABLE(...) join over ALL offers in one MERGE; a single
+  // unroutable offer makes the ORS table function error and aborts the entire
+  // statement, so every route is lost (silently - the caller's catch only WARNs).
+  // Instead, route each offer independently via fetchRoute (which returns
+  // 'UNROUTABLE'/null gracefully and has a per-call timeout + route cache), skip
+  // the ones that don't route, and upsert the successes in VALUES batches. One
+  // bad offer can no longer zero out the whole set.
+  const offers = await snowSql(
+    `SELECT OFFER_ID, PICKUP_LAT, PICKUP_LON, DROPOFF_LAT, DROPOFF_LON
+     FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
+     WHERE JOB_ID = ${escVal(jobId)}
+       AND PICKUP_LAT IS NOT NULL AND PICKUP_LON IS NOT NULL
+       AND DROPOFF_LAT IS NOT NULL AND DROPOFF_LON IS NOT NULL`,
+    'SYNTHETIC_DATASETS', 'UNIFIED',
   );
+  if (!offers.length) return;
+
+  interface RouteRow { offerId: string; roadKm: number; roadMin: number; geojson: string; }
+  const routed: RouteRow[] = [];
+  let unroutable = 0;
+  const CONCURRENCY = 8;
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < offers.length) {
+      const o = offers[cursor++];
+      const r = await fetchRoute(
+        Number(o.PICKUP_LAT), Number(o.PICKUP_LON),
+        Number(o.DROPOFF_LAT), Number(o.DROPOFF_LON),
+        profile, region, snowSql,
+      );
+      if (!r || r === 'UNROUTABLE') { unroutable++; continue; }
+      // fetchRoute returns coordinates as [lat, lng]; GeoJSON wants [lng, lat].
+      const geojson = JSON.stringify({
+        type: 'LineString',
+        coordinates: r.coordinates.map(c => [c[1], c[0]]),
+      });
+      routed.push({
+        offerId: String(o.OFFER_ID),
+        roadKm: Math.round((r.distance_m / 1000) * 100) / 100,
+        roadMin: Math.round((r.duration_sec / 60) * 100) / 100,
+        geojson,
+      });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offers.length) }, () => worker()));
+
+  // Upsert successes in batches. OFFER_ID is the table PK (offer ids repeat
+  // across jobs), so MERGE on OFFER_ID: update-in-place or insert, stamping the
+  // current JOB_ID/profile. Batches keep the VALUES SQL size bounded.
+  const BATCH = 50;
+  for (let i = 0; i < routed.length; i += BATCH) {
+    const chunk = routed.slice(i, i + BATCH);
+    const values = chunk.map(r =>
+      `(${escVal(r.offerId)},${r.roadKm},${r.roadMin},${escVal(r.geojson)},${escVal(profile)},${escVal(jobId)})`
+    ).join(',\n');
+    await snowSql(
+      `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
+       USING (
+         SELECT * FROM VALUES
+         ${values}
+         AS v(OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID)
+       ) src
+       ON tgt.OFFER_ID = src.OFFER_ID
+       WHEN MATCHED THEN UPDATE SET
+         ROAD_KM = src.ROAD_KM, ROAD_MIN = src.ROAD_MIN, GEOMETRY = src.GEOMETRY,
+         PROFILE = src.PROFILE, JOB_ID = src.JOB_ID, COMPUTED_AT = CURRENT_TIMESTAMP()
+       WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID, COMPUTED_AT)
+         VALUES (src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, src.JOB_ID, CURRENT_TIMESTAMP())`,
+      'FLEET_INTELLIGENCE', 'MARKETPLACE',
+    );
+  }
+  log('INFO', 'Studio', `Offer routes: ${routed.length}/${offers.length} routed, ${unroutable} unroutable`, { jobId });
 }
 
 // -------------------------------------------------------------------------
