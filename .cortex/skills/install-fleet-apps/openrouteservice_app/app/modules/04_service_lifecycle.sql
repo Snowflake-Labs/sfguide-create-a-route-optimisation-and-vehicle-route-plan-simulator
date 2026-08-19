@@ -327,23 +327,36 @@ BEGIN
     IF (NOT COALESCE(:enabled, TRUE)) THEN RETURN 'auto-hibernate: disabled'; END IF;
 
     -- last_activity = GREATEST across the synapse audit tables + ORS request log.
-    -- Each source is independently guarded (a bundle table may not exist).
-    FOR src IN (
-        SELECT COLUMN1 AS Q FROM VALUES
-            ('SELECT MAX(at) AS M FROM OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT'),
-            ('SELECT MAX(at) AS M FROM FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT'),
-            ('SELECT MAX(at) AS M FROM FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT'),
-            ('SELECT MAX(REQUEST_TS) AS M FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG')
-    ) DO
-        BEGIN
-            LET t TIMESTAMP_LTZ := NULL;
-            LET rs RESULTSET := (EXECUTE IMMEDIATE src.Q);
-            LET c CURSOR FOR rs;
-            FOR r IN c DO t := r.M::TIMESTAMP_LTZ; END FOR;
-            IF (:t IS NOT NULL AND (:la IS NULL OR :t > :la)) THEN la := :t; END IF;
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    END FOR;
+    -- Each source is queried in its own guarded block so a missing table (a
+    -- bundle may not be installed) never aborts the rest. Static SQL is used
+    -- deliberately: a query-literal "FOR ... IN (SELECT ... FROM VALUES)" loop
+    -- does not expose the loop column (rec.col needs a CURSOR, and VALUES
+    -- literals are rejected in a FOR-cursor), which previously raised
+    -- "invalid identifier 'SRC.Q'" and killed the hourly hibernate task.
+    BEGIN
+        LET t1 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t1 FROM OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT;
+        IF (:t1 IS NOT NULL AND (:la IS NULL OR :t1 > :la)) THEN la := :t1; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t2 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t2 FROM FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT;
+        IF (:t2 IS NOT NULL AND (:la IS NULL OR :t2 > :la)) THEN la := :t2; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t3 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t3 FROM FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT;
+        IF (:t3 IS NOT NULL AND (:la IS NULL OR :t3 > :la)) THEN la := :t3; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t4 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(REQUEST_TS) INTO :t4 FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG;
+        IF (:t4 IS NOT NULL AND (:la IS NULL OR :t4 > :la)) THEN la := :t4; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     IF (:la IS NOT NULL) THEN
         idle_min := DATEDIFF('minute', :la, CURRENT_TIMESTAMP());
