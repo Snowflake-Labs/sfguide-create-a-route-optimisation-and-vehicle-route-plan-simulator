@@ -36,6 +36,11 @@ export interface Job {
   abort: { aborted: boolean };
   listeners: Set<SseCallback>;
   events: BufferedEvent[];
+  // Wall-clock of the last observed progress (any progress/telemetry/trip/batch
+  // event). Used by the in-run no-progress watchdog. `stalled` is set by the
+  // watchdog when it aborts a wedged job so the completion path marks it FAILED.
+  lastProgressAt?: number;
+  stalled?: boolean;
 }
 
 // globalThis-pinned so the /api/studio/generate route (which calls startGeneration)
@@ -688,7 +693,9 @@ async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
     }).replace(/\$\$/g, '$ $');
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
-       SET LOG_TEXT = PARSE_JSON($$${payload}$$)
+       SET LOG_TEXT = PARSE_JSON($$${payload}$$),
+           POINTS_GENERATED = ${Number(job.pointsGenerated) || 0},
+           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0}
        WHERE JOB_ID = ${escVal(job.jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
@@ -795,6 +802,8 @@ export async function startGeneration(
     abort: { aborted: false },
     listeners: new Set(),
     events: [],
+    lastProgressAt: Date.now(),
+    stalled: false,
   };
   activeJobs.set(jobId, job);
   broadcast(job, 'started', {
@@ -825,6 +834,24 @@ export async function startGeneration(
         .catch(() => { /* persistJobLog already logs; never throw from timer */ })
         .finally(() => { persistInFlight = false; });
     }, JOB_LOG_FLUSH_MS);
+    // No-progress watchdog. reconcileStaleJobs only runs at boot and skips
+    // in-memory jobs, so a job that wedges while the container stays up would
+    // never self-heal. If no progress event arrives for WATCHDOG_STALL_MS, flag
+    // the job stalled and set the abort signal; the generator's abort checks and
+    // the per-call ORS timeout let the loop unwind and the completion path marks
+    // it FAILED. Secondary net to the per-call timeout in engine/routing.ts.
+    const WATCHDOG_STALL_MS = 15 * 60_000;
+    const WATCHDOG_TICK_MS = 60_000;
+    const watchdogTimer: NodeJS.Timeout = setInterval(() => {
+      if (job.status !== 'RUNNING' || job.abort.aborted) return;
+      const idleMs = Date.now() - (job.lastProgressAt ?? job.startedAt.getTime());
+      if (idleMs >= WATCHDOG_STALL_MS) {
+        job.stalled = true;
+        job.abort.aborted = true;
+        log('ERROR', 'Studio', `Watchdog: no progress for ${Math.round(idleMs / 60000)} min - aborting job ${jobId} (possible ORS stall)`, { jobId });
+        broadcast(job, 'warning', { message: `No progress for ${Math.round(idleMs / 60000)} min - watchdog aborting job (possible ORS stall)` });
+      }
+    }, WATCHDOG_TICK_MS);
     try {
       await ensureTables(snowSql);
       try {
@@ -1052,16 +1079,19 @@ export async function startGeneration(
         (p: GenerationProgress) => {
           job.pointsGenerated = p.totalPoints;
           job.tripsGenerated = p.totalTrips;
+          job.lastProgressAt = Date.now();
           broadcast(job, 'progress', p);
         },
         job.abort,
         (msg: string) => {
+          job.lastProgressAt = Date.now();
           broadcast(job, 'progress', { status: msg });
         }
       );
 
       for await (const event of gen) {
         if (job.abort.aborted) break;
+        job.lastProgressAt = Date.now();
 
         if (event.type === 'telemetry') {
           try {
@@ -1116,16 +1146,17 @@ export async function startGeneration(
           routeFailures: stoppedEvent.routeFailures,
         });
       } else {
-        job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
+        job.status = job.stalled ? 'FAILED' : (job.abort.aborted ? 'CANCELLED' : 'COMPLETED');
+        if (job.stalled && !job.error) job.error = 'No progress for 15 min - aborted by watchdog (possible ORS stall)';
         job.completedAt = new Date();
         log('INFO', 'Studio', `Job ${jobId} ${job.status}: ${job.pointsGenerated} pts, ${job.tripsGenerated} trips`, { jobId });
-        broadcast(job, job.status === 'COMPLETED' ? 'complete' : 'cancelled', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
+        broadcast(job, job.status === 'COMPLETED' ? 'complete' : (job.status === 'FAILED' ? 'error' : 'cancelled'), { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated, error: job.error ?? undefined });
       }
 
       try {
         const errMsg = stoppedEvent
           ? `ORS stopped: ${stoppedEvent.reason}. ${stoppedEvent.completedDays}/${stoppedEvent.totalDays} days completed.`
-          : null;
+          : (job.stalled ? job.error : null);
         await snowSql(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='${job.status}',
            POINTS_GENERATED=${job.pointsGenerated}, TRIPS_GENERATED=${job.tripsGenerated},
@@ -1194,6 +1225,7 @@ export async function startGeneration(
       }
     } finally {
       clearInterval(flushTimer);
+      clearInterval(watchdogTimer);
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
     }
