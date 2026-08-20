@@ -708,6 +708,17 @@ async function updateDatasetRowCounts(
 
 function broadcast(job: Job, event: string, data: any) {
   job.events.push({ event, data, ts: Date.now() });
+  // Every forward-progress event refreshes the no-progress watchdog. Without
+  // this, the pre-telemetry universal-generation phase (offers/partners/anchors/
+  // participants/... - each a discrete awaited INSERT that broadcasts on
+  // completion) never stamps lastProgressAt, so the watchdog measures from
+  // job.startedAt and falsely aborts any run whose setup phase exceeds 15 min in
+  // total (e.g. a region where the anchors INSERT alone takes ~10 min), even
+  // though progress messages are streaming. Telemetry-phase liveness is covered
+  // separately by getRouteActivity() in the watchdog; this covers the setup phase.
+  if (event === 'progress' || event === 'batch') {
+    job.lastProgressAt = Date.now();
+  }
   if (job.events.length > EVENT_BUFFER_CAP) {
     job.events.splice(0, job.events.length - EVENT_BUFFER_CAP);
   }
@@ -908,9 +919,10 @@ export async function startGeneration(
       }
       // Liveness heartbeat: when ORS route calls are still completing but no
       // vehicle-day has finished yet (mid-day on a large region), surface a
-      // moving status so the UI is not frozen on "0 pts, 0 trips". This does not
-      // stamp lastProgressAt - route activity already keeps the watchdog fresh -
-      // so it cannot mask a real wedge.
+      // moving status so the UI is not frozen on "0 pts, 0 trips". It only fires
+      // when route completions genuinely advanced since the last tick, so the
+      // resulting progress broadcast (which does stamp lastProgressAt) can never
+      // mask a real wedge - no route activity means no heartbeat.
       if (lastSeenRouteCompletions >= 0 && act.completions > lastSeenRouteCompletions && job.pointsGenerated === 0) {
         const rc = routeCacheStats();
         broadcast(job, 'progress', {
