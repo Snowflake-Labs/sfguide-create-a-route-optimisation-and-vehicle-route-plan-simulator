@@ -68,7 +68,7 @@ If the table exists and has rows, data is already loaded. Skip to Step 5 (Verify
 
 ### Create views and run ETL
 
-Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, and 3 ETL Dynamic Tables (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) computed from the views with `lag='5 minutes'` so they auto-refresh whenever CONFIG or upstream FACT_TRIPS change.
+Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, and 3 ETL Dynamic Tables (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) computed from the views (TRIP_DEVIATION_ANALYSIS with `lag=DOWNSTREAM`, the two summary tables with `lag='1 hour'`) so they auto-refresh whenever CONFIG or upstream FACT_TRIPS change without burning idle credits on a short refresh cadence.
 
 ## Workflow
 
@@ -114,7 +114,7 @@ UNION ALL SELECT 'DIM_POIS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW
 
 ### Step 4: Run ETL Pipeline
 
-Execute all 3 ETL steps in order. Each is a CREATE OR REPLACE DYNAMIC TABLE with `lag='5 minutes'` and `refresh_mode='AUTO'` so the Route Deviation pages always reflect the active CONFIG.REGION/VEHICLE_TYPE without a manual rebuild. Full SQL in `references/sql-pipeline.md`.
+Execute all 3 ETL steps in order. Each is a CREATE OR REPLACE DYNAMIC TABLE with `refresh_mode='AUTO'` (TRIP_DEVIATION_ANALYSIS uses `lag=DOWNSTREAM`, the two summaries `lag='1 hour'`) so the Route Deviation pages reflect the active CONFIG.REGION/VEHICLE_TYPE without a manual rebuild and without a short idle-cost refresh cadence. Full SQL in `references/sql-pipeline.md`.
 
 | Step | Table | Description |
 |------|-------|-------------|

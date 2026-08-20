@@ -120,6 +120,14 @@ The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens o
 
 ACCOUNTADMIN satisfies all of the above but is not required if the above are granted to a custom role.
 
+## Cost Guardrails (optional)
+
+Cost controls that ship enabled by default: dynamic tables use `DOWNSTREAM`/hourly lags, non-essential tasks are created suspended, the `RESCUE_PENDING_PROVISIONS_TASK` self-gates, the core SPCS pool is `MIN_NODES=1` (scales to 5), the gateway idle-suspends after 1h, Time Travel is `0` on all accelerator databases, and `AUTO_HIBERNATE_TASK` enters cost-safe mode after 4h idle (toggle in the admin Service Manager). `COST_SAFE_MODE()` / `RESUME_FLEET()` give a one-click manual control, and `docs/guides/cost-safe-teardown.sql` is a paste-in runbook for a live account.
+
+For a HARD ceiling + spend alerting, apply the optional `references/cost-guardrails.sql`: a `RESOURCE MONITOR` on the `ROUTING_ANALYTICS` warehouse plus a `SNOWFLAKE.CORE.BUDGET` covering the compute pools + warehouse. This is opt-in and NOT run by the installer because it needs ACCOUNTADMIN (or a role granted `CREATE RESOURCE MONITOR ON ACCOUNT` and `CREATE SNOWFLAKE.CORE.BUDGET`) plus a deployment-specific credit budget. Edit the two placeholders (`MONTHLY_CREDIT_QUOTA`, `BUDGET_NOTIFY_EMAIL`) and run it as such a role.
+
+The admin app's Observability page also shows a "Daily consumption (last 3 weeks)" chart (accelerator credits per day: `ROUTING_ANALYTICS` + the routing/app SPCS pools) read from `SNOWFLAKE.ACCOUNT_USAGE`. The admin app's service-owner role needs the narrow `SNOWFLAKE.USAGE_VIEWER` database role for this - the same `references/cost-guardrails.sql` includes that grant (step 3). Until granted, the widget renders a "grant required" notice with the exact statement instead of the chart.
+
 ## Cleanup
 
 ```sql
@@ -166,4 +174,5 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 - `references/snowflake-scripting-guidelines.md` - SQL Scripting rules for the engine modules.
 - `references/snowflake-sql-gotchas.md` - engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
 - `references/troubleshooting.md` - engine image build / registry / service troubleshooting.
+- `references/cost-guardrails.sql` - OPTIONAL privileged resource monitor + budget (see Cost Guardrails).
 - `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` - the locked agnostic contract.

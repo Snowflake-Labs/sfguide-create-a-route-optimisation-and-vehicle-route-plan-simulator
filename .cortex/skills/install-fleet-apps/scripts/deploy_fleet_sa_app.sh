@@ -125,7 +125,24 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     -f "$UI_DIR/Dockerfile" \
     -t "$REPO_URL/fleet_sa_app:$IMAGE_TAG" \
     "$UI_DIR" > /tmp/fleet_sa_docker.log 2>&1 || { echo "ERROR: docker build failed"; tail -40 /tmp/fleet_sa_docker.log; exit 1; }
-  docker push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: docker push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
+  # Prefer crane for the SPCS push: plain `docker push` intermittently hangs on the
+  # final manifest/blob commit ("timeout awaiting response headers") when the bearer
+  # token expires mid-upload; crane commits reliably. Mirrors provision_engine.sh.
+  # Falls back to `docker push` if crane is absent or the crane path errors.
+  if command -v crane >/dev/null 2>&1 && [ "${USE_CRANE_PUSH:-1}" = "1" ]; then
+    snow spcs image-registry login -c "$CONNECTION" >/dev/null 2>&1 || true
+    _tar="$(mktemp -t fleetsaimg.XXXXXX).tar"
+    if docker save "$REPO_URL/fleet_sa_app:$IMAGE_TAG" -o "$_tar" \
+       && crane push "$_tar" "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1; then
+      rm -f "$_tar"
+    else
+      rm -f "$_tar"
+      echo "  crane push failed; falling back to 'docker push' (see /tmp/fleet_sa_push.log)"
+      docker push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: docker push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
+    fi
+  else
+    docker push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: docker push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
+  fi
 else
   echo "[1-3/7] SKIP_IMAGE=1, skipping build/push."
 fi

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, ChatStatus, AppRole, DisplayConfig, StyleConfig } from './types';
+import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig } from './types';
 import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
@@ -46,6 +46,8 @@ interface PanelSlice {
   activeViewId: string | null;
   viewState: Record<string, unknown>;
   hasUnsavedChanges: boolean;
+  // Summary of the map area currently open (null when no map is mounted).
+  mapState: MapStateDescriptor | null;
 }
 
 interface AppState {
@@ -81,6 +83,7 @@ interface AppActions {
   showView: (viewId: string, state?: Record<string, unknown>) => void;
   showDynamicView: (raw: unknown, title?: string | null) => void;
   updateViewState: (patch: Record<string, unknown>) => void;
+  setMapState: (mapState: MapStateDescriptor | null) => void;
   setDirty: (isDirty: boolean) => void;
   setContext: (key: string, value: unknown) => void;
   getPanelContext: () => PanelContext;
@@ -119,6 +122,7 @@ export const useAppStore = create<AppStore>()(
         activeViewId: null,
         viewState: {},
         hasUnsavedChanges: false,
+        mapState: null,
       },
       context: {},
       viewsVersion: 0,
@@ -352,6 +356,9 @@ export const useAppStore = create<AppStore>()(
             activeViewId: viewId,
             viewState: state ?? {},
             hasUnsavedChanges: false,
+            // Drop the prior view's map summary so a table-only view does not
+            // inherit stale map context; the map area re-reports on mount.
+            mapState: null,
           },
         }));
       },
@@ -373,7 +380,7 @@ export const useAppStore = create<AppStore>()(
         const id = registerDynamicView(parsed.spec);
         set((s) => ({
           viewsVersion: s.viewsVersion + 1,
-          panel: { ...s.panel, activeViewId: id, viewState: {}, hasUnsavedChanges: false },
+          panel: { ...s.panel, activeViewId: id, viewState: {}, hasUnsavedChanges: false, mapState: null },
         }));
       },
 
@@ -384,6 +391,12 @@ export const useAppStore = create<AppStore>()(
             viewState: { ...s.panel.viewState, ...patch },
           },
         }));
+      },
+
+      // Map area reports a compact summary of what it rendered (layer counts,
+      // blank layers, framed extent, selection) for the chat agent's context.
+      setMapState: (mapState: MapStateDescriptor | null) => {
+        set((s) => ({ panel: { ...s.panel, mapState } }));
       },
 
       setDirty: (isDirty: boolean) => {
@@ -448,7 +461,7 @@ export const useAppStore = create<AppStore>()(
       getPanelContext: (): PanelContext => {
         const { panel, context, viewContextEnabled, selectedRole } = get();
         if (!viewContextEnabled) {
-          return { activeView: null, viewState: {}, availableViews: [], context, hasUnsavedChanges: false };
+          return { activeView: null, viewState: {}, availableViews: [], context, hasUnsavedChanges: false, mapState: null };
         }
         let activeView = null;
         if (panel.activeViewId) {
@@ -471,6 +484,7 @@ export const useAppStore = create<AppStore>()(
           availableViews,
           context,
           hasUnsavedChanges: panel.hasUnsavedChanges,
+          mapState: panel.mapState,
         };
       },
     }),

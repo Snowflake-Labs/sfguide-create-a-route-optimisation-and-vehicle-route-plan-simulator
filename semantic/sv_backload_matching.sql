@@ -1,32 +1,32 @@
--- SV_BACKLOAD_MATCHING - Backload matching demo semantic view
--- Source: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS
--- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
--- NOTE: offers/trailers views may be empty until the backload-matching demo generates data;
--- PROPOSAL_DECISIONS is written by the Backload Matching / Freight Exchange pages.
+-- SV_BACKLOAD_MATCHING - Backload matching semantic view (neutral FLEET_APP contract)
+-- Source: FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS + VW_PROPOSAL_DECISIONS
+--         (backload_matching pack; rebuilt from SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT).
+-- Deploy target: FLEET_INTELLIGENCE.SEMANTIC. Currency is USD (SF / USD dataset).
 -- Three independent facts; all coordinates exposed as LON/LAT floats (no GEOGRAPHY).
+-- No vendor branding: SOURCE / LISTING_TEXT are neutral (MARKETPLACE / PARTNER_APP / INTERNAL / DISPATCH).
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-backload-matching"}}';
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
 
   TABLES (
-    offers AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+    offers AS FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
       PRIMARY KEY (OFFER_ID)
-    , trailers AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS
+    , trailers AS FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
       PRIMARY KEY (TRAILER_ID)
-    , decisions AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+    , decisions AS FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
       PRIMARY KEY (DECISION_ID)
   )
 
   FACTS (
     offers.weight_kg AS WEIGHT_KG COMMENT = 'Offer load weight kg'
-    , offers.price_eur AS PRICE_EUR COMMENT = 'Offer price EUR'
+    , offers.price_usd AS PRICE_USD COMMENT = 'Offer price USD'
     , trailers.eta_min AS ETA_MIN COMMENT = 'Minutes to trailer ETA'
     , trailers.max_payload_kg AS MAX_PAYLOAD_KG COMMENT = 'Trailer max payload kg'
     , trailers.ev_range_km AS EV_RANGE_KM COMMENT = 'Electric range km'
     , decisions.score AS SCORE COMMENT = 'Match score'
     , decisions.empty_km AS EMPTY_KM COMMENT = 'Deadhead/empty km for the match'
-    , decisions.net_benefit_eur AS NET_BENEFIT_EUR COMMENT = 'Net benefit of the decision EUR'
+    , decisions.net_benefit_usd AS NET_BENEFIT_USD COMMENT = 'Net benefit of the decision USD'
   )
 
   DIMENSIONS (
@@ -40,19 +40,17 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , trailers.operating_country AS OPERATING_COUNTRY COMMENT = 'Trailer operating country'
     , trailers.home_depot AS HOME_DEPOT WITH SYNONYMS ('depot') COMMENT = 'Trailer home depot'
     , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
-    , trailers.trailer_status AS STATUS COMMENT = 'Trailer status'
+    , trailers.status AS STATUS COMMENT = 'Trailer status'
     , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
-    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL/EXTERNAL exchange)'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
-    , decisions.source_page AS SOURCE_PAGE COMMENT = 'Origin page (BACKLOAD_MATCHING / FREIGHT_EXCHANGE)'
-    , decisions.decision_type AS DECISION_TYPE WITH SYNONYMS ('type') COMMENT = 'Decision type (SINGLE / ROUND_TRIP / BUNDLE)'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
   )
 
   METRICS (
     offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
-    , offers.avg_price_eur AS AVG(price_eur) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (EUR)'
-    , offers.total_price_eur AS SUM(price_eur) COMMENT = 'Total offer price (EUR)'
+    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
     , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
     , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
     , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
@@ -61,20 +59,20 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
     , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
     , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
-    , decisions.total_net_benefit_eur AS SUM(net_benefit_eur) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit EUR'
-    , decisions.avg_net_benefit_eur AS AVG(net_benefit_eur) COMMENT = 'Average net benefit EUR'
+    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
   )
 
-  COMMENT = 'Backload matching demo: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit). Offers/trailers views may be empty until the demo generates data; decisions are written by the Backload Matching / Freight Exchange pages.'
+  COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'
 
   AI_SQL_GENERATION 'Backload matching semantic view.
 Entities (three independent facts):
 - offers (VW_EXTERNAL_OFFERS): external freight offers available to fill a backload.
 - trailers (VW_TRAILERS): trailers in transit / available, with ETA and capacity.
-- decisions (PROPOSAL_DECISIONS): recorded accept decisions with match score, empty (deadhead) km, and net benefit. Use for "matches", "deadhead/empty km", "net benefit", and breakdowns by decision_source, decision_type, or decided_by.
+- decisions (VW_PROPOSAL_DECISIONS): recorded accept decisions with match score, empty (deadhead) km, and net benefit USD. Use for "matches", "deadhead/empty km", "net benefit", and breakdowns by decision_source or decided_by.
 Conventions:
 - "matches" / "decisions" -> decisions.total_decisions.
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
-- "net benefit" / "savings from matching" -> decisions.total_net_benefit_eur.
+- "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
 - internal vs external -> decisions.decision_source.'
 ;

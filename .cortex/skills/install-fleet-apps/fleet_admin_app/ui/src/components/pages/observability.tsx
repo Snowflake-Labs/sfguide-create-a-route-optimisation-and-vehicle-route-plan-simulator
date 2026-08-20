@@ -1,6 +1,14 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, AlertTriangle } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Legend } from 'recharts';
+
+interface ConsumptionRow {
+  DAY: string;
+  WAREHOUSE_CREDITS: number;
+  SPCS_CREDITS: number;
+  TOTAL_CREDITS: number;
+}
 
 interface MetricRow {
   WINDOW_NAME: string;
@@ -42,6 +50,20 @@ export function ObservabilityPage() {
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [consumption, setConsumption] = useState<ConsumptionRow[]>([]);
+  const [consumptionNeedsGrant, setConsumptionNeedsGrant] = useState(false);
+  const [consumptionGrantHint, setConsumptionGrantHint] = useState<string | null>(null);
+
+  const fetchConsumption = useCallback(async () => {
+    try {
+      const res = await fetch('/api/observability/consumption');
+      if (!res.ok) return;
+      const body = await res.json();
+      setConsumption(body.rows || []);
+      setConsumptionNeedsGrant(!!body.needsGrant);
+      setConsumptionGrantHint(body.grantHint || null);
+    } catch {}
+  }, []);
 
   const fetchMetrics = useCallback(async () => {
     setLoading(true);
@@ -83,18 +105,73 @@ export function ObservabilityPage() {
     }
   }, [fetchMetrics, fetchEvents]);
 
-  useEffect(() => { fetchMetrics(); fetchEvents(); }, [fetchMetrics, fetchEvents]);
+  useEffect(() => { fetchMetrics(); fetchEvents(); fetchConsumption(); }, [fetchMetrics, fetchEvents, fetchConsumption]);
 
   const filtered = metrics.filter(m => m.WINDOW_NAME === windowKey);
+
+  const consumptionTotal = consumption.reduce((s, r) => s + (r.TOTAL_CREDITS || 0), 0);
+  const consumptionAvg = consumption.length ? consumptionTotal / consumption.length : 0;
 
   return (
     <div className="panel" style={{ maxWidth: 1400 }}>
       <h2>ORS Observability</h2>
+
+      <h3>Daily consumption (last 3 weeks)</h3>
+      <p className="subtitle" style={{ marginTop: 0 }}>
+        Accelerator credits per day: the <code>ROUTING_ANALYTICS</code> warehouse plus the routing/app SPCS compute pools,
+        from <code>SNOWFLAKE.ACCOUNT_USAGE</code>. Metering lags ~1-3h, so today is partial.
+      </p>
+      {consumptionNeedsGrant ? (
+        <div
+          style={{
+            background: 'rgba(229,72,77,0.08)', color: 'var(--text-secondary)',
+            border: '1px solid var(--border)', padding: 12, borderRadius: 6, marginBottom: 28, fontSize: 13,
+          }}
+        >
+          <div style={{ marginBottom: 6, color: 'var(--text)' }}>
+            <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            Consumption data requires a one-time grant so the app role can read account usage:
+          </div>
+          <code style={{ display: 'block', padding: 8, background: 'var(--bg)', borderRadius: 4, overflowX: 'auto' }}>
+            {consumptionGrantHint || 'GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE <admin app service-owner role>;'}
+          </code>
+          <div style={{ marginTop: 6 }}>Run as ACCOUNTADMIN, then refresh this page.</div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+            21-day total: <strong style={{ color: 'var(--text)' }}>{consumptionTotal.toFixed(1)}</strong> credits
+            {' | '}avg <strong style={{ color: 'var(--text)' }}>{consumptionAvg.toFixed(1)}</strong> credits/day
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={consumption} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+              <XAxis
+                dataKey="DAY"
+                tickFormatter={(d: string) => (d ? d.slice(5) : '')}
+                tick={{ fontSize: 11, fill: 'var(--text-secondary)' }}
+              />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} width={44} />
+              <Tooltip
+                formatter={(v: number, name: string) => [`${Number(v).toFixed(2)} cr`, name === 'WAREHOUSE_CREDITS' ? 'Warehouse' : 'SPCS']}
+                contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
+              />
+              <Legend
+                formatter={(v: string) => (v === 'WAREHOUSE_CREDITS' ? 'Warehouse (ROUTING_ANALYTICS)' : 'SPCS (compute pools)')}
+                wrapperStyle={{ fontSize: 12 }}
+              />
+              <Bar dataKey="WAREHOUSE_CREDITS" stackId="c" fill="var(--accent)" />
+              <Bar dataKey="SPCS_CREDITS" stackId="c" fill="#8b5cf6" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <h2 style={{ marginTop: 8 }}>ORS request metrics</h2>
       <p className="subtitle">
         Per-endpoint latency and error metrics, sampled from the routing gateway via the <code>ORS_METRICS_INGEST_TASK</code> task (1-minute cadence).
         Click <strong>Ingest now</strong> to force a refresh between scheduled runs.
       </p>
-
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {WINDOWS.map(w => (

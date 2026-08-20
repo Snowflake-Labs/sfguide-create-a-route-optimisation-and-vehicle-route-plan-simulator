@@ -9,30 +9,50 @@ import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
+// ISO string literal for a Date, for use INSIDE a VALUES clause (which cannot
+// contain function calls like escVal's TO_TIMESTAMP_NTZ(...)). The wrapping
+// SELECT converts it back with TO_TIMESTAMP_NTZ(..., TS_FMT).
+const TS_FMT = `'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'`;
+function isoLit(d: Date): string {
+  return `'${d.toISOString()}'`;
+}
+
 export async function insertTelemetryBatch(points: TelemetryPoint[], snowSql: SnowSqlFn, jobId: string): Promise<number> {
   if (points.length === 0) return 0;
-  // 2000 keeps SQL under Snowflake parser limits while cutting round trips ~4x vs 500.
+  // 2000-row batches. Rows are emitted as a single VALUES table constructor and
+  // converted in the wrapping SELECT (ST_MAKEPOINT for POINT_GEOM, TO_TIMESTAMP_NTZ
+  // for TS). The previous 2000-way `UNION ALL SELECT` produced ~320KB SQL that took
+  // ~30s to COMPILE (execution was ~2s), which serialized the whole pipeline; a
+  // VALUES table literal compiles in a fraction of that.
   const batchSize = 2000;
   let inserted = 0;
   for (let i = 0; i < points.length; i += batchSize) {
     const chunk = points.slice(i, i + batchSize);
-    const selects = chunk.map(p =>
-      `SELECT ${escVal(p.telemetry_id)},${escVal(p.region)},${escVal(p.vehicle_type)},` +
+    const values = chunk.map(p =>
+      `(${escVal(p.telemetry_id)},${escVal(p.region)},${escVal(p.vehicle_type)},` +
       `${escVal(p.vehicle_id)},${escVal(p.trip_id)},` +
-      `${escVal(p.ts)},${p.latitude},${p.longitude},ST_MAKEPOINT(${p.longitude},${p.latitude}),` +
+      `${isoLit(p.ts)},${p.latitude},${p.longitude},` +
       `${p.speed_kmh},${p.heading_deg},` +
       `${p.posted_speed_kmh},${escVal(p.status)},${escVal(p.is_speeding)},${escVal(p.is_hos_violation)},` +
       `${escVal(p.is_detour)},${p.gps_accuracy_m},${escVal(p.location_id)},${escVal(p.location_type)},` +
       `${escVal(p.ors_profile)},${p.battery_pct !== null ? p.battery_pct : 'NULL'},` +
       `${p.odometer_km !== null ? p.odometer_km : 'NULL'},${p.point_index !== null ? p.point_index : 'NULL'},` +
-      `${escVal(jobId)}`
-    ).join(' UNION ALL\n');
+      `${escVal(jobId)})`
+    ).join(',\n');
 
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY
       (TELEMETRY_ID,REGION,VEHICLE_TYPE,VEHICLE_ID,TRIP_ID,TS,LATITUDE,LONGITUDE,POINT_GEOM,SPEED_KMH,HEADING_DEG,
        POSTED_SPEED_KMH,STATUS,IS_SPEEDING,IS_HOS_VIOLATION,IS_DETOUR,GPS_ACCURACY_M,
        LOCATION_ID,LOCATION_TYPE,ORS_PROFILE,BATTERY_PCT,ODOMETER_KM,POINT_INDEX,JOB_ID)
-      ${selects}`;
+      SELECT TELEMETRY_ID,REGION,VEHICLE_TYPE,VEHICLE_ID,TRIP_ID,
+             TO_TIMESTAMP_NTZ(TS, ${TS_FMT}),LATITUDE,LONGITUDE,ST_MAKEPOINT(LONGITUDE,LATITUDE),SPEED_KMH,HEADING_DEG,
+             POSTED_SPEED_KMH,STATUS,IS_SPEEDING,IS_HOS_VIOLATION,IS_DETOUR,GPS_ACCURACY_M,
+             LOCATION_ID,LOCATION_TYPE,ORS_PROFILE,BATTERY_PCT::FLOAT,ODOMETER_KM::FLOAT,POINT_INDEX::INT,JOB_ID
+      FROM VALUES
+      ${values}
+      AS v(TELEMETRY_ID,REGION,VEHICLE_TYPE,VEHICLE_ID,TRIP_ID,TS,LATITUDE,LONGITUDE,SPEED_KMH,HEADING_DEG,
+           POSTED_SPEED_KMH,STATUS,IS_SPEEDING,IS_HOS_VIOLATION,IS_DETOUR,GPS_ACCURACY_M,
+           LOCATION_ID,LOCATION_TYPE,ORS_PROFILE,BATTERY_PCT,ODOMETER_KM,POINT_INDEX,JOB_ID)`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
@@ -51,25 +71,27 @@ export async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, j
   let inserted = 0;
   for (let i = 0; i < trips.length; i += batchSize) {
     const chunk = trips.slice(i, i + batchSize);
-    const selects = chunk.map(t => {
-      const routeGeo = t.route_coordinates.length >= 2
-        ? `TO_GEOGRAPHY('LINESTRING(${t.route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})')`
-        : 'TO_GEOGRAPHY(NULL)';
-      const plannedGeo = t.planned_route_coordinates && t.planned_route_coordinates.length >= 2
-        ? `TO_GEOGRAPHY('LINESTRING(${t.planned_route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})')`
-        : 'TO_GEOGRAPHY(NULL)';
-      return `SELECT ${escVal(t.trip_id)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
+    // VALUES table constructor: geometries/timestamps carry WKT/ISO strings and
+    // are converted in the wrapping SELECT (VALUES cannot contain function calls).
+    const values = chunk.map(t => {
+      const routeWkt = t.route_coordinates.length >= 2
+        ? `'LINESTRING(${t.route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})'`
+        : 'NULL';
+      const plannedWkt = t.planned_route_coordinates && t.planned_route_coordinates.length >= 2
+        ? `'LINESTRING(${t.planned_route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})'`
+        : 'NULL';
+      return `(${escVal(t.trip_id)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
         `${escVal(t.vehicle_type)},${escVal(t.region)},` +
         `${escVal(t.origin_poi_id)},${escVal(t.destination_poi_id)},` +
-        `${t.origin_lat},${t.origin_lon},ST_MAKEPOINT(${t.origin_lon},${t.origin_lat}),` +
-        `${t.destination_lat},${t.destination_lon},ST_MAKEPOINT(${t.destination_lon},${t.destination_lat}),` +
-        `${routeGeo},${t.distance_km},${t.duration_minutes},` +
-        `${plannedGeo},${t.planned_distance_km !== null ? t.planned_distance_km : 'NULL'},` +
+        `${t.origin_lat},${t.origin_lon},` +
+        `${t.destination_lat},${t.destination_lon},` +
+        `${routeWkt},${t.distance_km},${t.duration_minutes},` +
+        `${plannedWkt},${t.planned_distance_km !== null ? t.planned_distance_km : 'NULL'},` +
         `${escVal(t.is_detour)},${t.detour_distance_km !== null ? t.detour_distance_km : 'NULL'},` +
-        `${escVal(t.trip_start)},${escVal(t.trip_end)},${escVal(t.status)},${escVal(t.ors_profile)},` +
+        `${isoLit(t.trip_start)},${isoLit(t.trip_end)},${escVal(t.status)},${escVal(t.ors_profile)},` +
         `${escVal(t.trip_kind ?? 'LADEN')},` +
-        `${escVal(jobId)}`;
-    }).join(' UNION ALL\n');
+        `${escVal(jobId)})`;
+    }).join(',\n');
 
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS
       (TRIP_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
@@ -78,7 +100,21 @@ export async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, j
        ROUTE_GEOG,DISTANCE_KM,DURATION_MINUTES,
        PLANNED_ROUTE_GEOG,PLANNED_DISTANCE_KM,
        IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE,TRIP_KIND,JOB_ID)
-      ${selects}`;
+      SELECT TRIP_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
+             ORIGIN_POI_ID,DESTINATION_POI_ID,ORIGIN_LAT,ORIGIN_LON,ST_MAKEPOINT(ORIGIN_LON,ORIGIN_LAT),
+             DESTINATION_LAT,DESTINATION_LON,ST_MAKEPOINT(DESTINATION_LON,DESTINATION_LAT),
+             TO_GEOGRAPHY(ROUTE_WKT),DISTANCE_KM::FLOAT,DURATION_MINUTES::FLOAT,
+             TO_GEOGRAPHY(PLANNED_WKT),PLANNED_DISTANCE_KM::FLOAT,
+             IS_DETOUR,DETOUR_DISTANCE_KM::FLOAT,
+             TO_TIMESTAMP_NTZ(TRIP_START, ${TS_FMT}),TO_TIMESTAMP_NTZ(TRIP_END, ${TS_FMT}),STATUS,ORS_PROFILE,TRIP_KIND,JOB_ID
+      FROM VALUES
+      ${values}
+      AS v(TRIP_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
+           ORIGIN_POI_ID,DESTINATION_POI_ID,ORIGIN_LAT,ORIGIN_LON,
+           DESTINATION_LAT,DESTINATION_LON,
+           ROUTE_WKT,DISTANCE_KM,DURATION_MINUTES,
+           PLANNED_WKT,PLANNED_DISTANCE_KM,
+           IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE,TRIP_KIND,JOB_ID)`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
@@ -101,23 +137,32 @@ export async function insertTripScheduleBatch(
   let inserted = 0;
   for (let i = 0; i < trips.length; i += batchSize) {
     const chunk = trips.slice(i, i + batchSize);
-    const selects = chunk.map((t, idx) =>
-      `SELECT ${escVal(`${t.trip_id}-sched`)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
+    const values = chunk.map((t, idx) =>
+      `(${escVal(`${t.trip_id}-sched`)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
       `${escVal(t.vehicle_type)},${escVal(t.region)},` +
-      `TO_DATE(${escVal(t.trip_start)}),${idx + 1},` +
+      `${isoLit(t.trip_start)},${idx + 1},` +
       `${escVal(t.origin_poi_id)},${escVal(t.destination_poi_id)},` +
-      `${escVal(t.trip_start)},${escVal(t.trip_end)},` +
+      `${isoLit(t.trip_end)},` +
       `${escVal('generated')},${escVal(t.ors_profile)},` +
       `${t.distance_km ?? 'NULL'},${t.duration_minutes ?? 'NULL'},${escVal(t.status)},` +
-      `${escVal(jobId)}`
-    ).join(' UNION ALL\n');
+      `${escVal(jobId)})`
+    ).join(',\n');
 
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE
       (SCHEDULE_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
        TRIP_DATE,TRIP_SEQ,ORIGIN_POI_ID,DESTINATION_POI_ID,
        PLANNED_START,PLANNED_END,SHIFT_TYPE,ORS_PROFILE,
        DISTANCE_KM,DURATION_MINUTES,STATUS,JOB_ID)
-      ${selects}`;
+      SELECT SCHEDULE_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
+             TO_DATE(TO_TIMESTAMP_NTZ(TRIP_START, ${TS_FMT})),TRIP_SEQ,ORIGIN_POI_ID,DESTINATION_POI_ID,
+             TO_TIMESTAMP_NTZ(TRIP_START, ${TS_FMT}),TO_TIMESTAMP_NTZ(TRIP_END, ${TS_FMT}),SHIFT_TYPE,ORS_PROFILE,
+             DISTANCE_KM::FLOAT,DURATION_MINUTES::FLOAT,STATUS,JOB_ID
+      FROM VALUES
+      ${values}
+      AS v(SCHEDULE_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
+           TRIP_START,TRIP_SEQ,ORIGIN_POI_ID,DESTINATION_POI_ID,
+           TRIP_END,SHIFT_TYPE,ORS_PROFILE,
+           DISTANCE_KM,DURATION_MINUTES,STATUS,JOB_ID)`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;

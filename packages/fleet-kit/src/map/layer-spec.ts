@@ -82,6 +82,10 @@ export interface PathLayerSpec extends LayerBase {
   widthMinPixels?: number;
   /** Color a path takes on hover (requires pickable). Defaults to Snowflake blue. */
   highlightColor?: ColorRGBA;
+  /** Max vertices kept per line before stride-decimation (defaults to
+   *  DEFAULT_MAX_PATH_POINTS). Bounds GPU buffer + parse cost so heavy route
+   *  GeoJSON does not freeze the basemap; endpoints are always preserved. */
+  maxPathPoints?: number;
 }
 
 export interface H3HexagonLayerSpec extends LayerBase {
@@ -103,6 +107,9 @@ export interface GeoJsonLayerSpec extends LayerBase {
   // stringified value). Falls back to `fillColor` when the value is absent.
   colorColumn?: string;
   colorMap?: Record<string, ColorRGBA>;
+  /** Max vertices kept per LineString/MultiLineString before stride-decimation
+   *  (defaults to DEFAULT_MAX_PATH_POINTS). Polygon rings are never decimated. */
+  maxPathPoints?: number;
 }
 
 export interface ArcLayerSpec extends LayerBase {

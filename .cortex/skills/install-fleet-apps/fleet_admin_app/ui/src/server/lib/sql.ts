@@ -51,11 +51,19 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
   let result: any = await res.json();
   if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
     const pollUrl = `https://${SNOWFLAKE_HOST}${result.statementStatusUrl}`;
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
+    // Backoff poll instead of a flat 5s. Short statements (e.g. per-leg ORS
+    // DIRECTIONS calls in Data Studio generation) usually finish in well under
+    // a second, so a fixed 5s interval taxed every async-path route ~5s. Start
+    // at 300ms and ramp to a 3s cap for genuinely long statements. Overall
+    // bound stays ~10 min (matches the previous 120 x 5s ceiling).
+    const deadline = Date.now() + 600_000;
+    let delay = 300;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, delay));
       const pr = await fetch(pollUrl, { headers });
       result = await pr.json();
       if (result.data || (result.code && result.code !== '333334')) break;
+      delay = Math.min(Math.floor(delay * 1.5), 3000);
     }
   }
   if (result.message && !result.data) {

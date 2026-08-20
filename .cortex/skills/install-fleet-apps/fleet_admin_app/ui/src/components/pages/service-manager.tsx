@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { StatusResponse, ServiceInfo, OrsRegionReadiness, ComputePoolInfo, OrsGraphInfo } from '@/lib/types';
 import PhasePips from '@/components/shared/phase-pips';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 export function ServiceManagerPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -14,6 +15,31 @@ export function ServiceManagerPage() {
   const [scaleMax, setScaleMax] = useState(10);
   const [orsReadiness, setOrsReadiness] = useState<Record<string, OrsRegionReadiness> | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
+  const [hibernateEnabled, setHibernateEnabled] = useState(true);
+  const [hibernateIdleHours, setHibernateIdleHours] = useState(4);
+  const [hibernateSaving, setHibernateSaving] = useState(false);
+
+  const fetchHibernate = useCallback(async () => {
+    try {
+      const r = await fetch('/api/hibernate-settings');
+      if (!r.ok) return;
+      const data = await r.json();
+      if (typeof data.enabled === 'boolean') setHibernateEnabled(data.enabled);
+      if (Number.isFinite(data.idleHours)) setHibernateIdleHours(Number(data.idleHours));
+    } catch {}
+  }, []);
+
+  const saveHibernate = useCallback(async (enabled: boolean, idleHours: number) => {
+    setHibernateSaving(true);
+    try {
+      await fetch('/api/hibernate-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, idleHours }),
+      });
+    } catch {}
+    setHibernateSaving(false);
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -48,10 +74,12 @@ export function ServiceManagerPage() {
     fetchStatus();
     checkHealth();
     fetchOrsReadiness();
-    const interval = setInterval(fetchStatus, 15000);
-    const readinessInterval = setInterval(fetchOrsReadiness, 30000);
-    return () => { clearInterval(interval); clearInterval(readinessInterval); };
-  }, [fetchStatus, checkHealth, fetchOrsReadiness]);
+    fetchHibernate();
+  }, [fetchStatus, checkHealth, fetchOrsReadiness, fetchHibernate]);
+
+  // Poll only while the tab is visible (Tier E cost hygiene).
+  useVisiblePolling(fetchStatus, 15000);
+  useVisiblePolling(fetchOrsReadiness, 30000);
 
   const handleAction = async (action: string, body?: any) => {
     setActionInProgress(action);
@@ -390,6 +418,61 @@ export function ServiceManagerPage() {
         >
           Refresh
         </button>
+      </div>
+
+      <h3>Cost-safe mode</h3>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        For an idle deployment: suspends all fleet dynamic tables and recurring
+        tasks (SLA logger, studio GC, observability, rescue) and then all SPCS
+        routing services, so background credit consumption stops. Resume rebuilds
+        the dynamic tables; routing services resume automatically on first query.
+      </div>
+      <div className="action-row">
+        <button
+          className="btn secondary"
+          onClick={() => handleAction('cost-safe')}
+          disabled={!!actionInProgress || !!serviceAction}
+        >
+          {actionInProgress === 'cost-safe' ? 'Entering cost-safe mode...' : 'Enter cost-safe mode'}
+        </button>
+        <button
+          className="btn secondary"
+          onClick={() => handleAction('resume-fleet')}
+          disabled={!!actionInProgress || !!serviceAction}
+        >
+          {actionInProgress === 'resume-fleet' ? 'Resuming...' : 'Resume for demo'}
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '12px 0 8px' }}>
+        Auto-hibernate: enter cost-safe mode automatically after a period with no
+        agent or routing activity, and wake the dynamic tables when activity
+        resumes. Runs hourly in the background.
+      </div>
+      <div className="action-row" style={{ alignItems: 'center', gap: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={hibernateEnabled}
+            disabled={hibernateSaving}
+            onChange={(e) => { const v = e.target.checked; setHibernateEnabled(v); saveHibernate(v, hibernateIdleHours); }}
+          />
+          Auto-hibernate {hibernateEnabled ? 'enabled' : 'disabled'}
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          Idle hours
+          <input
+            type="number"
+            min={1}
+            max={168}
+            value={hibernateIdleHours}
+            disabled={hibernateSaving || !hibernateEnabled}
+            style={{ width: 64 }}
+            onChange={(e) => setHibernateIdleHours(Number(e.target.value))}
+            onBlur={() => saveHibernate(hibernateEnabled, hibernateIdleHours)}
+          />
+        </label>
+        {hibernateSaving && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Saving...</span>}
       </div>
 
       <h3>Scale</h3>

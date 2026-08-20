@@ -73,6 +73,7 @@ snow sql -c "$CONN" -q "
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
+  ALTER DATABASE OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.CORE
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX

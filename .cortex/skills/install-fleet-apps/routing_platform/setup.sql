@@ -21,6 +21,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-f
 
 CREATE DATABASE IF NOT EXISTS ROUTING_PLATFORM
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Rebuildable contract layer: no Time Travel needed (DB-level, inherited).
+ALTER DATABASE ROUTING_PLATFORM SET DATA_RETENTION_TIME_IN_DAYS = 0;
 
 -- Engine-agnostic routing API. Consumers depend ONLY on this surface.
 CREATE SCHEMA IF NOT EXISTS ROUTING_PLATFORM.CONTRACT  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

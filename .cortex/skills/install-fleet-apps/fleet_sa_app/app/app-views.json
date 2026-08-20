@@ -602,6 +602,23 @@
     "label": "{{labels.journey}} Inspector",
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "journey distance vs planned distance",
+        "duration and average speed",
+        "stop count and total dwell minutes",
+        "deviation percentage",
+        "safety event count"
+      ],
+      "exampleQuestions": [
+        "How far did this journey deviate from the plan?",
+        "What was the average speed on this trip?",
+        "How many stops and how much dwell time?",
+        "Were there any safety events on this journey?"
+      ],
+      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1369,6 +1386,23 @@
     "label": "{{labels.operator}} Performance",
     "category": "Core",
     "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "operator (driver) count",
+        "total journeys",
+        "average trip distance",
+        "deviated journeys",
+        "safety events per operator"
+      ],
+      "exampleQuestions": [
+        "Who has the most safety events?",
+        "Which operator covers the most distance?",
+        "How does operator X compare to operator Y?",
+        "What is the safety event rate per journey?"
+      ],
+      "gotchas": "query_fleet_ops (SV_FLEET_OPS) covers operator trip counts, distance, speed, shift, and driver profile. The per-operator safety-event counts in the table and chart come from the safety event data, which is NOT in the semantic view; quote those from the on-screen metric values or state they are event-derived rather than implying the tool can rank them. The leaderboard is sorted by safety events descending."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1509,6 +1543,21 @@
     "label": "Space-Time Density",
     "category": "Core",
     "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "activity density by H3 hex",
+        "time spent (dwell minutes) per hex",
+        "distinct vehicles per hex",
+        "top places and drivers by dwell"
+      ],
+      "exampleQuestions": [
+        "Where does fleet activity concentrate?",
+        "What are the top places by dwell?",
+        "Which hour of day is busiest?"
+      ],
+      "gotchas": "The H3 hex heatmap and the hour-of-day animation are computed client-side from vehicle telemetry and are not in a semantic view. query_fleet_ops answers trip and origin volume aggregates, not per-hex or per-hour density. The filters selected_metric (time or entities), selected_hour, and aggregate_all describe what is currently rendered on the map."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -1817,6 +1866,23 @@
     "label": "Dispatch Execution Board",
     "category": "Core",
     "description": "Manage scheduled {{labels.work_item}}s against plan - jobs list, resource board, and planned-vs-actual by day.",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "scheduled work items",
+        "distinct entities (vehicles)",
+        "assigned operators",
+        "destination sites",
+        "on-time vs missed / late / delayed status"
+      ],
+      "exampleQuestions": [
+        "How many scheduled jobs are there?",
+        "Are there any missed or late jobs?",
+        "Which entity has the most jobs?",
+        "Which site receives the most jobs?"
+      ],
+      "gotchas": "The KPI counts (scheduled, entities, operators, destination sites) are published as on-screen metric values; quote those. Dispatch/work-item status (MISSED, LATE, DELAYED), plan adherence, and planned-vs-actual-by-day are NOT modeled in any semantic view. query_fleet_ops (SV_FLEET_OPS) only covers trips, operators, and origins, so answer status and adherence questions from the on-screen metric values and the jobs table rather than implying the tool can compute them."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2039,6 +2105,19 @@
     "label": "Safety / Risk Scorecard",
     "category": "Core",
     "description": "Operational risk by severity - click a KPI tile to filter, review the event queue, and map hot spots.",
+    "agentKnowledge": {
+      "keyMetrics": [
+        "total safety / risk events",
+        "high, medium, and low severity counts",
+        "event types (speeding, harsh braking, and similar)"
+      ],
+      "exampleQuestions": [
+        "How many high-severity events are there?",
+        "How do high, medium, and low counts compare?",
+        "What severity filter is active?"
+      ],
+      "gotchas": "Safety events (severity, event type, per-driver counts) live in the scoped event data and are NOT modeled in any semantic view, so there is no Cortex Analyst tool that can recompute them. Answer count and severity-breakdown questions from the on-screen metric values (total events and high/medium/low counts published to panel context) and never invent event types, per-driver counts, or trends. The filters selected_severity and selected_entity show the active tile and row. A dedicated safety-event semantic view would be required to answer event-type rankings or trends via a tool."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2261,6 +2340,22 @@
     "label": "Dwell Overview",
     "category": "Core",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
+    "agentKnowledge": {
+      "preferredTool": "query_dwell",
+      "keyMetrics": [
+        "total dwell sessions",
+        "average dwell minutes",
+        "SLA compliance rate",
+        "active drivers"
+      ],
+      "exampleQuestions": [
+        "What is the average dwell time?",
+        "What is the SLA compliance rate?",
+        "Which facility has the most visits?",
+        "Are dwells trending up or down?"
+      ],
+      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2371,6 +2466,22 @@
     "label": "Facility Utilization",
     "category": "Core",
     "description": "Dwell load by facility and facility type - where vehicles spend the most time.",
+    "agentKnowledge": {
+      "preferredTool": "query_dwell",
+      "keyMetrics": [
+        "distinct facilities",
+        "total visits",
+        "average dwell minutes",
+        "maximum single-session dwell",
+        "facility type mix"
+      ],
+      "exampleQuestions": [
+        "Which facility has the longest total dwell?",
+        "Which facility type gets the most visits?",
+        "How many total visits across all facilities?"
+      ],
+      "gotchas": "The four headline KPIs (facilities, total visits, avg dwell, max dwell) are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) answers facility-level and facility-type rankings. This view shows utilization only and has no geographic data; for facility locations on a map, use the SLA Alerts view."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -2747,6 +2858,21 @@
     "label": "Top Origins",
     "category": "Core",
     "description": "Busiest origin locations by trip volume - where journeys begin (any origin type).",
+    "agentKnowledge": {
+      "preferredTool": "query_fleet_ops",
+      "keyMetrics": [
+        "distinct origin locations",
+        "total trips from origins",
+        "average trip duration",
+        "distinct location types"
+      ],
+      "exampleQuestions": [
+        "Which origin has the most trips?",
+        "What are the top 5 origins by trip count?",
+        "How many distinct location types are there?"
+      ],
+      "gotchas": "Only origins with more than zero trips are shown, and the map is capped at 2000 dots, so the map feature count is not the true origin total; quote the origins count from the on-screen metric values. query_fleet_ops (SV_FLEET_OPS) explicitly covers top origins and trip volume by origin for ranking questions."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -3573,6 +3699,518 @@
       }
     }
   },
+  "sourcing_optimizer": {
+    "label": "Freight Sourcing Optimizer",
+    "category": "Location",
+    "description": "Plant-to-customer location swaps: for each customer, compare the live road-distance freight cost from the current source plant against the cheapest product-capable plant, and quantify the annual saving. Freight cost is driven by your per-km and per-ton-km rate inputs.",
+    "info": "**Method**\n\nThe plant-to-customer road-distance matrix is computed LIVE with a single ORS MATRIX_TABULAR call (all plants x all customers), not precomputed. Freight cost per truckload = distance_km x rate per km + tons x distance_km x rate per ton-km.\n\nThe current source is a data-only baseline (nearest product-capable plant by straight-line distance); the optimizer picks the cheapest source by actual road distance, so the gap is the achievable saving. Only plants that can make the customer's product are considered.\n\nRegion note: all plants and customers must sit inside one provisioned ORS region graph; the demo runs within a single region.",
+    "agentKnowledge": {
+      "preferredTool": "query_sourcing",
+      "keyMetrics": ["current annual freight spend", "optimized annual freight spend", "total annual savings", "customers with a cheaper source"],
+      "exampleQuestions": ["Based on our plant locations, where would location swaps reduce freight costs?", "Which customer has the biggest freight saving from switching source plant?", "How much can we save in total by re-sourcing?"],
+      "gotchas": "Savings only consider plants that can make the customer's product. Freight cost is per truckload and uses live road distance from ORS; the current-source baseline is the nearest capable plant by straight-line distance. Annual savings = per-load saving x the customer's annual truckloads. The semantic view (query_sourcing) reports current estate/spend only; the swap recommendation is computed live on this page."
+    },
+    "layout": {
+      "default": {
+        "columns": "repeat(6, 1fr)",
+        "rows": "auto auto auto $heroMap auto",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls controls controls controls controls\"\n\"rkm rkm rkm rtonkm rtonkm rtonkm\"\n\"swaps swaps swaps map map map\"\n\"detail detail detail detail detail detail\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COALESCE(SUM(CURRENT_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS current_freight, COALESCE(SUM(BEST_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS optimized_freight, COALESCE(SUM(ANNUAL_SAVINGS),0) AS annual_savings, COUNT(CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 END) AS customers_with_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "product_filter": "viewState.product_filter"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "current_freight", "label": "Current annual freight", "format": "currency" },
+              { "column": "optimized_freight", "label": "Optimized annual freight", "format": "currency" },
+              { "column": "annual_savings", "label": "Total annual savings", "format": "currency" },
+              { "column": "customers_with_savings", "label": "Customers with cheaper source", "format": "number" }
+            ]
+          }
+        }
+      },
+      "controls": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "product",
+            "label": "Product",
+            "required": false,
+            "data": {
+              "query": "SELECT value, label FROM (SELECT '' AS value, 'All products' AS label, 0 AS ord UNION ALL SELECT DISTINCT PRODUCT, PRODUCT, 1 FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))) ORDER BY ord, label"
+            },
+            "emits": { "product_filter": "selection" }
+          },
+          {
+            "name": "profile",
+            "label": "Routing profile",
+            "required": false,
+            "data": {
+              "query": "SELECT 'driving-car' AS value, 'Car (driving-car)' AS label UNION ALL SELECT 'driving-hgv', 'Truck (driving-hgv)'"
+            },
+            "emits": { "profile": "selection" }
+          }
+        ]
+      },
+      "rkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/km per load)", "min": 0.5, "max": 5, "step": 0.1, "default": 1.5, "info": "Cost per kilometre for a full truckload, independent of weight. Freight cost per load = distance x this rate + tons x distance x the per-ton-km rate." },
+        "emits": { "rate_per_km": "filter" }
+      },
+      "rtonkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/ton-km)", "min": 0, "max": 0.5, "step": 0.01, "default": 0.05, "info": "Additional cost per ton per kilometre, scaling with the truckload weight. Raise it to weight distance more heavily for heavy glass loads." },
+        "emits": { "rate_per_ton_km": "filter" }
+      },
+      "swaps": {
+        "component": "ClickableTable",
+        "config": {
+          "title": "Location swap opportunities by customer (click to focus on the map)",
+          "fitRows": 8,
+          "rowKey": "customer_id",
+          "columns": [
+            { "field": "customer", "header": "Customer" },
+            { "field": "product", "header": "Product" },
+            { "field": "annual_truckloads", "header": "Truckloads/yr" },
+            { "field": "current_plant", "header": "Current plant" },
+            { "field": "current_cost", "header": "Current $/load" },
+            { "field": "best_plant", "header": "Best plant" },
+            { "field": "best_cost", "header": "Best $/load" },
+            { "field": "savings_per_load", "header": "Saving/load" },
+            { "field": "annual_savings", "header": "Annual saving" }
+          ]
+        },
+        "emits": { "selected_customer": "selection" },
+        "data": {
+          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) ORDER BY annual_savings DESC",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "product_filter": "viewState.product_filter"
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "clickEmits": { "object": "selected_customer", "objectColumn": "customer_id" },
+          "legend": [
+            { "label": "Plant", "color": [29, 78, 137, 255] },
+            { "label": "Customer (cheaper source available)", "color": [16, 185, 129, 220] },
+            { "label": "Customer (no change)", "color": [148, 163, 184, 200] },
+            { "label": "Selected customer", "color": [255, 200, 0, 255] },
+            { "label": "Current source lane", "color": [148, 163, 184, 180], "shape": "line" },
+            { "label": "Proposed source lane", "color": [16, 185, 129, 230], "shape": "line" },
+            { "label": "Selected lane", "color": [245, 158, 11, 255], "shape": "line" }
+          ],
+          "layers": [
+            {
+              "type": "path",
+              "id": "current-lanes",
+              "geojsonColumn": "route_geojson",
+              "color": [148, 163, 184, 200],
+              "width": 3,
+              "widthMinPixels": 2,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "product_filter": "viewState.product_filter"
+                }
+              }
+            },
+            {
+              "type": "path",
+              "id": "proposed-lanes",
+              "geojsonColumn": "route_geojson",
+              "color": [16, 185, 129, 230],
+              "width": 5,
+              "widthMinPixels": 3,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,NULL::VARCHAR))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "product_filter": "viewState.product_filter"
+                }
+              }
+            },
+            {
+              "type": "path",
+              "id": "selected-proposed-lane",
+              "geojsonColumn": "route_geojson",
+              "color": [245, 158, 11, 255],
+              "width": 6,
+              "widthMinPixels": 4,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,COALESCE(NULLIF(:selected_customer,''),'__NONE__')::VARCHAR))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "product_filter": "viewState.product_filter",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "plants",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 260,
+              "radiusMinPixels": 7,
+              "radiusMaxPixels": 16,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 230],
+              "lineWidthMinPixels": 2,
+              "fillColor": [29, 78, 137, 255],
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Plant",
+              "data": {
+                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))",
+                "params": {}
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "customers",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 220],
+              "lineWidthMinPixels": 1,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Product: {product}<br/>Annual saving: {annual_savings}",
+              "fillColor": {
+                "base": [148, 163, 184, 200],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "customer_id",
+                "whenViewStateEquals": "selected_customer",
+                "baseColumn": "has_savings",
+                "basePalette": {
+                  "1": [16, 185, 129, 220],
+                  "0": [148, 163, 184, 200]
+                }
+              },
+              "data": {
+                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, PRODUCT AS product, ANNUAL_SAVINGS AS annual_savings, CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 ELSE 0 END AS has_savings, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "product_filter": "viewState.product_filter"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "detail": {
+        "component": "DetailPanel",
+        "config": {
+          "triggerKey": "selected_customer",
+          "position": "inline",
+          "titleField": "customer",
+          "subtitleFields": ["product"],
+          "properties": [
+            { "field": "annual_truckloads", "label": "Annual truckloads", "format": "number" },
+            { "field": "current_plant", "label": "Current source plant" },
+            { "field": "current_cost", "label": "Current cost / load", "format": "currency" },
+            { "field": "best_plant", "label": "Best source plant" },
+            { "field": "best_cost", "label": "Best cost / load", "format": "currency" },
+            { "field": "savings_per_load", "label": "Saving / load", "format": "currency" },
+            { "field": "annual_savings", "label": "Annual saving", "format": "currency" }
+          ]
+        },
+        "data": {
+          "query": "SELECT CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) WHERE CUSTOMER_ID = :selected_customer",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "product_filter": "viewState.product_filter",
+            "selected_customer": "viewState.selected_customer"
+          }
+        }
+      }
+    }
+  },
+  "mix_sourcing": {
+    "label": "Product Mix Sourcing",
+    "description": "For each customer's mixed-product order, compare shipping every product from its own cheapest plant (ship direct) against transferring the missing products into one hub plant and shipping a single consolidated truckload (consolidate). Shows the freight saving and the handling penalty of consolidating.",
+    "category": "Location",
+    "info": "**Method**\n\nAll plant-to-customer and plant-to-plant road distances are computed LIVE with ORS MATRIX_TABULAR (two calls), not precomputed. freight = distance_km x rate per km + tons x distance_km x rate per ton-km.\n\nShip direct: each product line ships from its cheapest capable plant straight to the customer. Consolidate: pick a hub plant, transfer the products the hub cannot make in from the nearest capable plant (adding a handling-per-ton penalty), then ship one consolidated load from the hub. The cheaper of the two is recommended.\n\nSingle-line orders show near-zero savings (nothing to consolidate). Region note: all plants and customers must sit inside one provisioned ORS region graph.",
+    "agentKnowledge": {
+      "preferredTool": "query_sourcing",
+      "keyMetrics": ["total consolidation savings", "orders where consolidation wins", "orders better shipped direct", "total handling cost paid to consolidate"],
+      "exampleQuestions": ["For customers buying several glass products, is it cheaper to consolidate at one plant or ship from several?", "Which orders should we consolidate to cut freight cost?", "How much handling cost do we pay to consolidate?"],
+      "gotchas": "Consolidation adds a handling-per-ton penalty on every transferred product, so it only wins when the saved outbound freight beats that penalty. Single-line orders show ~0 savings. Costs use live road distance from ORS. The semantic view (query_sourcing) reports current customers/products/spend only; this consolidate-vs-direct tradeoff is computed live on this page."
+    },
+    "layout": {
+      "default": {
+        "columns": "repeat(6, 1fr)",
+        "rows": "auto auto auto $heroMap",
+        "grid": "\"metrics metrics metrics metrics metrics metrics\"\n\"controls controls rkm rkm rtonkm rtonkm\"\n\"handling handling handling handling handling handling\"\n\"orders orders orders map map map\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COALESCE(SUM(CASE WHEN SAVINGS>0 THEN SAVINGS END),0) AS total_savings, COUNT(CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 END) AS consolidate_orders, COUNT(CASE WHEN RECOMMENDATION='SHIP DIRECT' THEN 1 END) AS direct_orders, COALESCE(SUM(HANDLING_COST),0) AS total_handling FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "total_savings", "label": "Consolidation savings", "format": "currency" },
+              { "column": "consolidate_orders", "label": "Orders: consolidate", "format": "number" },
+              { "column": "direct_orders", "label": "Orders: ship direct", "format": "number" },
+              { "column": "total_handling", "label": "Handling cost paid", "format": "currency" }
+            ]
+          }
+        }
+      },
+      "controls": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "profile",
+            "label": "Routing profile",
+            "required": false,
+            "data": {
+              "query": "SELECT 'driving-car' AS value, 'Car (driving-car)' AS label UNION ALL SELECT 'driving-hgv', 'Truck (driving-hgv)'"
+            },
+            "emits": { "profile": "selection" }
+          }
+        ]
+      },
+      "rkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/km per load)", "min": 0.5, "max": 5, "step": 0.1, "default": 1.5, "info": "Cost per kilometre for a full truckload, independent of weight." },
+        "emits": { "rate_per_km": "filter" }
+      },
+      "rtonkm": {
+        "component": "Slider",
+        "config": { "label": "Freight rate ($/ton-km)", "min": 0, "max": 0.5, "step": 0.01, "default": 0.05, "info": "Additional cost per ton per kilometre, scaling with load weight." },
+        "emits": { "rate_per_ton_km": "filter" }
+      },
+      "handling": {
+        "component": "Slider",
+        "config": { "label": "Inter-plant handling ($/ton)", "min": 0, "max": 50, "step": 1, "default": 15, "info": "Handling and breakage cost per ton for moving product between plants to consolidate a load. Raise it to penalize inter-plant transfers (glass is fragile); at 0, consolidation is judged on freight distance alone." },
+        "emits": { "handling_per_ton": "filter" }
+      },
+      "orders": {
+        "component": "ClickableTable",
+        "config": {
+          "title": "Consolidate vs ship direct by customer order (click to show flows on the map)",
+          "fitRows": 8,
+          "rowKey": "customer_id",
+          "columns": [
+            { "field": "customer", "header": "Customer" },
+            { "field": "product_lines", "header": "Products" },
+            { "field": "total_tons", "header": "Tons" },
+            { "field": "cost_multi_plant", "header": "Ship direct $" },
+            { "field": "cost_consolidated", "header": "Consolidate $" },
+            { "field": "best_hub", "header": "Hub plant" },
+            { "field": "handling_cost", "header": "Handling $" },
+            { "field": "savings", "header": "Saving" },
+            { "field": "recommendation", "header": "Recommend" }
+          ]
+        },
+        "emits": { "selected_customer": "selection" },
+        "data": {
+          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings, RECOMMENDATION AS recommendation FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR)) ORDER BY savings DESC",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton"
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "clickEmits": { "object": "selected_customer", "objectColumn": "customer_id" },
+          "legend": [
+            { "label": "Plant", "color": [29, 78, 137, 255] },
+            { "label": "Order: consolidate", "color": [16, 185, 129, 220] },
+            { "label": "Order: ship direct", "color": [148, 163, 184, 200] },
+            { "label": "Transfer leg (into hub)", "color": [245, 158, 11, 230], "shape": "line" },
+            { "label": "Consolidated outbound", "color": [16, 185, 129, 230], "shape": "line" },
+            { "label": "Direct leg", "color": [148, 163, 184, 200], "shape": "line" }
+          ],
+          "layers": [
+            {
+              "type": "path",
+              "id": "direct-legs",
+              "geojsonColumn": "route_geojson",
+              "color": [148, 163, 184, 200],
+              "width": 4,
+              "widthMinPixels": 2,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='DIRECT'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "path",
+              "id": "transfer-legs",
+              "geojsonColumn": "route_geojson",
+              "color": [245, 158, 11, 230],
+              "width": 5,
+              "widthMinPixels": 2,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='TRANSFER'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "path",
+              "id": "outbound-leg",
+              "geojsonColumn": "route_geojson",
+              "color": [16, 185, 129, 230],
+              "width": 6,
+              "widthMinPixels": 3,
+              "pickable": false,
+              "data": {
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer)) WHERE LEG_KIND='OUTBOUND'",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton",
+                  "selected_customer": "viewState.selected_customer"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "plants",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 260,
+              "radiusMinPixels": 7,
+              "radiusMaxPixels": 16,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 230],
+              "lineWidthMinPixels": 2,
+              "fillColor": [29, 78, 137, 255],
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Plant",
+              "data": {
+                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))",
+                "params": {}
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "customers",
+              "lng": "lng",
+              "lat": "lat",
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 10,
+              "stroked": true,
+              "lineColor": [255, 255, 255, 220],
+              "lineWidthMinPixels": 1,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>Recommend: {recommendation}<br/>Saving: {savings}",
+              "fillColor": {
+                "base": [148, 163, 184, 200],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "customer_id",
+                "whenViewStateEquals": "selected_customer",
+                "baseColumn": "consolidate",
+                "basePalette": {
+                  "1": [16, 185, 129, 220],
+                  "0": [148, 163, 184, 200]
+                }
+              },
+              "data": {
+                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, RECOMMENDATION AS recommendation, SAVINGS AS savings, CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 ELSE 0 END AS consolidate, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
+                "params": {
+                  "profile": "viewState.profile",
+                  "rate_per_km": "viewState.rate_per_km",
+                  "rate_per_ton_km": "viewState.rate_per_ton_km",
+                  "handling_per_ton": "viewState.handling_per_ton"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "order_drawer": {
+        "component": "DetailPanel",
+        "config": {
+          "triggerKey": "selected_customer",
+          "position": "drawer",
+          "width": 400,
+          "titleField": "customer",
+          "subtitleFields": ["recommendation"],
+          "properties": [
+            { "field": "product_lines", "label": "Product lines", "format": "number" },
+            { "field": "total_tons", "label": "Total tons", "format": "number" },
+            { "field": "cost_multi_plant", "label": "Ship direct cost", "format": "currency" },
+            { "field": "cost_consolidated", "label": "Consolidate cost", "format": "currency" },
+            { "field": "best_hub", "label": "Best hub plant" },
+            { "field": "handling_cost", "label": "Handling cost", "format": "currency" },
+            { "field": "savings", "label": "Saving (direct - consolidate)", "format": "currency" }
+          ]
+        },
+        "data": {
+          "query": "SELECT CUSTOMER_NAME AS customer, RECOMMENDATION AS recommendation, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),COALESCE(:profile,'driving-car'),COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,:selected_customer))",
+          "params": {
+            "profile": "viewState.profile",
+            "rate_per_km": "viewState.rate_per_km",
+            "rate_per_ton_km": "viewState.rate_per_ton_km",
+            "handling_per_ton": "viewState.handling_per_ton",
+            "selected_customer": "viewState.selected_customer"
+          }
+        }
+      }
+    }
+  },
   "closure_impact": {
     "label": "Closure Impact",
     "category": "Location",
@@ -3987,6 +4625,23 @@
     "label": "Asset Velocity",
     "category": "Asset Pool",
     "description": "Idle {{labels.entity_plural}}, cost of idleness, and where they are parked - set a minimum idle threshold and click a {{labels.entity}} to highlight it.",
+    "agentKnowledge": {
+      "preferredTool": "query_asset_velocity",
+      "keyMetrics": [
+        "idle vehicle count",
+        "total cost of idleness (USD)",
+        "projected savings (USD)",
+        "average idle days",
+        "lane demand"
+      ],
+      "exampleQuestions": [
+        "Which vehicle has the highest cost of idleness?",
+        "What is the total cost of idleness?",
+        "Which dispatcher has the most idle vehicles?",
+        "How many CRITICAL-severity vehicles are there?"
+      ],
+      "gotchas": "query_asset_velocity (SV_ASSET_VELOCITY) is the dedicated tool for idle vehicles, cost of idleness, projected savings, and lane demand; use it for ranking and breakdown questions. The four headline KPIs are published as on-screen metric values. idle_min is the active idle-day threshold and selected_vehicle is the clicked row. The AI repositioning rationale is generated on screen and is not in panel context."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",

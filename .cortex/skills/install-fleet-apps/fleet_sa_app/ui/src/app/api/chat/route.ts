@@ -35,11 +35,23 @@ export async function POST(request: NextRequest) {
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
     if (vs && Object.keys(vs).length > 0) {
-      const activeFilters = Object.entries(vs)
-        .filter(([, v]) => v != null)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(', ');
+      // Keys prefixed __memo_ carry bounded, pre-joined KPI/metric strings that an
+      // area published for the agent (Gap 1). Render them under their own label so
+      // headline metric values are not mislabeled as active filters.
+      const entries = Object.entries(vs).filter(([, v]) => v != null);
+      const memoEntries = entries.filter(([k]) => k.startsWith('__memo_'));
+      const filterEntries = entries.filter(([k]) => !k.startsWith('__memo_'));
+      const activeFilters = filterEntries.map(([k, v]) => `${k}=${v}`).join(', ');
       if (activeFilters) parts.push(`Active filters: ${activeFilters}.`);
+      if (memoEntries.length) {
+        const memoText = memoEntries
+          .map(([k, v]) => {
+            const group = k.slice('__memo_'.length);
+            return memoEntries.length > 1 ? `${group}: ${v}` : String(v);
+          })
+          .join(' | ');
+        parts.push(`On-screen metric values: ${memoText}.`);
+      }
     }
     const ak = view.agentKnowledge;
     if (ak) {
@@ -50,6 +62,45 @@ export async function POST(request: NextRequest) {
     }
     parts.push('Use this context when the user asks about their data, campaigns, performance, or anything the view relates to. Do NOT use it only if the question is clearly about a different topic entirely. When you use the view context, start with "Looking at [view name] (filtered by [active filters]):" matching exactly what the context chip shows. Do NOT suggest or mention any other views in your response.]');
     contextPrefix = parts.join(' ') + '\n\n';
+  }
+
+  // Map awareness: summarize what the open map area is actually rendering (layer
+  // counts, blank layers, framed extent, selection) so the agent answers about
+  // what is on screen and diagnoses blank layers instead of inventing features.
+  const mapState = panelContext?.mapState as {
+    layerCount?: number;
+    layers?: Array<{ id: string; type: string; featureCount: number; colorBy?: string; rendered: boolean; gated?: boolean }>;
+    emptyLayers?: string[];
+    bbox?: [number, number, number, number];
+    selection?: Record<string, unknown>;
+    selectedFeature?: { key: string; value: unknown; attrs: Record<string, string | number | boolean> };
+    legend?: string[];
+  } | undefined;
+  if (mapState && (mapState.layerCount ?? 0) > 0 && Array.isArray(mapState.layers)) {
+    const layerLines = mapState.layers.slice(0, 8).map((l) => {
+      const bits = [`${l.type}`, `${l.featureCount} features`];
+      if (l.colorBy) bits.push(`color by ${l.colorBy}`);
+      if (l.gated) bits.push('HIDDEN (toggle off)');
+      else if (!l.rendered || l.featureCount === 0) bits.push('BLANK (no data)');
+      return `${l.id} (${bits.join(', ')})`;
+    });
+    const mapParts = [`[Map on screen: ${mapState.layerCount} layer(s). ${layerLines.join('; ')}.`];
+    if (mapState.emptyLayers?.length) mapParts.push(`Blank/empty layers: ${mapState.emptyLayers.join(', ')}.`);
+    if (mapState.bbox) {
+      const b = mapState.bbox.map((n) => Number(n).toFixed(4));
+      mapParts.push(`Viewport bbox (minLng,minLat,maxLng,maxLat): ${b.join(',')}.`);
+    }
+    if (mapState.selection && Object.keys(mapState.selection).length) {
+      const sel = Object.entries(mapState.selection).map(([k, v]) => `${k}=${v}`).join(', ');
+      mapParts.push(`Selected: ${sel}.`);
+    }
+    if (mapState.selectedFeature?.attrs && Object.keys(mapState.selectedFeature.attrs).length) {
+      const a = Object.entries(mapState.selectedFeature.attrs).map(([k, v]) => `${k}=${v}`).join(', ');
+      mapParts.push(`Selected feature attributes: ${a}.`);
+    }
+    if (mapState.legend?.length) mapParts.push(`Legend: ${mapState.legend.join(', ')}.`);
+    mapParts.push('Answer only about what is actually rendered. If a layer the user asks about is blank/empty or hidden, diagnose the likely cause (active filter or selection, zero rows for the current region/vehicle/date scope, a toggle that is off, or an unset selection anchor) before answering; do not describe features that are not on the map. When the user refers to "this" or "the selected" feature, use the Selected feature attributes above; for any field, metric, or nearby data not listed there, query the semantic view or a routing tool rather than guessing - the attribute list is a bounded snapshot, not the full row.]');
+    contextPrefix += mapParts.join(' ') + '\n\n';
   }
   if (availableViews.length > 0) {
     const viewLinks = availableViews

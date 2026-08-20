@@ -22,6 +22,8 @@ Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook a
 8. **New-deployment-first** - fixes land in pack/config/synapse source so a fresh deploy is correct; live hotfix is always secondary.
 9. **Live routing, not precomputed** - demo analytics that depend on drive-time reachability, catchments, matrices, or optimization MUST call the ORS functions (`OPENROUTESERVICE_APP.CORE.ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION`) at interaction time, NOT read materialized/precomputed ORS results. Precomputing isochrone or matrix output into tables is an anti-pattern: it hides the routing engine (the thing being demoed), goes stale when the estate/region/params change, and diverges from what a customer would build. Config-driven views call ORS inline by resolving the interactive selection into scalar-subquery / bind args (ORS SQL functions only evaluate with literal, scalar-subquery, or bind args - NOT correlated per-row columns; `ISOCHRONES` range is in MINUTES). Guard with `COALESCE(:selection, <default>)` so nothing is called with a NULL arg, and remember every ORS call requires the region's service RESUMED (a suspended service returns an embedded error, not a throw). Precomputed **non-ORS** reference data (Overture POI subsets, address/household density, synthetic commercials) is fine - the rule is specifically about not caching ORS engine output.
 
+10. **Agent-aware by construction** - every new or changed consumer view must be answerable by the left-panel Cortex agent: publish its on-screen values as bounded, pre-joined `__memo_<area>` `viewState` strings (Channel A), carry an accurate `agentKnowledge` block (Channel C - omit `preferredTool` when no semantic view models the data), and add `clickEmits` to the primary map layer (Channel B) so the agent can answer questions about the map and results. A view whose numbers exist only client-side, or whose `preferredTool` points at a semantic view that does not model the data, is incomplete.
+
 See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
 
 ## Repository Structure
@@ -42,6 +44,15 @@ archive/                     # Archived materials
 ```bash
 # Run skill evals (trigger accuracy, quality checks, cross-ref validation)
 python3 .cortex/skills/evals/run_evals.py
+
+# Run agent behavioral evals (executes the deployed FLEET_AGENT end to end and
+# grades verb-audit / ground-truth SQL / LLM-judge assertions). Requires a live
+# deployed stack, the target region's ORS services RUNNING, and a PAT:
+#   export FLEET_EVAL_PAT=<programmatic access token>
+#   python3 .cortex/skills/evals/run_agent_evals.py
+# Kept separate from run_evals.py because it needs the live stack and must not
+# block the static skill gate. Read-only: issues only SELECT/SHOW, creates no
+# Snowflake objects. Cases live in test-cases/agent-cases.yaml.
 
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
@@ -80,7 +91,7 @@ No global build/lint step - each skill is independently deployable via its own S
 | `setup-agent-playground` | demo-setup | Uploads `agent-demos.json` so the Agent Playground shows catchment/delivery/network scenarios. The 3 demo tools now source live region-scoped Overture POIs (no static `DEMO_*` needed); the legacy static seed in `references/deploy-demo-data.sql` is deprecated/optional. `install-fleet-apps` already uploads `agent-demos.json` (step 4.6). |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
-| `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
+| `backload-matching` | demo | Neutral (industry-agnostic) backload demo. Two FLEET_SA_APP views over the synthetic `BACKLOAD_MATCHING` views, solving live via `/api/backload/solve`: **Backload Matching** (single internal-first VROOM solve, assignment cards + write-back) and **Backload Proposals** (advanced cockpit - Quick scan / Per-load VRP / Fleet 1:1 / Profit-max strategies fused by client-side ensemble scoring into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips from `VW_CANDIDATES_SCORED` + Cortex rationale + session-only Accept/Reject/Flag). `references/proposals-schema.sql` adds the cockpit layer (MATCH_PARAMS/VW_LOADS/VW_TRAILERS_GEO/VW_CANDIDATES[_SCORED]); the generic `vrp_solve` verb solves any prepared VROOM challenge. |
 | `freight-exchange` | demo | Dispatcher-grade marketplace cockpit (parallel page to Backload Matching). Browse + filter + map of synthesized freight offers per active preset, with trust-score (credit/KYC/blacklist) and market-rate (vs. weekly p25/p50/p75 USD/km RATE_INDEX dynamic table) badges. Powered by FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data. |
 | `emergency-response` | demo | Single-page, multi-step evacuation-planning wizard. Step 1 colors a state's ZIP codes by FEMA NRI flood/wildfire risk; Step 2 seeds CareConnect PACE centers + Overture participant addresses sampled uniformly across the union of per-center drive-time isochrones (union drawn as a sanity overlay); Step 3 sets per-center vehicles/capacity + max trips per vehicle; Step 4 solves a capacitated multi-depot, multi-trip evacuation VRP (`OPTIMIZATION`, `pickup:[1]` jobs - each van expanded into up to maxTrips round trips) over participants at/above a chosen ZIP risk level, with a selectable trips list, numbered stop markers, and an overflow warning when the trip cap is exceeded. Fully client-driven via read-only `sfQuery`; risk = `V_ZIP_RISK` (NRI county risk joined to ZIP by county FIPS). States via `STATE_REGION_MAP` (CA/CO/PA). |
 | `sap-fleet-connector` | infrastructure | Binds landed SAP (EAM/SD/TM) + fleet telematics into the existing `FLEET_APP` neutral contract and `SV_FLEET_OPS`, so the dashboards, Cortex agent, and Cortex Analyst run on a customer's real SAP data with zero edits above the contract. Semantic-binding only (SAP+telematics assumed already landed via Fivetran/SLT/Datasphere). Maps EQUI/IFLOT/IMRG/AUFK/QMEL/LIKP+telematics to the neutral entities via a mandatory configurable `ASSET_CROSSWALK` (`native_serial`/`vin_2hop`/`vin_external`/`marine` + `normalize_serial`), dedupes CDC-landed tables to current rows, and repoints the `FLEET_APP.UNIFIED_FLEET` source seam. Config-driven via `sap-mapping.yaml` (generic strategy-archetype profiles). Users can discover bindable tables from the app UI: the chat agent's `introspect_sap` verb (wrapping read-only `ROUTING_TOOLS.TOOL_SAP_INTROSPECT`) scans a database's `INFORMATION_SCHEMA` and lists the SAP fleet objects, CDC fingerprint, telematics columns, and a suggested join strategy (`scripts/mock_sap_seed.sql` provides a demo `MOCK_SAP`/`MOCK_TELEMATICS`). Maintenance pack (AUFK/QMEL/IMRG -> new `fact_maintenance`) and SAP write-back are later phases. |
@@ -186,6 +197,22 @@ Rules:
 - Do NOT keep deploying newer image tags on top of still-uncommitted source - every deployed tag should correspond to a pushed commit.
 - If you discover deployed-but-uncommitted source has been reverted on disk, you can usually recover it: the last local `.next/server/chunks/*.js` from the build (minified, not clean source) plus the conversation edit history let you reconstruct the file; then `tsc`/build to verify and cross-check distinctive strings against the built bundle to confirm parity with what is deployed, and commit immediately.
 
+### Post-deploy agent smoke check (recommended, non-blocking)
+
+After an **app-surface** deploy that could affect the agent (SA/admin app redeploy, synapse bundle redeploy, agent recreate), run the fast agent smoke check so a broken agent->MCP->verb->audit chain is caught before a human hits it. This is a RECOMMENDATION, not a blocking gate: it is never wired inline into `install_fleet_apps.sh`, it does not run during the heavy engine build, and it must not stall a deploy.
+
+```bash
+export FLEET_EVAL_PAT=<programmatic access token>
+# Single-case, deterministic smoke (~30-90s): skips the LLM judge, checks the
+# verb fired and was audited with no error. Proves the whole chain is alive.
+python3 .cortex/skills/evals/run_agent_evals.py --case directions-sf --fast
+```
+
+Notes:
+- The check requires the target region's ORS services `RUNNING`; on a suspended region it triggers a resume (and briefly defeats auto-suspend), which is why it is opt-in rather than automatic. Skip the pre-flight with `--skip-ors-check` only if you have already confirmed ORS is up.
+- `--fast` omits `judge` (CORTEX.COMPLETE) assertions - use it for the routine post-deploy check to keep it deterministic and credit-cheap. Drop `--fast` and omit `--case` to run the full suite (verb + sql + judge) on demand.
+- Read-only: issues only SELECT/SHOW, creates no Snowflake objects, sets the standard `query_tag`.
+
 ## Friction Logging
 
 **MANDATORY:** After every `install-fleet-apps` execution (which builds the engine by default, regardless of success or failure), generate a friction log in `logs/`. This is NOT optional - every run produces a friction log, even if everything went smoothly.
@@ -286,7 +313,7 @@ graph TD
   - `STAGE IN ('CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')` → pin `ORS_SERVICE_<REGION>` and `ORS_POOL_<REGION>` to 0; `DOWNLOADER` returns to 14400 (the PBF is already on stage).
   - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
   - Studio (Data Studio) generation job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0. The control-app's `captureAndScaleUp()` performs this pinning in-process at job start and `scaleDown()` restores the captured baselines on every exit. `RECONCILE_AUTO_SUSPEND()` is the global safety net for the case where the control-app container restarts mid-run.
-  - All other times → services = `14400` (4h), per-region pools = `3600` (1h). `OPENROUTERSERVICE_APP_COMPUTE_POOL` is unrelated to this invariant (its default is `600`).
+  - All other times → the `routing_gateway_service` = `3600` (1h; it receives direct HTTP so its idle timer is real, and a shorter window collapses the shared core pool sooner), city/ORS + VROOM services = `14400` (4h; gateway-routed traffic does not reset their idle timer, so a shorter value risks mid-build/mid-use suspension - see `snowflake-scripting-guidelines.md`), per-region pools = `3600` (1h). `OPENROUTESERVICE_APP_COMPUTE_POOL` is `MIN_NODES=1 MAX_NODES=5` with `AUTO_SUSPEND_SECS=600` (unrelated to this invariant).
   - The fleet control apps (`FLEET_SA_APP`, `FLEET_ADMIN_APP`) have public endpoints and therefore no `AUTO_SUSPEND_SECS` - they are excluded.
   - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
   - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%` against `REGION_PROVISION_JOBS`, `MATRIX_BUILD_JOBS`, AND `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.

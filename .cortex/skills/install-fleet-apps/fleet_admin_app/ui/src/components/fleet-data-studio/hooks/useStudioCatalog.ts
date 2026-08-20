@@ -81,7 +81,12 @@ export function useStudioCatalog() {
   // focus / becomes visible. Picks up regions that finished provisioning
   // in the Region Builder while Data Studio was open.
   useEffect(() => {
-    const interval = setInterval(fetchAvailableRegions, 30000);
+    // Pause the 30s poll while the tab is hidden (Tier E cost hygiene); the
+    // visibility/focus handlers below re-fetch immediately on return.
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchAvailableRegions();
+    }, 30000);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') fetchAvailableRegions();
     };

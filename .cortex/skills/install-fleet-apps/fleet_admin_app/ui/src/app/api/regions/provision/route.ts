@@ -42,6 +42,15 @@ export const POST = withLogging(async (req: NextRequest) => {
     return NextResponse.json({ error: `Failed to create job: ${(err as Error).message}` }, { status: 500 });
   }
 
+  // Re-arm the self-gating rescue task. It suspends itself when idle to avoid
+  // 24/7 serverless credit burn, so arm it now that a job is pending; it will
+  // finalize this build and quiet itself again once everything settles.
+  try {
+    await runSql(`ALTER TASK IF EXISTS ${SF_DATABASE}.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME`);
+  } catch (e) {
+    console.error(`[provision] could not arm rescue task: ${(e as Error).message}`);
+  }
+
   // Fire-and-forget: launch the long-running provisioning CALL async and record
   // its statement handle, WITHOUT blocking the response. The standalone Node
   // process keeps the event loop alive so the un-awaited promise runs to completion.

@@ -16,6 +16,7 @@
 import type { SnowSqlFn } from './types';
 import type { GenerationConfig } from '../profiles';
 import { regionBoundaryCte, spatialFilter, sqlLit } from './region-source';
+import { h3ResForArea } from './spatial';
 
 const RO = 'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION';
 const PLACES = `${RO}.PLACES`;
@@ -23,6 +24,19 @@ const LOOKUP = `${RO}.LOOKUP`;
 const PLACES_COLS = '(REGION,GEOMETRY,PHONES,CATEGORY,NAME,ADDRESS,ALTERNATE,JOB_ID)';
 const LOOKUP_COLS =
   '(REGION,INDUSTRY,PA,PB,PC,IND,IND2,CTYPE,STYPE,SOURCE_TABLE,DEPOT_CTYPE,DEPOT_LABEL,JOB_ID)';
+
+// PLACES was previously a full, uncapped copy of every Overture place in the
+// region (Europe = ~21-32M rows, ~5.5 min insert on every run). The only
+// consumers are the route-optimization VRP demo (filters by CATEGORY; needs
+// ~100+ per category) and sample-poi-points / place-search (LIMIT <= 200); no
+// fleet dashboard reads PLACES. So we sample instead of cloning: keep up to
+// PLACES_CAP_PER_CATEGORY rows per primary category, AND at most
+// PLACES_CAP_PER_CATEGORY_CELL per (category, H3 cell) so density stays even
+// across metros (a pure category cap could thin any single metro). Cuts ~21M
+// to a few hundred k and the insert from minutes to seconds while preserving
+// the demo's per-category density.
+const PLACES_CAP_PER_CATEGORY = 1000;
+const PLACES_CAP_PER_CATEGORY_CELL = 50;
 
 export interface PlacesLookupResult {
   places: number;
@@ -42,6 +56,7 @@ async function insertPlaces(
     `DELETE FROM ${PLACES} WHERE JOB_ID = ${sqlLit(jobId)}`,
     'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
   );
+  const h3Res = h3ResForArea(config.region_area_km2);
   const sql = `
     INSERT INTO ${PLACES} ${PLACES_COLS}
     WITH ${regionBoundaryCte(config.region)}
@@ -58,7 +73,16 @@ async function insertPlaces(
       LEFT JOIN region_boundary rb ON TRUE
     WHERE p.GEOMETRY IS NOT NULL
       AND p.CATEGORIES:primary IS NOT NULL
-      AND ${spatialFilter('p.GEOMETRY', config.bbox)}`;
+      AND ${spatialFilter('p.GEOMETRY', config.bbox)}
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY p.CATEGORIES:primary::TEXT,
+                           H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${h3Res})
+              ORDER BY RANDOM()
+            ) <= ${PLACES_CAP_PER_CATEGORY_CELL}
+       AND ROW_NUMBER() OVER (
+              PARTITION BY p.CATEGORIES:primary::TEXT
+              ORDER BY RANDOM()
+            ) <= ${PLACES_CAP_PER_CATEGORY}`;
   const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
   const n = Number(rows?.[0]?.['number of rows inserted'] ?? 0);
   return Number.isFinite(n) ? n : 0;
