@@ -202,4 +202,4 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 | Gateway | routing_reverse_proxy | v1.1.5 |
 | VROOM | vroom-docker | v1.0.4 |
 | SA App | fleet_sa_app | v0.1.68 |
-| Admin App | fleet_admin_app | v0.1.16 |
+| Admin App | fleet_admin_app | v0.1.31 |

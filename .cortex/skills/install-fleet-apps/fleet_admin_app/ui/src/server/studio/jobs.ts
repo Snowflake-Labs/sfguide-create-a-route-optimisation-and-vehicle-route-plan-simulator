@@ -9,7 +9,7 @@ import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './s
 import { ensureTables } from './ensure-tables';
 import { syncRegionRegistryAndConfig } from './region-sync';
 import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactOffers, insertDimPartners, insertFactPartnerHistory } from './inserters';
-import { fetchRoute } from './engine/routing';
+import { fetchRoute, getRouteActivity, routeCacheStats } from './engine/routing';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -879,17 +879,45 @@ export async function startGeneration(
     // the job stalled and set the abort signal; the generator's abort checks and
     // the per-call ORS timeout let the loop unwind and the completion path marks
     // it FAILED. Secondary net to the per-call timeout in engine/routing.ts.
+    //
+    // On a continent-scale region a single vehicle-day (many live DIRECTIONS
+    // calls) can outlast the 15-min window, and telemetry/trip/progress events
+    // only fire at vehicle-day boundaries - so "no progress event" alone falsely
+    // flags a healthy-but-slow run. We therefore ALSO honour live ORS route
+    // activity (getRouteActivity): the job is only aborted when neither a
+    // progress event NOR a route-call completion has happened for the window. A
+    // genuine ORS outage is unaffected - it is caught quickly by the engine
+    // hard-stop (25 consecutive failures + 0 successes), not this watchdog.
     const WATCHDOG_STALL_MS = 15 * 60_000;
     const WATCHDOG_TICK_MS = 60_000;
+    let lastSeenRouteCompletions = -1;
     const watchdogTimer: NodeJS.Timeout = setInterval(() => {
       if (job.status !== 'RUNNING' || job.abort.aborted) return;
-      const idleMs = Date.now() - (job.lastProgressAt ?? job.startedAt.getTime());
+      const act = getRouteActivity();
+      const lastAliveMs = Math.max(
+        job.lastProgressAt ?? job.startedAt.getTime(),
+        act.lastActivityMs,
+      );
+      const idleMs = Date.now() - lastAliveMs;
       if (idleMs >= WATCHDOG_STALL_MS) {
         job.stalled = true;
         job.abort.aborted = true;
         log('ERROR', 'Studio', `Watchdog: no progress for ${Math.round(idleMs / 60000)} min - aborting job ${jobId} (possible ORS stall)`, { jobId });
         broadcast(job, 'warning', { message: `No progress for ${Math.round(idleMs / 60000)} min - watchdog aborting job (possible ORS stall)` });
+        return;
       }
+      // Liveness heartbeat: when ORS route calls are still completing but no
+      // vehicle-day has finished yet (mid-day on a large region), surface a
+      // moving status so the UI is not frozen on "0 pts, 0 trips". This does not
+      // stamp lastProgressAt - route activity already keeps the watchdog fresh -
+      // so it cannot mask a real wedge.
+      if (lastSeenRouteCompletions >= 0 && act.completions > lastSeenRouteCompletions && job.pointsGenerated === 0) {
+        const rc = routeCacheStats();
+        broadcast(job, 'progress', {
+          status: `Building telemetry: ${act.completions} route calls completed, ${rc.size} cached (large region - first vehicle-days can take several minutes)`,
+        });
+      }
+      lastSeenRouteCompletions = act.completions;
     }, WATCHDOG_TICK_MS);
     try {
       await ensureTables(snowSql);

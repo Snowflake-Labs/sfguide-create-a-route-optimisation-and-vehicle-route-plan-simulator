@@ -38,10 +38,24 @@ const routeCache = new Map<string, Promise<RouteFetchResult>>();
 let routeCacheHits = 0;
 let routeCacheMisses = 0;
 
+// Per-run liveness signal. Every real ORS DIRECTIONS call bumps these when it
+// resolves (success, UNROUTABLE, hard-fail, or timeout), giving jobs.ts a second
+// "still alive" signal beyond vehicle-day-completion progress events. On a
+// continent-scale region a single vehicle-day can take longer than the 15-min
+// no-progress watchdog window, so without this a healthy-but-slow run (route
+// calls still completing every <=60s) is falsely aborted as an "ORS stall". A
+// genuine outage is unaffected: it is caught quickly by the engine hard-stop
+// (25 consecutive failures + 0 successes), so refreshing on timeouts here does
+// not mask a down ORS. Reset by clearRouteCache() at generator start.
+let lastRouteActivityMs = Date.now();
+let routeCallCompletions = 0;
+
 export function clearRouteCache(): void {
   routeCache.clear();
   routeCacheHits = 0;
   routeCacheMisses = 0;
+  lastRouteActivityMs = Date.now();
+  routeCallCompletions = 0;
 }
 
 export function routeCacheStats(): { size: number; hits: number; misses: number; hitRate: number } {
@@ -52,6 +66,18 @@ export function routeCacheStats(): { size: number; hits: number; misses: number;
     misses: routeCacheMisses,
     hitRate: total > 0 ? routeCacheHits / total : 0,
   };
+}
+
+// Liveness snapshot for the jobs.ts watchdog/heartbeat. `completions` increases
+// monotonically per run so a tick can tell whether any ORS call landed since the
+// last tick; `lastActivityMs` is the wall-clock of the most recent completion.
+export function getRouteActivity(): { lastActivityMs: number; completions: number } {
+  return { lastActivityMs: lastRouteActivityMs, completions: routeCallCompletions };
+}
+
+function markRouteActivity(): void {
+  lastRouteActivityMs = Date.now();
+  routeCallCompletions++;
 }
 
 // Wrap a route fetch with the single-flight cache. `key` identifies the pair;
@@ -151,6 +177,10 @@ async function fetchRouteUncached(
       detail: { origin: [originLat, originLng], dest: [destLat, destLng], profile },
     });
     return null;
+  } finally {
+    // Bump the liveness signal on every completion (success/UNROUTABLE/fail/timeout)
+    // so the watchdog can tell a slow-but-alive run from a wedged generator.
+    markRouteActivity();
   }
 }
 
@@ -210,6 +240,8 @@ async function fetchDetourRouteUncached(
       detail: { profile },
     });
     return null;
+  } finally {
+    markRouteActivity();
   }
 }
 
