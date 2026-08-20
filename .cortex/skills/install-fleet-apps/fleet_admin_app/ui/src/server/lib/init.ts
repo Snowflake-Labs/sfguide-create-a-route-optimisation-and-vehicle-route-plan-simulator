@@ -311,11 +311,17 @@ export async function ensureBackloadAndAssetVelocityObjects(
     // Asset-attribute migration for existing installs (boot-only). DIM_FLEET's
     // V_DIM_FLEET_CURRENT view is `SELECT f.*`, so ADD COLUMN invalidates its
     // declared column count - drop it FIRST, then add columns; the view is
-    // recreated unconditionally later in this same boot (CREATE OR REPLACE
-    // V_DIM_FLEET_CURRENT below). Fresh installs already get these columns from
-    // the DIM_FLEET CREATE TABLE in studio/ensure-tables.ts. This migration is
-    // intentionally NOT in ensure-tables.ts (which also runs at generation
-    // time) so a generation run never drops the view without recreating it.
+    // recreated IMMEDIATELY after the ADD COLUMNs below (see the CREATE OR
+    // REPLACE V_DIM_FLEET_CURRENT right after this migration block). It MUST be
+    // recreated here and not deferred to the main V_*_CURRENT block further
+    // down, because BACKLOAD_MATCHING.VW_TRAILERS (created well before that
+    // block) reads V_DIM_FLEET_CURRENT; deferring left VW_TRAILERS (and the
+    // dependent VW_TRAILERS_GEO / VW_CANDIDATES / VW_CANDIDATES_SCORED cockpit
+    // views) failing on every boot because the source view was dropped and not
+    // yet recreated. Fresh installs already get these columns from the DIM_FLEET
+    // CREATE TABLE in studio/ensure-tables.ts. This migration is intentionally
+    // NOT in ensure-tables.ts (which also runs at generation time) so a
+    // generation run never drops the view without recreating it.
     { sql: `DROP VIEW IF EXISTS SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS NUMBER(6,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
@@ -324,6 +330,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    // Recreate V_DIM_FLEET_CURRENT right after the ADD COLUMN migration that
+    // dropped it (line above). This is the SAME canonical definition used by
+    // the main V_*_CURRENT projection block further down - kept here (earlier)
+    // so BACKLOAD_MATCHING.VW_TRAILERS, which is created before that block and
+    // reads this view, always compiles against a live source. Keep both in
+    // sync if the definition ever changes (single canonical body).
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT f.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = f.JOB_ID
+         AND d.REGION = f.REGION
+         AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
     // VEHICLE_CLASS_PROFILE - single source of truth for per-vehicle-class
     // capacity, costs, ORS profile, and UI label. Lives in
     // OPENROUTESERVICE_APP.CORE so any page on any preset can read it.
@@ -1110,19 +1135,11 @@ $$`,
     // IS_ACTIVE = TRUE returns POIs from any active dataset whose JOB_ID
     // matches, which is exactly what we want when multiple vehicle types
     // are active in the same region.
-    {
-      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
-        AS
-        SELECT f.*
-        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
-        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
-          ON d.DATASET_ID = f.JOB_ID
-         AND d.REGION = f.REGION
-         AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
-         AND d.IS_ACTIVE = TRUE`,
-      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
-    },
+    // NOTE: V_DIM_FLEET_CURRENT is created earlier (right after the DIM_FLEET
+    // ADD COLUMN migration) so it exists before BACKLOAD_MATCHING.VW_TRAILERS,
+    // which reads it. It is intentionally NOT recreated here to keep a single
+    // canonical definition. The other V_*_CURRENT views below are not dropped
+    // during the boot migration, so their placement here is fine.
     {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
@@ -1704,13 +1721,24 @@ $$`,
     log('ERROR', 'Init', `Asset Velocity views MISSING after boot init -> page will be empty: ${e?.message?.slice(0, 200)}`);
   }
   try {
+    // Probe the actual cockpit views the Backload Proposals page reads
+    // (VW_TRAILERS_GEO + VW_CANDIDATES_SCORED), NOT VW_LOADS: VW_LOADS is
+    // independent of VW_TRAILERS and survives even when the trailer/candidate
+    // views fail to create, so probing it here masked the exact failure that
+    // showed "still provisioning". Both of these depend on VW_TRAILERS, so if
+    // VW_TRAILERS failed to build they will be absent and this probe fires.
     await sqlFn(
-      `SELECT 1 FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS LIMIT 1`,
+      `SELECT 1 FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO LIMIT 1`,
+      'FLEET_INTELLIGENCE',
+      'BACKLOAD_MATCHING',
+    );
+    await sqlFn(
+      `SELECT 1 FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED LIMIT 1`,
       'FLEET_INTELLIGENCE',
       'BACKLOAD_MATCHING',
     );
   } catch (e: any) {
-    log('ERROR', 'Init', `Backload Proposals cockpit views MISSING after boot init -> Backload Proposals page will 422. Base VW_TRAILERS/VW_EXTERNAL_OFFERS likely absent (needs a generated dataset for the active region): ${e?.message?.slice(0, 200)}`);
+    log('ERROR', 'Init', `Backload Proposals cockpit views MISSING after boot init -> Backload Proposals page will show "still provisioning". VW_TRAILERS/VW_TRAILERS_GEO/VW_CANDIDATES_SCORED likely failed to build (check that V_DIM_FLEET_CURRENT exists before VW_TRAILERS, and that a dataset is generated for the active region): ${e?.message?.slice(0, 200)}`);
   }
   try {
     const cfgRows = await sqlFn(
