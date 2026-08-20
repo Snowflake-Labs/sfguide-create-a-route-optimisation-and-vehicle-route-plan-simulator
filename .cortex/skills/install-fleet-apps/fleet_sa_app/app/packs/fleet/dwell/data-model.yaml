@@ -25,7 +25,7 @@
 pack: dwell
 app_schema: FLEET_APP.DWELL
 warehouse: ROUTING_ANALYTICS
-dynamic_target_lag: "5 minutes"
+dynamic_target_lag: "1 hour"
 
 entities:
   # ---- Leaf projections (mapped; source shaping in entity-mapping.yaml) ------

@@ -138,4 +138,27 @@ export async function syncRegionRegistryAndConfig(
       log('WARN', 'Studio', `CONFIG update failed for ${schema}: ${e.message?.slice(0, 150)}`, { jobId });
     }
   }
+
+  // 4. Build the CATCHMENT layer (Overture POIs/addresses) for this region if it
+  //    is not already present, then rebuild the Freight Sourcing estate on top of
+  //    it. Both are pure Snowflake SQL (no ORS) and run inside this detached job,
+  //    so a multi-second CATCHMENT ingest here does not block any HTTP request.
+  //    build-if-missing: BUILD_CATCHMENT returns early when the region already
+  //    has POIs, so re-generating an existing region does not re-ingest Overture.
+  try {
+    await snowSql(
+      `CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT('${safeRegion}', FALSE)`,
+      'FLEET_INTELLIGENCE', 'CATCHMENT',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `BUILD_CATCHMENT failed for ${region}: ${e.message?.slice(0, 200)}`, { jobId });
+  }
+  try {
+    await snowSql(
+      `CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS('${safeRegion}')`,
+      'FLEET_INTELLIGENCE', 'SOURCING',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `BUILD_SOURCING_DIAGNOSTICS failed for ${region}: ${e.message?.slice(0, 200)}`, { jobId });
+  }
 }

@@ -115,16 +115,19 @@ AS
 $$
 DECLARE
     dropped INT DEFAULT 0;
-    rs      RESULTSET;
-    cur     CURSOR FOR rs;
 BEGIN
     SHOW SERVICES LIKE 'STUDIO_JOB_%' IN SCHEMA OPENROUTESERVICE_APP.CORE;
-    rs := (
+    -- Assign the RESULTSET before declaring the cursor. Declaring
+    -- "cur CURSOR FOR rs" in the DECLARE block (before rs is assigned) raises
+    -- "uninitialized resultSet 'RS'"; the working pattern is LET rs := (...)
+    -- then LET cur CURSOR FOR rs inside the body.
+    LET rs RESULTSET := (
         SELECT "name" AS svc_name, "status" AS status, "updated_on" AS updated_on
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         WHERE "status" IN ('DONE', 'FAILED', 'INTERNAL_ERROR')
           AND "updated_on" < DATEADD(hour, -1, CURRENT_TIMESTAMP())
     );
+    LET cur CURSOR FOR rs;
     FOR rec IN cur DO
         BEGIN
             EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name;

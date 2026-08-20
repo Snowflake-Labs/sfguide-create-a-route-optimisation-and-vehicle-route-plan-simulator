@@ -144,7 +144,7 @@ Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each s
 | 10 | DT_FACILITY_UTILIZATION | Dynamic Table | Daily facility visit stats |
 | 11 | DT_DRIVER_DWELL_SUMMARY | Dynamic Table | Per-driver dwell + breach counts |
 | 12 | DT_DAILY_TRENDS | Dynamic Table | Fleet-wide daily aggregates |
-| 13 | SLA_ALERT_LOG + Task | Table + Task | Schedule-based alert logging (every 5 min) |
+| 13 | SLA_ALERT_LOG + Task | Table + Task | Schedule-based alert logging (5-min schedule, created SUSPENDED to avoid idle cost; resume manually for a live demo) |
 
 ### Step 2: Verify Pipeline
 

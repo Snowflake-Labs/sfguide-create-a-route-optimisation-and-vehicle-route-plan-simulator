@@ -184,7 +184,7 @@ GROUP BY 1,2,3,4;
 -- 5. RATE_INDEX (Dynamic Table, weekly p25/p50/p75 USD/km by equipment)
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE DYNAMIC TABLE RATE_INDEX
-TARGET_LAG = '15 minutes'
+TARGET_LAG = '1 hour'
 WAREHOUSE = ROUTING_ANALYTICS
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS

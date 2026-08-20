@@ -30,6 +30,61 @@ export function binDegForArea(areaKm2: number | null | undefined): number {
   return 1.0;
 }
 
+// Adaptive H3 resolution for the server-side POI-pool spatial sample
+// (see loadPOIs in engine/routability.ts). The pool query round-robins one POI
+// per populated H3 cell so the 5,000-row cap spans the whole region instead of
+// the first micro-partition scan-order rows (which cluster in one corner for a
+// continent-sized bbox). Cell size shrinks as the region shrinks so a single
+// code path yields a healthy number of populated cells at any scale:
+//
+//   <    5,000 km^2  ->  res 6  (~36 km^2 cell)   - cities, BBBike rectangles
+//   <   50,000 km^2  ->  res 5  (~253 km^2)       - small states, Switzerland
+//   <  250,000 km^2  ->  res 5  (~253 km^2)       - UK, Germany, mid US states
+//   < 1,000,000 km^2  ->  res 4  (~1,770 km^2)    - California, France, Spain
+//   >= 1,000,000 km^2 ->  res 3  (~12,400 km^2)   - continental USA, EU
+export function h3ResForArea(areaKm2: number | null | undefined): number {
+  if (areaKm2 == null || !Number.isFinite(areaKm2) || areaKm2 <= 0) return 4;
+  if (areaKm2 < 5_000) return 6;
+  if (areaKm2 < 50_000) return 5;
+  if (areaKm2 < 250_000) return 5;
+  if (areaKm2 < 1_000_000) return 4;
+  return 3;
+}
+
+// Adaptive POI-pool cap for the loadPOIs sample. A flat 5,000 is plenty for a
+// city or state, but for a continent-sized region (Europe ~21M km^2) it leaves
+// home bins and destination pools very sparse, which produces cross-country
+// long routes and more unroutable picks. Scale the cap up with region area so
+// large regions get a denser, better-spread pool. The H3 round-robin sample
+// (loadPOIs) still spreads whatever cap is chosen across the whole region.
+//
+//   <  250,000 km^2  ->  5,000   - cities, states, small countries
+//   < 1,000,000 km^2  ->  8,000   - California, France, Spain
+//   >= 1,000,000 km^2 -> 12,000   - continental USA, EU
+export function poiCapForArea(areaKm2: number | null | undefined): number {
+  if (areaKm2 == null || !Number.isFinite(areaKm2) || areaKm2 <= 0) return 5_000;
+  if (areaKm2 < 250_000) return 5_000;
+  if (areaKm2 < 1_000_000) return 8_000;
+  return 12_000;
+}
+
+// Area-adaptive default fleet parallelism (concurrent vehicle-day ORS workers).
+// Larger regions have longer routes and more of them, so a modestly higher
+// concurrency better saturates the 4-instance ORS + 8-instance gateway back-end.
+// Kept conservative (max 12) so we do not overwhelm the warehouse/gateway; an
+// explicit config.parallelism always overrides this. Scaling ORS_SERVICE_<REGION>
+// replicas up during a large generation raises the useful ceiling further.
+//
+//   <  250,000 km^2  ->  8    - cities, states (unchanged default)
+//   < 1,000,000 km^2  -> 10    - California, France, Spain
+//   >= 1,000,000 km^2 -> 12    - continental USA, EU
+export function parallelismForArea(areaKm2: number | null | undefined): number {
+  if (areaKm2 == null || !Number.isFinite(areaKm2) || areaKm2 <= 0) return 8;
+  if (areaKm2 < 250_000) return 8;
+  if (areaKm2 < 1_000_000) return 10;
+  return 12;
+}
+
 // Approximate bbox area in km^2 (latitude correction). Used as a fallback when
 // REGION_CATALOG.BOUNDARY_AREA_KM2 is null (e.g. brand-new user-added region).
 export function bboxAreaKm2(bbox: { min_lat: number; max_lat: number; min_lng: number; max_lng: number }): number {

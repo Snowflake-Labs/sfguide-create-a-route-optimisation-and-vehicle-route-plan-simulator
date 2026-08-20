@@ -84,5 +84,16 @@ packs:
     probe: FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES
     self_building: true
 
-  # NOTE: the industry-vertical packs (marketplace / backload / dhl_ntbo) are
+  # Backload Matching - neutral, vehicle/industry-agnostic (no vendor branding).
+  # Rebuilds trailers / internal loads / external offers from the shared synthetic
+  # substrate + FLEET_INTELLIGENCE.BACKLOAD_MATCHING control tables (seeded by
+  # scripts/analytic_layer.sql). Consumer: backload_matching (TSX) + SV_BACKLOAD_MATCHING.
+  - name: backload_matching
+    app_schema: FLEET_APP.BACKLOAD_MATCHING
+    depends_on: [unified_fleet]
+    probe: FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING]
+    self_building: true
+
+  # NOTE: the remaining industry-vertical packs (marketplace / dhl_ntbo) are
   # intentionally EXCLUDED from this vehicle/industry-agnostic installer.

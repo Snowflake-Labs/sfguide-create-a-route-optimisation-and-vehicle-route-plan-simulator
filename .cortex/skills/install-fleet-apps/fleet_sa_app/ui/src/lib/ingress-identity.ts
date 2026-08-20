@@ -86,3 +86,25 @@ export function requireOps(req: Request): Promise<GateResult> {
 export function requireAdmin(req: Request): Promise<GateResult> {
   return gate(req, ADMIN_ROLES);
 }
+
+/**
+ * Require any authenticated end user for a write/mutating action.
+ *
+ * Unlike requireOps/requireAdmin this does not check a role - it only asserts
+ * that SPCS ingress injected an end-user identity. Deployed (SNOWFLAKE_HOST set):
+ * FAIL CLOSED, so an unauthenticated caller cannot reach a write path even
+ * though the app itself runs as the service role. Local dev (no SNOWFLAKE_HOST):
+ * FAIL OPEN, so PAT-based local runs and the owner keep working. Use on write
+ * endpoints (e.g. backload decision write-back) that have no role requirement
+ * but must not be anonymous.
+ */
+export async function requireUser(req: Request): Promise<GateResult> {
+  const user = getIngressUser(req);
+  if (!user) {
+    if (isDeployed()) {
+      return { ok: false, user: null, roles: [], status: 401, reason: 'No ingress identity' };
+    }
+    return { ok: true, user: null, roles: [], status: 200 };
+  }
+  return { ok: true, user, roles: [], status: 200 };
+}

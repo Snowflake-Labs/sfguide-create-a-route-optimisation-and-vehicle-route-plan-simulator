@@ -22,6 +22,8 @@ interface Props {
   onSourceTabChange: (tab: SourceTab) => void;
   search: string;
   onSearchChange: (v: string) => void;
+  levelFilter: string;
+  onLevelFilterChange: (v: string) => void;
 
   selectedRegion: CatalogRegion | null;
   onSelectRegion: (r: CatalogRegion | null) => void;
@@ -44,6 +46,7 @@ export default function ProvisionForm(props: Props) {
   const {
     catalog, catalogLoading, refreshing, onRefreshCatalog,
     sourceTab, onSourceTabChange, search, onSearchChange,
+    levelFilter, onLevelFilterChange,
     selectedRegion, onSelectRegion,
     selectedProfiles, onToggleProfile,
     computeSize, onComputeSizeChange,
@@ -57,10 +60,17 @@ export default function ProvisionForm(props: Props) {
       return acc;
     }, {}), []);
 
+  const availableLevels = useMemo(() => {
+    const order: CatalogRegion['level'][] = ['continent', 'country', 'sub-region', 'city'];
+    const present = new Set(catalog.filter((r) => r.source === sourceTab).map((r) => r.level));
+    return order.filter((l) => present.has(l));
+  }, [catalog, sourceTab]);
+
   const filteredCatalog = useMemo(() => {
     const words = search.toLowerCase().split(/\s+/).filter(Boolean);
     const filtered = catalog.filter((r) => {
       if (r.source !== sourceTab) return false;
+      if (levelFilter !== 'all' && r.level !== levelFilter) return false;
       if (words.length === 0) return true;
       const haystack = [r.regionName, r.continent || '', r.country || ''].join(' ').toLowerCase();
       return words.every((w) => haystack.includes(w));
@@ -72,7 +82,7 @@ export default function ProvisionForm(props: Props) {
       seen.add(key);
       return true;
     });
-  }, [catalog, sourceTab, search]);
+  }, [catalog, sourceTab, search, levelFilter]);
 
   useEffect(() => {
     if (selectedRegion && !filteredCatalog.some((r) => r.catalogId === selectedRegion.catalogId)) {
@@ -111,6 +121,20 @@ export default function ProvisionForm(props: Props) {
             className="select"
             style={{ flex: 1, minWidth: 0 }}
           />
+          {availableLevels.length > 1 && (
+            <select
+              className="select"
+              value={levelFilter}
+              onChange={(e) => onLevelFilterChange(e.target.value)}
+              style={{ width: 'auto' }}
+              aria-label="Filter by region type"
+            >
+              <option value="all">All types</option>
+              {availableLevels.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+          )}
           <button className="btn small" onClick={onRefreshCatalog} disabled={refreshing}>
             {refreshing ? 'Refreshing...' : 'Refresh Catalog'}
           </button>

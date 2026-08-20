@@ -40,6 +40,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_INTELLIGENCE SET DATA_RETENTION_TIME_IN_DAYS = 0;
 
 -- =============================================================================
 -- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
@@ -250,6 +251,75 @@ WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG)
 QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
 
 -- =============================================================================
+-- 3b. BACKLOAD_MATCHING control / reference / audit tables (safety-net)
+--     The backload_matching pack's FLEET_APP.BACKLOAD_MATCHING.VW_* views bind to
+--     these physical tables. Created + seeded idempotently here so a fresh install
+--     never needs a demo skill or app restart to populate them. Seed CONFIG ONLY
+--     when empty so a live preset switch (/api/region) is never clobbered.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+-- Per-vehicle-class capacity / cost / label profile (single source of truth for the page).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VEHICLE_CLASS_PROFILE (
+  VEHICLE_TYPE      VARCHAR PRIMARY KEY,
+  ORS_PROFILE       VARCHAR NOT NULL,
+  PAYLOAD_KG_TYP    NUMBER  NOT NULL,
+  PAYLOAD_KG_MAX    NUMBER  NOT NULL,
+  SHIPMENT_KG_MIN   NUMBER  NOT NULL,
+  SHIPMENT_KG_MAX   NUMBER  NOT NULL,
+  AVG_SPEED_KMH     NUMBER  NOT NULL,
+  COST_PER_KM       FLOAT   NOT NULL,
+  COST_PER_HR       FLOAT   NOT NULL,
+  HOME_RANGE_KM     NUMBER  NOT NULL,
+  LABEL_NOUN        VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VEHICLE_CLASS_PROFILE tgt
+USING (
+  SELECT * FROM VALUES
+    ('bicycle',    'cycling-regular',     15,    25,    1,    15,  18,  0.05,  8.0,  15, 'bicycle'),
+    ('ebike',      'cycling-electric',    25,    40,    2,    25,  22,  0.08, 10.0,  25, 'ebike'),
+    ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0,   5, 'courier'),
+    ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0,  80, 'motorcycle'),
+    ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0,  80, 'car'),
+    ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, 150, 'van'),
+    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, 200, 'trailer'),
+    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, 200, 'truck')
+  AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_PER_KM, COST_PER_HR, HOME_RANGE_KM, LABEL_NOUN)
+) src
+ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_PER_KM, COST_PER_HR, HOME_RANGE_KM, LABEL_NOUN)
+  VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.PAYLOAD_KG_TYP, src.PAYLOAD_KG_MAX, src.SHIPMENT_KG_MIN, src.SHIPMENT_KG_MAX, src.AVG_SPEED_KMH, src.COST_PER_KM, src.COST_PER_HR, src.HOME_RANGE_KM, src.LABEL_NOUN);
+
+-- Dispatcher decision write-back audit (the Backload Matching page writes here via /api/write).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS (
+  DECISION_ID     VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  TRAILER_ID      VARCHAR,
+  OFFER_ID        VARCHAR,
+  SOURCE          VARCHAR,
+  SCORE           FLOAT,
+  EMPTY_KM        FLOAT,
+  NET_BENEFIT_USD FLOAT,
+  DECIDED_BY      VARCHAR,
+  DECIDED_AT      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+  RATIONALE       VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- =============================================================================
 -- 4. CATCHMENT  (Overture Marketplace; real ADDRESS/CITY/STATE/POSTCODE, no synth)
 --    Runs LAST: depends on the two Overture listings + (optionally) REGION_CATALOG.
 --    A failure here (no Overture coverage / engine absent) does NOT block 1-3.
@@ -322,110 +392,142 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES (
   POSTCODE  VARCHAR
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- Single-row driver: active region key + bbox (from the active dataset's DIM_POIS
--- extent, +0.1deg margin -- engine-independent, data-derived, not hardcoded) +
--- boundary polygon from REGION_CATALOG when the engine is present (NULL-safe refine).
-CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.CATCHMENT._AL_REGION AS
-WITH active AS (
-  SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1
-),
-ext AS (
-  SELECT MIN(p.LNG) AS MNLON, MIN(p.LAT) AS MNLAT, MAX(p.LNG) AS MXLON, MAX(p.LAT) AS MXLAT
-  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
-  JOIN active a ON p.REGION = a.REGION
-),
-bnd AS (
-  SELECT TO_GEOGRAPHY(ST_ASWKT(rc.BOUNDARY)) AS BOUNDARY
-  FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-  JOIN active a ON (UPPER(rc.LOOKUP_NAME) = UPPER(a.REGION) OR UPPER(rc.REGION_KEY) = UPPER(a.REGION))
-  WHERE rc.BOUNDARY IS NOT NULL
-  ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
-  LIMIT 1
-),
--- Dominant ISO country code of the region's Overture places within the bbox.
--- Lets the address ingest prune by COUNTRY (fast) while staying region-agnostic
--- (resolves 'US' for SanFrancisco, 'GB' for London, 'DE' for Berlin, etc.).
-ctry AS (
-  SELECT p.ADDRESSES[0]:country::VARCHAR AS CC
-  FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p, ext e
-  WHERE p.ADDRESSES[0]:country IS NOT NULL
-    AND ST_X(p.GEOMETRY) BETWEEN COALESCE(e.MNLON, -123.0) - 0.1 AND COALESCE(e.MXLON, -121.5) + 0.1
-    AND ST_Y(p.GEOMETRY) BETWEEN COALESCE(e.MNLAT,   36.8) - 0.1 AND COALESCE(e.MXLAT,   38.5) + 0.1
-  GROUP BY 1
-  ORDER BY COUNT(*) DESC
-  LIMIT 1
-)
-SELECT
-  a.REGION                                   AS REGION_KEY,
-  COALESCE(e.MNLON, -123.0) - 0.1            AS BBOX_MIN_LON,
-  COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
-  COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
-  COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
-  (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY,
-  (SELECT CC FROM ctry)                      AS COUNTRY
-FROM active a CROSS JOIN ext e;
+-- Per-region CATCHMENT builder (factored from the former inline ingest so it can
+-- run for ANY region on demand, not just the install region). Builds POIS +
+-- CITIES_BY_STATE + REGIONAL_ADDRESSES for P_REGION from the Overture shares.
+-- Region-scoped and build-if-missing: returns early if the region already has
+-- POIs unless P_FORCE = TRUE. NO ORS calls (pure Snowflake SQL over Overture).
+-- Driver: region key + bbox (from that region's DIM_POIS extent, +0.1deg, data-
+-- derived) + boundary polygon from REGION_CATALOG + dominant Overture country.
+-- Idempotent per region (DELETE-by-region + INSERT) so other regions are kept.
+-- Called at install (CONFIG region), from Data Studio region-sync, and from the
+-- admin region-switch endpoint.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(P_REGION VARCHAR, P_FORCE BOOLEAN DEFAULT FALSE)
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  n INT DEFAULT 0;
+BEGIN
+  IF (P_REGION IS NULL) THEN
+    RETURN 'no region supplied';
+  END IF;
+  SELECT COUNT(*) INTO n FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION = :P_REGION;
+  IF (n > 0 AND NOT P_FORCE) THEN
+    RETURN 'catchment already built for ' || P_REGION || ' (' || n || ' pois); pass force=TRUE to rebuild';
+  END IF;
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
-SELECT
-    d.REGION_KEY AS REGION,
-    p.ID AS POI_ID,
-    p.NAMES:primary::VARCHAR AS POI_NAME,
-    p.BASIC_CATEGORY,
-    ST_X(p.GEOMETRY) AS LONGITUDE,
-    ST_Y(p.GEOMETRY) AS LATITUDE,
-    p.GEOMETRY,
-    COALESCE(p.ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
-    p.ADDRESSES[0]:locality::VARCHAR AS CITY,
-    p.ADDRESSES[0]:region::VARCHAR AS STATE,
-    p.ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
-FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
-CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
-WHERE p.BASIC_CATEGORY IN (
-    'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
-    'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
-    'clothing_store', 'electronics_store', 'specialty_store', 'gym',
-    'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
-)
-AND p.GEOMETRY IS NOT NULL
-AND p.ADDRESSES[0]:region IS NOT NULL
-AND ST_X(p.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
-AND ST_Y(p.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
-AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, d.BOUNDARY));
+  CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.CATCHMENT._AL_REGION AS
+  WITH active AS (
+    SELECT :P_REGION AS REGION
+  ),
+  ext AS (
+    SELECT MIN(p.LNG) AS MNLON, MIN(p.LAT) AS MNLAT, MAX(p.LNG) AS MXLON, MAX(p.LAT) AS MXLAT
+    FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+    JOIN active a ON p.REGION = a.REGION
+  ),
+  bnd AS (
+    SELECT TO_GEOGRAPHY(ST_ASWKT(rc.BOUNDARY)) AS BOUNDARY
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+    JOIN active a ON (UPPER(rc.LOOKUP_NAME) = UPPER(a.REGION) OR UPPER(rc.REGION_KEY) = UPPER(a.REGION))
+    WHERE rc.BOUNDARY IS NOT NULL
+    ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+    LIMIT 1
+  ),
+  -- Dominant ISO country code of the region's Overture places within the bbox.
+  -- Lets the address ingest prune by COUNTRY (fast) while staying region-agnostic
+  -- (resolves 'US' for SanFrancisco, 'GB' for London, 'DE' for Berlin, etc.).
+  ctry AS (
+    SELECT p.ADDRESSES[0]:country::VARCHAR AS CC
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p, ext e
+    WHERE p.ADDRESSES[0]:country IS NOT NULL
+      AND ST_X(p.GEOMETRY) BETWEEN COALESCE(e.MNLON, -123.0) - 0.1 AND COALESCE(e.MXLON, -121.5) + 0.1
+      AND ST_Y(p.GEOMETRY) BETWEEN COALESCE(e.MNLAT,   36.8) - 0.1 AND COALESCE(e.MXLAT,   38.5) + 0.1
+    GROUP BY 1
+    ORDER BY COUNT(*) DESC
+    LIMIT 1
+  )
+  SELECT
+    a.REGION                                   AS REGION_KEY,
+    COALESCE(e.MNLON, -123.0) - 0.1            AS BBOX_MIN_LON,
+    COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
+    COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
+    COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
+    (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY,
+    (SELECT CC FROM ctry)                      AS COUNTRY
+  FROM active a CROSS JOIN ext e;
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
-SELECT
-    REGION, STATE, CITY, COUNT(*) AS POI_COUNT
-FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
-WHERE CITY IS NOT NULL
-  AND REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1)
-GROUP BY REGION, STATE, CITY
-HAVING COUNT(*) > 10
-ORDER BY STATE, POI_COUNT DESC;
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
+  SELECT
+      d.REGION_KEY AS REGION,
+      p.ID AS POI_ID,
+      p.NAMES:primary::VARCHAR AS POI_NAME,
+      p.BASIC_CATEGORY,
+      ST_X(p.GEOMETRY) AS LONGITUDE,
+      ST_Y(p.GEOMETRY) AS LATITUDE,
+      p.GEOMETRY,
+      COALESCE(p.ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
+      p.ADDRESSES[0]:locality::VARCHAR AS CITY,
+      p.ADDRESSES[0]:region::VARCHAR AS STATE,
+      p.ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
+  FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+  CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+  WHERE p.BASIC_CATEGORY IN (
+      'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+      'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+      'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+      'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
+  )
+  AND p.GEOMETRY IS NOT NULL
+  AND p.ADDRESSES[0]:region IS NOT NULL
+  AND ST_X(p.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+  AND ST_Y(p.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+  AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, d.BOUNDARY));
 
-DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
-WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
-INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
-SELECT
-    d.REGION_KEY AS REGION,
-    a.ID,
-    a.GEOMETRY,
-    ST_X(a.GEOMETRY) AS LONGITUDE,
-    ST_Y(a.GEOMETRY) AS LATITUDE,
-    a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
-    a.POSTCODE
-FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
-CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
--- Region-agnostic: prune by the region's dominant country (partition-friendly),
--- then the bbox + boundary polygon scope the geography precisely.
-WHERE (d.COUNTRY IS NULL OR a.COUNTRY = d.COUNTRY)
-AND a.GEOMETRY IS NOT NULL
-AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
-AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
-AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+  SELECT
+      REGION, STATE, CITY, COUNT(*) AS POI_COUNT
+  FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+  WHERE CITY IS NOT NULL
+    AND REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1)
+  GROUP BY REGION, STATE, CITY
+  HAVING COUNT(*) > 10
+  ORDER BY STATE, POI_COUNT DESC;
+
+  DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+  WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+  INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+  SELECT
+      d.REGION_KEY AS REGION,
+      a.ID,
+      a.GEOMETRY,
+      ST_X(a.GEOMETRY) AS LONGITUDE,
+      ST_Y(a.GEOMETRY) AS LATITUDE,
+      a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
+      a.POSTCODE
+  FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
+  CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+  -- Region-agnostic: prune by the region's dominant country (partition-friendly),
+  -- then the bbox + boundary polygon scope the geography precisely.
+  WHERE (d.COUNTRY IS NULL OR a.COUNTRY = d.COUNTRY)
+  AND a.GEOMETRY IS NOT NULL
+  AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+  AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+  AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+
+  RETURN 'catchment built for ' || P_REGION;
+END;
+$$;
+
+-- Install-time build for the active CONFIG region (force = TRUE for a clean rebuild).
+CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
+  (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
 
 -- =============================================================================
 -- 5. LOCATION DIAGNOSTICS  (cannibalisation + closure vertical slice)
@@ -718,6 +820,7 @@ CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
 -- normally creates FLEET_APP, so create the DB defensively to keep a first run clean.
 CREATE DATABASE IF NOT EXISTS FLEET_APP
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
@@ -1469,6 +1572,846 @@ GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(VARCHAR, 
 GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(VARCHAR, FLOAT, FLOAT, INT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.CATCHMENT.LIVE_CATCHMENT_COMPETITORS(VARCHAR, FLOAT, FLOAT, INT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
+-- =============================================================================
+-- 6. FREIGHT SOURCING OPTIMIZER  (plant-to-customer "location swaps")
+--    Region-agnostic sourcing intelligence built from data already present:
+--    a deterministic subset of CATCHMENT.POIS becomes the "plant estate" and a
+--    second, disjoint subset becomes the "customer" demand points. Product
+--    capability per plant, per-customer annual truckloads / current source, and
+--    the freight rate model are SYNTHETIC and deterministic (HASH-seeded) - a
+--    proxy for first-party sourcing data. NO Data Studio / UNIFIED change.
+--
+--    LIVE ROUTING (Architecture Tenet 9): this build does NOT precompute any
+--    drive-time matrix. Plant x customer road distance/duration is computed at
+--    interaction time by FLEET_APP.SOURCING.LIVE_SOURCING_LANES calling
+--    OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR live (one call, all plant origins x
+--    all customer destinations). This build only materializes NON-ORS reference
+--    data: the plant estate (PLANTS), the customers (CUSTOMERS), the synthetic
+--    plant capability/cost (PLANT_FACTS), per-customer demand + a data-only
+--    nearest-capable-plant baseline (CUSTOMER_DEMAND), and the rate model
+--    (FREIGHT_RATE). The current-source baseline uses straight-line nearest so
+--    the live road-distance optimizer has something to beat.
+--
+--    NOTE (single-active-region model, mirrors CATCHMENT/LOCATION): the proc
+--    rebuilds only the region in FLEET_INTELLIGENCE.CATCHMENT.CONFIG
+--    (DELETE-by-region + INSERT), so rows for other regions are preserved. Every
+--    plant and customer sits inside ONE provisioned region's ORS graph, which is
+--    the requirement for the live MATRIX_TABULAR call.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.PLANTS (
+  REGION      VARCHAR NOT NULL,
+  PLANT_ID    VARCHAR NOT NULL,   -- synthetic (PL0001..), safe for dynamic SQL
+  POI_ID      VARCHAR,
+  PLANT_NAME  VARCHAR,
+  CATEGORY    VARCHAR,
+  LON         FLOAT,
+  LAT         FLOAT,
+  GEOG        GEOGRAPHY
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.CUSTOMERS (
+  REGION        VARCHAR NOT NULL,
+  CUSTOMER_ID   VARCHAR NOT NULL,  -- synthetic (CU0001..)
+  POI_ID        VARCHAR,
+  CUSTOMER_NAME VARCHAR,
+  LON           FLOAT,
+  LAT           FLOAT,
+  GEOG          GEOGRAPHY
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Synthetic plant capability + cost. PRODUCT_CAPABILITY is the set of glass
+-- products the plant can make (every plant makes FLOAT; even-indexed plants make
+-- COATED, odd-indexed make MIRROR, every 3rd makes LAMINATED) so any customer
+-- product always has at least one capable plant when >= 2 plants exist.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS (
+  REGION               VARCHAR NOT NULL,
+  PLANT_ID             VARCHAR NOT NULL,
+  PLANT_NAME           VARCHAR,
+  PRODUCT_CAPABILITY   ARRAY,          -- synthetic: e.g. ['FLOAT','COATED']
+  PRODUCTION_COST_PER_TON NUMBER(10,2),-- synthetic
+  ANNUAL_CAPACITY_TONS INT             -- synthetic
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Per-customer demand + a DATA-ONLY current-source baseline (nearest capable
+-- plant by straight-line distance). The live optimizer recomputes cheapest
+-- source using road distance, which may differ - that gap is the saving.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND (
+  REGION            VARCHAR NOT NULL,
+  CUSTOMER_ID       VARCHAR NOT NULL,
+  PRODUCT           VARCHAR,           -- FLOAT | COATED | MIRROR
+  ANNUAL_TRUCKLOADS INT,               -- synthetic
+  TONS_PER_LOAD     INT,               -- synthetic
+  CURRENT_PLANT_ID  VARCHAR            -- data-only nearest capable plant (baseline)
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Freight rate model (one row per region), overridable by the app sliders.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE (
+  REGION           VARCHAR NOT NULL,
+  RATE_PER_KM      NUMBER(10,4),       -- USD per km per load
+  RATE_PER_TON_KM  NUMBER(10,4)        -- USD per ton-km
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Mixed-product order basket per customer (Phase 2: product-mix / inter-plant
+-- transfer). One or more product lines per customer, each with tons. Powers the
+-- consolidate-at-a-hub vs ship-direct tradeoff. HASH-seeded, synthetic.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SOURCING.ORDER_MIX (
+  REGION      VARCHAR NOT NULL,
+  CUSTOMER_ID VARCHAR NOT NULL,
+  PRODUCT     VARCHAR,            -- FLOAT | COATED | MIRROR
+  TONS        INT                 -- synthetic tons for this product line
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Build procedure: materializes the plant estate + customers + synthetic facts
+-- for the active region. NO ORS calls (the matrix is computed live by the app).
+-- Owner's rights. Idempotent per region.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS(P_REGION VARCHAR DEFAULT NULL)
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  rg VARCHAR;
+BEGIN
+  -- Region resolution: explicit arg wins (region-sync / admin switch pass it);
+  -- otherwise fall back to the single active CATCHMENT.CONFIG region (install path).
+  IF (P_REGION IS NOT NULL) THEN
+    rg := P_REGION;
+  ELSE
+    SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  END IF;
+  IF (rg IS NULL) THEN
+    RETURN 'no region (arg NULL and no active CATCHMENT.CONFIG)';
+  END IF;
+
+  -- 1. Plant estate: deterministic subset of the region most-spread category,
+  --    one plant per H3 res-6 cell (widely separated), first 6.
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.PLANTS
+    (REGION, PLANT_ID, POI_ID, PLANT_NAME, CATEGORY, LON, LAT, GEOG)
+  WITH cat AS (
+    SELECT BASIC_CATEGORY
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+    WHERE REGION = :rg AND BASIC_CATEGORY IS NOT NULL AND LONGITUDE IS NOT NULL
+    GROUP BY BASIC_CATEGORY
+    ORDER BY COUNT(DISTINCT H3_POINT_TO_CELL_STRING(GEOMETRY, 6)) DESC, COUNT(*) DESC
+    LIMIT 1
+  ),
+  ranked AS (
+    SELECT p.POI_ID, p.POI_NAME, p.BASIC_CATEGORY, p.LONGITUDE, p.LATITUDE, p.GEOMETRY,
+           ROW_NUMBER() OVER (PARTITION BY H3_POINT_TO_CELL_STRING(p.GEOMETRY, 6) ORDER BY p.POI_ID) AS rn_cell
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
+    JOIN cat ON p.BASIC_CATEGORY = cat.BASIC_CATEGORY
+    WHERE p.REGION = :rg AND p.LONGITUDE IS NOT NULL
+  ),
+  spread AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY POI_ID) AS gidx
+    FROM ranked WHERE rn_cell = 1
+  )
+  SELECT :rg,
+         'PL' || LPAD(gidx::VARCHAR, 4, '0'),
+         POI_ID, 'Plant ' || POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY
+  FROM spread WHERE gidx <= 6;
+
+  -- 2. Customers: same category, one per finer H3 res-7 cell, EXCLUDING the POIs
+  --    already chosen as plants, first 30.
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.CUSTOMERS
+    (REGION, CUSTOMER_ID, POI_ID, CUSTOMER_NAME, LON, LAT, GEOG)
+  WITH cat AS (
+    SELECT BASIC_CATEGORY
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+    WHERE REGION = :rg AND BASIC_CATEGORY IS NOT NULL AND LONGITUDE IS NOT NULL
+    GROUP BY BASIC_CATEGORY
+    ORDER BY COUNT(DISTINCT H3_POINT_TO_CELL_STRING(GEOMETRY, 6)) DESC, COUNT(*) DESC
+    LIMIT 1
+  ),
+  ranked AS (
+    SELECT p.POI_ID, p.POI_NAME, p.LONGITUDE, p.LATITUDE, p.GEOMETRY,
+           ROW_NUMBER() OVER (PARTITION BY H3_POINT_TO_CELL_STRING(p.GEOMETRY, 7) ORDER BY p.POI_ID) AS rn_cell
+    FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
+    JOIN cat ON p.BASIC_CATEGORY = cat.BASIC_CATEGORY
+    WHERE p.REGION = :rg AND p.LONGITUDE IS NOT NULL
+      AND p.POI_ID NOT IN (SELECT POI_ID FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = :rg AND POI_ID IS NOT NULL)
+  ),
+  spread AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY POI_ID) AS cidx
+    FROM ranked WHERE rn_cell = 1
+  )
+  SELECT :rg,
+         'CU' || LPAD(cidx::VARCHAR, 4, '0'),
+         POI_ID, POI_NAME, LONGITUDE, LATITUDE, GEOMETRY
+  FROM spread WHERE cidx <= 30;
+
+  -- 3. Freight rate model (seeded defaults; app sliders override at query time).
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE (REGION, RATE_PER_KM, RATE_PER_TON_KM)
+    VALUES (:rg, 1.50, 0.05);
+
+  -- 4. Synthetic plant capability + cost (HASH-seeded, deterministic per PLANT_ID).
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS
+    (REGION, PLANT_ID, PLANT_NAME, PRODUCT_CAPABILITY, PRODUCTION_COST_PER_TON, ANNUAL_CAPACITY_TONS)
+  WITH base AS (
+    SELECT PLANT_ID, PLANT_NAME, TRY_TO_NUMBER(SUBSTR(PLANT_ID, 3)) AS gidx
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = :rg
+  )
+  SELECT :rg, PLANT_ID, PLANT_NAME,
+         ARRAY_CONSTRUCT_COMPACT(
+           'FLOAT',
+           CASE WHEN MOD(gidx, 2) = 0 THEN 'COATED' END,
+           CASE WHEN MOD(gidx, 2) = 1 THEN 'MIRROR' END,
+           CASE WHEN MOD(gidx, 3) = 0 THEN 'LAMINATED' END
+         ) AS PRODUCT_CAPABILITY,
+         (280 + MOD(ABS(HASH(PLANT_ID, 7)), 121))::NUMBER(10,2) AS PRODUCTION_COST_PER_TON,
+         50000 + MOD(ABS(HASH(PLANT_ID, 8)), 150001)            AS ANNUAL_CAPACITY_TONS
+  FROM base;
+
+  -- 5. Per-customer demand + data-only nearest-capable-plant baseline.
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND
+    (REGION, CUSTOMER_ID, PRODUCT, ANNUAL_TRUCKLOADS, TONS_PER_LOAD, CURRENT_PLANT_ID)
+  WITH cust AS (
+    SELECT c.CUSTOMER_ID, c.GEOG,
+           CASE MOD(ABS(HASH(c.CUSTOMER_ID, 1)), 3)
+             WHEN 0 THEN 'FLOAT' WHEN 1 THEN 'COATED' ELSE 'MIRROR' END AS product,
+           50 + MOD(ABS(HASH(c.CUSTOMER_ID, 2)), 450) AS annual_truckloads,
+           20 + MOD(ABS(HASH(c.CUSTOMER_ID, 3)), 6)   AS tons_per_load
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS c
+    WHERE c.REGION = :rg
+  ),
+  capable AS (
+    SELECT cu.CUSTOMER_ID, cu.product, cu.annual_truckloads, cu.tons_per_load, pl.PLANT_ID,
+           ROW_NUMBER() OVER (PARTITION BY cu.CUSTOMER_ID ORDER BY ST_DISTANCE(cu.GEOG, pl.GEOG)) AS rn
+    FROM cust cu
+    JOIN FLEET_INTELLIGENCE.SOURCING.PLANTS pl ON pl.REGION = :rg
+    JOIN FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf
+      ON pf.REGION = :rg AND pf.PLANT_ID = pl.PLANT_ID
+     AND ARRAY_CONTAINS(cu.product::VARIANT, pf.PRODUCT_CAPABILITY)
+  )
+  SELECT :rg, CUSTOMER_ID, product, annual_truckloads, tons_per_load, PLANT_ID
+  FROM capable WHERE rn = 1;
+
+  -- 6. Mixed-product order basket (1-3 lines/customer). Always the primary
+  --    product (same HASH as CUSTOMER_DEMAND.PRODUCT), plus each other product
+  --    included on a HASH coin-flip. Tons HASH-seeded per (customer, product).
+  DELETE FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX WHERE REGION = :rg;
+  INSERT INTO FLEET_INTELLIGENCE.SOURCING.ORDER_MIX (REGION, CUSTOMER_ID, PRODUCT, TONS)
+  WITH prods AS (
+    SELECT 'FLOAT' AS product, 0 AS pk
+    UNION ALL SELECT 'COATED', 1
+    UNION ALL SELECT 'MIRROR', 2
+  ),
+  cust AS (
+    SELECT CUSTOMER_ID,
+           CASE MOD(ABS(HASH(CUSTOMER_ID, 1)), 3)
+             WHEN 0 THEN 'FLOAT' WHEN 1 THEN 'COATED' ELSE 'MIRROR' END AS primary_product
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = :rg
+  )
+  SELECT :rg, c.CUSTOMER_ID, p.product,
+         8 + MOD(ABS(HASH(c.CUSTOMER_ID, p.pk, 9)), 15) AS tons
+  FROM cust c CROSS JOIN prods p
+  WHERE p.product = c.primary_product
+     OR MOD(ABS(HASH(c.CUSTOMER_ID, p.pk, 10)), 2) = 0;
+
+  RETURN 'SOURCING built for ' || rg || ' (live-routing model; no precomputed matrix)';
+END;
+$$;
+
+CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS();
+
+-- 6b. FLEET_APP neutral-contract views + LIVE UDTFs (consumers never bind to
+--     FLEET_INTELLIGENCE directly). Mirrors the LOCATION seam.
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.SOURCING
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_PLANTS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.PLANTS;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_CUSTOMERS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_PLANT_FACTS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_FREIGHT_RATE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE;
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ORDER_MIX
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX;
+-- Active-region pointer for the app: the single region the SOURCING estate was
+-- built for. Reflects CATCHMENT.CONFIG, which region creation (Data Studio
+-- region-sync) and region switch (admin regions/active) both update, and which
+-- BUILD_SOURCING_DIAGNOSTICS builds against - so the sourcing views always
+-- resolve to the same region their data was built for. Owner's-rights ownership
+-- chain (ACCOUNTADMIN owns both) lets FLEET_APP roles read it via the view grant.
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_REGION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+
+-- Estate-only facts view for the semantic view (SV_SOURCING). Current annual
+-- freight here is a DATA-ONLY straight-line estimate (no ORS), suitable for the
+-- semantic layer; precise, road-distance swap analysis is done live in the app.
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_SOURCING_FACTS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS
+  SELECT d.REGION, d.CUSTOMER_ID, c.CUSTOMER_NAME, d.PRODUCT,
+         d.ANNUAL_TRUCKLOADS, d.TONS_PER_LOAD, d.CURRENT_PLANT_ID,
+         p.PLANT_NAME AS CURRENT_PLANT,
+         ROUND(ST_DISTANCE(c.GEOG, p.GEOG) / 1000.0, 2) AS CURRENT_DISTANCE_KM,
+         ROUND(d.ANNUAL_TRUCKLOADS
+               * (ST_DISTANCE(c.GEOG, p.GEOG) / 1000.0)
+               * (fr.RATE_PER_KM + d.TONS_PER_LOAD * fr.RATE_PER_TON_KM), 0)::NUMBER(18,0) AS CURRENT_ANNUAL_FREIGHT
+  FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND d
+  JOIN FLEET_INTELLIGENCE.SOURCING.CUSTOMERS c ON c.REGION = d.REGION AND c.CUSTOMER_ID = d.CUSTOMER_ID
+  JOIN FLEET_INTELLIGENCE.SOURCING.PLANTS p ON p.REGION = d.REGION AND p.PLANT_ID = d.CURRENT_PLANT_ID
+  JOIN FLEET_INTELLIGENCE.SOURCING.FREIGHT_RATE fr ON fr.REGION = d.REGION;
+
+-- Live sourcing lanes: ONE ORS call computes the full plant x customer road
+-- distance/duration matrix (MATRIX_TABULAR: origins = all plant coords ordered
+-- by PLANT_ID, destinations = all customer coords ordered by CUSTOMER_ID). The
+-- response is a VARIANT with durations[i][j] (seconds) and distances[i][j]
+-- (meters); indices align to the ordered plant/customer rows. Freight cost per
+-- the customer's truckload = distance_km * rate_per_km + tons * distance_km *
+-- rate_per_ton_km. Nothing precomputed (Architecture Tenet 9); region ORS must
+-- be RESUMED. Owner's-rights; consumers only need USAGE.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT)
+RETURNS TABLE (PLANT_ID VARCHAR, PLANT_NAME VARCHAR, CUSTOMER_ID VARCHAR, CUSTOMER_NAME VARCHAR,
+               DISTANCE_KM NUMBER(14,2), DURATION_MIN NUMBER(14,1), TONS INT,
+               FREIGHT_COST NUMBER(18,2), PLANT_GEOG GEOGRAPHY, CUSTOMER_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH mtx AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
+      P_REGION) AS m
+  ),
+  p AS (
+    SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
+  ),
+  c AS (
+    SELECT CUSTOMER_ID, CUSTOMER_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY CUSTOMER_ID) - 1 AS ci
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION
+  ),
+  d AS (
+    SELECT CUSTOMER_ID, TONS_PER_LOAD
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND WHERE REGION = P_REGION
+  )
+  SELECT p.PLANT_ID, p.PLANT_NAME, c.CUSTOMER_ID, c.CUSTOMER_NAME,
+         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((mtx.m:durations[p.pi][c.ci]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         COALESCE(d.TONS_PER_LOAD, 22) AS tons,
+         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_KM
+               + COALESCE(d.TONS_PER_LOAD, 22) * (mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
+              )::NUMBER(18,2) AS freight_cost,
+         p.GEOG AS plant_geog, c.GEOG AS customer_geog
+  FROM mtx, p CROSS JOIN c
+  LEFT JOIN d ON d.CUSTOMER_ID = c.CUSTOMER_ID
+  WHERE mtx.m:distances[p.pi][c.ci] IS NOT NULL
+$$;
+
+-- Live location swap: for each customer, restrict lanes to product-capable
+-- plants, pick the cheapest, compare to the data-only current source, and
+-- annualize the per-load saving by ANNUAL_TRUCKLOADS. Builds on the single
+-- MATRIX_TABULAR call inside LIVE_SOURCING_LANES. P_PRODUCT_FILTER is optional
+-- (NULL = all products). Owner's-rights; consumers only need USAGE.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_PRODUCT_FILTER VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, CUSTOMER_NAME VARCHAR, PRODUCT VARCHAR, ANNUAL_TRUCKLOADS INT,
+               CURRENT_PLANT VARCHAR, CURRENT_COST_PER_LOAD NUMBER(18,2),
+               BEST_PLANT VARCHAR, BEST_COST_PER_LOAD NUMBER(18,2),
+               SAVINGS_PER_LOAD NUMBER(18,2), ANNUAL_SAVINGS NUMBER(18,0),
+               CURRENT_PLANT_GEOG GEOGRAPHY, BEST_PLANT_GEOG GEOGRAPHY, CUSTOMER_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH lanes AS (
+    SELECT * FROM TABLE(FLEET_APP.SOURCING.LIVE_SOURCING_LANES(P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM))
+  ),
+  dem AS (
+    SELECT CUSTOMER_ID, PRODUCT, ANNUAL_TRUCKLOADS, CURRENT_PLANT_ID
+    FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND
+    WHERE REGION = P_REGION
+      AND (P_PRODUCT_FILTER IS NULL OR PRODUCT = P_PRODUCT_FILTER)
+  ),
+  capable AS (
+    SELECT l.PLANT_ID, l.PLANT_NAME, l.CUSTOMER_ID, l.CUSTOMER_NAME, l.FREIGHT_COST,
+           l.PLANT_GEOG, l.CUSTOMER_GEOG,
+           d.PRODUCT, d.ANNUAL_TRUCKLOADS, d.CURRENT_PLANT_ID
+    FROM lanes l
+    JOIN dem d ON d.CUSTOMER_ID = l.CUSTOMER_ID
+    JOIN FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf
+      ON pf.REGION = P_REGION AND pf.PLANT_ID = l.PLANT_ID
+     AND ARRAY_CONTAINS(d.PRODUCT::VARIANT, pf.PRODUCT_CAPABILITY)
+  ),
+  best AS (
+    -- Pick the cheapest capable plant as ONE atomic row (name + geog + cost from
+    -- the same winning row), deterministic on a cost tie via PLANT_ID.
+    SELECT CUSTOMER_ID, PLANT_NAME AS best_plant, PLANT_GEOG AS best_plant_geog,
+           FREIGHT_COST AS best_cost
+    FROM capable
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY FREIGHT_COST, PLANT_ID) = 1
+  ),
+  cur AS (
+    SELECT CUSTOMER_ID, CUSTOMER_NAME, PRODUCT, ANNUAL_TRUCKLOADS,
+           PLANT_NAME AS current_plant, FREIGHT_COST AS current_cost,
+           CUSTOMER_GEOG, PLANT_GEOG AS current_plant_geog
+    FROM capable
+    WHERE PLANT_ID = CURRENT_PLANT_ID
+  )
+  SELECT cur.CUSTOMER_ID, cur.CUSTOMER_NAME, cur.PRODUCT, cur.ANNUAL_TRUCKLOADS,
+         cur.current_plant, ROUND(cur.current_cost, 2)::NUMBER(18,2) AS current_cost_per_load,
+         b.best_plant, ROUND(b.best_cost, 2)::NUMBER(18,2) AS best_cost_per_load,
+         ROUND(cur.current_cost - b.best_cost, 2)::NUMBER(18,2) AS savings_per_load,
+         ROUND((cur.current_cost - b.best_cost) * cur.ANNUAL_TRUCKLOADS, 0)::NUMBER(18,0) AS annual_savings,
+         cur.current_plant_geog, b.best_plant_geog, cur.CUSTOMER_GEOG
+  FROM cur JOIN best b ON b.CUSTOMER_ID = cur.CUSTOMER_ID
+  ORDER BY annual_savings DESC
+$$;
+
+-- ===========================================================================
+-- Phase 2: product-mix / inter-plant transfer (consolidate vs ship direct)
+-- ===========================================================================
+-- Live plant-to-plant road matrix (ONE MATRIX_TABULAR call, plants as both
+-- origins and destinations). Used for the inter-plant transfer legs. Diagonal
+-- (plant to itself) is 0. Same VARIANT distances[i][j] indexing + ARRAY_AGG
+-- ordering alignment as LIVE_SOURCING_LANES. Nothing precomputed (Tenet 9).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(
+  P_REGION VARCHAR, P_PROFILE VARCHAR)
+RETURNS TABLE (FROM_PLANT_ID VARCHAR, FROM_PLANT VARCHAR, TO_PLANT_ID VARCHAR, TO_PLANT VARCHAR,
+               DISTANCE_KM NUMBER(14,2), DURATION_MIN NUMBER(14,1),
+               FROM_GEOG GEOGRAPHY, TO_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH mtx AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+      P_REGION) AS m
+  ),
+  a AS (
+    SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
+  ),
+  b AS (
+    SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS bi
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
+  )
+  SELECT a.PLANT_ID, a.PLANT_NAME, b.PLANT_ID, b.PLANT_NAME,
+         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         a.GEOG, b.GEOG
+  FROM mtx, a CROSS JOIN b
+  WHERE mtx.m:distances[a.ai][b.bi] IS NOT NULL
+$$;
+
+-- Live product-mix tradeoff per customer order (basket of product lines):
+--   Option B (SHIP DIRECT): each line from its cheapest capable plant direct to
+--     the customer -> cost_multi_plant = sum over lines of min direct freight.
+--   Option A (CONSOLIDATE): pick a hub plant, transfer the products the hub
+--     cannot make in from the nearest capable plant (+ handling per ton), then
+--     ship ONE consolidated load hub->customer. cost_consolidated = min over
+--     hubs of (transfer_in + outbound). Because transfer cost is monotonic in
+--     road distance, the cheapest transfer source = the nearest capable plant,
+--     and a hub that itself makes the product appears as a distance-0 source
+--     (so no transfer / no handling for that line).
+-- freight(a,b,tons) = dist_km*rate_per_km + tons*dist_km*rate_per_ton_km.
+-- Uses LIVE_SOURCING_LANES (plant->customer distances) + LIVE_PLANT_MATRIX
+-- (plant->plant distances); two live ORS calls, nothing precomputed. Customers
+-- whose order cannot be fully covered (an unreachable required leg) are dropped.
+-- P_CUSTOMER_ID optional (NULL = all customers).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, CUSTOMER_NAME VARCHAR, PRODUCT_LINES INT, TOTAL_TONS INT,
+               COST_MULTI_PLANT NUMBER(18,2), COST_CONSOLIDATED NUMBER(18,2), BEST_HUB VARCHAR,
+               HANDLING_COST NUMBER(18,2), SAVINGS NUMBER(18,2), RECOMMENDATION VARCHAR,
+               CUSTOMER_GEOG GEOGRAPHY, BEST_HUB_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH pc AS (
+    SELECT PLANT_ID, CUSTOMER_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_SOURCING_LANES(P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM))
+  ),
+  pp AS (
+    SELECT FROM_PLANT_ID, TO_PLANT_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(P_REGION, P_PROFILE))
+  ),
+  orders AS (
+    SELECT CUSTOMER_ID, PRODUCT, TONS
+    FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX
+    WHERE REGION = P_REGION AND (P_CUSTOMER_ID IS NULL OR CUSTOMER_ID = P_CUSTOMER_ID)
+  ),
+  plant_products AS (
+    SELECT pf.PLANT_ID, f.value::VARCHAR AS PRODUCT
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf,
+         LATERAL FLATTEN(input => pf.PRODUCT_CAPABILITY) f
+    WHERE pf.REGION = P_REGION
+  ),
+  lines AS (SELECT CUSTOMER_ID, COUNT(*) AS product_lines FROM orders GROUP BY CUSTOMER_ID),
+  ct AS (SELECT CUSTOMER_ID, SUM(TONS) AS total_tons FROM orders GROUP BY CUSTOMER_ID),
+  custname AS (SELECT CUSTOMER_ID, CUSTOMER_NAME, GEOG FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
+  hubs AS (SELECT PLANT_ID, PLANT_NAME, GEOG FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+  -- per (hub, product): min road distance from a capable source plant (0 when the hub itself makes it)
+  transfer_basis AS (
+    SELECT pp.TO_PLANT_ID AS hub_id, cpp.PRODUCT, MIN(pp.DISTANCE_KM) AS min_dist
+    FROM pp JOIN plant_products cpp ON cpp.PLANT_ID = pp.FROM_PLANT_ID
+    GROUP BY pp.TO_PLANT_ID, cpp.PRODUCT
+  ),
+  transfer_line AS (
+    SELECT o.CUSTOMER_ID, tb.hub_id, o.PRODUCT, o.TONS, tb.min_dist,
+           CASE WHEN tb.min_dist > 0
+                THEN tb.min_dist * P_RATE_PER_KM + o.TONS * tb.min_dist * P_RATE_PER_TON_KM + P_HANDLING_PER_TON * o.TONS
+                ELSE 0 END AS line_transfer_cost
+    FROM orders o
+    JOIN transfer_basis tb ON tb.PRODUCT = o.PRODUCT
+  ),
+  transfer_in AS (
+    SELECT CUSTOMER_ID, hub_id,
+           SUM(line_transfer_cost) AS transfer_cost,
+           SUM(CASE WHEN min_dist > 0 THEN P_HANDLING_PER_TON * TONS ELSE 0 END) AS handling_cost,
+           COUNT(*) AS covered_lines
+    FROM transfer_line GROUP BY CUSTOMER_ID, hub_id
+  ),
+  optionA AS (
+    SELECT ti.CUSTOMER_ID, ti.hub_id, ti.handling_cost,
+           ti.transfer_cost + (pc.DISTANCE_KM * P_RATE_PER_KM + ct.total_tons * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS cost_a
+    FROM transfer_in ti
+    JOIN ct ON ct.CUSTOMER_ID = ti.CUSTOMER_ID
+    JOIN lines ln ON ln.CUSTOMER_ID = ti.CUSTOMER_ID AND ti.covered_lines = ln.product_lines
+    JOIN pc ON pc.PLANT_ID = ti.hub_id AND pc.CUSTOMER_ID = ti.CUSTOMER_ID
+  ),
+  bestA AS (
+    SELECT CUSTOMER_ID, hub_id AS best_hub_id, cost_a AS cost_consolidated, handling_cost
+    FROM optionA
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY cost_a, hub_id) = 1
+  ),
+  lineB AS (
+    SELECT o.CUSTOMER_ID, o.PRODUCT, o.TONS,
+           MIN(pc.DISTANCE_KM * P_RATE_PER_KM + o.TONS * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS line_direct_cost
+    FROM orders o
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pc ON pc.PLANT_ID = cpp.PLANT_ID AND pc.CUSTOMER_ID = o.CUSTOMER_ID
+    GROUP BY o.CUSTOMER_ID, o.PRODUCT, o.TONS
+  ),
+  costB AS (
+    SELECT CUSTOMER_ID, SUM(line_direct_cost) AS cost_multi, COUNT(*) AS covered_lines
+    FROM lineB GROUP BY CUSTOMER_ID
+  ),
+  -- Feasible direct plan = every line has a direct lane (covers the whole basket).
+  costB_ok AS (
+    SELECT cb.CUSTOMER_ID, cb.cost_multi
+    FROM costB cb JOIN lines ln ON ln.CUSTOMER_ID = cb.CUSTOMER_ID
+    WHERE cb.covered_lines = ln.product_lines
+  ),
+  -- Customer spine: keep a customer if EITHER plan is feasible (bestA already
+  -- requires a fully-covering hub; costB_ok requires a full direct plan). This
+  -- surfaces consolidation-only and direct-only customers instead of dropping
+  -- them (they show a NULL cost on the infeasible side).
+  spine AS (
+    SELECT CUSTOMER_ID FROM bestA
+    UNION
+    SELECT CUSTOMER_ID FROM costB_ok
+  )
+  SELECT cn.CUSTOMER_ID, cn.CUSTOMER_NAME, ln.product_lines, ct.total_tons,
+         ROUND(cb.cost_multi, 2)::NUMBER(18,2) AS cost_multi_plant,
+         ROUND(ba.cost_consolidated, 2)::NUMBER(18,2) AS cost_consolidated,
+         hb.PLANT_NAME AS best_hub,
+         ROUND(ba.handling_cost, 2)::NUMBER(18,2) AS handling_cost,
+         ROUND(cb.cost_multi - ba.cost_consolidated, 2)::NUMBER(18,2) AS savings,
+         CASE
+           WHEN ba.CUSTOMER_ID IS NULL THEN 'SHIP DIRECT'
+           WHEN cb.CUSTOMER_ID IS NULL THEN 'CONSOLIDATE'
+           WHEN cb.cost_multi - ba.cost_consolidated > 0 THEN 'CONSOLIDATE'
+           ELSE 'SHIP DIRECT'
+         END AS recommendation,
+         cn.GEOG AS customer_geog, hb.GEOG AS best_hub_geog
+  FROM spine s
+  JOIN custname cn ON cn.CUSTOMER_ID = s.CUSTOMER_ID
+  JOIN lines ln ON ln.CUSTOMER_ID = s.CUSTOMER_ID
+  JOIN ct ON ct.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN bestA ba ON ba.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN costB_ok cb ON cb.CUSTOMER_ID = s.CUSTOMER_ID
+  LEFT JOIN hubs hb ON hb.PLANT_ID = ba.best_hub_id
+  ORDER BY savings DESC NULLS LAST
+$$;
+
+-- Live flow legs for ONE customer's order, for the map: the CONSOLIDATE plan
+-- (transfer-in legs from the nearest capable source into the best hub, plus the
+-- consolidated outbound leg hub->customer) and the SHIP DIRECT plan (each line
+-- from its nearest capable plant direct to the customer). LEG_KIND in
+-- ('TRANSFER','OUTBOUND','DIRECT'). Recomputes the best hub the same way as
+-- LIVE_MIX_TRADEOFF. Two live ORS calls; region ORS must be RESUMED.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (LEG_KIND VARCHAR, PRODUCT VARCHAR, TONS INT,
+               FROM_LON FLOAT, FROM_LAT FLOAT, TO_LON FLOAT, TO_LAT FLOAT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH pc AS (
+    SELECT PLANT_ID, CUSTOMER_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_SOURCING_LANES(P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM))
+    WHERE CUSTOMER_ID = P_CUSTOMER_ID
+  ),
+  pp AS (
+    SELECT FROM_PLANT_ID, TO_PLANT_ID, DISTANCE_KM
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(P_REGION, P_PROFILE))
+  ),
+  orders AS (
+    SELECT PRODUCT, TONS FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX
+    WHERE REGION = P_REGION AND CUSTOMER_ID = P_CUSTOMER_ID
+  ),
+  plant_products AS (
+    SELECT pf.PLANT_ID, f.value::VARCHAR AS PRODUCT
+    FROM FLEET_INTELLIGENCE.SOURCING.PLANT_FACTS pf,
+         LATERAL FLATTEN(input => pf.PRODUCT_CAPABILITY) f
+    WHERE pf.REGION = P_REGION
+  ),
+  total AS (SELECT SUM(TONS) AS tt, COUNT(*) AS nlines FROM orders),
+  custrow AS (SELECT GEOG FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION AND CUSTOMER_ID = P_CUSTOMER_ID),
+  plants AS (SELECT PLANT_ID, GEOG FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
+  -- recompute the best hub (mirror of LIVE_MIX_TRADEOFF option A)
+  transfer_basis AS (
+    SELECT pp.TO_PLANT_ID AS hub_id, cpp.PRODUCT, MIN(pp.DISTANCE_KM) AS min_dist
+    FROM pp JOIN plant_products cpp ON cpp.PLANT_ID = pp.FROM_PLANT_ID
+    GROUP BY pp.TO_PLANT_ID, cpp.PRODUCT
+  ),
+  transfer_line AS (
+    SELECT tb.hub_id, o.PRODUCT, o.TONS, tb.min_dist,
+           CASE WHEN tb.min_dist > 0
+                THEN tb.min_dist * P_RATE_PER_KM + o.TONS * tb.min_dist * P_RATE_PER_TON_KM + P_HANDLING_PER_TON * o.TONS
+                ELSE 0 END AS line_transfer_cost
+    FROM orders o JOIN transfer_basis tb ON tb.PRODUCT = o.PRODUCT
+  ),
+  optionA AS (
+    SELECT tl.hub_id,
+           SUM(tl.line_transfer_cost) + (pc.DISTANCE_KM * P_RATE_PER_KM + total.tt * pc.DISTANCE_KM * P_RATE_PER_TON_KM) AS cost_a
+    FROM transfer_line tl
+    JOIN pc ON pc.PLANT_ID = tl.hub_id
+    CROSS JOIN total
+    GROUP BY tl.hub_id, pc.DISTANCE_KM, total.tt
+    HAVING COUNT(*) = (SELECT nlines FROM total)
+  ),
+  best AS (
+    SELECT hub_id FROM optionA QUALIFY ROW_NUMBER() OVER (ORDER BY cost_a, hub_id) = 1
+  ),
+  -- nearest capable source plant for each product into the best hub
+  src AS (
+    SELECT o.PRODUCT, o.TONS, b.hub_id, pp.FROM_PLANT_ID AS src_id, pp.DISTANCE_KM AS d
+    FROM orders o
+    CROSS JOIN best b
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pp ON pp.FROM_PLANT_ID = cpp.PLANT_ID AND pp.TO_PLANT_ID = b.hub_id
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY o.PRODUCT ORDER BY pp.DISTANCE_KM, pp.FROM_PLANT_ID) = 1
+  ),
+  -- nearest capable plant direct to the customer for each product
+  direct AS (
+    SELECT o.PRODUCT, o.TONS, cpp.PLANT_ID AS src_id
+    FROM orders o
+    JOIN plant_products cpp ON cpp.PRODUCT = o.PRODUCT
+    JOIN pc ON pc.PLANT_ID = cpp.PLANT_ID
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY o.PRODUCT ORDER BY pc.DISTANCE_KM, cpp.PLANT_ID) = 1
+  )
+  SELECT 'TRANSFER' AS leg_kind, src.PRODUCT, src.TONS,
+         ST_X(sp.GEOG) AS from_lon, ST_Y(sp.GEOG) AS from_lat,
+         ST_X(hp.GEOG) AS to_lon, ST_Y(hp.GEOG) AS to_lat
+  FROM src
+  JOIN plants sp ON sp.PLANT_ID = src.src_id
+  JOIN plants hp ON hp.PLANT_ID = src.hub_id
+  WHERE src.d > 0
+  UNION ALL
+  SELECT 'OUTBOUND', NULL, (SELECT tt FROM total),
+         ST_X(hp.GEOG), ST_Y(hp.GEOG), ST_X(cu.GEOG), ST_Y(cu.GEOG)
+  FROM best b JOIN plants hp ON hp.PLANT_ID = b.hub_id CROSS JOIN custrow cu
+  UNION ALL
+  SELECT 'DIRECT', d.PRODUCT, d.TONS,
+         ST_X(sp.GEOG), ST_Y(sp.GEOG), ST_X(cu.GEOG), ST_Y(cu.GEOG)
+  FROM direct d JOIN plants sp ON sp.PLANT_ID = d.src_id CROSS JOIN custrow cu
+$$;
+
+-- ===========================================================================
+-- Road-based lane geometry (batched live DIRECTIONS)
+-- ===========================================================================
+-- The swap/mix maps default to straight O-D arcs. These two owner's-rights
+-- UDTFs return the ACTUAL road route per lane so the map can draw road-based
+-- paths instead of arcs. DIRECTIONS is a TABLE function, so it supports a
+-- per-row LATERAL invocation (implicit CROSS JOIN) - this batches N routings
+-- into ONE set-based statement (one SQL round-trip for the app), while still
+-- calling ORS live per lane (Tenet 9, nothing precomputed). Consumers only
+-- need USAGE here; the ORS grant lives with the function owner.
+
+-- Proposed + selected swap lanes as road paths. When P_ONLY_CUSTOMER IS NULL,
+-- returns the road path best_plant->customer for every savings lane (the green
+-- "proposed" layer, only a handful). When P_ONLY_CUSTOMER is set, returns just
+-- that customer's best-plant road path regardless of savings (the focused
+-- "selected" layer, so a no-change customer still road-routes). GEOJSON is the
+-- parsed route geometry from DIRECTIONS; DISTANCE is meters, DURATION seconds.
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_PRODUCT_FILTER VARCHAR, P_ONLY_CUSTOMER VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, SAVINGS_PER_LOAD NUMBER(18,2),
+               ROAD_KM NUMBER(14,2), ROAD_MIN NUMBER(14,1), ROUTE_GEOJSON VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH reg AS (
+    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
+  ),
+  swap AS (
+    SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
+    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    WHERE BEST_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
+      AND ( (P_ONLY_CUSTOMER IS NULL AND SAVINGS_PER_LOAD > 0)
+            OR (P_ONLY_CUSTOMER IS NOT NULL AND CUSTOMER_ID = P_ONLY_CUSTOMER) )
+  )
+  SELECT s.CUSTOMER_ID, s.SAVINGS_PER_LOAD,
+         ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
+         ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
+  FROM swap s, reg,
+       TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+               P_PROFILE,
+               ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
+               ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
+               reg.r)) d
+$$;
+
+-- Product-mix flow legs as road paths for the selected customer's order. Wraps
+-- LIVE_MIX_FLOWS and road-routes each TRANSFER/OUTBOUND/DIRECT leg. Skips
+-- zero-length legs (a hub that makes the product is a distance-0 self leg).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_HANDLING_PER_TON FLOAT, P_CUSTOMER_ID VARCHAR)
+RETURNS TABLE (LEG_KIND VARCHAR, PRODUCT VARCHAR, TONS INT,
+               ROAD_KM NUMBER(14,2), ROAD_MIN NUMBER(14,1), ROUTE_GEOJSON VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH reg AS (
+    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
+  ),
+  flows AS (
+    SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
+    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
+                 P_HANDLING_PER_TON, P_CUSTOMER_ID))
+    WHERE FROM_LON IS NOT NULL AND FROM_LAT IS NOT NULL
+      AND TO_LON IS NOT NULL AND TO_LAT IS NOT NULL
+      AND NOT (FROM_LON = TO_LON AND FROM_LAT = TO_LAT)
+  )
+  SELECT f.LEG_KIND, f.PRODUCT, f.TONS,
+         ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
+         ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
+  FROM flows f, reg,
+       TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+               P_PROFILE,
+               ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
+               ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
+               reg.r)) d
+$$;
+
+-- Current-source lanes as road paths for EVERY customer (not just savings lanes).
+-- Wraps LIVE_LOCATION_SWAP and road-routes CURRENT_PLANT_GEOG -> CUSTOMER_GEOG so
+-- the map draws road-following current lanes instead of straight arcs. Region is
+-- resolved internally so callers pass a literal NULL (avoids the scalar-subquery
+-- optimizer error when a subquery arg meets a lateral DIRECTIONS join).
+CREATE OR REPLACE FUNCTION FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_RATE_PER_KM FLOAT, P_RATE_PER_TON_KM FLOAT,
+  P_PRODUCT_FILTER VARCHAR)
+RETURNS TABLE (CUSTOMER_ID VARCHAR, ROAD_KM NUMBER(14,2), ROAD_MIN NUMBER(14,1), ROUTE_GEOJSON VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH reg AS (
+    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
+  ),
+  cur AS (
+    SELECT CUSTOMER_ID, CURRENT_PLANT_GEOG, CUSTOMER_GEOG
+    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    WHERE CURRENT_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
+      AND NOT (ST_X(CURRENT_PLANT_GEOG) = ST_X(CUSTOMER_GEOG)
+               AND ST_Y(CURRENT_PLANT_GEOG) = ST_Y(CUSTOMER_GEOG))
+  )
+  SELECT c.CUSTOMER_ID,
+         ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
+         ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
+  FROM cur c, reg,
+       TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+               P_PROFILE,
+               ARRAY_CONSTRUCT(ST_X(c.CURRENT_PLANT_GEOG), ST_Y(c.CURRENT_PLANT_GEOG)),
+               ARRAY_CONSTRUCT(ST_X(c.CUSTOMER_GEOG), ST_Y(c.CUSTOMER_GEOG)),
+               reg.r)) d
+$$;
+
+-- Grants (additive; guarded so a role-less install does not error the file).
+GRANT USAGE ON SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_USER;
+GRANT USAGE ON SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_PLANT_MATRIX(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOWS(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(VARCHAR, VARCHAR, FLOAT, FLOAT, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
 UNION ALL SELECT 'ROUTE_DEVIATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
@@ -1479,4 +2422,8 @@ UNION ALL SELECT 'CATCHMENT.CITIES_BY_STATE', COUNT(*) FROM FLEET_INTELLIGENCE.C
 UNION ALL SELECT 'CATCHMENT.REGIONAL_ADDRESSES', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
 UNION ALL SELECT 'LOCATION.STORES', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORES
 UNION ALL SELECT 'LOCATION.HH_CELLS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS
-UNION ALL SELECT 'LOCATION.STORE_FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS;
+UNION ALL SELECT 'LOCATION.STORE_FACTS', COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+UNION ALL SELECT 'SOURCING.PLANTS', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS
+UNION ALL SELECT 'SOURCING.CUSTOMERS', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS
+UNION ALL SELECT 'SOURCING.CUSTOMER_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND
+UNION ALL SELECT 'SOURCING.ORDER_MIX', COUNT(*) FROM FLEET_INTELLIGENCE.SOURCING.ORDER_MIX;

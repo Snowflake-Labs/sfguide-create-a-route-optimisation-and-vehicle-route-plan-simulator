@@ -213,7 +213,7 @@ Declared as a **Dynamic Table** so it auto-refreshes when CONFIG.REGION/VEHICLE_
 ```sql
 CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-  LAG = '5 minutes'
+  LAG = DOWNSTREAM
   REFRESH_MODE = 'AUTO'
   INITIALIZE = 'ON_CREATE'
   WAREHOUSE = ROUTING_ANALYTICS
@@ -288,7 +288,7 @@ Aggregates deviation stats per driver, joined with fleet metadata via VW_FLEET.
 ```sql
 CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-  LAG = '5 minutes'
+  LAG = '1 hour'
   REFRESH_MODE = 'AUTO'
   INITIALIZE = 'ON_CREATE'
   WAREHOUSE = ROUTING_ANALYTICS
@@ -320,7 +320,7 @@ Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMA
 ```sql
 CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-  LAG = '5 minutes'
+  LAG = '1 hour'
   REFRESH_MODE = 'AUTO'
   INITIALIZE = 'ON_CREATE'
   WAREHOUSE = ROUTING_ANALYTICS

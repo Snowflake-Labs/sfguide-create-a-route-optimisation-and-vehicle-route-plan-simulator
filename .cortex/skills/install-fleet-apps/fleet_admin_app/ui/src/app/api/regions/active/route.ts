@@ -57,6 +57,12 @@ export const POST = withLogging(async (req: NextRequest) => {
     }
     runSql(`CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`, 'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION')
       .catch((e: Error) => log('WARN', 'RouteOpt', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`));
+    // Build the CATCHMENT layer + Freight Sourcing estate for the newly-activated
+    // region if missing (fire-and-forget, mirroring the seed above, so this
+    // synchronous handler stays fast). BUILD_CATCHMENT is build-if-missing.
+    runSql(`CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT('${safeRegion}', FALSE)`, 'FLEET_INTELLIGENCE', 'CATCHMENT')
+      .then(() => runSql(`CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS('${safeRegion}')`, 'FLEET_INTELLIGENCE', 'SOURCING'))
+      .catch((e: Error) => log('WARN', 'Sourcing', `Auto-build sourcing for ${region}: ${e.message?.slice(0, 200)}`));
     return NextResponse.json({ ok: true, region });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

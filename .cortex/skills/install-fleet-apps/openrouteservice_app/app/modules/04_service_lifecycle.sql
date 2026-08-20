@@ -62,6 +62,13 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Re-arm the self-gating rescue task so the prewarm flag just set above is
+    -- drained on the next cycle (the task suspends itself when idle).
+    BEGIN
+        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     RETURN OBJECT_CONSTRUCT(
         'resumed', resumed_count,
         'already_running', already_running
@@ -141,6 +148,294 @@ BEGIN
 END;
 $$;
 
+-- =============================================================================
+-- COST_SAFE_MODE / RESUME_FLEET
+-- -----------------------------------------------------------------------------
+-- One-shot cost control for an idle deployment. COST_SAFE_MODE quiets every
+-- recurring compute source so an unattended account (e.g. over a weekend)
+-- consumes ~nothing:
+--   1. suspends all fleet dynamic tables (stops scheduled refresh scans on
+--      ROUTING_ANALYTICS) across FLEET_INTELLIGENCE, FLEET_APP, SYNTHETIC_DATASETS;
+--   2. suspends the non-essential recurring tasks (LOG_SLA_ALERTS, STUDIO_JOB_GC,
+--      the observability tasks, and the self-gating RESCUE task);
+--   3. calls SUSPEND_ALL_SERVICES (suspends SPCS routing services + reconciles
+--      AUTO_SUSPEND / warehouse-size drift).
+-- Every statement is best-effort (a missing object or a permission gap on one
+-- object never aborts the rest). RESUME_FLEET is the inverse for a demo: it
+-- resumes the dynamic tables (SPCS services resume lazily on first query, so
+-- they are intentionally left suspended). Tasks stay suspended - they are demo
+-- conveniences / self-arming, so they are not blanket-resumed here.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.COST_SAFE_MODE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-safe"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    dt_suspended INTEGER DEFAULT 0;
+    task_suspended INTEGER DEFAULT 0;
+    svc_msg VARCHAR DEFAULT '';
+BEGIN
+    -- 1. Suspend all fleet dynamic tables across the known databases.
+    FOR db IN (
+        SELECT COLUMN1 AS DB FROM VALUES ('FLEET_INTELLIGENCE'), ('FLEET_APP'), ('SYNTHETIC_DATASETS')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE ' || db.DB;
+            LET rs RESULTSET := (
+                SELECT "database_name" AS D, "schema_name" AS S, "name" AS N,
+                       "scheduling_state" AS ST
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+            LET c CURSOR FOR rs;
+            FOR r IN c DO
+                IF (UPPER(COALESCE(r.ST, '')) NOT LIKE '%SUSPEND%') THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER DYNAMIC TABLE "' || r.D || '"."' || r.S
+                            || '"."' || r.N || '" SUSPEND';
+                        dt_suspended := :dt_suspended + 1;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- 2. Suspend the recurring tasks (best-effort; IF EXISTS on each).
+    FOR t IN (
+        SELECT COLUMN1 AS TSK FROM VALUES
+            ('FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS'),
+            ('OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK'),
+            ('OPENROUTESERVICE_APP.CORE.STUDIO_JOB_GC'),
+            ('OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK'),
+            ('OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER TASK IF EXISTS ' || t.TSK || ' SUSPEND';
+            task_suspended := :task_suspended + 1;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- 3. Suspend SPCS services + reconcile AUTO_SUSPEND / warehouse-size drift.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES() INTO :svc_msg;
+    EXCEPTION WHEN OTHER THEN svc_msg := 'services: skipped';
+    END;
+
+    RETURN 'cost-safe: suspended ' || :dt_suspended || ' dynamic tables, '
+        || :task_suspended || ' tasks; ' || :svc_msg;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_FLEET()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"resume-fleet"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    dt_resumed INTEGER DEFAULT 0;
+BEGIN
+    -- Resume all fleet dynamic tables. SPCS routing services are intentionally
+    -- NOT resumed here - they resume lazily on the first routing query, so a
+    -- resume before a demo does not need to pay for idle service time.
+    FOR db IN (
+        SELECT COLUMN1 AS DB FROM VALUES ('FLEET_INTELLIGENCE'), ('FLEET_APP'), ('SYNTHETIC_DATASETS')
+    ) DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE ' || db.DB;
+            LET rs RESULTSET := (
+                SELECT "database_name" AS D, "schema_name" AS S, "name" AS N,
+                       "scheduling_state" AS ST
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+            LET c CURSOR FOR rs;
+            FOR r IN c DO
+                IF (UPPER(COALESCE(r.ST, '')) LIKE '%SUSPEND%') THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER DYNAMIC TABLE "' || r.D || '"."' || r.S
+                            || '"."' || r.N || '" RESUME';
+                        dt_resumed := :dt_resumed + 1;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    RETURN 'resume-fleet: resumed ' || :dt_resumed
+        || ' dynamic tables (SPCS services resume lazily on first query)';
+END;
+$$;
+
+-- =============================================================================
+-- AUTO-HIBERNATE (Tier B): quiet an unattended account with no human action.
+-- -----------------------------------------------------------------------------
+-- A single-row settings table drives an hourly serverless task that calls
+-- COST_SAFE_MODE after N idle hours, and auto-resumes the dynamic tables
+-- (RESUME_FLEET) when activity returns. "Activity" = the most recent of the
+-- synapse VERB_ATTEMPT audit rows (real-time, per agent verb) and the ORS
+-- request log (per routing call, ~1 min ingest lag). Query history is NOT used
+-- (too laggy, and the task's own queries would falsely count as activity).
+-- The task is deliberately absent from COST_SAFE_MODE's task-suspend list so it
+-- keeps running while hibernated and can wake the fleet on renewed activity.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.COST_SETTINGS (
+    SETTING_KEY          VARCHAR NOT NULL PRIMARY KEY,
+    HIBERNATE_ENABLED    BOOLEAN,
+    HIBERNATE_IDLE_HOURS NUMBER,
+    UPDATED_AT           TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-settings"}}';
+
+-- Seed the default row once (MERGE so re-running the module never clobbers a
+-- user's saved toggle). Default: enabled, 4-hour idle threshold.
+MERGE INTO FLEET_INTELLIGENCE.CORE.COST_SETTINGS t
+USING (SELECT 'GLOBAL' AS SETTING_KEY) s ON t.SETTING_KEY = s.SETTING_KEY
+WHEN NOT MATCHED THEN INSERT (SETTING_KEY, HIBERNATE_ENABLED, HIBERNATE_IDLE_HOURS)
+    VALUES ('GLOBAL', TRUE, 4);
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    enabled BOOLEAN DEFAULT TRUE;
+    idle_hours NUMBER DEFAULT 4;
+    la TIMESTAMP_LTZ DEFAULT NULL;
+    idle_min FLOAT DEFAULT 999999;
+    active_jobs INTEGER DEFAULT 0;
+    suspended_dts INTEGER DEFAULT 0;
+    action VARCHAR DEFAULT 'noop';
+    tmp VARCHAR DEFAULT '';
+BEGIN
+    -- Settings (best-effort; defaults enabled/4h if the table is missing).
+    BEGIN
+        SELECT COALESCE(HIBERNATE_ENABLED, TRUE), COALESCE(HIBERNATE_IDLE_HOURS, 4)
+          INTO :enabled, :idle_hours
+        FROM FLEET_INTELLIGENCE.CORE.COST_SETTINGS WHERE SETTING_KEY = 'GLOBAL' LIMIT 1;
+    EXCEPTION WHEN OTHER THEN enabled := TRUE; idle_hours := 4;
+    END;
+    IF (NOT COALESCE(:enabled, TRUE)) THEN RETURN 'auto-hibernate: disabled'; END IF;
+
+    -- last_activity = GREATEST across the synapse audit tables + ORS request log.
+    -- Each source is queried in its own guarded block so a missing table (a
+    -- bundle may not be installed) never aborts the rest. Static SQL is used
+    -- deliberately: a query-literal "FOR ... IN (SELECT ... FROM VALUES)" loop
+    -- does not expose the loop column (rec.col needs a CURSOR, and VALUES
+    -- literals are rejected in a FOR-cursor), which previously raised
+    -- "invalid identifier 'SRC.Q'" and killed the hourly hibernate task.
+    BEGIN
+        LET t1 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t1 FROM OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT;
+        IF (:t1 IS NOT NULL AND (:la IS NULL OR :t1 > :la)) THEN la := :t1; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t2 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t2 FROM FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT;
+        IF (:t2 IS NOT NULL AND (:la IS NULL OR :t2 > :la)) THEN la := :t2; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t3 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(at) INTO :t3 FROM FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT;
+        IF (:t3 IS NOT NULL AND (:la IS NULL OR :t3 > :la)) THEN la := :t3; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        LET t4 TIMESTAMP_LTZ := NULL;
+        SELECT MAX(REQUEST_TS) INTO :t4 FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG;
+        IF (:t4 IS NOT NULL AND (:la IS NULL OR :t4 > :la)) THEN la := :t4; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    IF (:la IS NOT NULL) THEN
+        idle_min := DATEDIFF('minute', :la, CURRENT_TIMESTAMP());
+    END IF;
+
+    -- Never hibernate while a provision / matrix / studio job is in flight.
+    BEGIN
+        LET prov_jobs INTEGER := 0;
+        LET matrix_jobs INTEGER := 0;
+        LET gen_jobs INTEGER := 0;
+        -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
+        -- count each source separately and sum, rather than a FROM-less SELECT
+        -- of scalar subqueries (which raises "INTO clause is not allowed here").
+        SELECT COUNT(*) INTO :prov_jobs
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING');
+        SELECT COUNT(*) INTO :matrix_jobs
+          FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING') AND STAGE NOT IN ('COMPLETE','ERROR');
+        SELECT COUNT(*) INTO :gen_jobs
+          FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING');
+        active_jobs := :prov_jobs + :matrix_jobs + :gen_jobs;
+    EXCEPTION WHEN OTHER THEN active_jobs := 0;
+    END;
+
+    IF (:idle_min >= :idle_hours * 60) THEN
+        IF (:active_jobs = 0) THEN
+            BEGIN
+                CALL OPENROUTESERVICE_APP.CORE.COST_SAFE_MODE() INTO :tmp;
+                action := 'hibernated';
+            EXCEPTION WHEN OTHER THEN action := 'hibernate-failed';
+            END;
+        ELSE
+            action := 'idle-but-jobs-active';
+        END IF;
+    ELSE
+        -- Recent activity: if a prior hibernate left fleet dynamic tables
+        -- suspended, wake them (services resume lazily on first query).
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW DYNAMIC TABLES IN DATABASE FLEET_INTELLIGENCE';
+            SELECT COUNT(*) INTO :suspended_dts
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            WHERE UPPER(COALESCE("scheduling_state", '')) LIKE '%SUSPEND%';
+        EXCEPTION WHEN OTHER THEN suspended_dts := 0;
+        END;
+        IF (:suspended_dts > 0) THEN
+            BEGIN
+                CALL OPENROUTESERVICE_APP.CORE.RESUME_FLEET() INTO :tmp;
+                action := 'resumed';
+            EXCEPTION WHEN OTHER THEN action := 'resume-failed';
+            END;
+        ELSE
+            action := 'active';
+        END IF;
+    END IF;
+
+    RETURN 'auto-hibernate: action=' || :action
+        || ' idle_min=' || :idle_min
+        || ' idle_hours=' || :idle_hours
+        || ' active_jobs=' || :active_jobs;
+END;
+$$;
+
+CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK
+    SCHEDULE = '60 MINUTE'
+    USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate-task"}}'
+AS
+    CALL OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE();
+
+-- Enabled by default (the whole point of Tier B). Toggle off at runtime via the
+-- COST_SETTINGS.HIBERNATE_ENABLED flag (admin app) - the task keeps ticking but
+-- the proc returns early, which is cheaper than suspend/resume churn.
+ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK RESUME;
+
+
+-- Two-arg overload: scale the default ORS + gateway to [MIN,MAX] instances and
+-- size the current-db compute pool to fit (called by the admin app /api/scale).
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
@@ -470,7 +765,11 @@ BEGIN
             ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 0;
             left_zero := left_zero + 1;
         ELSE
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+            -- Gateway idle window = 1h (was 4h). Direct-traffic service, pinned to
+            -- 0 while busy above, so a shorter window collapses the shared core
+            -- pool sooner without risking mid-build suspension. City/ORS services
+            -- keep 14400 (gateway-routed traffic does not reset their idle timer).
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
             reconciled := reconciled + 1;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;

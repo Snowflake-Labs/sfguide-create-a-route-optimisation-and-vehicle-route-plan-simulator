@@ -265,7 +265,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
                 padding: noPad ? '0' : '16px',
               }}
             >
-              <Component areaConfig={areaConfig} selectionKeys={selectionKeys} />
+              <Component areaConfig={areaConfig} selectionKeys={selectionKeys} areaName={areaName} />
             </div>
           </div>
         );
@@ -277,7 +277,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
         const Component = AREA_COMPONENTS[areaConfig.component as AreaComponentName];
         if (!Component) return null;
         return (
-          <Component key={areaName} areaConfig={areaConfig} selectionKeys={selectionKeys} />
+          <Component key={areaName} areaConfig={areaConfig} selectionKeys={selectionKeys} areaName={areaName} />
         );
       })}
     </div>

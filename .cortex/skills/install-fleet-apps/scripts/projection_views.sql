@@ -7,10 +7,13 @@
 -- the unified_fleet pack's CREATE VIEW ... AS SELECT * FROM V_*_CURRENT fails at
 -- definition time and breaks the whole pack install.
 --
--- DDL mirrors fleet_admin_app/ui/src/server/lib/init.ts (the runtime owner). The
--- delivery/partner views (V_FACT_OFFERS_CURRENT / V_DIM_PARTNERS_CURRENT /
--- V_FACT_PARTNER_HISTORY_CURRENT) are created at app boot by init.ts (offers
--- are now vehicle-agnostic and retained), so they are not duplicated here.
+-- DDL mirrors fleet_admin_app/ui/src/server/lib/init.ts (the runtime owner).
+-- V_FACT_OFFERS_CURRENT is created here (in addition to being recreated at app
+-- boot by init.ts) because the backload_matching pack's VW_EXTERNAL_OFFERS reads
+-- it at pack-install time (step 4), which runs BEFORE the admin app boots. Its
+-- body is kept byte-identical to init.ts to avoid drift. The remaining
+-- partner views (V_DIM_PARTNERS_CURRENT / V_FACT_PARTNER_HISTORY_CURRENT) have
+-- no step-4 pack consumer, so they stay init.ts-only.
 --
 -- Each view returns only rows from the active dataset (DIM_DATASETS.IS_ACTIVE),
 -- so it requires the loader to have created DIM_DATASETS + the base tables. Run
@@ -74,6 +77,20 @@ JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
   ON d.DATASET_ID = t.JOB_ID
  AND d.REGION = t.REGION
  AND d.VEHICLE_TYPE = t.VEHICLE_TYPE
+ AND d.IS_ACTIVE = TRUE;
+
+-- Offers projection. Created here (not just at app boot) so the backload_matching
+-- pack's VW_EXTERNAL_OFFERS can bind to it at pack-install time. Body byte-identical
+-- to fleet_admin_app/ui/src/server/lib/init.ts.
+CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT f.*
+FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS f
+JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+  ON d.DATASET_ID = f.JOB_ID
+ AND d.REGION = f.REGION
+ AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
  AND d.IS_ACTIVE = TRUE;
 
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT

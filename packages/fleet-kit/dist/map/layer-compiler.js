@@ -6,6 +6,7 @@
 import { ScatterplotLayer, PathLayer, GeoJsonLayer, ArcLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { cellToBoundary } from 'h3-js';
+import { decimateLineCoords, decimateGeometry, DEFAULT_MAX_PATH_POINTS } from './simplify';
 const num = (v) => Number(v);
 const has = (r, ...cols) => cols.every((c) => r[c] != null);
 /** Resolve a ColorValue to a constant color or a per-row accessor. */
@@ -32,15 +33,17 @@ function colorAccessor(color, viewState, fallback) {
 }
 /** Build a PathLayer data array from rows (GeoJSON LineString or start->end).
  *  Row properties are carried onto each datum so `{COLUMN}` tooltip tokens and
- *  picking resolve against the source row. */
+ *  picking resolve against the source row. Line coordinates are stride-decimated
+ *  to spec.maxPathPoints so heavy route geometry does not overload the GPU. */
 function pathData(spec, rows) {
+    const cap = spec.maxPathPoints ?? DEFAULT_MAX_PATH_POINTS;
     const out = [];
     for (const r of rows) {
         if (spec.geojsonColumn && r[spec.geojsonColumn]) {
             try {
                 const geo = JSON.parse(r[spec.geojsonColumn]);
                 if (Array.isArray(geo?.coordinates) && geo.coordinates.length > 1) {
-                    out.push({ ...r, path: geo.coordinates });
+                    out.push({ ...r, path: decimateLineCoords(geo.coordinates, cap) });
                     continue;
                 }
             }
@@ -52,9 +55,44 @@ function pathData(spec, rows) {
     }
     return out;
 }
-/** Parse a column of GeoJSON strings into a FeatureCollection. */
+/**
+ * Single-parse compile: build the deck.gl Layer AND its camera-fit coordinates
+ * from ONE parse pass. For `path` / `geojson` layers this parses each row's
+ * GeoJSON string exactly once (the layer data and the fit coords are both
+ * derived from the parsed+decimated result), instead of the double parse you get
+ * from calling compileLayer + layerFitCoords separately. Non-parsing layer types
+ * (scatterplot / arc / h3) delegate to those helpers, which are already cheap.
+ *
+ * Prefer this over calling compileLayer and layerFitCoords back-to-back when the
+ * spec may carry heavy route GeoJSON - halving the parse is what keeps the
+ * basemap responsive.
+ */
+export function compileLayerWithFit(spec, rows, viewState, index, hovered) {
+    if (!rows || rows.length === 0)
+        return { layer: null, fitCoords: [] };
+    const id = spec.id ?? `spec-layer-${index}`;
+    if (spec.type === 'path') {
+        const s = spec;
+        const data = pathData(s, rows);
+        return { layer: buildPathLayer(s, id, data, hovered), fitCoords: fitFromPathData(data) };
+    }
+    if (spec.type === 'geojson') {
+        const s = spec;
+        const fc = geoFeatures(s, rows);
+        return { layer: buildGeoJsonLayer(s, id, fc), fitCoords: fitFromFeatures(fc) };
+    }
+    return { layer: compileLayer(spec, rows, viewState, index, hovered), fitCoords: layerFitCoords(spec, rows) };
+}
+/** Parse a column of GeoJSON strings into a FeatureCollection. Line geometries
+ *  are stride-decimated to spec.maxPathPoints; polygon rings are left intact. */
 function geoFeatures(spec, rows) {
+    const cap = spec.maxPathPoints ?? DEFAULT_MAX_PATH_POINTS;
     const features = [];
+    const push = (f) => {
+        if (f?.geometry)
+            f = { ...f, geometry: decimateGeometry(f.geometry, cap) };
+        features.push(f);
+    };
     for (const r of rows) {
         const raw = r[spec.geojsonColumn];
         if (!raw)
@@ -62,15 +100,91 @@ function geoFeatures(spec, rows) {
         try {
             const geom = typeof raw === 'string' ? JSON.parse(raw) : raw;
             if (geom?.type === 'FeatureCollection')
-                features.push(...geom.features);
+                for (const f of geom.features)
+                    push(f);
             else if (geom?.type === 'Feature')
-                features.push(geom);
+                push(geom);
             else if (geom?.type)
-                features.push({ type: 'Feature', geometry: geom, properties: r });
+                push({ type: 'Feature', geometry: decimateGeometry(geom, cap), properties: r });
         }
         catch { /* skip unparseable */ }
     }
     return { type: 'FeatureCollection', features };
+}
+/** Collect [lng,lat] coords from an already-parsed PathLayer data array (no re-parse). */
+function fitFromPathData(data) {
+    const out = [];
+    for (const seg of data)
+        for (const p of seg.path)
+            out.push([p[0], p[1]]);
+    return out;
+}
+/** Recursively push finite [lng,lat] pairs from a nested coordinate array. */
+function pushCoords(c, out) {
+    if (!Array.isArray(c))
+        return;
+    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+        if (Number.isFinite(c[0]) && Number.isFinite(c[1]))
+            out.push([c[0], c[1]]);
+        return;
+    }
+    for (const inner of c)
+        pushCoords(inner, out);
+}
+/** Collect [lng,lat] coords from an already-parsed FeatureCollection (no re-parse). */
+function fitFromFeatures(fc) {
+    const out = [];
+    for (const f of fc.features) {
+        const g = f?.geometry;
+        if (g?.coordinates)
+            pushCoords(g.coordinates, out);
+    }
+    return out;
+}
+/** Construct a PathLayer from an already-parsed path-data array. */
+function buildPathLayer(s, id, data, hovered) {
+    // Hover bolding: when the hovered path belongs to this layer, widen the
+    // matching journey so it visibly stands out (autoHighlight only recolors).
+    const hov = hovered && hovered.layerId === id ? hovered.value : null;
+    const baseWidth = s.width ?? 2;
+    const widthOf = (d) => hov != null && String(d?.journey_id ?? d?.JOURNEY_ID ?? '') === String(hov)
+        ? baseWidth * 2.4
+        : baseWidth;
+    return new PathLayer({
+        id,
+        data,
+        getPath: (d) => d.path,
+        getColor: s.color ?? [41, 181, 232, 150],
+        getWidth: hov == null ? baseWidth : widthOf,
+        widthMinPixels: s.widthMinPixels ?? 1,
+        pickable: s.pickable ?? false,
+        autoHighlight: s.pickable ?? false,
+        highlightColor: s.highlightColor ?? [41, 181, 232, 220],
+        updateTriggers: { getWidth: [hov] },
+    });
+}
+/** Construct a GeoJsonLayer from an already-parsed FeatureCollection. */
+function buildGeoJsonLayer(s, id, fc) {
+    const fallbackFill = s.fillColor ?? [41, 181, 232, 40];
+    // Per-feature choropleth: color by properties[colorColumn] via colorMap.
+    const fillAccessor = s.colorColumn && s.colorMap
+        ? (f) => {
+            const v = f?.properties?.[s.colorColumn];
+            return (v != null && s.colorMap[String(v)]) || fallbackFill;
+        }
+        : fallbackFill;
+    return new GeoJsonLayer({
+        id,
+        data: fc,
+        filled: true,
+        stroked: true,
+        getFillColor: fillAccessor,
+        getLineColor: s.lineColor ?? [41, 181, 232, 200],
+        getLineWidth: s.lineWidth ?? 2,
+        lineWidthMinPixels: 1,
+        pickable: s.pickable ?? false,
+        updateTriggers: { getFillColor: [s.colorColumn, JSON.stringify(s.colorMap)] },
+    });
 }
 /**
  * Compile one LayerSpec + its fetched rows into a deck.gl Layer.
@@ -101,25 +215,7 @@ export function compileLayer(spec, rows, viewState, index, hovered) {
         }
         case 'path': {
             const s = spec;
-            // Hover bolding: when the hovered path belongs to this layer, widen the
-            // matching journey so it visibly stands out (autoHighlight only recolors).
-            const hov = hovered && hovered.layerId === id ? hovered.value : null;
-            const baseWidth = s.width ?? 2;
-            const widthOf = (d) => hov != null && String(d?.journey_id ?? d?.JOURNEY_ID ?? '') === String(hov)
-                ? baseWidth * 2.4
-                : baseWidth;
-            return new PathLayer({
-                id,
-                data: pathData(s, rows),
-                getPath: (d) => d.path,
-                getColor: s.color ?? [41, 181, 232, 150],
-                getWidth: hov == null ? baseWidth : widthOf,
-                widthMinPixels: s.widthMinPixels ?? 1,
-                pickable: s.pickable ?? false,
-                autoHighlight: s.pickable ?? false,
-                highlightColor: s.highlightColor ?? [41, 181, 232, 220],
-                updateTriggers: { getWidth: [hov] },
-            });
+            return buildPathLayer(s, id, pathData(s, rows), hovered);
         }
         case 'h3': {
             const s = spec;
@@ -169,26 +265,7 @@ export function compileLayer(spec, rows, viewState, index, hovered) {
         }
         case 'geojson': {
             const s = spec;
-            const fallbackFill = s.fillColor ?? [41, 181, 232, 40];
-            // Per-feature choropleth: color by properties[colorColumn] via colorMap.
-            const fillAccessor = s.colorColumn && s.colorMap
-                ? (f) => {
-                    const v = f?.properties?.[s.colorColumn];
-                    return (v != null && s.colorMap[String(v)]) || fallbackFill;
-                }
-                : fallbackFill;
-            return new GeoJsonLayer({
-                id,
-                data: geoFeatures(s, rows),
-                filled: true,
-                stroked: true,
-                getFillColor: fillAccessor,
-                getLineColor: s.lineColor ?? [41, 181, 232, 200],
-                getLineWidth: s.lineWidth ?? 2,
-                lineWidthMinPixels: 1,
-                pickable: s.pickable ?? false,
-                updateTriggers: { getFillColor: [s.colorColumn, JSON.stringify(s.colorMap)] },
-            });
+            return buildGeoJsonLayer(s, id, geoFeatures(s, rows));
         }
         case 'arc': {
             const s = spec;

@@ -112,25 +112,32 @@ snow sql -f .cortex/skills/backload-matching/references/backfill-freight-offers.
 
 Idempotent: skips regions that already have offers. New presets generated after v1.0.199 deploy will populate offers natively, so this script is a no-op on greenfield deployments.
 
-### Step 4: Interactive page (retired host)
+### Step 3c: Cockpit schema (Backload Proposals)
 
-> **The legacy Vite control app (`ors_control_app`) that hosted the Backload Matching page has been removed from this repo, and the page was not ported to the current `fleet_sa_app`/`fleet_admin_app`.** Step 2's `bootstrap.sql` (plus the `fleet_admin_app` boot `init.ts`) still creates the full `BACKLOAD_MATCHING.*` projection views, so the objects are queryable and the `OPTIMIZATION`-based solve can be driven from SQL, but there is currently no bundled interactive page in the fleet apps. Take the page source from another repo if you need the UI. The verification steps below describe that retired page.
+Run `references/proposals-schema.sql` AFTER `bootstrap.sql`. It adds the neutral cockpit layer to `FLEET_INTELLIGENCE.BACKLOAD_MATCHING`:
+
+```bash
+snow sql -f .cortex/skills/backload-matching/references/proposals-schema.sql -c <ACTIVE_CONNECTION>
+```
+
+Creates `MATCH_PARAMS` (config-driven, vehicle-class-generalized constraints - distance / pickup-date / horizon / weight-fit / hazmat; no FTL-specific ADR/Thermo/Mega/LDM), `VW_LOADS` (internal volumes + external offers as one demand pool with an `IS_INTERNAL` priority flag), `VW_TRAILERS_GEO` (idle-vehicle free point + return-to-home geometry, free time anchored to the live "now" window), `VW_CANDIDATES` + `VW_CANDIDATES_SCORED` (per-rule pass/fail explainability), and empty `PROPOSALS` / `FEEDBACK` tables. All are synthetic-backed projections filtered by the active `CONFIG` preset. Sanity report prints row counts at the end.
+
+### Step 4: Interactive pages (FLEET_SA_APP)
+
+Two config-registered views ship in `FLEET_SA_APP` (category **Optimization**), both reading the neutral `FLEET_APP.BACKLOAD_MATCHING` + `FLEET_INTELLIGENCE.BACKLOAD_MATCHING` views and solving live via the `/api/backload/solve` contract seam. They render an empty state until Steps 3/3c have been run for the active preset.
+
+- **Backload Matching** (`backload_matching`) - single-solve engine: idle vehicles + internal loads + external offers, internal-first VROOM, assignment cards + KPIs + map, write-back to `PROPOSAL_DECISIONS`.
+- **Backload Proposals** (`backload_proposals`) - the advanced multi-strategy cockpit: run Quick scan / Per-load VRP / Fleet 1:1 / Profit-max, or **Ensemble** to fuse all four into one graded (A..F), internal-first proposal per vehicle. Adjustable ranking weights, per-constraint pass/fail chips from `VW_CANDIDATES_SCORED`, a Cortex rationale, and session-only Accept/Reject/Flag (no write-back).
+
+The generic, use-case-agnostic `vrp_solve` User verb (backed by `ROUTING_TOOLS.TOOL_VRP_SOLVE`) lets the Cortex agent solve any prepared VROOM challenge; the app itself uses `/api/backload/solve` (robust raw-scalar seam that avoids the TVF 0-row trap).
 
 ### Step 5: Verify
 
-In the app:
-
-1. Confirm the region picker is on whatever region/vehicle preset you want to demo (default: SanFrancisco/ebike on a fresh install). The page reads from `BACKLOAD_MATCHING.CONFIG`, which is auto-synced to the active preset.
-2. Click **Backload Matching** in the sidebar (under Solution Accelerators).
-3. Verify the map shows ~80 trailer markers + ~120 internal volume circles + ~300 external offer circles.
-4. Adjust `Internal Priority` slider if desired (default 100). Click **Solve Backloads**.
-5. Within ~10-30 sec the page should render colored loaded legs + gray empty legs + a per-trailer assignment table on the right rail with KPIs:
-   - **% trailers assigned**
-   - **Total empty km**
-   - **% internal coverage** (assigned-to-internal / assigned)
-   - **EUR/day reclaimed** (rough = `idle_days_saved * IDLE_COST_EUR_PER_DAY` + `empty_km_saved * EUR_PER_EMPTY_KM`)
-6. Click any trailer in the table -> *"Why this assignment?"* card -> Cortex returns a 2-sentence rationale.
-7. Click **Confirm Plan** - assignments land in `FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS`.
+1. Set the region/vehicle preset you want to demo (default: SanFrancisco/ebike). Both pages read `BACKLOAD_MATCHING.CONFIG`, auto-synced to the active preset.
+2. Open **Backload Proposals** (sidebar, Optimization). Confirm the counts strip shows idle vehicles, internal loads, external offers, and eligible pairs > 0.
+3. Leave strategy on **Ensemble**, click **Run proposals**. Within ~10-40 sec (VROOM must be running for the active region) the page renders per-vehicle graded cards, KPIs (vehicles matched / internal filled / empty km / avg score), and the empty+loaded legs on the map.
+4. Expand a card to see the per-constraint pass/fail chips and alternative loads; click **Explain (Cortex)** for a rationale; use Accept/Reject/Flag (session-only).
+5. Open **Backload Matching** for the single-solve variant; **Match backloads** then **Accept & write decisions** persists to `PROPOSAL_DECISIONS`.
 
 ### Step 6: AISQL Notebook (optional)
 
@@ -139,6 +146,13 @@ Upload `assets/notebooks/backload-matching-aisql.ipynb` to a notebook stage and 
 ## Cleanup
 
 ```sql
+DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED;
+DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES;
+DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO;
+DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS;
+DROP TABLE  IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.FEEDBACK;
+DROP TABLE  IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSALS;
+DROP TABLE  IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS;
 DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS;
 DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES;
 DROP VIEW   IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS;

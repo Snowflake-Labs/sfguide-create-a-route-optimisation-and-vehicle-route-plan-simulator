@@ -1825,6 +1825,10 @@ BEGIN
                SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
              WHERE UPPER(REGION) = UPPER(:P_REGION);
             warm_msg := 'flagged-for-reconciler';
+            BEGIN
+                ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
         END IF;
     EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-flag-skipped';
     END;
@@ -2208,6 +2212,10 @@ BEGIN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
                        SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
                      WHERE UPPER(REGION) = UPPER(:P_REGION);
+                    BEGIN
+                        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                 END IF;
             EXCEPTION WHEN OTHER THEN NULL;
             END;
@@ -2661,6 +2669,10 @@ BEGIN
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
            SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
          WHERE UPPER(REGION) = UPPER(:P_REGION);
+        BEGIN
+            ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
         BEGIN
             CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
             -- 'anchor_found=true' is PREWARM's reliable "the sweep actually routed"
@@ -4134,6 +4146,36 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Self-gating (cost): this task runs on a 2-minute serverless schedule. If
+    -- left RESUMED it bills serverless credits 24/7 even on an idle account. So
+    -- at the end of every cycle, if there is genuinely NO work left to do -- no
+    -- pending / in-flight provision jobs, no recoverable stuck/ERROR jobs in the
+    -- last 24h, and no MMAP region awaiting prewarm -- the task suspends itself.
+    -- It is re-armed (ALTER TASK ... RESUME) by the code paths that create work:
+    -- the provision enqueue endpoint and every proc that sets NEEDS_PREWARM=TRUE
+    -- (resume_region_ors, RESUME_ALL_SERVICES, APPLY_ORS_LIMITS, DOWNSIZE). The
+    -- deploy-time RESUME stays; the first idle cycle after deploy self-suspends.
+    BEGIN
+        LET jobs_left INTEGER := 0;
+        LET prewarm_left INTEGER := 0;
+        -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
+        -- count each source separately (idiomatic pattern used elsewhere here)
+        -- and sum, rather than a FROM-less SELECT of scalar subqueries.
+        SELECT COUNT(*) INTO :jobs_left
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+          WHERE STATUS IN ('PENDING','RUNNING')
+             OR (STATUS = 'ERROR'
+                 AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable')
+                 AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE())));
+        SELECT COUNT(*) INTO :prewarm_left
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+          WHERE NEEDS_PREWARM = TRUE;
+        IF ((:jobs_left + :prewarm_left) = 0) THEN
+            ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     RETURN 'scanned=' || :seen || ' rescued=' || :rescued;
 END;
 $$;
@@ -4269,14 +4311,14 @@ BEGIN
 END;
 $$;
 
--- Resume the task. CREATE OR REPLACE TASK creates the task in SUSPENDED state
--- by default; without this RESUME the rescue loop never runs and every
--- finalization (Fix 2 downgrade, Fix 3 build-history reset, Fix 5a
--- auto-suspend restore, eventual STATUS=COMPLETE flip) requires a manual
--- CALL FINALIZE_PROVISION_ITER. ALTER TASK IF EXISTS is a plain statement
--- that snow sql -f can parse (the previous BEGIN/EXCEPTION/END wrapper
--- failed parsing with "unexpected EOF" and left the task suspended after
--- every deploy).
+-- Resume the task at deploy. CREATE OR REPLACE TASK creates the task in
+-- SUSPENDED state by default. The task now self-suspends at the end of any
+-- cycle where there is no work left (see the self-gating block in
+-- RESCUE_PENDING_PROVISIONS), so on a fresh / idle deploy it runs at most one
+-- cycle (~2 min) and then quiets itself -- no 24/7 serverless burn. It is
+-- re-armed on demand by the provision endpoint and the NEEDS_PREWARM setters.
+-- ALTER TASK IF EXISTS is a plain statement that snow sql -f can parse (the
+-- previous BEGIN/EXCEPTION/END wrapper failed parsing with "unexpected EOF").
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
 
 -- ===========================================================================

@@ -9,6 +9,7 @@ import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './s
 import { ensureTables } from './ensure-tables';
 import { syncRegionRegistryAndConfig } from './region-sync';
 import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactOffers, insertDimPartners, insertFactPartnerHistory } from './inserters';
+import { fetchRoute, getRouteActivity, routeCacheStats } from './engine/routing';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -36,6 +37,11 @@ export interface Job {
   abort: { aborted: boolean };
   listeners: Set<SseCallback>;
   events: BufferedEvent[];
+  // Wall-clock of the last observed progress (any progress/telemetry/trip/batch
+  // event). Used by the in-run no-progress watchdog. `stalled` is set by the
+  // watchdog when it aborts a wedged job so the completion path marks it FAILED.
+  lastProgressAt?: number;
+  stalled?: boolean;
 }
 
 // globalThis-pinned so the /api/studio/generate route (which calls startGeneration)
@@ -244,41 +250,79 @@ async function precomputeOfferRoutes(
     `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
     'FLEET_INTELLIGENCE', 'MARKETPLACE',
   );
-  await snowSql(
-    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
-     USING (
-       SELECT
-         o.OFFER_ID,
-         ${escVal(jobId)} AS JOB_ID,
-         d.DISTANCE / 1000.0 AS ROAD_KM,
-         d.DURATION / 60.0 AS ROAD_MIN,
-         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS GEOMETRY,
-         ${escVal(profile)} AS PROFILE
-       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS o,
-            TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-              ${escVal(profile)},
-              ARRAY_CONSTRUCT(o.PICKUP_LON, o.PICKUP_LAT),
-              ARRAY_CONSTRUCT(o.DROPOFF_LON, o.DROPOFF_LAT),
-              ${escVal(region)}
-            )) d
-       WHERE o.JOB_ID = ${escVal(jobId)}
-         AND o.PICKUP_LON IS NOT NULL
-         AND o.PICKUP_LAT IS NOT NULL
-         AND o.DROPOFF_LON IS NOT NULL
-         AND o.DROPOFF_LAT IS NOT NULL
-     ) src
-     ON tgt.OFFER_ID = src.OFFER_ID AND tgt.JOB_ID = src.JOB_ID
-     WHEN MATCHED THEN UPDATE SET
-       ROAD_KM = src.ROAD_KM,
-       ROAD_MIN = src.ROAD_MIN,
-       GEOMETRY = src.GEOMETRY,
-       PROFILE = src.PROFILE,
-       JOB_ID = src.JOB_ID,
-       COMPUTED_AT = CURRENT_TIMESTAMP()
-     WHEN NOT MATCHED THEN INSERT (JOB_ID, OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
-       VALUES (src.JOB_ID, src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, CURRENT_TIMESTAMP())`,
-    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  // Resilient per-offer routing. The previous implementation ran DIRECTIONS as a
+  // single lateral TABLE(...) join over ALL offers in one MERGE; a single
+  // unroutable offer makes the ORS table function error and aborts the entire
+  // statement, so every route is lost (silently - the caller's catch only WARNs).
+  // Instead, route each offer independently via fetchRoute (which returns
+  // 'UNROUTABLE'/null gracefully and has a per-call timeout + route cache), skip
+  // the ones that don't route, and upsert the successes in VALUES batches. One
+  // bad offer can no longer zero out the whole set.
+  const offers = await snowSql(
+    `SELECT OFFER_ID, PICKUP_LAT, PICKUP_LON, DROPOFF_LAT, DROPOFF_LON
+     FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
+     WHERE JOB_ID = ${escVal(jobId)}
+       AND PICKUP_LAT IS NOT NULL AND PICKUP_LON IS NOT NULL
+       AND DROPOFF_LAT IS NOT NULL AND DROPOFF_LON IS NOT NULL`,
+    'SYNTHETIC_DATASETS', 'UNIFIED',
   );
+  if (!offers.length) return;
+
+  interface RouteRow { offerId: string; roadKm: number; roadMin: number; geojson: string; }
+  const routed: RouteRow[] = [];
+  let unroutable = 0;
+  const CONCURRENCY = 8;
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < offers.length) {
+      const o = offers[cursor++];
+      const r = await fetchRoute(
+        Number(o.PICKUP_LAT), Number(o.PICKUP_LON),
+        Number(o.DROPOFF_LAT), Number(o.DROPOFF_LON),
+        profile, region, snowSql,
+      );
+      if (!r || r === 'UNROUTABLE') { unroutable++; continue; }
+      // fetchRoute returns coordinates as [lat, lng]; GeoJSON wants [lng, lat].
+      const geojson = JSON.stringify({
+        type: 'LineString',
+        coordinates: r.coordinates.map(c => [c[1], c[0]]),
+      });
+      routed.push({
+        offerId: String(o.OFFER_ID),
+        roadKm: Math.round((r.distance_m / 1000) * 100) / 100,
+        roadMin: Math.round((r.duration_sec / 60) * 100) / 100,
+        geojson,
+      });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offers.length) }, () => worker()));
+
+  // Upsert successes in batches. OFFER_ID is the table PK (offer ids repeat
+  // across jobs), so MERGE on OFFER_ID: update-in-place or insert, stamping the
+  // current JOB_ID/profile. Batches keep the VALUES SQL size bounded.
+  const BATCH = 50;
+  for (let i = 0; i < routed.length; i += BATCH) {
+    const chunk = routed.slice(i, i + BATCH);
+    const values = chunk.map(r =>
+      `(${escVal(r.offerId)},${r.roadKm},${r.roadMin},${escVal(r.geojson)},${escVal(profile)},${escVal(jobId)})`
+    ).join(',\n');
+    await snowSql(
+      `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
+       USING (
+         SELECT * FROM VALUES
+         ${values}
+         AS v(OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID)
+       ) src
+       ON tgt.OFFER_ID = src.OFFER_ID
+       WHEN MATCHED THEN UPDATE SET
+         ROAD_KM = src.ROAD_KM, ROAD_MIN = src.ROAD_MIN, GEOMETRY = src.GEOMETRY,
+         PROFILE = src.PROFILE, JOB_ID = src.JOB_ID, COMPUTED_AT = CURRENT_TIMESTAMP()
+       WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID, COMPUTED_AT)
+         VALUES (src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, src.JOB_ID, CURRENT_TIMESTAMP())`,
+      'FLEET_INTELLIGENCE', 'MARKETPLACE',
+    );
+  }
+  log('INFO', 'Studio', `Offer routes: ${routed.length}/${offers.length} routed, ${unroutable} unroutable`, { jobId });
 }
 
 // -------------------------------------------------------------------------
@@ -688,7 +732,9 @@ async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
     }).replace(/\$\$/g, '$ $');
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
-       SET LOG_TEXT = PARSE_JSON($$${payload}$$)
+       SET LOG_TEXT = PARSE_JSON($$${payload}$$),
+           POINTS_GENERATED = ${Number(job.pointsGenerated) || 0},
+           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0}
        WHERE JOB_ID = ${escVal(job.jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
@@ -795,6 +841,8 @@ export async function startGeneration(
     abort: { aborted: false },
     listeners: new Set(),
     events: [],
+    lastProgressAt: Date.now(),
+    stalled: false,
   };
   activeJobs.set(jobId, job);
   broadcast(job, 'started', {
@@ -825,6 +873,52 @@ export async function startGeneration(
         .catch(() => { /* persistJobLog already logs; never throw from timer */ })
         .finally(() => { persistInFlight = false; });
     }, JOB_LOG_FLUSH_MS);
+    // No-progress watchdog. reconcileStaleJobs only runs at boot and skips
+    // in-memory jobs, so a job that wedges while the container stays up would
+    // never self-heal. If no progress event arrives for WATCHDOG_STALL_MS, flag
+    // the job stalled and set the abort signal; the generator's abort checks and
+    // the per-call ORS timeout let the loop unwind and the completion path marks
+    // it FAILED. Secondary net to the per-call timeout in engine/routing.ts.
+    //
+    // On a continent-scale region a single vehicle-day (many live DIRECTIONS
+    // calls) can outlast the 15-min window, and telemetry/trip/progress events
+    // only fire at vehicle-day boundaries - so "no progress event" alone falsely
+    // flags a healthy-but-slow run. We therefore ALSO honour live ORS route
+    // activity (getRouteActivity): the job is only aborted when neither a
+    // progress event NOR a route-call completion has happened for the window. A
+    // genuine ORS outage is unaffected - it is caught quickly by the engine
+    // hard-stop (25 consecutive failures + 0 successes), not this watchdog.
+    const WATCHDOG_STALL_MS = 15 * 60_000;
+    const WATCHDOG_TICK_MS = 60_000;
+    let lastSeenRouteCompletions = -1;
+    const watchdogTimer: NodeJS.Timeout = setInterval(() => {
+      if (job.status !== 'RUNNING' || job.abort.aborted) return;
+      const act = getRouteActivity();
+      const lastAliveMs = Math.max(
+        job.lastProgressAt ?? job.startedAt.getTime(),
+        act.lastActivityMs,
+      );
+      const idleMs = Date.now() - lastAliveMs;
+      if (idleMs >= WATCHDOG_STALL_MS) {
+        job.stalled = true;
+        job.abort.aborted = true;
+        log('ERROR', 'Studio', `Watchdog: no progress for ${Math.round(idleMs / 60000)} min - aborting job ${jobId} (possible ORS stall)`, { jobId });
+        broadcast(job, 'warning', { message: `No progress for ${Math.round(idleMs / 60000)} min - watchdog aborting job (possible ORS stall)` });
+        return;
+      }
+      // Liveness heartbeat: when ORS route calls are still completing but no
+      // vehicle-day has finished yet (mid-day on a large region), surface a
+      // moving status so the UI is not frozen on "0 pts, 0 trips". This does not
+      // stamp lastProgressAt - route activity already keeps the watchdog fresh -
+      // so it cannot mask a real wedge.
+      if (lastSeenRouteCompletions >= 0 && act.completions > lastSeenRouteCompletions && job.pointsGenerated === 0) {
+        const rc = routeCacheStats();
+        broadcast(job, 'progress', {
+          status: `Building telemetry: ${act.completions} route calls completed, ${rc.size} cached (large region - first vehicle-days can take several minutes)`,
+        });
+      }
+      lastSeenRouteCompletions = act.completions;
+    }, WATCHDOG_TICK_MS);
     try {
       await ensureTables(snowSql);
       try {
@@ -1052,16 +1146,19 @@ export async function startGeneration(
         (p: GenerationProgress) => {
           job.pointsGenerated = p.totalPoints;
           job.tripsGenerated = p.totalTrips;
+          job.lastProgressAt = Date.now();
           broadcast(job, 'progress', p);
         },
         job.abort,
         (msg: string) => {
+          job.lastProgressAt = Date.now();
           broadcast(job, 'progress', { status: msg });
         }
       );
 
       for await (const event of gen) {
         if (job.abort.aborted) break;
+        job.lastProgressAt = Date.now();
 
         if (event.type === 'telemetry') {
           try {
@@ -1116,16 +1213,17 @@ export async function startGeneration(
           routeFailures: stoppedEvent.routeFailures,
         });
       } else {
-        job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
+        job.status = job.stalled ? 'FAILED' : (job.abort.aborted ? 'CANCELLED' : 'COMPLETED');
+        if (job.stalled && !job.error) job.error = 'No progress for 15 min - aborted by watchdog (possible ORS stall)';
         job.completedAt = new Date();
         log('INFO', 'Studio', `Job ${jobId} ${job.status}: ${job.pointsGenerated} pts, ${job.tripsGenerated} trips`, { jobId });
-        broadcast(job, job.status === 'COMPLETED' ? 'complete' : 'cancelled', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
+        broadcast(job, job.status === 'COMPLETED' ? 'complete' : (job.status === 'FAILED' ? 'error' : 'cancelled'), { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated, error: job.error ?? undefined });
       }
 
       try {
         const errMsg = stoppedEvent
           ? `ORS stopped: ${stoppedEvent.reason}. ${stoppedEvent.completedDays}/${stoppedEvent.totalDays} days completed.`
-          : null;
+          : (job.stalled ? job.error : null);
         await snowSql(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='${job.status}',
            POINTS_GENERATED=${job.pointsGenerated}, TRIPS_GENERATED=${job.tripsGenerated},
@@ -1194,6 +1292,7 @@ export async function startGeneration(
       }
     } finally {
       clearInterval(flushTimer);
+      clearInterval(watchdogTimer);
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
     }

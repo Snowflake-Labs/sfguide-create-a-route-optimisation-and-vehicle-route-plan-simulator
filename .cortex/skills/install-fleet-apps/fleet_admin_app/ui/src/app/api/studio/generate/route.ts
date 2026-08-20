@@ -3,9 +3,10 @@ import { withLogging } from '@/lib/api-handler';
 import { runSql } from '@/server/lib/sql';
 import { startGeneration } from '@/server/studio/jobs';
 import { GenerationConfig, defaultDistanceDistributionForArea } from '@/server/studio/profiles';
-import { bboxAreaKm2 } from '@/server/studio/engine/spatial';
+import { bboxAreaKm2, parallelismForArea } from '@/server/studio/engine/spatial';
 import { resolveRegionBbox, resolveRegionAreaKm2, checkOrsReadiness } from '@/server/studio/route-helpers';
 import { requireOps } from '@/lib/ingress-identity';
+import { log } from '@/server/diagnostics';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,6 +41,11 @@ export const POST = withLogging(async (req: NextRequest) => {
 
     const areaKm2 = (await resolveRegionAreaKm2(config.region, runSql)) ?? bboxAreaKm2(config.bbox);
     config.region_area_km2 = areaKm2;
+    // Concurrency knob: honor an explicit config.parallelism (preset/UI), else
+    // derive an area-adaptive default so large regions saturate ORS better.
+    if (config.parallelism == null || !Number.isFinite(config.parallelism) || config.parallelism < 1) {
+      config.parallelism = parallelismForArea(areaKm2);
+    }
     if (!config.spatial_spread) {
       config.spatial_spread = { enabled: true, bin_deg: null, min_bins_required: 3 };
     } else {
@@ -51,8 +57,25 @@ export const POST = withLogging(async (req: NextRequest) => {
     const ddIncomplete = !dd || dd.short_pct == null || dd.short_max_km == null || dd.medium_pct == null || dd.medium_max_km == null || dd.long_pct == null;
     if (ddIncomplete) config.distance_distribution = defaultDistanceDistributionForArea(areaKm2);
 
-    const health = await checkOrsReadiness(runSql, config.ors_profile, config.region);
-    if (!health.ready) return NextResponse.json({ error: health.error, code: 'ORS_NOT_READY' }, { status: 409 });
+    // Fast pre-flight ORS readiness gate, but strictly time-bounded. checkOrsReadiness
+    // does a live ORS_STATUS() round-trip that can block well past the SPCS ingress
+    // ~60s window when the region's service is suspended or still loading a large graph
+    // (e.g. Europe) - which surfaces to the client as a 504 "upstream request timeout"
+    // text body and a cryptic JSON-parse error. The background job already re-checks
+    // readiness via waitForOrsReady, so if the pre-flight does not answer quickly we
+    // simply defer to it and return the job id immediately.
+    const READINESS_PREFLIGHT_MS = 8000;
+    const health = await Promise.race([
+      checkOrsReadiness(runSql, config.ors_profile, config.region),
+      new Promise<{ ready: boolean; deferred?: boolean }>((resolve) =>
+        setTimeout(() => resolve({ ready: true, deferred: true }), READINESS_PREFLIGHT_MS),
+      ),
+    ]);
+    if ((health as { deferred?: boolean }).deferred) {
+      log('INFO', 'Studio', `ORS readiness pre-check exceeded ${READINESS_PREFLIGHT_MS}ms for region "${config.region}"; deferring to background waitForOrsReady`);
+    } else if (!health.ready) {
+      return NextResponse.json({ error: (health as { error?: string }).error, code: 'ORS_NOT_READY' }, { status: 409 });
+    }
 
     const jobId = await startGeneration(config, name, runSql);
     return NextResponse.json({ job_id: jobId, status: 'RUNNING' });

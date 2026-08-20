@@ -109,7 +109,7 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 --------------------------------------------------------------------
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-    LAG = '5 minutes'
+    LAG = DOWNSTREAM
     REFRESH_MODE = 'AUTO'
     INITIALIZE = 'ON_CREATE'
     WAREHOUSE = ROUTING_ANALYTICS
@@ -177,7 +177,7 @@ WHERE t.ACTUAL_PATH IS NOT NULL;
 --------------------------------------------------------------------
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-    LAG = '5 minutes'
+    LAG = '1 hour'
     REFRESH_MODE = 'AUTO'
     INITIALIZE = 'ON_CREATE'
     WAREHOUSE = ROUTING_ANALYTICS
@@ -203,7 +203,7 @@ GROUP BY d.VEHICLE_ID, d.DRIVER_ID, f.DRIVER_PROFILE, f.OPERATING_MODE, f.HOME_C
 --------------------------------------------------------------------
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-    LAG = '5 minutes'
+    LAG = '1 hour'
     REFRESH_MODE = 'AUTO'
     INITIALIZE = 'ON_CREATE'
     WAREHOUSE = ROUTING_ANALYTICS
