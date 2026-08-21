@@ -161,6 +161,20 @@
       MAX_BATCH_ROWS = 100
       AS '/snap';
 
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._MATCH_RAW(method VARCHAR, options VARIANT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/match';
+
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._EXPORT_RAW(method VARCHAR, options VARIANT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/export/topojson';
+
    -- NOTE: Service functions (SERVICE=...) do not support ALTER FUNCTION SET COMMENT.
    -- They are tracked via the parent procedure's COMMENT and the session query_tag.
 
@@ -360,6 +374,79 @@
         f.VALUE:name::STRING AS NAME
       FROM (SELECT OPENROUTESERVICE_APP.CORE._SNAP_RAW(method, OBJECT_CONSTRUCT('locations', locations, 'radius', radius), region) AS resp),
            LATERAL FLATTEN(input => resp:locations, OUTER => TRUE) f
+      $$;
+
+   -- MATCH (map matching) - matches a GeoJSON FeatureCollection to the graph.
+   -- LineString features are matched with the HMM map-matcher; the raw ORS response
+   -- returns :edge_ids (arrays of internal graph edge ids per feature), NOT geometry.
+   -- Use MATCH_PATH for a road-following polyline.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH(method VARCHAR, features VARIANT, region VARCHAR DEFAULT NULL)
+      RETURNS VARIANT
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"match"}}'
+      AS
+      'SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(method, OBJECT_CONSTRUCT(''features'', features), region)';
+
+   -- MATCH_PATH (trajectory snap-to-road) - matches a noisy GPS LineString to the
+   -- road network and returns the matched road segments as a single GEOGRAPHY.
+   -- Chain: /match (LineString -> ors edge_ids) then /export (bbox TopoJSON) to
+   -- resolve those edge ids to real OSM geometry (requires the profile's OsmId
+   -- ext storage, enabled by write_ors_config). Reversal of an arc does not change
+   -- its shape, so arcs are collected (ST_COLLECT) rather than strictly re-ordered.
+   -- GEOJSON is NULL when nothing matched (or OsmId storage is absent); RESPONSE
+   -- always carries the raw match result for inspection.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH_PATH(method VARCHAR, linestring ARRAY, region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, MATCHED_EDGES INT)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"match-path"}}'
+      AS
+      $$
+      WITH m AS (
+        SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(
+                 method,
+                 OBJECT_CONSTRUCT('features',
+                   OBJECT_CONSTRUCT('type', 'FeatureCollection', 'features',
+                     ARRAY_CONSTRUCT(OBJECT_CONSTRUCT(
+                       'type', 'Feature',
+                       'geometry', OBJECT_CONSTRUCT('type', 'LineString', 'coordinates', linestring))))),
+                 region) AS match_resp
+      ),
+      ids AS (
+        SELECT ARRAY_AGG(DISTINCT f.value::INT) AS edge_ids
+        FROM m,
+             LATERAL FLATTEN(input => m.match_resp:edge_ids) g,
+             LATERAL FLATTEN(input => g.value) f
+      ),
+      bb AS (
+        SELECT ARRAY_CONSTRUCT(
+                 ARRAY_CONSTRUCT(MIN(c.value[0]::FLOAT) - 0.003, MIN(c.value[1]::FLOAT) - 0.003),
+                 ARRAY_CONSTRUCT(MAX(c.value[0]::FLOAT) + 0.003, MAX(c.value[1]::FLOAT) + 0.003)
+               ) AS bbox
+        FROM LATERAL FLATTEN(input => linestring) c
+      ),
+      ex AS (
+        SELECT OPENROUTESERVICE_APP.CORE._EXPORT_RAW(
+                 method,
+                 OBJECT_CONSTRUCT('bbox', (SELECT bbox FROM bb), 'geometry', TRUE),
+                 region) AS export_resp
+      ),
+      arcs AS (
+        SELECT DISTINCT ABS(a.value::INT) AS arc_idx
+        FROM ex,
+             LATERAL FLATTEN(input => ex.export_resp:objects:network:geometries) gg,
+             LATERAL FLATTEN(input => gg.value:arcs) a
+        WHERE ARRAYS_OVERLAP(gg.value:properties:ors_ids::ARRAY, (SELECT edge_ids FROM ids))
+      ),
+      lines AS (
+        SELECT TO_GEOGRAPHY(OBJECT_CONSTRUCT('type', 'LineString', 'coordinates',
+                 GET(ex.export_resp:arcs, arcs.arc_idx))) AS line
+        FROM ex, arcs
+        WHERE arcs.arc_idx IS NOT NULL
+      )
+      SELECT
+        (SELECT match_resp FROM m)                       AS RESPONSE,
+        (SELECT ST_COLLECT(line) FROM lines)             AS GEOJSON,
+        COALESCE((SELECT ARRAY_SIZE(edge_ids) FROM ids), 0) AS MATCHED_EDGES
       $$;
 
    -- ORS_STATUS - returns VARIANT

@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.10'
+GATEWAY_VERSION = 'v1.1.11'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -871,6 +871,61 @@ def post_snap(format="json"):
         if isinstance(body, list):
             body = {'locations': body, 'radius': 350}
         output_rows.append([row[0], get_ors_response('snap', row[1], body, format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/match")
+@app.post("/match/<format>")
+def post_match(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS match body (a VARIANT built by the SQL layer):
+      {"features": {GeoJSON FeatureCollection}}. Point features snap to the
+      nearest edge; LineString features are matched with the HMM map-matcher;
+      Polygon features are intersected with the graph. Returns edge_ids per feature.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('match', row[1], row[2], format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/export")
+@app.post("/export/<format>")
+def post_export(format="topojson"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS export body (a VARIANT built by the SQL layer):
+      {"bbox": [[minLon,minLat],[maxLon,maxLat]], "geometry": true}.
+    Default format is topojson so the response carries edge geometry (+ ors_ids
+    when the profile has OsmId storage enabled), which MATCH_PATH uses to resolve
+    matched edge ids to road geometry.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('export', row[1], row[2], format, ors_host)])
 
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)

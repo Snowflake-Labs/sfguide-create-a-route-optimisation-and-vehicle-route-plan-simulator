@@ -434,6 +434,115 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- TOOL_MATCH: map-match a free-text/coordinate trajectory to the road network and
+-- return the matched road segments as GeoJSON (HMM map matching via ORS /match,
+-- geometry resolved via /export). This is trajectory map matching, unlike TOOL_SNAP.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_coord_count INT;
+    v_resp VARIANT;
+    v_geojson VARIANT;
+    v_matched_edges INT;
+BEGIN
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1: geocode the free-text trajectory into an ORDERED coords array.
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract the ordered sequence of points/coordinates that form this trajectory or path and return their coordinates in order. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    v_coord_count := COALESCE(ARRAY_SIZE(v_coords), 0);
+    IF (v_coords IS NULL OR v_coord_count < 2) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'MATCH FAILED: A trajectory needs at least 2 ordered points; could not parse enough from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 2: map-match the trajectory and resolve matched edges to geometry.
+    LET match_sql VARCHAR := 'SELECT mp.RESPONSE, ST_ASGEOJSON(mp.GEOJSON)::VARIANT, mp.MATCHED_EDGES
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.MATCH_PATH(''' || v_used || ''', PARSE_JSON(?), NULL)) mp';
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :match_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_resp, v_geojson, v_matched_edges;
+    CLOSE c2;
+
+    IF (v_resp:error IS NOT NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('MATCH FAILED: OpenRouteService returned an error: ', v_resp:error::VARCHAR), 'locations_requested', v_locations, 'status', 'FAILED');
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'matched_geometry', v_geojson,
+        'matched_edges', v_matched_edges,
+        'edge_ids', v_resp:edge_ids,
+        'graph_timestamp', v_resp:graph_timestamp,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_MATCH failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
