@@ -369,6 +369,14 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
                     logger.info(f'Injected pre-computed {len(locs)}x{len(locs)} matrix for {ors_host_override}')
                 else:
                     logger.warning(f'Matrix pre-computation returned empty for {ors_host_override}, VROOM will use default ORS')
+        # When the caller opts out of geometry (options.g=false), force g=False in
+        # the VROOM payload too so VROOM never emits geometry on ANY path
+        # (matrix-success, matrix-empty fallback, or no-matrix). Combined with the
+        # gated reconstruction below, this keeps the response geometry-free and
+        # under the _OPTIMIZATION_RAW 20MB cap. The client draws the route lazily
+        # via DIRECTIONS instead.
+        if not want_geometry:
+            payload['options'] = {'g': False}
         return payload
 
     results = []
@@ -383,15 +391,28 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             }])
             continue
         resp = get_vroom_response(payload, vroom_host=vroom_host_override)
-        if want_geometry and ors_host_override and 'routes' in resp:
-            needs_geo = any('geometry' not in r for r in resp['routes'])
-            if needs_geo:
-                profile = 'driving-car'
-                for v in (row[2] if len(row) > 2 else []):
-                    if isinstance(v, dict) and 'profile' in v:
-                        profile = v['profile']
-                        break
-                _reconstruct_geometry(resp['routes'], profile, ors_host_override, list(_collected_locs))
+        if 'routes' in resp and isinstance(resp.get('routes'), list):
+            if want_geometry:
+                if ors_host_override:
+                    needs_geo = any('geometry' not in r for r in resp['routes'])
+                    if needs_geo:
+                        profile = 'driving-car'
+                        for v in (row[2] if len(row) > 2 else []):
+                            if isinstance(v, dict) and 'profile' in v:
+                                profile = v['profile']
+                                break
+                        _reconstruct_geometry(resp['routes'], profile, ors_host_override, list(_collected_locs))
+            else:
+                # Client opted out of geometry (options.g=false). VROOM/vroom-express
+                # can still emit an encoded route geometry even when the payload sets
+                # options.g=false, and get_vroom_response DECODES it into a full
+                # [[lon,lat],...] array - which for a large region is exactly what
+                # blows the _OPTIMIZATION_RAW 20MB response cap. Strip it here so the
+                # response is compact; the client redraws the selected route lazily
+                # via ORS DIRECTIONS.
+                for r in resp['routes']:
+                    if isinstance(r, dict):
+                        r.pop('geometry', None)
         results.append([row[0], resp])
     return results
 
