@@ -1513,7 +1513,8 @@ $$
         'isochrones_maximum_locations', 50,
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
-        'isochrones_maximum_range_time', 18000
+        'isochrones_maximum_range_time', 18000,
+        'snap_maximum_locations', 5000
     )::VARIANT
 $$;
 
@@ -1556,6 +1557,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'isochrones_maximum_intervals': 10,
         'isochrones_maximum_range_distance': 1500000,
         'isochrones_maximum_range_time': 18000,
+        'snap_maximum_locations': 5000,
     }
     try:
         d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
@@ -1675,6 +1677,9 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
         '          value: ' + str(limits['isochrones_maximum_range_time']),
+        '    snap:',
+        '      enabled: true',
+        '      maximum_locations: ' + str(limits['snap_maximum_locations']),
         '',
     ])
 

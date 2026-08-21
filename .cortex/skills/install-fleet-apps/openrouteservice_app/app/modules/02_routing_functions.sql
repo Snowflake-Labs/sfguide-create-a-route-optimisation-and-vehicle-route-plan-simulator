@@ -154,6 +154,13 @@
       MAX_BATCH_ROWS = 100
       AS '/matrix';
 
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._SNAP_RAW(method VARCHAR, options VARIANT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/snap';
+
    -- NOTE: Service functions (SERVICE=...) do not support ALTER FUNCTION SET COMMENT.
    -- They are tracked via the parent procedure's COMMENT and the session query_tag.
 
@@ -322,6 +329,38 @@
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(method, origin, destinations, region)';
+
+   -- SNAP (locations array + radius) - snaps each point to the nearest routable
+   -- edge in the profile's graph. Returns the raw ORS VARIANT response whose
+   -- :locations[] entries are either null (nothing within radius) or
+   -- {location:[lon,lat], name, snapped_distance}. This is per-point nearest-edge
+   -- snapping, NOT trajectory map matching.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SNAP(method VARCHAR, locations ARRAY, radius INT, region VARCHAR DEFAULT NULL)
+      RETURNS VARIANT
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      AS
+      'SELECT OPENROUTESERVICE_APP.CORE._SNAP_RAW(method, OBJECT_CONSTRUCT(''locations'', locations, ''radius'', radius), region)';
+
+   -- SNAP_POINTS (tabular convenience) - one row per input point, in input order.
+   -- SNAPPED_GEOG is NULL for points that could not be snapped within radius
+   -- (LATERAL FLATTEN with OUTER => TRUE preserves those rows).
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SNAP_POINTS(method VARCHAR, locations ARRAY, radius INT, region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (IDX INT, INPUT_GEOG GEOGRAPHY, SNAPPED_GEOG GEOGRAPHY, SNAPPED_DISTANCE FLOAT, NAME STRING)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"snap"}}'
+      AS
+      $$
+      SELECT
+        f.INDEX::INT AS IDX,
+        ST_MAKEPOINT(locations[f.INDEX][0]::FLOAT, locations[f.INDEX][1]::FLOAT) AS INPUT_GEOG,
+        IFF(f.VALUE IS NULL, NULL,
+            ST_MAKEPOINT(f.VALUE:location[0]::FLOAT, f.VALUE:location[1]::FLOAT)) AS SNAPPED_GEOG,
+        f.VALUE:snapped_distance::FLOAT AS SNAPPED_DISTANCE,
+        f.VALUE:name::STRING AS NAME
+      FROM (SELECT OPENROUTESERVICE_APP.CORE._SNAP_RAW(method, OBJECT_CONSTRUCT('locations', locations, 'radius', radius), region) AS resp),
+           LATERAL FLATTEN(input => resp:locations, OUTER => TRUE) f
+      $$;
 
    -- ORS_STATUS - returns VARIANT
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_STATUS(region VARCHAR DEFAULT NULL)

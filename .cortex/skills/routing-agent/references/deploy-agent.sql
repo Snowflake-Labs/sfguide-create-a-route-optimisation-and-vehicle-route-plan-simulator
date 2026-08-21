@@ -309,6 +309,131 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- TOOL_SNAP: snap free-text coordinates/places to the nearest routable road edge
+-- (per-point nearest-edge snapping via ORS /snap, NOT trajectory map matching).
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    RADIUS_METERS NUMBER DEFAULT 350,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_radius INT;
+    v_points VARIANT;
+    v_unsnapped INT;
+    v_total INT;
+BEGIN
+    v_radius := COALESCE(:RADIUS_METERS, 350)::INT;
+    IF (v_radius <= 0) THEN
+        v_radius := 350;
+    END IF;
+
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    -- Cycling variants + ebike map to the only built cycling graph (see TOOL_DIRECTIONS).
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    -- Resolve the requested profile against the profiles actually built in the
+    -- default region (best-effort; failure -> rename-only behavior).
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1: geocode the free-text description to a coords array [[lon,lat], ...].
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract all locations/coordinates from this description and return their coordinates. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    IF (v_coords IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'SNAP FAILED: Could not parse any coordinates from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 2: snap each point to the nearest routable edge. v_radius is a validated
+    -- INT so it is safe to inline; coords are passed as a bound VARIANT parameter.
+    LET snap_sql VARCHAR := 'SELECT
+            ARRAY_AGG(OBJECT_CONSTRUCT_KEEP_NULL(
+                ''idx'', s.IDX,
+                ''input_lon'', ST_X(s.INPUT_GEOG),
+                ''input_lat'', ST_Y(s.INPUT_GEOG),
+                ''snapped_lon'', ST_X(s.SNAPPED_GEOG),
+                ''snapped_lat'', ST_Y(s.SNAPPED_GEOG),
+                ''snapped_distance_m'', s.SNAPPED_DISTANCE,
+                ''name'', s.NAME
+            )) WITHIN GROUP (ORDER BY s.IDX),
+            COUNT_IF(s.SNAPPED_GEOG IS NULL),
+            COUNT(*)
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?), ' || v_radius || ', NULL)) s';
+
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :snap_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_points, v_unsnapped, v_total;
+    CLOSE c2;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'radius_meters', v_radius,
+        'points', v_points,
+        'unsnapped_count', v_unsnapped,
+        'total_points', v_total,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_SNAP failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,

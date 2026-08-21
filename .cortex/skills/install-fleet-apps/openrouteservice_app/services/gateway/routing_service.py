@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.9'
+GATEWAY_VERSION = 'v1.1.10'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -841,6 +841,36 @@ def post_matrix(format="json"):
                 'resolve_locations': True
             }
         output_rows.append([row[0], get_ors_response('matrix', row[1], body, format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/snap")
+@app.post("/snap/<format>")
+def post_snap(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS snap body (a VARIANT built by the SQL layer):
+      {"locations": [[lon,lat], ...], "radius": <meters>}.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        body = row[2]
+        # Accept a bare locations list too (defensive) - snap still needs a radius,
+        # so fall back to a sane default when only a list is supplied.
+        if isinstance(body, list):
+            body = {'locations': body, 'radius': 350}
+        output_rows.append([row[0], get_ors_response('snap', row[1], body, format, ors_host)])
 
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
