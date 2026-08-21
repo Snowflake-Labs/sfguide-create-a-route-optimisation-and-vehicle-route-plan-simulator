@@ -314,7 +314,15 @@ def _remap_indices(jobs, vehicles, indices, shipments=None):
                     sub['location_index'] = indices[t]
 
 
-def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None):
+def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None, want_geometry=True):
+    # want_geometry: when False, the gateway does NOT reconstruct per-route road
+    # geometry after the VROOM solve. VROOM is always asked with options.g=False
+    # when a matrix is pre-computed, so without reconstruction the routes come
+    # back geometry-free (just steps). This keeps the _OPTIMIZATION_RAW response
+    # under the 20MB external-function cap for large regions with many/long
+    # routes. Callers that render the solve geometry directly (or omit options.g)
+    # get the default True and unchanged behavior; callers that fetch the drawn
+    # route lazily via DIRECTIONS (e.g. Backload Proposals) send options.g=False.
     _collected_locs = []
 
     def build_vroom_payload(row):
@@ -375,7 +383,7 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             }])
             continue
         resp = get_vroom_response(payload, vroom_host=vroom_host_override)
-        if ors_host_override and 'routes' in resp:
+        if want_geometry and ors_host_override and 'routes' in resp:
             needs_geo = any('geometry' not in r for r in resp['routes'])
             if needs_geo:
                 profile = 'driving-car'
@@ -464,10 +472,20 @@ def post_optimization():
         vroom_host = resolve_vroom_host(region) if region else None
         if ors_host:
             shifted = [row[0], row[1]]
+            # Honor the client's VROOM geometry flag. The reshaping below drops
+            # `options` (the tabular row has no options slot), so read options.g
+            # here first. Default True preserves behavior for callers that omit
+            # it or set g:true (e.g. Backload Matching, route-optimization); a
+            # client that draws the route lazily via DIRECTIONS sends g:false to
+            # keep the _OPTIMIZATION_RAW response under the 20MB cap.
+            want_geometry = True
+            if isinstance(row[1], dict):
+                want_geometry = bool(row[1].get('options', {}).get('g', True))
             tabular_rows = _handle_optimization_tabular(
                 [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', []), row[1].get('shipments', [])]],
                 ors_host_override=ors_host,
-                vroom_host_override=vroom_host
+                vroom_host_override=vroom_host,
+                want_geometry=want_geometry,
             )
             output_rows.append(tabular_rows[0])
         else:
