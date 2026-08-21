@@ -19,6 +19,8 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 | `ISOCHRONES(method, lon, lat, range [, region])` | TABLE (RESPONSE, GEOJSON) |
 | `OPTIMIZATION(jobs, vehicles [, matrices, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
 | `OPTIMIZATION(challenge [, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
+| `SNAP_POINTS(method, locations, radius [, region])` | TABLE (IDX, INPUT_GEOG, SNAPPED_GEOG, SNAPPED_DISTANCE, NAME) |
+| `MATCH_PATH(method, linestring [, region])` | TABLE (RESPONSE, GEOJSON, MATCHED_EDGES) - HMM map matching; GEOJSON = matched road segments |
 
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
@@ -34,6 +36,8 @@ Return VARIANT:
 | `MATRIX(method, locations [, region])` | Full NxN distance/duration matrix |
 | `MATRIX(method, options [, region])` | Matrix with advanced options |
 | `MATRIX_TABULAR(method, origin, destinations [, region])` | Origin-to-destinations matrix |
+| `SNAP(method, locations, radius [, region])` | Snap each point to nearest routable edge (raw ORS VARIANT: `:locations[]` of null or `{location, name, snapped_distance}`) |
+| `MATCH(method, features [, region])` | Map matching: match a GeoJSON FeatureCollection to the graph, returns `:edge_ids` per feature (raw ORS VARIANT). Needs engine >= v9.4.0. Use `MATCH_PATH` for geometry. |
 | `ORS_STATUS([region])` | Service status JSON |
 
 Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`

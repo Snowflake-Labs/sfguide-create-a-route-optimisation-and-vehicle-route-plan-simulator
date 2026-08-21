@@ -300,19 +300,19 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     else
       ROUTING_TOOLS_RC=$?
     fi
-    # Assert all 9 TOOL_* procs exist. Non-fatal by design (matches the
+    # Assert all 11 TOOL_* procs exist. Non-fatal by design (matches the
     # best-effort routing step), but a shortfall is recorded in ROUTING_SUBSTRATE
     # so the friction log AND the final summary highlight it loudly instead of it
     # surfacing as a silent "routing service issues" at agent runtime.
     TOOL_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
       "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
-    if [ "${TOOL_N:-0}" -lt 9 ]; then
+    if [ "${TOOL_N:-0}" -lt 11 ]; then
       [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
-      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
+      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/11 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
     else
-      ROUTING_SUBSTRATE="OK (9/9 ROUTING_TOOLS.TOOL_* procs)"
+      ROUTING_SUBSTRATE="OK (11/11 ROUTING_TOOLS.TOOL_* procs)"
       note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else

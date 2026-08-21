@@ -972,7 +972,7 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.10.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
     CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
         WHEN 'HIGHMEM_X64_M'  THEN '16G'
         WHEN 'HIGHMEM_X64_L'  THEN '64G'
@@ -1513,7 +1513,9 @@ $$
         'isochrones_maximum_locations', 50,
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
-        'isochrones_maximum_range_time', 18000
+        'isochrones_maximum_range_time', 18000,
+        'snap_maximum_locations', 5000,
+        'match_maximum_search_radius', 2000
     )::VARIANT
 $$;
 
@@ -1556,6 +1558,8 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'isochrones_maximum_intervals': 10,
         'isochrones_maximum_range_distance': 1500000,
         'isochrones_maximum_range_time': 18000,
+        'snap_maximum_locations': 5000,
+        'match_maximum_search_radius': 2000,
     }
     try:
         d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
@@ -1622,11 +1626,39 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'
     ]
 
+    # Per-profile default ext_storages (from ORS build config defaults) PLUS OsmId.
+    # OsmId is required so the /export TopoJSON exposes ors_ids, which MATCH_PATH uses
+    # to map matched edge ids back to road geometry. We re-declare each profile's
+    # defaults explicitly (rather than only adding OsmId) so that if ORS treats a
+    # config ext_storages block as a full replacement of the built-in defaults, we do
+    # not silently drop the storages that power avoid_features / HGV restrictions /
+    # trail difficulty. OsmId is compatible with any profile type.
+    default_ext_storages = {
+        'driving-car':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'driving-hgv':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'cycling-regular':  ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-road':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-mountain': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-electric': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-walking':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-hiking':      ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'wheelchair':       ['WayCategory', 'WaySurfaceType', 'Wheelchair'],
+    }
+
     profile_lines = []
     for p in all_profiles:
         enabled = 'true' if p in profiles_list else 'false'
         profile_lines.append('      ' + p + ':')
         profile_lines.append('        enabled: ' + enabled)
+        # Only enabled profiles are built, so only they need the ext_storages block.
+        if enabled == 'true':
+            storages = list(default_ext_storages.get(p, ['WayCategory', 'WaySurfaceType']))
+            if 'OsmId' not in storages:
+                storages.append('OsmId')
+            profile_lines.append('        build:')
+            profile_lines.append('          ext_storages:')
+            for s in storages:
+                profile_lines.append('            ' + s + ':')
 
     all_profiles_str = ', '.join(all_profiles)
     # maximum_snapping_radius is explicit so it survives ORS engine version
@@ -1675,6 +1707,12 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
         '          value: ' + str(limits['isochrones_maximum_range_time']),
+        '    snap:',
+        '      enabled: true',
+        '      maximum_locations: ' + str(limits['snap_maximum_locations']),
+        '    match:',
+        '      enabled: true',
+        '      maximum_search_radius: ' + str(limits['match_maximum_search_radius']),
         '',
     ])
 
