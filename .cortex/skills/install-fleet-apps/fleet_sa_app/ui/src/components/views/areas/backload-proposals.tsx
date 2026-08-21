@@ -261,7 +261,15 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
         priority,
       });
     }
-    return { challenge: { vehicles, shipments, options: { g: true } }, idToTrailer, idToLoad };
+    // g:false - do NOT ask VROOM to return per-route road geometry. For a large
+    // region (e.g. Europe/car) the geometry for many long cross-country routes
+    // pushes the _OPTIMIZATION_RAW external-function response past its 20MB cap
+    // (Snowflake 100335). The solve still runs (VROOM sources its matrix from
+    // ORS internally); the selected route's road path is fetched lazily via ORS
+    // DIRECTIONS (routeGeo) at selection time, so nothing on the map needs the
+    // solve-time geometry. PATH_COORDS is therefore null and routePath falls
+    // back to the DIRECTIONS path.
+    return { challenge: { vehicles, shipments, options: { g: false } }, idToTrailer, idToLoad };
   }, [cls, trailers, loads, maxVehicles, maxLoads]);
 
   const parseSolve = useCallback((
