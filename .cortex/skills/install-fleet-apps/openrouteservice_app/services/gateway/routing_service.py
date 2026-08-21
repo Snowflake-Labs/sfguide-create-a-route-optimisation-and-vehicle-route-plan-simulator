@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.6'
+GATEWAY_VERSION = 'v1.1.9'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -187,9 +187,23 @@ def _get_ors_status(ors_host=None):
         return {'error': str(e), 'service_ready': False, 'health_ready': False, 'ors_host': host}
 
 
+def _status_with_version(host=None):
+    # Always attach the gateway's baked build version to the status payload.
+    # GATEWAY_VERSION is compiled into the image, so this is the reliable
+    # stale-image detector: a cached old image reports the old version even when
+    # SYSTEM$GET_SERVICE_STATUS shows the new spec tag (SPCS serves images BY TAG
+    # and does not re-pull an unchanged tag). Surfaced to SQL via ORS_STATUS.
+    # Injected here (not inside _get_ors_status) so it is present regardless of
+    # ORS graph state - the probe tests the gateway process, not ORS readiness.
+    status = _get_ors_status(host)
+    if isinstance(status, dict):
+        status['gateway_version'] = GATEWAY_VERSION
+    return status
+
+
 @app.get("/ors_status")
 def get_ors_status():
-    return _get_ors_status()
+    return _status_with_version()
 
 
 @app.post("/ors_status")
@@ -201,12 +215,12 @@ def post_ors_status():
     logger.debug(f'Received status request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
-        return {"data": [[0, _get_ors_status()]]}
+        return {"data": [[0, _status_with_version()]]}
     output_rows = []
     for row in input_rows:
         region = _extract_region(row, 1)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], _get_ors_status(ors_host)])
+        output_rows.append([row[0], _status_with_version(ors_host)])
     return _make_response(output_rows)
 
 
