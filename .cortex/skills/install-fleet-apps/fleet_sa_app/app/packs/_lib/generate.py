@@ -196,6 +196,10 @@ def gen_setup(model, mapping):
         f"-- pack={model.get('pack','?')} mapping_source_id={mapping.get('source_id','?')}",
         f"ALTER SESSION SET query_tag = '{QUERY_TAG_JSON}';",
         f"CREATE DATABASE IF NOT EXISTS {db} COMMENT='{TRACK_JSON}';",
+        # Accelerator data is synthetic/rebuildable - disable Time Travel (and the
+        # 7-day Fail-safe on non-zero retention) to avoid pure storage cost. Co-located
+        # after CREATE DATABASE (order-independent; no-op on an already-configured DB).
+        f"ALTER DATABASE {db} SET DATA_RETENTION_TIME_IN_DAYS = 0;",
         f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='{TRACK_JSON}';\n",
     ]
     for ent in topo_order(model["entities"]):
