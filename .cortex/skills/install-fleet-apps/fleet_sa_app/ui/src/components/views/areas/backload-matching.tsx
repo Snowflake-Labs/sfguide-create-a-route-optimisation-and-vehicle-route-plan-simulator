@@ -29,6 +29,7 @@ import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLegGeoJSON,
+  findUnroutablePoints, coordKey,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   type VehicleClass, type EmptyLegBaseline,
 } from './backload-matching/helpers';
@@ -43,10 +44,12 @@ const BM_INTERNAL_MIN = 0, BM_INTERNAL_MAX = 80;
 const BM_EXTERNAL_MIN = 0, BM_EXTERNAL_MAX = 60;
 const BM_MAX_MATRIX_LOCATIONS = 500;
 const BM_SOLVE_TIMEOUT_MS = 180_000;
-// A single VROOM code-3 unroutable location aborts the whole solve. We drop the
-// offending shipment/vehicle and re-solve; cap the retries so a pathological
-// dataset can never loop forever.
-const BM_MAX_UNROUTABLE_RETRIES = 8;
+// A single VROOM code-3 unroutable location aborts the whole solve. A bulk
+// bidirectional MATRIX pre-filter (findUnroutablePoints) removes the bulk of
+// unroutable points before the first solve; this loop is the thin safety net
+// for the rare point that snaps leniently in MATRIX yet still aborts the solve.
+// Cap the retries so a pathological dataset can never loop forever.
+const BM_MAX_UNROUTABLE_RETRIES = 16;
 
 // VROOM echoes the failing coordinate rounded to ~6dp, so match with a small
 // epsilon rather than exact equality.
@@ -92,9 +95,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [sharedDestUserEdited, setSharedDestUserEdited] = useState(false);
 
   // Economics levers (USD).
-  const [costPerHourUsd, setCostPerHourUsd] = useState(45);
-  const [costPerKmUsd, setCostPerKmUsd] = useState(0.85);
-  const [fixedDispatchUsd, setFixedDispatchUsd] = useState(120);
+  const [costPerHourUsd, setCostPerHourUsd] = useState(28);
+  const [costPerKmUsd, setCostPerKmUsd] = useState(0.80);
+  const [fixedDispatchUsd, setFixedDispatchUsd] = useState(140);
   const [costPerDeliveryUsd, setCostPerDeliveryUsd] = useState(15);
   const [internalRatePerKm, setInternalRatePerKm] = useState(USD_PER_LOADED_KM);
   const [hideUnprofitable, setHideUnprofitable] = useState(false);
@@ -344,14 +347,88 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     setSuspended(null);
 
     // Solve, dropping any VROOM code-3 unroutable location and re-solving the
-    // remainder. A single point snapped onto a disconnected road component
-    // otherwise aborts the whole solve ("Unfound route(s) from location
-    // [lon,lat]"). VROOM names the offending coordinate, so we drop the matching
-    // shipment/vehicle (a shipment needs BOTH endpoints routable) and retry.
-    let workVehicles = vrpVehicles;
-    let workShipments = vrpShipments;
+    // remainder. A single point snapped onto a disconnected road component (or
+    // farther than the region snap radius) otherwise aborts the whole solve
+    // ("Unfound route(s) from location [lon,lat]" / "could not find routable
+    // point within a radius of Xm"). VROOM names only ONE offending coordinate
+    // per solve, so a dataset with many unroutable points would need one failed
+    // solve per point. To avoid exhausting the retry cap on large regions
+    // (Europe seeds freight across the whole bbox incl. islands / ocean-edge),
+    // we first bulk-remove unroutable points via a bidirectional MATRIX probe,
+    // then use the loop below only as a safety net.
     const excludedLabels: string[] = [];
     const droppedCoords: string[] = [];
+    let workVehicles = vrpVehicles;
+    let workShipments = vrpShipments;
+
+    // Anchor for the routability probe: the trailer start with the most
+    // neighbours within 300km (densest continental cluster centre) is on the
+    // main road graph, so probing every point to/from it flags island /
+    // off-road / disconnected points up front.
+    const vehStarts = vrpVehicles
+      .map((v) => (Array.isArray(v.start) ? (v.start as number[]) : null))
+      .filter((s): s is number[] => s != null && s.length >= 2);
+    let anchor: [number, number] | null = null;
+    if (vehStarts.length) {
+      let bestCount = -1;
+      for (const cand of vehStarts) {
+        let cnt = 0;
+        for (const other of vehStarts) if (haversineKm(cand[0], cand[1], other[0], other[1]) <= 300) cnt++;
+        if (cnt > bestCount) { bestCount = cnt; anchor = [cand[0], cand[1]]; }
+      }
+    }
+
+    if (anchor) {
+      setSolverLog('Checking stop routability...');
+      const uniq = new Map<string, [number, number]>();
+      const addPt = (loc: unknown) => {
+        if (Array.isArray(loc) && loc.length >= 2) {
+          const p: [number, number] = [Number(loc[0]), Number(loc[1])];
+          if (Number.isFinite(p[0]) && Number.isFinite(p[1])) uniq.set(coordKey(p[0], p[1]), p);
+        }
+      };
+      for (const v of vrpVehicles) { addPt(v.start); addPt(v.end); }
+      for (const s of vrpShipments) {
+        addPt((s.pickup as { location?: unknown }).location);
+        addPt((s.delivery as { location?: unknown }).location);
+      }
+      let badKeys = new Set<string>();
+      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal }); }
+      catch { badKeys = new Set(); }
+      if (badKeys.size) {
+        const locBad = (loc: unknown): boolean =>
+          Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
+        workVehicles = vrpVehicles.filter((veh) => {
+          const hit = locBad(veh.start) || locBad(veh.end);
+          if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
+          return !hit;
+        });
+        workShipments = vrpShipments.filter((s) => {
+          const pu = (s.pickup as { location?: unknown }).location;
+          const dl = (s.delivery as { location?: unknown }).location;
+          const hitPickup = locBad(pu);
+          const hitDelivery = locBad(dl);
+          if (hitPickup || hitDelivery) {
+            const sid = Number((s.pickup as { id?: unknown }).id);
+            const ent = offerById.get(sid);
+            const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
+            excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
+          }
+          return !(hitPickup || hitDelivery);
+        });
+        for (const k of badKeys) droppedCoords.push(k);
+      }
+    }
+
+    if (!workVehicles.length) {
+      setSolveError('All trailers are at unroutable locations for this region. Regenerate the preset data or pick another region.');
+      setSolving(false); return;
+    }
+    if (!workShipments.length) {
+      setSolveError('Every load pickup/dropoff is unroutable for this region. Regenerate the preset data or pick another region.');
+      setSolving(false); return;
+    }
+
     let respObj: Record<string, unknown> | null = null;
     let fatal: string | null = null;
 
@@ -360,7 +437,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       // Let the routing gateway pre-compute the matrix (options.g=true).
       const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: true } };
       setSolverLog(attempt === 0
-        ? 'Calling OPTIMIZATION...'
+        ? (excludedLabels.length ? `Excluded ${excludedLabels.length} unroutable stop(s); calling OPTIMIZATION...` : 'Calling OPTIMIZATION...')
         : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
       let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
       let ok = false;

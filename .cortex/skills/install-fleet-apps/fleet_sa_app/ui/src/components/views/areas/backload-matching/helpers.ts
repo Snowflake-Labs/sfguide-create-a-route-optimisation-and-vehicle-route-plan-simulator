@@ -9,7 +9,7 @@ export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
 // Default freight economics. USD per loaded km is the pricing unit; internal
 // volumes inherit the same model, external offers carry their real PRICE_USD.
-export const USD_PER_LOADED_KM = 1.2;
+export const USD_PER_LOADED_KM = 1.3;
 export const KMH_DEFAULT = 60;      // avg speed fallback for time-budget math
 export const COST_SCALE = 100;      // USD -> VROOM integer cost units
 
@@ -282,6 +282,99 @@ export async function computeEmptyLegBaselines(
     }
   }
   return out;
+}
+
+// Solver snap radius (meters). The optimization/VROOM path enforces the region
+// maximum_snapping_radius (1000m for standard regions). MATRIX snaps more
+// leniently, so a point can return a finite duration yet still abort the whole
+// solve with VROOM code 3 ("could not find routable point within a radius of
+// 1000.0 meters"). Any point whose snapped_distance exceeds this must be dropped
+// before the solve. Continental-preset regions use 5000m; pass snapRadiusM to
+// override when the active region uses a larger radius.
+export const SOLVER_SNAP_RADIUS_M = 1000;
+
+// Stable coordinate key for de-duping / matching dropped points. VROOM echoes
+// the failing coordinate rounded to ~6dp; matching to 4dp (~11m) is safe and
+// mirrors the retry loop's coordNear epsilon (1e-4).
+export function coordKey(lon: number, lat: number): string {
+  return `${Number(lon).toFixed(4)},${Number(lat).toFixed(4)}`;
+}
+
+// Bulk routability pre-filter. A single unroutable location aborts the ENTIRE
+// VROOM solve (code 3) and VROOM names only ONE offending coordinate per solve,
+// so a dataset with N unroutable points needs N sequential failed solves to
+// clear via the drop-and-retry loop. When a large region (e.g. Europe) seeds
+// freight across the whole bbox, N easily exceeds the retry cap and the solve
+// never converges. This helper removes the bulk in a handful of MATRIX calls
+// BEFORE the first solve.
+//
+// Given unique [lon,lat] points and a known-routable central anchor, it probes
+// each point BOTH directions via MATRIX_TABULAR:
+//   inbound  (anchor -> point): durations[0][j] + destinations[j].snapped_distance
+//   outbound (point -> anchor): durations[j][0]
+// A point is unroutable when its snapped_distance is null / greater than the
+// solver radius (off-road / mid-ocean), OR when either direction has a null
+// duration (point on a disconnected road component - e.g. a coastal stub
+// reachable inbound but dead outbound; see the Friesland case). Returns the set
+// of coordKey()s to exclude. Fails OPEN: any probe/parse error keeps the batch
+// so a transient MATRIX hiccup never blocks a valid solve.
+export async function findUnroutablePoints(
+  profile: string,
+  points: [number, number][],
+  anchor: [number, number],
+  region: string | null | undefined,
+  opts: { signal?: AbortSignal; snapRadiusM?: number; batchSize?: number } = {},
+): Promise<Set<string>> {
+  const bad = new Set<string>();
+  if (!points.length) return bad;
+  const prof = profile.replace(/[^a-z0-9-]/gi, '');
+  const regionLit = region ? `'${sqlLiteral(String(region))}'` : 'NULL';
+  const snapMax = opts.snapRadiusM ?? SOLVER_SNAP_RADIUS_M;
+  // Keep each MATRIX call comfortably under the gateway location guardrail.
+  const batchSize = Math.max(1, Math.min(opts.batchSize ?? 150, 150));
+  const anchorArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${Number(anchor[0])}, ${Number(anchor[1])}))`;
+  const fmtArr = (pts: [number, number][]) =>
+    'ARRAY_CONSTRUCT(' + pts.map(([lo, la]) => `ARRAY_CONSTRUCT(${Number(lo)}, ${Number(la)})`).join(',') + ')';
+  const parse = (v: unknown): unknown => {
+    if (v == null) return null;
+    if (typeof v === 'string') { try { return JSON.parse(v); } catch { return null; } }
+    return v;
+  };
+
+  for (let i = 0; i < points.length; i += batchSize) {
+    const batch = points.slice(i, i + batchSize);
+    const destArr = fmtArr(batch);
+    // Two function calls (inbound + outbound) hoisted into a subquery so each
+    // MATRIX_TABULAR is evaluated once; extract durations/destinations from the
+    // shared inbound result.
+    const sql =
+      `SELECT TO_VARCHAR(MI:durations) AS DUR_IN, TO_VARCHAR(MI:destinations) AS DESTS, ` +
+      `TO_VARCHAR(MO:durations) AS DUR_OUT FROM (SELECT ` +
+      `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${prof}', ${anchorArr}, ${destArr}, ${regionLit}) AS MI, ` +
+      `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${prof}', ${destArr}, ${anchorArr}, ${regionLit}) AS MO)`;
+    try {
+      const rows = await sfRead(sql, { signal: opts.signal });
+      const r = rows[0] as { DUR_IN?: unknown; DESTS?: unknown; DUR_OUT?: unknown } | undefined;
+      const durIn = parse(r?.DUR_IN) as number[][] | null;
+      const dests = parse(r?.DESTS) as Array<{ snapped_distance?: number } | null> | null;
+      const durOut = parse(r?.DUR_OUT) as number[][] | null;
+      // If the batch response is unusable, keep every point (fail open).
+      if (!Array.isArray(durIn) || !Array.isArray(durIn[0])) continue;
+      for (let j = 0; j < batch.length; j++) {
+        const inD = durIn[0]?.[j];
+        const outD = Array.isArray(durOut) ? durOut[j]?.[0] : undefined;
+        const snap = Array.isArray(dests) ? dests[j]?.snapped_distance : undefined;
+        const nullIn = inD == null || !Number.isFinite(Number(inD));
+        const nullOut = outD == null || !Number.isFinite(Number(outD));
+        const farSnap = snap == null || !Number.isFinite(Number(snap)) || Number(snap) > snapMax;
+        if (nullIn || nullOut || farSnap) bad.add(coordKey(batch[j][0], batch[j][1]));
+      }
+    } catch {
+      // Transient MATRIX error: keep this batch's points, let the solve-time
+      // retry loop catch any real unroutable point.
+    }
+  }
+  return bad;
 }
 
 // Empty-leg road polyline (trailer dropoff -> first pickup) via ORS DIRECTIONS.
