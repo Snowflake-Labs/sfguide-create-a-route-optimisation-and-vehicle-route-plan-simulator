@@ -231,13 +231,18 @@ export function OpsConsoleView() {
     const instances = svc?.max_instances != null
       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
       : '-';
-    const drift = Number(svc?.auto_suspend_secs) === 0 && isRunning;
+    // AUTO_SUSPEND_SECS=0 while running is an expected steady state now:
+    // RECONCILE_AUTO_SUSPEND pins a region's service/pool to 0 during an active
+    // build OR while it has recent routing activity (keep-warm), and restores
+    // the finite default hourly once the region goes idle. So this is an
+    // informational "won't auto-suspend" note, not an error/drift alarm.
+    const noSuspend0 = Number(svc?.auto_suspend_secs) === 0 && isRunning;
     return (
       <div key={fqName} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', padding: '4px 0' }}>
         <span style={{ flex: 1, minWidth: 200, fontSize: '12px', fontFamily: 'monospace' }}>{displayName}</span>
         {svc?.status != null && <span style={badge(isRunning ? 'ok' : isSuspended ? 'muted' : 'warn')}>{svc.status}</span>}
         <span style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', minWidth: 70, whiteSpace: 'nowrap' }}>{instances}</span>
-        {drift && <span style={badge('warn')} title="AUTO_SUSPEND_SECS=0 while running. Call CORE.RECONCILE_AUTO_SUSPEND() if no provisioning is in flight.">drift</span>}
+        {noSuspend0 && <span style={badge('muted')} title="AUTO_SUSPEND_SECS=0: pinned so it will not auto-suspend. Expected during an active build or while the region has recent routing activity (keep-warm); CORE.RECONCILE_AUTO_SUSPEND restores the finite default hourly once idle.">no-suspend</span>}
         <button onClick={() => status(fqName)} disabled={busy === `${fqName}:STATUS`} style={btn(busy === `${fqName}:STATUS`)}>Status</button>
         <button onClick={() => control(fqName, 'RESUME')} disabled={busy === `${fqName}:RESUME` || isRunning} style={btn(busy === `${fqName}:RESUME` || isRunning)}>Resume</button>
         <button onClick={() => control(fqName, 'SUSPEND')} disabled={busy === `${fqName}:SUSPEND` || isSuspended || noSuspend} style={btn(busy === `${fqName}:SUSPEND` || isSuspended || noSuspend)} title={noSuspendTitle}>Suspend</button>

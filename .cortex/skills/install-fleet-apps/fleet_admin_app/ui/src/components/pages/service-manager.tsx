@@ -222,7 +222,12 @@ export function ServiceManagerPage() {
               : stateLower === 'suspended' || stateLower === 'unknown'
                 ? 'muted'
                 : 'error';
-          const driftCount = poolSvcs.filter((s) => Number(s.auto_suspend_secs) === 0 && (s.status === 'RUNNING' || s.status === 'READY')).length;
+          // AUTO_SUSPEND_SECS=0 while running is an expected steady state:
+          // RECONCILE_AUTO_SUSPEND pins a region's service/pool to 0 during an
+          // active build OR while it has recent routing activity (keep-warm),
+          // restoring the finite default hourly once idle. Informational count
+          // of pinned services, not an error/drift alarm.
+          const pinnedCount = poolSvcs.filter((s) => Number(s.auto_suspend_secs) === 0 && (s.status === 'RUNNING' || s.status === 'READY')).length;
           const headerSubtitle = [
             poolMeta?.instance_family,
             poolMeta?.active_nodes != null && poolMeta?.max_nodes != null ? `${poolMeta.active_nodes}/${poolMeta.max_nodes} nodes` : null,
@@ -241,9 +246,9 @@ export function ServiceManagerPage() {
                 </div>
                 <div className="pool-section-state">
                   <span className={`badge ${stateClass === 'ok' ? 'ok' : stateClass === 'warn' ? 'warn' : ''}`}>{poolMeta?.state || 'UNKNOWN'}</span>
-                  {driftCount > 0 && (
-                    <span className="badge warn" title="One or more services have AUTO_SUSPEND_SECS=0 while running. Call CORE.RECONCILE_AUTO_SUSPEND() if no provisioning is in flight.">
-                      {driftCount} drift
+                  {pinnedCount > 0 && (
+                    <span className="badge" title="AUTO_SUSPEND_SECS=0: these services are pinned so they will not auto-suspend. Expected during an active build or while the region has recent routing activity (keep-warm); CORE.RECONCILE_AUTO_SUSPEND restores the finite default hourly once idle.">
+                      {pinnedCount} no-suspend
                     </span>
                   )}
                 </div>
