@@ -55,6 +55,7 @@ const SUSPEND_SIGNATURES = [
   /name or service not known/i,
   /matrix pre-?compute failed/i,
   /matrix_precompute_failed/i,
+  /service_unreachable/i,
   /OPTIMIZATION_UNAVAILABLE/i,
   /connection refused/i,
 ];

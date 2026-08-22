@@ -3,6 +3,14 @@ import { logger } from '@/lib/logger';
 import { getAgentConfig, buildCortexUrl, buildCortexRequestBody } from '@/lib/agent-config';
 import { parseCortexStream } from '@/lib/cortex-stream';
 import type { MessagePart } from '@/lib/types';
+import {
+  detectOrsSuspended,
+  detectSuspendedInResult,
+  suspendedMessage,
+  waitCopyForTier,
+  type SuspendDetection,
+} from '@/lib/routing-suspend';
+import { resolveResumeRegion, triggerRegionResume } from '@/lib/routing-resume';
 
 export async function POST(request: NextRequest) {
   const reqId = crypto.randomUUID().slice(0, 8);
@@ -164,9 +172,39 @@ export async function POST(request: NextRequest) {
 
   const cortexBody = buildCortexRequestBody(config, cortexMessages, threadId, parentMessageId);
 
+  // Active region for resolving which routing engine to resume when a tool
+  // reports a suspended service without naming the host explicitly.
+  const activeRegion = activeCtx.region ? String(activeCtx.region) : null;
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      // A suspended ORS/VROOM region surfaces to the agent path only as tool
+      // content (typed reason:OPTIMIZATION_UNAVAILABLE or a raw DNS/matrix
+      // error), never as an HTTP error. Detect it deterministically here,
+      // trigger a server-side resume once per region (fire-and-forget; the app
+      // runs as ACCOUNTADMIN), and inject a friendly text part so the user is
+      // told the engine is starting even if the model emits no text.
+      const resumedRegions = new Set<string>();
+      const handleSuspend = (det: SuspendDetection) => {
+        if (!det.suspended) return;
+        const region = resolveResumeRegion(det.region, activeRegion);
+        const key = region.toUpperCase();
+        if (resumedRegions.has(key)) return;
+        resumedRegions.add(key);
+        // Synchronous friendly message (default wait copy avoids an async tier
+        // lookup that could resolve after the stream closes).
+        const textPart: MessagePart = {
+          type: 'text',
+          content: suspendedMessage(region, waitCopyForTier(null)),
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(textPart)}\n\n`));
+        // Fire-and-forget resume of the region's ORS + VROOM services.
+        triggerRegionResume(region).catch((e) =>
+          logger.warn('chat-resume-failed', { region, error: String(e) }),
+        );
+      };
+
       try {
         const cortexResponse = await fetch(url, {
           method: 'POST',
@@ -195,6 +233,10 @@ export async function POST(request: NextRequest) {
         await parseCortexStream(cortexResponse, {
           onPart: (part: MessagePart) => {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(part)}\n\n`));
+            // Additive: if the tool result/error signals a suspended engine,
+            // resume it and append a friendly notice (original part still shown).
+            if (part.type === 'tool_result') handleSuspend(detectSuspendedInResult(part.output));
+            else if (part.type === 'tool_error') handleSuspend(detectOrsSuspended(part.error));
           },
           onStatus: (status: string, message: string) => {
             controller.enqueue(
@@ -209,6 +251,7 @@ export async function POST(request: NextRequest) {
           onError: (error: string) => {
             const errorPart: MessagePart = { type: 'tool_error', toolName: 'system', error };
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPart)}\n\n`));
+            handleSuspend(detectOrsSuspended(error));
           },
           onDone: () => {
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));

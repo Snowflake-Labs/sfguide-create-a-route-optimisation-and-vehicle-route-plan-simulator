@@ -4,11 +4,30 @@ import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus
 import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
+import {
+  detectSuspendedInResult,
+  detectOrsSuspended,
+  suspendedMessage,
+  waitCopyForTier,
+} from './routing-suspend';
 
 // Build a graceful fallback message when a stream ends with no usable text part
 // (e.g. the agent gave up after a failed/blocked tool call). Derives a short
 // reason from the last tool error so the user is never left with a blank turn.
 function synthesizeNoTextFallback(parts: MessagePart[]): string {
+  // Safety net for the agent path: if a tool signaled a suspended routing
+  // engine, prefer the friendly "engine starting, retry in ~N min" copy. (The
+  // /api/chat interception normally injects this as a text part already, so
+  // this only matters if that part was dropped.)
+  for (const p of parts) {
+    const det =
+      p.type === 'tool_result' ? detectSuspendedInResult(p.output)
+      : p.type === 'tool_error' ? detectOrsSuspended(p.error)
+      : { suspended: false as const };
+    if (det.suspended) {
+      return suspendedMessage(det.region || 'this region', waitCopyForTier(null));
+    }
+  }
   let reason = '';
   for (const p of parts) {
     if (p.type === 'tool_error' && p.error) {
