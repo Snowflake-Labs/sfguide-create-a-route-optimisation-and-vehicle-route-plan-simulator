@@ -1309,6 +1309,22 @@ def _escape_sql_string(s: str) -> str:
     """Escape single quotes for safe SQL string interpolation."""
     return s.replace("'", "''")
 
+# Suspended-engine detection: a suspended regional ORS/VROOM makes the gateway
+# return an embedded error / thrown error naming an unresolvable service host.
+# Mirrors SUSPEND_SIGNATURES in the SA app's lib/routing-suspend.ts so the chat
+# layer can resume + show a friendly notice instead of a raw connection error.
+def _ors_suspended(txt) -> bool:
+    t = str(txt or '').lower()
+    sigs = ['failed to resolve', 'nameresolutionerror', 'max retries exceeded',
+            'name or service not known', 'matrix pre-compute failed',
+            'matrix precompute failed', 'matrix_precompute_failed',
+            'service_unreachable', 'connection refused', 'optimization_unavailable']
+    return any(s in t for s in sigs)
+
+def _vroom_svc(region) -> str:
+    import re
+    return 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + re.sub(r'[^A-Z0-9_]', '', str(region).upper())
+
 def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
         # An explicit NULL region bind from the verb bypasses the SQL DEFAULT, so
@@ -1399,6 +1415,12 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
 
         if 'error' in opt_data:
+            if _ors_suspended(opt_data['error']):
+                return {
+                    'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                    'vroom_service': _vroom_svc(region),
+                    'error': f'Route optimization service for {region} is not responding (it may be suspended or starting). Resume it and retry.'
+                }
             return {
                 'error': f"OPTIMIZATION FAILED: OpenRouteService returned an error: {opt_data['error']}",
                 'deliveries_requested': delivery_data.get('locations', []),
@@ -1443,6 +1465,12 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
     except KeyError as e:
         return {'error': f'OPTIMIZATION FAILED: Missing expected field in geocoding response: {str(e)}', 'status': 'FAILED'}
     except Exception as e:
+        if _ors_suspended(str(e)):
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding ({str(e)}). Resume it and retry.'
+            }
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
@@ -1588,8 +1616,14 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails, region: region,
-                 requested_profile: PROFILE, used_profile: usedProfile,
+        // Zero rows here usually means the region's VROOM/ORS engine is suspended
+        // or cold-starting (a suspended engine makes the gateway return an
+        // empty/error body). Surface a typed reason so the chat layer resumes it
+        // and shows a friendly notice instead of a blank plan.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
+                 jobs: jobDetails, requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
     var rawResp = optRes.getColumnValue(1);
@@ -1637,7 +1671,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1786,7 +1826,11 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', region: region,
+        // Suspended/cold engine returns an empty/error body -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1805,7 +1849,13 @@ try {
         geometry: geojson
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1893,7 +1943,11 @@ try {
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
-        return { error: 'Isochrone returned no results for this location', status: 'FAILED',
+        // A suspended/cold regional ORS returns no isochrone -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (it may be suspended or starting). Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1986,7 +2040,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
