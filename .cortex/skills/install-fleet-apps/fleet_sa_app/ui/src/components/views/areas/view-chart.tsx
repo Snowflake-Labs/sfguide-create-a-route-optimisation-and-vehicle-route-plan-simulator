@@ -22,6 +22,7 @@ import {
 } from 'recharts';
 import { useViewData } from '@/hooks/use-view-data';
 import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface SeriesConfig {
   type: string;
@@ -48,7 +49,7 @@ interface ViewChartAreaProps {
 }
 
 export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   // Chart palette comes from the centralized style config (app-config.json),
   // falling back to the bundled Snowflake-forward defaults.
@@ -100,6 +101,10 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
         <div style={{ width: '100%', height: '100%', borderRadius: '8px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', animation: 'pulse 2s ease-in-out infinite' }} />
       </div>
     );
+  }
+
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />;
   }
 
   if (error) {

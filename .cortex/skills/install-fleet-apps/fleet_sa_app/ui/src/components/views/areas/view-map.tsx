@@ -14,6 +14,8 @@ import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import type { SuspendedInfo } from '@/lib/routing-suspend';
 import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
 
 interface ViewMapAreaProps {
@@ -42,6 +44,9 @@ interface LayerFetcherProps {
     template: string | undefined,
     count: number,
   ) => void;
+  // Report a suspended routing engine (or null when clear) so the parent can
+  // overlay a single friendly notice for the whole map.
+  onSuspended: (index: number, info: SuspendedInfo | null, retry: () => void) => void;
 }
 
 /**
@@ -100,12 +105,17 @@ function selectionFit(
  * so it is a non-urgent update. This keeps the basemap and UI responsive even
  * when a layer carries multi-MB route geometry.
  */
-function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult }: LayerFetcherProps) {
+function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult, onSuspended }: LayerFetcherProps) {
   // Skip the fetch entirely when the layer is toggled off (undefined query
   // short-circuits useViewData) - avoids wasted (and sometimes expensive, e.g.
   // live-ORS) queries for hidden layers.
-  const { data } = useViewData(visible ? layer.data.query : undefined, layer.data.params);
+  const { data, suspended, refetch } = useViewData(visible ? layer.data.query : undefined, layer.data.params);
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
+  // A suspended region (live-ORS layer) no longer fails silently: report it up
+  // so the map shows the shared resume notice instead of an empty basemap.
+  useEffect(() => {
+    onSuspended(index, visible ? suspended : null, refetch);
+  }, [index, visible, suspended, refetch, onSuspended]);
   useEffect(() => {
     if (!visible) {
       onResult(index, null, [], [], undefined, 0);
@@ -341,6 +351,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
   const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
+  // Per-layer suspended-engine state (any live-ORS layer over a suspended region).
+  const [suspendedLayers, setSuspendedLayers] = useState<Record<number, SuspendedInfo>>({});
+  const retryRef = useRef<Record<number, () => void>>({});
   // Path hovered in the map -> widen the matching journey (see compileLayer).
   const [hovered, setHovered] = useState<{ layerId: string; value: unknown } | null>(null);
   // Attributes of the last map-picked feature, surfaced to the chat agent so it
@@ -407,6 +420,34 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     },
     [],
   );
+
+  const onSuspended = useCallback(
+    (index: number, info: SuspendedInfo | null, retry: () => void) => {
+      retryRef.current[index] = retry;
+      setSuspendedLayers((prev) => {
+        if (!info) {
+          if (!(index in prev)) return prev;
+          const next = { ...prev };
+          delete next[index];
+          return next;
+        }
+        if (prev[index]) return prev;
+        return { ...prev, [index]: info };
+      });
+    },
+    [],
+  );
+
+  const suspendedInfo = useMemo<SuspendedInfo | null>(() => {
+    const vals = Object.values(suspendedLayers);
+    return vals.length ? vals[0] : null;
+  }, [suspendedLayers]);
+
+  const retryAllLayers = useCallback(() => {
+    for (const fn of Object.values(retryRef.current)) {
+      try { fn(); } catch { /* ignore */ }
+    }
+  }, []);
 
   const orderedLayers = useMemo<Layer[]>(
     () => specs.map((_, i) => layers[i]).filter((l): l is Layer => !!l),
@@ -544,7 +585,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         const v = key ? viewState[key] : undefined;
         const visible = !key || (v !== false && v !== 'false');
         return (
-          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} />
+          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} onSuspended={onSuspended} />
         );
       })}
       <MapView
@@ -555,6 +596,11 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         onHover={onHover}
         onClick={onClick}
       />
+      {suspendedInfo ? (
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5 }}>
+          <RoutingSuspendedNotice info={suspendedInfo} onRetry={retryAllLayers} />
+        </div>
+      ) : null}
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
       {config.categoryLegend?.length ? <MapLegend items={config.categoryLegend} title="Categories" corner="bottom-right" /> : null}
       {config.toggles?.length ? <MapToggles toggles={config.toggles} /> : null}

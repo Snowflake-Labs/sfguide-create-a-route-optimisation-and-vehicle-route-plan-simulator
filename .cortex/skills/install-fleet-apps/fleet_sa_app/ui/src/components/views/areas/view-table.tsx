@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
 const HEADER_PX = 38;
@@ -45,7 +46,7 @@ function isNumericColumn(rows: Record<string, unknown>[], key: string): boolean 
 }
 
 export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -94,6 +95,10 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
         ))}
       </div>
     );
+  }
+
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} />;
   }
 
   if (error) {

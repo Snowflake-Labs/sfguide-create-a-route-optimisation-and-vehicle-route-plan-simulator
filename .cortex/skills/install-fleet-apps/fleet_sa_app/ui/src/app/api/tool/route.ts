@@ -3,6 +3,8 @@ import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
+import { detectOrsSuspended, detectSuspendedInResult } from '@/lib/routing-suspend';
+import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
 
 // Calls a User-bundle synapse routing proc (the routing MCP verbs) for the
 // Tier-3 showcase pages (VRP simulator, Emergency wizard). The agent uses the
@@ -39,7 +41,7 @@ function resolveTools(): { schema: string; verbs: Record<string, number> } {
 }
 
 async function handlePost(req: Request) {
-  let body: { verb?: string; args?: unknown[]; idempotency_key?: unknown };
+  let body: { verb?: string; args?: unknown[]; idempotency_key?: unknown; region?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -47,6 +49,8 @@ async function handlePost(req: Request) {
   }
 
   const verb = String(body.verb ?? '');
+  const regionHint =
+    typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
   const { schema, verbs } = resolveTools();
   if (!(verb in verbs)) {
     return NextResponse.json({ error: `Unknown verb: ${verb}` }, { status: 400 });
@@ -79,10 +83,26 @@ async function handlePost(req: Request) {
     if (typeof raw === 'string') {
       try { result = JSON.parse(raw); } catch { /* leave as string */ }
     }
+    // A routing verb may succeed at the SQL level but return a typed
+    // "OPTIMIZATION_UNAVAILABLE" result when the region's ORS/VROOM service is
+    // suspended. Resume it and return the friendly notice instead of the raw shape.
+    const det = detectSuspendedInResult(result);
+    if (det.suspended) {
+      const resumeRegion = resolveResumeRegion(det.region, regionHint);
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+      return NextResponse.json(payload, { status: 503 });
+    }
     return NextResponse.json({ ok: true, verb, result });
   } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Tool call failed';
+    const det = detectOrsSuspended(rawMsg);
+    if (det.suspended) {
+      const resumeRegion = resolveResumeRegion(det.region, regionHint);
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+      return NextResponse.json(payload, { status: 503 });
+    }
     logger.error('tool-call', { verb }, err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Tool call failed' }, { status: 500 });
+    return NextResponse.json({ error: rawMsg }, { status: 500 });
   }
 }
 

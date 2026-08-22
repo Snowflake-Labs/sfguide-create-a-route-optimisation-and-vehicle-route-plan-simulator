@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/lib/store';
 import { DYNAMIC_VIEW_ID } from '@/lib/load-views';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 
 interface QueryResult {
   columns: Array<{ key: string; label: string }>;
@@ -14,6 +15,9 @@ interface UseViewDataResult {
   data: QueryResult | null;
   loading: boolean;
   error: string | null;
+  // Set when the query failed because the region's routing engine is suspended
+  // (server has already triggered a resume). Views render RoutingSuspendedNotice.
+  suspended: SuspendedInfo | null;
   refetch: () => void;
   // Epoch ms when the current data last arrived (for freshness indicators); null until first load.
   fetchedAt: number | null;
@@ -50,6 +54,7 @@ export function useViewData(
   const [data, setData] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -70,6 +75,7 @@ export function useViewData(
 
     setLoading(true);
     setError(null);
+    setSuspended(null);
 
     try {
       const res = await fetch('/api/query', {
@@ -81,6 +87,12 @@ export function useViewData(
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        // A suspended routing engine returns a typed 503; surface it as a
+        // friendly notice (resume already triggered) instead of a raw error.
+        if (res.status === 503 && isSuspendedBody(body)) {
+          if (!controller.signal.aborted) setSuspended(body);
+          return;
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -107,5 +119,5 @@ export function useViewData(
     return () => abortRef.current?.abort();
   }, [fetchData]);
 
-  return { data, loading, error, refetch: fetchData, fetchedAt };
+  return { data, loading, error, suspended, refetch: fetchData, fetchedAt };
 }

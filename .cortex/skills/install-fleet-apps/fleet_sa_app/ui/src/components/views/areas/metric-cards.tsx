@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface MetricMapping {
   column: string;
@@ -63,7 +64,7 @@ function formatValue(value: unknown, format?: string): string {
 }
 
 export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const display = useDisplayConfig();
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
@@ -117,6 +118,10 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
         ))}
       </div>
     );
+  }
+
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />;
   }
 
   if (error) {
