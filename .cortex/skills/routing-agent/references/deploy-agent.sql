@@ -1411,7 +1411,18 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             '{region}'
         ))
         """
-        opt_result = session.sql(opt_query).collect()[0]['RESULT']
+        _opt_rows = session.sql(opt_query).collect()
+        if not _opt_rows:
+            # The OPTIMIZATION TVF flattens resp:routes; a suspended/cold VROOM
+            # returns an empty/error body -> 0 rows. Surface a typed reason so the
+            # chat layer resumes the engine and shows a friendly notice (indexing
+            # [0] here would otherwise throw a generic "list index out of range").
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.'
+            }
+        opt_result = _opt_rows[0]['RESULT']
         opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
 
         if 'error' in opt_data:
