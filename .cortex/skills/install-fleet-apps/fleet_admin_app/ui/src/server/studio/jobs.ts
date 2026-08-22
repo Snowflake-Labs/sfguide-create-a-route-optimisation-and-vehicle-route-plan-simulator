@@ -959,7 +959,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const pois = await loadPOIs(config, snowSql);
+      const pois = await loadPOIs(config, snowSql, (msg) => broadcast(job, 'progress', { status: msg }));
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
       // Marketplace data (offers / partners / lane history) is generated for
