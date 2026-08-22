@@ -23,6 +23,8 @@ import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import InfoTip from './backload-matching/InfoTip';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
@@ -120,6 +122,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [solverLog, setSolverLog] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [auditRows, setAuditRows] = useState<Record<string, unknown>[]>([]);
 
   const recenterRef = useRef<(() => void) | null>(null);
@@ -338,6 +341,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     const ac = new AbortController();
     solveAbortRef.current = ac;
+    setSuspended(null);
 
     // Solve, dropping any VROOM code-3 unroutable location and re-solving the
     // remainder. A single point snapped onto a disconnected road component
@@ -367,6 +371,15 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         });
         body = await res.json();
         ok = res.ok;
+        // Suspended routing engine: server has triggered a resume. Show the
+        // shared notice with a Retry instead of a raw solver error.
+        if (res.status === 503 && isSuspendedBody(body)) {
+          clearTimeout(deadlineHandle);
+          solveAbortRef.current = null;
+          setSuspended(body);
+          setSolving(false);
+          return;
+        }
       } catch (e) {
         clearTimeout(deadlineHandle);
         solveAbortRef.current = null;
@@ -990,6 +1003,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {confirmMsg && (<div style={{ marginBottom: 12, fontSize: 13, padding: '8px 12px', background: 'rgba(22,163,74,0.10)', border: '1px solid rgba(22,163,74,0.4)', borderRadius: 4, color: '#065f46' }}>{confirmMsg}</div>)}
       {solverLog && (<div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary, #6b7280)' }}>{solverLog}</div>)}
       {vehicleClassError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Vehicle class issue.</b> {vehicleClassError}</div>)}
+      {suspended && (<div style={{ marginBottom: 12 }}><RoutingSuspendedNotice info={suspended} onRetry={solve} compact /></div>)}
       {solveError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Solve returned no assignments.</b> {solveError}</div>)}
 
       {/* Map + assignments */}

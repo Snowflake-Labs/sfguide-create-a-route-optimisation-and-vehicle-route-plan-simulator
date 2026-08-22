@@ -23,6 +23,8 @@ import {
   type StrategyFamily,
 } from './backload-ensemble';
 import { sqlLiteral } from './backload-matching/helpers';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
 import StatusBar from './backload-proposals/StatusBar';
 import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
@@ -95,12 +97,22 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
   });
 }
 
+// Thrown by apiSolve when the routing engine is suspended so the caller can show
+// the shared resume notice (server has already triggered the resume).
+class SuspendedError extends Error {
+  constructor(readonly info: SuspendedInfo) {
+    super(info.message);
+    this.name = 'SuspendedError';
+  }
+}
+
 async function apiSolve(challenge: object, region: string): Promise<Record<string, unknown> | null> {
   const res = await fetch('/api/backload/solve', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ challenge, region }),
   });
   const body = await res.json();
+  if (res.status === 503 && isSuspendedBody(body)) throw new SuspendedError(body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return (body.result as Record<string, unknown>) ?? null;
 }
@@ -153,6 +165,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [busy, setBusy] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -343,7 +356,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const runFamilies = useCallback(async (families: StrategyFamily[]) => {
     if (!cfg || !cls) return;
     setBusy('Generating proposals\u2026'); setSolveError(null); setInfo(null);
-    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({});
+    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({}); setSuspended(null);
     try {
       const all: ProposalRow[] = [];
       for (const fam of families) {
@@ -359,7 +372,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setProposals(all);
       setRanAt(Date.now());
     } catch (e) {
-      setSolveError(e instanceof Error ? e.message : 'Solve failed');
+      if (e instanceof SuspendedError) { setSuspended(e.info); }
+      else setSolveError(e instanceof Error ? e.message : 'Solve failed');
     } finally { setBusy(null); }
   }, [cfg, cls, baselineProposals, buildChallenge, parseSolve]);
 
@@ -625,6 +639,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       </div>
 
       {/* Status bar */}
+      {suspended && (<RoutingSuspendedNotice info={suspended} onRetry={onRun} />)}
       <StatusBar
         busy={busy}
         error={solveError}

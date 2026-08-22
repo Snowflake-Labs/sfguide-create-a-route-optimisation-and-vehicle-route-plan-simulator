@@ -7,6 +7,8 @@
 import { useState } from 'react';
 import { RouteMapInline } from '@/components/inline/route-map-inline';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 
 const PROFILES = ['driving-car', 'driving-hgv', 'cycling-regular', 'foot-walking'];
 
@@ -33,11 +35,13 @@ export function VrpSimulatorView() {
   const [profile, setProfile] = useState('driving-car');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
 
   const run = async () => {
     setLoading(true);
     setError(null);
+    setSuspended(null);
     setResult(null);
     try {
       const res = await fetch('/api/tool', {
@@ -46,9 +50,12 @@ export function VrpSimulatorView() {
         body: JSON.stringify({
           verb: 'optimize_routes',
           args: [stops, depot, vehicles, profile, null],
+          region,
         }),
       });
       const body = await res.json();
+      // Suspended routing engine: server has triggered a resume; show the notice.
+      if (res.status === 503 && isSuspendedBody(body)) { setSuspended(body); return; }
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setResult(body.result as Record<string, unknown>);
     } catch (err) {
@@ -100,6 +107,8 @@ export function VrpSimulatorView() {
           {loading ? 'Optimizing…' : 'Optimize routes'}
         </button>
       </div>
+
+      {suspended && <RoutingSuspendedNotice info={suspended} onRetry={run} compact />}
 
       {error && <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'var(--surface-error, #fef2f2)', border: '1px solid var(--border-error, #fecaca)', fontSize: '13px', color: 'var(--text-error, #dc2626)' }}>{error}</div>}
 

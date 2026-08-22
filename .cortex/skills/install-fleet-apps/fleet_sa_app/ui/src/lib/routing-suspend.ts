@@ -132,3 +132,24 @@ export function isSuspendedBody(body: unknown): body is SuspendedInfo {
     (body as { reason?: unknown }).reason === SUSPEND_REASON
   );
 }
+
+// Classify a SYSTEM$GET_SERVICE_STATUS result (as returned by the ops
+// service_status verb: { status_json: "<json array>" }). An empty / missing
+// array means the service exists but has no running instances (suspended). A
+// truly non-existent service makes the ops call THROW, handled by the caller.
+export function parseSvcStatus(raw: Record<string, unknown>): 'RUNNING' | 'SUSPENDED' | 'UNKNOWN' {
+  const js = raw?.status_json as string | undefined;
+  if (js == null || js === '') return 'SUSPENDED';
+  try {
+    const arr = JSON.parse(js);
+    if (Array.isArray(arr)) {
+      if (!arr.length) return 'SUSPENDED';
+      const statuses = arr.map((i: { status?: string }) => String(i?.status ?? '').toUpperCase());
+      if (statuses.every((s) => s === 'RUNNING' || s === 'READY')) return 'RUNNING';
+      return 'SUSPENDED'; // PENDING / starting -> keep waiting
+    }
+  } catch {
+    /* fall through */
+  }
+  return 'UNKNOWN';
+}

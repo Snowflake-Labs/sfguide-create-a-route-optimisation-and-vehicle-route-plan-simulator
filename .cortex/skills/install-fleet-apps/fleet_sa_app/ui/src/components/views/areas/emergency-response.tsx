@@ -18,6 +18,7 @@ import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { ViewProps, MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
+import { parseSvcStatus, regionServiceName } from '@/lib/routing-suspend';
 
 type Hazard = 'WILDFIRE' | 'FLOOD';
 interface HazardZone { zoneId: string; geojson: string; wildfire_level: number; flood_level: number; }
@@ -200,21 +201,7 @@ async function apiOps(verb: string, args: unknown[]): Promise<{ forbidden: boole
 // of per-instance objects with a `status` field; an empty array / missing json
 // means the service exists but has no running instances (suspended). A truly
 // non-existent service makes the ops call THROW ("does not exist"), handled by
-// the caller, so this never returns MISSING.
-function parseSvcStatus(raw: Record<string, unknown>): 'RUNNING' | 'SUSPENDED' | 'UNKNOWN' {
-  const js = raw?.status_json as string | undefined;
-  if (js == null || js === '') return 'SUSPENDED';
-  try {
-    const arr = JSON.parse(js);
-    if (Array.isArray(arr)) {
-      if (!arr.length) return 'SUSPENDED';
-      const statuses = arr.map((i: { status?: string }) => String(i?.status ?? '').toUpperCase());
-      if (statuses.every((s) => s === 'RUNNING' || s === 'READY')) return 'RUNNING';
-      return 'SUSPENDED'; // PENDING / starting -> keep waiting
-    }
-  } catch { /* fall through */ }
-  return 'UNKNOWN';
-}
+// the caller, so this never returns MISSING. (Shared impl in lib/routing-suspend.)
 
 type EnsureOutcome = 'running' | 'resumed' | 'timeout' | 'missing' | 'forbidden';
 
@@ -564,8 +551,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       } catch (e) {
         if (!isTimeoutError(e)) throw e;
         setNotice(`Routing engine is warming up for ${regionLbl}. Retrying...`);
-        const orsSvc = 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
-          + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        const orsSvc = regionServiceName(region, 'ORS');
         let outcome: EnsureOutcome = 'timeout';
         try { outcome = await ensureOptimizationService(orsSvc); } catch { /* best-effort warm; retry regardless */ }
         await sleep(outcome === 'resumed' ? 8000 : 3000);
@@ -658,8 +644,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       });
       const challenge = JSON.stringify({ vehicles, jobs });
       const regionLbl = region ?? 'the active region';
-      const defaultSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_'
-        + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+      const defaultSvc = regionServiceName(region, 'VROOM');
       let r = await apiTool('evac_solve', [challenge, region ?? null]);
       let ensured = false;
       // The proc returns reason 'OPTIMIZATION_UNAVAILABLE' when the region's VROOM
