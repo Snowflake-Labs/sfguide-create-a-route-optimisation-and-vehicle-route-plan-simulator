@@ -420,13 +420,16 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
     }
 
-    if (!workVehicles.length) {
-      setSolveError('All trailers are at unroutable locations for this region. Regenerate the preset data or pick another region.');
-      setSolving(false); return;
-    }
-    if (!workShipments.length) {
-      setSolveError('Every load pickup/dropoff is unroutable for this region. Regenerate the preset data or pick another region.');
-      setSolving(false); return;
+    // Belt-and-suspenders: a pre-filter must never zero out the whole solve. If
+    // it did (untrustworthy probe that slipped past the helper's own backoff),
+    // discard it and solve the full set - the solve path detects a suspended
+    // engine and the retry loop shears any real code-3 point. Do NOT surface an
+    // "all unroutable" error here; that hides a live-but-degraded engine.
+    if (!workVehicles.length || !workShipments.length) {
+      workVehicles = vrpVehicles;
+      workShipments = vrpShipments;
+      excludedLabels.length = 0;
+      droppedCoords.length = 0;
     }
 
     let respObj: Record<string, unknown> | null = null;

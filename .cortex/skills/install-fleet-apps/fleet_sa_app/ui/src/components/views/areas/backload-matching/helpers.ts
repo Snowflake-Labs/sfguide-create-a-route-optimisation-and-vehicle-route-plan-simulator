@@ -374,6 +374,16 @@ export async function findUnroutablePoints(
       // retry loop catch any real unroutable point.
     }
   }
+  // Sanity backoff: the pre-filter must only ever remove a MINORITY of genuinely
+  // unroutable points (bad data is ~1% of a preset). If it flags a large
+  // fraction, the probe is untrustworthy - a suspended/degraded ORS returns null
+  // durations rather than throwing, a mis-snapped anchor makes everything look
+  // far, and a proxy/parse hiccup can null whole batches. Treating those as
+  // "unroutable" would wrongly strip every trailer/shipment. Back off entirely
+  // (drop nothing) and let the solve path handle it: /api/backload/solve detects
+  // a suspended engine and triggers resume, and the drop-and-retry loop shears
+  // any real code-3 point one at a time.
+  if (points.length && bad.size > Math.floor(points.length * 0.5)) return new Set();
   return bad;
 }
 
