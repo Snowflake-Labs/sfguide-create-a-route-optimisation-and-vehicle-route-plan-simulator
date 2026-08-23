@@ -12,7 +12,7 @@
 spec:
   containers:
     - name: fleet-sa-app
-      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.94
+      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.95
       env:
         HOSTNAME: "0.0.0.0"   # override SPCS pod hostname so Next standalone binds to all interfaces
         APP_CONFIG: "/app-config/app-config.json"
