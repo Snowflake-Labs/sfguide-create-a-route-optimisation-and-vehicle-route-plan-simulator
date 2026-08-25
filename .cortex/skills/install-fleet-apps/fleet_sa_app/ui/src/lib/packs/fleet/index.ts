@@ -72,18 +72,19 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     category: 'Optimization',
     agentKnowledge: {
       keyMetrics: [
-        'assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count',
+        'assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count, empty_km_total, deadhead_avoided_km_total',
         'trailers / internal_volumes / external_offers loaded for the active preset, and selected_trailer',
-        'the full per-trip list is published as __memo_backload_matching: trailer id, source (INTERNAL/external), pickup->dropoff city, the delivery points (dropoff cities), delivery count, empty/loaded km, and revenue/cost/net USD',
+        'the full per-trip list is published as __memo_backload_matching: trailer id, source (INTERNAL/external), pickup->dropoff city, the delivery points (dropoff cities), delivery count, empty km split into out + back legs, loaded km, deadhead avoided versus the reposition baseline, and revenue/cost/net USD',
       ],
       exampleQuestions: [
         'give me a list of assignments with delivery and revenue details for each',
         'which trips deliver where?',
         'how much net benefit does the plan reclaim?',
+        'how much deadhead did the plan avoid?',
         'how many internal vs external loads were matched?',
         'which trailer has the most profitable backload?',
       ],
-      gotchas: 'Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. There is no semantic view for a live solve, so answer ONLY from the injected __memo_backload_matching / summary panel context and never invent trailer ids, offers, cities, km, or dollars. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The list is capped at the top 12 net-desc trips with a "(+N more)" suffix. Requires the active region routing/VROOM service to be running.',
+      gotchas: 'Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. There is no semantic view for a live solve, so answer ONLY from the injected __memo_backload_matching / summary panel context and never invent trailer ids, offers, cities, km, or dollars. Empty km covers BOTH deadhead legs (idle location -> first pickup, and last task stop -> tour end); "deadhead avoided" is the vehicle\'s reposition baseline (real ORS distance from its idle location to its end point) minus the empty km actually driven, so it can never exceed that baseline, and it is omitted entirely for open-ended tours where no baseline exists. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The list is capped at the top 12 net-desc trips with a "(+N more)" suffix. Requires the active region routing/VROOM service to be running.',
     },
     component: lazy(() =>
       import('@/components/views/areas/backload-matching').then((mod) => ({

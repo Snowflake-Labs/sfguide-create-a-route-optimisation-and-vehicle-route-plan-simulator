@@ -5,6 +5,8 @@
 // ROUTING_PLATFORM.CONTRACT (matrix) and OPENROUTESERVICE_APP.CORE.DIRECTIONS
 // (empty-leg polyline) at interaction time - never precomputed into tables.
 
+import type { LngLat } from '@/lib/map/map-fit';
+
 export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
 // Default freight economics. USD per loaded km is the pricing unit; internal
@@ -65,11 +67,25 @@ export interface Assignment {
   DROPOFF_LON: number; DROPOFF_LAT: number;
   EMPTY_KM: number; LOADED_KM: number; SCORE: number;
   DETOUR_KM?: number; SAVED_KM?: number;
+  // Empty (deadhead) km split into its two real legs: idle location -> first
+  // pickup (out) and last task stop -> tour end (back). EMPTY_KM is their sum.
+  EMPTY_OUT_KM?: number;
+  EMPTY_BACK_KM?: number;
+  // Reposition baseline the vehicle would have driven empty anyway (idle -> end),
+  // from computeEmptyLegBaselines (real ORS matrix, haversine/fixed fallback).
+  // SAVED_KM = max(0, BASELINE_EMPTY_KM - EMPTY_KM) and is only meaningful when
+  // BASELINE_SOURCE is not 'fixed-open'.
+  BASELINE_EMPTY_KM?: number;
+  BASELINE_SOURCE?: EmptyLegBaseline['source'];
   PRODUCT: string; PICKUP_CITY: string; PROPOSAL_DROPOFF_CITY: string;
   HOME_LON: number; HOME_LAT: number;
   TRAILER_DROPOFF_LON: number; TRAILER_DROPOFF_LAT: number;
+  // Tour end point and last task stop - the two ends of the return empty leg.
+  END_LON?: number; END_LAT?: number;
+  LAST_TASK_LON?: number; LAST_TASK_LAT?: number;
   ROUTE_GEOJSON?: unknown;
-  EMPTY_GEOJSON?: unknown;
+  EMPTY_GEOJSON?: unknown;        // idle location -> first pickup
+  EMPTY_RETURN_GEOJSON?: unknown; // last task stop -> tour end (reposition home)
   STOPS: Stop[];
   TOUR_KM?: number;
   TOUR_HRS?: number;
@@ -387,24 +403,51 @@ export async function findUnroutablePoints(
   return bad;
 }
 
-// Empty-leg road polyline (trailer dropoff -> first pickup) via ORS DIRECTIONS.
-// Returns a GeoJSON geometry object or null. Numeric-only waypoints -> inlined
-// array literal is injection-safe.
-export async function fetchEmptyLegGeoJSON(
+// Empty-leg road polyline + real road distance via ORS DIRECTIONS. Used for both
+// deadhead legs of a tour: idle location -> first pickup, and last task stop ->
+// tour end. Returns null on failure so callers fall back to haversine km and
+// simply draw no dashed line. Numeric-only waypoints -> inlined array literal is
+// injection-safe.
+export async function fetchEmptyLeg(
   profile: string, from: [number, number], to: [number, number], region: string,
-): Promise<unknown | null> {
+): Promise<{ geo: unknown; km: number | null } | null> {
   const pts = [from, to].filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
   if (pts.length < 2) return null;
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const reg = sqlLiteral(region);
   const locs = JSON.stringify(pts.map(([lon, lat]) => [Number(lon), Number(lat)]));
-  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G, DISTANCE AS D FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {
     const rows = await sfRead(sql);
-    const g = (rows[0] as { G?: string } | undefined)?.G;
-    if (!g) return null;
-    return JSON.parse(g);
+    const r = rows[0] as { G?: string; D?: number | string } | undefined;
+    if (!r?.G) return null;
+    const meters = Number(r.D);
+    return { geo: JSON.parse(r.G), km: Number.isFinite(meters) && meters > 0 ? meters / 1000 : null };
   } catch {
     return null;
   }
+}
+
+// Geometry-only wrapper (kept for callers that do not need the distance).
+export async function fetchEmptyLegGeoJSON(
+  profile: string, from: [number, number], to: [number, number], region: string,
+): Promise<unknown | null> {
+  const leg = await fetchEmptyLeg(profile, from, to, region);
+  return leg ? leg.geo : null;
+}
+
+// Cut a tour polyline at the point closest to `at`, returning the leading
+// portion. Used so the solid "loaded" path stops at the last task stop and the
+// dashed empty-leg layer owns the reposition tail instead of it being painted as
+// if the vehicle were loaded.
+export function trimPathAt(path: LngLat[], at: [number, number]): LngLat[] {
+  if (path.length < 2) return path;
+  let bestIdx = path.length - 1;
+  let bestD = Infinity;
+  for (let i = 0; i < path.length; i += 1) {
+    const d = haversineKm(path[i][0], path[i][1], at[0], at[1]);
+    if (d < bestD) { bestD = d; bestIdx = i; }
+  }
+  // Keep at least two points so the layer still renders something sane.
+  return path.slice(0, Math.max(2, bestIdx + 1));
 }
