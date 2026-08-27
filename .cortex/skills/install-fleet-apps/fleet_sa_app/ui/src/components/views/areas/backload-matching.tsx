@@ -28,7 +28,7 @@ import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
-  fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, trimPathAt,
+  fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   type VehicleClass, type EmptyLegBaseline,
@@ -122,6 +122,8 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const solveAbortRef = useRef<AbortController | null>(null);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const emptyLegCacheRef = useRef<Map<string, EmptyLegCacheEntry>>(new Map());
+  // Cached ORS loaded-tour polyline keyed by `<trailer>|<offer>|tour`.
+  const tourCacheRef = useRef<Map<string, unknown>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
@@ -452,8 +454,12 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     for (let attempt = 0; attempt <= BM_MAX_UNROUTABLE_RETRIES; attempt++) {
       const deadlineHandle = setTimeout(() => ac.abort(), BM_SOLVE_TIMEOUT_MS);
-      // Let the routing gateway pre-compute the matrix (options.g=true).
-      const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: true } };
+      // Solve for assignments and steps only. options.g=false tells the gateway
+      // to strip VROOM's per-route road geometry: decoded, it blows the 20MB
+      // _OPTIMIZATION_RAW external-function cap on large regions (Snowflake
+      // 100335). The map fetches each tour's road path lazily via ORS
+      // DIRECTIONS in the enrichment pass below.
+      const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: false } };
       setSolverLog(attempt === 0
         ? (excludedLabels.length ? `Excluded ${excludedLabels.length} unroutable stop(s); calling OPTIMIZATION...` : 'Calling OPTIMIZATION...')
         : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
@@ -553,6 +559,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       const t = trailerById.get(vehId);
       if (!t) continue;
       const steps = Array.isArray(route?.steps) ? (route.steps as Record<string, unknown>[]) : [];
+      // Normally null: the solve requests no geometry (options.g=false) and the
+      // enrichment pass below fills ROUTE_GEOJSON from ORS DIRECTIONS. Kept as a
+      // defensive read so a geometry-bearing response is still honoured.
       const routeGeo = Array.isArray(route?.geometry) && (route.geometry as unknown[]).length > 1
         ? { type: 'LineString', coordinates: route.geometry } : null;
       const taskSteps = steps.filter((s) => s.type === 'pickup' || s.type === 'delivery' || s.type === 'job' || s.type === 'break');
@@ -694,14 +703,29 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       setSolveError('Solver returned no routes. Try raising Detour budget or Allowed deviation, and confirm the region routing service is running.');
     }
 
-    // Lazily fetch both empty-leg polylines through the live routing seam:
-    // outbound (idle location -> first pickup) and return (last task stop ->
-    // tour end). The real road distance that comes back replaces the haversine
-    // seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM, SAVED_KM, and DETOUR_KM
-    // all end up in the same distance system as TOUR_KM.
+    // Lazily fetch the three polylines a tour needs through the live routing
+    // seam: the loaded path (first pickup -> last task stop), and both empty legs
+    // - outbound (idle location -> first pickup) and return (last task stop ->
+    // tour end). The loaded path is fetched here rather than taken from the solve
+    // response because the solve runs with VROOM geometry disabled to stay under
+    // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
+    // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
+    // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
     Promise.all(newAssignments.map(async (a) => {
       const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
       const retKey = `${outKey}|ret`;
+      const tourKey = `${outKey}|tour`;
+
+      const cachedTour = tourCacheRef.current.get(tourKey);
+      if (cachedTour) {
+        a.ROUTE_GEOJSON = cachedTour;
+      } else {
+        const geo = await fetchTourPath(profile, a.STOPS, cfg.region);
+        if (geo) {
+          tourCacheRef.current.set(tourKey, geo);
+          a.ROUTE_GEOJSON = geo;
+        }
+      }
       const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
       if (cachedOut) {
         a.EMPTY_GEOJSON = cachedOut.geo;
@@ -900,10 +924,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }) as unknown as Layer);
     }
     const hasSel = !!selectedAssignment;
-    // The VROOM tour geometry covers the return reposition too. Trim it at the
-    // last task stop so the solid "loaded" path only covers loaded travel and the
-    // dashed empty-leg layer owns the tail (otherwise the deadhead home renders
-    // as if the vehicle were carrying freight).
+    // The lazily fetched tour path already ends at the last task stop, so this
+    // trim is normally a no-op. It stays because a geometry-bearing solve
+    // response would cover the return reposition too, and that tail must not be
+    // painted as if the vehicle were still carrying freight - the dashed
+    // empty-leg layer owns it.
     const loadedPaths = visibleAssignments.map((a, i) => ({ a, i }))
       .filter(({ a }) => !!a.ROUTE_GEOJSON)
       .map(({ a, i }) => {

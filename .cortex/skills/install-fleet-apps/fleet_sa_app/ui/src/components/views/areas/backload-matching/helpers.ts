@@ -403,19 +403,35 @@ export async function findUnroutablePoints(
   return bad;
 }
 
-// Empty-leg road polyline + real road distance via ORS DIRECTIONS. Used for both
-// deadhead legs of a tour: idle location -> first pickup, and last task stop ->
-// tour end. Returns null on failure so callers fall back to haversine km and
-// simply draw no dashed line. Numeric-only waypoints -> inlined array literal is
-// injection-safe.
-export async function fetchEmptyLeg(
-  profile: string, from: [number, number], to: [number, number], region: string,
+// ORS routes through at most this many waypoints in one DIRECTIONS call. Longer
+// tours fall back to straight links rather than failing the request.
+export const MAX_DIRECTIONS_WAYPOINTS = 50;
+
+// Drop unusable waypoints (non-finite, null island) and collapse consecutive
+// duplicates - DIRECTIONS rejects zero-length legs, and VROOM `break` steps
+// often repeat the location of the step before them.
+function cleanWaypoints(pts: [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [lon, lat] of pts) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || (lon === 0 && lat === 0)) continue;
+    const prev = out[out.length - 1];
+    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;
+    out.push([Number(lon), Number(lat)]);
+  }
+  return out;
+}
+
+// Road polyline + real road distance through N waypoints via ORS DIRECTIONS.
+// Returns null on failure so callers can fall back to haversine km / straight
+// links. Numeric-only waypoints -> inlined array literal is injection-safe.
+export async function fetchDirections(
+  profile: string, waypoints: [number, number][], region: string,
 ): Promise<{ geo: unknown; km: number | null } | null> {
-  const pts = [from, to].filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
-  if (pts.length < 2) return null;
+  const pts = cleanWaypoints(waypoints);
+  if (pts.length < 2 || pts.length > MAX_DIRECTIONS_WAYPOINTS) return null;
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const reg = sqlLiteral(region);
-  const locs = JSON.stringify(pts.map(([lon, lat]) => [Number(lon), Number(lat)]));
+  const locs = JSON.stringify(pts);
   const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G, DISTANCE AS D FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {
     const rows = await sfRead(sql);
@@ -428,12 +444,45 @@ export async function fetchEmptyLeg(
   }
 }
 
+// Empty-leg road polyline + real road distance via ORS DIRECTIONS. Used for both
+// deadhead legs of a tour: idle location -> first pickup, and last task stop ->
+// tour end. Returns null on failure so callers fall back to haversine km and
+// simply draw no dashed line.
+export async function fetchEmptyLeg(
+  profile: string, from: [number, number], to: [number, number], region: string,
+): Promise<{ geo: unknown; km: number | null } | null> {
+  return fetchDirections(profile, [from, to], region);
+}
+
 // Geometry-only wrapper (kept for callers that do not need the distance).
 export async function fetchEmptyLegGeoJSON(
   profile: string, from: [number, number], to: [number, number], region: string,
 ): Promise<unknown | null> {
   const leg = await fetchEmptyLeg(profile, from, to, region);
   return leg ? leg.geo : null;
+}
+
+// Loaded tour polyline for one assignment, fetched lazily after the solve. The
+// solve itself is run with VROOM geometry disabled (options.g=false) because the
+// decoded per-route geometry blows the 20MB _OPTIMIZATION_RAW response cap on
+// large regions - see the solve call in backload-matching.tsx.
+//
+// Waypoints span the first pickup through the last task stop: `start` (vehicle
+// idle location) and `end` (tour end) are excluded because those two legs are
+// the deadheads, drawn separately from EMPTY_GEOJSON / EMPTY_RETURN_GEOJSON.
+// Falls back to a straight LineString through the same waypoints so the tour is
+// never silently missing from the map.
+export async function fetchTourPath(
+  profile: string, stops: Stop[], region: string,
+): Promise<unknown | null> {
+  const pts = cleanWaypoints(
+    stops.filter((s) => s.kind !== 'start' && s.kind !== 'end')
+      .map((s) => [Number(s.lon), Number(s.lat)] as [number, number]),
+  );
+  if (pts.length < 2) return null;
+  const road = await fetchDirections(profile, pts, region);
+  if (road?.geo) return road.geo;
+  return { type: 'LineString', coordinates: pts };
 }
 
 // Cut a tour polyline at the point closest to `at`, returning the leading
