@@ -1,8 +1,7 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
+import { GeoJsonLayer, ScatterplotLayer, PathLayer } from '@deck.gl/layers';
 import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './samplePoints';
 
 export interface GraphReadiness {
@@ -38,31 +37,11 @@ export function loadedProfilesForRegion(region: RegionOption | null): string[] {
   return region?.graphReadiness?.profiles_loaded ?? [];
 }
 
-export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
-
 export const OPTIMIZATION_PALETTE: [number, number, number, number][] = [
   [59, 130, 246, 230],
   [16, 185, 129, 230],
   [244, 114, 182, 230],
 ];
-
-export function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap',
-    data: CARTO_LIGHT,
-    minZoom: 0,
-    maxZoom: 19,
-    tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, {
-        data: undefined,
-        image: props.data,
-        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
-      });
-    },
-  });
-}
 
 export const PROFILE_LABELS: Record<string, string> = {
   'driving-car': 'Car',

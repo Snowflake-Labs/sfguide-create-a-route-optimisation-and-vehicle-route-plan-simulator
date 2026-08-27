@@ -31,11 +31,14 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- 3. Basemap egress: CARTO tile CDN (mirrors OPENROUTESERVICE_APP.CORE.ORS_CARTO_*).
---    The two apps proxy /api/tiles -> *.basemaps.cartocdn.com server-side; the
---    service must run with this EAI attached or basemaps render blank.
+--    The apps render CARTO VECTOR basemaps (MapLibre GL JS + a keyless positron
+--    style), fetched by the browser directly from the CDN - so maps need no
+--    server-side egress today. Retained and repointed at the vector hosts so a
+--    same-origin tile proxy can be reinstated without recreating the
+--    integration, and because both app services pass this EAI on ALTER SERVICE.
 CREATE OR REPLACE NETWORK RULE FLEET_INTELLIGENCE.CORE.FLEET_APP_CARTO_NETWORK_RULE
   TYPE = HOST_PORT  MODE = EGRESS
-  VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
+  VALUE_LIST = ('basemaps.cartocdn.com:443','tiles.basemaps.cartocdn.com:443','tiles-a.basemaps.cartocdn.com:443','tiles-b.basemaps.cartocdn.com:443','tiles-c.basemaps.cartocdn.com:443','tiles-d.basemaps.cartocdn.com:443')
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_CARTO_EAI

@@ -204,7 +204,9 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN
       FROM ${CONFIG_STAGE}
       SPECIFICATION_FILE = 'fleet_sa_app_service.yaml';
-    -- CARTO basemap tile proxy (/api/tiles) needs egress to *.basemaps.cartocdn.com.
+    -- Basemaps are CARTO VECTOR styles fetched by the browser, so no server-side
+    -- basemap egress is needed; the EAI is kept attached so a same-origin tile
+    -- proxy can be reinstated without changing the service.
     -- EAIs are a service property (not expressible in the spec YAML), so set it here.
     -- Resolved infra: reuses ORS_CARTO_EAI when present, else FLEET_APP_CARTO_EAI.
     ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI);

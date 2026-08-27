@@ -1,14 +1,13 @@
 'use client';
 
-// deck.gl map canvas with a CARTO raster basemap and data-driven camera fit.
+// deck.gl map canvas with a CARTO vector basemap and data-driven camera fit.
 // Ported from the control app's shared/MapView.tsx; changes: 'use client' and
 // the map-fit import path.
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import DeckGL from '@deck.gl/react';
-import { BitmapLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
 import type { Layer } from '@deck.gl/core';
+import Basemap from './basemap';
 import {
   fitBoundsToData,
   coordsSignature,
@@ -49,25 +48,6 @@ interface MapViewProps {
 }
 
 const DEFAULT_VIEW: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
-const CARTO_TILES = '/api/tiles/{z}/{x}/{y}';
-
-function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap',
-    data: CARTO_TILES,
-    minZoom: 0,
-    maxZoom: 19,
-    tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, {
-        data: undefined,
-        image: props.data,
-        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
-      });
-    },
-  });
-}
 
 function isValidViewState(vs: any): boolean {
   return vs &&
@@ -106,7 +86,6 @@ export default function MapView({
   const lastFocusRef = useRef<string | undefined>(fitTo?.focusKey);
   const focusPendingRef = useRef(false);
   const focusBaselineSigRef = useRef<string>('');
-  const basemap = useMemo(() => cartoBasemap(), []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -221,23 +200,24 @@ export default function MapView({
     if (onRecenterReady) onRecenterReady(recenter);
   }, [onRecenterReady, recenter]);
 
-  const allLayers = useMemo(() => [basemap, ...layers], [basemap, layers]);
-
   return (
     <div ref={containerRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
       {dims && (
-        <DeckGL
-          width={dims.width}
-          height={dims.height}
-          viewState={viewState}
-          onViewStateChange={handleViewStateChange}
-          layers={allLayers}
-          controller={true}
-          onClick={onClick}
-          onHover={onHover}
-          getTooltip={getTooltip}
-          style={{ position: 'absolute', top: '0', left: '0', width: `${dims.width}px`, height: `${dims.height}px` }}
-        />
+        <>
+          <Basemap viewState={viewState} />
+          <DeckGL
+            width={dims.width}
+            height={dims.height}
+            viewState={viewState}
+            onViewStateChange={handleViewStateChange}
+            layers={layers}
+            controller={true}
+            onClick={onClick}
+            onHover={onHover}
+            getTooltip={getTooltip}
+            style={{ position: 'absolute', top: '0', left: '0', width: `${dims.width}px`, height: `${dims.height}px` }}
+          />
+        </>
       )}
       {children}
     </div>

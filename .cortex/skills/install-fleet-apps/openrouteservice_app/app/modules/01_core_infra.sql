@@ -23,9 +23,15 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
      VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+   -- Basemap egress. The apps render CARTO VECTOR basemaps (MapLibre GL JS
+   -- fetching a keyless positron style), which the browser loads directly from
+   -- the CDN - so no server-side egress is needed for maps today. Retained and
+   -- repointed at the vector hosts so a same-origin tile proxy can be
+   -- reinstated without recreating the integration, and because the app
+   -- services pass this EAI in their ALTER SERVICE statements.
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_CARTO_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
-     VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
+     VALUE_LIST = ('basemaps.cartocdn.com:443','tiles.basemaps.cartocdn.com:443','tiles-a.basemaps.cartocdn.com:443','tiles-b.basemaps.cartocdn.com:443','tiles-c.basemaps.cartocdn.com:443','tiles-d.basemaps.cartocdn.com:443')
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI

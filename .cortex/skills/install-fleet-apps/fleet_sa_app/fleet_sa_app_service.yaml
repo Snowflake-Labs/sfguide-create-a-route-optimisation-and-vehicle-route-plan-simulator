@@ -4,15 +4,15 @@
 # (tier-B config-extensibility). The agent runs in agent-object mode against
 # FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT, which exposes OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP.
 #
-# EXTERNAL ACCESS: the map basemap proxy (/api/tiles -> *.basemaps.cartocdn.com)
-# requires the service to have EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI).
-# This is a SERVICE property, NOT part of this spec body; deploy_fleet_sa_app.sh
-# sets it on every ALTER SERVICE. Without it, /api/tiles returns 502 and maps
-# render route geometry but no basemap.
+# BASEMAPS: the maps render CARTO VECTOR basemaps - MapLibre GL JS loads the
+# keyless positron style straight from *.basemaps.cartocdn.com in the browser,
+# so no server-side basemap egress is involved. deploy_fleet_sa_app.sh still
+# passes ORS_CARTO_EAI on every ALTER SERVICE, so a same-origin tile proxy could
+# be reinstated without touching the integration.
 spec:
   containers:
     - name: fleet-sa-app
-      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.95
+      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.96
       env:
         HOSTNAME: "0.0.0.0"   # override SPCS pod hostname so Next standalone binds to all interfaces
         APP_CONFIG: "/app-config/app-config.json"

@@ -8,7 +8,7 @@ import { RES_LABELS } from '@/lib/types';
 import { RoadFilterBadge, SegControl } from '@/components/matrix-viewer/Atoms';
 import {
   GradientMetric, ScaleMode, TimeUnit,
-  cartoBasemap, formatNumber, formatBytes,
+  formatNumber, formatBytes,
   COLORS, rgb, lerpColor, rawValue, unitSuffix, fmtLegend,
 } from '@/components/matrix-viewer/helpers';
 import { getOdPair, getHexLatLon } from '@/api/matrix';
@@ -16,6 +16,7 @@ import { useFitMap } from '@/components/shared/useFitMap';
 import { coordsFromH3Cells } from '@/components/shared/mapFit';
 import RecenterButton from '@/components/shared/RecenterButton';
 import { useRegion } from '@/hooks/useRegion';
+import Basemap from '@/components/shared/basemap';
 import type { LngLat } from '@/components/shared/mapFit';
 
 type ViewerMode = 'area' | 'pair';
@@ -268,8 +269,6 @@ export function MatrixViewerPage() {
     }, 300);
   }, [activeTable, originHex, fetchReachability]);
 
-  const basemap = useMemo(() => cartoBasemap(), []);
-
   const reachSet = useMemo(() => new Set(destinations.map(d => d.hex_id)), [destinations]);
 
   const dataMax = useMemo(() => {
@@ -413,9 +412,9 @@ export function MatrixViewerPage() {
 
   const layers = useMemo(
     () => mode === 'area'
-      ? [basemap, bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean)
-      : [basemap, bgLayerPair, originHaloLayer, originLayer, destHaloLayer, destLayer].filter(Boolean),
-    [mode, basemap, bgLayer, bgLayerPair, reachLayer, originHaloLayer, originLayer, destHaloLayer, destLayer]
+      ? [bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean)
+      : [bgLayerPair, originHaloLayer, originLayer, destHaloLayer, destLayer].filter(Boolean),
+    [mode, bgLayer, bgLayerPair, reachLayer, originHaloLayer, originLayer, destHaloLayer, destLayer]
   );
 
   const fitCoords = useMemo<LngLat[]>(() => {
@@ -642,6 +641,7 @@ export function MatrixViewerPage() {
 
           <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
             {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{loadingMsg}</div>}
+            <Basemap viewState={viewState} />
             <DeckGL
               viewState={viewState}
               onViewStateChange={onViewStateChange}

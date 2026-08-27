@@ -2,10 +2,9 @@
 import { useMemo } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, PathLayer, IconLayer, TextLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer } from '@deck.gl/layers';
+import Basemap from '@/components/shared/basemap';
 import {
-  GeoData, OptimizationParsed, OPTIMIZATION_PALETTE, cartoBasemap,
+  GeoData, OptimizationParsed, OPTIMIZATION_PALETTE,
   extractGeoData, parseMatrixResult, parseOptimizationResult, travelTimeColor,
   parseIsochroneOrigin,
 } from './helpers';
@@ -224,13 +223,12 @@ export function ResultMap({
     return layers;
   }, [optimization]);
 
-  const basemap = useMemo(() => cartoBasemap(), []);
   const layers = useMemo(() => optimization
-    ? [basemap, ...optimizationLayers]
+    ? optimizationLayers
     : matrix
-      ? [basemap, ...matrixLayers]
-      : [basemap, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer].filter(Boolean),
-    [basemap, optimization, optimizationLayers, matrix, matrixLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer]);
+      ? matrixLayers
+      : [geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer].filter(Boolean),
+    [optimization, optimizationLayers, matrix, matrixLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer]);
 
   const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization);
 
@@ -358,14 +356,17 @@ export function ResultMap({
       )}
       <div ref={containerRef} style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {dims && isFiniteVS(viewState) ? (
-          <DeckGL
-            viewState={viewState}
-            onViewStateChange={onViewStateChange}
-            controller={true}
-            layers={layers}
-            getTooltip={getTooltip}
-            style={{ width: '100%', height: '100%' }}
-          />
+          <>
+            <Basemap viewState={viewState} />
+            <DeckGL
+              viewState={viewState}
+              onViewStateChange={onViewStateChange}
+              controller={true}
+              layers={layers}
+              getTooltip={getTooltip}
+              style={{ width: '100%', height: '100%' }}
+            />
+          </>
         ) : null}
         <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
