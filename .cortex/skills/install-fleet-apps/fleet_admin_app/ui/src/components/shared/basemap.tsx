@@ -15,9 +15,9 @@
 // MapView.tsx has to move onto MapLibre's fitBounds().
 //
 // Attribution (CARTO + OpenStreetMap) is rendered by MapLibre from the style's
-// TileJSON, which is a condition of CARTO's free tier. Do not remove the
-// default AttributionControl, and do not inline the source's `tiles` array in
-// place of its `url` - the attribution travels with the TileJSON.
+// TileJSON, which is a condition of CARTO's free tier. Keep an AttributionControl
+// mounted (see the explicit one below), and do not inline the source's `tiles`
+// array in place of its `url` - the attribution travels with the TileJSON.
 
 import { useEffect, useRef } from 'react';
 import type { Map as MapLibreMap } from 'maplibre-gl';
@@ -60,7 +60,7 @@ export default function Basemap({ viewState }: { viewState: BasemapViewState }) 
       const maplibregl = (await import('maplibre-gl')).default;
       if (cancelled || !containerRef.current) return;
       const vs = latestRef.current;
-      mapRef.current = new maplibregl.Map({
+      const map = new maplibregl.Map({
         container: containerRef.current,
         style: styleUrl(),
         center: [vs.longitude, vs.latitude],
@@ -68,7 +68,23 @@ export default function Basemap({ viewState }: { viewState: BasemapViewState }) 
         pitch: vs.pitch ?? 0,
         bearing: vs.bearing ?? 0,
         interactive: false,
+        // Suppressed so it can be re-added with explicit options below.
+        attributionControl: false,
       });
+
+      // maplibre-gl's AttributionControl defaults to
+      //   { compact: true, customAttribution: '<a ...>MapLibre</a>' }
+      // which renders "MapLibre | (c) CARTO, (c) OpenStreetMap contributors"
+      // behind an (i) toggle. Its constructor takes those as a DEFAULT PARAMETER
+      // rather than merging them, so passing any options object drops the
+      // MapLibre self-promo link, and compact:false keeps the credit expanded.
+      // The CARTO + OpenStreetMap credit still comes from the style's TileJSON
+      // and MUST remain visible - that is CARTO's free-tier condition. MapLibre
+      // itself is BSD-3, which requires the notice in source and binary
+      // distributions, not on-screen credit.
+      map.addControl(new maplibregl.AttributionControl({ compact: false }));
+
+      mapRef.current = map;
     })();
 
     return () => {
