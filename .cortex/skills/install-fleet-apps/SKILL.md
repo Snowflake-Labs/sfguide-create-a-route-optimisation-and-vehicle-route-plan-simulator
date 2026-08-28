@@ -92,6 +92,29 @@ bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connectio
 
 The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes) but runs by default and is skipped automatically when an engine is already present. `provision_engine.sh` ensures the `OPENROUTESERVICE_APP.CORE` infra, builds + pushes the 4 engine images (`references/build-images.md`), stages the map/config + service specs, loads SQL modules `01-08`/`15`, and lets module `03` bootstrap the default region. The engine keeps the `OPENROUTESERVICE_APP.CORE` namespace behind the `ROUTING_PLATFORM.CONTRACT` seam, and preserves the AUTO_SUSPEND_SECS, REBUILD_GRAPHS reuse, and per-region VROOM invariants (see `references/available-functions.md`, `references/snowflake-scripting-guidelines.md`, `references/snowflake-sql-gotchas.md`, `references/troubleshooting.md`).
 
+### Prewarm before a live demo
+
+Region ORS services carry `AUTO_SUSPEND_SECS = 14400` (4h) and their compute pool 3600 (1h), so an
+idle region WILL be suspended when you next open a view. Live routing then returns
+`service_unreachable` and the graph needs 2-5 minutes to reload. Roughly 20 minutes before a
+demo, run:
+
+```sql
+-- (region, wait_for_ready, timeout_seconds) - all three are required
+CALL OPENROUTESERVICE_APP.CORE.RESUME_REGION_ORS('<Region>', TRUE, 600);
+CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH('<Region>');
+```
+
+Resume alone is not enough - a resumed service still has to load the graph. The 4h timer runs from
+resume, so one prewarm comfortably covers a normal demo slot.
+
+Views that call ORS live surface a suspended engine as a resume notice and trigger the resume
+automatically (`/api/query` matches `service_unreachable` and the `ors-service-*` host), so a cold
+region self-heals rather than rendering blank. Prewarming just avoids doing that wait on stage.
+Note this only works if the SQL RAISES: a function that degrades an ORS error into NULL or into
+zero rows is invisible to that path and produces a silently empty panel instead - see the
+`LIVE_APPROACH_RING` / `LIVE_INBOUND_ETA` comments in `scripts/delivery_sync_layer.sql`.
+
 ## Configuration
 
 | Parameter | Default | Purpose |
