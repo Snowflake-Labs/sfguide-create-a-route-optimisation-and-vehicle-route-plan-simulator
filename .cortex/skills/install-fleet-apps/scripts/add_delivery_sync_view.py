@@ -72,6 +72,27 @@ PALETTE = {
     "EXPECTED": [145, 158, 171, 200],
 }
 
+# Map colouring. Only ACTIONABLE vehicle states carry a colour; anything neutral
+# takes NEUTRAL_GREY, which is also the stroke colour, so an en-route or idle
+# vehicle renders as a single flat grey dot instead of a ringed one. All values
+# are config, so the palette can be retuned without touching code.
+NEUTRAL_GREY = [90, 99, 104, 255]
+SITE_BLACK = [33, 41, 48, 235]
+VEHICLE_PALETTE = {
+    "ON_SITE": [46, 160, 67, 240],       # green  - vehicle is unloading
+    "JUST_LEFT": [214, 57, 57, 240],     # red    - load just landed, crew can go
+    "APPROACHING": [255, 171, 0, 245],   # yellow - inside the live drive-time band
+    "DRIVING": NEUTRAL_GREY,             # grey   - en route, nothing to act on
+    "IDLE": NEUTRAL_GREY,                # grey   - no further stops today
+}
+
+# Approach threshold in MINUTES for LIVE_FLEET_STATUS. APPROACH (above) is the
+# same setting in SECONDS for the isochrone ring, which takes seconds; keeping
+# both derived from PARAMS.APPROACH_SECONDS means the ring the user sees and the
+# yellow "approaching" colour always agree on what "close" means.
+APPROACH_MIN = ("(SELECT ROUND(APPROACH_SECONDS/60.0) FROM "
+                "FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1)")
+
 VIEW = {
     "label": "Delivery Sync",
     "category": "Core",
@@ -92,7 +113,15 @@ VIEW = {
         "the busiest day for the region so the page still shows something, and the As "
         "Of card is what tells you which day and time you are looking at. The replay "
         "clock steps in 10-minute increments, which is finer than the median time on "
-        "site, so a typical delivery is visible while the vehicle is still there."
+        "site, so a typical delivery is visible while the vehicle is still there. "
+        "On the map, black markers are the delivery sites and the smaller dots are "
+        "vehicles, coloured only when their state is actionable: green on site, red "
+        "just left, yellow inside the live drive-time approach band. En route and idle "
+        "vehicles stay grey so the eye lands on the few that matter. "
+        "One caveat worth knowing: a site reading EXPECTED is hindsight, not a "
+        "forecast - the visit is in the data because it was detected later the same "
+        "day. In production that state would come from the dispatch plan. READY and "
+        "IN_PROGRESS are direct detections."
     ),
     "agentKnowledge": {
         "preferredTool": "query_delivery_sync",
@@ -113,7 +142,18 @@ VIEW = {
         ],
         "gotchas": (
             "Readiness is evaluated AT the replay hour, not at wall-clock now, so the "
-            "same site reads EXPECTED earlier in the day and READY later. A visit is "
+            "same site reads EXPECTED earlier in the day and READY later. IMPORTANT: "
+            "EXPECTED is NOT a forecast. A visit only exists because it was detected "
+            "from telemetry, so at an early replay instant a later visit reads EXPECTED "
+            "purely because the rest of the day is already in the data - it is hindsight. "
+            "In production that state would come from the dispatch plan instead. READY "
+            "and IN_PROGRESS are direct detections and carry no such caveat. "
+            "On the map, site markers are neutral black and do NOT encode readiness; "
+            "readiness lives in the KPI cards, the readiness table and the site tooltip. "
+            "Vehicle colour carries the actionable state, and only three states are "
+            "coloured (on site, just left, approaching) - en route and idle are both grey "
+            "on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing "
+            "engine, not a straight-line radius. A visit is "
             "only counted once the vehicle was genuinely stationary inside the geofence "
             "for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site "
             "produces no event. The approach ring is computed outward FROM the site so "
@@ -237,13 +277,18 @@ VIEW = {
                 },
                 "toggles": [
                     {"key": "show_ring", "label": "Approach ring", "default": True},
-                    {"key": "show_inbound", "label": "Inbound vehicles", "default": True},
+                    {"key": "show_vehicles", "label": "Vehicles", "default": True},
                 ],
+                # Only the three ACTIONABLE vehicle states get a colour. Listing
+                # DRIVING and IDLE separately would undercut the point of greying
+                # them: at a typical instant it is about 11 coloured against 41
+                # grey, so the eye should land on the few that matter.
                 "legend": [
-                    {"label": "Ready for crew", "color": PALETTE["READY"]},
-                    {"label": "Vehicle on site", "color": PALETTE["IN_PROGRESS"]},
-                    {"label": "Still expected", "color": PALETTE["EXPECTED"]},
-                    {"label": "Inbound vehicle", "color": [41, 181, 232, 240]},
+                    {"label": "On site now", "color": VEHICLE_PALETTE["ON_SITE"]},
+                    {"label": "Just left", "color": VEHICLE_PALETTE["JUST_LEFT"]},
+                    {"label": "Approaching (15 min)", "color": VEHICLE_PALETTE["APPROACHING"]},
+                    {"label": "En route / idle", "color": NEUTRAL_GREY},
+                    {"label": "Delivery site", "color": SITE_BLACK},
                     {"label": "Approach ring", "color": [41, 181, 232, 200], "shape": "line"},
                 ],
                 "layers": [
@@ -270,70 +315,101 @@ VIEW = {
                         },
                     },
                     {
+                        # The fixed estate: larger, near-black, one marker per site.
+                        # Readiness no longer drives the colour (the vehicles carry
+                        # that story now) but is rolled into the tooltip.
                         "type": "scatterplot",
                         "id": "sites",
                         "lng": "lng",
                         "lat": "lat",
-                        "radius": 90,
-                        "radiusMinPixels": 5,
-                        "radiusMaxPixels": 16,
+                        "radius": 140,
+                        "radiusMinPixels": 6,
+                        "radiusMaxPixels": 22,
                         "pickable": True,
                         "fillColor": {
-                            "base": [145, 158, 171, 200],
+                            "base": SITE_BLACK,
                             "active": [17, 86, 127, 255],
                             "matchColumn": "site_id",
                             "whenViewStateEquals": "selected_site",
-                            "baseColumn": "readiness",
-                            "basePalette": PALETTE,
                         },
                         "tooltip": (
-                            "<b>{site_name}</b><br/>{readiness}<br/>Vehicle {vehicle_id}"
-                            "<br/>On site {dwell_min} min<br/>Load ready {ready_at}"
+                            "<b>{site_name}</b><br/>{visits_today} delivery(s) today"
+                            "<br/>{deliveries_done} done, {on_site_now} in progress"
+                            "<br/>Last ready {last_ready_at}"
                         ),
                         "data": {
+                            # DEDUPED to one row per site. F_SITE_READINESS_ASOF is
+                            # per VISIT, so a site served twice in a day produced two
+                            # exact-coordinate markers (134 rows for 118 sites on the
+                            # reference day). Grouping also stops a repeat-visit site
+                            # being drawn triple-weight.
                             "query": (
-                                "SELECT SITE_ID AS site_id, SITE_NAME AS site_name, "
-                                "READINESS_ENUM AS readiness, ST_X(SITE_GEOG) AS lng, "
-                                "ST_Y(SITE_GEOG) AS lat, VEHICLE_ID AS vehicle_id, "
-                                "DWELL_MINUTES AS dwell_min, "
-                                "IFF(READINESS_ENUM='READY', "
-                                "TO_VARCHAR(PRODUCT_READY_TS,'HH24:MI'), '-') AS ready_at "
+                                "SELECT SITE_ID AS site_id, ANY_VALUE(SITE_NAME) AS site_name, "
+                                "ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat, "
+                                "COUNT(*) AS visits_today, "
+                                "COUNT_IF(READINESS_ENUM='READY') AS deliveries_done, "
+                                "COUNT_IF(READINESS_ENUM='IN_PROGRESS') AS on_site_now, "
+                                "COALESCE(TO_VARCHAR(MAX(IFF(READINESS_ENUM='READY', "
+                                "DEPARTURE_TS, NULL)),'HH24:MI'), '-') AS last_ready_at "
                                 "FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, "
                                 + ASOF + ")) WHERE SERVICE_DATE = " + SD
-                                + " AND SITE_GEOG IS NOT NULL"
+                                + " AND SITE_GEOG IS NOT NULL GROUP BY SITE_ID"
                             ),
                             "params": dict(CTX),
                         },
                     },
                     {
+                        # The moving layer: every vehicle with a recent position,
+                        # coloured ONLY when its state is actionable. Replaces the
+                        # old focus-site inbound layer, so ORS calls per step stay
+                        # at 2 (this fleet matrix + the inbound table).
                         "type": "scatterplot",
-                        "id": "inbound",
+                        "id": "vehicles",
                         "lng": "lng",
                         "lat": "lat",
-                        "visibleWhen": "show_inbound",
+                        "visibleWhen": "show_vehicles",
                         "noFit": True,
                         "stroked": True,
-                        "lineColor": [255, 255, 255, 230],
+                        # Static grey stroke. Deliberately the SAME grey as the
+                        # DRIVING/IDLE fill so a neutral vehicle reads as one flat
+                        # dot rather than a ringed one.
+                        "lineColor": NEUTRAL_GREY,
                         "lineWidthMinPixels": 1,
-                        "fillColor": [41, 181, 232, 240],
+                        "fillColor": {
+                            "column": "status",
+                            "palette": VEHICLE_PALETTE,
+                            # Any future status not in the palette degrades to grey
+                            # rather than to a stray colour.
+                            "default": NEUTRAL_GREY,
+                        },
                         "radius": 70,
                         "radiusMinPixels": 4,
                         "radiusMaxPixels": 12,
                         "pickable": True,
                         "tooltip": (
-                            "<b>{vehicle_id}</b><br/>{minutes_out} min from {site_name}"
-                            "<br/>{distance_km} km by road<br/>ETA {eta}"
+                            "<b>{vehicle_id}</b><br/>{status_label}"
+                            "<br/>{site_name}<br/>{detail}"
                         ),
                         "data": {
                             "query": (
-                                "SELECT VEHICLE_ID AS vehicle_id, SITE_NAME AS site_name, "
-                                "MINUTES_OUT AS minutes_out, DISTANCE_KM AS distance_km, "
-                                "TO_VARCHAR(ETA_TS,'HH24:MI') AS eta, "
+                                "SELECT VEHICLE_ID AS vehicle_id, STATUS_ENUM AS status, "
+                                "COALESCE(SITE_NAME, 'No further stops today') AS site_name, "
+                                "CASE STATUS_ENUM "
+                                "WHEN 'ON_SITE' THEN 'On site now' "
+                                "WHEN 'JUST_LEFT' THEN 'Just left' "
+                                "WHEN 'APPROACHING' THEN 'Approaching' "
+                                "WHEN 'DRIVING' THEN 'En route' "
+                                "ELSE 'Idle' END AS status_label, "
+                                "CASE STATUS_ENUM "
+                                "WHEN 'JUST_LEFT' THEN MINUTES_SINCE_LEFT::VARCHAR || ' min ago' "
+                                "WHEN 'ON_SITE' THEN 'Unloading' "
+                                "WHEN 'IDLE' THEN 'Day complete' "
+                                "ELSE MINUTES_OUT::VARCHAR || ' min out, ' "
+                                "|| DISTANCE_KM::VARCHAR || ' km by road' END AS detail, "
                                 "ST_X(VEHICLE_GEOG) AS lng, ST_Y(VEHICLE_GEOG) AS lat "
-                                "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA("
-                                ":region, " + PROFILE + ", " + SITE + ", " + ASOF + ", 20)) "
-                                "WHERE MINUTES_OUT IS NOT NULL "
-                                "ORDER BY MINUTES_OUT LIMIT 25"
+                                "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS("
+                                ":region, " + PROFILE + ", " + ASOF + ", "
+                                + APPROACH_MIN + ", 20, 20))"
                             ),
                             "params": dict(CTX),
                         },

@@ -434,6 +434,146 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------
+-- 6b. LIVE_FLEET_STATUS - what every vehicle is doing at the replay instant.
+--
+--     LIVE_INBOUND_ETA answers "who is heading for THIS site". This answers the
+--     fleet-wide question the map needs: is each vehicle on a site, has it just
+--     left one, is it closing in, or is it simply driving. Statuses:
+--
+--       ON_SITE     - inside a detected visit right now (arrival <= t < departure)
+--       JUST_LEFT   - departed a site within P_JUST_LEFT_MIN of the instant
+--       APPROACHING - live road ETA to its OWN next site <= P_APPROACH_MIN
+--       DRIVING     - en route, but further out than that
+--       IDLE        - no further visit today
+--
+--     STRICT PRECEDENCE in that order. Computed as independent flags the ON_SITE
+--     and JUST_LEFT sets overlap (a vehicle that left site A can already be
+--     sitting at site B), which would double-plot it, so the CASE resolves to
+--     exactly one status per vehicle.
+--
+--     APPROACHING is a LIVE ROAD-TIME threshold, not a radius: one MATRIX_TABULAR
+--     call over the en-route subset, origins = vehicle positions ordered by
+--     VEHICLE_ID, destinations = the distinct next sites ordered by SITE_ID, and
+--     each vehicle reads durations[its origin index][its own next-site index].
+--     The ARRAY_AGG ordering MUST match those indices or every ETA silently maps
+--     to the wrong site - the same trap as LIVE_INBOUND_ETA. Sized in practice at
+--     36 origins x 39 destinations = 1,404 pairs against a matrix_maximum_routes
+--     cap of 2,000,000.
+--
+--     Same staleness guard as LIVE_INBOUND_ETA: a vehicle whose last ping is
+--     older than P_MAX_STALENESS_MIN is omitted rather than drawn as live.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_FLEET_STATUS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_AS_OF TIMESTAMP_NTZ,
+  P_APPROACH_MIN NUMBER, P_JUST_LEFT_MIN NUMBER, P_MAX_STALENESS_MIN NUMBER)
+RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
+               SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
+               ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
+               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH last_pos AS (
+    SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
+    FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
+    WHERE REGION = P_REGION
+      AND TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
+      AND TS >= DATEADD('minute', -1 * COALESCE(P_MAX_STALENESS_MIN, 20),
+                        COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
+  ),
+  -- Currently inside a visit.
+  on_site AS (
+    SELECT VEHICLE_ID, ANY_VALUE(SITE_ID) AS SITE_ID, ANY_VALUE(SITE_NAME) AS SITE_NAME
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) >= ARRIVAL_TS
+      AND COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) <  DEPARTURE_TS
+    GROUP BY VEHICLE_ID
+  ),
+  -- Most recent departure inside the just-left window.
+  just_left AS (
+    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, DEPARTURE_TS
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND DEPARTURE_TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
+      AND DEPARTURE_TS >= DATEADD('minute', -1 * COALESCE(P_JUST_LEFT_MIN, 20),
+                                  COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY DEPARTURE_TS DESC) = 1
+  ),
+  -- The next visit still ahead of the instant.
+  next_site AS (
+    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, SITE_GEOG
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND ARRIVAL_TS > COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY ARRIVAL_TS) = 1
+  ),
+  -- En route = has a position and a next site, and is not on a site right now.
+  -- JUST_LEFT vehicles ARE included: they still need an ETA so the status can be
+  -- re-evaluated once the just-left window lapses.
+  enroute AS (
+    SELECT p.VEHICLE_ID AS VID, p.LONGITUDE AS LON, p.LATITUDE AS LAT,
+           n.SITE_ID AS SID,
+           ROW_NUMBER() OVER (ORDER BY p.VEHICLE_ID) - 1 AS OI
+    FROM last_pos p
+    JOIN next_site n ON n.VEHICLE_ID = p.VEHICLE_ID
+    WHERE NOT EXISTS (SELECT 1 FROM on_site o WHERE o.VEHICLE_ID = p.VEHICLE_ID)
+  ),
+  dests AS (
+    SELECT n.SITE_ID AS SID, ANY_VALUE(n.SITE_GEOG) AS G,
+           ROW_NUMBER() OVER (ORDER BY n.SITE_ID) - 1 AS DI
+    FROM next_site n
+    WHERE n.SITE_ID IN (SELECT SID FROM enroute)
+    GROUP BY n.SITE_ID
+  ),
+  mtx AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+             P_PROFILE,
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY OI) FROM enroute),
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(G), ST_Y(G))) WITHIN GROUP (ORDER BY DI) FROM dests),
+             P_REGION) AS R
+  ),
+  eta AS (
+    SELECT e.VID,
+           ROUND(m.R:durations[e.OI][d.DI]::FLOAT / 60.0, 1)   AS MINS,
+           ROUND(m.R:distances[e.OI][d.DI]::FLOAT / 1000.0, 2) AS KM
+    FROM enroute e JOIN dests d ON d.SID = e.SID CROSS JOIN mtx m
+  )
+  SELECT
+    p.VEHICLE_ID,
+    CASE
+      WHEN o.VEHICLE_ID IS NOT NULL THEN 'ON_SITE'
+      WHEN j.VEHICLE_ID IS NOT NULL THEN 'JUST_LEFT'
+      WHEN n.VEHICLE_ID IS NULL     THEN 'IDLE'
+      WHEN e2.MINS IS NOT NULL
+       AND e2.MINS <= COALESCE(P_APPROACH_MIN, 15) THEN 'APPROACHING'
+      ELSE 'DRIVING'
+    END AS STATUS_ENUM,
+    -- Name the site the status is ABOUT: where it is / just left, else where it
+    -- is heading.
+    COALESCE(o.SITE_ID, j.SITE_ID, n.SITE_ID)       AS SITE_ID,
+    COALESCE(o.SITE_NAME, j.SITE_NAME, n.SITE_NAME) AS SITE_NAME,
+    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL, e2.MINS, NULL)::NUMBER(10,1) AS MINUTES_OUT,
+    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL, e2.KM, NULL)::NUMBER(10,2)   AS DISTANCE_KM,
+    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL AND e2.MINS IS NOT NULL,
+        DATEADD('second', (e2.MINS * 60)::INT,
+                COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)), NULL) AS ETA_TS,
+    IFF(j.VEHICLE_ID IS NOT NULL,
+        ROUND(DATEDIFF('second', j.DEPARTURE_TS,
+                       COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)) / 60.0, 1),
+        NULL)::NUMBER(12,1) AS MINUTES_SINCE_LEFT,
+    p.TS,
+    p.POINT_GEOM
+  FROM last_pos p
+  LEFT JOIN on_site   o  ON o.VEHICLE_ID  = p.VEHICLE_ID
+  LEFT JOIN just_left j  ON j.VEHICLE_ID  = p.VEHICLE_ID
+  LEFT JOIN next_site n  ON n.VEHICLE_ID  = p.VEHICLE_ID
+  LEFT JOIN eta       e2 ON e2.VID        = p.VEHICLE_ID
+$$;
+
+-- ---------------------------------------------------------------------
 -- 7. DELIVERY_EVENT_LOG - fire-once notification ledger.
 --    The MERGE key includes VISIT_ID (which embeds the episode number), so
 --    re-running the task cannot double-notify, and a genuine second visit to
@@ -552,6 +692,21 @@ AS
 $$
   SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_INBOUND_ETA(
     P_REGION, P_PROFILE, P_SITE_ID, P_AS_OF, P_MAX_STALENESS_MIN))
+$$;
+
+CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_AS_OF TIMESTAMP_NTZ,
+  P_APPROACH_MIN NUMBER, P_JUST_LEFT_MIN NUMBER, P_MAX_STALENESS_MIN NUMBER)
+RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
+               SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
+               ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
+               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_FLEET_STATUS(
+    P_REGION, P_PROFILE, P_AS_OF, P_APPROACH_MIN, P_JUST_LEFT_MIN, P_MAX_STALENESS_MIN))
 $$;
 
 -- ---------------------------------------------------------------------
