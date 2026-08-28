@@ -414,6 +414,11 @@ VIEW = {
                         # that story now) but is rolled into the tooltip.
                         "type": "scatterplot",
                         "id": "sites",
+                        # Opt out of selection framing: this layer is colour-bound
+                        # to selected_site, so without noFit a click would collapse
+                        # the camera onto the single matched point and zoom in
+                        # before the approach ring finishes loading.
+                        "noFit": True,
                         "lng": "lng",
                         "lat": "lat",
                         "radius": 140,
