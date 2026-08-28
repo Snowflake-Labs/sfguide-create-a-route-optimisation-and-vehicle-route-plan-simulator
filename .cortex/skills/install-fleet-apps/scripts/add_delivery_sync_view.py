@@ -27,16 +27,20 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app" / "ap
 # range contains no visits at all, so the page degrades to "showing another day"
 # rather than to blank cards. The resolved date is published as a KPI card so
 # that fallback is visible rather than silent.
+# Every "busiest X" pick below is tie-broken explicitly. Without that the ORDER BY
+# is non-deterministic and the page silently changes anchor between loads - the
+# focus site was observed flipping between two sites for the SAME service day,
+# which is what made the single approach ring look like it landed on a random
+# site. Ties are real here because visit counts are small integers.
 SD = ("COALESCE("
       "(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
       "WHERE REGION = :region "
       "AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) "
       "AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) "
-      "GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), "
+      "GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), "
       "(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
-      "WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))")
-# As-of instant: the replay clock. Readiness and both live ORS calls are all
-# evaluated at this instant so the whole page tells one consistent story.
+      "WHERE REGION = :region GROUP BY 1 "
+      "ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))")
 # As-of instant: the replay clock. Readiness and both live ORS calls are all
 # evaluated at this instant so the whole page tells one consistent story.
 #
@@ -53,11 +57,15 @@ PROFILE = ("(SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
            "WHERE REGION = :region LIMIT 1)")
 APPROACH = ("(SELECT APPROACH_SECONDS FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
             "WHERE REGION = :region LIMIT 1)")
-# Focus site: the clicked site, else the busiest site that day. Guarantees the
-# live ring and ETA calls never receive a NULL anchor.
+# Focus site: the clicked site, else the busiest site that day (tie-broken by
+# SITE_ID so it is stable across loads). Guarantees the live ring and ETA calls
+# never receive a NULL anchor. The SAME expression and tie-break is used by
+# LIVE_APPROACH_RINGS to exclude this site, so the two can never disagree about
+# which site is the focus.
 SITE = ("COALESCE(:selected_site, (SELECT SITE_ID FROM "
         "FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region "
-        "AND SERVICE_DATE = " + SD + " GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))")
+        "AND SERVICE_DATE = " + SD + " GROUP BY 1 "
+        "ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1))")
 
 CTX = {
     "region": "context.region",
@@ -113,6 +121,18 @@ VEHICLE_PALETTE = {
 # view stays correct on a dataset that includes stores.
 GEOFENCE_RADII = (200, 100)
 
+# Approach-ring colours. Snowflake DARK blue #11567F, deliberately not the light
+# blue that now belongs to vehicles. The focus site's ring is drawn strongly; the
+# other ~117 rings are drawn very faintly, because at 1.5x average overlap an
+# alpha that reads well for one ring accumulates into a solid wash for a hundred.
+# Two separate layers are required rather than one: buildGeoJsonLayer passes
+# getLineColor STATICALLY (only getFillColor supports a per-feature accessor via
+# colorColumn/colorMap), so a single layer cannot vary outline strength by row.
+RING_FOCUS_FILL = [17, 86, 127, 30]
+RING_FOCUS_LINE = [17, 86, 127, 220]
+RING_ALL_FILL = [17, 86, 127, 8]
+RING_ALL_LINE = [17, 86, 127, 85]
+
 # Approach threshold in MINUTES for LIVE_FLEET_STATUS. APPROACH (above) is the
 # same setting in SECONDS for the isochrone ring, which takes seconds; keeping
 # both derived from PARAMS.APPROACH_SECONDS means the ring the user sees and the
@@ -127,34 +147,100 @@ VIEW = {
         "When each vehicle reached its delivery site and when it left, so the "
         "receiving crew travels only once the load is actually on the floor."
     ),
-    "info": (
-        "Arrival and departure are detected from geofence entry and exit, not from a "
-        "status flag: every position ping is tested against the site's own radius "
-        "(DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped "
-        "into a visit, and the arrival/departure pair is taken from the stationary core "
-        "of that visit. The approach ring and the inbound ETA are computed live by the "
-        "routing engine at the replay instant. "
-        "This page shows ONE service day, and the As Of card names the exact instant "
-        "being replayed. The day is the busiest delivery day inside the global date "
-        "range; if the selected range contains no deliveries at all, it falls back to "
-        "the busiest day for the region so the page still shows something, and the As "
-        "Of card is what tells you which day and time you are looking at. The replay "
-        "clock steps in 10-minute increments, which is finer than the median time on "
-        "site, so a typical delivery is visible while the vehicle is still there. "
-        "On the map, hollow grey rings are the delivery sites and the smaller solid "
-        "dots are vehicles, coloured only when their state is actionable: green on "
-        "site, red just left, yellow inside the live drive-time approach band. En "
-        "route and idle vehicles stay Snowflake blue so the eye lands on the few "
-        "that matter. Grey is only ever site furniture and blue is only ever a "
-        "vehicle, so the two classes cannot be confused. An optional Site geofence "
-        "layer (off by default) draws each site's true 100-200 m detection radius; "
-        "it is only legible zoomed in, because that is how big those circles "
-        "really are. "
-        "One caveat worth knowing: a site reading EXPECTED is hindsight, not a "
-        "forecast - the visit is in the data because it was detected later the same "
-        "day. In production that state would come from the dispatch plan. READY and "
-        "IN_PROGRESS are direct detections."
-    ),
+    "useCase": {
+        # Presenter/agent block: renders the view's "i" overlay (composed to
+        # markdown by lib/use-case.ts) and feeds the chat agent's solution
+        # catalog. Replaces the former free-text "info" field; the methodology
+        # prose that used to live there is now `method` + `caveats`.
+        "headline": (
+            "Tell the receiving crew exactly when a load is on the floor, so they "
+            "travel to site once and at the right time."
+        ),
+        "businessQuestion": (
+            "Has the delivery actually arrived and left, so the crew that receives "
+            "or installs it can be sent now rather than sent twice?"
+        ),
+        "audience": [
+            "Site or crew scheduler",
+            "Field operations manager",
+            "Delivery operations",
+            "Customer service",
+        ],
+        "industries": [
+            "Beverage and CPG distribution",
+            "Construction and building materials",
+            "Retail replenishment",
+            "Field installation services",
+        ],
+        "talkTrack": [
+            "Point at the As Of card first - it names the exact service day and the "
+            "instant being replayed.",
+            "Read the readiness split: sites READY, IN_PROGRESS, and still EXPECTED.",
+            "Drag the replay clock forward and watch sites flip to READY as vehicles "
+            "depart.",
+            "On the map, call out the colour rules: green on site, red just left, "
+            "yellow inside the live approach band, blue for a vehicle with nothing "
+            "actionable.",
+            "Show the inbound table: which vehicles are inside the approach window, "
+            "with a live drive-time ETA from the routing engine.",
+            "Land the value: one avoided wasted crew trip per site per week is the "
+            "whole business case.",
+        ],
+        "snowflakeCapabilities": [
+            "Geofence arrival and departure detected from raw pings with Dynamic "
+            "Tables, with no per-site status flag required",
+            "Live drive-time ETA and approach band computed by the routing engine "
+            "(OpenRouteService on Snowpark Container Services) at the replay "
+            "instant, never precomputed",
+            "Replayable operational state, so the same demo can be run at any hour "
+            "of a real service day",
+        ],
+        "dataRequired": [
+            "Position pings with timestamp",
+            "Delivery site master with a detection radius per site",
+            "Optional but important in production: the dispatch plan, which is what "
+            "supplies genuinely forward-looking expected arrivals",
+        ],
+        "valueDrivers": [
+            "Stop the wasted second trip when a crew arrives before the load does",
+            "Shorten the gap between delivery and the revenue-earning work that "
+            "follows it",
+            "Give the customer a credible arrival window instead of a day-long one",
+        ],
+        "method": (
+            "Arrival and departure are detected from geofence entry and exit, not from a "
+            "status flag: every position ping is tested against the site's own radius "
+            "(DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped "
+            "into a visit, and the arrival/departure pair is taken from the stationary core "
+            "of that visit. Every site's 15-minute approach ring, and the inbound ETA, are "
+            "computed live by the "
+            "routing engine at the replay instant. The rings are drive-time, not radius, "
+            "so they follow the road network; they are only distinguishable when you zoom "
+            "in, which is why the focus site's ring is drawn more strongly. "
+            "This page shows ONE service day, and the As Of card names the exact instant "
+            "being replayed. The day is the busiest delivery day inside the global date "
+            "range; if the selected range contains no deliveries at all, it falls back to "
+            "the busiest day for the region so the page still shows something, and the As "
+            "Of card is what tells you which day and time you are looking at. The replay "
+            "clock steps in 10-minute increments, which is finer than the median time on "
+            "site, so a typical delivery is visible while the vehicle is still there. "
+            "On the map, hollow grey rings are the delivery sites and the smaller solid "
+            "dots are vehicles, coloured only when their state is actionable: green on "
+            "site, red just left, yellow inside the live drive-time approach band. En "
+            "route and idle vehicles stay Snowflake blue so the eye lands on the few "
+            "that matter. Grey is only ever site furniture and blue is only ever a "
+            "vehicle, so the two classes cannot be confused. An optional Site geofence "
+            "layer (off by default) draws each site's true 100-200 m detection radius; "
+            "it is only legible zoomed in, because that is how big those circles "
+            "really are. "
+        ),
+        "caveats": (
+            "A site reading EXPECTED is hindsight, not a forecast: the visit is in "
+            "the data because it was detected later the same day. In production that "
+            "state would come from the dispatch plan. READY and IN_PROGRESS are "
+            "direct detections. The telemetry itself is synthetic."
+        ),
+    },
     "agentKnowledge": {
         "preferredTool": "query_delivery_sync",
         "keyMetrics": [
@@ -188,7 +274,9 @@ VIEW = {
             "the routing engine, not a straight-line radius. A visit is "
             "only counted once the vehicle was genuinely stationary inside the geofence "
             "for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site "
-            "produces no event. The approach ring is computed outward FROM the site so "
+            "produces no event. Approach rings are drawn for every site on the day "
+            "(the focus site's ring is stronger); they are computed outward FROM each "
+            "site so "
             "it only approximates drive time toward it; the quoted minutes-out always "
             "comes from the live matrix call instead. If the routing engine is suspended "
             "the ring and the inbound ETA RAISE rather than return nothing, so the app "
@@ -312,7 +400,11 @@ VIEW = {
                     "lat": "lat",
                 },
                 "toggles": [
-                    {"key": "show_ring", "label": "Approach ring (15 min)", "default": True},
+                    # All sites' rings, ON by default. Fetched once per service day,
+                    # not per replay step, so leaving it on costs ~4.9s at load and
+                    # nothing thereafter.
+                    {"key": "show_all_rings", "label": "All approach rings (15 min)", "default": True},
+                    {"key": "show_ring", "label": "Focus site ring (15 min)", "default": True},
                     # Default OFF: a 100-200 m circle is only a few pixels at city
                     # zoom, so it is a zoomed-in diagnostic rather than an overview
                     # layer. Off also means no query at all - LayerFetcher skips
@@ -335,17 +427,63 @@ VIEW = {
                     # Dark blue #11567F, NOT the light blue used for vehicles: the
                     # ring used to share the vehicles' blue, which now reads as a
                     # vehicle smeared across the map.
-                    {"label": "Approach ring", "color": [17, 86, 127, 220], "shape": "line"},
+                    {"label": "Approach ring, all sites", "color": RING_ALL_LINE, "shape": "line"},
+                    {"label": "Approach ring, focus site", "color": RING_FOCUS_LINE, "shape": "line"},
                 ],
                 "layers": [
+                    {
+                        # EVERY site's 15-minute ring, drawn faintly and FIRST so
+                        # it sits under the focus ring, the geofences, the sites
+                        # and the vehicles.
+                        #
+                        # Bound to the region and the date range ONLY. Deliberately
+                        # not to :as_of_minute - a drive-time ring does not move as
+                        # the replay clock advances - and deliberately not to
+                        # :selected_site either, which is why the focus site is NOT
+                        # excluded here (P_EXCLUDE_SITE_ID is passed NULL).
+                        #
+                        # Excluding it would be marginally cleaner to look at, but it
+                        # would put :selected_site in the params key and so re-run a
+                        # ~4.9s 118-site ORS call on EVERY site click. Instead the
+                        # focus site's faint ring is simply overdrawn by the strong
+                        # one, which is layered after it: alpha 8 under alpha 30 fill
+                        # and a width-1 alpha-85 outline under a width-2 alpha-220
+                        # one is not perceptible. Net effect: this layer is fetched
+                        # ONCE per page load and then never again - no stall on a
+                        # click, no stall on a playback step.
+                        "type": "geojson",
+                        "id": "approach-rings-all",
+                        "geojsonColumn": "geo",
+                        "visibleWhen": "show_all_rings",
+                        "noFit": True,
+                        "fillColor": RING_ALL_FILL,
+                        "lineColor": RING_ALL_LINE,
+                        "lineWidth": 1,
+                        "pickable": True,
+                        "tooltip": "<b>{site_name}</b><br/>Within {minutes} min drive",
+                        "data": {
+                            "query": (
+                                "SELECT ST_ASGEOJSON(RING_GEOG)::STRING AS geo, "
+                                "SITE_NAME AS site_name, "
+                                "ROUND(RANGE_SECONDS/60.0) AS minutes "
+                                "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RINGS("
+                                ":region, " + PROFILE + ", " + APPROACH + ", "
+                                # NULL::VARCHAR, not a bare NULL: an untyped NULL
+                                # gives Snowflake nothing to resolve the overload
+                                # against and the call fails to compile.
+                                + SD + "::DATE, NULL::VARCHAR))"
+                            ),
+                            "params": dict(CTX),
+                        },
+                    },
                     {
                         "type": "geojson",
                         "id": "approach-ring",
                         "geojsonColumn": "geo",
                         "visibleWhen": "show_ring",
                         "noFit": True,
-                        "fillColor": [17, 86, 127, 30],
-                        "lineColor": [17, 86, 127, 220],
+                        "fillColor": RING_FOCUS_FILL,
+                        "lineColor": RING_FOCUS_LINE,
                         "lineWidth": 2,
                         "pickable": True,
                         "tooltip": "<b>{site_name}</b><br/>Within {minutes} min drive",
