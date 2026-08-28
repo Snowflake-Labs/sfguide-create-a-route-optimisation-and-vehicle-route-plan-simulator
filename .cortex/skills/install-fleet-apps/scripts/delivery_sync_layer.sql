@@ -384,6 +384,113 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------
+-- 5b. LIVE_APPROACH_RINGS - the same 15-minute ring, for EVERY site on the
+--     service day rather than one focus site.
+--
+--     WHY THIS EXISTS AT ALL: CORE.ISOCHRONES is tagged "multi-isochrone" and
+--     accepts an ARRAY of up to 50 locations, but its body is
+--     TO_GEOGRAPHY(resp:features[0]:geometry) - it returns ONLY THE FIRST
+--     feature and silently discards the rest. ORS has already computed and
+--     returned all N of them in RESPONSE:features, each tagged with
+--     properties.group_index giving its position in the locations array. So we
+--     read RESPONSE directly and FLATTEN it ourselves. That is not a new trick
+--     here: the site_impact candidate-isochrone layer in app-views.json does
+--     exactly the same. The shared wrapper is deliberately NOT changed - nine
+--     other call sites depend on it returning exactly one row.
+--
+--     BATCHING: isochrones_maximum_locations = 50, so the sites are split into
+--     three fixed batches of 50. That caps this at 150 sites; the busiest day
+--     in the NJ dataset has 118, so there is headroom. Ordering by visit count
+--     DESC (tie-broken by SITE_ID, so it is deterministic) means that if a day
+--     ever exceeds 150 it degrades predictably to the 150 busiest sites rather
+--     than to an arbitrary subset. Measured ~4.9s and ~958KB for 118 rings.
+--
+--     DEGRADES QUIETLY on a suspended engine, unlike LIVE_APPROACH_RING. Same
+--     reasoning as LIVE_FLEET_STATUS: the single-site ring on the same map is
+--     the designated canary that RAISES, which fires the resume notice and the
+--     region resume, so there is nothing to gain from 118 simultaneous raises.
+--     (Mechanically it would also need a sentinel row, because FLATTEN over a
+--     missing `features` array yields zero rows and an expression-based raise
+--     would never be evaluated.)
+--
+--     P_EXCLUDE_SITE_ID optionally drops one site, for a caller that wants to
+--     draw that site's ring separately. The delivery_sync view passes NULL: it
+--     draws its strong focus ring OVER the faint one instead, because binding
+--     the exclusion to the clicked site would re-run this whole call on every
+--     click for a difference nobody can see.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_APPROACH_RINGS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_SECONDS NUMBER,
+  P_SERVICE_DATE DATE, P_EXCLUDE_SITE_ID VARCHAR)
+RETURNS TABLE (SITE_ID VARCHAR, SITE_NAME VARCHAR, RING_GEOG GEOGRAPHY, RANGE_SECONDS NUMBER)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH ranked AS (
+    SELECT SITE_ID,
+           ANY_VALUE(SITE_NAME) AS SITE_NAME,
+           ST_X(ANY_VALUE(SITE_GEOG)) AS LNG,
+           ST_Y(ANY_VALUE(SITE_GEOG)) AS LAT,
+           ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, SITE_ID) - 1 AS RN
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND SERVICE_DATE = P_SERVICE_DATE
+      AND SITE_GEOG IS NOT NULL
+      AND SITE_ID <> COALESCE(P_EXCLUDE_SITE_ID, '~none~')
+    GROUP BY SITE_ID
+  ),
+  batched AS (
+    SELECT SITE_ID, SITE_NAME, LNG, LAT,
+           FLOOR(RN / 50) AS BATCH_NO,
+           MOD(RN, 50)    AS LOC_IDX
+    FROM ranked
+    WHERE RN < 150
+  ),
+  -- One ORS call per batch. The location arrays are UNCORRELATED scalar
+  -- subqueries; a correlated form ("Unsupported subquery type cannot be
+  -- evaluated") is why this is three explicit branches rather than a lateral
+  -- join over batch numbers.
+  b0 AS (
+    SELECT 0 AS BATCH_NO, RESPONSE FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LNG, LAT)) WITHIN GROUP (ORDER BY LOC_IDX)
+         FROM batched WHERE BATCH_NO = 0),
+      ARRAY_CONSTRUCT(COALESCE(P_SECONDS, 900)), 'time', P_REGION))
+  ),
+  b1 AS (
+    SELECT 1 AS BATCH_NO, RESPONSE FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LNG, LAT)) WITHIN GROUP (ORDER BY LOC_IDX)
+         FROM batched WHERE BATCH_NO = 1),
+      ARRAY_CONSTRUCT(COALESCE(P_SECONDS, 900)), 'time', P_REGION))
+  ),
+  b2 AS (
+    SELECT 2 AS BATCH_NO, RESPONSE FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      P_PROFILE,
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LNG, LAT)) WITHIN GROUP (ORDER BY LOC_IDX)
+         FROM batched WHERE BATCH_NO = 2),
+      ARRAY_CONSTRUCT(COALESCE(P_SECONDS, 900)), 'time', P_REGION))
+  ),
+  responses AS (
+    SELECT * FROM b0 UNION ALL SELECT * FROM b1 UNION ALL SELECT * FROM b2
+  ),
+  -- FLATTEN must live in its own CTE: doing the flatten and the join back to
+  -- `batched` in a single step fails with "invalid identifier 'A.BATCH_NO'",
+  -- because the outer alias is not in scope alongside the LATERAL.
+  features AS (
+    SELECT r.BATCH_NO AS BATCH_NO,
+           f.value:properties:group_index::INT AS LOC_IDX,
+           f.value:geometry AS GEOM
+    FROM responses r, LATERAL FLATTEN(input => r.RESPONSE:features) f
+  )
+  SELECT b.SITE_ID, b.SITE_NAME, TO_GEOGRAPHY(x.GEOM), COALESCE(P_SECONDS, 900)
+  FROM features x
+  JOIN batched b ON b.BATCH_NO = x.BATCH_NO AND b.LOC_IDX = x.LOC_IDX
+  WHERE x.GEOM IS NOT NULL
+$$;
+
+-- ---------------------------------------------------------------------
 -- 6. LIVE_INBOUND_ETA - live road ETA from each in-flight vehicle to the
 --    site it is heading for. This supplies the NUMBER in the notification
 --    ("arriving in ~12 min"); a containment ring can only say in/out.
@@ -722,6 +829,18 @@ AS
 $$
   SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_APPROACH_RING(
     P_REGION, P_PROFILE, P_SITE_ID, P_SECONDS))
+$$;
+
+CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RINGS(
+  P_REGION VARCHAR, P_PROFILE VARCHAR, P_SECONDS NUMBER,
+  P_SERVICE_DATE DATE, P_EXCLUDE_SITE_ID VARCHAR)
+RETURNS TABLE (SITE_ID VARCHAR, SITE_NAME VARCHAR, RING_GEOG GEOGRAPHY, RANGE_SECONDS NUMBER)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_APPROACH_RINGS(
+    P_REGION, P_PROFILE, P_SECONDS, P_SERVICE_DATE, P_EXCLUDE_SITE_ID))
 $$;
 
 CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA(

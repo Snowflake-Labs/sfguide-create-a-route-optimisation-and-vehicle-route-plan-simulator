@@ -52,17 +52,18 @@ VIEW_ID = sys.argv[2] if len(sys.argv) > 2 else "delivery_sync"
 # Mirrors app-shell.tsx date_range handling for the `last_365_days` default
 # declared in app-config.json's contextBar. If that default ever changes, this
 # must change with it or the harness stops reflecting reality.
-# Areas allowed to return zero rows, with the reason. Everything else returning
-# nothing is treated as a defect - an empty panel is the failure mode this
-# harness exists to catch, so exemptions are named explicitly rather than
-# silently tolerated.
+# Areas allowed to return zero rows, keyed by LAYER ID (not positional path - a
+# path index moves whenever a layer is inserted, which would quietly point the
+# exemption at the wrong query). Everything else returning nothing is treated as
+# a defect: an empty panel is the failure mode this harness exists to catch, so
+# exemptions are named explicitly rather than silently tolerated.
 MAY_BE_EMPTY = {
     # One geofence layer per distinct BUFFER_RADIUS_M. The monitored site types
     # yield 200 m (WAREHOUSE) and 100 m (STORE / DESTINATION); the NJ dataset is
     # entirely warehouses, so the 100 m layer has nothing to draw there. The
     # layer is emitted regardless so the view stays correct on a dataset with
     # stores, which means "empty here" is the expected result, not a bug.
-    "areas.map.config.layers[2]": "geofence-100: NJ has no 100 m (STORE/DESTINATION) sites",
+    "geofence-100": "NJ has no 100 m (STORE/DESTINATION) sites",
 }
 
 BINDS_SQL = {
@@ -100,7 +101,12 @@ def collect_queries(view: dict):
         if isinstance(node, dict):
             data = node.get("data")
             if isinstance(data, dict) and isinstance(data.get("query"), str):
-                found.append((path or "root", data["query"], data.get("params") or {}))
+                # Carry the layer/area `id` when present. Exemptions and reports key
+                # off this rather than the positional path, because inserting one
+                # layer renumbers every path after it and would silently move an
+                # exemption onto the wrong query.
+                found.append((path or "root", data["query"], data.get("params") or {},
+                              node.get("id")))
             for key, val in node.items():
                 walk(val, ("%s.%s" % (path, key)) if path else key)
         elif isinstance(node, list):
@@ -138,7 +144,10 @@ def main() -> int:
         enforce = region == "UsNewJersey"
         print("\n=== region %s %s ==="
               % (region, "(enforced non-empty)" if enforce else "(reported only)"))
-        for path, query, params in queries:
+        for path, query, params, layer_id in queries:
+            # Report by layer id when there is one - "geofence-100" says what broke;
+            # "areas.map.config.layers[3]" makes you go and count brackets.
+            label = layer_id or path
             sql = query
             for name, expr in BINDS_SQL.items():
                 sql = sql.replace(name, expr)
@@ -148,41 +157,42 @@ def main() -> int:
             # a defect worth failing on rather than silently passing.
             leftover = find_binds(sql)
             if leftover:
-                print("  UNMODELLED BIND %-28s %s" % (path, leftover[:3]))
-                failures.append((region, path, "unmodelled bind %s" % leftover[:3]))
+                print("  UNMODELLED BIND %-28s %s" % (label, leftover[:3]))
+                failures.append((region, label, "unmodelled bind %s" % leftover[:3]))
                 continue
 
             rows, err = run_sql("SELECT COUNT(*) AS N FROM (\n%s\n);"
                                 % sql.rstrip().rstrip(";"))
             if err:
-                print("  SQL ERROR       %-28s %s" % (path, err))
-                failures.append((region, path, err))
+                print("  SQL ERROR       %-28s %s" % (label, err))
+                failures.append((region, label, err))
                 continue
             n = rows[0]["N"] if rows else 0
-            why_empty = MAY_BE_EMPTY.get(path)
+            why_empty = MAY_BE_EMPTY.get(layer_id)
             if n == 0 and why_empty:
                 # Legitimately empty on this dataset - reported, not failed.
-                print("  BY-DESIGN %-24s rows=0  (%s)" % (path, why_empty))
+                print("  BY-DESIGN %-24s rows=0  (%s)" % (label, why_empty))
                 continue
             flag = "OK   " if (n > 0 or not enforce) else "EMPTY"
-            print("  %s %-28s rows=%s" % (flag, path, n))
+            print("  %s %-28s rows=%s" % (flag, label, n))
             if enforce and n == 0:
-                failures.append((region, path, "returned 0 rows"))
+                failures.append((region, label, "returned 0 rows"))
 
     # Declared-bind audit: every :bind the SQL references must be declared in
     # that area's data.params, else the renderer never supplies it at runtime.
     print("\n=== declared-bind audit ===")
     ctx_supplied = {"region", "vehicle_type", "date_range_start",
                     "date_range_end", "dataset_id"}
-    for path, query, params in queries:
+    for path, query, params, layer_id in queries:
+        label = layer_id or path
         refs = set(find_binds(query))
         missing = sorted(r for r in refs
                          if r not in params and r not in ctx_supplied)
         if missing:
-            print("  MISSING %-28s %s" % (path, missing))
-            failures.append(("*", path, "undeclared binds %s" % missing))
+            print("  MISSING %-28s %s" % (label, missing))
+            failures.append(("*", label, "undeclared binds %s" % missing))
         else:
-            print("  OK      %-28s refs=%d" % (path, len(refs)))
+            print("  OK      %-28s refs=%d" % (label, len(refs)))
 
     print()
     if failures:
