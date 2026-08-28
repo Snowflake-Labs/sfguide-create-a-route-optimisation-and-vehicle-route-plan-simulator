@@ -20,6 +20,37 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Route Optimization Simulator',
     description: 'Plan multi-stop vehicle routes from a depot and view them on the map.',
     category: 'Optimization',
+    useCase: {
+      headline: 'Turn a depot and a pile of stops into a solved, drivable multi-vehicle route plan in one click.',
+      businessQuestion: 'What is the cheapest set of routes that covers all of today\'s stops with the vehicles we actually have?',
+      audience: ['Transport planner', 'Dispatcher', 'Operations manager', 'Supply chain lead'],
+      industries: ['Distribution', 'Last-mile delivery', 'Field service', 'Waste and municipal fleets'],
+      talkTrack: [
+        'Set the depot, the number of vehicles and the stop count, then solve.',
+        'Show the solved tours on the map, one colour per vehicle, following real roads.',
+        'Read the per-route distance and duration, and point out that the stop order was chosen by the solver, not by us.',
+        'Change the vehicle count and re-solve, so the trade-off between fleet size and distance is visible live.',
+        'Make the platform point: the optimizer runs inside Snowflake, so the plan is a query result rather than an export to a planning tool.',
+      ],
+      snowflakeCapabilities: [
+        'Vehicle routing solved by the VROOM optimizer running on Snowpark Container Services, called from SQL',
+        'Road distances and geometry from OpenRouteService on the same platform, with no third-party routing API and no data leaving the account',
+        'Optimization as a governed, audited tool the Cortex agent can also invoke',
+      ],
+      dataRequired: [
+        'Depot location',
+        'Stop or order locations for the planning horizon',
+        'Vehicle count and capacity',
+        'A provisioned routing region covering the stops',
+      ],
+      valueDrivers: [
+        'Cut planned distance and vehicle count against a manually built plan',
+        'Replan in seconds when the order book changes',
+        'Keep planning next to the data instead of exporting to a separate optimizer',
+      ],
+      method: 'Stops and vehicles are assembled into a routing problem and solved live by the optimizer against the region road graph. Distances and the drawn geometry come from the routing engine, not from straight lines.',
+      caveats: 'A demonstration of the solver rather than a production planning system: it does not model time windows negotiated with customers, driver hours rules, or multi-day horizons. All stops must sit inside one provisioned routing region.',
+    },
     component: lazy(() =>
       import('@/components/views/areas/vrp-simulator').then((mod) => ({
         default: mod.VrpSimulatorView,
@@ -32,6 +63,39 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Emergency Response',
     description: 'Plan a capacitated multi-depot evacuation for the active region: hazard-zone risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.',
     category: 'Optimization',
+    useCase: {
+      headline: 'Plan the evacuation of people who cannot evacuate themselves: hazard exposure, who is inside the risk zone, and a solved multi-depot van plan.',
+      businessQuestion: 'If this hazard escalates, who do we collect first, with which vehicles, and how many trips does it actually take?',
+      audience: ['Emergency management director', 'Public health and care operations', 'Transport coordinator', 'Resilience planner'],
+      industries: ['Public sector and emergency management', 'Healthcare and paratransit', 'Utilities', 'Insurance and reinsurance'],
+      talkTrack: [
+        'Step 1: colour the region by hazard risk and pick wildfire or flood, so exposure is visible before anyone talks about vehicles.',
+        'Step 2: seed care centers and the people who depend on them, sampled inside the live drive-time reach of those centers.',
+        'Step 3: set vehicles, seats and the maximum trips per vehicle - the real-world constraint that makes this hard.',
+        'Step 4: solve, then walk the trip list grouped by care center and step through the numbered stops on the map.',
+        'Raise the risk threshold and re-solve to show how the plan changes as the emergency escalates.',
+        'Call out the overflow warning: it names exactly how many people cannot be seated with the fleet on hand, which is the resourcing ask.',
+      ],
+      snowflakeCapabilities: [
+        'Capacitated multi-depot, multi-trip routing solved live on Snowpark Container Services',
+        'Drive-time isochrones used to seed a realistic dependent population rather than a random scatter',
+        'Procedural H3 hazard modelling that works in any region, with no licensed hazard dataset required',
+        'A Cortex agent that answers questions about the solved plan, including specific addresses and per-center rosters',
+      ],
+      dataRequired: [
+        'Care center, shelter or muster point locations',
+        'The dependent population to collect (addresses; in production a client or patient register)',
+        'Vehicle count, seat capacity and a realistic trip cap',
+        'A provisioned routing region covering the affected area',
+      ],
+      valueDrivers: [
+        'Know before the event whether the fleet on hand can actually clear the at-risk population',
+        'Turn an evacuation annex from a document into an executable, testable plan',
+        'Quantify the resourcing gap in vehicles and trips, not in adjectives',
+      ],
+      method: 'Hazard risk is a procedural H3 hex model (wildfire, flood and a composite), so it is granular and works worldwide without a licensed dataset. Participants are sampled inside the union of the care centers\' live drive-time isochrones. The plan is a capacitated multi-depot vehicle routing problem where each van is expanded into up to the configured number of round trips, solved live over people at or above the selected risk band.',
+      caveats: 'The hazard model is procedural, not an official hazard map, and the participants are synthetic addresses - in production both would be replaced by the customer\'s authoritative sources. The plan is computed in this view and is not persisted, so re-seeding produces a different set. Solving requires the region routing and optimizer services to be running.',
+    },
     agentKnowledge: {
       keyMetrics: [
         'evacuees and evacuated (assigned) counts',
@@ -70,6 +134,39 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Backload Matching',
     description: 'Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.',
     category: 'Optimization',
+    useCase: {
+      headline: 'Fill the empty return leg: match idle vehicles to waiting internal loads first, then to external freight offers, and price the result.',
+      businessQuestion: 'Our vehicles run back empty. Which waiting loads could they carry instead, and what is that worth?',
+      audience: ['Dispatcher', 'Head of transport', 'Freight buyer', 'CFO'],
+      industries: ['Road freight and haulage', 'Trailer and container operators', 'Retail and grocery distribution', 'Bulk and industrial transport'],
+      talkTrack: [
+        'Frame the problem in one line: an empty return leg is fuel, driver hours and tyres spent on no revenue.',
+        'Set the sliders - how many vehicles, how many internal loads, how many external offers, and how much detour is acceptable.',
+        'Solve, then read the headline: trips in the plan, internal versus external matches, net benefit and deadhead avoided.',
+        'Open an assignment card and walk its tour on the map: the dashed empty legs, then the numbered loaded stops.',
+        'Stress internal-first: filling your own waiting load beats buying an external one, and the solver is told so.',
+        'Turn on Hide unprofitable to show the honest subset a dispatcher would actually accept.',
+      ],
+      snowflakeCapabilities: [
+        'Live vehicle routing solved by the VROOM optimizer on Snowpark Container Services, called from the app in one round trip',
+        'Real road distances from OpenRouteService used for both the plan and the deadhead baseline, so the saving is not a straight-line estimate',
+        'Internal loads and external marketplace offers evaluated together in one governed model, without sending either to a third-party platform',
+      ],
+      dataRequired: [
+        'Idle vehicle locations with availability windows',
+        'Waiting internal loads (origin, destination, time window, weight)',
+        'External freight offers, if the customer subscribes to any exchange',
+        'Rate or revenue per load and a cost per empty km',
+        'A provisioned routing region covering the lanes',
+      ],
+      valueDrivers: [
+        'Convert empty running into revenue-earning or cost-avoiding movement',
+        'Fill your own waiting loads before paying an exchange for someone else\'s',
+        'Give the dispatcher a priced, ranked recommendation instead of a phone-around',
+      ],
+      method: 'Idle vehicles, internal loads and external offers are assembled into one routing problem and solved live. Empty km covers both deadhead legs (idle location to first pickup, and last stop to tour end). Deadhead avoided is the vehicle\'s reposition baseline, the real road distance from its idle location to its end point, minus the empty km actually driven, so it can never exceed that baseline.',
+      caveats: 'Vehicles, loads and offers are synthetic, and the economics use the rates configured on screen. Nothing is computed until Solve is pressed, and the plan is not written back to a TMS - it is a recommendation. Requires the region routing and optimizer services to be running.',
+    },
     agentKnowledge: {
       keyMetrics: [
         'assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count, empty_km_total, deadhead_avoided_km_total',
@@ -103,6 +200,38 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     label: 'Backload Proposals',
     description: 'Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.',
     category: 'Optimization',
+    useCase: {
+      headline: 'Four backhaul strategies run side by side and fused into one graded recommendation per vehicle, with the reasons a load was rejected shown on the card.',
+      businessQuestion: 'Which backhaul should this vehicle take, how confident are we, and why was the obvious-looking load actually ineligible?',
+      audience: ['Head of transport', 'Dispatch supervisor', 'Network optimization lead', 'Freight buyer'],
+      industries: ['Road freight and haulage', 'Trailer and container operators', 'Retail and grocery distribution', 'Third-party logistics'],
+      talkTrack: [
+        'Explain why there are four strategies: quick scan, per-load routing, fleet-wide one-to-one, and profit-max all answer the same question differently.',
+        'Run ensemble mode and read the grade per vehicle plus how many of the four strategies agree - agreement is the confidence signal.',
+        'Open a proposal card and walk the constraint chips: distance, pickup time, horizon, capacity, hazmat.',
+        'Pick a rejected pairing and show exactly which constraint failed, which is the question a dispatcher always asks.',
+        'Read the Cortex rationale as the plain-language justification a planner could forward.',
+        'Switch to a single strategy and show the recommendation change, to make the point that ensemble is doing real work.',
+      ],
+      snowflakeCapabilities: [
+        'Several optimizer runs orchestrated against the same live routing engine on Snowpark Container Services',
+        'Constraint eligibility evaluated in SQL over the neutral contract views, so every pass or fail is explainable',
+        'Cortex generating the recommendation rationale next to the data, with no external LLM call',
+      ],
+      dataRequired: [
+        'Idle vehicle locations with availability and capability (capacity, hazmat)',
+        'Candidate loads and offers with time windows and weight',
+        'Revenue per load and cost per empty km',
+        'A provisioned routing region covering the lanes',
+      ],
+      valueDrivers: [
+        'Higher-quality backhaul decisions than any single heuristic gives',
+        'Explainable rejections, which is what earns dispatcher trust in an optimizer',
+        'A defensible margin number per proposal rather than a gut call',
+      ],
+      method: 'Quick scan is a great-circle nearest-load pass with no solve. Per-load routing, fleet one-to-one and profit-max each call the routing engine once. Ensemble mode fuses all four with configurable ranking weights into a graded proposal per vehicle, and the constraint chips come from the scored candidate view.',
+      caveats: 'Synthetic vehicles and loads. Everything is null until Run is pressed, and Accept, Reject and Flag are session-only rather than persisted. The routing strategies require the region routing and optimizer services to be running.',
+    },
     agentKnowledge: {
       keyMetrics: [
         'vehicles_matched, internal_matched, total_empty_km, total_margin_usd (revenue minus empty-leg cost across the plan), avg_composite (0-100 ensemble score)',
@@ -137,6 +266,30 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     category: 'Admin',
     tags: ['ops', 'admin'],
     roles: ['ops'],
+    useCase: {
+      headline: 'Operator controls for the platform behind the demos: service lifecycle, the active region, and health at a glance.',
+      businessQuestion: 'Is the routing platform healthy, which region is active, and what do I resume before a demo or suspend after one?',
+      audience: ['Solution Engineer', 'Platform operator', 'Snowflake account team'],
+      industries: ['Internal enablement'],
+      talkTrack: [
+        'Before presenting, check service health here so a suspended region is never discovered mid-demo.',
+        'Resume the region you are about to show, and give the graph time to load before opening a routing view.',
+        'Confirm the active region matches the dataset the demo expects.',
+        'After the session, suspend so the environment stops accruing cost.',
+      ],
+      snowflakeCapabilities: [
+        'Container service lifecycle driven from the app through audited operator verbs, with no console access needed',
+        'Role-scoped controls: this page is gated to the operator role and its tool bundle is separate from the consumer one',
+        'Cost control by suspending compute the moment it is idle',
+      ],
+      dataRequired: ['No customer data - this operates the deployment itself'],
+      valueDrivers: [
+        'A demo that starts warm instead of failing on a cold service',
+        'Idle compute suspended deliberately rather than forgotten',
+      ],
+      method: 'Actions call the operator verb bundle, which is a separate role-scoped tool surface from the one the consumer agent uses. Every call flows through the audited envelope.',
+      caveats: 'Operator-facing, not a customer demo. Resuming a large region loads its road graph and is not instant, so resume well before you need it.',
+    },
     component: lazy(() =>
       import('@/components/views/areas/ops-console').then((mod) => ({
         default: mod.OpsConsoleView,

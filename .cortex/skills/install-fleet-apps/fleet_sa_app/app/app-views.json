@@ -3,6 +3,45 @@
     "label": "Live {{labels.entity}} Operations",
     "category": "Core",
     "description": "Where is every {{labels.entity}} now - live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
+    "useCase": {
+      "headline": "One live picture of the whole fleet: where every {{labels.entity}} is right now, what state it is in, and whether the fleet is earning or idling.",
+      "businessQuestion": "Where is every {{labels.entity}} right now, and how much of our movement is productive rather than empty?",
+      "audience": [
+        "Fleet operations manager",
+        "Dispatch supervisor",
+        "COO"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Field service",
+        "Last-mile delivery",
+        "Public sector fleets"
+      ],
+      "talkTrack": [
+        "Open on the KPI row: active {{labels.entity_plural}}, movement utilization, empty miles percentage and average speed for the current region and date scope.",
+        "Call out empty miles percentage as the money metric - it is the share of distance driven with no load.",
+        "Click a row in the {{labels.entity}} list to select one and show the map recentering on it.",
+        "Read the detail panel for that {{labels.entity}}: current state, last ping and recent movement.",
+        "Ask the assistant on the left how many {{labels.entity_plural}} are moving right now, and show it answering from the same numbers that are on screen."
+      ],
+      "snowflakeCapabilities": [
+        "Fleet-scale GPS telemetry queried directly in Snowflake, with no extract and no separate geospatial database",
+        "Native GEOGRAPHY types and H3 spatial functions driving the map straight from SQL",
+        "One semantic view (SV_FLEET_OPS) serving both the dashboard and the Cortex agent, so the screen and the chat cannot disagree"
+      ],
+      "dataRequired": [
+        "Vehicle or asset master (id, type, home base)",
+        "Position pings with timestamp and location",
+        "Optional: trip or job records, to attribute loaded versus empty distance"
+      ],
+      "valueDrivers": [
+        "Cut empty running, which is cost with no revenue attached",
+        "Replace a morning roll-call spreadsheet with a live shared picture",
+        "Give dispatch one screen instead of one portal per telematics vendor"
+      ],
+      "method": "Positions are raw GPS pings. Utilization is the share of pings in a MOVING state, so it is a movement measure rather than a duty-cycle or paid-hours measure. Empty miles come from leg classification (laden versus empty), not from an assumption.",
+      "caveats": "The telemetry is synthetic, generated for the active region and vehicle type. Because utilization is ping-based, do not quote it as a contractual utilization figure."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -602,6 +641,48 @@
     "label": "{{labels.journey}} Inspector",
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
+    "useCase": {
+      "headline": "Reconstruct any single {{labels.journey}} end to end: the road it actually took, every stop, speed over time, and how far it drifted from plan.",
+      "businessQuestion": "What actually happened on this {{labels.journey}}, and why did it take longer or cost more than planned?",
+      "audience": [
+        "Dispatch manager",
+        "Operations analyst",
+        "Claims and dispute handler",
+        "Safety lead"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Last-mile delivery",
+        "Field service",
+        "Insurance telematics"
+      ],
+      "talkTrack": [
+        "Pick a {{labels.entity}} in the selector, then click a {{labels.journey}} in the list.",
+        "Show the actual road-following path on the map alongside the planned route.",
+        "Read the KPI row: distance versus planned, duration, average speed, stops, total dwell, deviation percentage and safety events.",
+        "Scrub the replay slider to walk the {{labels.journey}} forward in time.",
+        "Use the speed chart to find where time was lost, then click the stop that explains it.",
+        "Ask the assistant how far this {{labels.journey}} deviated from plan."
+      ],
+      "snowflakeCapabilities": [
+        "Breadcrumb reconstruction from raw pings into a road-following path stored as GEOGRAPHY",
+        "Per-journey planned versus actual comparison served from a semantic view the agent can query",
+        "Drill from fleet aggregate to one journey with no extract and no second tool"
+      ],
+      "dataRequired": [
+        "Position pings with timestamp",
+        "Trip or journey records with start and end",
+        "Optional: the planned route or stop sequence to compare against",
+        "Optional: safety or exception events"
+      ],
+      "valueDrivers": [
+        "Settle a customer or driver dispute in minutes with evidence instead of assertion",
+        "Find the recurring lanes and stops where time is actually lost",
+        "Turn deviation from an anecdote into a measured percentage"
+      ],
+      "method": "The path is reconstructed from ordered position pings, so it follows the road rather than jumping in straight lines between stops. Deviation compares the actual path against the planned route; a {{labels.journey}} with no planned route is excluded rather than counted as zero deviation.",
+      "caveats": "Synthetic telemetry for the active region. Stops and dwell are derived from sessionized pings, so a stop shorter than the detection threshold does not appear at all."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -1386,6 +1467,46 @@
     "label": "{{labels.operator}} Performance",
     "category": "Core",
     "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
+    "useCase": {
+      "headline": "League table of {{labels.operator_plural}}: who covers the most distance, who deviates from plan, and who accumulates the most risk events.",
+      "businessQuestion": "Which {{labels.operator_plural}} need coaching, and which ones are our benchmark?",
+      "audience": [
+        "Fleet safety manager",
+        "Depot or branch manager",
+        "Training lead",
+        "Insurance and risk"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Field service",
+        "Passenger transport",
+        "Public sector fleets"
+      ],
+      "talkTrack": [
+        "Start at the KPI row: {{labels.operator}} count, total {{labels.journey_plural}}, average distance, deviated {{labels.journey_plural}} and safety events.",
+        "Show the leaderboard sorted by safety events descending and frame it as the coaching list.",
+        "Use the factor chart to name which kind of event dominates.",
+        "Click an {{labels.operator}} row and show their activity on the map.",
+        "Contrast the top and the bottom of the table, and land it as a coaching conversation rather than a ranking for its own sake."
+      ],
+      "snowflakeCapabilities": [
+        "Per-operator aggregation over trip and event data, with masking and row access policies available on the same tables",
+        "Semantic view (SV_FLEET_OPS) so the agent answers distance and trip-count rankings without new SQL",
+        "Telemetry-derived events combined with operational trip data in a single query"
+      ],
+      "dataRequired": [
+        "Operator master, assigned to vehicles or trips",
+        "Trip records with distance and duration",
+        "Safety or exception events attributed to an operator or trip"
+      ],
+      "valueDrivers": [
+        "Target coaching where it changes claims and fuel cost, instead of training everyone equally",
+        "Evidence for insurance and risk negotiations",
+        "Recognise the good operators on the same evidence used to correct the others"
+      ],
+      "method": "Trip counts, distance and speed come from the trip records. Per-operator safety-event counts come from the event data and are not part of the semantic view, so they are event-derived rather than modelled metrics. The leaderboard is sorted by safety events descending.",
+      "caveats": "Synthetic operators and events. In a real deployment, whether per-person ranking is acceptable and who may see it is a decision for the customer and their works council; the platform supports masking and row access policies for exactly that reason."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -1543,6 +1664,45 @@
     "label": "Space-Time Density",
     "category": "Core",
     "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
+    "useCase": {
+      "headline": "Where and when activity concentrates: an H3 hexagon heatmap you can animate hour by hour.",
+      "businessQuestion": "Where does our activity cluster, and at what times of day, so depots, shifts and capacity can be placed against real demand?",
+      "audience": [
+        "Network planner",
+        "Operations strategy",
+        "Depot siting",
+        "Demand planner"
+      ],
+      "industries": [
+        "Last-mile delivery",
+        "Ride hail and mobility",
+        "Field service",
+        "Retail logistics"
+      ],
+      "talkTrack": [
+        "Choose the metric: time spent, or distinct {{labels.entity_plural}} per hexagon.",
+        "Press play on the hour slider and let the day sweep, so the peak windows become obvious.",
+        "Turn off aggregate-all to compare a single hour against the whole day.",
+        "Read the top places and top {{labels.operator_plural}} tables under the map.",
+        "Land the point: this is where capacity should be, not where it happens to be today."
+      ],
+      "snowflakeCapabilities": [
+        "Native H3 aggregation (H3_POINT_TO_CELL_STRING) over millions of pings, with no PostGIS and no tile server",
+        "Time-sliced spatial aggregation computed on demand rather than pre-baked per hour",
+        "GEOGRAPHY-first schema feeding deck.gl directly from SQL"
+      ],
+      "dataRequired": [
+        "Position pings with timestamp and location",
+        "Optional: place or site master, to label the top locations"
+      ],
+      "valueDrivers": [
+        "Site depots, lockers and charge points against observed demand rather than intuition",
+        "Shape shift patterns around the hours that actually carry the load",
+        "Spot congestion and dead zones in the network you already run"
+      ],
+      "method": "Pings are bucketed into H3 cells and by hour of day. The metric selector switches between time spent and distinct {{labels.entity_plural}} per cell; the hour slider filters to one hour and aggregate-all sums the whole day.",
+      "caveats": "Synthetic telemetry, so the clusters reflect the generator's route pool rather than a real market. Time spent per cell is derived from ping cadence, so an area sampled more often reads hotter."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -1703,6 +1863,46 @@
     "label": "Plan-vs-Actual Performance",
     "category": "Core",
     "description": "Which {{labels.journey_plural}} diverge from plan, where, and by how much (merges Route Deviation and Route Comparison).",
+    "useCase": {
+      "headline": "Which {{labels.journey_plural}} left the plan, where they left it, and how much extra distance that cost.",
+      "businessQuestion": "How closely does execution match the plan we priced, and where is the margin leaking?",
+      "audience": [
+        "Transport planner",
+        "Operations manager",
+        "Cost controller",
+        "Customer service lead"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Distribution",
+        "Field service",
+        "Waste and municipal fleets"
+      ],
+      "talkTrack": [
+        "Read the deviation rate and the excess distance versus plan on the KPI row.",
+        "Show the planned route against the actual path on the map for a deviating {{labels.journey}}.",
+        "Click the worst offenders in the table and look for a pattern by lane, {{labels.operator}} or time of day.",
+        "Convert excess distance into fuel and hours so it becomes a cost conversation.",
+        "Hand off to {{labels.journey}} Inspector for the full reconstruction of one case."
+      ],
+      "snowflakeCapabilities": [
+        "Planned versus actual geometry compared in SQL with native GEOGRAPHY functions",
+        "Dedicated semantic view (SV_ROUTE_DEVIATION) so the agent can rank deviations directly",
+        "Deviation measured against the stored plan rather than re-simulated inside a BI tool"
+      ],
+      "dataRequired": [
+        "Planned routes or stop sequences per {{labels.journey}}",
+        "Actual position pings or completed journey geometry",
+        "Optional: cost per km, to price the excess"
+      ],
+      "valueDrivers": [
+        "Recover margin lost to unplanned kilometres",
+        "Separate bad planning from bad execution before blaming either",
+        "Improve the plan using evidence of what crews actually do"
+      ],
+      "method": "Deviation compares the actual path against the planned route for the same {{labels.journey}}. A {{labels.journey}} with no planned route is excluded rather than counted as zero deviation, so the rate is measured over plannable work only.",
+      "caveats": "Synthetic plans and telemetry. A legitimate diversion (roadworks, a customer request) looks identical to an unnecessary one: the view finds the candidates, the operator supplies the reason."
+    },
     "agentKnowledge": {
       "preferredTool": "query_route_deviation",
       "keyMetrics": [
@@ -1866,6 +2066,46 @@
     "label": "Dispatch Execution Board",
     "category": "Core",
     "description": "Manage scheduled {{labels.work_item}}s against plan - jobs list, resource board, and planned-vs-actual by day.",
+    "useCase": {
+      "headline": "Today's committed work against what is actually happening: the job list, the resource board, and adherence by day.",
+      "businessQuestion": "Will we complete today's committed work, and which jobs are already late or missed?",
+      "audience": [
+        "Dispatcher",
+        "Depot manager",
+        "Customer service lead",
+        "Service delivery manager"
+      ],
+      "industries": [
+        "Field service",
+        "Distribution",
+        "Utilities",
+        "Facilities and maintenance"
+      ],
+      "talkTrack": [
+        "Read the board header: scheduled {{labels.work_item}}s, {{labels.entity_plural}} committed, {{labels.operator_plural}} assigned and destination sites.",
+        "Filter to the exceptions - missed, late and delayed - and treat that as the call list.",
+        "Click a job to put it on the map with its assigned {{labels.entity}}.",
+        "Use the resource chart to show where load is uneven across {{labels.entity_plural}}.",
+        "Show planned versus actual by day to prove whether this is a bad day or a bad pattern."
+      ],
+      "snowflakeCapabilities": [
+        "Operational work items and telemetry joined in one place, with no nightly reconciliation job",
+        "Dynamic Tables keeping the board fresh as new pings and status changes land",
+        "One dashboard and one agent over the same neutral contract views"
+      ],
+      "dataRequired": [
+        "Scheduled jobs or {{labels.work_item}}s with a time window, site and assignment",
+        "Vehicle and operator master",
+        "Position pings or completion events, to derive actual status"
+      ],
+      "valueDrivers": [
+        "Catch a missed commitment while it can still be recovered, not in tomorrow's report",
+        "Rebalance work across {{labels.entity_plural}} before the day breaks",
+        "Give customer service the same truth dispatch is looking at"
+      ],
+      "method": "Scheduled {{labels.work_item}}s are compared against detected activity. Status (missed, late, delayed) and plan adherence are derived on this page rather than modelled in a semantic view, so the assistant answers those from the on-screen values.",
+      "caveats": "Synthetic schedule and telemetry. Because status comes from detection, a job completed outside the geofence or with no pings can read as missed."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -2105,6 +2345,46 @@
     "label": "Safety / Risk Scorecard",
     "category": "Core",
     "description": "Operational risk by severity - click a KPI tile to filter, review the event queue, and map hot spots.",
+    "useCase": {
+      "headline": "Operational risk on one screen: event volume by severity, the behaviour mix behind it, and where the hot spots are.",
+      "businessQuestion": "Where is our risk concentrated, and what would we fix first to reduce claims?",
+      "audience": [
+        "Safety manager",
+        "Risk and insurance",
+        "Compliance officer",
+        "Operations director"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Passenger transport",
+        "Utilities",
+        "Public sector fleets"
+      ],
+      "talkTrack": [
+        "Start with the severity tiles and click High to filter the whole page to high-severity events.",
+        "Read the event-type mix to name the behaviour worth targeting.",
+        "Work the event queue as a triage list.",
+        "Show the map hot spots, and point out that some are infrastructure rather than driver behaviour.",
+        "Close on the link to {{labels.operator}} Performance for the coaching list."
+      ],
+      "snowflakeCapabilities": [
+        "Event detection over raw telemetry inside Snowflake, with no separate rules engine to run",
+        "Click-to-filter analytics where the KPI tile is itself the filter control",
+        "Governed access to sensitive behaviour data using masking and row access policies on the same tables"
+      ],
+      "dataRequired": [
+        "Safety or exception events with severity, type, time and location",
+        "Vehicle and operator master, to attribute events",
+        "Optional: claims data, to correlate events with actual loss"
+      ],
+      "valueDrivers": [
+        "Reduce claim frequency by targeting the few behaviours and locations that drive it",
+        "Evidence for a premium negotiation",
+        "Separate driver-behaviour risk from road and site risk, so the fix matches the cause"
+      ],
+      "method": "Events carry a severity and a type and are aggregated by both. The KPI tiles double as the filter, so the queue, chart and map always reflect the selected severity.",
+      "caveats": "Synthetic events, and they are not modelled in any semantic view. The assistant therefore answers from the on-screen values rather than recomputing them, and will not invent per-operator trends or event types."
+    },
     "agentKnowledge": {
       "keyMetrics": [
         "total safety / risk events",
@@ -2340,6 +2620,46 @@
     "label": "Dwell Overview",
     "category": "Core",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
+    "useCase": {
+      "headline": "How much of the day the fleet spends standing still, how that is trending, and how often it breaches the dwell SLA.",
+      "businessQuestion": "How much paid time are we losing to standing still, and are we meeting our turnaround commitments?",
+      "audience": [
+        "Operations manager",
+        "Supply chain lead",
+        "Site or yard manager",
+        "Carrier performance manager"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Manufacturing inbound",
+        "Retail distribution",
+        "Ports and terminals"
+      ],
+      "talkTrack": [
+        "Read the four headline numbers: dwell sessions, average dwell minutes, SLA compliance rate and active {{labels.operator_plural}}.",
+        "Show the trend chart and say plainly whether dwell is getting better or worse.",
+        "Use the facilities chart to name the worst offenders.",
+        "Frame the cost: dwell is paid time with no movement attached to it.",
+        "Hand off to Facility Utilization for the site view, and to SLA Alerts for the breach queue."
+      ],
+      "snowflakeCapabilities": [
+        "Sessionization of raw pings into dwell events using Dynamic Tables that refresh incrementally",
+        "SLA thresholds held in configuration (DIM_VEHICLE_DWELL_SLA) rather than hardcoded in a report",
+        "One semantic view (SV_DWELL_ANALYTICS) answering both the dashboard and the agent"
+      ],
+      "dataRequired": [
+        "Position pings with timestamp",
+        "Site or facility master with location and detection radius",
+        "A dwell SLA threshold per vehicle class or site type"
+      ],
+      "valueDrivers": [
+        "Recover paid hours lost at the dock or the kerb",
+        "Hold sites and carriers to a measured turnaround commitment",
+        "Free capacity without buying more {{labels.entity_plural}}"
+      ],
+      "method": "Dwell sessions are sessionized from position pings: consecutive stationary pings inside a site radius are grouped into one session. SLA compliance is the fraction of sessions at or under the configured threshold, 30 minutes by default.",
+      "caveats": "Synthetic telemetry. A stop shorter than the detection threshold is not a session at all, so very brief stops are invisible by design. This view has no map; use SLA Alerts for dwell geography."
+    },
     "agentKnowledge": {
       "preferredTool": "query_dwell",
       "keyMetrics": [
@@ -2466,6 +2786,45 @@
     "label": "Facility Utilization",
     "category": "Core",
     "description": "Dwell load by facility and facility type - where vehicles spend the most time.",
+    "useCase": {
+      "headline": "Which sites and site types absorb the fleet's standing time, ranked by load.",
+      "businessQuestion": "Which facilities cost us the most turnaround time, and is the problem one site or a whole class of sites?",
+      "audience": [
+        "Network and yard operations",
+        "Site manager",
+        "Supplier or carrier manager",
+        "Procurement"
+      ],
+      "industries": [
+        "Retail distribution",
+        "Manufacturing inbound",
+        "Ports and terminals",
+        "Wholesale"
+      ],
+      "talkTrack": [
+        "Read the header: distinct facilities, total visits, average dwell and the worst single session.",
+        "Rank by facility and name the top offender.",
+        "Switch to the facility-type view to show whether it is one bad site or a pattern across a type.",
+        "Turn the worst site into a specific ask: more doors, different appointment windows, or a different arrival profile."
+      ],
+      "snowflakeCapabilities": [
+        "Facility-level aggregation over sessionized dwell, with no pre-aggregated cube to maintain",
+        "Site master and telemetry joined through the neutral contract, so a customer's own site hierarchy swaps in without touching the dashboard",
+        "Semantic view answering facility and facility-type rankings for the agent"
+      ],
+      "dataRequired": [
+        "Site or facility master with type and location",
+        "Dwell sessions, or the pings needed to derive them",
+        "Optional: appointment or booking data, to compare dwell against the booked slot"
+      ],
+      "valueDrivers": [
+        "Fix the small number of sites that cause most of the delay",
+        "Evidence for a commercial conversation with a supplier or a landlord",
+        "Plan dock and yard capacity against measured load"
+      ],
+      "method": "Dwell sessions are attributed to the site whose detection radius contains the stop, then aggregated by site and by site type.",
+      "caveats": "Synthetic telemetry and site master. This view shows utilization only and has no map; use SLA Alerts to see breaching sites geographically."
+    },
     "agentKnowledge": {
       "preferredTool": "query_dwell",
       "keyMetrics": [
@@ -2578,6 +2937,45 @@
     "label": "SLA Alerts",
     "category": "Core",
     "description": "Dwell sessions that breached SLA thresholds, by severity.",
+    "useCase": {
+      "headline": "The breach queue: every dwell session that went over its SLA, by severity, with the site on a map.",
+      "businessQuestion": "Which dwell breaches happened, how bad were they, and where should we intervene first?",
+      "audience": [
+        "Operations controller",
+        "Carrier performance manager",
+        "Site manager",
+        "Customer service"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Retail distribution",
+        "Manufacturing inbound",
+        "Ports and terminals"
+      ],
+      "talkTrack": [
+        "Filter to Critical and read the alert count with the average minutes over threshold.",
+        "Show the status chart to split critical from warning.",
+        "Work the table as a queue, then click a breach.",
+        "Show the site on the map and use it to argue for a physical or a scheduling fix."
+      ],
+      "snowflakeCapabilities": [
+        "Threshold-driven alerting derived in SQL from sessionized telemetry, with no separate alerting product",
+        "Per-class thresholds that change by configuration rather than by code",
+        "The same breach rows available to the dashboard, the agent and a downstream notification"
+      ],
+      "dataRequired": [
+        "Dwell sessions, or the pings needed to derive them",
+        "Per-class or per-site SLA thresholds",
+        "Site master with location"
+      ],
+      "valueDrivers": [
+        "Escalate while the {{labels.entity}} is still on site, instead of reporting it next month",
+        "Quantify the minutes lost per site for a commercial claim",
+        "Prioritise remediation by severity rather than by complaint volume"
+      ],
+      "method": "A session breaches when its duration exceeds the configured SLA threshold, and severity bands split critical from warning by how far over it went. Sessions at or under the threshold are compliant and never enter this queue.",
+      "caveats": "Synthetic telemetry. Because sessions are sessionized from pings, a stop shorter than the SLA threshold cannot be a breach, so this is not a list of every long wait a driver felt."
+    },
     "agentKnowledge": {
       "preferredTool": "query_dwell",
       "keyMetrics": [
@@ -2858,7 +3256,47 @@
     "label": "Delivery Sync",
     "category": "Core",
     "description": "When each vehicle reached its delivery site and when it left, so the receiving crew travels only once the load is actually on the floor.",
-    "info": "Arrival and departure are detected from geofence entry and exit, not from a status flag: every position ping is tested against the site's own radius (DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped into a visit, and the arrival/departure pair is taken from the stationary core of that visit. The approach ring and the inbound ETA are computed live by the routing engine at the replay instant. This page shows ONE service day, and the As Of card names the exact instant being replayed. The day is the busiest delivery day inside the global date range; if the selected range contains no deliveries at all, it falls back to the busiest day for the region so the page still shows something, and the As Of card is what tells you which day and time you are looking at. The replay clock steps in 10-minute increments, which is finer than the median time on site, so a typical delivery is visible while the vehicle is still there. On the map, hollow grey rings are the delivery sites and the smaller solid dots are vehicles, coloured only when their state is actionable: green on site, red just left, yellow inside the live drive-time approach band. En route and idle vehicles stay Snowflake blue so the eye lands on the few that matter. Grey is only ever site furniture and blue is only ever a vehicle, so the two classes cannot be confused. An optional Site geofence layer (off by default) draws each site's true 100-200 m detection radius; it is only legible zoomed in, because that is how big those circles really are. One caveat worth knowing: a site reading EXPECTED is hindsight, not a forecast - the visit is in the data because it was detected later the same day. In production that state would come from the dispatch plan. READY and IN_PROGRESS are direct detections.",
+    "useCase": {
+      "headline": "Tell the receiving crew exactly when a load is on the floor, so they travel to site once and at the right time.",
+      "businessQuestion": "Has the delivery actually arrived and left, so the crew that receives or installs it can be sent now rather than sent twice?",
+      "audience": [
+        "Site or crew scheduler",
+        "Field operations manager",
+        "Delivery operations",
+        "Customer service"
+      ],
+      "industries": [
+        "Beverage and CPG distribution",
+        "Construction and building materials",
+        "Retail replenishment",
+        "Field installation services"
+      ],
+      "talkTrack": [
+        "Point at the As Of card first - it names the exact service day and the instant being replayed.",
+        "Read the readiness split: sites READY, IN_PROGRESS, and still EXPECTED.",
+        "Drag the replay clock forward and watch sites flip to READY as vehicles depart.",
+        "On the map, call out the colour rules: green on site, red just left, yellow inside the live approach band, blue for a vehicle with nothing actionable.",
+        "Show the inbound table: which vehicles are inside the approach window, with a live drive-time ETA from the routing engine.",
+        "Land the value: one avoided wasted crew trip per site per week is the whole business case."
+      ],
+      "snowflakeCapabilities": [
+        "Geofence arrival and departure detected from raw pings with Dynamic Tables, with no per-site status flag required",
+        "Live drive-time ETA and approach band computed by the routing engine (OpenRouteService on Snowpark Container Services) at the replay instant, never precomputed",
+        "Replayable operational state, so the same demo can be run at any hour of a real service day"
+      ],
+      "dataRequired": [
+        "Position pings with timestamp",
+        "Delivery site master with a detection radius per site",
+        "Optional but important in production: the dispatch plan, which is what supplies genuinely forward-looking expected arrivals"
+      ],
+      "valueDrivers": [
+        "Stop the wasted second trip when a crew arrives before the load does",
+        "Shorten the gap between delivery and the revenue-earning work that follows it",
+        "Give the customer a credible arrival window instead of a day-long one"
+      ],
+      "method": "Arrival and departure are detected from geofence entry and exit, not from a status flag: every position ping is tested against the site's own radius (DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped into a visit, and the arrival/departure pair is taken from the stationary core of that visit. The approach ring and the inbound ETA are computed live by the routing engine at the replay instant. This page shows ONE service day, and the As Of card names the exact instant being replayed. The day is the busiest delivery day inside the global date range; if the selected range contains no deliveries at all, it falls back to the busiest day for the region so the page still shows something. The replay clock steps in 10-minute increments, which is finer than the median time on site, so a typical delivery is visible while the vehicle is still there. On the map, hollow grey rings are the delivery sites and the smaller solid dots are vehicles, coloured only when their state is actionable: green on site, red just left, yellow inside the live drive-time approach band. En route and idle vehicles stay Snowflake blue so the eye lands on the few that matter. Grey is only ever site furniture and blue is only ever a vehicle, so the two classes cannot be confused. An optional Site geofence layer (off by default) draws each site's true 100-200 m detection radius; it is only legible zoomed in, because that is how big those circles really are.",
+      "caveats": "A site reading EXPECTED is hindsight, not a forecast: the visit is in the data because it was detected later the same day. In production that state would come from the dispatch plan. READY and IN_PROGRESS are direct detections. The telemetry itself is synthetic."
+    },
     "agentKnowledge": {
       "preferredTool": "query_delivery_sync",
       "keyMetrics": [
@@ -2876,7 +3314,7 @@
         "Which vehicles are within 15 minutes of their next site?",
         "Which sites are still waiting on a delivery?"
       ],
-      "gotchas": "Readiness is evaluated AT the replay hour, not at wall-clock now, so the same site reads EXPECTED earlier in the day and READY later. IMPORTANT: EXPECTED is NOT a forecast. A visit only exists because it was detected from telemetry, so at an early replay instant a later visit reads EXPECTED purely because the rest of the day is already in the data - it is hindsight. In production that state would come from the dispatch plan instead. READY and IN_PROGRESS are direct detections and carry no such caveat. On the map, sites are hollow grey rings and do NOT encode readiness; readiness lives in the KPI cards, the readiness table and the site tooltip. Vehicle colour carries the actionable state, and only three states are coloured (on site, just left, approaching) - en route and idle are both Snowflake blue on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing engine, not a straight-line radius. A visit is only counted once the vehicle was genuinely stationary inside the geofence for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site produces no event. The approach ring is computed outward FROM the site so it only approximates drive time toward it; the quoted minutes-out always comes from the live matrix call instead. If the routing engine is suspended the ring and the inbound ETA RAISE rather than return nothing, so the app shows a resume notice instead of a silently empty map; the optional geofence layer needs no routing and keeps working regardless. SOURCE_STATUS_HINT separates deliveries from pickups and idles but is descriptive only and plays no part in detection."
+      "gotchas": "Readiness is evaluated AT the replay hour, not at wall-clock now, so the same site reads EXPECTED earlier in the day and READY later. IMPORTANT: EXPECTED is NOT a forecast. A visit only exists because it was detected from telemetry, so at an early replay instant a later visit reads EXPECTED purely because the rest of the day is already in the data - it is hindsight. In production that state would come from the dispatch plan instead. READY and IN_PROGRESS are direct detections and carry no such caveat. On the map, sites are hollow grey rings and do NOT encode readiness; readiness lives in the KPI cards, the readiness table and the site tooltip. Vehicle colour carries the actionable state, and only three states are coloured (on site, just left, approaching) - en route and idle are both Snowflake blue on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing engine, not a straight-line radius. A visit is only counted once the vehicle was genuinely stationary inside the geofence for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site produces no event. Approach rings are drawn for every site on the day (the focus site's ring is stronger); they are computed outward FROM each site so it only approximates drive time toward it; the quoted minutes-out always comes from the live matrix call instead. If the routing engine is suspended the ring and the inbound ETA RAISE rather than return nothing, so the app shows a resume notice instead of a silently empty map; the optional geofence layer needs no routing and keeps working regardless. SOURCE_STATUS_HINT separates deliveries from pickups and idles but is descriptive only and plays no part in detection."
     },
     "layout": {
       "default": {
@@ -2889,7 +3327,7 @@
       "delivery_sync": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COALESCE(COUNT(*), 0) AS visits, COALESCE(COUNT_IF(READINESS_ENUM='READY'), 0) AS ready, COALESCE(COUNT_IF(READINESS_ENUM='IN_PROGRESS'), 0) AS on_site, COALESCE(COUNT_IF(READINESS_ENUM='EXPECTED'), 0) AS expected, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, TO_VARCHAR(DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ), 'DD Mon HH24:MI') AS as_of FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))",
+          "query": "SELECT COALESCE(COUNT(*), 0) AS visits, COALESCE(COUNT_IF(READINESS_ENUM='READY'), 0) AS ready, COALESCE(COUNT_IF(READINESS_ENUM='IN_PROGRESS'), 0) AS on_site, COALESCE(COUNT_IF(READINESS_ENUM='EXPECTED'), 0) AS expected, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, TO_VARCHAR(DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ), 'DD Mon HH24:MI') AS as_of FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -2935,7 +3373,7 @@
             "name": "site",
             "label": "Focus site",
             "data": {
-              "query": "SELECT SITE_ID AS value, SITE_NAME AS label FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_NAME IS NOT NULL GROUP BY 1,2 ORDER BY 2 LIMIT 300",
+              "query": "SELECT SITE_ID AS value, SITE_NAME AS label FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND SITE_NAME IS NOT NULL GROUP BY 1,2 ORDER BY 2 LIMIT 300",
               "params": {
                 "region": "context.region",
                 "vehicle_type": "context.vehicle_type",
@@ -2979,8 +3417,13 @@
           },
           "toggles": [
             {
+              "key": "show_all_rings",
+              "label": "All approach rings (15 min)",
+              "default": true
+            },
+            {
               "key": "show_ring",
-              "label": "Approach ring (15 min)",
+              "label": "Focus site ring (15 min)",
               "default": true
             },
             {
@@ -3051,7 +3494,17 @@
               "shape": "line"
             },
             {
-              "label": "Approach ring",
+              "label": "Approach ring, all sites",
+              "color": [
+                17,
+                86,
+                127,
+                85
+              ],
+              "shape": "line"
+            },
+            {
+              "label": "Approach ring, focus site",
               "color": [
                 17,
                 86,
@@ -3062,6 +3515,38 @@
             }
           ],
           "layers": [
+            {
+              "type": "geojson",
+              "id": "approach-rings-all",
+              "geojsonColumn": "geo",
+              "visibleWhen": "show_all_rings",
+              "noFit": true,
+              "fillColor": [
+                17,
+                86,
+                127,
+                8
+              ],
+              "lineColor": [
+                17,
+                86,
+                127,
+                85
+              ],
+              "lineWidth": 1,
+              "pickable": true,
+              "tooltip": "<b>{site_name}</b><br/>Within {minutes} min drive",
+              "data": {
+                "query": "SELECT ST_ASGEOJSON(RING_GEOG)::STRING AS geo, SITE_NAME AS site_name, ROUND(RANGE_SECONDS/60.0) AS minutes FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RINGS(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), (SELECT APPROACH_SECONDS FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::DATE, COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1))))",
+                "params": {
+                  "region": "context.region",
+                  "vehicle_type": "context.vehicle_type",
+                  "date_range_start": "context.date_range_start",
+                  "date_range_end": "context.date_range_end",
+                  "selected_site": "viewState.selected_site"
+                }
+              }
+            },
             {
               "type": "geojson",
               "id": "approach-ring",
@@ -3084,7 +3569,7 @@
               "pickable": true,
               "tooltip": "<b>{site_name}</b><br/>Within {minutes} min drive",
               "data": {
-                "query": "SELECT ST_ASGEOJSON(RING_GEOG)::STRING AS geo, SITE_NAME AS site_name, ROUND(RANGE_SECONDS/60.0) AS minutes FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RING(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)), (SELECT APPROACH_SECONDS FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1)))",
+                "query": "SELECT ST_ASGEOJSON(RING_GEOG)::STRING AS geo, SITE_NAME AS site_name, ROUND(RANGE_SECONDS/60.0) AS minutes FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RING(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1)), (SELECT APPROACH_SECONDS FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1)))",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
@@ -3119,7 +3604,7 @@
               ],
               "lineWidthMinPixels": 1,
               "data": {
-                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 200 GROUP BY SITE_ID",
+                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 200 GROUP BY SITE_ID",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
@@ -3153,7 +3638,7 @@
               ],
               "lineWidthMinPixels": 1,
               "data": {
-                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 100 GROUP BY SITE_ID",
+                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 100 GROUP BY SITE_ID",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
@@ -3165,6 +3650,7 @@
             {
               "type": "scatterplot",
               "id": "sites",
+              "noFit": true,
               "lng": "lng",
               "lat": "lat",
               "radius": 140,
@@ -3197,7 +3683,7 @@
               },
               "tooltip": "<b>{site_name}</b><br/>{visits_today} delivery(s) today<br/>{deliveries_done} done, {on_site_now} in progress<br/>Last ready {last_ready_at}",
               "data": {
-                "query": "SELECT SITE_ID AS site_id, ANY_VALUE(SITE_NAME) AS site_name, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat, COUNT(*) AS visits_today, COUNT_IF(READINESS_ENUM='READY') AS deliveries_done, COUNT_IF(READINESS_ENUM='IN_PROGRESS') AS on_site_now, COALESCE(TO_VARCHAR(MAX(IFF(READINESS_ENUM='READY', DEPARTURE_TS, NULL)),'HH24:MI'), '-') AS last_ready_at FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL GROUP BY SITE_ID",
+                "query": "SELECT SITE_ID AS site_id, ANY_VALUE(SITE_NAME) AS site_name, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat, COUNT(*) AS visits_today, COUNT_IF(READINESS_ENUM='READY') AS deliveries_done, COUNT_IF(READINESS_ENUM='IN_PROGRESS') AS on_site_now, COALESCE(TO_VARCHAR(MAX(IFF(READINESS_ENUM='READY', DEPARTURE_TS, NULL)),'HH24:MI'), '-') AS last_ready_at FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL GROUP BY SITE_ID",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
@@ -3269,7 +3755,7 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{status_label}<br/>{site_name}<br/>{detail}",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, STATUS_ENUM AS status, COALESCE(SITE_NAME, 'No further stops today') AS site_name, CASE STATUS_ENUM WHEN 'ON_SITE' THEN 'On site now' WHEN 'JUST_LEFT' THEN 'Just left' WHEN 'APPROACHING' THEN 'Approaching' WHEN 'DRIVING' THEN 'En route' ELSE 'Idle' END AS status_label, CASE STATUS_ENUM WHEN 'JUST_LEFT' THEN MINUTES_SINCE_LEFT::VARCHAR || ' min ago' WHEN 'ON_SITE' THEN 'Unloading' WHEN 'IDLE' THEN 'Day complete' ELSE MINUTES_OUT::VARCHAR || ' min out, ' || DISTANCE_KM::VARCHAR || ' km by road' END AS detail, ST_X(VEHICLE_GEOG) AS lng, ST_Y(VEHICLE_GEOG) AS lat FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ), (SELECT ROUND(APPROACH_SECONDS/60.0) FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), 20, 20))",
+                "query": "SELECT VEHICLE_ID AS vehicle_id, STATUS_ENUM AS status, COALESCE(SITE_NAME, 'No further stops today') AS site_name, CASE STATUS_ENUM WHEN 'ON_SITE' THEN 'On site now' WHEN 'JUST_LEFT' THEN 'Just left' WHEN 'APPROACHING' THEN 'Approaching' WHEN 'DRIVING' THEN 'En route' ELSE 'Idle' END AS status_label, CASE STATUS_ENUM WHEN 'JUST_LEFT' THEN MINUTES_SINCE_LEFT::VARCHAR || ' min ago' WHEN 'ON_SITE' THEN 'Unloading' WHEN 'IDLE' THEN 'Day complete' ELSE MINUTES_OUT::VARCHAR || ' min out, ' || DISTANCE_KM::VARCHAR || ' km by road' END AS detail, ST_X(VEHICLE_GEOG) AS lng, ST_Y(VEHICLE_GEOG) AS lat FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ), (SELECT ROUND(APPROACH_SECONDS/60.0) FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), 20, 20))",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
@@ -3285,7 +3771,7 @@
       "feed": {
         "component": "Table",
         "data": {
-          "query": "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS \"At\", EVENT_TYPE AS \"Event\", SITE_NAME AS \"Site\", VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\" FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND EVENT_TS <= DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ) ORDER BY EVENT_TS DESC LIMIT 200",
+          "query": "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS \"At\", EVENT_TYPE AS \"Event\", SITE_NAME AS \"Site\", VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\" FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND EVENT_TS <= DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ) ORDER BY EVENT_TS DESC LIMIT 200",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3302,7 +3788,7 @@
       "readiness": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT SITE_ID AS site_id, SITE_NAME AS \"Site\", READINESS_ENUM AS \"State\", VEHICLE_ID AS \"Vehicle\", TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS \"Arrived\", IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') AS \"Departed\", DWELL_MINUTES AS \"On site (min)\" FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) ORDER BY CASE READINESS_ENUM WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, ARRIVAL_TS DESC LIMIT 300",
+          "query": "SELECT SITE_ID AS site_id, SITE_NAME AS \"Site\", READINESS_ENUM AS \"State\", VEHICLE_ID AS \"Vehicle\", TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS \"Arrived\", IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') AS \"Departed\", DWELL_MINUTES AS \"On site (min)\" FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) ORDER BY CASE READINESS_ENUM WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, ARRIVAL_TS DESC LIMIT 300",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3323,7 +3809,7 @@
       "inbound": {
         "component": "Table",
         "data": {
-          "query": "SELECT VEHICLE_ID AS \"Vehicle\", MINUTES_OUT AS \"Minutes out\", DISTANCE_KM AS \"Road km\", TO_VARCHAR(ETA_TS,'HH24:MI') AS \"ETA\", TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\" FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))::TIMESTAMP_NTZ), 20)) WHERE MINUTES_OUT IS NOT NULL ORDER BY MINUTES_OUT LIMIT 25",
+          "query": "SELECT VEHICLE_ID AS \"Vehicle\", MINUTES_OUT AS \"Minutes out\", DISTANCE_KM AS \"Road km\", TO_VARCHAR(ETA_TS,'HH24:MI') AS \"ETA\", TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\" FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1)), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ), 20)) WHERE MINUTES_OUT IS NOT NULL ORDER BY MINUTES_OUT LIMIT 25",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3344,6 +3830,44 @@
     "label": "Top Origins",
     "category": "Core",
     "description": "Busiest origin locations by trip volume - where journeys begin (any origin type).",
+    "useCase": {
+      "headline": "Where {{labels.journey_plural}} begin, ranked by volume, so network and depot decisions start from observed origins.",
+      "businessQuestion": "Which origins generate most of our work, and is our network actually positioned against them?",
+      "audience": [
+        "Network planner",
+        "Depot siting",
+        "Operations strategy",
+        "Commercial planner"
+      ],
+      "industries": [
+        "Distribution",
+        "Last-mile delivery",
+        "Field service",
+        "Wholesale"
+      ],
+      "talkTrack": [
+        "Read the header: distinct origins, total {{labels.journey_plural}} and average duration.",
+        "Show the top origins chart and name the concentration.",
+        "Put them on the map and ask whether the depot footprint matches.",
+        "Ask the assistant for the top five origins by {{labels.journey}} count and let it answer from the semantic view."
+      ],
+      "snowflakeCapabilities": [
+        "Origin ranking served from the neutral contract through a semantic view the agent queries directly",
+        "GEOGRAPHY points rendered to the map straight from SQL",
+        "One query path behind the chart, the map and the chat answer"
+      ],
+      "dataRequired": [
+        "{{labels.journey}} records with an origin location",
+        "Optional: location master with a type, to classify origins"
+      ],
+      "valueDrivers": [
+        "Position depots and staging against real origin volume",
+        "Find the few origins worth a dedicated resource",
+        "Simplify a network that grew by accident"
+      ],
+      "method": "Only origins with more than zero {{labels.journey_plural}} are shown, and the map is capped at 2000 points, so the dot count on the map is not the origin total - the header count is.",
+      "caveats": "Synthetic {{labels.journey_plural}} for the active region."
+    },
     "agentKnowledge": {
       "preferredTool": "query_fleet_ops",
       "keyMetrics": [
@@ -3478,7 +4002,47 @@
     "label": "Catchment",
     "category": "Location",
     "description": "Drive-time catchment and market analysis: pick a candidate site (click a row or a point on the map), then read the live isochrone rings, reachable population / households / median income, and the venues that compete inside each band.",
-    "info": "**How to use**\n\nPick a candidate site by clicking a row in the Candidate sites list or by clicking any point on the map (greenfield). The map draws nested drive-time rings (5 / 10 / 15 min) around it and every stat below is recomputed for that site.\n\n**Live routing**\n\nIsochrones are computed at interaction time by calling OpenRouteService, never precomputed. The region's routing service must be running.\n\n**Sociodemographics**\n\nPopulation, households and median income are the real SafeGraph Census figures used by Site Impact and Closure Impact (ZIP centroids inside the drive-time polygon; income is household-weighted). These are US-only; outside the US those metrics read 0 and the Overture venue and address counts still populate. Bands are cumulative (within X minutes), so do not add rows together.",
+    "useCase": {
+      "headline": "Live drive-time market analysis for any site: who and what is actually reachable in 5, 10 and 15 minutes by road.",
+      "businessQuestion": "If we put a site here, how many people can reach it by road, and who is already competing for them?",
+      "audience": [
+        "Head of real estate",
+        "Network planner",
+        "Franchise development",
+        "Commercial strategy"
+      ],
+      "industries": [
+        "Retail",
+        "Quick-service restaurants",
+        "Banking branch networks",
+        "Healthcare access",
+        "Public services"
+      ],
+      "talkTrack": [
+        "Click a candidate site in the list, or click anywhere on the map for a greenfield site.",
+        "Show the nested drive-time rings appear, and stress that they are computed on the click rather than looked up.",
+        "Read reachable population, households and median income for the band.",
+        "Open the competing venues table and count the competition inside the band.",
+        "Move to a second location and show every number change - that is the whole point of live routing."
+      ],
+      "snowflakeCapabilities": [
+        "Live isochrones from OpenRouteService running on Snowpark Container Services, called at click time and never precomputed",
+        "Third-party demographics and Overture places joined to routing output in one SQL statement",
+        "Drive-time catchment with no GIS desktop tool, no data extract and no per-seat licence"
+      ],
+      "dataRequired": [
+        "Candidate and existing site locations",
+        "A provisioned routing region covering the market",
+        "Optional: your own customer or loyalty data, which beats third-party demographics"
+      ],
+      "valueDrivers": [
+        "Screen sites in minutes instead of commissioning a study per location",
+        "Compare candidates on a measured drive-time basis rather than on radius circles",
+        "Kill bad sites before spending survey money on them"
+      ],
+      "method": "Isochrones are computed at interaction time by calling OpenRouteService, never precomputed, so the region's routing service must be running. Population, households and median income are the real Census figures also used by Site Impact and Closure Impact: ZIP centroids inside the drive-time polygon, with income household-weighted.",
+      "caveats": "Bands are cumulative (within X minutes), so never sum population or venues across band rows. The Census metrics are US-only and read 0 elsewhere, while the Overture venue and address counts populate in any region. Because the isochrones are live, a suspended region routing service means no rings."
+    },
     "agentKnowledge": {
       "preferredTool": "catchment",
       "keyMetrics": ["reachable population and households", "median income", "venues in catchment", "catchment area"],
@@ -3795,7 +4359,48 @@
     "label": "Site Impact",
     "category": "Location",
     "description": "Cannibalisation what-if: pick a candidate site and a drive-time band to see how much revenue and EBITDA it draws from the existing estate, split by interaction type. Revenue and EBITDA are driven by your value-per-household, EBITDA-margin and capture-rate inputs.",
-    "info": "**Attribution method**\n\nOverlap geometry is the computed ST_INTERSECTION of live drive-time isochrones, not visual polygon stacking. Postcodes (ZIPs) are attributed by ZIP centroid containment; households by H3 cell-centroid containment.\n\nCannibalised revenue and EBITDA are derived from your value-per-household, capture-rate and EBITDA-margin inputs.\n\nOverlap rows are pairwise (candidate vs one existing store); do not sum households across overlap rows, because neighbouring store catchments themselves overlap. The headline KPI cards and the transfer table use non-overlapping nearest-store attribution.",
+    "useCase": {
+      "headline": "Cannibalisation what-if: how much of a new site's revenue is genuinely new, and how much is taken from your own estate.",
+      "businessQuestion": "If we open here, how much of the revenue is incremental and how much comes out of our existing stores?",
+      "audience": [
+        "Head of real estate",
+        "CFO and finance business partner",
+        "Network strategy",
+        "Franchise development"
+      ],
+      "industries": [
+        "Retail",
+        "Quick-service restaurants",
+        "Banking branch networks",
+        "Fitness and leisure"
+      ],
+      "talkTrack": [
+        "Pick a candidate site and a drive-time band.",
+        "Read cannibalised revenue and EBITDA, shared households, and how many existing stores are affected.",
+        "Move the three sliders - value per household, EBITDA margin, capture rate - and show the finance recompute live. These are the customer's assumptions, not ours.",
+        "Open the transfers table to name which existing store loses the most.",
+        "Switch to the overlap view to show the computed intersection geometry of the catchments.",
+        "Widen the band and show cannibalisation grow, which is the trade-off a property committee actually argues about."
+      ],
+      "snowflakeCapabilities": [
+        "Live drive-time isochrones intersected with ST_INTERSECTION in SQL, so overlap is computed geometry rather than stacked polygons",
+        "Household attribution by H3 cell containment at scale",
+        "A what-if model whose finance assumptions are on-screen inputs and whose recompute is a live query"
+      ],
+      "dataRequired": [
+        "Existing store estate with locations",
+        "Candidate site locations",
+        "Household or address density (Overture works out of the box; first-party customer data is better)",
+        "Your own value per household, capture rate and EBITDA margin"
+      ],
+      "valueDrivers": [
+        "Avoid opening a site that mostly moves existing revenue around",
+        "Defend or challenge a site proposal with a transparent, adjustable model",
+        "Rank a candidate pipeline on net rather than gross opportunity"
+      ],
+      "method": "Overlap geometry is the computed ST_INTERSECTION of live drive-time isochrones, not visual polygon stacking. Postcodes (ZIPs) are attributed by ZIP centroid containment and households by H3 cell-centroid containment. Cannibalised revenue and EBITDA are derived from your value-per-household, capture-rate and EBITDA-margin inputs. Overlap rows are pairwise (candidate versus one existing store), so do not sum households across overlap rows, because neighbouring store catchments themselves overlap; the headline KPI cards and the transfer table use non-overlapping nearest-store attribution.",
+      "caveats": "Household counts are real address density, but revenue and EBITDA are derived entirely from the assumptions set on screen, so present them as a model rather than a measurement. Drive-time bands are nested what-if scenarios: never sum transfer across bands for the same candidate and store pair. The store estate and its interaction mix are synthetic for the demo."
+    },
     "agentKnowledge": {
       "preferredTool": "query_location",
       "keyMetrics": ["cannibalised revenue and EBITDA", "shared households", "existing stores impacted"],
@@ -4189,7 +4794,47 @@
     "label": "Freight Sourcing Optimizer",
     "category": "Location",
     "description": "Plant-to-customer location swaps: for each customer, compare the live road-distance freight cost from the current source plant against the cheapest product-capable plant, and quantify the annual saving. Freight cost is driven by your per-km and per-ton-km rate inputs.",
-    "info": "**Method**\n\nThe plant-to-customer road-distance matrix is computed LIVE with a single ORS MATRIX_TABULAR call (all plants x all customers), not precomputed. Freight cost per truckload = distance_km x rate per km + tons x distance_km x rate per ton-km.\n\nThe current source is a data-only baseline (nearest product-capable plant by straight-line distance); the optimizer picks the cheapest source by actual road distance, so the gap is the achievable saving. Only plants that can make the customer's product are considered.\n\nRegion note: all plants and customers must sit inside one provisioned ORS region graph; the demo runs within a single region.",
+    "useCase": {
+      "headline": "Serve each customer from the cheapest plant that can actually make their product, priced on real road distance.",
+      "businessQuestion": "Where are we shipping from the wrong plant, and what would re-sourcing save us in a year?",
+      "audience": [
+        "Supply chain director",
+        "Logistics and freight manager",
+        "CFO",
+        "Commercial operations"
+      ],
+      "industries": [
+        "Building materials",
+        "Glass and packaging",
+        "Chemicals",
+        "Food and beverage manufacturing"
+      ],
+      "talkTrack": [
+        "Read the header: current annual freight spend, optimized spend and the total saving.",
+        "Show the swaps table sorted by saving and open the biggest one.",
+        "Put it on the map: current source plant versus proposed plant for that customer.",
+        "Move the per-km and per-ton-km sliders to the customer's real rates and watch the saving move.",
+        "Stress that the distance matrix is one live routing call over the road network, not straight lines."
+      ],
+      "snowflakeCapabilities": [
+        "A single live ORS MATRIX_TABULAR call producing an all-plants by all-customers road-distance matrix at interaction time",
+        "A table function that turns that matrix into rows and picks the winning source per customer in SQL",
+        "Product capability constraints enforced in the same query as the cost model"
+      ],
+      "dataRequired": [
+        "Plant locations with product capability",
+        "Customer locations with product and annual volume",
+        "Freight rates per km and per ton-km",
+        "A provisioned routing region containing all plants and customers"
+      ],
+      "valueDrivers": [
+        "Cut freight spend with no capital investment - it is a sourcing decision, not a build",
+        "Quantify a re-sourcing business case customer by customer",
+        "Expose where straight-line planning has been quietly wrong"
+      ],
+      "method": "The plant-to-customer road-distance matrix is computed live with a single ORS MATRIX_TABULAR call (all plants by all customers), not precomputed. Freight cost per truckload = distance_km x rate per km + tons x distance_km x rate per ton-km. The current source is a data-only baseline (the nearest product-capable plant by straight-line distance); the optimizer picks the cheapest source by actual road distance, so the gap is the achievable saving. Only plants that can make the customer's product are considered, and annual savings are the per-load saving multiplied by the customer's annual truckloads.",
+      "caveats": "Plants, customers and volumes are synthetic. The saving is only as good as the rates entered, and it assumes the proposed plant has the capacity to absorb the volume - capacity is not modelled. All plants and customers must sit inside one provisioned routing region graph."
+    },
     "agentKnowledge": {
       "preferredTool": "query_sourcing",
       "keyMetrics": ["current annual freight spend", "optimized annual freight spend", "total annual savings", "customers with a cheaper source"],
@@ -4446,7 +5091,47 @@
     "label": "Product Mix Sourcing",
     "description": "For each customer's mixed-product order, compare shipping every product from its own cheapest plant (ship direct) against transferring the missing products into one hub plant and shipping a single consolidated truckload (consolidate). Shows the freight saving and the handling penalty of consolidating.",
     "category": "Location",
-    "info": "**Method**\n\nAll plant-to-customer and plant-to-plant road distances are computed LIVE with ORS MATRIX_TABULAR (two calls), not precomputed. freight = distance_km x rate per km + tons x distance_km x rate per ton-km.\n\nShip direct: each product line ships from its cheapest capable plant straight to the customer. Consolidate: pick a hub plant, transfer the products the hub cannot make in from the nearest capable plant (adding a handling-per-ton penalty), then ship one consolidated load from the hub. The cheaper of the two is recommended.\n\nSingle-line orders show near-zero savings (nothing to consolidate). Region note: all plants and customers must sit inside one provisioned ORS region graph.",
+    "useCase": {
+      "headline": "For a multi-product order, decide between shipping direct from several plants or consolidating into one truckload.",
+      "businessQuestion": "For customers buying several products, is it cheaper to ship from each plant or to transfer everything into one hub and send a single load?",
+      "audience": [
+        "Supply chain planner",
+        "Logistics manager",
+        "Order management",
+        "CFO"
+      ],
+      "industries": [
+        "Building materials",
+        "Glass and packaging",
+        "Chemicals",
+        "Industrial distribution"
+      ],
+      "talkTrack": [
+        "Read the header: total consolidation savings, orders where consolidation wins, orders better shipped direct, and the handling cost paid to consolidate.",
+        "Open an order where consolidation wins and walk the two options in the drawer.",
+        "Show the map: the transfer legs into the hub, then one outbound load.",
+        "Raise the handling slider until consolidation stops winning - that boundary is the customer's real decision rule.",
+        "Point out a single-line order showing near-zero saving, because there is nothing to consolidate."
+      ],
+      "snowflakeCapabilities": [
+        "Two live ORS MATRIX_TABULAR calls covering plant-to-customer and plant-to-plant road distance, computed on demand",
+        "Two complete fulfilment options costed per order in SQL",
+        "Interactive rate and handling assumptions driving a live recompute rather than a static scenario"
+      ],
+      "dataRequired": [
+        "Plant locations with product capability",
+        "Customer orders with product lines and tonnage",
+        "Freight rates per km and per ton-km, plus a handling cost per ton",
+        "A provisioned routing region containing all plants and customers"
+      ],
+      "valueDrivers": [
+        "Pick the cheaper fulfilment option order by order instead of applying a blanket policy",
+        "Price the handling penalty that consolidation actually costs",
+        "Give order management a defensible rule for mixed orders"
+      ],
+      "method": "All plant-to-customer and plant-to-plant road distances are computed live with ORS MATRIX_TABULAR (two calls), not precomputed. freight = distance_km x rate per km + tons x distance_km x rate per ton-km. Ship direct: each product line ships from its cheapest capable plant straight to the customer. Consolidate: pick a hub plant, transfer in the products the hub cannot make from the nearest capable plant (adding a handling-per-ton penalty), then ship one consolidated load from the hub. The cheaper of the two is recommended.",
+      "caveats": "Synthetic plants, customers and orders. The model compares freight and handling only: it does not model lead time, truck availability, or the service impact of holding an order back to consolidate it. Single-line orders show near-zero savings by construction, and all plants and customers must sit inside one provisioned routing region graph."
+    },
     "agentKnowledge": {
       "preferredTool": "query_sourcing",
       "keyMetrics": ["total consolidation savings", "orders where consolidation wins", "orders better shipped direct", "total handling cost paid to consolidate"],
@@ -4707,7 +5392,47 @@
       "exampleQuestions": ["If we close this store, which store inherits the most sales?", "How much revenue is at risk if we close this store?", "What is the closure risk score for this store?"],
       "gotchas": "A postcode (ZIP) is RETAINED if at least one surviving store's drive-time catchment reaches its centroid within the band, otherwise AT_RISK (its revenue is the closure leakage). Revenue and EBITDA are derived from the user-supplied value per household, retention rate and EBITDA margin; the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue. Overlap rows are pairwise (closed store vs one surviving store); do not sum households across rows because surviving catchments overlap."
     },
-    "info": "**Attribution method**\n\nThe map shows a household H3 hexagon heatmap of the closing store's drive-time catchment, shaded by how many surviving stores still reach each cell (red = at risk / thin coverage, green = well covered). Coverage is computed from pre-rasterized H3 res-8 household cells tested against live drive-time isochrones, not from stacked polygons.\n\nA postcode (ZIP) is RETAINED if at least one surviving store's catchment reaches its centroid within the band, otherwise AT_RISK (its revenue is the closure leakage). Revenue and EBITDA are user-driven: households x value per household x retention rate, with EBITDA = revenue x margin, and the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue.\n\nThe gainers table assigns each catchment cell to its nearest surviving store (non-overlapping). The overlap-summary rows are pairwise (closed store vs one surviving store); do not sum households across rows, because surviving-store catchments themselves overlap.",
+    "useCase": {
+      "headline": "Closure what-if: when a site closes, which surviving sites inherit its customers and which revenue simply leaks away.",
+      "businessQuestion": "If we close this site, how much revenue do we keep because a neighbour can still serve it, and how much do we lose outright?",
+      "audience": [
+        "Head of real estate",
+        "CFO",
+        "Network strategy",
+        "Regional director"
+      ],
+      "industries": [
+        "Retail",
+        "Banking branch networks",
+        "Healthcare networks",
+        "Quick-service restaurants"
+      ],
+      "talkTrack": [
+        "Pick the store to close and read revenue retained against revenue at risk.",
+        "Show the household heatmap: red cells are households no surviving store reaches in time, green cells are well covered.",
+        "Open the gainers table to name which surviving stores absorb the demand.",
+        "Move the retention slider to the customer's own assumption and watch the split move.",
+        "Close on the closure risk score as the one number a committee can compare across candidates."
+      ],
+      "snowflakeCapabilities": [
+        "Live drive-time isochrones for surviving sites tested against pre-rasterized H3 household cells, so coverage is computed rather than eyeballed",
+        "Nearest-surviving-store reassignment computed in SQL at interaction time",
+        "A finance model whose assumptions are sliders on screen, recomputed live"
+      ],
+      "dataRequired": [
+        "Store estate with locations",
+        "Household or address density",
+        "Your own value per household, retention rate and EBITDA margin",
+        "A provisioned routing region covering the estate"
+      ],
+      "valueDrivers": [
+        "Close the sites whose demand is genuinely absorbed, rather than the ones with the worst P&L",
+        "Quantify the leakage before it shows up in next year's revenue",
+        "Prepare the transfer plan for the stores that inherit the volume"
+      ],
+      "method": "The map shows a household H3 hexagon heatmap of the closing store's drive-time catchment, shaded by how many surviving stores still reach each cell (red = at risk or thin coverage, green = well covered). Coverage is computed from pre-rasterized H3 res-8 household cells tested against live drive-time isochrones, not from stacked polygons. A postcode (ZIP) is RETAINED if at least one surviving store's catchment reaches its centroid within the band, otherwise AT_RISK, and its revenue is the closure leakage. Revenue and EBITDA are user-driven: households x value per household x retention rate, with EBITDA = revenue x margin, and the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue. The gainers table assigns each catchment cell to its nearest surviving store (non-overlapping).",
+      "caveats": "Households are real address density, but revenue, EBITDA and the retained-versus-at-risk split all depend on the assumptions set on screen. Overlap-summary rows are pairwise (closed store versus one surviving store), so do not sum households across rows, because surviving-store catchments themselves overlap. The store estate and its interaction mix are synthetic, and customer loyalty to a specific site is not modelled beyond the retention rate."
+    },
     "layout": {
       "default": {
         "columns": "repeat(6, 1fr)",
@@ -5111,6 +5836,47 @@
     "label": "Asset Velocity",
     "category": "Asset Pool",
     "description": "Idle {{labels.entity_plural}}, cost of idleness, and where they are parked - set a minimum idle threshold and click a {{labels.entity}} to highlight it.",
+    "useCase": {
+      "headline": "Find idle {{labels.entity_plural}}, price what the idleness is costing, and get a live repositioning suggestion for each one.",
+      "businessQuestion": "Which of our {{labels.entity_plural}} are sitting still, what is that costing us, and where should they go next?",
+      "audience": [
+        "Fleet asset manager",
+        "Dispatch manager",
+        "CFO",
+        "Yard and depot operations"
+      ],
+      "industries": [
+        "Road freight",
+        "Trailer and container leasing",
+        "Rail and intermodal",
+        "Equipment rental"
+      ],
+      "talkTrack": [
+        "Set the minimum idle-days threshold, then read the KPI row: idle count, cost of idleness, projected savings and average idle days.",
+        "Show the severity chart and focus on CRITICAL.",
+        "Click an idle {{labels.entity}} to highlight where it is parked.",
+        "Read the repositioning rationale, and note that the move is solved live against the road network rather than looked up in a table.",
+        "Convert the cost of idleness into the annual figure, which is the CFO's version of this story."
+      ],
+      "snowflakeCapabilities": [
+        "Live vehicle routing and repositioning solved with the VROOM optimizer running on Snowpark Container Services",
+        "A dedicated semantic view (SV_ASSET_VELOCITY) so the agent ranks idle assets and cost without new SQL",
+        "Cost model held in configuration rather than in someone's spreadsheet"
+      ],
+      "dataRequired": [
+        "Asset master with home base and class",
+        "Position or last-known-location history, to derive idle time",
+        "A daily holding or opportunity cost per asset class",
+        "Optional: forward demand or lane requirements to reposition against"
+      ],
+      "valueDrivers": [
+        "Turn parked assets back into earning assets",
+        "Raise utilization enough to defer capital spend on more units",
+        "Give dispatch a defensible next move for every idle asset"
+      ],
+      "method": "Idle time is the gap since the asset last moved, filtered by the idle-days threshold set on screen. Cost of idleness is idle days multiplied by the configured daily cost for that class. The repositioning move is solved live against the road network and its rationale is generated on screen.",
+      "caveats": "Synthetic assets and positions. Projected savings assume the repositioned asset actually finds work at the destination, so treat the figure as an upper bound."
+    },
     "agentKnowledge": {
       "preferredTool": "query_asset_velocity",
       "keyMetrics": [
@@ -5412,6 +6178,46 @@
     "label": "SAP Binding",
     "category": "Help",
     "description": "How to bind a customer's landed SAP (EAM/SD/TM) plus telematics data into the neutral FLEET_APP contract. Ask the assistant for step-by-step guidance.",
+    "useCase": {
+      "headline": "How to point these dashboards and the assistant at a customer's real SAP plus telematics data without rebuilding anything above the contract.",
+      "businessQuestion": "Our asset master lives in SAP and our positions come from a telematics vendor. What does it take to run all of this on our own data?",
+      "audience": [
+        "Enterprise architect",
+        "Data platform lead",
+        "SAP data owner",
+        "Solution Engineer"
+      ],
+      "industries": [
+        "Manufacturing",
+        "Utilities",
+        "Mining and heavy equipment",
+        "Transport and logistics"
+      ],
+      "talkTrack": [
+        "Frame the seam: the dashboards read a neutral contract, so binding customer data is a mapping exercise rather than an app rebuild.",
+        "Ask the assistant which SAP tables can be bound - it introspects the database live and lists what it finds.",
+        "Walk the join strategy question: how SAP equipment is matched to telematics devices, and why the crosswalk is mandatory.",
+        "Show that CDC-landed tables are deduped to current rows before they are bound.",
+        "Close on the payoff: the semantic view, every dashboard and the agent move across together, with no edits above the contract."
+      ],
+      "snowflakeCapabilities": [
+        "A neutral data contract that lets physical sources swap without touching dashboards, semantic views or the agent",
+        "Live introspection of a customer database through an audited agent tool",
+        "Cortex Search over the binding playbook, so guidance is retrieved rather than remembered"
+      ],
+      "dataRequired": [
+        "SAP EAM, SD and TM tables already landed in Snowflake (Fivetran, SLT, Datasphere or equivalent)",
+        "Telematics positions landed in the same account",
+        "A crosswalk that reliably matches an SAP asset to a telematics device"
+      ],
+      "valueDrivers": [
+        "Get from demo to the customer's own data in days, using a documented mapping",
+        "Avoid a bespoke integration project per dashboard",
+        "Keep SAP as the system of record while the analytics run in Snowflake"
+      ],
+      "method": "This is a guidance page rather than analytics over fleet data. The assistant answers from a Cortex Search knowledge base of the binding playbook, and can introspect a target database live to list bindable objects.",
+      "caveats": "SAP and telematics must be co-located in one Snowflake account before binding, and the asset crosswalk is mandatory - without a reliable asset-to-device match, nothing above the contract can be trusted. Maintenance objects and SAP write-back are later phases."
+    },
     "agentKnowledge": {
       "preferredTool": "search_sap_binding",
       "keyMetrics": [],
