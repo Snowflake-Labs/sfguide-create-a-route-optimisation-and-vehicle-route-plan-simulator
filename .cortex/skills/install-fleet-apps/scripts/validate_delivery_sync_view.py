@@ -6,7 +6,7 @@ Why this exists
 Two defects shipped to a user because queries were validated with bind values
 chosen by hand rather than the ones the app actually sends:
 
-  1. ":as_of_hour not set" - the query referenced a viewState bind that no area
+  1. ":as_of_minute not set" - the query referenced a viewState bind that no area
      declared in data.params. Substituting a literal for it hid the omission.
   2. Four empty KPI cards - the app's context bar defaults the date range to
      `last_365_days` (app-config.json -> app-shell.tsx sets date_range_start =
@@ -55,7 +55,7 @@ VIEW_ID = sys.argv[2] if len(sys.argv) > 2 else "delivery_sync"
 BINDS_SQL = {
     ":date_range_start": "DATEADD('day', -365, CURRENT_DATE())::DATE",
     ":date_range_end": "CURRENT_DATE()::DATE",
-    ":as_of_hour": "9",          # Slider config.default
+    ":as_of_minute": "540",     # Slider config.default (09:00, minutes since midnight)
     ":selected_site": "NULL",    # nothing clicked on first render
     ":dataset_id": "NULL",
     ":vehicle_type": "NULL",

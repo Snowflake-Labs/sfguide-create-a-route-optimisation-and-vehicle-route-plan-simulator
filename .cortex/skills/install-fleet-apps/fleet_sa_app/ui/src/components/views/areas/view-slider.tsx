@@ -6,8 +6,11 @@
 // refetches. Reproduces the control app's congestion hour-slider interaction.
 //
 // Time-scrubber mode: config.format === 'hour' renders the value as HH:00 and
-// config.play === true adds a play/pause that auto-advances (wrapping at max),
-// turning the hour slider into an animated space-time scrubber.
+// config.format === 'time_of_day' treats the value as MINUTES SINCE MIDNIGHT and
+// renders HH:MM, which is what a sub-hourly replay clock needs (a 10-minute step
+// slider emitting 550 must read 09:10, not 550). config.play === true adds a
+// play/pause that auto-advances (wrapping at max), turning either into an
+// animated space-time scrubber.
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -21,7 +24,7 @@ interface ViewSliderAreaProps {
       max?: number;
       step?: number;
       default?: number;
-      format?: string;        // 'hour' -> render value as HH:00
+      format?: string;        // 'hour' -> HH:00; 'time_of_day' -> HH:MM from minutes since midnight
       play?: boolean;         // show a play/pause auto-advance control
       playIntervalMs?: number; // ms per step when playing (default 1200)
       info?: string;          // explanatory text shown in a popover behind an "i" icon
@@ -32,6 +35,12 @@ interface ViewSliderAreaProps {
 
 function formatTick(value: number, format?: string): string {
   if (format === 'hour') return `${String(value).padStart(2, '0')}:00`;
+  // Minutes since midnight -> HH:MM. Used by sub-hourly replay clocks.
+  if (format === 'time_of_day') {
+    const hours = Math.floor(value / 60);
+    const minutes = Math.abs(value % 60);
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  }
   return String(value);
 }
 
