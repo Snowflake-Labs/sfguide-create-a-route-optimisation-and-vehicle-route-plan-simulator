@@ -52,6 +52,19 @@ VIEW_ID = sys.argv[2] if len(sys.argv) > 2 else "delivery_sync"
 # Mirrors app-shell.tsx date_range handling for the `last_365_days` default
 # declared in app-config.json's contextBar. If that default ever changes, this
 # must change with it or the harness stops reflecting reality.
+# Areas allowed to return zero rows, with the reason. Everything else returning
+# nothing is treated as a defect - an empty panel is the failure mode this
+# harness exists to catch, so exemptions are named explicitly rather than
+# silently tolerated.
+MAY_BE_EMPTY = {
+    # One geofence layer per distinct BUFFER_RADIUS_M. The monitored site types
+    # yield 200 m (WAREHOUSE) and 100 m (STORE / DESTINATION); the NJ dataset is
+    # entirely warehouses, so the 100 m layer has nothing to draw there. The
+    # layer is emitted regardless so the view stays correct on a dataset with
+    # stores, which means "empty here" is the expected result, not a bug.
+    "areas.map.config.layers[2]": "geofence-100: NJ has no 100 m (STORE/DESTINATION) sites",
+}
+
 BINDS_SQL = {
     ":date_range_start": "DATEADD('day', -365, CURRENT_DATE())::DATE",
     ":date_range_end": "CURRENT_DATE()::DATE",
@@ -146,6 +159,11 @@ def main() -> int:
                 failures.append((region, path, err))
                 continue
             n = rows[0]["N"] if rows else 0
+            why_empty = MAY_BE_EMPTY.get(path)
+            if n == 0 and why_empty:
+                # Legitimately empty on this dataset - reported, not failed.
+                print("  BY-DESIGN %-24s rows=0  (%s)" % (path, why_empty))
+                continue
             flag = "OK   " if (n > 0 or not enforce) else "EMPTY"
             print("  %s %-28s rows=%s" % (flag, path, n))
             if enforce and n == 0:

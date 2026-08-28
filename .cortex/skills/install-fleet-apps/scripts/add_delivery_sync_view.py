@@ -72,19 +72,46 @@ PALETTE = {
     "EXPECTED": [145, 158, 171, 200],
 }
 
-# Map colouring. Only ACTIONABLE vehicle states carry a colour; anything neutral
-# takes NEUTRAL_GREY, which is also the stroke colour, so an en-route or idle
-# vehicle renders as a single flat grey dot instead of a ringed one. All values
-# are config, so the palette can be retuned without touching code.
-NEUTRAL_GREY = [90, 99, 104, 255]
-SITE_BLACK = [33, 41, 48, 235]
+# Map colouring. Grey and blue are split by CLASS, not by state: grey is site
+# furniture (the estate and its geofences), Snowflake light blue is vehicles.
+# Before this split an en-route grey vehicle and a near-black site marker read as
+# almost the same dot. Now the two can never be confused: sites are the only
+# HOLLOW markers (transparent fill, grey ring) and vehicles are the only blue
+# ones. Within vehicles, colour is reserved for the three ACTIONABLE states, so
+# en-route and idle stay flat blue and the eye lands on the few that matter.
+# All values are config, so the palette can be retuned without touching code.
+SITE_STROKE_GREY = [90, 99, 104, 235]   # the estate: ring only, no fill
+GEOFENCE_GREY = [90, 99, 104, 130]      # detection boundary: fainter than the site
+TRANSPARENT = [0, 0, 0, 0]              # alpha 0 - see NOTE below
+# Snowflake light blue #29B5E8 (app-config.json style.chart.palette[0]).
+SNOWFLAKE_BLUE = [41, 181, 232, 240]
 VEHICLE_PALETTE = {
     "ON_SITE": [46, 160, 67, 240],       # green  - vehicle is unloading
     "JUST_LEFT": [214, 57, 57, 240],     # red    - load just landed, crew can go
     "APPROACHING": [255, 171, 0, 245],   # yellow - inside the live drive-time band
-    "DRIVING": NEUTRAL_GREY,             # grey   - en route, nothing to act on
-    "IDLE": NEUTRAL_GREY,                # grey   - no further stops today
+    "DRIVING": SNOWFLAKE_BLUE,           # blue   - en route, nothing to act on
+    "IDLE": SNOWFLAKE_BLUE,              # blue   - no further stops today
 }
+
+# NOTE on hollow markers: layer-compiler.ts never passes `filled` to
+# ScatterplotLayer, so deck.gl's default filled:true stands and there is no
+# config route to a genuinely unfilled circle. An alpha-0 fill is the way to get
+# one - it still renders, just invisibly, while stroked + lineColor draw the
+# ring. Picking is geometry-based, not colour-based, so tooltips and clickEmits
+# keep working on a transparent marker.
+
+# Geofence radii in METRES, from DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M for the
+# monitored site types: WAREHOUSE 200, STORE 100, DESTINATION 100. These are the
+# actual circles the detector tests every ping against, so drawing them makes the
+# arrival/departure logic legible rather than a black box.
+#
+# Rendered as scatterplots because deck.gl radius is already in METRES, which is
+# exact - and unavoidable, since ST_BUFFER rejects GEOGRAPHY (GEOMETRY only) so
+# there is no geodesic buffer available in SQL. getRadius is static per layer
+# (layer-compiler.ts, no radiusColumn), hence ONE LAYER PER RADIUS. NJ today is
+# all WAREHOUSE, so the 100 m layer is empty there - it is emitted anyway so the
+# view stays correct on a dataset that includes stores.
+GEOFENCE_RADII = (200, 100)
 
 # Approach threshold in MINUTES for LIVE_FLEET_STATUS. APPROACH (above) is the
 # same setting in SECONDS for the isochrone ring, which takes seconds; keeping
@@ -114,10 +141,15 @@ VIEW = {
         "Of card is what tells you which day and time you are looking at. The replay "
         "clock steps in 10-minute increments, which is finer than the median time on "
         "site, so a typical delivery is visible while the vehicle is still there. "
-        "On the map, black markers are the delivery sites and the smaller dots are "
-        "vehicles, coloured only when their state is actionable: green on site, red "
-        "just left, yellow inside the live drive-time approach band. En route and idle "
-        "vehicles stay grey so the eye lands on the few that matter. "
+        "On the map, hollow grey rings are the delivery sites and the smaller solid "
+        "dots are vehicles, coloured only when their state is actionable: green on "
+        "site, red just left, yellow inside the live drive-time approach band. En "
+        "route and idle vehicles stay Snowflake blue so the eye lands on the few "
+        "that matter. Grey is only ever site furniture and blue is only ever a "
+        "vehicle, so the two classes cannot be confused. An optional Site geofence "
+        "layer (off by default) draws each site's true 100-200 m detection radius; "
+        "it is only legible zoomed in, because that is how big those circles "
+        "really are. "
         "One caveat worth knowing: a site reading EXPECTED is hindsight, not a "
         "forecast - the visit is in the data because it was detected later the same "
         "day. In production that state would come from the dispatch plan. READY and "
@@ -148,17 +180,21 @@ VIEW = {
             "purely because the rest of the day is already in the data - it is hindsight. "
             "In production that state would come from the dispatch plan instead. READY "
             "and IN_PROGRESS are direct detections and carry no such caveat. "
-            "On the map, site markers are neutral black and do NOT encode readiness; "
+            "On the map, sites are hollow grey rings and do NOT encode readiness; "
             "readiness lives in the KPI cards, the readiness table and the site tooltip. "
             "Vehicle colour carries the actionable state, and only three states are "
-            "coloured (on site, just left, approaching) - en route and idle are both grey "
-            "on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing "
-            "engine, not a straight-line radius. A visit is "
+            "coloured (on site, just left, approaching) - en route and idle are both "
+            "Snowflake blue on purpose. APPROACHING is a LIVE ROAD-TIME threshold from "
+            "the routing engine, not a straight-line radius. A visit is "
             "only counted once the vehicle was genuinely stationary inside the geofence "
             "for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site "
             "produces no event. The approach ring is computed outward FROM the site so "
             "it only approximates drive time toward it; the quoted minutes-out always "
-            "comes from the live matrix call instead. SOURCE_STATUS_HINT separates "
+            "comes from the live matrix call instead. If the routing engine is suspended "
+            "the ring and the inbound ETA RAISE rather than return nothing, so the app "
+            "shows a resume notice instead of a silently empty map; the optional "
+            "geofence layer needs no routing and keeps working regardless. "
+            "SOURCE_STATUS_HINT separates "
             "deliveries from pickups and idles but is descriptive only and plays no "
             "part in detection."
         ),
@@ -276,20 +312,30 @@ VIEW = {
                     "lat": "lat",
                 },
                 "toggles": [
-                    {"key": "show_ring", "label": "Approach ring", "default": True},
+                    {"key": "show_ring", "label": "Approach ring (15 min)", "default": True},
+                    # Default OFF: a 100-200 m circle is only a few pixels at city
+                    # zoom, so it is a zoomed-in diagnostic rather than an overview
+                    # layer. Off also means no query at all - LayerFetcher skips
+                    # fetching a gated-off layer - so it costs nothing until asked
+                    # for.
+                    {"key": "show_geofence", "label": "Site geofence (100-200 m)", "default": False},
                     {"key": "show_vehicles", "label": "Vehicles", "default": True},
                 ],
                 # Only the three ACTIONABLE vehicle states get a colour. Listing
-                # DRIVING and IDLE separately would undercut the point of greying
+                # DRIVING and IDLE separately would undercut the point of muting
                 # them: at a typical instant it is about 11 coloured against 41
-                # grey, so the eye should land on the few that matter.
+                # blue, so the eye should land on the few that matter.
                 "legend": [
                     {"label": "On site now", "color": VEHICLE_PALETTE["ON_SITE"]},
                     {"label": "Just left", "color": VEHICLE_PALETTE["JUST_LEFT"]},
                     {"label": "Approaching (15 min)", "color": VEHICLE_PALETTE["APPROACHING"]},
-                    {"label": "En route / idle", "color": NEUTRAL_GREY},
-                    {"label": "Delivery site", "color": SITE_BLACK},
-                    {"label": "Approach ring", "color": [41, 181, 232, 200], "shape": "line"},
+                    {"label": "En route / idle", "color": SNOWFLAKE_BLUE},
+                    {"label": "Delivery site (grey ring)", "color": SITE_STROKE_GREY},
+                    {"label": "Geofence 100-200 m", "color": GEOFENCE_GREY, "shape": "line"},
+                    # Dark blue #11567F, NOT the light blue used for vehicles: the
+                    # ring used to share the vehicles' blue, which now reads as a
+                    # vehicle smeared across the map.
+                    {"label": "Approach ring", "color": [17, 86, 127, 220], "shape": "line"},
                 ],
                 "layers": [
                     {
@@ -298,8 +344,8 @@ VIEW = {
                         "geojsonColumn": "geo",
                         "visibleWhen": "show_ring",
                         "noFit": True,
-                        "fillColor": [41, 181, 232, 30],
-                        "lineColor": [41, 181, 232, 220],
+                        "fillColor": [17, 86, 127, 30],
+                        "lineColor": [17, 86, 127, 220],
                         "lineWidth": 2,
                         "pickable": True,
                         "tooltip": "<b>{site_name}</b><br/>Within {minutes} min drive",
@@ -314,8 +360,56 @@ VIEW = {
                             "params": dict(CTX),
                         },
                     },
+                    # The detection boundaries the arrival/departure logic actually
+                    # tests against, one layer per distinct radius. Listed BEFORE
+                    # the site markers so the rings sit underneath them.
+                    #
+                    # These are the only ORS-INDEPENDENT geometry on the map: pure
+                    # Snowflake data, so they keep drawing when the routing engine
+                    # is cold and the isochrone cannot be computed.
+                    #
+                    # Time-independent, and deliberately NOT referencing the as-of
+                    # instant: a geofence is a property of the site, not of the
+                    # replay clock. That keeps the params key stable during
+                    # playback, so these fetch ONCE instead of on every 10-minute
+                    # step.
+                    *[
+                        {
+                            "type": "scatterplot",
+                            "id": "geofence-%d" % radius_m,
+                            "lng": "lng",
+                            "lat": "lat",
+                            "visibleWhen": "show_geofence",
+                            "noFit": True,
+                            # Radius in METRES - the true geofence size.
+                            "radius": radius_m,
+                            # radiusMinPixels 0 on purpose: flooring it would draw
+                            # the boundary larger than it is, which for a detection
+                            # radius is a misrepresentation. The honest consequence
+                            # is that these are only legible zoomed in.
+                            "radiusMinPixels": 0,
+                            "radiusMaxPixels": 400,
+                            "fillColor": TRANSPARENT,
+                            "stroked": True,
+                            "lineColor": GEOFENCE_GREY,
+                            "lineWidthMinPixels": 1,
+                            "data": {
+                                "query": (
+                                    "SELECT SITE_ID AS site_id, "
+                                    "ST_X(ANY_VALUE(SITE_GEOG)) AS lng, "
+                                    "ST_Y(ANY_VALUE(SITE_GEOG)) AS lat "
+                                    "FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+                                    "WHERE REGION = :region AND SERVICE_DATE = " + SD
+                                    + " AND SITE_GEOG IS NOT NULL "
+                                    "AND GEOFENCE_RADIUS_M = %d GROUP BY SITE_ID" % radius_m
+                                ),
+                                "params": dict(CTX),
+                            },
+                        }
+                        for radius_m in GEOFENCE_RADII
+                    ],
                     {
-                        # The fixed estate: larger, near-black, one marker per site.
+                        # The fixed estate: larger, HOLLOW, one marker per site.
                         # Readiness no longer drives the colour (the vehicles carry
                         # that story now) but is rolled into the tooltip.
                         "type": "scatterplot",
@@ -326,8 +420,16 @@ VIEW = {
                         "radiusMinPixels": 6,
                         "radiusMaxPixels": 22,
                         "pickable": True,
+                        "stroked": True,
+                        "lineColor": SITE_STROKE_GREY,
+                        # 2px so the ring stays readable once the fill is gone.
+                        "lineWidthMinPixels": 2,
                         "fillColor": {
-                            "base": SITE_BLACK,
+                            # Transparent at rest, so a site is a grey outline and
+                            # can never be mistaken for a blue vehicle dot. The
+                            # SELECTED site fills solid dark blue - a much stronger
+                            # affordance than it was when every site was filled.
+                            "base": TRANSPARENT,
                             "active": [17, 86, 127, 255],
                             "matchColumn": "site_id",
                             "whenViewStateEquals": "selected_site",
@@ -370,17 +472,20 @@ VIEW = {
                         "visibleWhen": "show_vehicles",
                         "noFit": True,
                         "stroked": True,
-                        # Static grey stroke. Deliberately the SAME grey as the
-                        # DRIVING/IDLE fill so a neutral vehicle reads as one flat
-                        # dot rather than a ringed one.
-                        "lineColor": NEUTRAL_GREY,
+                        # Static blue stroke on EVERY vehicle. For en-route/idle it
+                        # matches the fill, so a neutral vehicle reads as one flat
+                        # blue dot; for the three actionable states it becomes a
+                        # blue ring around a coloured centre, which keeps "this is a
+                        # vehicle" legible at a glance. Never grey - grey now means
+                        # site.
+                        "lineColor": SNOWFLAKE_BLUE,
                         "lineWidthMinPixels": 1,
                         "fillColor": {
                             "column": "status",
                             "palette": VEHICLE_PALETTE,
-                            # Any future status not in the palette degrades to grey
+                            # Any future status not in the palette degrades to blue
                             # rather than to a stray colour.
-                            "default": NEUTRAL_GREY,
+                            "default": SNOWFLAKE_BLUE,
                         },
                         "radius": 70,
                         "radiusMinPixels": 4,

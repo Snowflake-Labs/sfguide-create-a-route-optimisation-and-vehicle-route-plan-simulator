@@ -351,7 +351,7 @@ $$
     LIMIT 1
   ),
   ring AS (
-    SELECT GEOJSON
+    SELECT GEOJSON, RESPONSE
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       P_PROFILE,
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LNG FROM site), (SELECT LAT FROM site))),
@@ -359,7 +359,27 @@ $$
       'time',
       P_REGION))
   )
-  SELECT s.LOCATION_ID, s.SITE_NAME, r.GEOJSON, COALESCE(P_SECONDS, 900)
+  -- FAIL LOUDLY when the routing engine is down. ISOCHRONES degrades a
+  -- suspended engine into a row with GEOJSON = NULL and the reason in
+  -- RESPONSE. The map layer drops null geometry silently (layer-compiler
+  -- skips falsy geojsonColumn values), so a suspended region used to be
+  -- indistinguishable from "this site has no ring" - a blank map with no
+  -- explanation. Raising instead routes the request through the app's
+  -- existing suspended-engine path: /api/query matches 'service_unreachable'
+  -- against SUSPEND_SIGNATURES, reads the region out of the 'ors-service-*'
+  -- host, returns a typed 503 and RESUMES the region. So the user gets
+  -- "resume triggered, back in N minutes" instead of an empty layer.
+  -- The raise is a deliberate TO_GEOGRAPHY parse failure: SQL UDFs cannot
+  -- RAISE, and the resulting message carries both strings the detector needs.
+  -- CASE is lazy here (verified against a healthy region), so the cast is
+  -- only evaluated on the failure branch.
+  SELECT s.LOCATION_ID, s.SITE_NAME,
+         CASE
+           WHEN r.GEOJSON IS NOT NULL THEN r.GEOJSON
+           ELSE TO_GEOGRAPHY('ORS ' || COALESCE(r.RESPONSE:error::STRING, 'service_unreachable')
+                             || ' host=' || COALESCE(r.RESPONSE:ors_host::STRING, '?'))
+         END,
+         COALESCE(P_SECONDS, 900)
   FROM site s CROSS JOIN ring r
 $$;
 
@@ -420,17 +440,34 @@ $$
              ARRAY_CONSTRUCT(ARRAY_CONSTRUCT((SELECT LNG FROM site), (SELECT LAT FROM site))),
              P_REGION) AS R
   )
+  -- FAIL LOUDLY on a suspended engine, same reasoning as LIVE_APPROACH_RING.
+  -- This previously read `WHERE m.R:durations IS NOT NULL`, which turned a dead
+  -- routing engine into an empty result set - the inbound table just went blank
+  -- with no explanation. A deliberate TO_NUMBER parse failure carries the two
+  -- strings /api/query needs ('service_unreachable' and the 'ors-service-*'
+  -- host) so the app shows the resume notice instead.
+  --
+  -- Note this raises ONLY when at least one vehicle row exists: with no
+  -- in-flight vehicles the CROSS JOIN yields no rows, the expression is never
+  -- evaluated, and an empty result correctly means "nobody inbound" rather
+  -- than an outage. A null duration for an INDIVIDUAL vehicle (unroutable
+  -- point) still passes through as NULL - only a wholly missing `durations`
+  -- array means the engine itself failed.
   SELECT
     o.VEHICLE_ID,
     s.LOCATION_ID,
     s.SITE_NAME,
-    ROUND(m.R:durations[o.IDX][0]::FLOAT / 60.0, 1)::NUMBER(10,1)   AS MINUTES_OUT,
+    CASE
+      WHEN m.R:durations IS NOT NULL
+        THEN ROUND(m.R:durations[o.IDX][0]::FLOAT / 60.0, 1)::NUMBER(10,1)
+      ELSE TO_NUMBER('ORS ' || COALESCE(m.R:error::STRING, 'service_unreachable')
+                     || ' host=' || COALESCE(m.R:ors_host::STRING, '?'))
+    END                                                             AS MINUTES_OUT,
     ROUND(m.R:distances[o.IDX][0]::FLOAT / 1000.0, 2)::NUMBER(10,2) AS DISTANCE_KM,
     DATEADD('second', m.R:durations[o.IDX][0]::FLOAT::INT, o.TS) AS ETA_TS,
     o.TS,
     o.POINT_GEOM
   FROM ordered o CROSS JOIN mtx m CROSS JOIN site s
-  WHERE m.R:durations IS NOT NULL
 $$;
 
 -- ---------------------------------------------------------------------
@@ -528,6 +565,14 @@ $$
     WHERE n.SITE_ID IN (SELECT SID FROM enroute)
     GROUP BY n.SITE_ID
   ),
+  -- DELIBERATELY DEGRADES, unlike LIVE_APPROACH_RING and LIVE_INBOUND_ETA which
+  -- raise when the engine is down. Those two exist only to show ORS output, so
+  -- an outage leaves them nothing to say. This function is different: vehicle
+  -- positions and ON_SITE / JUST_LEFT / IDLE all come from Snowflake data and
+  -- stay correct without routing. Raising here would blank the whole vehicles
+  -- layer over a missing sub-status. So a dead engine costs only APPROACHING
+  -- (those vehicles read DRIVING, the honest fallback), and the ring layer on
+  -- the same map raises anyway - so the suspended banner still tells the user.
   mtx AS (
     SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
              P_PROFILE,

@@ -2858,7 +2858,7 @@
     "label": "Delivery Sync",
     "category": "Core",
     "description": "When each vehicle reached its delivery site and when it left, so the receiving crew travels only once the load is actually on the floor.",
-    "info": "Arrival and departure are detected from geofence entry and exit, not from a status flag: every position ping is tested against the site's own radius (DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped into a visit, and the arrival/departure pair is taken from the stationary core of that visit. The approach ring and the inbound ETA are computed live by the routing engine at the replay instant. This page shows ONE service day, and the As Of card names the exact instant being replayed. The day is the busiest delivery day inside the global date range; if the selected range contains no deliveries at all, it falls back to the busiest day for the region so the page still shows something, and the As Of card is what tells you which day and time you are looking at. The replay clock steps in 10-minute increments, which is finer than the median time on site, so a typical delivery is visible while the vehicle is still there. On the map, black markers are the delivery sites and the smaller dots are vehicles, coloured only when their state is actionable: green on site, red just left, yellow inside the live drive-time approach band. En route and idle vehicles stay grey so the eye lands on the few that matter. One caveat worth knowing: a site reading EXPECTED is hindsight, not a forecast - the visit is in the data because it was detected later the same day. In production that state would come from the dispatch plan. READY and IN_PROGRESS are direct detections.",
+    "info": "Arrival and departure are detected from geofence entry and exit, not from a status flag: every position ping is tested against the site's own radius (DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped into a visit, and the arrival/departure pair is taken from the stationary core of that visit. The approach ring and the inbound ETA are computed live by the routing engine at the replay instant. This page shows ONE service day, and the As Of card names the exact instant being replayed. The day is the busiest delivery day inside the global date range; if the selected range contains no deliveries at all, it falls back to the busiest day for the region so the page still shows something, and the As Of card is what tells you which day and time you are looking at. The replay clock steps in 10-minute increments, which is finer than the median time on site, so a typical delivery is visible while the vehicle is still there. On the map, hollow grey rings are the delivery sites and the smaller solid dots are vehicles, coloured only when their state is actionable: green on site, red just left, yellow inside the live drive-time approach band. En route and idle vehicles stay Snowflake blue so the eye lands on the few that matter. Grey is only ever site furniture and blue is only ever a vehicle, so the two classes cannot be confused. An optional Site geofence layer (off by default) draws each site's true 100-200 m detection radius; it is only legible zoomed in, because that is how big those circles really are. One caveat worth knowing: a site reading EXPECTED is hindsight, not a forecast - the visit is in the data because it was detected later the same day. In production that state would come from the dispatch plan. READY and IN_PROGRESS are direct detections.",
     "agentKnowledge": {
       "preferredTool": "query_delivery_sync",
       "keyMetrics": [
@@ -2876,7 +2876,7 @@
         "Which vehicles are within 15 minutes of their next site?",
         "Which sites are still waiting on a delivery?"
       ],
-      "gotchas": "Readiness is evaluated AT the replay hour, not at wall-clock now, so the same site reads EXPECTED earlier in the day and READY later. IMPORTANT: EXPECTED is NOT a forecast. A visit only exists because it was detected from telemetry, so at an early replay instant a later visit reads EXPECTED purely because the rest of the day is already in the data - it is hindsight. In production that state would come from the dispatch plan instead. READY and IN_PROGRESS are direct detections and carry no such caveat. On the map, site markers are neutral black and do NOT encode readiness; readiness lives in the KPI cards, the readiness table and the site tooltip. Vehicle colour carries the actionable state, and only three states are coloured (on site, just left, approaching) - en route and idle are both grey on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing engine, not a straight-line radius. A visit is only counted once the vehicle was genuinely stationary inside the geofence for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site produces no event. The approach ring is computed outward FROM the site so it only approximates drive time toward it; the quoted minutes-out always comes from the live matrix call instead. SOURCE_STATUS_HINT separates deliveries from pickups and idles but is descriptive only and plays no part in detection."
+      "gotchas": "Readiness is evaluated AT the replay hour, not at wall-clock now, so the same site reads EXPECTED earlier in the day and READY later. IMPORTANT: EXPECTED is NOT a forecast. A visit only exists because it was detected from telemetry, so at an early replay instant a later visit reads EXPECTED purely because the rest of the day is already in the data - it is hindsight. In production that state would come from the dispatch plan instead. READY and IN_PROGRESS are direct detections and carry no such caveat. On the map, sites are hollow grey rings and do NOT encode readiness; readiness lives in the KPI cards, the readiness table and the site tooltip. Vehicle colour carries the actionable state, and only three states are coloured (on site, just left, approaching) - en route and idle are both Snowflake blue on purpose. APPROACHING is a LIVE ROAD-TIME threshold from the routing engine, not a straight-line radius. A visit is only counted once the vehicle was genuinely stationary inside the geofence for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site produces no event. The approach ring is computed outward FROM the site so it only approximates drive time toward it; the quoted minutes-out always comes from the live matrix call instead. If the routing engine is suspended the ring and the inbound ETA RAISE rather than return nothing, so the app shows a resume notice instead of a silently empty map; the optional geofence layer needs no routing and keeps working regardless. SOURCE_STATUS_HINT separates deliveries from pickups and idles but is descriptive only and plays no part in detection."
     },
     "layout": {
       "default": {
@@ -2980,8 +2980,13 @@
           "toggles": [
             {
               "key": "show_ring",
-              "label": "Approach ring",
+              "label": "Approach ring (15 min)",
               "default": true
+            },
+            {
+              "key": "show_geofence",
+              "label": "Site geofence (100-200 m)",
+              "default": false
             },
             {
               "key": "show_vehicles",
@@ -3020,28 +3025,38 @@
             {
               "label": "En route / idle",
               "color": [
-                90,
-                99,
-                104,
-                255
+                41,
+                181,
+                232,
+                240
               ]
             },
             {
-              "label": "Delivery site",
+              "label": "Delivery site (grey ring)",
               "color": [
-                33,
-                41,
-                48,
+                90,
+                99,
+                104,
                 235
               ]
             },
             {
+              "label": "Geofence 100-200 m",
+              "color": [
+                90,
+                99,
+                104,
+                130
+              ],
+              "shape": "line"
+            },
+            {
               "label": "Approach ring",
               "color": [
-                41,
-                181,
-                232,
-                200
+                17,
+                86,
+                127,
+                220
               ],
               "shape": "line"
             }
@@ -3054,15 +3069,15 @@
               "visibleWhen": "show_ring",
               "noFit": true,
               "fillColor": [
-                41,
-                181,
-                232,
+                17,
+                86,
+                127,
                 30
               ],
               "lineColor": [
-                41,
-                181,
-                232,
+                17,
+                86,
+                127,
                 220
               ],
               "lineWidth": 2,
@@ -3081,6 +3096,74 @@
             },
             {
               "type": "scatterplot",
+              "id": "geofence-200",
+              "lng": "lng",
+              "lat": "lat",
+              "visibleWhen": "show_geofence",
+              "noFit": true,
+              "radius": 200,
+              "radiusMinPixels": 0,
+              "radiusMaxPixels": 400,
+              "fillColor": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "stroked": true,
+              "lineColor": [
+                90,
+                99,
+                104,
+                130
+              ],
+              "lineWidthMinPixels": 1,
+              "data": {
+                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 200 GROUP BY SITE_ID",
+                "params": {
+                  "region": "context.region",
+                  "vehicle_type": "context.vehicle_type",
+                  "date_range_start": "context.date_range_start",
+                  "date_range_end": "context.date_range_end"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "geofence-100",
+              "lng": "lng",
+              "lat": "lat",
+              "visibleWhen": "show_geofence",
+              "noFit": true,
+              "radius": 100,
+              "radiusMinPixels": 0,
+              "radiusMaxPixels": 400,
+              "fillColor": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "stroked": true,
+              "lineColor": [
+                90,
+                99,
+                104,
+                130
+              ],
+              "lineWidthMinPixels": 1,
+              "data": {
+                "query": "SELECT SITE_ID AS site_id, ST_X(ANY_VALUE(SITE_GEOG)) AS lng, ST_Y(ANY_VALUE(SITE_GEOG)) AS lat FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1)) AND SITE_GEOG IS NOT NULL AND GEOFENCE_RADIUS_M = 100 GROUP BY SITE_ID",
+                "params": {
+                  "region": "context.region",
+                  "vehicle_type": "context.vehicle_type",
+                  "date_range_start": "context.date_range_start",
+                  "date_range_end": "context.date_range_end"
+                }
+              }
+            },
+            {
+              "type": "scatterplot",
               "id": "sites",
               "lng": "lng",
               "lat": "lat",
@@ -3088,12 +3171,20 @@
               "radiusMinPixels": 6,
               "radiusMaxPixels": 22,
               "pickable": true,
+              "stroked": true,
+              "lineColor": [
+                90,
+                99,
+                104,
+                235
+              ],
+              "lineWidthMinPixels": 2,
               "fillColor": {
                 "base": [
-                  33,
-                  41,
-                  48,
-                  235
+                  0,
+                  0,
+                  0,
+                  0
                 ],
                 "active": [
                   17,
@@ -3125,10 +3216,10 @@
               "noFit": true,
               "stroked": true,
               "lineColor": [
-                90,
-                99,
-                104,
-                255
+                41,
+                181,
+                232,
+                240
               ],
               "lineWidthMinPixels": 1,
               "fillColor": {
@@ -3153,23 +3244,23 @@
                     245
                   ],
                   "DRIVING": [
-                    90,
-                    99,
-                    104,
-                    255
+                    41,
+                    181,
+                    232,
+                    240
                   ],
                   "IDLE": [
-                    90,
-                    99,
-                    104,
-                    255
+                    41,
+                    181,
+                    232,
+                    240
                   ]
                 },
                 "default": [
-                  90,
-                  99,
-                  104,
-                  255
+                  41,
+                  181,
+                  232,
+                  240
                 ]
               },
               "radius": 70,
