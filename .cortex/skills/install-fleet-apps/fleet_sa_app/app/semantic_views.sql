@@ -500,3 +500,76 @@ Conventions:
 - "which plant supplies the most customers" -> customer_count grouped by current_plant.
 IMPORTANT: the "location swap" analysis ("where would swapping the source plant reduce freight cost", "how much can we save") is computed LIVE in the Freight Sourcing Optimizer app page (ORS road distance via MATRIX_TABULAR), not in this view. Direct such questions to that page / the routing tools; this view answers current-estate composition and spend only.'
 ;
+
+-- ============ SV_DELIVERY_SYNC (bound onto FLEET_APP.DELIVERY_SYNC.*) ============
+-- SV_DELIVERY_SYNC - site arrival / departure ("was the load delivered yet?")
+-- Source: FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS (one row per detected visit).
+-- Deploy target: FLEET_INTELLIGENCE.SEMANTIC
+-- SITE_GEOG is deliberately excluded (GEOGRAPHY is not supported in a semantic
+-- view). Single fact table, so no join ambiguity.
+--
+-- Scope boundary worth stating: this view answers HISTORICAL questions ("when
+-- did it arrive", "how long was it on site", "which sites were served"). The
+-- forward-looking questions ("how far out is the vehicle now", "what is inside
+-- the 15-minute ring") are answered by LIVE ORS calls on the Delivery Sync page
+-- and cannot be modeled here - the AI_SQL_GENERATION text below redirects them
+-- rather than letting the model invent an ETA column.
+
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERY_SYNC
+
+  TABLES (
+    visits AS FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
+      PRIMARY KEY (VISIT_ID)
+  )
+
+  FACTS (
+    visits.dwell_minutes AS DWELL_MINUTES COMMENT = 'Minutes the vehicle was stationary on site (the unload window)'
+    , visits.dwell_seconds AS DWELL_SECONDS COMMENT = 'Seconds the vehicle was stationary on site'
+    , visits.stationary_pings AS STATIONARY_PINGS COMMENT = 'Position pings recorded while stationary inside the geofence'
+    , visits.fence_pings AS FENCE_PINGS COMMENT = 'Position pings recorded inside the geofence, moving or stationary'
+    , visits.chord_m AS CHORD_M COMMENT = 'Metres between the geofence entry and exit point; small for a genuine stop, large for a pass-by'
+    , visits.max_speed_in_fence AS MAX_SPEED_IN_FENCE COMMENT = 'Peak speed observed inside the geofence'
+    , visits.geofence_radius_m AS GEOFENCE_RADIUS_M COMMENT = 'Geofence radius applied for this site type and vehicle type'
+    , visits.visit_seq AS VISIT_SEQ COMMENT = 'Sequence number distinguishing repeat visits by the same vehicle to the same site'
+  )
+
+  DIMENSIONS (
+    visits.region AS REGION COMMENT = 'Region the visit occurred in'
+    , visits.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('truck', 'vehicle', 'asset') COMMENT = 'Vehicle that made the delivery'
+    , visits.vehicle_type AS VEHICLE_TYPE COMMENT = 'Vehicle class (hgv, car, ebike)'
+    , visits.site_id AS SITE_ID COMMENT = 'Delivery site identifier'
+    , visits.site_name AS SITE_NAME WITH SYNONYMS ('site', 'account', 'location', 'customer') COMMENT = 'Delivery site name'
+    , visits.site_type AS SITE_TYPE COMMENT = 'Site type (WAREHOUSE, STORE, DESTINATION)'
+    , visits.site_category AS SITE_CATEGORY COMMENT = 'Site category from the place catalogue'
+    , visits.journey_id AS JOURNEY_ID COMMENT = 'Journey the visit belonged to'
+    , visits.service_date AS SERVICE_DATE WITH SYNONYMS ('date', 'day') COMMENT = 'Date of the visit'
+    , visits.arrival_ts AS ARRIVAL_TS WITH SYNONYMS ('arrived', 'arrival time') COMMENT = 'When the vehicle became stationary inside the site geofence'
+    , visits.departure_ts AS DEPARTURE_TS WITH SYNONYMS ('departed', 'left', 'product ready') COMMENT = 'When the vehicle stopped being stationary inside the geofence; the load is on the floor from this moment'
+    , visits.source_status_hint AS SOURCE_STATUS_HINT WITH SYNONYMS ('visit kind') COMMENT = 'Descriptive visit classification from the source feed (DWELL_DESTINATION = delivery, DWELL_ORIGIN = pickup, IDLE, DWELL_REST). Descriptive only; detection is purely geometric'
+  )
+
+  METRICS (
+    visits.total_visits AS COUNT(*) WITH SYNONYMS ('visits', 'stops', 'deliveries') COMMENT = 'Total detected site visits'
+    , visits.avg_time_on_site AS AVG(dwell_minutes) WITH SYNONYMS ('average unload time', 'average time on site') COMMENT = 'Average minutes on site'
+    , visits.total_time_on_site AS SUM(dwell_minutes) COMMENT = 'Total minutes spent on site'
+    , visits.max_time_on_site AS MAX(dwell_minutes) WITH SYNONYMS ('longest stop') COMMENT = 'Longest time on site in minutes'
+    , visits.unique_sites AS COUNT(DISTINCT SITE_ID) WITH SYNONYMS ('sites served', 'accounts served') COMMENT = 'Distinct sites visited'
+    , visits.unique_vehicles AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('vehicles delivering') COMMENT = 'Distinct vehicles that made visits'
+  )
+
+  COMMENT = 'Delivery sync: geofence-detected site arrivals and departures, so a receiving crew knows when a load actually landed and how long the vehicle was on site.'
+
+  AI_SQL_GENERATION 'Site arrival/departure semantic view for the Route Optimisation & Fleet Intelligence solution.
+Entity:
+- visits (DT_SITE_VISITS): one row per detected vehicle visit to a site. arrival_ts is when the vehicle became stationary inside the site geofence; departure_ts is when it left, which is the moment the load is available for the receiving crew.
+Conventions:
+- "was the load delivered / has the vehicle left site X" -> filter site_name and inspect departure_ts.
+- "how long did it take to unload" / "time on site" -> avg_time_on_site or total_time_on_site.
+- "which sites were served" -> unique_sites, or group total_visits by site_name.
+- "deliveries" specifically (as opposed to pickups or idling) -> filter source_status_hint = DWELL_DESTINATION.
+- repeat visits to the same site on one day are distinct rows, separated by visit_seq.
+IMPORTANT scope limits:
+- There is NO ETA, no predicted arrival and no "minutes out" column here. Forward-looking questions ("how far out is the vehicle", "which vehicles arrive in the next 15 minutes", "what is within the approach ring") are answered by LIVE routing calls on the Delivery Sync page; direct the user there instead of inventing a column.
+- Readiness (EXPECTED / IN_PROGRESS / READY) is evaluated at a chosen instant by the Delivery Sync page, not stored here. This view only holds the completed arrival/departure pair.
+- A vehicle that merely drove past a site is NOT present: a visit requires a genuine stationary period inside the geofence.'
+;
