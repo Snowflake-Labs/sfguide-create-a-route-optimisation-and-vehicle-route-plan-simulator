@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import { logger } from '@/lib/logger';
 import { getAgentConfig, buildCortexUrl, buildCortexRequestBody } from '@/lib/agent-config';
 import { parseCortexStream } from '@/lib/cortex-stream';
-import type { MessagePart } from '@/lib/types';
+import type { MessagePart, SolutionCatalogEntry, UseCase } from '@/lib/types';
+import { compactUseCaseLine } from '@/lib/use-case';
 import {
   detectOrsSuspended,
   detectSuspendedInResult,
@@ -39,6 +40,7 @@ export async function POST(request: NextRequest) {
         exampleQuestions?: string[];
         gotchas?: string;
       };
+      useCase?: UseCase;
     };
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
@@ -67,6 +69,26 @@ export async function POST(request: NextRequest) {
       if (ak.keyMetrics?.length) parts.push(`Key metrics here: ${ak.keyMetrics.join('; ')}.`);
       if (ak.exampleQuestions?.length) parts.push(`Typical questions: ${ak.exampleQuestions.join(' / ')}.`);
       if (ak.gotchas) parts.push(`Note: ${ak.gotchas}`);
+    }
+    // Presenter detail for the view that is actually open, so "how would I demo
+    // this?" / "what does this prove?" / "what would I tell the customer?" are
+    // answerable without the user leaving the view. Only the open view gets the
+    // full block; every other view is one line in the catalog below.
+    const uc = view.useCase;
+    if (uc) {
+      parts.push(`This view exists to answer: ${uc.businessQuestion}`);
+      if (uc.talkTrack?.length) {
+        parts.push(`Demo flow for this view, in order: ${uc.talkTrack.map((s, i) => `(${i + 1}) ${s}`).join(' ')}`);
+      }
+      if (uc.snowflakeCapabilities?.length) {
+        parts.push(`Snowflake capabilities this view proves: ${uc.snowflakeCapabilities.join('; ')}.`);
+      }
+      if (uc.valueDrivers?.length) parts.push(`Customer value: ${uc.valueDrivers.join('; ')}.`);
+      if (uc.dataRequired?.length) {
+        parts.push(`To run this on customer data they must bring: ${uc.dataRequired.join('; ')}.`);
+      }
+      if (uc.method) parts.push(`How the numbers are derived: ${uc.method}`);
+      if (uc.caveats) parts.push(`Be upfront about these limits if asked: ${uc.caveats}`);
     }
     parts.push('Use this context when the user asks about their data, campaigns, performance, or anything the view relates to. Do NOT use it only if the question is clearly about a different topic entirely. When you use the view context, start with "Looking at [view name] (filtered by [active filters]):" matching exactly what the context chip shows. Do NOT suggest or mention any other views in your response.]');
     contextPrefix = parts.join(' ') + '\n\n';
@@ -117,6 +139,16 @@ export async function POST(request: NextRequest) {
     contextPrefix += `[Available panel views - use the exact markdown link format below when your response would benefit from the user exploring data or taking action in the UI:\n${viewLinks}\n\nInclude a view link when: the question is about data that view surfaces, the user could take a useful action in the view, or the answer alone leaves the user without an obvious next step. Do not include links for general or conceptual questions. One or two links per response at most. Always use the markdown link format - never plain text view names.]\n\n`;
   } else if (contextPrefix) {
     contextPrefix += '\n';
+  }
+
+  // Solution catalog: cross-view discovery. availableViews above answers "where do
+  // I click for this data"; this answers "what can we offer this customer", which
+  // is the question a Solution Engineer actually opens with. One bounded line per
+  // view, role-filtered upstream in getPanelContext.
+  const solutionCatalog = (panelContext?.solutionCatalog || []) as SolutionCatalogEntry[];
+  if (solutionCatalog.length > 0) {
+    const lines = solutionCatalog.map((e) => `  ${compactUseCaseLine(e)}`).join('\n');
+    contextPrefix += `[Solution catalog - the use cases this deployment can actually demonstrate:\n${lines}\n\nUse this catalog when the user asks what use cases or demos are available, what to show a given industry or persona, or what fits a customer problem or pain point they describe. Recommend at most 3, ordered by fit, and say in one line why each fits their situation. Link every recommendation with the exact [Label](view:id) markdown format shown above. Only recommend use cases from this catalog - never invent a use case, and never imply a capability that no listed use case covers. If nothing in the catalog fits, say so plainly and name the closest adjacent one. When the user asks for detail about one of them, open it with a view link rather than describing it at length, since the view itself carries the full demo flow.]\n\n`;
   }
 
   // Active dashboard context (region / vehicle / dataset / date range) so the

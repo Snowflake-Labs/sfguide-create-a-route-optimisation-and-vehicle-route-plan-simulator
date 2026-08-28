@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig } from './types';
+import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig, SolutionCatalogEntry } from './types';
 import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
+import { toCatalogEntry } from './use-case';
 import {
   detectSuspendedInResult,
   detectOrsSuspended,
@@ -505,7 +506,7 @@ export const useAppStore = create<AppStore>()(
       getPanelContext: (): PanelContext => {
         const { panel, context, viewContextEnabled, selectedRole } = get();
         if (!viewContextEnabled) {
-          return { activeView: null, viewState: {}, availableViews: [], context, hasUnsavedChanges: false, mapState: null };
+          return { activeView: null, viewState: {}, availableViews: [], solutionCatalog: [], context, hasUnsavedChanges: false, mapState: null };
         }
         let activeView = null;
         if (panel.activeViewId) {
@@ -515,17 +516,26 @@ export const useAppStore = create<AppStore>()(
             label: def?.label || panel.activeViewId,
             description: def?.description || '',
             agentKnowledge: def?.agentKnowledge,
+            useCase: def?.useCase,
           };
         }
-        const availableViews = viewRegistry.list(selectedRole).map((v: { id: string; label: string; description: string }) => ({
+        const visible = viewRegistry.list(selectedRole);
+        const availableViews = visible.map((v: { id: string; label: string; description: string }) => ({
           id: v.id,
           label: v.label,
           description: v.description,
         }));
+        // Cross-view discovery channel: every role-visible view that carries a
+        // useCase, one bounded line each. Role-filtered from the same list as
+        // availableViews so the agent never offers a view the user cannot open.
+        const solutionCatalog: SolutionCatalogEntry[] = visible
+          .filter((v) => v.useCase)
+          .map((v) => toCatalogEntry(v.id, v.label, v.useCase!));
         return {
           activeView,
           viewState: panel.viewState,
           availableViews,
+          solutionCatalog,
           context,
           hasUnsavedChanges: panel.hasUnsavedChanges,
           mapState: panel.mapState,

@@ -34,6 +34,50 @@ export interface AgentKnowledge {
   gotchas?: string;
 }
 
+// Presenter-facing description of what a view is FOR (config-authored in
+// app-views.json, or inline for code-registered views). Single source for two
+// consumers: composeUseCaseMarkdown renders it into the per-view "i" modal for a
+// Solution Engineer about to present, and getPanelContext folds it into the chat
+// agent's grounding so the agent can answer cross-view discovery questions
+// ("what can we show a retail customer?"). Never duplicate this prose into a
+// second field - add a consumer, not a copy. Every field except headline and
+// businessQuestion is optional; absent sections are omitted from both surfaces.
+export interface UseCase {
+  // One customer-facing sentence: what this view does and why it matters.
+  headline: string;
+  // The question a customer walks in with that this view answers.
+  businessQuestion: string;
+  // Personas who buy or use it (e.g. "Dispatch manager", "Head of real estate").
+  audience?: string[];
+  // Industries where this lands (e.g. "Retail", "Logistics", "Public sector").
+  industries?: string[];
+  // Ordered demo steps an SE clicks through, one action per entry.
+  talkTrack?: string[];
+  // Snowflake capabilities the view actually proves. Must be truthful per Tenet 9:
+  // only claim live routing where the view calls ORS at interaction time.
+  snowflakeCapabilities?: string[];
+  // What a customer must bring to run this on their own data.
+  dataRequired?: string[];
+  // Outcome / where the money is, in the customer's terms.
+  valueDrivers?: string[];
+  // How the on-screen numbers are derived (the former `info` methodology prose).
+  method?: string;
+  // Honest demo limits: synthetic proxies, hindsight metrics, assumptions.
+  caveats?: string;
+}
+
+// One catalog entry the chat agent uses for cross-view discovery: bounded to a
+// single line per view so the whole catalog stays cheap to inject every turn.
+export interface SolutionCatalogEntry {
+  id: string;
+  label: string;
+  headline: string;
+  industries?: string[];
+  audience?: string[];
+  // First value driver only - the full list stays in the active view's context.
+  value?: string;
+}
+
 // Compact summary of one rendered map layer, surfaced to the chat agent so it can
 // reason about what is actually on screen (counts, blank layers) instead of guessing.
 // Carries only scalar metadata - never per-feature rows - so it stays cheap and safe.
@@ -72,9 +116,18 @@ export interface MapStateDescriptor {
 }
 
 export interface PanelContext {
-  activeView: { id: string; label: string; description: string; agentKnowledge?: AgentKnowledge } | null;
+  activeView: {
+    id: string;
+    label: string;
+    description: string;
+    agentKnowledge?: AgentKnowledge;
+    useCase?: UseCase;
+  } | null;
   viewState: Record<string, unknown>;
   availableViews: Array<{ label: string; description: string }>;
+  // Every role-visible view that carries a useCase, one compact line each. Drives
+  // "what use cases are available / what fits this customer?" in the chat agent.
+  solutionCatalog: SolutionCatalogEntry[];
   context: Record<string, unknown>;
   hasUnsavedChanges: boolean;
   // Present only when a map area is open; null otherwise.
@@ -92,8 +145,9 @@ export interface ViewDef {
   id: string;
   label: string;
   description: string;
-  // Optional markdown shown in the per-view info overlay ("i" button).
-  info?: string;
+  // Presenter/agent description of the use case. Drives the "i" info overlay
+  // (composed to markdown) and the agent's solution catalog. Absent => no icon.
+  useCase?: UseCase;
   component: LazyExoticComponent<ComponentType<ViewProps>>;
   hidden?: boolean;
   icon?: string;

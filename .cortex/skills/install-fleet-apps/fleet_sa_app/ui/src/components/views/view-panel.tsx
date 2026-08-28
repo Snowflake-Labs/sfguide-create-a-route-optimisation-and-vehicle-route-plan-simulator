@@ -5,6 +5,7 @@ import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import { ViewPicker } from './view-picker';
 import { ViewInfoDialog } from './view-info-dialog';
+import { composeUseCaseMarkdown } from '@/lib/use-case';
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -45,7 +46,7 @@ export function ViewPanel() {
         <div style={{ flex: 1, minWidth: 0 }}>
           <ViewPicker />
         </div>
-        {viewDef?.info && (
+        {viewDef?.useCase && (
           <button
             onClick={() => setShowInfo(true)}
             aria-label="About this view"
@@ -85,8 +86,12 @@ export function ViewPanel() {
           <EmptyPanelState />
         )}
       </div>
-      {showInfo && viewDef?.info && (
-        <ViewInfoDialog title={viewDef.label} content={viewDef.info} onClose={() => setShowInfo(false)} />
+      {showInfo && viewDef?.useCase && (
+        <ViewInfoDialog
+          title={viewDef.label}
+          content={composeUseCaseMarkdown(viewDef.useCase)}
+          onClose={() => setShowInfo(false)}
+        />
       )}
     </div>
   );
