@@ -14,11 +14,27 @@ import sys
 APP = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app" / "app-views.json"
 
 # Shared SQL fragments -------------------------------------------------------
-# Service date: the explicit global date filter when set, else the busiest day
-# in the active dataset so the view is never empty on first open.
-SD = ("COALESCE(:date_range_start::DATE, (SELECT SERVICE_DATE FROM "
-      "FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region "
-      "GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))")
+# Service date. This page is a SINGLE-DAY replay (readiness and both live ORS
+# calls are evaluated at one instant), but the app's global context supplies a
+# date RANGE, not a date. So we resolve the range to the busiest day inside it.
+#
+# Do NOT go back to `SERVICE_DATE = :date_range_start`. The context bar default
+# is `last_365_days` (app-config.json), which app-shell.tsx turns into
+# date_range_start = today-365, so an equality match asks for a day a year ago
+# and every area returns nothing - which is exactly how this view shipped empty.
+#
+# The second COALESCE arm falls back to the region's busiest day when the user's
+# range contains no visits at all, so the page degrades to "showing another day"
+# rather than to blank cards. The resolved date is published as a KPI card so
+# that fallback is visible rather than silent.
+SD = ("COALESCE("
+      "(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+      "WHERE REGION = :region "
+      "AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) "
+      "AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) "
+      "GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1), "
+      "(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+      "WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1))")
 # As-of instant: the replay clock. Readiness and both live ORS calls are all
 # evaluated at this instant so the whole page tells one consistent story.
 ASOF = "DATEADD('hour', COALESCE(:as_of_hour, 9), " + SD + "::TIMESTAMP_NTZ)"
@@ -59,7 +75,12 @@ VIEW = {
         "(DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped "
         "into a visit, and the arrival/departure pair is taken from the stationary core "
         "of that visit. The approach ring and the inbound ETA are computed live by the "
-        "routing engine at the replay instant."
+        "routing engine at the replay instant. "
+        "This page shows ONE service day, named on the Service Day card: the busiest "
+        "delivery day inside the global date range. If the selected range contains no "
+        "deliveries at all, it falls back to the busiest day for the region so the page "
+        "still shows something, and the Service Day card is what tells you which day "
+        "you are looking at."
     ),
     "agentKnowledge": {
         "preferredTool": "query_delivery_sync",
@@ -110,12 +131,18 @@ VIEW = {
         "delivery_sync": {
             "component": "MetricCards",
             "data": {
+                # COUNT_IF over an EMPTY set returns NULL in Snowflake, not 0, so
+                # without COALESCE an out-of-scope date renders four dashes and a
+                # data-scoping problem is indistinguishable from a broken view.
+                # A genuine zero must read "0"; only avg_dwell is legitimately
+                # dash-able, since no average exists over no rows.
                 "query": (
-                    "SELECT COUNT(*) AS visits, "
-                    "COUNT_IF(READINESS_ENUM='READY') AS ready, "
-                    "COUNT_IF(READINESS_ENUM='IN_PROGRESS') AS on_site, "
-                    "COUNT_IF(READINESS_ENUM='EXPECTED') AS expected, "
-                    "ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell "
+                    "SELECT COALESCE(COUNT(*), 0) AS visits, "
+                    "COALESCE(COUNT_IF(READINESS_ENUM='READY'), 0) AS ready, "
+                    "COALESCE(COUNT_IF(READINESS_ENUM='IN_PROGRESS'), 0) AS on_site, "
+                    "COALESCE(COUNT_IF(READINESS_ENUM='EXPECTED'), 0) AS expected, "
+                    "ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, "
+                    "TO_VARCHAR(" + SD + ", 'DD Mon') AS service_day "
                     "FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, "
                     + ASOF + ")) WHERE SERVICE_DATE = " + SD
                 ),
@@ -126,6 +153,10 @@ VIEW = {
                         {"column": "on_site", "label": "Vehicle On Site", "format": "number"},
                         {"column": "expected", "label": "Still Expected", "format": "number"},
                         {"column": "avg_dwell", "label": "Avg Min On Site", "format": "number_2dp"},
+                        # Which day is on screen. Without this the page asserts
+                        # "56 ready" with no idea of when, and the SD range
+                        # fallback above would be invisible.
+                        {"column": "service_day", "label": "Service Day", "format": "text"},
                     ]
                 },
             },
