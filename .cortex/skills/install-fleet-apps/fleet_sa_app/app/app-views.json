@@ -2894,7 +2894,8 @@
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
             "date_range_start": "context.date_range_start",
-            "date_range_end": "context.date_range_end"
+            "date_range_end": "context.date_range_end",
+            "as_of_hour": "viewState.as_of_hour"
           },
           "mapping": {
             "metrics": [
@@ -3056,7 +3057,8 @@
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
                   "date_range_start": "context.date_range_start",
-                  "date_range_end": "context.date_range_end"
+                  "date_range_end": "context.date_range_end",
+                  "selected_site": "viewState.selected_site"
                 }
               }
             },
@@ -3113,7 +3115,8 @@
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
                   "date_range_start": "context.date_range_start",
-                  "date_range_end": "context.date_range_end"
+                  "date_range_end": "context.date_range_end",
+                  "as_of_hour": "viewState.as_of_hour"
                 }
               }
             },
@@ -3149,7 +3152,9 @@
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
                   "date_range_start": "context.date_range_start",
-                  "date_range_end": "context.date_range_end"
+                  "date_range_end": "context.date_range_end",
+                  "as_of_hour": "viewState.as_of_hour",
+                  "selected_site": "viewState.selected_site"
                 }
               }
             }
@@ -3164,7 +3169,8 @@
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
             "date_range_start": "context.date_range_start",
-            "date_range_end": "context.date_range_end"
+            "date_range_end": "context.date_range_end",
+            "as_of_hour": "viewState.as_of_hour"
           }
         },
         "config": {
@@ -3180,7 +3186,8 @@
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
             "date_range_start": "context.date_range_start",
-            "date_range_end": "context.date_range_end"
+            "date_range_end": "context.date_range_end",
+            "as_of_hour": "viewState.as_of_hour"
           }
         },
         "config": {
@@ -3200,7 +3207,9 @@
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
             "date_range_start": "context.date_range_start",
-            "date_range_end": "context.date_range_end"
+            "date_range_end": "context.date_range_end",
+            "as_of_hour": "viewState.as_of_hour",
+            "selected_site": "viewState.selected_site"
           }
         },
         "config": {

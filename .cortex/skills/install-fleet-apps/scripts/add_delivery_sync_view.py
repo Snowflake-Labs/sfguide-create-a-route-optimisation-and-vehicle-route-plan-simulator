@@ -361,8 +361,40 @@ def block_span(text: str, key: str):
     raise ValueError('unbalanced braces scanning %s' % key)
 
 
+# viewState binds this view can emit. The renderer only supplies a bind if the
+# area declares it in data.params, so any query referencing one of these without
+# the matching entry fails at runtime with
+# "Bind variable :<name> not set" - which is exactly what shipped the first time.
+# Deriving the bindings from the SQL removes the chance of missing one.
+VIEWSTATE_BINDS = ("as_of_hour", "selected_site")
+
+
+def bind_viewstate_params(node) -> int:
+    """Walk the view tree and, for every data.query, add the viewState params
+    that query actually references. Returns the number of bindings added."""
+    added = 0
+    if isinstance(node, dict):
+        data = node.get("data")
+        if isinstance(data, dict) and isinstance(data.get("query"), str):
+            q = data["query"]
+            params = data.setdefault("params", {})
+            for name in VIEWSTATE_BINDS:
+                if (":" + name) in q and name not in params:
+                    params[name] = "viewState." + name
+                    added += 1
+        for val in node.values():
+            added += bind_viewstate_params(val)
+    elif isinstance(node, list):
+        for val in node:
+            added += bind_viewstate_params(val)
+    return added
+
+
 def main() -> int:
     text = APP.read_text()
+
+    n = bind_viewstate_params(VIEW)
+    print("viewState bindings injected: %d" % n)
 
     # Remove any prior delivery_sync block (idempotency), including its comma.
     prior = block_span(text, 'delivery_sync')
