@@ -272,6 +272,46 @@ SELECT
 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS v;
 
 -- ---------------------------------------------------------------------
+-- 4b. F_SITE_READINESS_ASOF - readiness evaluated AT AN INSTANT.
+--     VW_SITE_READINESS above reports the terminal state of each visit, so on
+--     historical data every visit is READY and nothing is ever IN_PROGRESS.
+--     Replaying a timeline (which is what a demo or an "as of 09:00" question
+--     does) needs the state the site was in at that instant:
+--       EXPECTED    - as-of is before the vehicle arrived
+--       IN_PROGRESS - vehicle on site at the as-of instant
+--       READY       - vehicle had already left
+--     P_AS_OF NULL means "now".
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.DELIVERY_SYNC.F_SITE_READINESS_ASOF(
+  P_REGION VARCHAR, P_AS_OF TIMESTAMP_NTZ)
+RETURNS TABLE (REGION VARCHAR, SERVICE_DATE DATE, SITE_ID VARCHAR, SITE_NAME VARCHAR,
+               SITE_TYPE VARCHAR, SITE_GEOG GEOGRAPHY, VEHICLE_ID VARCHAR,
+               JOURNEY_ID VARCHAR, VISIT_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
+               DEPARTURE_TS TIMESTAMP_NTZ, DWELL_MINUTES NUMBER(10,1),
+               PRODUCT_READY_TS TIMESTAMP_NTZ, SOURCE_STATUS_HINT VARCHAR,
+               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT
+    v.REGION, v.SERVICE_DATE, v.SITE_ID, v.SITE_NAME, v.SITE_TYPE, v.SITE_GEOG,
+    v.VEHICLE_ID, v.JOURNEY_ID, v.VISIT_ID, v.ARRIVAL_TS, v.DEPARTURE_TS,
+    v.DWELL_MINUTES, v.DEPARTURE_TS AS PRODUCT_READY_TS, v.SOURCE_STATUS_HINT,
+    CASE
+      WHEN COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) < v.ARRIVAL_TS   THEN 'EXPECTED'
+      WHEN COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) < v.DEPARTURE_TS THEN 'IN_PROGRESS'
+      ELSE 'READY'
+    END AS READINESS_ENUM,
+    IFF(COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) >= v.DEPARTURE_TS,
+        ROUND(DATEDIFF('second', v.DEPARTURE_TS,
+                       COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)) / 60.0, 1),
+        NULL)::NUMBER(12,1) AS MINUTES_SINCE_READY
+  FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS v
+  WHERE (P_REGION IS NULL OR v.REGION = P_REGION)
+$$;
+
+-- ---------------------------------------------------------------------
 -- 5. LIVE_APPROACH_RING - live drive-time ring around a site.
 --    This is the APPROACHING trigger geometry and the map layer source.
 --
@@ -462,6 +502,22 @@ CREATE OR REPLACE VIEW FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE
   GROUP BY d.REGION, d.VEHICLE_TYPE;
 
 -- Live UDTF passthroughs so the app never references FLEET_INTELLIGENCE.
+CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(
+  P_REGION VARCHAR, P_AS_OF TIMESTAMP_NTZ)
+RETURNS TABLE (REGION VARCHAR, SERVICE_DATE DATE, SITE_ID VARCHAR, SITE_NAME VARCHAR,
+               SITE_TYPE VARCHAR, SITE_GEOG GEOGRAPHY, VEHICLE_ID VARCHAR,
+               JOURNEY_ID VARCHAR, VISIT_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
+               DEPARTURE_TS TIMESTAMP_NTZ, DWELL_MINUTES NUMBER(10,1),
+               PRODUCT_READY_TS TIMESTAMP_NTZ, SOURCE_STATUS_HINT VARCHAR,
+               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.F_SITE_READINESS_ASOF(
+    P_REGION, P_AS_OF))
+$$;
+
 CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.LIVE_APPROACH_RING(
   P_REGION VARCHAR, P_PROFILE VARCHAR, P_SITE_ID VARCHAR, P_SECONDS NUMBER)
 RETURNS TABLE (SITE_ID VARCHAR, SITE_NAME VARCHAR, RING_GEOG GEOGRAPHY, RANGE_SECONDS NUMBER)

@@ -60,6 +60,11 @@ ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
 # truth per fleet_tools/user/src/catalog.ts; deployed in step 3 after the contract.
 ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-agent.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
+# DELIVERY_SYNC: site arrival/departure/approach detection. Reads the physical
+# dataset-scoped projections (a Dynamic Table cannot read FLEET_APP.CORE.VW_*,
+# which wrap table functions), so it must run AFTER the packs have built the
+# contract and the projections exist, and BEFORE the semantic views bind to it.
+DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 # SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
@@ -403,6 +408,23 @@ if [ "${SKIP_PACKS:-0}" != "1" ]; then
   step "4 packs" OK
 else
   step "4 packs" SKIPPED
+fi
+
+# ── 4.2 DELIVERY_SYNC layer (site arrival / departure / approach events) ──
+# Builds FLEET_INTELLIGENCE.DELIVERY_SYNC (geofence-episode Dynamic Table + the
+# live ORS approach-ring and inbound-ETA UDTFs) and the neutral
+# FLEET_APP.DELIVERY_SYNC contract the app view and semantic view read. Runs
+# AFTER packs (needs the contract + the V_*_CURRENT projections) and BEFORE
+# semantic views (SV_DELIVERY_SYNC binds to FLEET_APP.DELIVERY_SYNC).
+# Best-effort: a failure here must not abort an otherwise good install, but it
+# does disable the delivery-notification view.
+if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
+  note "[4.2/8] delivery-sync layer (site arrival/departure detection)..."
+  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" >/tmp/ifa_delivery_sync.log 2>&1 \
+    && step "4.2 delivery-sync" OK \
+    || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
+else
+  step "4.2 delivery-sync" SKIPPED
 fi
 
 # ── 4.5 semantic views (Cortex Analyst SVs the consumer agent binds to) ──
