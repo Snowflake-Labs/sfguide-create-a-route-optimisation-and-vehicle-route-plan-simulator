@@ -204,14 +204,23 @@ VIEW = {
                 "default": 540,
                 "format": "time_of_day",
                 "play": True,
+                # playIntervalMs is a MINIMUM frame time, not a period: Play waits
+                # for every area's query to settle before stepping, so the panels
+                # stay in lockstep with the clock. playMaxWaitMs caps that wait so
+                # one slow query degrades playback to a timed advance rather than
+                # freezing it.
                 "playIntervalMs": 400,
+                "playMaxWaitMs": 8000,
                 "info": (
                     "Scrubs the service day in 10-minute steps. Everything on the page "
                     "is evaluated at this instant: site readiness, the notification feed "
                     "cutoff, and the live approach ring and inbound ETA. 10 minutes is "
                     "finer than the median time on site (about 12 minutes), so a typical "
                     "delivery is always caught while the vehicle is still there; an "
-                    "hourly step misses roughly two thirds of them."
+                    "hourly step misses roughly two thirds of them. Play advances only "
+                    "once every panel has finished loading the current instant, so a step "
+                    "takes as long as the slowest query (the live routing call) rather "
+                    "than a fixed interval."
                 ),
             },
             "emits": {"as_of_minute": ""},

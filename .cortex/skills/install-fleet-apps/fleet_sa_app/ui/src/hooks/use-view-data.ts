@@ -51,6 +51,8 @@ export function useViewData(
   // Queries for the ephemeral agent-emitted page run through the owner's-rights
   // dynamic boundary (/api/query dynamic:true). Trusted shipped views do not.
   const isDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
+  const beginFetch = useAppStore((s) => s.beginFetch);
+  const endFetch = useAppStore((s) => s.endFetch);
   const [data, setData] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +78,15 @@ export function useViewData(
     setLoading(true);
     setError(null);
     setSuspended(null);
+
+    // Global in-flight accounting. The replay Slider gates its auto-advance on
+    // the count reaching zero, so this MUST be paired 1:1 with the endFetch() in
+    // the finally below. Every exit path from here on (success, abort, HTTP
+    // error, thrown error, and the early return on the suspended-503) has to
+    // decrement exactly once: a leak leaves the count above zero forever and
+    // permanently stalls playback. The decrement therefore lives OUTSIDE the
+    // `!aborted` guard, because an aborted request is still a finished request.
+    beginFetch();
 
     try {
       const res = await fetch('/api/query', {
@@ -107,6 +118,8 @@ export function useViewData(
         setError(err instanceof Error ? err.message : 'Query failed');
       }
     } finally {
+      // Unconditional: balances beginFetch() on every path, including aborts.
+      endFetch();
       if (!controller.signal.aborted) {
         setLoading(false);
       }

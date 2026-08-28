@@ -88,6 +88,14 @@ interface AppState {
   // Resolved FLEET_ADMIN_APP URL (admins only, from /api/admin-link); null hides
   // the header cross-link.
   adminAppUrl: string | null;
+  // Number of view-data queries currently in flight, across ALL areas. Each
+  // useViewData call increments on request start and decrements on settle, so a
+  // value of 0 means every area has finished fetching for the current params.
+  // The replay Slider gates its auto-advance on this: a blind timer outruns the
+  // queries (a step fires 5 requests, the live ORS ETA alone averages ~1s) and
+  // because useViewData aborts the previous request on every param change, the
+  // dependent areas never complete a fetch while playing.
+  inflight: number;
 }
 
 interface AppActions {
@@ -103,6 +111,11 @@ interface AppActions {
   showDynamicView: (raw: unknown, title?: string | null) => void;
   updateViewState: (patch: Record<string, unknown>) => void;
   setMapState: (mapState: MapStateDescriptor | null) => void;
+  // Paired in-flight accounting for view-data queries. MUST be 1:1 - a begin
+  // without a matching end leaves inflight above zero forever and permanently
+  // stalls any consumer gating on it.
+  beginFetch: () => void;
+  endFetch: () => void;
   setDirty: (isDirty: boolean) => void;
   setContext: (key: string, value: unknown) => void;
   getPanelContext: () => PanelContext;
@@ -153,6 +166,7 @@ export const useAppStore = create<AppStore>()(
       selectedRole: 'admin' as AppRole,
       detectedRole: null,
       adminAppUrl: null,
+      inflight: 0,
 
       addUserMessage: (text: string) => {
         const msg: Message = {
@@ -416,6 +430,17 @@ export const useAppStore = create<AppStore>()(
       // blank layers, framed extent, selection) for the chat agent's context.
       setMapState: (mapState: MapStateDescriptor | null) => {
         set((s) => ({ panel: { ...s.panel, mapState } }));
+      },
+
+      // In-flight accounting for view-data queries (see AppState.inflight).
+      // Clamped at zero so an unbalanced extra decrement cannot drive the count
+      // negative and mask a genuine leak.
+      beginFetch: () => {
+        set((s) => ({ inflight: s.inflight + 1 }));
+      },
+
+      endFetch: () => {
+        set((s) => ({ inflight: Math.max(0, s.inflight - 1) }));
       },
 
       setDirty: (isDirty: boolean) => {

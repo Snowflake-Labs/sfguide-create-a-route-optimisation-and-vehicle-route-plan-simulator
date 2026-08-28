@@ -2960,7 +2960,8 @@
           "format": "time_of_day",
           "play": true,
           "playIntervalMs": 400,
-          "info": "Scrubs the service day in 10-minute steps. Everything on the page is evaluated at this instant: site readiness, the notification feed cutoff, and the live approach ring and inbound ETA. 10 minutes is finer than the median time on site (about 12 minutes), so a typical delivery is always caught while the vehicle is still there; an hourly step misses roughly two thirds of them."
+          "playMaxWaitMs": 8000,
+          "info": "Scrubs the service day in 10-minute steps. Everything on the page is evaluated at this instant: site readiness, the notification feed cutoff, and the live approach ring and inbound ETA. 10 minutes is finer than the median time on site (about 12 minutes), so a typical delivery is always caught while the vehicle is still there; an hourly step misses roughly two thirds of them. Play advances only once every panel has finished loading the current instant, so a step takes as long as the slowest query (the live routing call) rather than a fixed interval."
         },
         "emits": {
           "as_of_minute": ""
