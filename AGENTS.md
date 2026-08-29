@@ -22,7 +22,7 @@ Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook a
 8. **New-deployment-first** - fixes land in pack/config/synapse source so a fresh deploy is correct; live hotfix is always secondary.
 9. **Live routing, not precomputed** - demo analytics that depend on drive-time reachability, catchments, matrices, or optimization MUST call the ORS functions (`OPENROUTESERVICE_APP.CORE.ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION`) at interaction time, NOT read materialized/precomputed ORS results. Precomputing isochrone or matrix output into tables is an anti-pattern: it hides the routing engine (the thing being demoed), goes stale when the estate/region/params change, and diverges from what a customer would build. Config-driven views call ORS inline by resolving the interactive selection into scalar-subquery / bind args (ORS SQL functions only evaluate with literal, scalar-subquery, or bind args - NOT correlated per-row columns; `ISOCHRONES` range is in MINUTES). Guard with `COALESCE(:selection, <default>)` so nothing is called with a NULL arg, and remember every ORS call requires the region's service RESUMED (a suspended service returns an embedded error, not a throw). Precomputed **non-ORS** reference data (Overture POI subsets, address/household density, synthetic commercials) is fine - the rule is specifically about not caching ORS engine output.
 
-10. **Agent-aware by construction** - every new or changed consumer view must be answerable by the left-panel Cortex agent: publish its on-screen values as bounded, pre-joined `__memo_<area>` `viewState` strings (Channel A), carry an accurate `agentKnowledge` block (Channel C - omit `preferredTool` when no semantic view models the data), and add `clickEmits` to the primary map layer (Channel B) so the agent can answer questions about the map and results. A view whose numbers exist only client-side, or whose `preferredTool` points at a semantic view that does not model the data, is incomplete.
+10. **Agent-aware by construction** - every new or changed consumer view must be answerable by the left-panel Cortex agent AND must state what it is for: publish its on-screen values as bounded, pre-joined `__memo_<area>` `viewState` strings (Channel A), carry an accurate `agentKnowledge` block (Channel C - omit `preferredTool` when no semantic view models the data), add `clickEmits` to the primary map layer (Channel B) so the agent can answer questions about the map and results, and carry a `useCase` block (Channel D - `headline` + `businessQuestion` mandatory) which renders the per-view "i" overlay for a presenting Solution Engineer and feeds the agent's cross-view `solutionCatalog` ("what can we show this customer?"). A view whose numbers exist only client-side, whose `preferredTool` points at a semantic view that does not model the data, or which has no `useCase` (no "i" overlay, invisible to the catalog), is incomplete. `useCase.snowflakeCapabilities` must be truthful per tenet 9 and `caveats` must name synthetic or hindsight data; enforced by `.cortex/skills/install-fleet-apps/scripts/check_view_usecases.py` via `.githooks/pre-commit`.
 
 See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
 
@@ -60,11 +60,14 @@ python3 .cortex/skills/evals/run_evals.py
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
 bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 
+# Validate every SA app view carries a useCase block (Tenet 10, Channel D)
+python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
+
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, and when an SA app view is missing its `useCase` block):
 
 ```bash
 chmod +x .githooks/pre-commit
