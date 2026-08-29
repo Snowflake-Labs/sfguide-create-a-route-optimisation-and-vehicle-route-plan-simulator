@@ -194,4 +194,8 @@ export interface MapAreaConfig {
   toggles?: MapToggleItem[];
   /** Optional: route map clicks into viewState (click-to-anchor). */
   clickEmits?: MapClickEmits;
+  /** Fit the camera once on load (and again on a region change), then never
+   *  auto re-frame. Selections, layer toggles and periodic refetches leave the
+   *  camera exactly where the user left it. */
+  lockCamera?: boolean;
 }

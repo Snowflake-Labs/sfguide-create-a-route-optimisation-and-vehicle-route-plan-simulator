@@ -393,6 +393,10 @@ VIEW = {
             "component": "Map",
             "config": {
                 "noPad": True,
+                # Frame the region once on load, then leave the camera alone: a
+                # site pick, a layer toggle, or a replay-step refetch must not
+                # re-zoom the map out from under the presenter.
+                "lockCamera": True,
                 "clickEmits": {
                     "object": "selected_site",
                     "objectColumn": "site_id",

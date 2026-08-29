@@ -3409,6 +3409,7 @@
         "component": "Map",
         "config": {
           "noPad": true,
+          "lockCamera": true,
           "clickEmits": {
             "object": "selected_site",
             "objectColumn": "site_id",

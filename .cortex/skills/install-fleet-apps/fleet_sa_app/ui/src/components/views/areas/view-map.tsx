@@ -575,6 +575,10 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   }, [templates]);
 
   const regionKey = String(context.region ?? '');
+  // Views that opt into a locked camera frame once on load and then stay put:
+  // no selection focus fit, no refit when a layer toggle or a periodic refetch
+  // changes the data extent.
+  const lockCamera = !!config.lockCamera;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
@@ -590,7 +594,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
       })}
       <MapView
         layers={orderedLayers}
-        fitTo={{ coords: fitCoords, regionKey, focusKey }}
+        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
         onHover={onHover}

@@ -32,6 +32,11 @@ interface FitToOptions {
   // change so it lands on the new (narrowed) coords, not the stale set still
   // showing during an in-flight refetch.
   focusKey?: string;
+  // Fit once on load (plus a short settle window while the remaining layers
+  // report their coords), then stop auto-fitting entirely: selections, layer
+  // toggles and periodic refetches never move the camera. A regionKey change
+  // still re-arms the initial fit, and an explicit recenter still works.
+  lockAfterFirstFit?: boolean;
 }
 
 interface MapViewProps {
@@ -48,6 +53,10 @@ interface MapViewProps {
 }
 
 const DEFAULT_VIEW: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
+
+// Grace period after the first fit during which a locked camera still accepts
+// fits, so late-arriving layers widen the initial frame before it freezes.
+const LOCK_SETTLE_MS = 2000;
 
 function isValidViewState(vs: any): boolean {
   return vs &&
@@ -86,6 +95,10 @@ export default function MapView({
   const lastFocusRef = useRef<string | undefined>(fitTo?.focusKey);
   const focusPendingRef = useRef(false);
   const focusBaselineSigRef = useRef<string>('');
+  // Wall-clock of the first successful fit, used by lockAfterFirstFit to keep
+  // accepting fits until the async layer loads have settled (a lock applied on
+  // the very first layer's coords would freeze a partial bounding box).
+  const firstFitAtRef = useRef<number>(0);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -119,12 +132,14 @@ export default function MapView({
   const fitMaxZoom = fitTo?.maxZoom;
   const fitRegionKey = fitTo?.regionKey;
   const fitFocusKey = fitTo?.focusKey;
+  const fitLocked = fitTo?.lockAfterFirstFit ?? false;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
 
   if (lastRegionRef.current !== fitRegionKey) {
     lastRegionRef.current = fitRegionKey;
     hasFittedRef.current = false;
     userMovedRef.current = false;
+    firstFitAtRef.current = 0;
   }
 
   // A selection became active or changed: mark a pending forced fit and capture
@@ -134,7 +149,7 @@ export default function MapView({
   // (empty focusKey) records the change but does NOT pend a fit - camera stays.
   if (lastFocusRef.current !== fitFocusKey) {
     lastFocusRef.current = fitFocusKey;
-    if (fitFocusKey) {
+    if (fitFocusKey && !fitLocked) {
       focusPendingRef.current = true;
       focusBaselineSigRef.current = fitSig;
       userMovedRef.current = false;
@@ -144,8 +159,20 @@ export default function MapView({
   useEffect(() => {
     if (!dims) return;
     if (!fitTo || !fitCoords || fitCoords.length === 0) return;
+    const explicitRecenter = forceFitRef.current;
+    // Locked: only the initial fit (and the settle window right after it) may
+    // move the camera; everything later is the user's own view.
+    if (
+      fitLocked &&
+      !explicitRecenter &&
+      hasFittedRef.current &&
+      Date.now() - firstFitAtRef.current > LOCK_SETTLE_MS
+    ) {
+      focusPendingRef.current = false;
+      return;
+    }
     const forcedByFocus = focusPendingRef.current && fitSig !== focusBaselineSigRef.current;
-    const firstFit = !hasFittedRef.current || forceFitRef.current || forcedByFocus;
+    const firstFit = !hasFittedRef.current || explicitRecenter || forcedByFocus;
     if (!firstFit) {
       if (userMovedRef.current) return;
       if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
@@ -161,12 +188,13 @@ export default function MapView({
       fallback: fallbackViewState,
     });
     if (next && isValidViewState(next)) {
+      if (!hasFittedRef.current) firstFitAtRef.current = Date.now();
       hasFittedRef.current = true;
       forceFitRef.current = false;
       if (forcedByFocus) focusPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fallbackViewState, fitTo, recenterTick]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||
