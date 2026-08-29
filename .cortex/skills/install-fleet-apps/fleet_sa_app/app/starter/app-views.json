@@ -2,6 +2,41 @@
   "locations": {
     "label": "Locations",
     "description": "Points of interest by category and location, on a map.",
+    "useCase": {
+      "headline": "Where the estate sits: every location on a map, counted and split by category, as the starting point for a new domain.",
+      "businessQuestion": "Where are our locations, and how do they break down by category and type?",
+      "audience": [
+        "Operations manager",
+        "Network planner",
+        "Data or analytics lead"
+      ],
+      "industries": [
+        "Retail",
+        "Logistics and transport",
+        "Field service",
+        "Public sector"
+      ],
+      "talkTrack": [
+        "Read the header: total locations, distinct categories and distinct location types.",
+        "Show the category breakdown and name the dominant category.",
+        "Put the locations on the map and pan to the area that matters to the customer.",
+        "Say what this view becomes once retargeted: the estate, depot or site view for the customer's own domain."
+      ],
+      "snowflakeCapabilities": [
+        "Locations stored as native GEOGRAPHY and rendered to the map straight from SQL",
+        "A config-driven view: this page is JSON over the neutral contract, with no application code",
+        "One query path feeding the dashboard and the Cortex agent alike"
+      ],
+      "dataRequired": [
+        "A location master with a name, a category or type, and a point location"
+      ],
+      "valueDrivers": [
+        "A working view on day one of a retargeting, before any custom build",
+        "One shared picture of the estate instead of a spreadsheet per team"
+      ],
+      "method": "Counts come from the starter pack's VW_LOCATIONS contract view, and the map plots each location's GEOGRAPHY point directly. Category and type are whatever the source data supplies - nothing is derived.",
+      "caveats": "This is a starter-pack placeholder over STARTER_APP.CORE, not a finished use case. Rewrite every field here when you retarget the app: the headline, business question, audience and industries all surface in the per-view info overlay AND in the chat agent's solution catalog, so leaving this text in place tells a customer they are looking at a scaffold."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",
@@ -70,6 +105,42 @@
   "movements": {
     "label": "Movements",
     "description": "Origin-to-destination movements: volume, distance, duration, and daily trend.",
+    "useCase": {
+      "headline": "Origin-to-destination movement: how much moves, how far, how long it takes, and how that trends by day.",
+      "businessQuestion": "What is moving between our locations, and is the volume or the distance changing?",
+      "audience": [
+        "Operations manager",
+        "Supply chain analyst",
+        "Network planner"
+      ],
+      "industries": [
+        "Logistics and transport",
+        "Distribution",
+        "Field service",
+        "Public sector"
+      ],
+      "talkTrack": [
+        "Read the header: movement count, average distance, average duration and total distance.",
+        "Show the daily trend and say whether volume or distance is rising.",
+        "Use the daily table to pick out an outlier day, then ask the customer what happened that day.",
+        "Say what this becomes after retargeting: the shipment, journey or job-flow view for their domain."
+      ],
+      "snowflakeCapabilities": [
+        "Movement facts and a pre-aggregated daily rollup served from the same contract, with no cube to maintain",
+        "A config-driven view: JSON over the neutral contract, with no application code",
+        "One query path behind the KPIs, the chart, the table and the agent's answer"
+      ],
+      "dataRequired": [
+        "Movement records with an origin, a destination, a timestamp, and distance or duration",
+        "Optional: a daily rollup, if raw volume makes per-day aggregation expensive"
+      ],
+      "valueDrivers": [
+        "See flow and its trend without building a reporting layer first",
+        "Establish the baseline that later optimization work is measured against"
+      ],
+      "method": "The KPIs aggregate the starter pack's VW_MOVEMENTS contract view; the trend chart and the daily table read the VW_MOVEMENT_DAILY rollup. Distance and duration are taken from the source records rather than recomputed from geometry.",
+      "caveats": "Starter-pack placeholder over STARTER_APP.CORE, not a finished use case. Rewrite every field when retargeting - this text surfaces in the per-view info overlay AND in the chat agent's solution catalog. Distance and duration are whatever the source supplies, so do not present them as road-network measurements unless the source made them so."
+    },
     "layout": {
       "default": {
         "columns": "1fr 1fr",

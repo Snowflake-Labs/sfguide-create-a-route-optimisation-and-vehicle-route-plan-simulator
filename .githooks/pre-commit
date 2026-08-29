@@ -6,31 +6,45 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 SKILL_DIR=".cortex/skills/install-fleet-apps"
-CHECK_SCRIPT="$SKILL_DIR/scripts/check_image_versions.sh"
-
-if [ ! -x "$CHECK_SCRIPT" ] && [ ! -f "$CHECK_SCRIPT" ]; then
-  exit 0
-fi
-
 STAGED=$(git diff --cached --name-only)
-needs_check=0
-for path in \
+
+# True when any staged path starts with one of the given prefixes. Uses an `if`
+# condition (never `cmd && return`) so a non-match cannot trip `set -e`.
+staged_any() {
+  local prefix
+  for prefix in "$@"; do
+    if echo "$STAGED" | grep -q "^${prefix}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ── 1. Image tag consistency ────────────────────────────────────
+IMAGE_CHECK="$SKILL_DIR/scripts/check_image_versions.sh"
+if [ -f "$IMAGE_CHECK" ] && staged_any \
   "$SKILL_DIR/image-versions.env" \
   "$SKILL_DIR/openrouteservice_app/services/" \
   "$SKILL_DIR/openrouteservice_app/app/modules/" \
-  "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; do
-  if echo "$STAGED" | grep -q "^${path}"; then
-    needs_check=1
-    break
-  fi
-done
-
-if [ "$needs_check" -eq 0 ]; then
-  exit 0
+  "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; then
+  echo "pre-commit: image version consistency check..."
+  bash "$IMAGE_CHECK" || {
+    echo "pre-commit FAILED: fix image tag drift (see image-versions.env), then re-commit."
+    exit 1
+  }
 fi
 
-echo "pre-commit: image version consistency check..."
-bash "$CHECK_SCRIPT" || {
-  echo "pre-commit FAILED: fix image tag drift (see image-versions.env), then re-commit."
-  exit 1
-}
+# ── 2. View useCase coverage (Tenet 10, Channel D) ──────────────
+# A view with no useCase renders fine but shows no "i" overlay and is invisible
+# to the chat agent's solution catalog, so the failure is silent without a check.
+USECASE_CHECK="$SKILL_DIR/scripts/check_view_usecases.py"
+if [ -f "$USECASE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/index.ts"; then
+  echo "pre-commit: view useCase coverage check..."
+  python3 "$USECASE_CHECK" || {
+    echo "pre-commit FAILED: every view needs a useCase block (see TENETS.md tenet 10)."
+    exit 1
+  }
+fi
