@@ -17,6 +17,7 @@ import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
+import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
 import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
@@ -203,7 +204,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
 
       if (!tDeduped.length || !iDeduped.length || !oDeduped.length) {
-        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) \u2014 trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
+        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
       } else {
         setSeedHint(null);
       }
@@ -997,6 +998,22 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     }
     return result;
   }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected]);
+
+  // Agent grounding, Channel B: this page builds deck.gl layers itself, so nothing
+  // publishes map state for it and the agent could not answer "what is on the map"
+  // or diagnose an empty one. Derived from the compiled layers so a future layer is
+  // described automatically. Gated on having loaded something, so a pre-solve page
+  // publishes null instead of an all-zero map the agent would report as a finding.
+  usePublishMapState(
+    useMemo(
+      () =>
+        describeDeckLayers(layers, {
+          selection: { selected_trailer: selected?.TRAILER_ID ?? null },
+          ready: trailers.length > 0 || internal.length > 0 || external.length > 0,
+        }),
+      [layers, selected, trailers.length, internal.length, external.length],
+    ),
+  );
 
   // Fit-to coords: selected route (+empty leg) when selected, else the estate.
   const fitCoords = useMemo<LngLat[]>(() => {

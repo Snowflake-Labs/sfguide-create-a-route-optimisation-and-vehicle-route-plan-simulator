@@ -21,8 +21,13 @@ export function ChatInput({ onSend, isStreaming, suggestions }: ChatInputProps) 
   const viewDef = activeViewId ? viewRegistry.get(activeViewId) : undefined;
   const showChip = !!viewDef && viewContextEnabled;
 
+  // Filters only: `__memo_*` keys are agent-grounding payloads (see
+  // lib/agent-memo.ts), not user-set filters. Counting them inflated "N filters
+  // active" and leaked memo text into the chip hover, and it also broke the
+  // agent instruction in chat/route.ts that tells it to open with "filtered by
+  // ..." matching exactly what this chip shows.
   const activeFilterEntries = Object.entries(viewState)
-    .filter(([, v]) => v != null);
+    .filter(([k, v]) => v != null && !k.startsWith('__memo_'));
   const activeFilters = activeFilterEntries
     .map(([k, v]) => `${k.replace('selected', '')}: ${v}`)
     .join(', ');

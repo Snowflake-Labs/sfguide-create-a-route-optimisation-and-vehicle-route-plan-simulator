@@ -8,10 +8,11 @@
 // itself absolutely over the view (the renderer places drawer areas outside the
 // CSS grid). Reuses the shared primitives in detail-sections.tsx.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { buildRecordMemo, useAgentMemo } from '@/lib/agent-memo';
 import {
   fmtValue,
   KVRow,
@@ -47,6 +48,9 @@ interface DetailPanelAreaProps {
     data?: { query?: string; params?: Record<string, string> }; // header (single-row) query
     config: DetailPanelConfig;
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this panel's agent memo.
+  areaName?: string;
 }
 
 // ── Open-state body (mounted only when a selection is active, so the section
@@ -83,11 +87,13 @@ function DetailPanelBody({
   headerParams,
   config,
   inline = false,
+  areaName,
 }: {
   headerQuery?: string;
   headerParams?: Record<string, string>;
   config: DetailPanelConfig;
   inline?: boolean;
+  areaName?: string;
 }) {
   const display = useDisplayConfig();
   const showView = useAppStore((s) => s.showView);
@@ -95,6 +101,16 @@ function DetailPanelBody({
   const row = data?.rows[0] as Record<string, unknown> | undefined;
 
   const tr = useCallback((t?: string) => (t ? interpolateTokens(t, display) : t), [display]);
+
+  // Agent grounding: the open record. This body is mounted only while the panel is
+  // open, so useAgentMemo's unmount clear is what retracts the record from the
+  // agent's context on close - a stale record would have the agent answering about
+  // something the user is no longer looking at.
+  useAgentMemo(
+    areaName,
+    useMemo(() => buildRecordMemo(row, { label: 'open detail panel' }), [row]),
+    'detail',
+  );
 
   const title = row && config.titleField
     ? String(row[config.titleField] ?? config.title ?? '')
@@ -210,7 +226,7 @@ function DetailPanelBody({
 
 // ── Area component (always mounted; controls the slide-over chrome) ──────────
 
-export function DetailPanelArea({ areaConfig }: DetailPanelAreaProps) {
+export function DetailPanelArea({ areaConfig, areaName }: DetailPanelAreaProps) {
   const { data: areaData, config } = areaConfig;
   const triggerKey = config.triggerKey;
   const selectionValue = useAppStore((s) => s.panel.viewState[triggerKey]);
@@ -247,6 +263,7 @@ export function DetailPanelArea({ areaConfig }: DetailPanelAreaProps) {
               headerQuery={areaData?.query}
               headerParams={areaData?.params}
               config={config}
+              areaName={areaName}
             />
           </div>
         ) : (
@@ -291,6 +308,7 @@ export function DetailPanelArea({ areaConfig }: DetailPanelAreaProps) {
           headerQuery={areaData?.query}
           headerParams={areaData?.params}
           config={config}
+          areaName={areaName}
         />
       )}
       {!open && (

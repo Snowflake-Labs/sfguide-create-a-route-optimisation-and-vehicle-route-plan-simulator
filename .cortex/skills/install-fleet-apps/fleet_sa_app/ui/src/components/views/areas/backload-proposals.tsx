@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
+import { usePublishMapState } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
 import {
   computeScoredPairs, rankByWeights, groupByTrailer, loadWeights, saveWeights,
@@ -640,6 +641,33 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     if (selectedPair?.pathCoords && selectedPair.pathCoords.length > 1) return selectedPair.pathCoords;
     return null;
   }, [selectedKey, routeGeo, selectedPair]);
+
+  // Agent grounding, Channel B. The layers live inside ProposalMap, so describe the
+  // semantic arrays this page feeds it rather than reaching into the child: same
+  // counts, and it stays correct if the child changes how it draws them. Gated on
+  // having any vehicles or loads so a still-loading page publishes null instead of
+  // an empty map the agent would report as "nothing to dispatch".
+  usePublishMapState(
+    useMemo(
+      () => {
+        const layers = [
+          { id: 'vehicles', type: 'scatterplot', featureCount: mapVehicles.length },
+          { id: 'loads', type: 'scatterplot', featureCount: mapLoads.length },
+          { id: 'proposal-links', type: 'arc', featureCount: mapLinks.length },
+          { id: 'selected-stops', type: 'scatterplot', featureCount: mapStops.length },
+          { id: 'selected-route', type: 'path', featureCount: routePath ? 1 : 0 },
+        ].map((l) => ({ ...l, rendered: l.featureCount > 0 }));
+        if (!mapVehicles.length && !mapLoads.length) return null;
+        return {
+          layerCount: layers.length,
+          layers,
+          emptyLayers: layers.filter((l) => !l.rendered).map((l) => l.id),
+          selection: selectedKey ? { selected_pair: selectedKey } : undefined,
+        };
+      },
+      [mapVehicles.length, mapLoads.length, mapLinks.length, mapStops.length, routePath, selectedKey],
+    ),
+  );
 
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {

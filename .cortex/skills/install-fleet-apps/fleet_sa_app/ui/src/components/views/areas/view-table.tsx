@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
@@ -24,6 +25,9 @@ interface ViewTableAreaProps {
       fitRows?: number;
     };
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this table's agent memo so sibling tables in one view do not clobber it.
+  areaName?: string;
 }
 
 function formatCell(value: unknown): string {
@@ -45,7 +49,7 @@ function isNumericColumn(rows: Record<string, unknown>[], key: string): boolean 
   return rows.slice(0, 10).every((r) => r[key] === null || r[key] === undefined || typeof r[key] === 'number');
 }
 
-export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
+export function ViewTableArea({ areaConfig, areaName }: ViewTableAreaProps) {
   const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -70,6 +74,27 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
       return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [data, sortKey, sortDir]);
+
+  // Agent grounding: republish the rendered slice so the chat agent can answer
+  // about this table instead of re-querying and drifting from what is on screen
+  // (these tables are commonly scoped to a replay instant). Built from sortedRows
+  // so the sample follows the user's current ordering.
+  useAgentMemo(
+    areaName,
+    useMemo(
+      () =>
+        buildTableMemo({
+          columns: data?.columns ?? [],
+          rows: sortedRows,
+          totalRows: data?.totalRows,
+          sortKey,
+          sortDir,
+          formatCell,
+        }),
+      [data?.columns, data?.totalRows, sortedRows, sortKey, sortDir],
+    ),
+    'table',
+  );
 
   const handleHover = useCallback((index: number | null) => setHoveredIndex(index), []);
 

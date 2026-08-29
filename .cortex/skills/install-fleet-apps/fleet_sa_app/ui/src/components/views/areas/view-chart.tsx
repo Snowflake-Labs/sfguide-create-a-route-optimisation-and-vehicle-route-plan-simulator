@@ -22,6 +22,7 @@ import {
 } from 'recharts';
 import { useViewData } from '@/hooks/use-view-data';
 import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
+import { buildChartMemo, useAgentMemo } from '@/lib/agent-memo';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface SeriesConfig {
@@ -46,9 +47,12 @@ interface ViewChartAreaProps {
     };
     config: ChartConfig;
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this chart's agent memo so sibling charts in one view do not clobber it.
+  areaName?: string;
 }
 
-export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
+export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
   const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   // Chart palette comes from the centralized style config (app-config.json),
@@ -94,6 +98,37 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
     return { data: points, categories: Array.from(categories) };
   }, [data, config]);
+
+  // Agent grounding: a chart publishes no readable numbers anywhere else, and its
+  // shape IS the finding ("which site is worst", "is this trending up"), so
+  // summarize what is plotted. Chart-kind precedence mirrors the render branches
+  // below exactly (pie, scatter, area, grouped stacked bar, bar, else line) so the
+  // memo never claims a different chart than the one on screen.
+  useAgentMemo(
+    areaName,
+    useMemo(() => {
+      const kindOf = (): string => {
+        if (config.series.some((s) => s.type === 'pie')) return 'pie';
+        if (config.series.some((s) => s.type === 'scatter')) return 'scatter';
+        if (config.series.some((s) => s.type === 'area')) return 'area';
+        if (groupedData) return 'stacked bar';
+        if (config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar')) return 'bar';
+        return 'line';
+      };
+      const points = groupedData ? groupedData.data : chartData;
+      if (!points.length) return '';
+      return buildChartMemo({
+        chartType: kindOf(),
+        xKey: config.xAxis.field,
+        // A grouped chart has one value column per category, so report the first
+        // category as the y key and name the rest as series.
+        yKey: groupedData ? (groupedData.categories[0] ?? config.series[0].field) : config.series[0].field,
+        points,
+        seriesNames: groupedData ? groupedData.categories : config.series.map((s) => s.label).filter(Boolean),
+      });
+    }, [chartData, groupedData, config]),
+    'chart',
+  );
 
   if (loading) {
     return (

@@ -12,6 +12,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useVisiblePolling } from '@/hooks/useVisiblePolling';
+import { joinBounded, useAgentMemo } from '@/lib/agent-memo';
 
 // The app's own service lives in FLEET_INTELLIGENCE.SYNAPSE_USER, not in
 // OPENROUTESERVICE_APP.CORE. The service_inventory verb now appends the Fleet
@@ -92,6 +93,38 @@ export function OpsConsoleView() {
   const [auditOutcome, setAuditOutcome] = useState<'' | 'ok' | 'error' | 'idempotent_replay'>('');
 
   const append = (line: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 40));
+
+  // Agent grounding: surface the substrate state the operator is looking at, so
+  // "is anything down?" is answered from the same inventory on screen rather than
+  // from a separate ops call that may disagree with it. Services are grouped by
+  // status and non-RUNNING ones are named, since those are the actionable rows.
+  useAgentMemo(
+    'ops_console',
+    useMemo(() => {
+      const services = inventory?.services ?? [];
+      if (!services.length) return invLoading ? '' : 'ops console: no services returned by service_inventory';
+      const byStatus = new Map<string, string[]>();
+      for (const s of services) {
+        const key = (s.status ?? 'UNKNOWN').toUpperCase();
+        if (!byStatus.has(key)) byStatus.set(key, []);
+        byStatus.get(key)!.push(s.name);
+      }
+      const counts = [...byStatus.entries()].map(([st, names]) => `${st} ${names.length}`);
+      const notRunning = [...byStatus.entries()]
+        .filter(([st]) => st !== 'RUNNING')
+        .flatMap(([st, names]) => names.slice(0, 6).map((n) => `${n} (${st})`));
+      const pools = Object.keys(inventory?.compute_pools ?? {});
+      return joinBounded(
+        [
+          `ops console: active region ${region}`,
+          `${services.length} services (${counts.join(', ')})`,
+          pools.length ? `${pools.length} compute pools` : null,
+          notRunning.length ? `not running: ${notRunning.join(', ')}` : 'all services RUNNING',
+          `verb audit rows loaded: ${attempts.length}${auditOutcome ? ` (filtered to ${auditOutcome})` : ''}`,
+        ].filter(Boolean) as string[],
+      );
+    }, [inventory, invLoading, region, attempts.length, auditOutcome]),
+  );
 
   const fetchInventory = useCallback(async () => {
     try {

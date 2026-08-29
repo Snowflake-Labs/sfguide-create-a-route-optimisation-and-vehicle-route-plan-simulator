@@ -81,6 +81,23 @@ export interface SolutionCatalogEntry {
 // Compact summary of one rendered map layer, surfaced to the chat agent so it can
 // reason about what is actually on screen (counts, blank layers) instead of guessing.
 // Carries only scalar metadata - never per-feature rows - so it stays cheap and safe.
+//
+// AGENT GROUNDING, THE TWO CHANNELS. This descriptor is Channel B (the map). Its
+// counterpart, Channel A, needs no type of its own because it rides inside
+// `viewState` as `__memo_<areaName>` string keys, published by the area components
+// (KPI cards, tables, charts, detail panels) through `useAgentMemo` in
+// lib/agent-memo.ts and read back by app/api/chat/route.ts.
+//
+// The Channel A contract, in short - the full reasoning is in lib/agent-memo.ts:
+//   1. A memo value is a FLAT STRING. route.ts interpolates it, so an object
+//      becomes "[object Object]".
+//   2. The publisher bounds its own memo and states what it trimmed. route.ts
+//      caps the total across panels, but cannot make one huge memo useful.
+//   3. Publish through `useAgentMemo`, never a hand-rolled effect: writing to
+//      viewState re-renders the publisher, and an ungated effect loops (React #185).
+//   4. Key per area, so sibling areas of the same kind do not overwrite each other.
+// Do not name a memo key the same as a query param key referenced by any
+// `data.params` entry, or use-view-data will treat it as a filter and refetch.
 export interface MapLayerDescriptor {
   // Stable layer id (spec id, or spec-layer-<index> fallback).
   id: string;

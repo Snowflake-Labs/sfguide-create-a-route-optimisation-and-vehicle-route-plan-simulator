@@ -6,10 +6,11 @@
 // viewState.<key>-parametrized query. Reproduces the control app's FleetMap
 // click-a-courier drilldown.
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
+import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
 import { FreshnessBadge } from './freshness-badge';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -46,6 +47,9 @@ interface ViewClickableTableAreaProps {
     };
     emits?: Record<string, string>;
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this table's agent memo so sibling tables in one view do not clobber it.
+  areaName?: string;
 }
 
 function compareValues(a: unknown, b: unknown, dir: 'asc' | 'desc'): number {
@@ -57,7 +61,7 @@ function compareValues(a: unknown, b: unknown, dir: 'asc' | 'desc'): number {
   return dir === 'desc' ? -cmp : cmp;
 }
 
-export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaProps) {
+export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTableAreaProps) {
   const { data, loading, error, suspended, refetch, fetchedAt } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   const styleConfig = useStyleConfig();
@@ -101,6 +105,56 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
     }
   }, [data, autoSelect, emitKey, rowKey, selected, updateViewState]);
 
+  // Display ordering, hoisted above the early returns so the agent memo (a hook)
+  // can see exactly the rows the user does. Exception-first pin, then the active
+  // sort (user click, falling back to defaultSort), then the row cap.
+  const rows = useMemo(() => {
+    let out = data?.rows ?? [];
+    if (out.length) {
+      const exc = config?.exceptionFirst;
+      if (exc || sortKey) {
+        const excSet = exc ? new Set(exc.values.map(String)) : null;
+        out = [...out].sort((a, b) => {
+          if (excSet && exc) {
+            const af = excSet.has(String(a[exc.column])) ? 0 : 1;
+            const bf = excSet.has(String(b[exc.column])) ? 0 : 1;
+            if (af !== bf) return af - bf;
+          }
+          if (sortKey) return compareValues(a[sortKey], b[sortKey], sortDir);
+          return 0;
+        });
+      }
+    }
+    return out.slice(0, config?.maxRows ?? resolveDefaultMaxRows(styleConfig));
+  }, [data, config?.exceptionFirst, config?.maxRows, sortKey, sortDir, styleConfig]);
+
+  const columns: TableColumn[] = useMemo(
+    () => config?.columns ?? (data?.columns ?? []).map((c) => ({ field: c.key, header: c.label })),
+    [config?.columns, data?.columns],
+  );
+
+  // Agent grounding: republish the rendered slice, including which row is selected
+  // and the exception-first pin, so the agent answers about this table rather than
+  // re-deriving it from SQL and disagreeing with the screen.
+  useAgentMemo(
+    areaName,
+    useMemo(
+      () =>
+        buildTableMemo({
+          columns: columns.map((c) => ({ key: c.field, label: c.header ?? c.field })),
+          rows,
+          totalRows: data?.totalRows,
+          sortKey,
+          sortDir,
+          formatCell: (v) => String(v ?? '-'),
+          selectedLabel: selected != null && selected !== '' ? String(selected) : null,
+          orderNote: config?.exceptionFirst ? `exceptions first by ${config.exceptionFirst.column}` : undefined,
+        }),
+      [columns, rows, data?.totalRows, sortKey, sortDir, selected, config?.exceptionFirst],
+    ),
+    'table',
+  );
+
   if (loading) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>Loading…</div>;
   }
@@ -111,29 +165,9 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
   if (error) {
     return <div style={{ padding: '16px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   }
-  let rows = data?.rows ?? [];
-  // Exception-first triage pin, then the active sort (user click, falling back to defaultSort).
-  if (rows.length) {
-    const exc = config?.exceptionFirst;
-    if (exc || sortKey) {
-      const excSet = exc ? new Set(exc.values.map(String)) : null;
-      rows = [...rows].sort((a, b) => {
-        if (excSet && exc) {
-          const af = excSet.has(String(a[exc.column])) ? 0 : 1;
-          const bf = excSet.has(String(b[exc.column])) ? 0 : 1;
-          if (af !== bf) return af - bf;
-        }
-        if (sortKey) return compareValues(a[sortKey], b[sortKey], sortDir);
-        return 0;
-      });
-    }
-  }
-  rows = rows.slice(0, config?.maxRows ?? resolveDefaultMaxRows(styleConfig));
   if (!rows.length) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
   }
-
-  const columns: TableColumn[] = config?.columns ?? (data?.columns ?? []).map((c) => ({ field: c.key, header: c.label }));
 
   const onRowClick = (row: Record<string, unknown>) => {
     if (!emitKey || !rowKey) return;

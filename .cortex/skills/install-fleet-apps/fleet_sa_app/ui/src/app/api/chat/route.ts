@@ -45,22 +45,52 @@ export async function POST(request: NextRequest) {
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
     if (vs && Object.keys(vs).length > 0) {
-      // Keys prefixed __memo_ carry bounded, pre-joined KPI/metric strings that an
-      // area published for the agent (Gap 1). Render them under their own label so
-      // headline metric values are not mislabeled as active filters.
+      // Keys prefixed __memo_ carry bounded, pre-joined strings that an area
+      // published for the agent: KPI values, but also table slices, chart shape
+      // summaries, and open detail records (see lib/agent-memo.ts). Render them
+      // under their own label so on-screen values are not mislabeled as filters.
       const entries = Object.entries(vs).filter(([, v]) => v != null);
       const memoEntries = entries.filter(([k]) => k.startsWith('__memo_'));
       const filterEntries = entries.filter(([k]) => !k.startsWith('__memo_'));
       const activeFilters = filterEntries.map(([k, v]) => `${k}=${v}`).join(', ');
       if (activeFilters) parts.push(`Active filters: ${activeFilters}.`);
       if (memoEntries.length) {
-        const memoText = memoEntries
-          .map(([k, v]) => {
-            const group = k.slice('__memo_'.length);
-            return memoEntries.length > 1 ? `${group}: ${v}` : String(v);
-          })
-          .join(' | ');
-        parts.push(`On-screen metric values: ${memoText}.`);
+        // Always name the area. A view now publishes several memos (KPI strip plus
+        // each table and chart), so the group name is what lets the agent say
+        // WHICH panel a number came from instead of blending them into one list.
+        const rendered = memoEntries.map(([k, v]) => `${k.slice('__memo_'.length)}: ${v}`);
+        // Trim order: KPI memos are the headline numbers and must survive, so rank
+        // by memo kind. Publishers self-describe ("table:", "<kind> chart:",
+        // "open record"/"open detail panel"), and a KPI memo is bare "label=value",
+        // so an unrecognized prefix sorts first by design.
+        const memoRank = (s: string): number => {
+          const body = s.slice(s.indexOf(': ') + 2);
+          if (body.startsWith('table:')) return 1;
+          if (/^\w+ chart:/.test(body)) return 2;
+          if (body.startsWith('open ')) return 3;
+          return 0;
+        };
+        rendered.sort((a, b) => memoRank(a) - memoRank(b));
+        // Total budget across all panels. Each publisher self-bounds to ~500
+        // chars, but a busy view has 5+ areas and the map block plus the useCase
+        // block still have to fit in the same prompt. Trim whole panels rather
+        // than characters, so nothing is half-quoted.
+        const MEMO_TOTAL_MAX = 3000;
+        let memoText = '';
+        let dropped = 0;
+        for (let i = 0; i < rendered.length; i++) {
+          const next = memoText ? `${memoText} | ${rendered[i]}` : rendered[i];
+          if (next.length > MEMO_TOTAL_MAX) {
+            dropped = rendered.length - i;
+            break;
+          }
+          memoText = next;
+        }
+        if (dropped > 0) memoText += ` | (+${dropped} more panels not shown)`;
+        parts.push(`On-screen values by panel: ${memoText}.`);
+        parts.push(
+          'Those on-screen values are what the user is looking at right now - quote them when asked what is on screen, and prefer them over re-running a query, which can disagree with the panel (several views are scoped to a replay instant or a client-side sort). Table memos are a bounded top-N sample of the rendered rows and say how many rows exist; never report the sample size as the total, and query the semantic view for any row, column, or category outside the sample.',
+        );
       }
     }
     const ak = view.agentKnowledge;
