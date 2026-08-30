@@ -217,6 +217,18 @@ agg AS (
       AS SOURCE_STATUS_HINT
   FROM episoded e CROSS JOIN prm
   GROUP BY e.REGION, e.VEHICLE_ID, e.VEHICLE_TYPE, e.LOCATION_ID, e.EPISODE_NO
+),
+-- Site names are NOT unique: the reference NJ day alone has 10 distinct sites
+-- called "Extra Space Storage", 8 "Public Storage", 4 "CubeSmart Self Storage".
+-- Unqualified, the focus-site dropdown lists several identical entries and "just
+-- left Public Storage" does not say which one - the same apparent contradiction
+-- as a status disagreeing with the map. Counted over VISITED sites (the exact set
+-- every UI surface offers) and region-wide rather than per day, so a site's label
+-- does not change as the replay day changes.
+dupnames AS (
+  SELECT REGION, TRIM(SITE_NAME, '"') AS NM, COUNT(DISTINCT LOCATION_ID) AS N_SITES
+  FROM agg
+  GROUP BY 1, 2
 )
 SELECT
   MD5(a.REGION || '|' || a.VEHICLE_ID || '|' || a.LOCATION_ID || '|' || a.EPISODE_NO::VARCHAR) AS VISIT_ID,
@@ -224,6 +236,14 @@ SELECT
   a.LOCATION_ID AS SITE_ID,
   -- Overture names arrive JSON-quoted; strip for display.
   TRIM(a.SITE_NAME, '"') AS SITE_NAME,
+  -- Display label: the bare name when it is unique, otherwise the name plus its
+  -- coordinates to 3 dp (~100 m), which is the only disambiguator available
+  -- without a locality dataset and is the one a presenter can match against the
+  -- map. SITE_ID stays the key everything joins and emits on.
+  IFF(d.N_SITES > 1,
+      TRIM(a.SITE_NAME, '"') || ' (' || TO_VARCHAR(ROUND(ST_Y(a.SITE_GEOG), 3))
+        || ', ' || TO_VARCHAR(ROUND(ST_X(a.SITE_GEOG), 3)) || ')',
+      TRIM(a.SITE_NAME, '"')) AS SITE_LABEL,
   a.SITE_TYPE, a.SITE_CATEGORY, a.SITE_GEOG, a.GEOFENCE_RADIUS_M,
   a.EPISODE_NO AS VISIT_SEQ,
   a.ARRIVAL_TS, a.DEPARTURE_TS,
@@ -233,6 +253,8 @@ SELECT
   a.MAX_SPEED_IN_FENCE, a.CHORD_M, a.SOURCE_STATUS_HINT,
   TO_DATE(a.ARRIVAL_TS) AS SERVICE_DATE
 FROM agg a CROSS JOIN prm
+LEFT JOIN dupnames d
+  ON d.REGION = a.REGION AND d.NM = TRIM(a.SITE_NAME, '"')
 WHERE a.ARRIVAL_TS IS NOT NULL
   AND a.DEPARTURE_TS IS NOT NULL
   AND a.STATIONARY_PINGS >= prm.MIN_STATIONARY_PINGS
@@ -247,13 +269,13 @@ WHERE a.ARRIVAL_TS IS NOT NULL
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DELIVERY_SYNC.VW_SITE_VISIT_EVENTS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_TYPE,
+SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_LABEL, SITE_TYPE,
        SITE_GEOG, VISIT_SEQ, SERVICE_DATE, SOURCE_STATUS_HINT,
        'ARRIVED' AS EVENT_TYPE, ARRIVAL_TS AS EVENT_TS,
        DWELL_MINUTES, NULL::TIMESTAMP_NTZ AS PRODUCT_READY_TS
 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
 UNION ALL
-SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_TYPE,
+SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_LABEL, SITE_TYPE,
        SITE_GEOG, VISIT_SEQ, SERVICE_DATE, SOURCE_STATUS_HINT,
        'DEPARTED' AS EVENT_TYPE, DEPARTURE_TS AS EVENT_TS,
        DWELL_MINUTES, DEPARTURE_TS AS PRODUCT_READY_TS
@@ -269,7 +291,7 @@ CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DELIVERY_SYNC.VW_SITE_READINESS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
-  v.REGION, v.SERVICE_DATE, v.SITE_ID, v.SITE_NAME, v.SITE_TYPE, v.SITE_GEOG,
+  v.REGION, v.SERVICE_DATE, v.SITE_ID, v.SITE_NAME, v.SITE_LABEL, v.SITE_TYPE, v.SITE_GEOG,
   v.VEHICLE_ID, v.JOURNEY_ID, v.VISIT_ID,
   v.ARRIVAL_TS, v.DEPARTURE_TS, v.DWELL_MINUTES,
   v.DEPARTURE_TS AS PRODUCT_READY_TS,
@@ -305,7 +327,9 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"ma
 AS
 $$
   SELECT
-    v.REGION, v.SERVICE_DATE, v.SITE_ID, v.SITE_NAME, v.SITE_TYPE, v.SITE_GEOG,
+    -- SITE_LABEL, not the raw name: duplicated names would make the readiness
+    -- table and the site tooltip ambiguous. Column name unchanged for consumers.
+    v.REGION, v.SERVICE_DATE, v.SITE_ID, v.SITE_LABEL AS SITE_NAME, v.SITE_TYPE, v.SITE_GEOG,
     v.VEHICLE_ID, v.JOURNEY_ID, v.VISIT_ID, v.ARRIVAL_TS, v.DEPARTURE_TS,
     v.DWELL_MINUTES, v.DEPARTURE_TS AS PRODUCT_READY_TS, v.SOURCE_STATUS_HINT,
     CASE
@@ -585,10 +609,23 @@ $$;
 --     left one, is it closing in, or is it simply driving. Statuses:
 --
 --       ON_SITE     - last known position is INSIDE a monitored site's geofence
---       JUST_LEFT   - departed a site within P_JUST_LEFT_MIN of the instant
+--       JUST_LEFT   - departed within P_JUST_LEFT_MIN AND still inside the site's
+--                     live drive-time band (P_APPROACH_MIN), i.e. inside the ring
 --       APPROACHING - live road ETA to its OWN next site <= P_APPROACH_MIN
 --       DRIVING     - en route, but further out than that
 --       IDLE        - no further visit today
+--
+--     JUST_LEFT IS ALSO GATED ON DISTANCE, not on elapsed time alone. The map
+--     draws a 15-minute drive-time ring around the focus site, so a red "just
+--     left" dot outside that ring reads as a contradiction. It was one: the window
+--     was a 20-minute look-back while the ring came from PARAMS.APPROACH_SECONDS
+--     (900s), and elapsed minutes are not drive-time minutes anyway - observed on
+--     UsNewJersey 2026-08-07 09:00, V-DRI-00052 departed NFI at 08:42:53 (17.1 min
+--     earlier) but sat 20.9 ORS-minutes away, because the telemetry drives faster
+--     than ORS free-flow. Aligning the two windows narrows that but cannot close
+--     it, so the colour now requires the vehicle to still be within the band the
+--     ring depicts. Past that it is simply a vehicle heading elsewhere and falls
+--     through to APPROACHING / DRIVING / IDLE.
 --
 --     STRICT PRECEDENCE in that order. Computed as independent flags the ON_SITE
 --     and JUST_LEFT sets overlap (a vehicle that left site A can already be
@@ -650,7 +687,7 @@ RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
                POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
-               ON_SITE_PHASE VARCHAR)
+               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1))
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -672,12 +709,26 @@ $$
   -- site type). Deliberately mirrors the `sites` CTE of DT_SITE_VISITS verbatim
   -- so the radius used to CLASSIFY a live position cannot drift from the radius
   -- used to DETECT the visit.
+  -- Duplicate-name signal for the display label, counted over ALL POIs in the
+  -- region (not just monitored ones) so the label is stable regardless of which
+  -- site types are being monitored.
+  site_dupes AS (
+    SELECT TRIM(NAME, '"') AS NM, COUNT(*) AS N_SITES
+    FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+    WHERE REGION = P_REGION
+    GROUP BY 1
+  ),
   sites AS (
-    SELECT p.LOCATION_ID, p.REGION, TRIM(p.NAME, '"') AS SITE_NAME,
+    SELECT p.LOCATION_ID, p.REGION,
+           IFF(d.N_SITES > 1,
+               TRIM(p.NAME, '"') || ' (' || TO_VARCHAR(ROUND(p.LAT, 3))
+                 || ', ' || TO_VARCHAR(ROUND(p.LNG, 3)) || ')',
+               TRIM(p.NAME, '"')) AS SITE_NAME,
            p.POINT_GEOM, sla.VEHICLE_TYPE, sla.BUFFER_RADIUS_M
     FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
     JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA sla
       ON sla.LOCATION_TYPE = p.LOCATION_TYPE
+    LEFT JOIN site_dupes d ON d.NM = TRIM(p.NAME, '"')
     CROSS JOIN prm
     WHERE p.REGION = P_REGION
       AND ARRAY_CONTAINS(p.LOCATION_TYPE::VARIANT,
@@ -704,8 +755,12 @@ $$
   -- replaced: it keeps ON_SITE alive across a momentarily missing ping (a gap
   -- that puts `last_pos` outside the fence mid-visit) and it is what tells the
   -- UI the unload is still in progress.
+  -- SITE_NAME is the DT's disambiguated SITE_LABEL, not the raw name: site names
+  -- repeat (10 x "Extra Space Storage" on the reference day), so "just left
+  -- <name>" would not identify which one. The column keeps the name SITE_NAME so
+  -- the semantic view and the agent tool need no change.
   visit_now AS (
-    SELECT VEHICLE_ID, ANY_VALUE(SITE_ID) AS SITE_ID, ANY_VALUE(SITE_NAME) AS SITE_NAME
+    SELECT VEHICLE_ID, ANY_VALUE(SITE_ID) AS SITE_ID, ANY_VALUE(SITE_LABEL) AS SITE_NAME
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
       AND COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) >= ARRIVAL_TS
@@ -729,7 +784,7 @@ $$
   ),
   -- Most recent departure inside the just-left window.
   just_left AS (
-    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, DEPARTURE_TS
+    SELECT VEHICLE_ID, SITE_ID, SITE_LABEL AS SITE_NAME, SITE_GEOG, DEPARTURE_TS
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
       AND DEPARTURE_TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
@@ -762,7 +817,7 @@ $$
   -- `dests` feeds ST_X(G)/ST_Y(G) into the destination array, where a NULL geog
   -- would inject a NULL coordinate.
   next_site AS (
-    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, SITE_GEOG
+    SELECT VEHICLE_ID, SITE_ID, SITE_LABEL AS SITE_NAME, SITE_GEOG
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
       AND SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
@@ -770,23 +825,57 @@ $$
       AND ARRIVAL_TS > COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
     QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY ARRIVAL_TS) = 1
   ),
-  -- En route = has a position and a next site, and is not on a site right now.
-  -- JUST_LEFT vehicles ARE included: they still need an ETA so the status can be
-  -- re-evaluated once the just-left window lapses.
+  -- Every vehicle that needs a live measurement: not on a site, and either
+  -- heading somewhere (next-site ETA) or freshly departed (drive time BACK to the
+  -- site it left, which is what gates the JUST_LEFT colour). Written as LEFT JOINs
+  -- rather than three correlated EXISTS because correlated subqueries over CTEs in
+  -- this function are a known source of "Unsupported subquery type cannot be
+  -- evaluated".
+  --
+  -- This list is used TWICE - as matrix origins (vehicle -> next site) and as
+  -- matrix destinations (left site -> vehicle) - and both uses keep the SAME
+  -- ORDER BY VID, so a vehicle's destination index is simply its origin index
+  -- offset by the number of next-site destinations. That is the whole reason the
+  -- reverse direction costs no extra ORS call.
+  veh_origins AS (
+    SELECT VID, LON, LAT, ROW_NUMBER() OVER (ORDER BY VID) - 1 AS OI
+    FROM (
+      SELECT DISTINCT p.VEHICLE_ID AS VID, p.LONGITUDE AS LON, p.LATITUDE AS LAT
+      FROM last_pos p
+      LEFT JOIN on_site   o ON o.VEHICLE_ID = p.VEHICLE_ID
+      LEFT JOIN next_site n ON n.VEHICLE_ID = p.VEHICLE_ID
+      LEFT JOIN just_left j ON j.VEHICLE_ID = p.VEHICLE_ID
+      WHERE o.VEHICLE_ID IS NULL
+        AND (n.VEHICLE_ID IS NOT NULL OR j.VEHICLE_ID IS NOT NULL)
+    )
+  ),
   enroute AS (
-    SELECT p.VEHICLE_ID AS VID, p.LONGITUDE AS LON, p.LATITUDE AS LAT,
-           n.SITE_ID AS SID,
-           ROW_NUMBER() OVER (ORDER BY p.VEHICLE_ID) - 1 AS OI
-    FROM last_pos p
-    JOIN next_site n ON n.VEHICLE_ID = p.VEHICLE_ID
-    WHERE NOT EXISTS (SELECT 1 FROM on_site o WHERE o.VEHICLE_ID = p.VEHICLE_ID)
+    SELECT v.VID, v.OI, n.SITE_ID AS SID
+    FROM veh_origins v JOIN next_site n ON n.VEHICLE_ID = v.VID
   ),
   dests AS (
     SELECT n.SITE_ID AS SID, ANY_VALUE(n.SITE_GEOG) AS G,
            ROW_NUMBER() OVER (ORDER BY n.SITE_ID) - 1 AS DI
-    FROM next_site n
-    WHERE n.SITE_ID IN (SELECT SID FROM enroute)
+    FROM next_site n JOIN veh_origins v ON v.VID = n.VEHICLE_ID
     GROUP BY n.SITE_ID
+  ),
+  -- The sites just-left vehicles came from, as ADDITIONAL matrix origins. The
+  -- direction matters: LIVE_APPROACH_RING computes its isochrone OUTWARD FROM the
+  -- site, so the only measurement that agrees with the ring the user is looking at
+  -- is site -> vehicle. Measuring vehicle -> site would be the inbound direction
+  -- and would disagree with the drawn polygon on asymmetric networks.
+  left_origins AS (
+    SELECT j.SITE_ID AS SID, ANY_VALUE(j.SITE_GEOG) AS G,
+           ROW_NUMBER() OVER (ORDER BY j.SITE_ID) - 1 AS LOI
+    FROM just_left j JOIN veh_origins v ON v.VID = j.VEHICLE_ID
+    WHERE j.SITE_GEOG IS NOT NULL
+    GROUP BY j.SITE_ID
+  ),
+  left_pairs AS (
+    SELECT v.VID, v.OI, j.SITE_ID AS SID
+    FROM veh_origins v
+    JOIN just_left j ON j.VEHICLE_ID = v.VID
+    WHERE j.SITE_GEOG IS NOT NULL
   ),
   -- DELIBERATELY DEGRADES, unlike LIVE_APPROACH_RING and LIVE_INBOUND_ETA which
   -- raise when the engine is down. Those two exist only to show ORS output, so
@@ -796,55 +885,107 @@ $$
   -- layer over a missing sub-status. So a dead engine costs only APPROACHING
   -- (those vehicles read DRIVING, the honest fallback), and the ring layer on
   -- the same map raises anyway - so the suspended banner still tells the user.
+  -- ONE call, two directions. Origins = [vehicles ordered by VID | just-left sites
+  -- ordered by SITE_ID]; destinations = [next sites ordered by SITE_ID | the SAME
+  -- vehicles ordered by VID]. So durations[vehicle_i][site_j] is the outbound ETA
+  -- and durations[n_veh + site_k][n_dest + vehicle_i] is the drive time back from
+  -- the site vehicle i just left. Sized ~44 x 83 = 3.6k pairs on the reference day
+  -- against a matrix_maximum_routes cap of 2,000,000.
+  --
+  -- The ARRAY_CAT halves MUST stay in the same order as the index expressions or
+  -- every reading silently lands on the wrong pair - the standing trap in this
+  -- function, now with two more ordered lists. COALESCE guards the empty halves
+  -- (no just-left vehicles, or none with a next site).
   mtx AS (
     SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
              P_PROFILE,
-             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY OI) FROM enroute),
-             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(G), ST_Y(G))) WITHIN GROUP (ORDER BY DI) FROM dests),
+             ARRAY_CAT(
+               COALESCE((SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY OI) FROM veh_origins), ARRAY_CONSTRUCT()),
+               COALESCE((SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(G), ST_Y(G))) WITHIN GROUP (ORDER BY LOI) FROM left_origins), ARRAY_CONSTRUCT())),
+             ARRAY_CAT(
+               COALESCE((SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(G), ST_Y(G))) WITHIN GROUP (ORDER BY DI) FROM dests), ARRAY_CONSTRUCT()),
+               COALESCE((SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY OI) FROM veh_origins), ARRAY_CONSTRUCT())),
              P_REGION) AS R
+  ),
+  offsets AS (
+    SELECT (SELECT COUNT(*) FROM veh_origins) AS N_VEH,
+           (SELECT COUNT(*) FROM dests)       AS N_DEST
   ),
   eta AS (
     SELECT e.VID,
            ROUND(m.R:durations[e.OI][d.DI]::FLOAT / 60.0, 1)   AS MINS,
            ROUND(m.R:distances[e.OI][d.DI]::FLOAT / 1000.0, 2) AS KM
     FROM enroute e JOIN dests d ON d.SID = e.SID CROSS JOIN mtx m
+  ),
+  -- Drive time back from the site the vehicle just left. NULL when the engine is
+  -- down or the pair is unroutable, which deliberately falls back to the old
+  -- time-only JUST_LEFT decision rather than recolouring or dropping the vehicle.
+  back AS (
+    SELECT lp.VID,
+           ROUND(m.R:durations[o.N_VEH + lo.LOI][o.N_DEST + lp.OI]::FLOAT / 60.0, 1) AS MINS
+    FROM left_pairs lp
+    JOIN left_origins lo ON lo.SID = lp.SID
+    CROSS JOIN mtx m CROSS JOIN offsets o
+  ),
+  -- One row per vehicle with the status decision made ONCE. Repeating the
+  -- just-left predicate in the projection would let the status and the
+  -- MINUTES_SINCE_LEFT / MINUTES_OUT gating drift apart, which is exactly the
+  -- defect class this function keeps producing.
+  resolved AS (
+    SELECT
+      p.VEHICLE_ID, p.TS, p.POINT_GEOM,
+      o.SITE_ID AS O_SITE, o.SITE_NAME AS O_NAME, o.ON_SITE_PHASE,
+      j.SITE_ID AS J_SITE, j.SITE_NAME AS J_NAME, j.DEPARTURE_TS,
+      n.SITE_ID AS N_SITE, n.SITE_NAME AS N_NAME,
+      e2.MINS AS OUT_MINS, e2.KM AS OUT_KM, b.MINS AS BACK_MINS,
+      (o.VEHICLE_ID IS NOT NULL) AS IS_ON_SITE,
+      (n.VEHICLE_ID IS NOT NULL) AS HAS_NEXT,
+      (o.VEHICLE_ID IS NULL
+       AND j.VEHICLE_ID IS NOT NULL
+       AND (b.MINS IS NULL OR b.MINS <= COALESCE(P_APPROACH_MIN, 15))) AS IS_JUST_LEFT
+    FROM last_pos p
+    LEFT JOIN on_site   o  ON o.VEHICLE_ID  = p.VEHICLE_ID
+    LEFT JOIN just_left j  ON j.VEHICLE_ID  = p.VEHICLE_ID
+    LEFT JOIN next_site n  ON n.VEHICLE_ID  = p.VEHICLE_ID
+    LEFT JOIN eta       e2 ON e2.VID        = p.VEHICLE_ID
+    LEFT JOIN back      b  ON b.VID         = p.VEHICLE_ID
   )
   SELECT
-    p.VEHICLE_ID,
+    r.VEHICLE_ID,
     CASE
-      WHEN o.VEHICLE_ID IS NOT NULL THEN 'ON_SITE'
-      WHEN j.VEHICLE_ID IS NOT NULL THEN 'JUST_LEFT'
-      WHEN n.VEHICLE_ID IS NULL     THEN 'IDLE'
-      WHEN e2.MINS IS NOT NULL
-       AND e2.MINS <= COALESCE(P_APPROACH_MIN, 15) THEN 'APPROACHING'
+      WHEN r.IS_ON_SITE     THEN 'ON_SITE'
+      WHEN r.IS_JUST_LEFT   THEN 'JUST_LEFT'
+      WHEN NOT r.HAS_NEXT   THEN 'IDLE'
+      WHEN r.OUT_MINS IS NOT NULL
+       AND r.OUT_MINS <= COALESCE(P_APPROACH_MIN, 15) THEN 'APPROACHING'
       ELSE 'DRIVING'
     END AS STATUS_ENUM,
-    -- Name the site the status is ABOUT: where it is / just left, else where it
-    -- is heading.
-    COALESCE(o.SITE_ID, j.SITE_ID, n.SITE_ID)       AS SITE_ID,
-    COALESCE(o.SITE_NAME, j.SITE_NAME, n.SITE_NAME) AS SITE_NAME,
-    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL, e2.MINS, NULL)::NUMBER(10,1) AS MINUTES_OUT,
-    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL, e2.KM, NULL)::NUMBER(10,2)   AS DISTANCE_KM,
-    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL AND e2.MINS IS NOT NULL,
-        DATEADD('second', (e2.MINS * 60)::INT,
+    -- Name the site the status is ABOUT: where it is, where it just left (only
+    -- while that is still the status), else where it is heading. A vehicle that
+    -- departed but is already beyond the band is named by its NEXT site, because
+    -- that is what its status is now about.
+    COALESCE(r.O_SITE, IFF(r.IS_JUST_LEFT, r.J_SITE, NULL), r.N_SITE) AS SITE_ID,
+    COALESCE(r.O_NAME, IFF(r.IS_JUST_LEFT, r.J_NAME, NULL), r.N_NAME) AS SITE_NAME,
+    IFF(NOT r.IS_ON_SITE AND NOT r.IS_JUST_LEFT, r.OUT_MINS, NULL)::NUMBER(10,1) AS MINUTES_OUT,
+    IFF(NOT r.IS_ON_SITE AND NOT r.IS_JUST_LEFT, r.OUT_KM, NULL)::NUMBER(10,2)   AS DISTANCE_KM,
+    IFF(NOT r.IS_ON_SITE AND NOT r.IS_JUST_LEFT AND r.OUT_MINS IS NOT NULL,
+        DATEADD('second', (r.OUT_MINS * 60)::INT,
                 COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)), NULL) AS ETA_TS,
-    -- Gated on o.VEHICLE_ID IS NULL as well, because a vehicle standing inside a
-    -- geofence usually ALSO has a closed visit inside the just-left window (that
-    -- is exactly the case the containment test rescues), and reporting "left N
-    -- minutes ago" on a row whose status is ON_SITE would put the contradiction
+    -- Gated on the RESOLVED status, not on the presence of a departure row: a
+    -- vehicle standing inside a geofence usually ALSO has a closed visit inside
+    -- the just-left window (the case the containment test rescues), and a vehicle
+    -- that departed but is already beyond the band is no longer 'just left'.
+    -- Reporting "left N minutes ago" on either would put the contradiction
     -- straight back into the tooltip and the agent's grounding.
-    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NOT NULL,
-        ROUND(DATEDIFF('second', j.DEPARTURE_TS,
+    IFF(r.IS_JUST_LEFT,
+        ROUND(DATEDIFF('second', r.DEPARTURE_TS,
                        COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)) / 60.0, 1),
         NULL)::NUMBER(12,1) AS MINUTES_SINCE_LEFT,
-    p.TS,
-    p.POINT_GEOM,
-    o.ON_SITE_PHASE
-  FROM last_pos p
-  LEFT JOIN on_site   o  ON o.VEHICLE_ID  = p.VEHICLE_ID
-  LEFT JOIN just_left j  ON j.VEHICLE_ID  = p.VEHICLE_ID
-  LEFT JOIN next_site n  ON n.VEHICLE_ID  = p.VEHICLE_ID
-  LEFT JOIN eta       e2 ON e2.VID        = p.VEHICLE_ID
+    r.TS,
+    r.POINT_GEOM,
+    r.ON_SITE_PHASE,
+    IFF(r.IS_JUST_LEFT, r.BACK_MINS, NULL)::NUMBER(10,1) AS MINUTES_BACK_TO_SITE
+  FROM resolved r
 $$;
 
 -- ---------------------------------------------------------------------
@@ -987,7 +1128,7 @@ RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
                POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
-               ON_SITE_PHASE VARCHAR)
+               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1))
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS

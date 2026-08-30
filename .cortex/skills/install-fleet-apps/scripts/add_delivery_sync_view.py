@@ -156,6 +156,12 @@ RING_ALL_LINE = [17, 86, 127, 85]
 APPROACH_MIN = ("(SELECT ROUND(APPROACH_SECONDS/60.0) FROM "
                 "FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1)")
 
+# The JUST_LEFT look-back, ALSO derived from APPROACH_SECONDS rather than being a
+# literal. It used to be a hardcoded 20 while the ring was 15, so a vehicle 15-20
+# minutes past departure was red and outside the ring by construction. One PARAMS
+# edit now moves the ring, the approaching colour and the just-left window together.
+JUST_LEFT_MIN = APPROACH_MIN
+
 VIEW = {
     "label": "Delivery Sync",
     "category": "Core",
@@ -254,7 +260,10 @@ VIEW = {
             "separates the two phases - Unloading while the detected visit is still "
             "open, On site with unload complete once it has closed. Readiness in the "
             "tables and cards uses the unload window instead, which is why a site can "
-            "read READY while the vehicle is still standing on it. "
+            "read READY while the vehicle is still standing on it. Just left is a "
+            "distance test too, not only a clock: a vehicle keeps the red colour while "
+            "it is inside the same 15-minute drive-time band the ring draws, and once "
+            "it is further out it is simply shown as heading to its next stop. "
         ),
         "caveats": (
             "A site reading EXPECTED is hindsight, not a forecast: the visit is in "
@@ -299,8 +308,15 @@ VIEW = {
             "finished even though the vehicle may still be standing on it. A vehicle "
             "whose telemetry ends while it is on site therefore stays ON_SITE until "
             "the staleness guard drops it from the layer entirely, rather than "
-            "claiming a departure that was never observed. APPROACHING is a LIVE "
-            "ROAD-TIME threshold from "
+            "claiming a departure that was never observed. JUST_LEFT is gated on "
+            "DISTANCE as well as time: it means departed within the window AND still "
+            "inside the site's live drive-time band, which is exactly the ring drawn "
+            "on the map, so a red dot outside the ring is impossible. Elapsed minutes "
+            "are not drive-time minutes (the telemetry moves faster than the engine's "
+            "free-flow estimate), which is why the gate uses a live measurement rather "
+            "than the clock. The window and the ring both come from "
+            "PARAMS.APPROACH_SECONDS, so they cannot drift apart. APPROACHING is a "
+            "LIVE ROAD-TIME threshold from "
             "the routing engine, not a straight-line radius. A visit is "
             "only counted once the vehicle was genuinely stationary inside the geofence "
             "for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site "
@@ -373,7 +389,7 @@ VIEW = {
                     "label": "Focus site",
                     "data": {
                         "query": (
-                            "SELECT SITE_ID AS value, SITE_NAME AS label FROM "
+                            "SELECT SITE_ID AS value, SITE_LABEL AS label FROM "
                             "FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region "
                             "AND SERVICE_DATE = " + SD + " AND SITE_NAME IS NOT NULL "
                             "GROUP BY 1,2 ORDER BY 2 LIMIT 300"
@@ -691,6 +707,8 @@ VIEW = {
                                 "ELSE 'Idle' END AS status_label, "
                                 "CASE STATUS_ENUM "
                                 "WHEN 'JUST_LEFT' THEN MINUTES_SINCE_LEFT::VARCHAR || ' min ago' "
+                                "|| COALESCE(', ' || MINUTES_BACK_TO_SITE::VARCHAR "
+                                "|| ' min back by road', '') "
                                 "WHEN 'ON_SITE' THEN "
                                 "IFF(ON_SITE_PHASE = 'UNLOADING', 'Unloading', "
                                 "'On site, unload complete') "
@@ -700,7 +718,7 @@ VIEW = {
                                 "ST_X(VEHICLE_GEOG) AS lng, ST_Y(VEHICLE_GEOG) AS lat "
                                 "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS("
                                 ":region, " + PROFILE + ", " + ASOF + ", "
-                                + APPROACH_MIN + ", 20, 20))"
+                                + APPROACH_MIN + ", " + JUST_LEFT_MIN + ", 20))"
                             ),
                             "params": dict(CTX),
                         },
@@ -724,7 +742,7 @@ VIEW = {
                     # with blank cells and no error. Display text lives in
                     # config.columns[].header.
                     "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS at_time, "
-                    "EVENT_TYPE AS event_type, SITE_NAME AS site_name, "
+                    "EVENT_TYPE AS event_type, SITE_LABEL AS site_name, "
                     "VEHICLE_ID AS vehicle_id, DWELL_MINUTES AS dwell_minutes, "
                     # Hidden drilldown columns (not in config.columns).
                     # A visit yields two events, so the row id must include the
