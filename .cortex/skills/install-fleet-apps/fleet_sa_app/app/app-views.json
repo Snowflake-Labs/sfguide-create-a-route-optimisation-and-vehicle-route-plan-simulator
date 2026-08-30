@@ -3319,8 +3319,8 @@
     "layout": {
       "default": {
         "columns": "1fr 1fr",
-        "rows": "auto auto $heroMap $content $content",
-        "grid": "\"delivery_sync delivery_sync\"\n\"filter clock\"\n\"map map\"\n\"feed readiness\"\n\"inbound inbound\""
+        "rows": "auto auto $heroMap $content",
+        "grid": "\"delivery_sync delivery_sync\"\n\"filter clock\"\n\"feed map\"\n\"readiness inbound\""
       }
     },
     "areas": {
@@ -3787,7 +3787,6 @@
         },
         "config": {
           "title": "Notification feed",
-          "fitRows": 6,
           "rowKey": "event_id",
           "columns": [
             {

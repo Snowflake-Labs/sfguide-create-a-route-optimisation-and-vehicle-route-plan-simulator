@@ -306,13 +306,12 @@ VIEW = {
     "layout": {
         "default": {
             "columns": "1fr 1fr",
-            "rows": "auto auto $heroMap $content $content",
+            "rows": "auto auto $heroMap $content",
             "grid": (
                 '"delivery_sync delivery_sync"\n'
                 '"filter clock"\n'
-                '"map map"\n'
-                '"feed readiness"\n'
-                '"inbound inbound"'
+                '"feed map"\n'
+                '"readiness inbound"'
             ),
         }
     },
@@ -727,7 +726,10 @@ VIEW = {
             },
             "config": {
                 "title": "Notification feed",
-                "fitRows": 6,
+                # No fitRows on purpose: the feed shares the fixed-height
+                # $heroMap row with the map, and view-clickable-table falls back
+                # to height:100% + internal scroll when fitRows is absent, so
+                # the feed matches the map's height exactly.
                 "rowKey": "event_id",
                 # Explicit columns: keeps the visible table exactly as it was
                 # and stops the hidden drilldown ids rendering as columns.
