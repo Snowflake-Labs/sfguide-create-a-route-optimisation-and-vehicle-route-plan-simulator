@@ -18,6 +18,7 @@ import { escapeHtml } from '@/lib/html';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import type { SuspendedInfo } from '@/lib/routing-suspend';
 import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
+import { buildMapLayerMemo, joinBounded, useAgentMemo, MEMO_MAX_LEN } from '@/lib/agent-memo';
 
 interface ViewMapAreaProps {
   areaConfig: {
@@ -26,6 +27,8 @@ interface ViewMapAreaProps {
   // viewState keys that represent a user selection (from ViewRenderer). When one
   // is active, the camera focuses on the selected object's coords only.
   selectionKeys?: string[];
+  // Area key from the view config, used to namespace this map's agent memo.
+  areaName?: string;
 }
 
 interface LayerFetcherProps {
@@ -48,6 +51,9 @@ interface LayerFetcherProps {
   // Report a suspended routing engine (or null when clear) so the parent can
   // overlay a single friendly notice for the whole map.
   onSuspended: (index: number, info: SuspendedInfo | null, retry: () => void) => void;
+  // Report this layer's agent memo (empty when it declares no agentSummary, is
+  // toggled off, or has no rows) so the parent can publish one combined memo.
+  onSummary: (index: number, summary: string) => void;
 }
 
 /**
@@ -106,7 +112,7 @@ function selectionFit(
  * so it is a non-urgent update. This keeps the basemap and UI responsive even
  * when a layer carries multi-MB route geometry.
  */
-function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult, onSuspended }: LayerFetcherProps) {
+function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult, onSuspended, onSummary }: LayerFetcherProps) {
   // Skip the fetch entirely when the layer is toggled off (undefined query
   // short-circuits useViewData) - avoids wasted (and sometimes expensive, e.g.
   // live-ORS) queries for hidden layers.
@@ -117,6 +123,21 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
   useEffect(() => {
     onSuspended(index, visible ? suspended : null, refetch);
   }, [index, visible, suspended, refetch, onSuspended]);
+  // Grounding Channel A for the map: publish the rows themselves (bounded), not
+  // just the count the descriptor already carries. Derived from `rows` rather
+  // than the compiled deck layer so column names are the raw query columns.
+  const summarySpec = layer.agentSummary;
+  useEffect(() => {
+    if (!summarySpec || !visible) {
+      onSummary(index, '');
+      return;
+    }
+    onSummary(index, buildMapLayerMemo({
+      layerId: layer.id ?? `layer-${index}`,
+      rows,
+      ...summarySpec,
+    }));
+  }, [index, rows, visible, summarySpec, layer.id, onSummary]);
   useEffect(() => {
     if (!visible) {
       onResult(index, null, [], [], undefined, 0);
@@ -332,7 +353,7 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
   );
 }
 
-export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps) {
+export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMapAreaProps) {
   const config = areaConfig.config;
   const specs = config.layers ?? [];
 
@@ -361,6 +382,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const [templates, setTemplates] = useState<Record<string, string>>({});
   // Per-layer suspended-engine state (any live-ORS layer over a suspended region).
   const [suspendedLayers, setSuspendedLayers] = useState<Record<number, SuspendedInfo>>({});
+  // Per-layer agent memos, keyed by layer index; only layers declaring
+  // `agentSummary` ever contribute a non-empty entry.
+  const [summaries, setSummaries] = useState<Record<number, string>>({});
   const retryRef = useRef<Record<number, () => void>>({});
   // Path hovered in the map -> widen the matching journey (see compileLayer).
   const [hovered, setHovered] = useState<{ layerId: string; value: unknown } | null>(null);
@@ -445,6 +469,21 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     },
     [],
   );
+
+  const onSummary = useCallback((index: number, summary: string) => {
+    setSummaries((prev) => (prev[index] === summary ? prev : { ...prev, [index]: summary }));
+  }, []);
+
+  // One memo for the whole map area rather than one per layer: layer count is
+  // data-driven, and route.ts ranks/drops memos whole-panel, so a map that added
+  // a layer must not start evicting another panel's memo.
+  const layerMemo = useMemo(() => {
+    const parts = specs
+      .map((_, i) => summaries[i])
+      .filter((s): s is string => !!s);
+    return parts.length ? joinBounded(parts, MEMO_MAX_LEN * 2, ' | ') : '';
+  }, [specs, summaries]);
+  useAgentMemo(areaName, layerMemo, 'map');
 
   const suspendedInfo = useMemo<SuspendedInfo | null>(() => {
     const vals = Object.values(suspendedLayers);
@@ -659,7 +698,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         const v = key ? viewState[key] : undefined;
         const visible = !key || (v !== false && v !== 'false');
         return (
-          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} onSuspended={onSuspended} />
+          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} onSuspended={onSuspended} onSummary={onSummary} />
         );
       })}
       <MapView

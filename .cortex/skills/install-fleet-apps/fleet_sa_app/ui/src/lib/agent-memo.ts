@@ -238,6 +238,58 @@ export function buildRecordMemo(
   return joinBounded([`${label}:`, ...pairs], MEMO_MAX_LEN);
 }
 
+interface LayerMemoInput {
+  /** Layer id, used as the memo's subject when no noun is configured. */
+  layerId: string;
+  /** Rows as fetched for the layer (pre-compile, so column names are raw). */
+  rows: Record<string, unknown>[];
+  groupBy?: string;
+  label: string;
+  detail?: string;
+  maxPerGroup?: number;
+  noun?: string;
+}
+
+/**
+ * Summarize one map layer's features by category, with identities.
+ *
+ * This is the gap that made the agent contradict the map: `MapStateDescriptor`
+ * carries a feature COUNT per layer and nothing else, so "which vehicles are on
+ * site now?" had to be answered from a different panel with a different
+ * definition. The category counts here are EXACT even when the identity list is
+ * truncated - a count is the part an agent will state as fact, so it must never
+ * be a sample artifact.
+ */
+export function buildMapLayerMemo(input: LayerMemoInput): string {
+  const { layerId, rows, groupBy, label, detail, maxPerGroup = 6, noun } = input;
+  if (!rows.length) return '';
+
+  const subject = `${noun ?? layerId} on map`;
+  // Insertion-ordered so the memo lists groups in the order the data arrives
+  // (usually the layer's ORDER BY), not alphabetically.
+  const groups = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = groupBy ? memoScalar(r[groupBy], 30) : 'all';
+    const ident = detail
+      ? `${memoScalar(r[label], 30)} ${memoScalar(r[detail], 40)}`
+      : memoScalar(r[label], 30);
+    const list = groups.get(key);
+    if (list) list.push(ident);
+    else groups.set(key, [ident]);
+  }
+
+  const parts = [...groups.entries()].map(([key, idents]) => {
+    const shown = idents.slice(0, maxPerGroup);
+    const dropped = idents.length - shown.length;
+    const listed = shown.join(', ') + (dropped > 0 ? `, +${dropped} more` : '');
+    return groupBy
+      ? `${key} ${idents.length} (${listed})`
+      : `${idents.length} (${listed})`;
+  });
+
+  return joinBounded([`${subject}: ${rows.length} feature${rows.length === 1 ? '' : 's'}`, ...parts], MEMO_MAX_LEN);
+}
+
 /**
  * Channel B for hand-built maps.
  *

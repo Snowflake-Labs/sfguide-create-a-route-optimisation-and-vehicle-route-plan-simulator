@@ -44,6 +44,30 @@ interface LayerBase {
      *  value is explicitly false/'false' (so it defaults ON before a toggle seeds).
      *  When hidden the layer skips its data fetch entirely (no wasted query). */
     visibleWhen?: string;
+    /** Publish this layer's rows to the chat agent (grounding Channel A).
+     *
+     *  Without it a layer contributes only a feature COUNT to the agent's map
+     *  block, so a question the map answers visually ("which vehicles are on site
+     *  now?") gets answered from some other panel with a different definition -
+     *  which is how the agent came to name a different vehicle than the one the
+     *  map painted. Declare it on any layer whose per-feature identity IS the
+     *  finding. */
+    agentSummary?: MapLayerAgentSummary;
+}
+/** How a layer's rows are summarized for the agent: exact counts per category,
+ *  plus a bounded sample of identities inside each category. */
+export interface MapLayerAgentSummary {
+    /** Row column whose value buckets the features, e.g. a status label. Omit to
+     *  summarize the layer as one unbucketed group. */
+    groupBy?: string;
+    /** Row column identifying a feature within its bucket, e.g. a vehicle id. */
+    label: string;
+    /** Optional second column appended to each identity, e.g. the site name. */
+    detail?: string;
+    /** Identities listed per bucket before collapsing to "(+N more)". Default 6. */
+    maxPerGroup?: number;
+    /** Noun for the features, used in the memo prefix. Default "features". */
+    noun?: string;
 }
 export interface ScatterplotLayerSpec extends LayerBase {
     type: 'scatterplot';
