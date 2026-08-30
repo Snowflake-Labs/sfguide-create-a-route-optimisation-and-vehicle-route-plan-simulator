@@ -526,8 +526,27 @@ END;
 $$;
 
 -- Install-time build for the active CONFIG region (force = TRUE for a clean rebuild).
-CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
-  (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
+--
+-- GUARDED, and the guard is load-bearing. This is the ONLY statement in this file
+-- that depends on the five Overture Marketplace listings acquired above, which is
+-- the most likely thing to fail on a brand-new account (listing availability,
+-- ORGDATACLOUD access, region). Because `snow sql -f` is stop-on-first-error, an
+-- unguarded failure here abandoned the remaining ~1,400 lines of this file - the
+-- LOCATION diagnostics, the ZIP enrichment, the SOURCING diagnostics and the
+-- FLEET_APP.SOURCING views - so one missing listing silently emptied five views
+-- that have nothing to do with Overture. Catchment is allowed to fail alone.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
+    (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
+  RETURN 'catchment built';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'WARN: BUILD_CATCHMENT failed (Overture listings unavailable?); '
+        || 'the catchment view will be empty, everything downstream of this '
+        || 'point still builds. Detail: ' || SQLERRM;
+END;
+$$;
 
 -- =============================================================================
 -- 5. LOCATION DIAGNOSTICS  (cannibalisation + closure vertical slice)
@@ -747,7 +766,20 @@ BEGIN
 END;
 $$;
 
-CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
+-- Guarded for the same reason as BUILD_CATCHMENT above: these builders read the
+-- Overture-derived CATCHMENT tables, so they fail when catchment failed. Letting
+-- that abort the file would also take out the SOURCING section 1,100 lines below,
+-- which shares no dependency with either.
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
+  RETURN 'location diagnostics built';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'WARN: BUILD_LOCATION_DIAGNOSTICS failed; site_impact / closure_impact '
+        || 'will be empty. Detail: ' || SQLERRM;
+END;
+$$;
 
 -- ZIP enrichment (US demo only): real ZIP polygons (SFR listing GZTYZ7P39MI) +
 -- real population/housing/income rolled up from SafeGraph Open Census CBGs. Guarded
@@ -812,7 +844,16 @@ EXCEPTION
 END;
 $$;
 
-CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
+  RETURN 'location zip enrichment built';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'WARN: BUILD_LOCATION_ZIP_ENRICHMENT failed; the ZIP choropleth and the '
+        || 'at-risk rollups will be empty. Detail: ' || SQLERRM;
+END;
+$$;
 
 -- 5b. FLEET_APP neutral-contract views the SA app reads (consumers never bind to
 --     FLEET_INTELLIGENCE directly). Mirrors the generated CATCHMENT pack pattern.
@@ -869,6 +910,32 @@ $$
                     || ' host=' || COALESCE(P_RESPONSE:ors_host::STRING, '?'))
   END
 $$;
+
+-- Region -> ORS profile. Every live-routing view below used to hardcode
+-- 'driving-car', which is only correct when the region's graph happens to have
+-- that profile built. A region is provisioned for its dataset's vehicle type, so
+-- an HGV region builds ONLY driving-hgv and an e-bike region builds
+-- cycling-electric - and ORS answers a request for an unbuilt profile with
+-- {"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'"},
+-- which the ORS_FEATURES guard turns into a cast failure. Result: catchment,
+-- site_impact, closure_impact, sourcing_optimizer and mix_sourcing all failed
+-- outright on every HGV region (96 failing area-executions across 4 regions in
+-- the validate_app_views baseline), while passing on a car region - which is why
+-- it was never noticed.
+--
+-- Resolved from data, not from a live ORS_STATUS call, so it costs nothing and
+-- works while the service is suspended: the active dataset's VEHICLE_TYPE maps
+-- through DIM_VEHICLE_PROFILE to exactly the profile that region's graph was
+-- built for. Falls back to driving-car for a region with no active dataset.
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_PROFILE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT d.REGION,
+       COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
+WHERE d.IS_ACTIVE;
 
 -- FLATTEN input for the ISOCHRONES response. Returns the features array when the
 -- call succeeded; raises (carrying the suspend tokens) when it did not. A missing
@@ -947,7 +1014,9 @@ $$
     SELECT (f.value:properties:value::INT)/60 AS band_min,
            TO_GEOGRAPHY(f.value:geometry) AS g
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID))),
@@ -985,7 +1054,9 @@ $$
     SELECT f.value:properties:group_index::INT AS grp,
            TO_GEOGRAPHY(f.value:geometry) AS g
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY STORE_ID)
          FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'),
       ARRAY_CONSTRUCT(P_BAND * 60),
@@ -1028,7 +1099,9 @@ $$
   WITH iso AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
@@ -1100,7 +1173,9 @@ $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
@@ -1168,7 +1243,9 @@ $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
@@ -1220,7 +1297,9 @@ $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
@@ -1566,7 +1645,9 @@ $$
     SELECT (f.value:properties:value::INT)/60 AS band_min,
            TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
@@ -1626,7 +1707,9 @@ $$
   WITH iso AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
@@ -1657,7 +1740,9 @@ $$
   WITH iso AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
     FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      'driving-car',
+      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
       ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
@@ -1932,7 +2017,16 @@ BEGIN
 END;
 $$;
 
-CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS();
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS();
+  RETURN 'sourcing diagnostics built';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'WARN: BUILD_SOURCING_DIAGNOSTICS failed; sourcing_optimizer / '
+        || 'mix_sourcing will be empty. Detail: ' || SQLERRM;
+END;
+$$;
 
 -- 6b. FLEET_APP neutral-contract views + LIVE UDTFs (consumers never bind to
 --     FLEET_INTELLIGENCE directly). Mirrors the LOCATION seam.
@@ -1966,6 +2060,24 @@ CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ORDER_MIX
 CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_REGION
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+
+-- The sourcing region's ORS profile, already resolved to ONE flat row.
+--
+-- Joins only, deliberately: the app passes this into a table function, and a UDTF
+-- argument may be a literal, a bind or a scalar subquery but NOT a scalar subquery
+-- that itself contains scalar subqueries. Views are inlined, so building this from
+-- nested `(SELECT ...)` expressions pushed the nesting into the caller and
+-- reproduced "Unsupported subquery type cannot be evaluated". Keep it join-shaped.
+CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_PROFILE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS
+SELECT COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
+FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG c
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+  ON d.REGION = c.REGION AND d.IS_ACTIVE
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
+LIMIT 1;
 
 -- Estate-only facts view for the semantic view (SV_SOURCING). Current annual
 -- freight here is a DATA-ONLY straight-line estimate (no ORS), suitable for the

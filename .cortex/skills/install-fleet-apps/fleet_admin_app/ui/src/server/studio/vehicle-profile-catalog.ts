@@ -191,6 +191,12 @@ const PROFILE_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHI
 // never violates NOT NULL on tables that still hold rows; the MERGE always supplies a value.
 const PROFILE_ALTER = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS SPEEDING_RATIO FLOAT`;
 // Same idempotent-add contract for MIN_STOP_SECONDS (see VehicleProfileRow).
+// The dependent `SELECT *` view must be dropped first: Snowflake fixes a view's
+// column count at creation, so ADD COLUMN invalidates
+// FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE ("declared 13 column(s), but view
+// query produces 14"). The pack step recreates it; boot order makes this safe
+// because the packs run after this catalog on every install.
+const PROFILE_DROP_DEPENDENT_VIEW = `DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE`;
 const PROFILE_ALTER_MIN_STOP = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER`;
 
 const DWELL_SLA_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
@@ -247,7 +253,9 @@ function dwellSlaMergeSql(): string {
 // every boot. Must run BEFORE any contract view/UDTF that reads the catalog
 // and before generation stamps DIM_FLEET.
 export async function ensureVehicleProfileCatalog(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [PROFILE_DDL, PROFILE_ALTER, PROFILE_ALTER_MIN_STOP, profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
+  const stmts = [PROFILE_DDL, PROFILE_ALTER, PROFILE_DROP_DEPENDENT_VIEW,
+                 PROFILE_ALTER_MIN_STOP, profileMergeSql(), DWELL_SLA_DDL,
+                 dwellSlaMergeSql()];
   for (const sql of stmts) {
     await snowSql(sql, 'FLEET_INTELLIGENCE', 'CORE');
   }

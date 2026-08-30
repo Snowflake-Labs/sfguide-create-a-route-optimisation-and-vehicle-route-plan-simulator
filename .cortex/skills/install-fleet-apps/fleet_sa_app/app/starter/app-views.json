@@ -2,6 +2,15 @@
   "locations": {
     "label": "Locations",
     "description": "Points of interest by category and location, on a map.",
+    "agentKnowledge": {
+      "keyMetrics": "Total locations, plus the per-category counts from the breakdown chart. Both describe the estate as loaded, not a filtered subset.",
+      "exampleQuestions": [
+        "How many locations are there, and which category has the most?",
+        "Which categories are represented in this region?",
+        "Where is the estate concentrated on the map?"
+      ],
+      "gotchas": "Scoped by region only, with no date range, so the numbers do not move when the context bar dates change - say that rather than implying a time-filtered answer."
+    },
     "useCase": {
       "headline": "Where the estate sits: every location on a map, counted and split by category, as the starting point for a new domain.",
       "businessQuestion": "Where are our locations, and how do they break down by category and type?",
@@ -105,6 +114,15 @@
   "movements": {
     "label": "Movements",
     "description": "Origin-to-destination movements: volume, distance, duration, and daily trend.",
+    "agentKnowledge": {
+      "keyMetrics": "Movement count, total and average distance, average duration, and the daily trend series. Averages are per movement, not per location.",
+      "exampleQuestions": [
+        "How many movements were there, and how far did they travel on average?",
+        "Which day had the most movement?",
+        "Is the daily trend rising or falling over the selected range?"
+      ],
+      "gotchas": "Distance and duration are whatever the bound source supplies. On a freshly retargeted domain they may be straight-line rather than road-network values, so do not call them drive distances unless the domain's contract says they are."
+    },
     "useCase": {
       "headline": "Origin-to-destination movement: how much moves, how far, how long it takes, and how that trends by day.",
       "businessQuestion": "What is moving between our locations, and is the volume or the distance changing?",

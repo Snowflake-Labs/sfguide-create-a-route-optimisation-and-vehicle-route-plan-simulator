@@ -39,16 +39,28 @@ a mode-AGNOSTIC dataset (`VEHICLE_TYPE = ebike` is just a data dimension):
    ```
    The loader lives at repo-root `datasets/` (NOT under any skill folder),
    so it survives deprecation of the routing-engine skill.
-4. **Agnostic guard** - re-run `scripts/seed_data.sql`; its step 3 PURGES any
-   industry-vertical rows the loader created (freight offers, partners, partner
-   history, and the MARKETPLACE/BACKLOAD/DHL schemas) so only agnostic data
-   persists.
+4. **Agnostic guard** - re-run `scripts/seed_data.sql`. Its step 3 now drops only
+   `FLEET_INTELLIGENCE.DHL_NTBO` (a retired vendor-specific schema). It does NOT
+   purge freight offers, partners, partner history, or the MARKETPLACE /
+   BACKLOAD_MATCHING schemas - those are agnostic marketplace entities the seed
+   deliberately ships and several views depend on them.
 
 ## Agnostic scope of the seed
 
-| Loaded (agnostic) | Purged / not loaded (vertical) |
+The seed parquet tree is a full `SEED_READY` export: all 16 entities in
+`SEED_REQUIRED_ENTITIES` load in install step 2, so nothing among them needs a
+Data Studio run. Studio is required only for a dataset in a DIFFERENT region or
+vehicle type.
+
+| Loaded by the seed | Not in the seed (built elsewhere) |
 |---|---|
-| `FACT_TRIPS`, `FACT_VEHICLE_TELEMETRY`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `DIM_DATASETS`, `GENERATION_JOBS`, `ROUTE_OPTIMIZATION.{PLACES,LOOKUP,CONFIG}` | `FACT_FREIGHT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, `MARKETPLACE.*`, `BACKLOAD_MATCHING.*`, `DHL_NTBO.*` |
+| `FACT_TRIPS`, `FACT_VEHICLE_TELEMETRY`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `FACT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, `DIM_ANCHORS`, `DIM_PARTICIPANTS`, `FACT_HAZARD_ZONES`, `DIM_AREA_DEMOGRAPHICS`, `DIM_DEMAND_CATALOG`, `DIM_DATASETS`, `GENERATION_JOBS`, `ROUTE_OPTIMIZATION.{PLACES,LOOKUP,CONFIG}`, `MARKETPLACE.{FACT_OFFER_ROUTES,CONFIG}`, `CORE.REGION_REGISTRY` | `CORE.DIM_VEHICLE_PROFILE` + `DIM_VEHICLE_DWELL_SLA` (step 2.5), `BACKLOAD_MATCHING.*` + `CATCHMENT.*` + `LOCATION.*` + `SOURCING.*` (step 3.5 analytic layer), `V_*_CURRENT` projections (step 2.5), `MOCK_SAP` / `MOCK_TELEMATICS` (step 2.6), `REGION_CATALOG` and the travel-time matrix (engine build) |
+
+Guarded seed paths that yield zero rows silently: `LOAD_SEED_CATALOG` and
+`LOAD_SEED_MATRIX` are wrapped in exception handlers because their procs only
+exist once the engine modules have run. Install steps 3.4 and 3.4b retry them; with
+`--no-engine` they never load, so `REGION_CATALOG` stays empty and
+`REGION_REGISTRY_V` falls back to bbox geometry.
 
 This feeds the agnostic packs: `unified_fleet`, `fleet_ops`, `dwell`,
 `route_deviation`, `route_optimization`.

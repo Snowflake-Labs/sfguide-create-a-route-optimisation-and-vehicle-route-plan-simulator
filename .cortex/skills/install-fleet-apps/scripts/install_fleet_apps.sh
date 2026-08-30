@@ -387,11 +387,31 @@ fi
 # CONFIG safety-net, and the Overture-sourced CATCHMENT tables. Runs AFTER the
 # engine (so REGION_CATALOG boundaries exist) and BEFORE packs. Best-effort: a
 # catchment failure (no Overture coverage) must not abort the install.
+#
+# The status is now reported HONESTLY. It used to read `step "3.5 analytic" OK`
+# unconditionally, outside the conditional, so the summary table said OK even
+# when the file had failed - and because `snow sql -f` stops at the first error,
+# a failure in the Overture-dependent BUILD_CATCHMENT abandoned every later
+# section (LOCATION, SOURCING, the FLEET_APP.SOURCING views). Five to seven views
+# rendered empty while the installer claimed success, which is the worst possible
+# combination. The three builder CALLs in analytic_layer.sql are now individually
+# guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
-  snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1 \
-    || note "  WARN: analytic layer reported errors (catchment may need Overture coverage); see /tmp/ifa_analytic.log"
-  step "3.5 analytic" OK
+  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1; then
+    # The file completed, but the guarded builders report their own failures as
+    # WARN strings in the result set rather than a non-zero exit - surface those
+    # too, otherwise "OK" still overstates what happened.
+    if grep -q "^WARN:" /tmp/ifa_analytic.log || grep -q "WARN: BUILD_" /tmp/ifa_analytic.log; then
+      note "  WARN: analytic layer completed with degraded sections; see /tmp/ifa_analytic.log"
+      step "3.5 analytic" WARN
+    else
+      step "3.5 analytic" OK
+    fi
+  else
+    note "  WARN: analytic layer FAILED (see /tmp/ifa_analytic.log); dependent views will be empty"
+    step "3.5 analytic" FAILED
+  fi
 else
   step "3.5 analytic" SKIPPED
 fi
@@ -538,6 +558,39 @@ if [ "${SKIP_ROLES:-0}" != "1" ]; then
   step "8 roles" OK
 else
   step "8 roles" SKIPPED
+fi
+
+# ── 9. post-install view verification (NON-BLOCKING) ────────────
+# Executes every SA app view's queries with the binds the runtime actually sends
+# and reports OK / EMPTY / ERROR per area. This is the only step that answers the
+# question a user actually cares about - "will the pages have data?" - because
+# every other step verifies that objects were CREATED, not that they RETURN
+# anything. An empty panel passes every other gate in this installer.
+#
+# Deliberately non-blocking and last: it must never fail an otherwise good
+# install, and it needs every layer present. Skip with SKIP_VERIFY=1.
+if [ "${SKIP_VERIFY:-0}" != "1" ]; then
+  note "[9/9] verifying app views return data (non-blocking)..."
+  if python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
+    python3 "$SCRIPTS/validate_app_views.py" -c "$CONNECTION" \
+      --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1
+    VERIFY_RC=$?
+    VERIFY_TALLY=$(grep -E "^(OK|EMPTY|ERROR|BY_DESIGN)" /tmp/ifa_verify.log | tail -1)
+    if [ "$VERIFY_RC" = "0" ]; then
+      note "  all views returned data or are declared empty ($VERIFY_TALLY)"
+      step "9 verify-views" OK
+    else
+      note "  WARN: some views returned no data or errored - see /tmp/ifa_verify.log"
+      note "        summary: ${VERIFY_TALLY:-see log}"
+      note "        repair attempt: python3 $SCRIPTS/validate_app_views.py -c $CONNECTION --repair"
+      step "9 verify-views" WARN
+    fi
+  else
+    note "  SKIPPED: needs snowflake-connector-python + PyYAML"
+    step "9 verify-views" SKIPPED
+  fi
+else
+  step "9 verify-views" SKIPPED
 fi
 
 # ── friction log + summary ──────────────────────────────────────

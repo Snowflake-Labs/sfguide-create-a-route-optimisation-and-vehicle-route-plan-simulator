@@ -78,6 +78,24 @@ def check_config(path: pathlib.Path, problems: list[str]) -> int:
         for field in REQUIRED:
             if not str(uc.get(field) or "").strip():
                 problems.append(f"{rel}: {view_id}.useCase.{field} is missing or empty")
+        # Tenet 10 Channel C. A view with no agentKnowledge still renders, so
+        # nothing else notices, but the left-panel agent then has no idea which
+        # tool to prefer, which metrics matter, or where the traps are - it
+        # answers questions about the view from general knowledge. Checked here
+        # because this is already the Tenet 10 gate; `preferredTool` stays
+        # optional on purpose (the tenet says to omit it when no semantic view
+        # models the data, and naming one that does not is worse than none).
+        ak = view.get("agentKnowledge")
+        if not isinstance(ak, dict) or not ak:
+            problems.append(
+                f"{rel}: {view_id} has no agentKnowledge block - the chat agent is "
+                f"ungrounded for this view (Tenet 10, Channel C)."
+            )
+        elif not str(ak.get("keyMetrics") or ak.get("exampleQuestions") or "").strip():
+            problems.append(
+                f"{rel}: {view_id}.agentKnowledge carries neither keyMetrics nor "
+                f"exampleQuestions, so it grounds nothing."
+            )
     return len(views)
 
 

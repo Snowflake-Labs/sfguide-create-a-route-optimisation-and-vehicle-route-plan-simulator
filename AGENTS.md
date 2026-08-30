@@ -60,8 +60,26 @@ python3 .cortex/skills/evals/run_evals.py
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
 bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 
-# Validate every SA app view carries a useCase block (Tenet 10, Channel D)
+# Validate every SA app view carries a useCase block (Tenet 10, Channel D) and an
+# agentKnowledge block (Channel C)
 python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
+
+# Execute EVERY SA app view's queries with the binds the runtime actually sends and
+# report OK / EMPTY / ERROR per area. This is the only check that answers "will the
+# pages have data?" - every other gate verifies objects were CREATED, not that they
+# RETURN anything, and an empty panel passes all of them. Two passes: first render
+# (nothing selected) then a seeded-selection pass that exercises the drill-downs.
+# Legitimately-empty panels are declared in scripts/view-expectations.yaml with a
+# reason; an undeclared empty result fails. Read-only unless --repair is passed.
+# Needs snowflake-connector-python + PyYAML, and a live deployed stack.
+python3 .cortex/skills/install-fleet-apps/scripts/validate_app_views.py -c <connection>
+python3 .cortex/skills/install-fleet-apps/scripts/validate_app_views.py -c <connection> --repair
+# Installer step 9 runs it automatically, non-blocking; skip with SKIP_VERIFY=1.
+
+# Before a flush + fresh install on an account that has never run this stack:
+# probes Overture listing acquisition, ORS services, privileges, pre-existing fleet
+# objects and the harness's own dependencies. Exit 0 ready / 1 blocking / 2 degraded.
+bash .cortex/skills/install-fleet-apps/scripts/preflight_new_account.sh -c <connection>
 
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"

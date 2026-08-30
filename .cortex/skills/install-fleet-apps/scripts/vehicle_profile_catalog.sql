@@ -53,6 +53,16 @@ ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS
 -- population IS noise (a courier held at a light inside a 100 m fence): the
 -- ebike histogram spikes at 189 under 30s and 741 in 30-59s, then runs smooth
 -- from 60s up, so the floor is set just above the spike, not at zero.
+--
+-- DROP THE DEPENDENT `SELECT *` VIEW FIRST. FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+-- is `SELECT * FROM DIM_VEHICLE_PROFILE`, and Snowflake stores a view's column
+-- count at creation, so ADD COLUMN invalidates it: reads then fail with "declared
+-- 13 column(s), but view query produces 14". Same trap this file already guards for
+-- V_DIM_FLEET_CURRENT below. On a fresh install FLEET_APP does not exist yet and
+-- this is a no-op; on an existing account it clears the stale view and the pack
+-- step (installer step 4) recreates it. A STANDALONE run of this script must
+-- therefore be followed by the pack step.
+DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE;
 ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER;
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
