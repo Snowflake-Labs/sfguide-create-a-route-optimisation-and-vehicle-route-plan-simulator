@@ -347,6 +347,13 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     [context, panelViewState],
   );
 
+  const regionKey = String(context.region ?? '');
+  // Bbox of the active region: frames the map on the region the moment the
+  // context dropdown changes, before this view's data for that region arrives
+  // (and instead of world zoom when the view has no rows for it). Also used to
+  // discard stale foreign coords from the fit union - see boxFrom below.
+  const regionCoords = useRegionCamera(regionKey);
+
   const [layers, setLayers] = useState<Record<number, Layer | null>>({});
   const [counts, setCounts] = useState<Record<number, number>>({});
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
@@ -457,7 +464,42 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
 
   // When a selection is active, focus on the selected object's coords only
   // (excluding context layers); otherwise frame the full set of all layers.
+  //
+  // INVARIANT (do not "simplify" this back to one union): per-layer fit coords
+  // are keyed by layer index and SURVIVE a region change, because each layer
+  // refetches independently. So mid-switch the union can span the old region and
+  // the new one - Singapore plus New Jersey unions to lon -75..119, whose centre
+  // is mid-Atlantic off Africa, and once that box is fitted the "coords already
+  // in view" check keeps the camera there. Hence two unions in one pass: coords
+  // inside the active region (padded) and all coords. Prefer the region-local
+  // box when it exists, which drops the stale foreign coords.
+  //
+  // The fallback to the full union is equally load-bearing: 32 map layers across
+  // Sourcing Optimizer, Mix Sourcing, Catchment, Site Impact, Closure Impact,
+  // Asset Velocity and Dwell SLA are deliberately NOT region-scoped. For those,
+  // nothing is ever inside the active region, and clipping would frame an empty
+  // region while their data sat elsewhere.
   const fitCoords = useMemo<LngLat[]>(() => {
+    // Region clip window: the region bbox padded by 25% of its span (min 1 deg)
+    // so genuinely region-local geometry that overruns the boundary - drive-time
+    // isochrones, routes crossing a border - is not treated as foreign.
+    let clip: { minLng: number; minLat: number; maxLng: number; maxLat: number } | null = null;
+    if (regionCoords && regionCoords.length >= 2) {
+      const lngs = regionCoords.map((c) => c[0]);
+      const lats = regionCoords.map((c) => c[1]);
+      const rMinLng = Math.min(...lngs), rMaxLng = Math.max(...lngs);
+      const rMinLat = Math.min(...lats), rMaxLat = Math.max(...lats);
+      if ([rMinLng, rMaxLng, rMinLat, rMaxLat].every((v) => Number.isFinite(v))) {
+        const padLng = Math.max(1, (rMaxLng - rMinLng) * 0.25);
+        const padLat = Math.max(1, (rMaxLat - rMinLat) * 0.25);
+        clip = {
+          minLng: rMinLng - padLng,
+          maxLng: rMaxLng + padLng,
+          minLat: rMinLat - padLat,
+          maxLat: rMaxLat + padLat,
+        };
+      }
+    }
     // Collapse every layer's coords into a single bounding box (2 corner
     // points) without spreading large arrays into push() - spreading
     // data-sized arrays overflows the call stack. Downstream fit helpers
@@ -465,6 +507,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     const boxFrom = (source: Record<number, LngLat[]>): LngLat[] => {
       let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
       let seen = false;
+      // Second accumulator, filled only with coords inside the clip window.
+      let iMinLng = Infinity, iMinLat = Infinity, iMaxLng = -Infinity, iMaxLat = -Infinity;
+      let seenInside = false;
       for (const key of Object.keys(source)) {
         const arr = source[Number(key)];
         if (!arr) continue;
@@ -477,15 +522,23 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
           if (lat < minLat) minLat = lat;
           if (lat > maxLat) maxLat = lat;
           seen = true;
+          if (clip && lng >= clip.minLng && lng <= clip.maxLng && lat >= clip.minLat && lat <= clip.maxLat) {
+            if (lng < iMinLng) iMinLng = lng;
+            if (lng > iMaxLng) iMaxLng = lng;
+            if (lat < iMinLat) iMinLat = lat;
+            if (lat > iMaxLat) iMaxLat = lat;
+            seenInside = true;
+          }
         }
       }
+      if (seenInside) return [[iMinLng, iMinLat], [iMaxLng, iMaxLat]];
       if (!seen) return [];
       return [[minLng, minLat], [maxLng, maxLat]];
     };
     const sel = boxFrom(fitsSel);
     if (sel.length) return sel;
     return boxFrom(fitsFull);
-  }, [fitsSel, fitsFull]);
+  }, [fitsSel, fitsFull, regionCoords]);
 
   // Changes whenever a tracked selection value changes; drives MapView's
   // one-shot focus fit. Empty when nothing is selected (camera stays on clear).
@@ -575,11 +628,6 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     };
   }, [templates]);
 
-  const regionKey = String(context.region ?? '');
-  // Bbox of the active region: frames the map on the region the moment the
-  // context dropdown changes, before this view's data for that region arrives
-  // (and instead of world zoom when the view has no rows for it).
-  const regionCoords = useRegionCamera(regionKey);
   // Views that opt into a locked camera frame once on load and then stay put:
   // no selection focus fit, no refit when a layer toggle or a periodic refetch
   // changes the data extent.
