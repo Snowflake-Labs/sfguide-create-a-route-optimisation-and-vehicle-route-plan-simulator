@@ -134,6 +134,32 @@ export function isSuspendedBody(body: unknown): body is SuspendedInfo {
   );
 }
 
+// Thrown by hand-rolled fetchers (the surfaces that do not go through
+// useViewData) so a suspended engine propagates as a TYPED error instead of
+// being flattened into "HTTP 503". Catch with isRoutingSuspendedError and render
+// RoutingSuspendedNotice.
+export class RoutingSuspendedError extends Error {
+  readonly info: SuspendedInfo;
+  constructor(info: SuspendedInfo) {
+    super(info.message);
+    this.name = 'RoutingSuspendedError';
+    this.info = info;
+  }
+}
+
+export function isRoutingSuspendedError(err: unknown): err is RoutingSuspendedError {
+  return err instanceof RoutingSuspendedError;
+}
+
+// Standard guard for a hand-rolled fetch: call it on a non-ok response BEFORE
+// falling back to body.error, because a suspended payload has no `error` key and
+// would otherwise be reported as a bare "HTTP 503".
+export function throwIfSuspended(status: number, body: unknown): void {
+  if (status === 503 && isSuspendedBody(body)) {
+    throw new RoutingSuspendedError(body);
+  }
+}
+
 // Classify a SYSTEM$GET_SERVICE_STATUS result (as returned by the ops
 // service_status verb: { status_json: "<json array>" }). An empty / missing
 // array means the service exists but has no running instances (suspended). A

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import { buildRecordMemo, useAgentMemo } from '@/lib/agent-memo';
@@ -76,7 +77,7 @@ export function EntityDetailArea({ areaConfig, areaName }: EntityDetailAreaProps
   const showView = useAppStore(s => s.showView);
   const bumpViewsVersion = useAppStore(s => s.bumpViewsVersion);
 
-  const { data, loading, error } = useViewData(
+  const { data, loading, error, suspended, refetch } = useViewData(
     areaData.query,
     areaData.params as Record<string, string> | undefined,
   );
@@ -233,6 +234,7 @@ export function EntityDetailArea({ areaConfig, areaName }: EntityDetailAreaProps
     );
   }
 
+  if (suspended) return <RoutingSuspendedNotice info={suspended} onRetry={refetch} />;
   if (error) return <div style={{ padding: '24px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   if (!row)  return <div style={{ padding: '24px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>Record not found.</div>;
 

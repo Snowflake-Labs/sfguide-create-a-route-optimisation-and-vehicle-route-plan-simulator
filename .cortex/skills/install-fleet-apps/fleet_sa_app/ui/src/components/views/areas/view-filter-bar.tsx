@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedInlineHint } from '@/components/views/RoutingSuspendedInlineHint';
 
 interface FilterDef {
   name: string;
@@ -33,7 +34,11 @@ function FilterSelect({
 }: {
   filter: FilterDef;
 }) {
-  const { data, loading } = useViewData(filter.data.query, filter.data.params);
+  // `suspended` matters here even though a filter is not itself an ORS surface:
+  // a filter fed by a live-routing query would otherwise render an empty
+  // dropdown, and every dependent panel then looks like "no data" instead of
+  // "engine starting".
+  const { data, loading, suspended, refetch } = useViewData(filter.data.query, filter.data.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
@@ -89,6 +94,7 @@ function FilterSelect({
           </option>
         ))}
       </select>
+      {suspended && <RoutingSuspendedInlineHint info={suspended} onRetry={refetch} />}
     </div>
   );
 }

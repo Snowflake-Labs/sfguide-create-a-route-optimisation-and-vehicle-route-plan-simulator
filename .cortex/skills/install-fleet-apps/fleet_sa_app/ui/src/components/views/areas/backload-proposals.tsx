@@ -25,7 +25,7 @@ import {
 } from './backload-ensemble';
 import { sqlLiteral, findUnroutablePoints, coordKey } from './backload-matching/helpers';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
-import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
+import { isSuspendedBody, isRoutingSuspendedError, RoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
 import StatusBar from './backload-proposals/StatusBar';
 import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
@@ -94,6 +94,9 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
     body: JSON.stringify({ sql }),
   });
   const body = await res.json();
+  // Typed 503 first: a suspended payload carries no `error` key, so the fallback
+  // below would otherwise report a bare "HTTP 503" for an outage.
+  if (res.status === 503 && isSuspendedBody(body)) throw new RoutingSuspendedError(body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   const rows = (body.rows as Record<string, unknown>[]) || [];
   return rows.map((r) => {
@@ -103,14 +106,10 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
   });
 }
 
-// Thrown by apiSolve when the routing engine is suspended so the caller can show
-// the shared resume notice (server has already triggered the resume).
-class SuspendedError extends Error {
-  constructor(readonly info: SuspendedInfo) {
-    super(info.message);
-    this.name = 'SuspendedError';
-  }
-}
+// Thrown by apiSolve and sfRead when the routing engine is suspended so the
+// caller can show the shared resume notice (server has already triggered the
+// resume). Aliased to the shared class so both paths land in ONE catch.
+const SuspendedError = RoutingSuspendedError;
 
 // True when a VROOM location [lon,lat] matches (within ~11m). VROOM echoes the
 // failing coordinate to ~6dp; match with the same epsilon coordKey uses.
@@ -264,6 +263,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setScored(scRows as unknown as ScoredCandidate[]);
       setParams(pRows as unknown as ParamRow[]);
     } catch (e) {
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       const msg = e instanceof Error ? e.message : 'Failed to load backload data';
       // The cockpit data layer (VW_LOADS / VW_CANDIDATES_SCORED / MATCH_PARAMS in
       // FLEET_INTELLIGENCE.BACKLOAD_MATCHING) is provisioned by the admin app boot

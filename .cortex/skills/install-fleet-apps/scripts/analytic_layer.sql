@@ -821,8 +821,101 @@ CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT();
 CREATE DATABASE IF NOT EXISTS FLEET_APP
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ALTER DATABASE FLEET_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.CORE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.LOCATION
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- ===========================================================================
+-- SUSPENDED-ENGINE GUARDS (shared by every live-ORS function)
+-- ===========================================================================
+-- An ORS wrapper does NOT throw when its region's service is suspended: it
+-- returns a row whose payload is NULL and whose response carries the reason
+--   {"error":"service_unreachable", "ors_host":"ors-service-<region>", ...}
+-- Consumers that filter the NULL away (IS NOT NULL, or an inner join on
+-- group_index) therefore turn an outage into an EMPTY RESULT SET, and the app
+-- renders a blank panel that is indistinguishable from "there is no data here".
+--
+-- The app already handles a raised error: /api/query matches the message
+-- against its suspend signatures (which include 'service_unreachable'), pulls
+-- the region out of the 'ors-service-<region>' token, RESUMES that region, and
+-- returns a typed 503 that the UI renders as "engine starting, retry in ~N min".
+-- So the correct behavior everywhere is to FAIL LOUDLY with a message carrying
+-- those two strings.
+--
+-- SQL UDFs cannot RAISE, so a deliberate cast failure carries the payload:
+--   TO_BOOLEAN('ORS service_unreachable host=ors-service-europe')
+--     -> "Boolean value 'ORS service_unreachable host=ors-service-europe' is
+--         not recognized"
+-- The CASE is LAZY, so a healthy region never evaluates the cast and pays
+-- nothing.
+--
+-- Use the shape-specific helper for the call being guarded, because the guard
+-- has to sit on an expression the query CANNOT prune:
+--   ISOCHRONES + LATERAL FLATTEN -> ORS_FEATURES(resp.RESPONSE) as the FLATTEN
+--     input (no features => no rows, so a WHERE guard would never be reached)
+--   MATRIX_TABULAR               -> ORS_MATRIX(...) wrapping the call in the
+--     CTE, so every downstream reference to the VARIANT forces evaluation
+--   anything else                -> ORS_OK(response) in a WHERE predicate
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.ORS_OK(P_RESPONSE VARIANT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  CASE
+    WHEN P_RESPONSE IS NOT NULL AND P_RESPONSE:error IS NULL THEN TRUE
+    ELSE TO_BOOLEAN('ORS ' || COALESCE(P_RESPONSE:error::STRING, 'service_unreachable')
+                    || ' host=' || COALESCE(P_RESPONSE:ors_host::STRING, '?'))
+  END
+$$;
+
+-- FLATTEN input for the ISOCHRONES response. Returns the features array when the
+-- call succeeded; raises (carrying the suspend tokens) when it did not. A missing
+-- `features` array is treated as a failure: ORS always returns features for a
+-- request it actually served.
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.ORS_FEATURES(P_RESPONSE VARIANT)
+RETURNS ARRAY
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  CASE
+    WHEN P_RESPONSE:features IS NOT NULL THEN P_RESPONSE:features::ARRAY
+    ELSE TO_ARRAY(TO_BOOLEAN('ORS ' || COALESCE(P_RESPONSE:error::STRING, 'service_unreachable')
+                             || ' host=' || COALESCE(P_RESPONSE:ors_host::STRING, '?')))
+  END
+$$;
+
+-- Pass-through guard for a MATRIX_TABULAR VARIANT: returns the response verbatim
+-- when it holds a matrix, raises otherwise. Wrap the MATRIX_TABULAR call itself so
+-- the guard cannot be pruned or short-circuited by an adjacent IS NOT NULL filter.
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.ORS_MATRIX(P_RESPONSE VARIANT)
+RETURNS VARIANT
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  CASE
+    WHEN P_RESPONSE:distances IS NOT NULL OR P_RESPONSE:durations IS NOT NULL THEN P_RESPONSE
+    ELSE TO_VARIANT(TO_BOOLEAN('ORS ' || COALESCE(P_RESPONSE:error::STRING, 'service_unreachable')
+                               || ' host=' || COALESCE(P_RESPONSE:ors_host::STRING, '?')))
+  END
+$$;
+
+-- Grants for the guards (additive; roles from fleet_sa_app/app/role_binding.sql).
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_OK(VARIANT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_OK(VARIANT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_OK(VARIANT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_FEATURES(VARIANT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_FEATURES(VARIANT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_FEATURES(VARIANT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_MATRIX(VARIANT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_MATRIX(VARIANT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.CORE.ORS_MATRIX(VARIANT) TO ROLE FLEET_APP_ADMIN;
 
 CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_STORES
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -860,7 +953,9 @@ $$
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID))),
       (SELECT ARRAY_AGG(BAND_MIN*60) FROM FLEET_INTELLIGENCE.LOCATION.BANDS),
       'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   z AS (
     SELECT ZIP, POPULATION, HOUSEHOLDS, MEDIAN_INCOME, CENTROID, GEOG
@@ -895,7 +990,9 @@ $$
          FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'),
       ARRAY_CONSTRUCT(P_BAND * 60),
       'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   )
   SELECT o.STORE_ID, o.POI_NAME, P_BAND, i.g
   FROM owned o JOIN iso i ON i.grp = o.grp
@@ -936,7 +1033,9 @@ $$
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   owned AS (
     SELECT STORE_ID, POI_NAME, LON, LAT,
@@ -1006,7 +1105,9 @@ $$
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   owned AS (
     SELECT STORE_ID, POI_NAME, GEO
@@ -1072,7 +1173,9 @@ $$
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   owned AS (
     SELECT STORE_ID, POI_NAME, GEO
@@ -1122,7 +1225,9 @@ $$
         (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
         (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   owned AS (
     SELECT STORE_ID, GEO
@@ -1466,7 +1571,9 @@ $$
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
       P_BANDS, 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   ),
   zip AS (
     SELECT band_min,
@@ -1524,7 +1631,9 @@ $$
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   )
   SELECT p.BASIC_CATEGORY, COUNT(*) AS venues
   FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.POIS p
@@ -1553,7 +1662,9 @@ $$
         COALESCE((SELECT LONGITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LON, (SELECT AVG(LONGITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)),
         COALESCE((SELECT LATITUDE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION AND POI_NAME=P_POI_NAME ORDER BY 1 LIMIT 1), P_LAT, (SELECT AVG(LATITUDE) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION=P_REGION)))),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      LATERAL FLATTEN(input => resp.RESPONSE:features) f
+      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
+      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
+      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
   )
   SELECT p.POI_NAME, p.BASIC_CATEGORY, p.LONGITUDE, p.LATITUDE
   FROM iso i JOIN FLEET_INTELLIGENCE.CATCHMENT.POIS p
@@ -1892,13 +2003,15 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{
 AS
 $$
   WITH mtx AS (
-    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+    -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
+    -- letting the `distances IS NOT NULL` filter below silently return no lanes.
+    SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
       P_PROFILE,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
-      P_REGION) AS m
+      P_REGION)) AS m
   ),
   p AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
@@ -2003,13 +2116,14 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{
 AS
 $$
   WITH mtx AS (
-    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+    -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE).
+    SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
       P_PROFILE,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      P_REGION) AS m
+      P_REGION)) AS m
   ),
   a AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai

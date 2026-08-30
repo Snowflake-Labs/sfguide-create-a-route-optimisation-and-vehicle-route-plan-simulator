@@ -68,6 +68,14 @@ export function useViewData(
 
   const paramsKey = JSON.stringify(resolvedParams);
 
+  // Region hint for the suspended-engine handler. Several routing errors (a
+  // gateway failure, 'matrix pre-compute failed', a bare 'service_unreachable')
+  // carry NO 'ors-service-<region>' token, so without this the server falls back
+  // to its hardcoded default and would resume the wrong region while telling the
+  // user it resumed that default. `context.region` is written by the dataset
+  // picker and is the region every view query is scoped to.
+  const regionHint = typeof context.region === 'string' && context.region ? context.region : null;
+
   const fetchData = useCallback(async () => {
     if (!query) return;
 
@@ -92,7 +100,7 @@ export function useViewData(
       const res = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: query, params: resolvedParams, dynamic: isDynamic }),
+        body: JSON.stringify({ sql: query, params: resolvedParams, dynamic: isDynamic, region: regionHint }),
         signal: controller.signal,
       });
 
@@ -125,7 +133,7 @@ export function useViewData(
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, paramsKey, viewsVersion, isDynamic]);
+  }, [query, paramsKey, viewsVersion, isDynamic, regionHint]);
 
   useEffect(() => {
     fetchData();

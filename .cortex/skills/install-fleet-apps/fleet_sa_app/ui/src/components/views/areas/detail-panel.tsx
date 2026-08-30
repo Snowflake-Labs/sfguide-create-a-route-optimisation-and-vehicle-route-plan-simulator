@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildRecordMemo, useAgentMemo } from '@/lib/agent-memo';
@@ -97,7 +98,7 @@ function DetailPanelBody({
 }) {
   const display = useDisplayConfig();
   const showView = useAppStore((s) => s.showView);
-  const { data, loading, error } = useViewData(headerQuery, headerParams);
+  const { data, loading, error, suspended, refetch } = useViewData(headerQuery, headerParams);
   const row = data?.rows[0] as Record<string, unknown> | undefined;
 
   const tr = useCallback((t?: string) => (t ? interpolateTokens(t, display) : t), [display]);
@@ -172,6 +173,8 @@ function DetailPanelBody({
               <div key={i} style={{ height: '30px', marginBottom: '8px', borderRadius: '4px', backgroundColor: 'var(--surface-secondary, #f3f4f6)' }} />
             ))}
           </div>
+        ) : suspended ? (
+          <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />
         ) : error ? (
           <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
         ) : !row ? (

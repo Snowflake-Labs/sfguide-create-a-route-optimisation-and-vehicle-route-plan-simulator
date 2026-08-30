@@ -26,7 +26,7 @@ import StopsPanel from './backload-matching/StopsPanel';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import InfoTip from './backload-matching/InfoTip';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
-import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
+import { isSuspendedBody, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
@@ -213,6 +213,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         setSeedHint(null);
       }
     } catch (e) {
+      // A suspended engine reaches here when one of the DATA reads (not the
+      // solve) is the first thing to touch live routing.
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       setSeedHint(e instanceof Error ? e.message : 'Failed to load backload data');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

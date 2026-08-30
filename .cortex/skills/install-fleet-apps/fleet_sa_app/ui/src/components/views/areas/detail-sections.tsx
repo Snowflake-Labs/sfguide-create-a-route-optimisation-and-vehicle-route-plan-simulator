@@ -7,6 +7,7 @@
 // generic auto-table, and the two query-backed section renderers.
 
 import { useViewData } from '@/hooks/use-view-data';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // ── Shared config types ─────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
 // Runs row[field] as a SQL query - used for "Live Membership" in audience detail.
 export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; title?: string; limit?: number }) {
   const wrappedSql = sql ? `SELECT * FROM (${sql}) AS _t LIMIT ${limit ?? 200}` : undefined;
-  const { data, loading, error, refetch } = useViewData(wrappedSql);
+  const { data, loading, error, suspended, refetch } = useViewData(wrappedSql);
 
   return (
     <div style={{ marginBottom: '28px' }}>
@@ -143,6 +144,8 @@ export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; t
           <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No SQL - membership cannot be computed.</div>
         ) : loading ? (
           <Skeleton />
+        ) : suspended ? (
+          <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />
         ) : error ? (
           <div style={{ padding: '12px 16px' }}>
             <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px', marginBottom: '8px' }}>Error: {error}</div>
@@ -177,7 +180,7 @@ export function RelatedTableSection({
   showViewFn: (id: string) => void;
   scrollHeight?: number;
 }) {
-  const { data, loading, error } = useViewData(section.query, params);
+  const { data, loading, error, suspended, refetch } = useViewData(section.query, params);
 
   return (
     <div style={{ marginBottom: '28px' }}>
@@ -185,6 +188,8 @@ export function RelatedTableSection({
       <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden', minHeight: scrollHeight }}>
         {loading ? (
           <Skeleton />
+        ) : suspended ? (
+          <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />
         ) : error ? (
           <div style={{ padding: '12px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
         ) : !data?.rows.length ? (

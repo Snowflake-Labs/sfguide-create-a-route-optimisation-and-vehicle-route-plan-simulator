@@ -48,3 +48,20 @@ if [ -f "$USECASE_CHECK" ] && staged_any \
     exit 1
   }
 fi
+
+# ── 3. Live-routing views must fail loudly on a suspended engine ─────────────
+# A suspended ORS service does not throw: it returns NULL payloads, so a view
+# that filters those away renders BLANK instead of triggering the app's
+# auto-resume + "engine starting" notice. Silent by construction, hence a check.
+ORS_RAISE_CHECK="$SKILL_DIR/scripts/check_ors_raise.py"
+if [ -f "$ORS_RAISE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
+  "$SKILL_DIR/scripts/analytic_layer.sql" \
+  "$SKILL_DIR/scripts/delivery_sync_layer.sql"; then
+  echo "pre-commit: suspended-ORS raise coverage check..."
+  python3 "$ORS_RAISE_CHECK" || {
+    echo "pre-commit FAILED: a live-routing view would render blank on a suspended engine."
+    exit 1
+  }
+fi

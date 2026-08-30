@@ -6,6 +6,7 @@
 // (empty-leg polyline) at interaction time - never precomputed into tables.
 
 import type { LngLat } from '@/lib/map/map-fit';
+import { throwIfSuspended } from '@/lib/routing-suspend';
 
 export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
@@ -121,6 +122,9 @@ export async function sfRead(sql: string, opts: { signal?: AbortSignal } = {}): 
     body: JSON.stringify({ sql }), signal: opts.signal,
   });
   const body = await res.json();
+  // A suspended routing engine returns a typed 503 with NO `error` key, so this
+  // check has to come first or the outage is flattened into "HTTP 503".
+  throwIfSuspended(res.status, body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   const rows = (body.rows as Record<string, unknown>[]) || [];
   return rows.map((r) => {
