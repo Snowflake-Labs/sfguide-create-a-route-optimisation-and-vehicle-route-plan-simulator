@@ -16,6 +16,7 @@ import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { ViewProps, MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
 import { parseSvcStatus, regionServiceName } from '@/lib/routing-suspend';
@@ -243,6 +244,9 @@ async function ensureOptimizationService(svc: string): Promise<EnsureOutcome> {
 
 export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
+  // Region bbox: frames the map on the active region as soon as the context
+  // dropdown changes, before hazard zones or participants are seeded.
+  const regionCoords = useRegionCamera(region);
   const setMapState = useAppStore((s) => s.setMapState);
 
   const [avail, setAvail] = useState<'checking' | 'ready' | 'unavailable'>('checking');
@@ -1010,7 +1014,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       </div>
 
       <div style={{ position: 'relative', height: '100%' }}>
-        <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: `${region}:${step}:${participants.length}` }}
+        <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: `${region}:${step}:${participants.length}`, regionKey: region, regionCoords }}
           getTooltip={(info: any) => {
             const o = info?.object; if (!o) return null;
             if (o.center_name) return { text: o.center_name };

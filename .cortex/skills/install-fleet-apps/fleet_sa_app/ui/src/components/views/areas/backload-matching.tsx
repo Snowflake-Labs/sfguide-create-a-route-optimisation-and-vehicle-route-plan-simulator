@@ -17,6 +17,7 @@ import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
 import type { ViewProps } from '@/lib/types';
@@ -75,6 +76,9 @@ function clampPayload(v: number, i: number, e: number, budget: number): { v: num
 
 export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
+  // Region bbox: frames the map on the active region immediately on a context
+  // change, before any trailers/offers for that region have loaded.
+  const regionCoords = useRegionCamera(region);
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
   const [vehicleClass, setVehicleClass] = useState<VehicleClass | null>(null);
@@ -1257,7 +1261,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
               <button type="button" onClick={() => solveAbortRef.current?.abort()} style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>Cancel</button>
             </div>
           )}
-          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
           <button type="button" onClick={() => recenterRef.current?.()} style={{ position: 'absolute', top: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Recenter</button>
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ position: 'absolute', top: 12, right: 108, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Stops &darr;</button>

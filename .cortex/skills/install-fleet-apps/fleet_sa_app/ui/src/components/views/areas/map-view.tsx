@@ -43,6 +43,13 @@ interface FitToOptions {
   // table row click), not an automatic re-frame, and it does not re-arm the
   // auto-fit machinery.
   focusPoint?: { lng: number; lat: number; zoom?: number } | null;
+  // Bounding-box corners of the ACTIVE region (2 coords is enough). Used to frame
+  // the region immediately when regionKey changes, before that region's layer
+  // data has arrived - and to keep framing it when a view has no rows for the
+  // region at all (otherwise the camera would sit on the previous region, or at
+  // world zoom on first load). This is a provisional fit: the real data fit is
+  // still forced once fresh coords arrive, so the final framing is unchanged.
+  regionCoords?: LngLat[] | null;
 }
 
 interface MapViewProps {
@@ -105,6 +112,12 @@ export default function MapView({
   // accepting fits until the async layer loads have settled (a lock applied on
   // the very first layer's coords would freeze a partial bounding box).
   const firstFitAtRef = useRef<number>(0);
+  // A region change (or first mount) is pending a real data fit. Kept armed until
+  // coords that differ from the ones showing at the moment of the change arrive,
+  // so the forced fit lands on the NEW region's data and not on the stale set
+  // still rendered during the refetch.
+  const regionPendingRef = useRef(true);
+  const regionBaselineSigRef = useRef<string>('');
 
   useEffect(() => {
     const el = containerRef.current;
@@ -140,6 +153,7 @@ export default function MapView({
   const fitFocusKey = fitTo?.focusKey;
   const fitLocked = fitTo?.lockAfterFirstFit ?? false;
   const focusPoint = fitTo?.focusPoint ?? null;
+  const regionCoords = fitTo?.regionCoords ?? null;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
 
   if (lastRegionRef.current !== fitRegionKey) {
@@ -147,6 +161,10 @@ export default function MapView({
     hasFittedRef.current = false;
     userMovedRef.current = false;
     firstFitAtRef.current = 0;
+    // Arm the region handling: frame the region bbox right away, and force the
+    // next data fit even if the (still stale) coords happen to be in view.
+    regionPendingRef.current = true;
+    regionBaselineSigRef.current = fitSig;
   }
 
   // A selection became active or changed: mark a pending forced fit and capture
@@ -179,7 +197,8 @@ export default function MapView({
       return;
     }
     const forcedByFocus = focusPendingRef.current && fitSig !== focusBaselineSigRef.current;
-    const firstFit = !hasFittedRef.current || explicitRecenter || forcedByFocus;
+    const forcedByRegion = regionPendingRef.current && fitSig !== regionBaselineSigRef.current;
+    const firstFit = !hasFittedRef.current || explicitRecenter || forcedByFocus || forcedByRegion;
     if (!firstFit) {
       if (userMovedRef.current) return;
       if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
@@ -199,9 +218,39 @@ export default function MapView({
       hasFittedRef.current = true;
       forceFitRef.current = false;
       if (forcedByFocus) focusPendingRef.current = false;
+      if (forcedByRegion) regionPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
   }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick]);
+
+  // Provisional region framing. Declared AFTER the data fit on purpose: in the
+  // commit where the region changed, the data fit above still sees the previous
+  // region's coords, so this must run last to win. It intentionally does NOT set
+  // hasFittedRef / firstFitAtRef - the forced data fit still follows (and starts
+  // the lock settle window), so a locked camera is unaffected. When the view has
+  // no data for the region, regionPendingRef stays armed and this stays as the
+  // final camera instead of the stale or world-zoom view.
+  const lastRegionPrefitRef = useRef<string>('');
+  useEffect(() => {
+    if (!dims) return;
+    if (!regionCoords || regionCoords.length === 0) return;
+    if (!regionPendingRef.current) return;
+    const sig = `${fitRegionKey ?? ''}|${coordsSignature(regionCoords)}`;
+    if (lastRegionPrefitRef.current === sig) return;
+    lastRegionPrefitRef.current = sig;
+    const next = fitBoundsToData({
+      width: dims.width,
+      height: dims.height,
+      coords: regionCoords,
+      padding: fitPadding ?? DEFAULT_PADDING,
+      minZoom: fitMinZoom,
+      maxZoom: fitMaxZoom,
+      fallback: fallbackViewState,
+    });
+    if (next && isValidViewState(next)) {
+      setViewState(prev => ({ ...prev, ...next }));
+    }
+  }, [dims, regionCoords, fitRegionKey, fitPadding, fitMinZoom, fitMaxZoom, fallbackViewState]);
 
   // Explicit one-shot focus (row click). Keyed on the point signature so it
   // fires once per new point and never fights the user's own panning after.

@@ -12,6 +12,7 @@ import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
 import { useViewData } from '@/hooks/use-view-data';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
@@ -575,6 +576,10 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   }, [templates]);
 
   const regionKey = String(context.region ?? '');
+  // Bbox of the active region: frames the map on the region the moment the
+  // context dropdown changes, before this view's data for that region arrives
+  // (and instead of world zoom when the view has no rows for it).
+  const regionCoords = useRegionCamera(regionKey);
   // Views that opt into a locked camera frame once on load and then stay put:
   // no selection focus fit, no refit when a layer toggle or a periodic refetch
   // changes the data extent.
@@ -611,7 +616,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
       })}
       <MapView
         layers={orderedLayers}
-        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera, focusPoint }}
+        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera, focusPoint, regionCoords }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
         onHover={onHover}
