@@ -42,6 +42,18 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       detour: { probability: 0.05, max_detour_factor: 1.4 },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
       base_speed_kmh: { min: 30, max: 55 },
+      // Without a category_map every POI fell through to the mapper's catch-all
+      // 'LOCATION', which is semantically empty and, because LOCATION was in no
+      // consumer's monitored-site whitelist, made Delivery Sync render blank for
+      // car regions. Keys mirror poi_categories above so the estate carries a
+      // meaningful type. home_location_types makes the generator pick a depot,
+      // which the DELIVERY_SYNC detector needs to exclude overnight parking.
+      home_location_types: ['DESTINATION'],
+      category_map: {
+        STORE: ['shopping_mall', 'restaurant', 'cafe', 'coffee_shop', 'bar'],
+        DESTINATION: ['corporate_or_business_office', 'hotel', 'hospital', 'airport', 'lounge'],
+        _default: 'DESTINATION',
+      },
       generates_offers: true,
       // Universal-generation entities (Overture + free Marketplace). Enabled on
       // the canonical seed preset so one Data Studio run produces anchors,

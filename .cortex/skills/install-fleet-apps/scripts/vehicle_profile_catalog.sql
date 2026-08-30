@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE (
   SUBTYPE_DIST            VARIANT,
   DEVIATION_DISTANCE_RATIO FLOAT   NOT NULL,
   TELEPORT_DISTANCE_M     NUMBER   NOT NULL,
-  SPEEDING_RATIO          FLOAT
+  SPEEDING_RATIO          FLOAT,
+  MIN_STOP_SECONDS        NUMBER
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Idempotent column add for accounts whose DIM_VEHICLE_PROFILE predates SPEEDING_RATIO
@@ -43,6 +44,16 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE (
 -- supplies a value. SPEEDING_RATIO = posted-speed multiplier above which a synthetic
 -- ping is flagged IS_SPEEDING (read by the Data Studio generator, interpolate.ts).
 ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS SPEEDING_RATIO FLOAT;
+
+-- MIN_STOP_SECONDS: shortest stationary span the DELIVERY_SYNC detector accepts
+-- as a genuine site visit. Per vehicle type because the single HGV-tuned 180s
+-- value silently halved recall on lighter modes - measured on the seeded ebike
+-- dataset, 6,961 of 14,604 candidate visits (48%) fell under 180s while the
+-- generator's own configured destination dwell median is 120s. The sub-60s
+-- population IS noise (a courier held at a light inside a 100 m fence): the
+-- ebike histogram spikes at 189 under 30s and 741 in 30-59s, then runs smooth
+-- from 60s up, so the floor is set just above the spike, not at zero.
+ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER;
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
   VEHICLE_TYPE    VARCHAR NOT NULL,
@@ -55,15 +66,20 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
 -- Profiles (VALUES cannot hold PARSE_JSON, so use SELECT ... UNION ALL).
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
 INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
-  (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO)
+  (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO, MIN_STOP_SECONDS)
 SELECT 'hgv','driving-hgv','regional_hgv',40.00,4.00,16.50,2.55,11.50,0.18,
-       PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500,1.05
+       PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500,1.05,180
 UNION ALL
-SELECT 'car','driving-car','urban_car',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000,1.08
+SELECT 'car','driving-car','urban_car',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000,1.08,120
 UNION ALL
-SELECT 'ebike','cycling-electric','urban_ebike',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300,1.15;
+SELECT 'ebike','cycling-electric','urban_ebike',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300,1.15,60;
 
 -- Dwell SLA (per vehicle_type x location_type; scaled per TS DWELL_SCALE).
+-- MUST stay row-for-row identical to BASELINE_DWELL_SLA x DWELL_SCALE in
+-- fleet_admin_app/ui/src/server/studio/vehicle-profile-catalog.ts. That file
+-- MERGEs additively on admin-app boot; THIS file DELETEs and re-INSERTs on every
+-- installer run, so it is authoritative - a location type added only there is
+-- silently wiped by the next install.
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA;
 INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA
   (VEHICLE_TYPE, LOCATION_TYPE, WARNING_MIN, CRITICAL_MIN, BUFFER_RADIUS_M)
@@ -71,12 +87,15 @@ VALUES
   -- hgv (f=1.0)
   ('hgv','WAREHOUSE',5,15,200),('hgv','DESTINATION',3,10,100),('hgv','REST_STOP',5,12,150),
   ('hgv','STORE',2,8,100),('hgv','DETOUR',2,5,100),('hgv','IDLE',120,240,100),
+  ('hgv','RESTAURANT',2,8,100),('hgv','LOCATION',3,10,100),('hgv','ADDRESS',3,10,100),
   -- car (f=0.6)
   ('car','WAREHOUSE',3,9,200),('car','DESTINATION',2,6,100),('car','REST_STOP',3,7,150),
   ('car','STORE',1,5,100),('car','DETOUR',1,3,100),('car','IDLE',120,240,100),
+  ('car','RESTAURANT',1,5,100),('car','LOCATION',2,6,100),('car','ADDRESS',2,6,100),
   -- ebike (f=0.5)
   ('ebike','WAREHOUSE',3,8,200),('ebike','DESTINATION',2,5,100),('ebike','REST_STOP',3,6,150),
-  ('ebike','STORE',1,4,100),('ebike','DETOUR',1,3,100),('ebike','IDLE',120,240,100);
+  ('ebike','STORE',1,4,100),('ebike','DETOUR',1,3,100),('ebike','IDLE',120,240,100),
+  ('ebike','RESTAURANT',1,4,100),('ebike','LOCATION',2,5,100),('ebike','ADDRESS',2,5,100);
 
 -- ---------------------------------------------------------------------------
 -- Stamp DIM_FLEET asset columns from the catalog. scoped_contract.sql's

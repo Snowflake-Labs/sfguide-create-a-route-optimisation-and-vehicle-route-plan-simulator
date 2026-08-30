@@ -157,6 +157,8 @@ pts AS (
     t.REGION, t.VEHICLE_ID, t.TRIP_ID, t.TS, t.POINT_GEOM,
     t.LATITUDE, t.LONGITUDE, t.SPEED_KMH, t.STATUS AS SOURCE_STATUS_HINT,
     f.VEHICLE_TYPE, f.HOME_LOCATION_ID,
+    -- H3 join key for the containment prefilter (see site_cells below).
+    H3_POINT_TO_CELL_STRING(t.POINT_GEOM, 8) AS H3_CELL,
     ROW_NUMBER() OVER (PARTITION BY t.REGION, t.VEHICLE_ID ORDER BY t.TS) AS SEQ
   FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT t
   JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
@@ -177,6 +179,30 @@ sites AS (
   WHERE ARRAY_CONTAINS(p.LOCATION_TYPE::VARIANT,
                        STRTOK_TO_ARRAY(prm.MONITORED_SITE_TYPES, ','))
 ),
+-- Each monitored site expanded to its H3 res-8 cell plus the 6 neighbours.
+-- This exists PURELY as an equality join key so the containment step below is a
+-- hash join instead of a spatial comparison of every ping against every site.
+-- It is a prefilter, never the answer: ST_DWITHIN remains the authoritative
+-- test, so results are bit-identical with or without this CTE.
+--
+-- WHY IT IS REQUIRED, NOT AN OPTIMISATION. The monitored estate used to be
+-- WAREHOUSE-only, i.e. ~2.3k sites against ~0.8M HGV pings, and the refresh took
+-- ~6 minutes. Once RESTAURANT and LOCATION were monitored (without which the
+-- ebike and car datasets produce no visits at all), SanFrancisco alone became
+-- 1.58M pings x 4,996 sites and a manually triggered FULL refresh ran for over
+-- 75 minutes on the XSMALL warehouse without completing - well past the 1 hour
+-- TARGET_LAG, so the table could never have kept its lag.
+--
+-- k = 1 at res 8 is safe for every radius in DIM_VEHICLE_DWELL_SLA (max 200 m,
+-- WAREHOUSE): a res-8 cell has an ~461 m edge, so the 7-cell disk clears any
+-- point in the centre cell by roughly 400 m in every direction. A future radius
+-- above ~400 m would need a coarser resolution or a larger k, otherwise the
+-- prefilter would start dropping genuine containments.
+site_cells AS (
+  SELECT s.*, c.VALUE::VARCHAR AS H3_CELL
+  FROM sites s,
+       LATERAL FLATTEN(input => H3_GRID_DISK(H3_POINT_TO_CELL_STRING(s.POINT_GEOM, 8), 1)) c
+),
 -- Containment, one site per ping (nearest wins). Home base excluded so
 -- overnight parking is never reported as a delivery.
 inside AS (
@@ -186,8 +212,9 @@ inside AS (
     s.LOCATION_ID, s.SITE_NAME, s.LOCATION_TYPE, s.SITE_CATEGORY,
     s.POINT_GEOM AS SITE_GEOM, s.BUFFER_RADIUS_M
   FROM pts p
-  JOIN sites s
+  JOIN site_cells s
     ON s.REGION = p.REGION
+   AND s.H3_CELL = p.H3_CELL
    AND s.VEHICLE_TYPE = p.VEHICLE_TYPE
    AND ST_DWITHIN(p.POINT_GEOM, s.POINT_GEOM, s.BUFFER_RADIUS_M)
   WHERE s.LOCATION_ID <> COALESCE(p.HOME_LOCATION_ID, '~none~')
@@ -277,10 +304,18 @@ SELECT
 FROM agg a CROSS JOIN prm
 LEFT JOIN dupnames d
   ON d.REGION = a.REGION AND d.NM = TRIM(a.SITE_NAME, '"')
+-- Per-vehicle minimum stop. PARAMS.MIN_STOP_SECONDS remains the account-wide
+-- fallback for a vehicle type absent from the catalog; the catalog value wins
+-- when present. A single global 180s (tuned for HGV pass-by rejection) discarded
+-- 48% of the seeded ebike dataset's candidate visits, whose configured
+-- destination dwell median is 120s - see DIM_VEHICLE_PROFILE.MIN_STOP_SECONDS.
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = a.VEHICLE_TYPE
 WHERE a.ARRIVAL_TS IS NOT NULL
   AND a.DEPARTURE_TS IS NOT NULL
   AND a.STATIONARY_PINGS >= prm.MIN_STATIONARY_PINGS
-  AND DATEDIFF('second', a.ARRIVAL_TS, a.DEPARTURE_TS) >= prm.MIN_STOP_SECONDS
+  AND DATEDIFF('second', a.ARRIVAL_TS, a.DEPARTURE_TS)
+        >= COALESCE(vp.MIN_STOP_SECONDS, prm.MIN_STOP_SECONDS)
   AND DATEDIFF('second', a.FENCE_ENTRY_TS, a.FENCE_EXIT_TS) <= prm.MAX_STOP_SECONDS;
 
 -- ---------------------------------------------------------------------
