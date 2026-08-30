@@ -584,7 +584,7 @@ $$;
 --     fleet-wide question the map needs: is each vehicle on a site, has it just
 --     left one, is it closing in, or is it simply driving. Statuses:
 --
---       ON_SITE     - inside a detected visit right now (arrival <= t < departure)
+--       ON_SITE     - last known position is INSIDE a monitored site's geofence
 --       JUST_LEFT   - departed a site within P_JUST_LEFT_MIN of the instant
 --       APPROACHING - live road ETA to its OWN next site <= P_APPROACH_MIN
 --       DRIVING     - en route, but further out than that
@@ -594,6 +594,42 @@ $$;
 --     and JUST_LEFT sets overlap (a vehicle that left site A can already be
 --     sitting at site B), which would double-plot it, so the CASE resolves to
 --     exactly one status per vehicle.
+--
+--     ON_SITE IS A CONTAINMENT TEST, NOT AN UNLOAD WINDOW. This is the fix for a
+--     real contradiction on the map: the marker is drawn at `last_pos` (the last
+--     ping at or before the instant) while ON_SITE used to be bounded by
+--     DT_SITE_VISITS.DEPARTURE_TS, which is MAX(TS) over the STATIONARY CORE -
+--     the last ping on which the vehicle was seen not moving. That is the
+--     product-ready moment, NOT evidence of leaving, so status and marker were
+--     answering different questions. Worked example (UsNewJersey 2026-08-07,
+--     V-DRI-00001 at Revolution Rail Co. Cape May): ARRIVAL 05:54:16.982,
+--     DEPARTURE 05:57:49.128 - and that departure ping is the vehicle's LAST
+--     ping of the day, speed 0, 6 m from the site inside a 200 m geofence. At
+--     06:00 the dot sat on the site while the tooltip read "Just left 2.2 min
+--     ago". Two buckets on that day's 134 visits: 27 where DEPARTURE_TS is the
+--     vehicle's last ping (no exit evidence exists at all, so it read JUST_LEFT
+--     for the whole window then IDLE while parked on the site) and 105 where
+--     DEPARTURE_TS < FENCE_EXIT_TS (the drive-out tail is still inside the
+--     fence). The entry side was mirror-imaged: FENCE_ENTRY_TS precedes
+--     ARRIVAL_TS, so the marker was inside the fence while labelled APPROACHING.
+--
+--     So ON_SITE now asks the positional question about the SAME row the map
+--     plots, giving the invariant: the plotted position lies inside a monitored
+--     site's geofence IFF STATUS_ENUM = 'ON_SITE'. ARRIVAL_TS / DEPARTURE_TS
+--     keep their unload semantics and are untouched - readiness
+--     (F_SITE_READINESS_ASOF), DWELL_MINUTES, PRODUCT_READY_TS and the
+--     notification feed were always correct; only the live map status was
+--     overloading them. ON_SITE_PHASE carries the distinction the UI needs:
+--     UNLOADING while the instant is still inside the visit window, UNLOAD_DONE
+--     once past DEPARTURE_TS (or when no visit window covers the instant).
+--
+--     Accepted consequence: a vehicle driving OUT of the yard but still inside
+--     the fence reads ON_SITE for one ping. That is honest and, crucially, it
+--     matches the dot - a speed gate would reintroduce a status that disagrees
+--     with the marker, which is the whole defect. Likewise a vehicle whose feed
+--     ends on site stays ON_SITE until P_MAX_STALENESS_MIN drops it from the
+--     layer entirely, which is the right failure mode: it disappears rather than
+--     claiming a departure that was never observed.
 --
 --     APPROACHING is a LIVE ROAD-TIME threshold, not a radius: one MATRIX_TABULAR
 --     call over the en-route subset, origins = vehicle positions ordered by
@@ -613,12 +649,17 @@ CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_FLEET_STATUS(
 RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
-               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY)
+               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
+               ON_SITE_PHASE VARCHAR)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH last_pos AS (
+  WITH prm AS (
+    SELECT MONITORED_SITE_TYPES
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS LIMIT 1
+  ),
+  last_pos AS (
     SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
     FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
     WHERE REGION = P_REGION
@@ -627,14 +668,64 @@ $$
                         COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
     QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
   ),
-  -- Currently inside a visit.
-  on_site AS (
+  -- The monitored-site set with the geofence radius resolved per (vehicle type,
+  -- site type). Deliberately mirrors the `sites` CTE of DT_SITE_VISITS verbatim
+  -- so the radius used to CLASSIFY a live position cannot drift from the radius
+  -- used to DETECT the visit.
+  sites AS (
+    SELECT p.LOCATION_ID, p.REGION, TRIM(p.NAME, '"') AS SITE_NAME,
+           p.POINT_GEOM, sla.VEHICLE_TYPE, sla.BUFFER_RADIUS_M
+    FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
+    JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA sla
+      ON sla.LOCATION_TYPE = p.LOCATION_TYPE
+    CROSS JOIN prm
+    WHERE p.REGION = P_REGION
+      AND ARRAY_CONTAINS(p.LOCATION_TYPE::VARIANT,
+                         STRTOK_TO_ARRAY(prm.MONITORED_SITE_TYPES, ','))
+  ),
+  -- CONTAINMENT: the plotted position is inside a monitored geofence. Nearest
+  -- site wins (a stop inside a cluster of nearby sites must not resolve to
+  -- several), and the vehicle's own home base is excluded exactly as the
+  -- detector excludes it, so overnight parking is never reported as on site.
+  at_site AS (
+    SELECT p.VEHICLE_ID, s.LOCATION_ID AS SITE_ID, s.SITE_NAME
+    FROM last_pos p
+    JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
+      ON f.VEHICLE_ID = p.VEHICLE_ID AND f.REGION = P_REGION
+    JOIN sites s
+      ON s.VEHICLE_TYPE = f.VEHICLE_TYPE
+     AND ST_DWITHIN(p.POINT_GEOM, s.POINT_GEOM, s.BUFFER_RADIUS_M)
+    WHERE s.LOCATION_ID <> COALESCE(f.HOME_LOCATION_ID, '~none~')
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY p.VEHICLE_ID
+              ORDER BY ST_DISTANCE(p.POINT_GEOM, s.POINT_GEOM)) = 1
+  ),
+  -- Inside a detected visit window. Kept as a SECOND source rather than being
+  -- replaced: it keeps ON_SITE alive across a momentarily missing ping (a gap
+  -- that puts `last_pos` outside the fence mid-visit) and it is what tells the
+  -- UI the unload is still in progress.
+  visit_now AS (
     SELECT VEHICLE_ID, ANY_VALUE(SITE_ID) AS SITE_ID, ANY_VALUE(SITE_NAME) AS SITE_NAME
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
       AND COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) >= ARRIVAL_TS
       AND COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) <  DEPARTURE_TS
     GROUP BY VEHICLE_ID
+  ),
+  -- Union of the two, one row per vehicle. The visit window is preferred (PREF
+  -- 1) because it names the site the unload belongs to and carries the
+  -- UNLOADING phase; containment supplies the rest, phased UNLOAD_DONE.
+  on_site_src AS (
+    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, 'UNLOADING'   AS ON_SITE_PHASE, 1 AS PREF
+    FROM visit_now
+    UNION ALL
+    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, 'UNLOAD_DONE' AS ON_SITE_PHASE, 2 AS PREF
+    FROM at_site
+  ),
+  on_site AS (
+    SELECT VEHICLE_ID, SITE_ID, SITE_NAME, ON_SITE_PHASE
+    FROM on_site_src
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY PREF) = 1
   ),
   -- Most recent departure inside the just-left window.
   just_left AS (
@@ -737,12 +828,18 @@ $$
     IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NULL AND e2.MINS IS NOT NULL,
         DATEADD('second', (e2.MINS * 60)::INT,
                 COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)), NULL) AS ETA_TS,
-    IFF(j.VEHICLE_ID IS NOT NULL,
+    -- Gated on o.VEHICLE_ID IS NULL as well, because a vehicle standing inside a
+    -- geofence usually ALSO has a closed visit inside the just-left window (that
+    -- is exactly the case the containment test rescues), and reporting "left N
+    -- minutes ago" on a row whose status is ON_SITE would put the contradiction
+    -- straight back into the tooltip and the agent's grounding.
+    IFF(o.VEHICLE_ID IS NULL AND j.VEHICLE_ID IS NOT NULL,
         ROUND(DATEDIFF('second', j.DEPARTURE_TS,
                        COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)) / 60.0, 1),
         NULL)::NUMBER(12,1) AS MINUTES_SINCE_LEFT,
     p.TS,
-    p.POINT_GEOM
+    p.POINT_GEOM,
+    o.ON_SITE_PHASE
   FROM last_pos p
   LEFT JOIN on_site   o  ON o.VEHICLE_ID  = p.VEHICLE_ID
   LEFT JOIN just_left j  ON j.VEHICLE_ID  = p.VEHICLE_ID
@@ -889,7 +986,8 @@ CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS(
 RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
-               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY)
+               POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
+               ON_SITE_PHASE VARCHAR)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
