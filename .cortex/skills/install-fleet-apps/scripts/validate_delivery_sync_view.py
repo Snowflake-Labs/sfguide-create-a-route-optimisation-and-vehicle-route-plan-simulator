@@ -75,6 +75,14 @@ BINDS_SQL = {
     ":vehicle_type": "NULL",
 }
 
+# Instants (minutes since midnight) the same-day invariant is swept over. NOT
+# just the slider default: the ON_SITE regression was a parked-vehicle failure
+# only visible in the early-morning window, so 05:00 is load-bearing here.
+# Issued as ONE statement per instant - do NOT fold them into a single query with
+# a correlated table function over a minutes list, which aborts with Snowflake
+# internal error 300010.
+INVARIANT_MINUTES = (300, 540, 780, 1020)   # 05:00, 09:00, 13:00, 17:00
+
 # Resolved service day for a region: the busiest day, tie-broken deterministically.
 # MIRRORS the `SD` fragment in add_delivery_sync_view.py - if that changes, change
 # this with it, exactly like the context-bind mirroring above.
@@ -83,7 +91,7 @@ SD_SQL = ("(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
           "ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)")
 
 
-def same_day_invariant_sql(region: str) -> str:
+def same_day_invariant_sql(region: str, minute: int) -> str:
     """Count vehicles LIVE_FLEET_STATUS classifies against a site that is NOT on
     the service day the rest of the page is showing.
 
@@ -95,6 +103,15 @@ def same_day_invariant_sql(region: str) -> str:
     isochrone: the map showed an APPROACHING vehicle with no ring anywhere near it.
     Every other check passed - the SQL was valid, the query returned rows and the
     view rendered - so only an explicit invariant catches it.
+
+    Why it is SWEPT over several instants
+    -------------------------------------
+    The same defect class then recurred on the OTHER branch: the ON_SITE
+    containment test joined the whole monitored POI estate, so a vehicle parked on
+    an unplanned warehouse read "On site now" naming a site with no marker, no
+    geofence circle and no feed row. That is a PARKED-vehicle failure, most
+    visible in the early-morning window, and sampling one instant (09:00) is what
+    let it ship. One instant is not a guard - it is a spot check.
 
     Expected result is 0. Uses the live function (so it exercises the real code
     path, ORS included, which this harness already requires).
@@ -112,7 +129,7 @@ def same_day_invariant_sql(region: str) -> str:
         "WHERE REGION = '{r}' AND SERVICE_DATE = {sd}) "
         "SELECT COUNT(*) AS N FROM fs WHERE fs.SITE_ID IS NOT NULL "
         "AND fs.SITE_ID NOT IN (SELECT SITE_ID FROM day_sites);"
-    ).format(r=region, m=BINDS_SQL[":as_of_minute"], sd=sd)
+    ).format(r=region, m=minute, sd=sd)
 
 
 def run_sql(sql: str):
@@ -235,24 +252,38 @@ def main() -> int:
 
     # Same-day invariant: a vehicle's status must never be about a site that is
     # not on the day being shown, or the map contradicts itself (an APPROACHING
-    # marker with no approach ring). Enforced for EVERY region, not just the demo
-    # one: the regression is most visible on a sparse dataset, which is exactly
-    # the region this harness would otherwise only "report".
+    # marker with no approach ring, or a green "on site" dot on a POI with no
+    # geofence circle and no feed row). Enforced for EVERY region, not just the
+    # demo one: the regression is most visible on a sparse dataset, which is
+    # exactly the region this harness would otherwise only "report". Swept over
+    # INVARIANT_MINUTES because the statuses fail at different times of day.
     print("\n=== same-day status invariant ===")
     for region in region_list:
-        rows, err = run_sql(same_day_invariant_sql(region))
-        if err:
-            print("  SQL ERROR       %-28s %s" % (region, err))
-            failures.append((region, "same-day invariant", err))
+        worst = []
+        errored = False
+        for minute in INVARIANT_MINUTES:
+            rows, err = run_sql(same_day_invariant_sql(region, minute))
+            if err:
+                print("  SQL ERROR       %-28s %02d:%02d %s"
+                      % (region, minute // 60, minute % 60, err))
+                failures.append((region, "same-day invariant", err))
+                errored = True
+                break
+            n = rows[0]["N"] if rows else 0
+            if n:
+                worst.append((minute, n))
+        if errored:
             continue
-        n = rows[0]["N"] if rows else 0
-        if n:
-            print("  VIOLATED %-27s %s vehicle(s) classified against an off-day site"
-                  % (region, n))
+        if worst:
+            detail = ", ".join("%02d:%02d=%s" % (m // 60, m % 60, n) for m, n in worst)
+            print("  VIOLATED %-27s off-day site classifications at %s"
+                  % (region, detail))
             failures.append((region, "same-day invariant",
-                             "%s vehicle(s) target a site not on the shown service day" % n))
+                             "vehicle(s) target a site not on the shown service day (%s)"
+                             % detail))
         else:
-            print("  OK      %-28s no off-day site classifications" % region)
+            print("  OK      %-28s no off-day site classifications (%d instants)"
+                  % (region, len(INVARIANT_MINUTES)))
 
     print()
     if failures:

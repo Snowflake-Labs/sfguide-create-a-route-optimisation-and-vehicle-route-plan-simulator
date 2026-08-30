@@ -93,9 +93,21 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC
 --    FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M. Editing a
 --    value here re-refreshes the Dynamic Table, so the radius and the gates
 --    are demo-tunable without a redeploy.
+--
+--    MONITORED_SITE_TYPES must cover EVERY LOCATION_TYPE the generator can
+--    emit for a site worth notifying about, because the vocabulary is
+--    per-preset, not universal (studio/profiles.ts category_map): regional-hgv
+--    yields WAREHOUSE / REST_STOP / DESTINATION, urban-ebike yields RESTAURANT,
+--    and urban-car falls through to the catch-all LOCATION. The original
+--    'WAREHOUSE,STORE,DESTINATION' therefore matched the HGV presets only, and
+--    Delivery Sync rendered an empty page for the SanFrancisco seed dataset
+--    (4,996 RESTAURANT POIs) and for Europe (8,842 LOCATION POIs) even though
+--    both had millions of pings. REST_STOP, DETOUR, IDLE and ADDRESS stay OUT
+--    on purpose: a fuel stop or a roadside idle is not a delivery, and adding
+--    REST_STOP would silently change the established HGV visit counts.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS (
-  MONITORED_SITE_TYPES   VARCHAR      DEFAULT 'WAREHOUSE,STORE,DESTINATION',
+  MONITORED_SITE_TYPES   VARCHAR      DEFAULT 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION',
   STATIONARY_SPEED_KMH   FLOAT        DEFAULT 5,
   MIN_STOP_SECONDS       NUMBER       DEFAULT 180,
   MAX_STOP_SECONDS       NUMBER       DEFAULT 7200,
@@ -109,8 +121,18 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"ma
 INSERT INTO FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
   (MONITORED_SITE_TYPES, STATIONARY_SPEED_KMH, MIN_STOP_SECONDS, MAX_STOP_SECONDS,
    MIN_STATIONARY_PINGS, APPROACH_SECONDS)
-SELECT 'WAREHOUSE,STORE,DESTINATION', 5, 180, 7200, 2, 900
+SELECT 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION', 5, 180, 7200, 2, 900
 WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS);
+
+-- Upgrade already-deployed accounts. The seed above is a no-op wherever the row
+-- already exists, so without this an existing install keeps the old HGV-only
+-- whitelist forever and re-running this file leaves Delivery Sync blank for the
+-- seed and Europe datasets. Scoped to the exact legacy value so a demo-tuned
+-- setting is never clobbered.
+UPDATE FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
+   SET MONITORED_SITE_TYPES = 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION',
+       UPDATED_AT = CURRENT_TIMESTAMP()
+ WHERE MONITORED_SITE_TYPES = 'WAREHOUSE,STORE,DESTINATION';
 
 -- ---------------------------------------------------------------------
 -- 2. DT_SITE_VISITS - one row per (vehicle, site, visit) with a genuine
@@ -651,9 +673,34 @@ $$;
 --     ARRIVAL_TS, so the marker was inside the fence while labelled APPROACHING.
 --
 --     So ON_SITE now asks the positional question about the SAME row the map
---     plots, giving the invariant: the plotted position lies inside a monitored
---     site's geofence IFF STATUS_ENUM = 'ON_SITE'. ARRIVAL_TS / DEPARTURE_TS
---     keep their unload semantics and are untouched - readiness
+--     plots, giving the invariant: the plotted position lies inside the geofence
+--     OF A SITE SERVED ON THE SHOWN SERVICE DAY iff STATUS_ENUM = 'ON_SITE'.
+--
+--     THE DAY SCOPE IS PART OF THE INVARIANT, NOT AN OPTIMISATION. The first
+--     version of this containment test joined the whole monitored estate, which
+--     on the Malaysia dataset is 2,311 POIs against the 20 sites that day serves
+--     - a 115x over-reach. Every other element of the page is day-scoped (grey
+--     markers and the readiness table from F_SITE_READINESS_ASOF, the geofence
+--     circles from VW_SITE_VISITS, the rings from LIVE_APPROACH_RINGS, the feed
+--     from VW_EVENTS, and the "vehicle on site" KPI from
+--     COUNT_IF(READINESS_ENUM='IN_PROGRESS')), so an unscoped containment test
+--     produces a green "On site now" dot naming a site that appears NOWHERE else
+--     on the page and no drawn circle around it. Worked example
+--     (MalaysiaSingaporeAndBrunei 2026-08-03 05:40, V-DRI-00008): parked 1.3 m
+--     from POI c15dcd77 "J&T Cargo" (5.8333, 102.542), stationary since before
+--     05:08, so a 200 m WAREHOUSE fence says inside - but that POI has ZERO
+--     visits ever, the vehicle has none that day, and the KPI read 0 on site.
+--     All 6 ON_SITE vehicles at that instant were this (4 sites never visited by
+--     anyone, 2 served on another day), and none was at its own
+--     HOME_LOCATION_ID - the nearest home was 44 km away - so the home-base
+--     exclusion cannot see this case. New Jersey 2026-08-07 09:00 had 6 of 10.
+--     Accepted consequence: a vehicle genuinely parked in an UNPLANNED yard now
+--     reads IDLE rather than ON_SITE. That is the honest answer for this page,
+--     because nothing on it knows about that yard; surfacing unplanned stops is
+--     a separate feature (its own state plus its own layer), not this status.
+--
+--     ARRIVAL_TS / DEPARTURE_TS keep their unload semantics and are untouched
+--     - readiness
 --     (F_SITE_READINESS_ASOF), DWELL_MINUTES, PRODUCT_READY_TS and the
 --     notification feed were always correct; only the live map status was
 --     overloading them. ON_SITE_PHASE carries the distinction the UI needs:
@@ -708,44 +755,47 @@ $$
   -- The monitored-site set with the geofence radius resolved per (vehicle type,
   -- site type). Deliberately mirrors the `sites` CTE of DT_SITE_VISITS verbatim
   -- so the radius used to CLASSIFY a live position cannot drift from the radius
-  -- used to DETECT the visit.
-  -- Duplicate-name signal for the display label, counted over ALL POIs in the
-  -- region (not just monitored ones) so the label is stable regardless of which
-  -- site types are being monitored.
-  site_dupes AS (
-    SELECT TRIM(NAME, '"') AS NM, COUNT(*) AS N_SITES
-    FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-    WHERE REGION = P_REGION
-    GROUP BY 1
-  ),
+  -- used to DETECT the visit. This is the whole estate (2,311 POIs on the
+  -- Malaysia dataset) and is used ONLY for the radius - the site set that may
+  -- be reported is `day_sites` below.
   sites AS (
-    SELECT p.LOCATION_ID, p.REGION,
-           IFF(d.N_SITES > 1,
-               TRIM(p.NAME, '"') || ' (' || TO_VARCHAR(ROUND(p.LAT, 3))
-                 || ', ' || TO_VARCHAR(ROUND(p.LNG, 3)) || ')',
-               TRIM(p.NAME, '"')) AS SITE_NAME,
-           p.POINT_GEOM, sla.VEHICLE_TYPE, sla.BUFFER_RADIUS_M
+    SELECT p.LOCATION_ID, p.REGION, p.POINT_GEOM,
+           sla.VEHICLE_TYPE, sla.BUFFER_RADIUS_M
     FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
     JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA sla
       ON sla.LOCATION_TYPE = p.LOCATION_TYPE
-    LEFT JOIN site_dupes d ON d.NM = TRIM(p.NAME, '"')
     CROSS JOIN prm
     WHERE p.REGION = P_REGION
       AND ARRAY_CONTAINS(p.LOCATION_TYPE::VARIANT,
                          STRTOK_TO_ARRAY(prm.MONITORED_SITE_TYPES, ','))
   ),
-  -- CONTAINMENT: the plotted position is inside a monitored geofence. Nearest
-  -- site wins (a stop inside a cluster of nearby sites must not resolve to
-  -- several), and the vehicle's own home base is excluded exactly as the
-  -- detector excludes it, so overnight parking is never reported as on site.
+  -- The sites the SHOWN SERVICE DAY actually serves - the same set the grey
+  -- markers, the geofence circles and the approach rings are drawn from. The
+  -- containment test MUST intersect this: see the header note, an unscoped
+  -- containment test names POIs that appear nowhere else on the page.
+  -- SITE_LABEL (not the raw POI name) for parity with `visit_now` / `just_left`.
+  day_sites AS (
+    SELECT SITE_ID, ANY_VALUE(SITE_LABEL) AS SITE_NAME
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
+      AND SITE_GEOG IS NOT NULL
+    GROUP BY SITE_ID
+  ),
+  -- CONTAINMENT: the plotted position is inside the geofence of a site served
+  -- on the shown service day. Nearest site wins (a stop inside a cluster of
+  -- nearby sites must not resolve to several), and the vehicle's own home base
+  -- is excluded exactly as the detector excludes it, so overnight parking is
+  -- never reported as on site.
   at_site AS (
-    SELECT p.VEHICLE_ID, s.LOCATION_ID AS SITE_ID, s.SITE_NAME
+    SELECT p.VEHICLE_ID, s.LOCATION_ID AS SITE_ID, ds.SITE_NAME
     FROM last_pos p
     JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
       ON f.VEHICLE_ID = p.VEHICLE_ID AND f.REGION = P_REGION
     JOIN sites s
       ON s.VEHICLE_TYPE = f.VEHICLE_TYPE
      AND ST_DWITHIN(p.POINT_GEOM, s.POINT_GEOM, s.BUFFER_RADIUS_M)
+    JOIN day_sites ds ON ds.SITE_ID = s.LOCATION_ID
     WHERE s.LOCATION_ID <> COALESCE(f.HOME_LOCATION_ID, '~none~')
     QUALIFY ROW_NUMBER() OVER (
               PARTITION BY p.VEHICLE_ID
