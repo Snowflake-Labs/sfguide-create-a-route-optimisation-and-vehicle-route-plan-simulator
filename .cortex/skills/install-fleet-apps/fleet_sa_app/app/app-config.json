@@ -151,7 +151,7 @@
       "type": "date_range",
       "label": "Date range",
       "default": "data_range",
-      "boundsSource": "SELECT MIN(d)::DATE AS min_date, MAX(d)::DATE AS max_date FROM (SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region UNION ALL SELECT SERVICE_DATE AS d FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region)"
+      "boundsSource": "SELECT TO_VARCHAR(MIN(d)::DATE, 'YYYY-MM-DD') AS min_date, TO_VARCHAR(MAX(d)::DATE, 'YYYY-MM-DD') AS max_date FROM (SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region UNION ALL SELECT SERVICE_DATE AS d FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region)"
     },
     {
       "id": "deviation_threshold",

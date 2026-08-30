@@ -284,6 +284,16 @@ async function handleQuery(request: NextRequest): Promise<Response> {
         } else if (col.type === 'timestamp_ntz' || col.type === 'timestamp_ltz' || col.type === 'timestamp_tz') {
           const ms = Math.round(parseFloat(raw) * 1000);
           obj[col.key] = new Date(ms).toISOString();
+        } else if (col.type === 'date') {
+          // The SQL REST API serializes DATE as DAYS SINCE EPOCH ("20666"), not
+          // as text, so without this branch a projected DATE renders as a raw
+          // number. Emit a date-only YYYY-MM-DD string (UTC, so no local-timezone
+          // off-by-one) which stays lexically comparable and is directly usable
+          // as an <input type="date"> value/min/max.
+          const days = Number(raw);
+          obj[col.key] = Number.isFinite(days)
+            ? new Date(days * 86400000).toISOString().slice(0, 10)
+            : raw;
         } else {
           obj[col.key] = raw;
         }

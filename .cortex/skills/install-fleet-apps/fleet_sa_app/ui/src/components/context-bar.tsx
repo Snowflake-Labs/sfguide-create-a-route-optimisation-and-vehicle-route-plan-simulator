@@ -22,12 +22,29 @@ interface DateBounds {
 // Fallback bounds query for a stage-mounted app-config.json that predates the
 // `boundsSource` field (config-driven first, literal as fallback only). Spans
 // both facts the views filter on, so the offered range is never narrower than
-// what a view can render.
+// what a view can render. Formatted as text on purpose: a bare DATE crosses the
+// SQL REST API as days-since-epoch, so TO_VARCHAR keeps it correct even against
+// an image whose /api/query lacks the `date` branch.
 const DEFAULT_BOUNDS_SOURCE =
-  'SELECT MIN(d)::DATE AS min_date, MAX(d)::DATE AS max_date FROM (' +
+  "SELECT TO_VARCHAR(MIN(d)::DATE, 'YYYY-MM-DD') AS min_date, TO_VARCHAR(MAX(d)::DATE, 'YYYY-MM-DD') AS max_date FROM (" +
   'SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region ' +
   'UNION ALL ' +
   'SELECT SERVICE_DATE AS d FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region)';
+
+// Coerce a bounds value to YYYY-MM-DD. Accepts an ISO/date-only string and also
+// a bare days-since-epoch number, which is how the SQL REST API serializes a
+// DATE column - so a stale stage config returning a raw DATE still renders as a
+// date rather than "20666".
+function normalizeDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  if (/^\d+$/.test(s)) {
+    const d = new Date(Number(s) * 86400000);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+  return null;
+}
 
 function addDays(dateStr: string, delta: number): string {
   const d = new Date(`${dateStr}T00:00:00Z`);
@@ -234,11 +251,11 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
         });
         if (!res.ok) return;
         const body = (await res.json()) as {
-          rows?: Array<{ min_date?: string | null; max_date?: string | null }>;
+          rows?: Array<{ min_date?: unknown; max_date?: unknown }>;
         };
         const row = body.rows?.[0];
-        const min = row?.min_date ? String(row.min_date).slice(0, 10) : null;
-        const max = row?.max_date ? String(row.max_date).slice(0, 10) : null;
+        const min = normalizeDate(row?.min_date);
+        const max = normalizeDate(row?.max_date);
         if (cancelled) return;
         if (!min || !max) {
           // No data for this region: degrade to All time rather than an empty
