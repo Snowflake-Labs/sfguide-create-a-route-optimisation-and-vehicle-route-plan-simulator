@@ -250,7 +250,11 @@ VIEW = {
             "dots are vehicles, coloured only when their state is actionable: green on "
             "site, red just left, yellow inside the live drive-time approach band. En "
             "route and idle vehicles stay Snowflake blue so the eye lands on the few "
-            "that matter. Grey is only ever site furniture and blue is only ever a "
+            "that matter. Idle is split in the tooltip between a vehicle that has "
+            "finished its day and one with no delivery recorded at all - early in "
+            "the day most idle vehicles are the second kind, and calling those "
+            "\"day complete\" would misread. Grey is only ever site furniture and "
+            "blue is only ever a "
             "vehicle, so the two classes cannot be confused. An optional Site geofence "
             "layer (off by default) draws each site's true 100-200 m detection radius; "
             "it is only legible zoomed in, because that is how big those circles "
@@ -328,7 +332,13 @@ VIEW = {
             "than the clock. The window and the ring both come from "
             "PARAMS.APPROACH_SECONDS, so they cannot drift apart. APPROACHING is a "
             "LIVE ROAD-TIME threshold from "
-            "the routing engine, not a straight-line radius. A visit is "
+            "the routing engine, not a straight-line radius. IDLE means no further "
+            "visit today and carries IDLE_REASON to say which kind: DAY_COMPLETE "
+            "when the vehicle already worked before the instant, NO_VISITS_TODAY "
+            "when it has no delivery recorded that day at all. That second value "
+            "is the absence of a DETECTION, not a plan lookup - the dataset has no "
+            "dispatch plan - so read it as \"nothing recorded\", never as "
+            "\"nothing assigned\". A visit is "
             "only counted once the vehicle was genuinely stationary inside the geofence "
             "for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site "
             "produces no event. Approach rings are drawn for every site on the day "
@@ -709,7 +719,14 @@ VIEW = {
                         "data": {
                             "query": (
                                 "SELECT VEHICLE_ID AS vehicle_id, STATUS_ENUM AS status, "
-                                "COALESCE(SITE_NAME, 'No further stops today') AS site_name, "
+                                # IDLE splits two different facts that used to share
+                                # one label: a vehicle that FINISHED its day and one
+                                # that had no delivery at all. IFF (not CASE on the
+                                # value) so a NULL IDLE_REASON - any future status,
+                                # or an older function - degrades to the previous
+                                # wording rather than to a blank tooltip line.
+                                "COALESCE(SITE_NAME, IFF(IDLE_REASON = 'NO_VISITS_TODAY', "
+                                "'No deliveries today', 'No further stops today')) AS site_name, "
                                 "CASE STATUS_ENUM "
                                 "WHEN 'ON_SITE' THEN 'On site now' "
                                 "WHEN 'JUST_LEFT' THEN 'Just left' "
@@ -723,7 +740,11 @@ VIEW = {
                                 "WHEN 'ON_SITE' THEN "
                                 "IFF(ON_SITE_PHASE = 'UNLOADING', 'Unloading', "
                                 "'On site, unload complete') "
-                                "WHEN 'IDLE' THEN 'Day complete' "
+                                # "recorded" is load-bearing: the absence is an
+                                # absent DETECTION, not a plan lookup - this
+                                # dataset has no dispatch plan to be absent from.
+                                "WHEN 'IDLE' THEN IFF(IDLE_REASON = 'NO_VISITS_TODAY', "
+                                "'No deliveries recorded today', 'Day complete') "
                                 "ELSE MINUTES_OUT::VARCHAR || ' min out, ' "
                                 "|| DISTANCE_KM::VARCHAR || ' km by road' END AS detail, "
                                 "ST_X(VEHICLE_GEOG) AS lng, ST_Y(VEHICLE_GEOG) AS lat "

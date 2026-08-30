@@ -734,7 +734,8 @@ RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
                POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
-               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1))
+               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1),
+               IDLE_REASON VARCHAR)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -977,6 +978,23 @@ $$
     JOIN left_origins lo ON lo.SID = lp.SID
     CROSS JOIN mtx m CROSS JOIN offsets o
   ),
+  -- Did this vehicle work at all before the instant? IDLE only says "no further
+  -- visit today", which the tooltip cannot tell apart from "never had one": on
+  -- MalaysiaSingaporeAndBrunei 2026-08-03 05:40, 19 of 24 IDLE vehicles had not
+  -- worked at all yet every one of them read "Day complete". The distinction is
+  -- drawn from DETECTED visits, not a dispatch plan - this dataset has no plan -
+  -- so the negative case means "no delivery recorded", not "nothing scheduled".
+  -- Keyed on ARRIVAL_TS <= as_of rather than a whole-day count so the answer
+  -- stays literally true even for a vehicle with a pending visit that `next_site`
+  -- cannot see (NULL SITE_GEOG), which would otherwise read IDLE with work
+  -- outstanding.
+  worked_today AS (
+    SELECT DISTINCT VEHICLE_ID
+    FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+    WHERE REGION = P_REGION
+      AND SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
+      AND ARRIVAL_TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
+  ),
   -- One row per vehicle with the status decision made ONCE. Repeating the
   -- just-left predicate in the projection would let the status and the
   -- MINUTES_SINCE_LEFT / MINUTES_OUT gating drift apart, which is exactly the
@@ -990,6 +1008,7 @@ $$
       e2.MINS AS OUT_MINS, e2.KM AS OUT_KM, b.MINS AS BACK_MINS,
       (o.VEHICLE_ID IS NOT NULL) AS IS_ON_SITE,
       (n.VEHICLE_ID IS NOT NULL) AS HAS_NEXT,
+      (w.VEHICLE_ID IS NOT NULL) AS WORKED_TODAY,
       (o.VEHICLE_ID IS NULL
        AND j.VEHICLE_ID IS NOT NULL
        AND (b.MINS IS NULL OR b.MINS <= COALESCE(P_APPROACH_MIN, 15))) AS IS_JUST_LEFT
@@ -999,6 +1018,7 @@ $$
     LEFT JOIN next_site n  ON n.VEHICLE_ID  = p.VEHICLE_ID
     LEFT JOIN eta       e2 ON e2.VID        = p.VEHICLE_ID
     LEFT JOIN back      b  ON b.VID         = p.VEHICLE_ID
+    LEFT JOIN worked_today w ON w.VEHICLE_ID = p.VEHICLE_ID
   )
   SELECT
     r.VEHICLE_ID,
@@ -1034,7 +1054,14 @@ $$
     r.TS,
     r.POINT_GEOM,
     r.ON_SITE_PHASE,
-    IFF(r.IS_JUST_LEFT, r.BACK_MINS, NULL)::NUMBER(10,1) AS MINUTES_BACK_TO_SITE
+    IFF(r.IS_JUST_LEFT, r.BACK_MINS, NULL)::NUMBER(10,1) AS MINUTES_BACK_TO_SITE,
+    -- Only meaningful for IDLE, and NULL everywhere else - gated on the SAME
+    -- flags the CASE above uses (the triple is the exact complement of its IDLE
+    -- arm) rather than on a re-derived predicate, which is how this function has
+    -- repeatedly let a column drift out of agreement with the status it
+    -- describes.
+    IFF(r.IS_ON_SITE OR r.IS_JUST_LEFT OR r.HAS_NEXT, NULL,
+        IFF(r.WORKED_TODAY, 'DAY_COMPLETE', 'NO_VISITS_TODAY')) AS IDLE_REASON
   FROM resolved r
 $$;
 
@@ -1178,7 +1205,8 @@ RETURNS TABLE (VEHICLE_ID VARCHAR, STATUS_ENUM VARCHAR, SITE_ID VARCHAR,
                SITE_NAME VARCHAR, MINUTES_OUT NUMBER(10,1), DISTANCE_KM NUMBER(10,2),
                ETA_TS TIMESTAMP_NTZ, MINUTES_SINCE_LEFT NUMBER(12,1),
                POSITION_TS TIMESTAMP_NTZ, VEHICLE_GEOG GEOGRAPHY,
-               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1))
+               ON_SITE_PHASE VARCHAR, MINUTES_BACK_TO_SITE NUMBER(10,1),
+               IDLE_REASON VARCHAR)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
