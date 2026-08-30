@@ -646,11 +646,36 @@ $$
                                   COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
     QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY DEPARTURE_TS DESC) = 1
   ),
-  -- The next visit still ahead of the instant.
+  -- The next visit still ahead of the instant, ON THE SAME SERVICE DAY.
+  --
+  -- SERVICE_DATE is load-bearing, not decoration. Without it `ARRIVAL_TS > as_of`
+  -- means "the next visit EVER", so a vehicle idle today is reported en route to
+  -- a site it serves days later - and because the ring layers ARE day-scoped
+  -- (LIVE_APPROACH_RINGS filters SERVICE_DATE), that site has no isochrone on the
+  -- day being viewed. Observed on Malaysia at 2026-08-03 09:00: a vehicle parked
+  -- exactly on its 2026-08-09 site matrixed to 0 min / 0 km, cleared the 15-min
+  -- gate and rendered APPROACHING with no ring anywhere near it, while 17 of 21
+  -- "en route" vehicles were driving to another day's site (one 619 min / 762 km
+  -- out). New Jersey masked it: a dense day gives most vehicles a real same-day
+  -- stop, so only 6 of 40 were wrong.
+  --
+  -- P_AS_OF::DATE IS the page's resolved service day - the view builds the
+  -- instant as DATEADD('minute', :as_of_minute, SD) with as_of_minute in 0..1430,
+  -- so it never crosses midnight. INVARIANT: this function must answer for the
+  -- one service day the rings, readiness and feed are showing, or a vehicle can
+  -- be classified against a site that has no ring. `on_site` and `just_left` need
+  -- no such filter - they are inherently same-day (an arrival/departure window
+  -- straddling the instant, and a 20-minute look-back).
+  --
+  -- SITE_GEOG IS NOT NULL mirrors the rings CTE and protects the MATRIX call:
+  -- `dests` feeds ST_X(G)/ST_Y(G) into the destination array, where a NULL geog
+  -- would inject a NULL coordinate.
   next_site AS (
     SELECT VEHICLE_ID, SITE_ID, SITE_NAME, SITE_GEOG
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
+      AND SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
+      AND SITE_GEOG IS NOT NULL
       AND ARRIVAL_TS > COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
     QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY ARRIVAL_TS) = 1
   ),

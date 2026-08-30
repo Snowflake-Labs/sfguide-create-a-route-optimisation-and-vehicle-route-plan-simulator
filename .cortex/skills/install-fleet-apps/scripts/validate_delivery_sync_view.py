@@ -75,6 +75,45 @@ BINDS_SQL = {
     ":vehicle_type": "NULL",
 }
 
+# Resolved service day for a region: the busiest day, tie-broken deterministically.
+# MIRRORS the `SD` fragment in add_delivery_sync_view.py - if that changes, change
+# this with it, exactly like the context-bind mirroring above.
+SD_SQL = ("(SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+          "WHERE REGION = '%s' GROUP BY 1 "
+          "ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)")
+
+
+def same_day_invariant_sql(region: str) -> str:
+    """Count vehicles LIVE_FLEET_STATUS classifies against a site that is NOT on
+    the service day the rest of the page is showing.
+
+    Why this check exists
+    --------------------
+    `next_site` once resolved "the next visit EVER" (ARRIVAL_TS > as_of with no
+    SERVICE_DATE filter), so a vehicle with nothing to do today was reported en
+    route to a site days away. The ring layers ARE day-scoped, so that site had no
+    isochrone: the map showed an APPROACHING vehicle with no ring anywhere near it.
+    Every other check passed - the SQL was valid, the query returned rows and the
+    view rendered - so only an explicit invariant catches it.
+
+    Expected result is 0. Uses the live function (so it exercises the real code
+    path, ORS included, which this harness already requires).
+    """
+    sd = SD_SQL % region
+    return (
+        "WITH fs AS (SELECT VEHICLE_ID, STATUS_ENUM, SITE_ID FROM TABLE("
+        "FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS('{r}', "
+        "(SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
+        "WHERE REGION = '{r}' LIMIT 1), "
+        "DATEADD('minute', {m}, {sd}::TIMESTAMP_NTZ), "
+        "(SELECT ROUND(APPROACH_SECONDS/60.0) FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
+        "WHERE REGION = '{r}' LIMIT 1), 20, 20))), "
+        "day_sites AS (SELECT DISTINCT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+        "WHERE REGION = '{r}' AND SERVICE_DATE = {sd}) "
+        "SELECT COUNT(*) AS N FROM fs WHERE fs.SITE_ID IS NOT NULL "
+        "AND fs.SITE_ID NOT IN (SELECT SITE_ID FROM day_sites);"
+    ).format(r=region, m=BINDS_SQL[":as_of_minute"], sd=sd)
+
 
 def run_sql(sql: str):
     with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
@@ -193,6 +232,27 @@ def main() -> int:
             failures.append(("*", label, "undeclared binds %s" % missing))
         else:
             print("  OK      %-28s refs=%d" % (label, len(refs)))
+
+    # Same-day invariant: a vehicle's status must never be about a site that is
+    # not on the day being shown, or the map contradicts itself (an APPROACHING
+    # marker with no approach ring). Enforced for EVERY region, not just the demo
+    # one: the regression is most visible on a sparse dataset, which is exactly
+    # the region this harness would otherwise only "report".
+    print("\n=== same-day status invariant ===")
+    for region in region_list:
+        rows, err = run_sql(same_day_invariant_sql(region))
+        if err:
+            print("  SQL ERROR       %-28s %s" % (region, err))
+            failures.append((region, "same-day invariant", err))
+            continue
+        n = rows[0]["N"] if rows else 0
+        if n:
+            print("  VIOLATED %-27s %s vehicle(s) classified against an off-day site"
+                  % (region, n))
+            failures.append((region, "same-day invariant",
+                             "%s vehicle(s) target a site not on the shown service day" % n))
+        else:
+            print("  OK      %-28s no off-day site classifications" % region)
 
     print()
     if failures:
