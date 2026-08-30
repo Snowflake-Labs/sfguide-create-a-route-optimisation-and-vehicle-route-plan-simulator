@@ -3776,7 +3776,7 @@
       "feed": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS \"At\", EVENT_TYPE AS \"Event\", SITE_NAME AS \"Site\", VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\", VISIT_ID || '-' || EVENT_TYPE AS event_id, SITE_ID AS site_id, VEHICLE_ID AS vehicle_id, ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, COALESCE(LEAST(1430, GREATEST(0, CEIL(DATEDIFF('minute', SERVICE_DATE, EVENT_TS)/10.0)*10)), COALESCE(:as_of_minute, 540)) AS as_of_minute FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND EVENT_TS <= DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ) ORDER BY EVENT_TS DESC LIMIT 200",
+          "query": "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS at_time, EVENT_TYPE AS event_type, SITE_NAME AS site_name, VEHICLE_ID AS vehicle_id, DWELL_MINUTES AS dwell_minutes, VISIT_ID || '-' || EVENT_TYPE AS event_id, SITE_ID AS site_id, ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, COALESCE(LEAST(1430, GREATEST(0, CEIL(DATEDIFF('minute', SERVICE_DATE, EVENT_TS)/10.0)*10)), COALESCE(:as_of_minute, 540)) AS as_of_minute FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) AND EVENT_TS <= DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ) ORDER BY EVENT_TS DESC LIMIT 200",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3791,19 +3791,24 @@
           "rowKey": "event_id",
           "columns": [
             {
-              "field": "At"
+              "field": "at_time",
+              "header": "At"
             },
             {
-              "field": "Event"
+              "field": "event_type",
+              "header": "Event"
             },
             {
-              "field": "Site"
+              "field": "site_name",
+              "header": "Site"
             },
             {
-              "field": "Vehicle"
+              "field": "vehicle_id",
+              "header": "Vehicle"
             },
             {
-              "field": "On site (min)"
+              "field": "dwell_minutes",
+              "header": "On site (min)"
             }
           ]
         },
@@ -3819,7 +3824,7 @@
       "readiness": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT SITE_NAME AS \"Site\", READINESS_ENUM AS \"State\", VEHICLE_ID AS \"Vehicle\", TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS \"Arrived\", IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') AS \"Departed\", DWELL_MINUTES AS \"On site (min)\", VISIT_ID AS visit_id, SITE_ID AS site_id, VEHICLE_ID AS vehicle_id, ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, COALESCE(LEAST(1430, GREATEST(0, CEIL(DATEDIFF('minute', SERVICE_DATE, ARRIVAL_TS)/10.0)*10)), COALESCE(:as_of_minute, 540)) AS as_of_minute FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) ORDER BY CASE READINESS_ENUM WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, ARRIVAL_TS DESC LIMIT 300",
+          "query": "SELECT SITE_NAME AS site_name, READINESS_ENUM AS readiness_state, VEHICLE_ID AS vehicle_id, TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS arrived_at, IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') AS departed_at, DWELL_MINUTES AS dwell_minutes, VISIT_ID AS visit_id, SITE_ID AS site_id, ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, COALESCE(LEAST(1430, GREATEST(0, CEIL(DATEDIFF('minute', SERVICE_DATE, ARRIVAL_TS)/10.0)*10)), COALESCE(:as_of_minute, 540)) AS as_of_minute FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ))) WHERE SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) ORDER BY CASE READINESS_ENUM WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, ARRIVAL_TS DESC LIMIT 300",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3834,22 +3839,28 @@
           "rowKey": "visit_id",
           "columns": [
             {
-              "field": "Site"
+              "field": "site_name",
+              "header": "Site"
             },
             {
-              "field": "State"
+              "field": "readiness_state",
+              "header": "State"
             },
             {
-              "field": "Vehicle"
+              "field": "vehicle_id",
+              "header": "Vehicle"
             },
             {
-              "field": "Arrived"
+              "field": "arrived_at",
+              "header": "Arrived"
             },
             {
-              "field": "Departed"
+              "field": "departed_at",
+              "header": "Departed"
             },
             {
-              "field": "On site (min)"
+              "field": "dwell_minutes",
+              "header": "On site (min)"
             }
           ]
         },
@@ -3865,7 +3876,7 @@
       "inbound": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS \"Vehicle\", MINUTES_OUT AS \"Minutes out\", DISTANCE_KM AS \"Road km\", TO_VARCHAR(ETA_TS,'HH24:MI') AS \"ETA\", TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\", VEHICLE_ID AS vehicle_id, SITE_ID AS site_id, ST_X(VEHICLE_GEOG) AS focus_lng, ST_Y(VEHICLE_GEOG) AS focus_lat FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1)), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ), 20)) WHERE MINUTES_OUT IS NOT NULL ORDER BY MINUTES_OUT LIMIT 25",
+          "query": "SELECT VEHICLE_ID AS vehicle_id, MINUTES_OUT AS minutes_out, DISTANCE_KM AS distance_km, TO_VARCHAR(ETA_TS,'HH24:MI') AS eta, TO_VARCHAR(POSITION_TS,'HH24:MI') AS position_as_of, SITE_ID AS site_id, ST_X(VEHICLE_GEOG) AS focus_lng, ST_Y(VEHICLE_GEOG) AS focus_lat FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA(:region, (SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE WHERE REGION = :region LIMIT 1), COALESCE(:selected_site, (SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND SERVICE_DATE = COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1)) GROUP BY 1 ORDER BY COUNT(*) DESC, SITE_ID LIMIT 1)), DATEADD('minute', COALESCE(:as_of_minute, 540), COALESCE((SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region AND (:date_range_start IS NULL OR SERVICE_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR SERVICE_DATE <= :date_range_end::DATE) GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), (SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1))::TIMESTAMP_NTZ), 20)) WHERE MINUTES_OUT IS NOT NULL ORDER BY MINUTES_OUT LIMIT 25",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3881,19 +3892,24 @@
           "rowKey": "vehicle_id",
           "columns": [
             {
-              "field": "Vehicle"
+              "field": "vehicle_id",
+              "header": "Vehicle"
             },
             {
-              "field": "Minutes out"
+              "field": "minutes_out",
+              "header": "Minutes out"
             },
             {
-              "field": "Road km"
+              "field": "distance_km",
+              "header": "Road km"
             },
             {
-              "field": "ETA"
+              "field": "eta",
+              "header": "ETA"
             },
             {
-              "field": "Position as of"
+              "field": "position_as_of",
+              "header": "Position as of"
             }
           ]
         },

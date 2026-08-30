@@ -18,6 +18,12 @@ Also enforces two rules learned the hard way:
     (the per-control slider popover) and is deliberately ignored.
   * no Unicode dashes, literal or \\u-escaped. The useCase blocks are now the
     largest body of prose in the repo and the house style is ASCII hyphens only.
+  * every `areas.*.config.columns[].field` must equal its own lowercase form. The
+    app's /api/query lowercases each returned column name into the row key
+    (`col.name.toLowerCase()`), so a field carrying display case - e.g. `"On site
+    (min)"` from a quoted SQL alias - matches no key and every cell renders BLANK
+    with no error, no failing query and no type error. Shipped exactly that way
+    once; display text belongs in `header`, not `field`.
 
 Usage:
     python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
@@ -96,6 +102,44 @@ def check_pack(path: pathlib.Path, problems: list[str]) -> int:
     return len(blocks)
 
 
+def check_column_fields(path: pathlib.Path, problems: list[str]) -> int:
+    """Assert every table column `field` is lowercase (the row-key contract).
+
+    Returns the number of column definitions inspected.
+    """
+    if not path.exists():
+        return 0
+    try:
+        views = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0  # check_config already reported the parse failure
+    rel = path.relative_to(SKILL_DIR)
+    seen = 0
+    for view_id, view in views.items():
+        for area_id, area in (view.get("areas") or {}).items():
+            if not isinstance(area, dict):
+                continue
+            cols = (area.get("config") or {}).get("columns")
+            if not isinstance(cols, list):
+                continue
+            for col in cols:
+                if not isinstance(col, dict):
+                    continue
+                field = col.get("field")
+                if not isinstance(field, str):
+                    continue
+                seen += 1
+                if field != field.lower():
+                    problems.append(
+                        f"{rel}: {view_id}.{area_id} column field {field!r} is not "
+                        f"lowercase - /api/query lowercases every column name into "
+                        f"the row key, so this renders BLANK cells silently. Use the "
+                        f"lowercased SQL alias as 'field' and put the display text in "
+                        f"'header'. Fix the GENERATOR too if a script owns this view."
+                    )
+    return seen
+
+
 def check_dashes(paths: list[pathlib.Path], problems: list[str]) -> None:
     for path in paths:
         if not path.exists():
@@ -112,6 +156,7 @@ def main() -> int:
     problems: list[str] = []
     n_config = sum(check_config(p, problems) for p in CONFIG_FILES)
     n_pack = check_pack(PACK_FILE, problems)
+    n_cols = sum(check_column_fields(p, problems) for p in CONFIG_FILES)
     check_dashes(CONFIG_FILES + [PACK_FILE], problems)
 
     if problems:
@@ -122,7 +167,8 @@ def main() -> int:
 
     print(
         f"PASSED: useCase present on {n_config} config view(s) "
-        f"and {n_pack} code-registered view(s); no retired 'info' keys; no Unicode dashes."
+        f"and {n_pack} code-registered view(s); no retired 'info' keys; "
+        f"{n_cols} column field(s) lowercase; no Unicode dashes."
     )
     return 0
 

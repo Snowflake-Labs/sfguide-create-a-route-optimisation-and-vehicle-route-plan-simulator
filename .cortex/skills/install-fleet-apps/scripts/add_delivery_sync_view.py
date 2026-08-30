@@ -701,15 +701,22 @@ VIEW = {
             "component": "ClickableTable",
             "data": {
                 "query": (
-                    "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS \"At\", "
-                    "EVENT_TYPE AS \"Event\", SITE_NAME AS \"Site\", "
-                    "VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\", "
+                    # Aliases are lowercase snake_case, NOT display text: the app's
+                    # /api/query lowercases every returned column name into the row
+                    # key (col.name.toLowerCase()), so a quoted alias like "On site
+                    # (min)" arrives as `on site (min)` and a config.columns field
+                    # carrying the display case matches nothing - the row renders
+                    # with blank cells and no error. Display text lives in
+                    # config.columns[].header.
+                    "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS at_time, "
+                    "EVENT_TYPE AS event_type, SITE_NAME AS site_name, "
+                    "VEHICLE_ID AS vehicle_id, DWELL_MINUTES AS dwell_minutes, "
                     # Hidden drilldown columns (not in config.columns).
                     # A visit yields two events, so the row id must include the
                     # event type or arrival and departure share one id and the
                     # highlight lands on the wrong row.
                     "VISIT_ID || '-' || EVENT_TYPE AS event_id, "
-                    "SITE_ID AS site_id, VEHICLE_ID AS vehicle_id, "
+                    "SITE_ID AS site_id, "
                     "ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, "
                     + snap_minute("EVENT_TS") + " AS as_of_minute "
                     "FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS "
@@ -724,12 +731,13 @@ VIEW = {
                 "rowKey": "event_id",
                 # Explicit columns: keeps the visible table exactly as it was
                 # and stops the hidden drilldown ids rendering as columns.
+                # `field` MUST be the lowercased SQL alias (see the query note).
                 "columns": [
-                    {"field": "At"},
-                    {"field": "Event"},
-                    {"field": "Site"},
-                    {"field": "Vehicle"},
-                    {"field": "On site (min)"},
+                    {"field": "at_time", "header": "At"},
+                    {"field": "event_type", "header": "Event"},
+                    {"field": "site_name", "header": "Site"},
+                    {"field": "vehicle_id", "header": "Vehicle"},
+                    {"field": "dwell_minutes", "header": "On site (min)"},
                 ],
             },
             # First entry is the primary selection (row highlight); the rest are
@@ -747,16 +755,17 @@ VIEW = {
             "component": "ClickableTable",
             "data": {
                 "query": (
-                    "SELECT SITE_NAME AS \"Site\", "
-                    "READINESS_ENUM AS \"State\", VEHICLE_ID AS \"Vehicle\", "
-                    "TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS \"Arrived\", "
+                    # Lowercase snake_case aliases; display text goes in
+                    # config.columns[].header (see the feed query note).
+                    "SELECT SITE_NAME AS site_name, "
+                    "READINESS_ENUM AS readiness_state, VEHICLE_ID AS vehicle_id, "
+                    "TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS arrived_at, "
                     "IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') "
-                    "AS \"Departed\", DWELL_MINUTES AS \"On site (min)\", "
+                    "AS departed_at, DWELL_MINUTES AS dwell_minutes, "
                     # Hidden drilldown columns. The row id is the VISIT, not the
                     # site: a site can be served several times a day and the
                     # highlight must follow the clicked visit.
                     "VISIT_ID AS visit_id, SITE_ID AS site_id, "
-                    "VEHICLE_ID AS vehicle_id, "
                     "ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, "
                     + snap_minute("ARRIVAL_TS") + " AS as_of_minute "
                     "FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, "
@@ -774,12 +783,12 @@ VIEW = {
                 # nothing. Every other clickable table in the app uses rowKey.
                 "rowKey": "visit_id",
                 "columns": [
-                    {"field": "Site"},
-                    {"field": "State"},
-                    {"field": "Vehicle"},
-                    {"field": "Arrived"},
-                    {"field": "Departed"},
-                    {"field": "On site (min)"},
+                    {"field": "site_name", "header": "Site"},
+                    {"field": "readiness_state", "header": "State"},
+                    {"field": "vehicle_id", "header": "Vehicle"},
+                    {"field": "arrived_at", "header": "Arrived"},
+                    {"field": "departed_at", "header": "Departed"},
+                    {"field": "dwell_minutes", "header": "On site (min)"},
                 ],
             },
             # Clock jumps to ARRIVAL, so the vehicle reads as on site at the
@@ -798,14 +807,16 @@ VIEW = {
             "component": "ClickableTable",
             "data": {
                 "query": (
-                    "SELECT VEHICLE_ID AS \"Vehicle\", MINUTES_OUT AS \"Minutes out\", "
-                    "DISTANCE_KM AS \"Road km\", TO_VARCHAR(ETA_TS,'HH24:MI') AS \"ETA\", "
-                    "TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\", "
+                    # Lowercase snake_case aliases; display text goes in
+                    # config.columns[].header (see the feed query note).
+                    "SELECT VEHICLE_ID AS vehicle_id, MINUTES_OUT AS minutes_out, "
+                    "DISTANCE_KM AS distance_km, TO_VARCHAR(ETA_TS,'HH24:MI') AS eta, "
+                    "TO_VARCHAR(POSITION_TS,'HH24:MI') AS position_as_of, "
                     # Hidden drilldown columns. Focus is the VEHICLE's own
                     # position here (the site is already the page's anchor), and
                     # there is deliberately no as_of_minute: an inbound row is
                     # only meaningful at the instant already on the clock.
-                    "VEHICLE_ID AS vehicle_id, SITE_ID AS site_id, "
+                    "SITE_ID AS site_id, "
                     "ST_X(VEHICLE_GEOG) AS focus_lng, ST_Y(VEHICLE_GEOG) AS focus_lat "
                     "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA("
                     ":region, " + PROFILE + ", " + SITE + ", " + ASOF + ", 20)) "
@@ -818,11 +829,11 @@ VIEW = {
                 "fitRows": 6,
                 "rowKey": "vehicle_id",
                 "columns": [
-                    {"field": "Vehicle"},
-                    {"field": "Minutes out"},
-                    {"field": "Road km"},
-                    {"field": "ETA"},
-                    {"field": "Position as of"},
+                    {"field": "vehicle_id", "header": "Vehicle"},
+                    {"field": "minutes_out", "header": "Minutes out"},
+                    {"field": "distance_km", "header": "Road km"},
+                    {"field": "eta", "header": "ETA"},
+                    {"field": "position_as_of", "header": "Position as of"},
                 ],
             },
             "emits": {
