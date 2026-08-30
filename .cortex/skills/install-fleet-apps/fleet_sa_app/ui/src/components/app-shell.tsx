@@ -152,6 +152,12 @@ export function AppShell() {
               continue;
             }
             if (field.type === 'date_range' && field.default) {
+              // `data_range` (the default) is resolved at runtime by the
+              // DateRangePicker from the region's actual min/max data dates, so
+              // seed NOTHING here - a wall-clock window would sit outside the
+              // data and a stale seed would flash before the bounds land.
+              if (field.default === 'data_range') continue;
+              // Legacy wall-clock defaults, kept only for an older stage config.
               if (field.default === 'last_30_days') {
                 const d = new Date();
                 d.setDate(d.getDate() - 30);
