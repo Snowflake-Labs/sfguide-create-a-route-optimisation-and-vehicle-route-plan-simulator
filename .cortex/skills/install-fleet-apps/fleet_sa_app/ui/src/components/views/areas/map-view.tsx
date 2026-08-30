@@ -37,6 +37,12 @@ interface FitToOptions {
   // toggles and periodic refetches never move the camera. A regionKey change
   // still re-arms the initial fit, and an explicit recenter still works.
   lockAfterFirstFit?: boolean;
+  // One-shot camera focus on a single point, independent of the coords fit. When
+  // the point changes the camera pans to it (and zooms, when `zoom` is given).
+  // Deliberately bypasses lockAfterFirstFit: it is an explicit user gesture (a
+  // table row click), not an automatic re-frame, and it does not re-arm the
+  // auto-fit machinery.
+  focusPoint?: { lng: number; lat: number; zoom?: number } | null;
 }
 
 interface MapViewProps {
@@ -133,6 +139,7 @@ export default function MapView({
   const fitRegionKey = fitTo?.regionKey;
   const fitFocusKey = fitTo?.focusKey;
   const fitLocked = fitTo?.lockAfterFirstFit ?? false;
+  const focusPoint = fitTo?.focusPoint ?? null;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
 
   if (lastRegionRef.current !== fitRegionKey) {
@@ -195,6 +202,28 @@ export default function MapView({
       setViewState(prev => ({ ...prev, ...next }));
     }
   }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick]);
+
+  // Explicit one-shot focus (row click). Keyed on the point signature so it
+  // fires once per new point and never fights the user's own panning after.
+  const focusSig = focusPoint
+    ? `${focusPoint.lng},${focusPoint.lat},${focusPoint.zoom ?? ''}`
+    : '';
+  const lastFocusPointRef = useRef<string>(focusSig);
+  useEffect(() => {
+    if (!focusPoint || !focusSig) return;
+    if (lastFocusPointRef.current === focusSig) return;
+    lastFocusPointRef.current = focusSig;
+    if (!Number.isFinite(focusPoint.lng) || !Number.isFinite(focusPoint.lat)) return;
+    // Treat as a user-driven move so the auto-fit does not immediately pull the
+    // camera back to the data extent on the next data change.
+    userMovedRef.current = true;
+    setViewState((prev) => ({
+      ...prev,
+      longitude: focusPoint.lng,
+      latitude: focusPoint.lat,
+      ...(focusPoint.zoom != null ? { zoom: focusPoint.zoom } : {}),
+    }));
+  }, [focusSig, focusPoint]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||

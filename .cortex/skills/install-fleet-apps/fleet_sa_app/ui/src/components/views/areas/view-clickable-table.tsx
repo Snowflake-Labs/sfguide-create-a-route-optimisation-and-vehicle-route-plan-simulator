@@ -1,12 +1,23 @@
 'use client';
 
-// Clickable-table area (parity widget #2): a data table whose row click writes a
-// configured column value into a viewState key via updateViewState. Drives map
-// highlight (LayerSpec conditional color whenViewStateEquals) and any
+// Clickable-table area (parity widget #2): a data table whose row click writes
+// configured values into viewState via updateViewState. Drives map highlight
+// (LayerSpec conditional color whenViewStateEquals) and any
 // viewState.<key>-parametrized query. Reproduces the control app's FleetMap
 // click-a-courier drilldown.
+//
+// `emits` is a map of viewState key -> source. The FIRST entry is the primary
+// selection: it drives the row highlight and (via the renderer) the map's focus
+// fit. Sources resolve as:
+//   'selection' | 'highlight' -> the row's config.rowKey value (the original,
+//                               single-key behaviour every other view uses)
+//   any other string          -> the name of a row column, whose value is
+//                               written to that viewState key
+// This lets one row click set several related keys at once - e.g. the site, the
+// vehicle, the replay minute and a map focus point - in a SINGLE viewState patch
+// so dependent areas refetch once rather than once per key.
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
@@ -45,6 +56,9 @@ interface ViewClickableTableAreaProps {
       // 'first' picks the top row; 'random' picks a random loaded row.
       autoSelect?: 'first' | 'random';
     };
+    // A map of viewState key -> source. First entry is the primary selection
+    // (row highlight + renderer selectionKeys); see the file header for how
+    // each source resolves.
     emits?: Record<string, string>;
   };
   // The area's own key in the view layout, supplied by the renderer. Namespaces
@@ -79,9 +93,33 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
     }
   };
 
-  const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
+  const emitEntries = useMemo<[string, string][]>(
+    () => Object.entries(areaConfig.emits ?? {}),
+    [areaConfig.emits],
+  );
+  const emitKey = emitEntries.length ? emitEntries[0][0] : null;
   const rowKey = config?.rowKey;
   const selected = emitKey ? viewState[emitKey] : null;
+
+  // Resolve one row into the full viewState patch this table emits. `rowKey`
+  // sources ('selection'/'highlight') all carry the row id; every other source
+  // names a column on the row. Passing null clears the whole set, so a deselect
+  // never leaves a stale companion value (e.g. a vehicle with no site).
+  const patchFor = useCallback(
+    (row: Record<string, unknown> | null): Record<string, unknown> => {
+      const patch: Record<string, unknown> = {};
+      for (const [key, source] of emitEntries) {
+        if (row == null) {
+          patch[key] = null;
+          continue;
+        }
+        const col = source === 'selection' || source === 'highlight' ? rowKey : source;
+        patch[key] = col ? (row[col] ?? null) : null;
+      }
+      return patch;
+    },
+    [emitEntries, rowKey],
+  );
 
   // Auto-select once on load: seed the emitted selection so the view opens with a
   // highlighted venue (same machinery as an explicit row/map click) instead of the
@@ -98,12 +136,12 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
       return;
     }
     const idx = autoSelect === 'random' ? Math.floor(Math.random() * r.length) : 0;
-    const val = r[idx]?.[rowKey];
-    if (val != null) {
-      updateViewState({ [emitKey]: val });
+    const row = r[idx];
+    if (row?.[rowKey] != null) {
+      updateViewState(patchFor(row));
       autoSelectedRef.current = true;
     }
-  }, [data, autoSelect, emitKey, rowKey, selected, updateViewState]);
+  }, [data, autoSelect, emitKey, rowKey, selected, updateViewState, patchFor]);
 
   // Display ordering, hoisted above the early returns so the agent memo (a hook)
   // can see exactly the rows the user does. Exception-first pin, then the active
@@ -171,10 +209,10 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
 
   const onRowClick = (row: Record<string, unknown>) => {
     if (!emitKey || !rowKey) return;
-    const val = row[rowKey];
-    // Toggle selection off when re-clicking the active row.
-    const next = String(val) === String(selected) ? null : (val ?? null);
-    updateViewState({ [emitKey]: next });
+    // Toggle selection off when re-clicking the active row: clears the primary
+    // key AND every companion key in one patch.
+    const isActive = String(row[rowKey]) === String(selected);
+    updateViewState(patchFor(isActive ? null : row));
   };
 
   const fitRows = config?.fitRows;

@@ -74,6 +74,22 @@ CTX = {
     "date_range_end": "context.date_range_end",
 }
 
+
+def snap_minute(ts: str) -> str:
+    """Timestamp -> the replay clock's minutes-since-midnight, snapped to the
+    slider's 10-minute grid, so a table row click can move the scroller.
+
+    CEIL, not FLOOR: the notification feed is an `EVENT_TS <= cutoff` list, so
+    rounding DOWN to the grid can land just before the clicked event and drop it
+    off its own list. Rounding up guarantees the event has happened at the
+    selected instant. Clamped to the slider's own [0, 1430] range (1430 = 23:50,
+    the last clean 10-minute mark), and falling back to the CURRENT clock when
+    the timestamp is NULL (e.g. an EXPECTED visit with no arrival yet) so such a
+    row leaves the scroller where it is instead of snapping it to the default.
+    """
+    return ("COALESCE(LEAST(1430, GREATEST(0, CEIL(DATEDIFF('minute', "
+            "SERVICE_DATE, " + ts + ")/10.0)*10)), COALESCE(:as_of_minute, 540))")
+
 PALETTE = {
     "READY": [46, 160, 67, 235],
     "IN_PROGRESS": [255, 171, 0, 245],
@@ -397,6 +413,14 @@ VIEW = {
                 # site pick, a layer toggle, or a replay-step refetch must not
                 # re-zoom the map out from under the presenter.
                 "lockCamera": True,
+                # ... except for an explicit row-click drilldown, which writes
+                # these keys and pans/zooms the camera once to the clicked
+                # vehicle or site.
+                "focusOn": {
+                    "lngKey": "map_focus_lng",
+                    "latKey": "map_focus_lat",
+                    "zoom": 13,
+                },
                 "clickEmits": {
                     "object": "selected_site",
                     "objectColumn": "site_id",
@@ -670,29 +694,71 @@ VIEW = {
             },
         },
         "feed": {
-            "component": "Table",
+            # Clickable: a row is a drilldown anchor. Clicking one selects its
+            # site AND its vehicle, moves the replay clock to the event, and
+            # focuses the camera on the site - so the map, the rings, readiness
+            # and the inbound ETA all re-evaluate at the clicked moment.
+            "component": "ClickableTable",
             "data": {
                 "query": (
                     "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS \"At\", "
                     "EVENT_TYPE AS \"Event\", SITE_NAME AS \"Site\", "
-                    "VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\" "
+                    "VEHICLE_ID AS \"Vehicle\", DWELL_MINUTES AS \"On site (min)\", "
+                    # Hidden drilldown columns (not in config.columns).
+                    # A visit yields two events, so the row id must include the
+                    # event type or arrival and departure share one id and the
+                    # highlight lands on the wrong row.
+                    "VISIT_ID || '-' || EVENT_TYPE AS event_id, "
+                    "SITE_ID AS site_id, VEHICLE_ID AS vehicle_id, "
+                    "ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, "
+                    + snap_minute("EVENT_TS") + " AS as_of_minute "
                     "FROM FLEET_APP.DELIVERY_SYNC.VW_EVENTS "
                     "WHERE REGION = :region AND SERVICE_DATE = " + SD
                     + " AND EVENT_TS <= " + ASOF + " ORDER BY EVENT_TS DESC LIMIT 200"
                 ),
                 "params": dict(CTX),
             },
-            "config": {"title": "Notification feed", "fitRows": 6},
+            "config": {
+                "title": "Notification feed",
+                "fitRows": 6,
+                "rowKey": "event_id",
+                # Explicit columns: keeps the visible table exactly as it was
+                # and stops the hidden drilldown ids rendering as columns.
+                "columns": [
+                    {"field": "At"},
+                    {"field": "Event"},
+                    {"field": "Site"},
+                    {"field": "Vehicle"},
+                    {"field": "On site (min)"},
+                ],
+            },
+            # First entry is the primary selection (row highlight); the rest are
+            # companion keys written in the same patch.
+            "emits": {
+                "selected_event": "selection",
+                "selected_site": "site_id",
+                "selected_vehicle": "vehicle_id",
+                "as_of_minute": "as_of_minute",
+                "map_focus_lng": "focus_lng",
+                "map_focus_lat": "focus_lat",
+            },
         },
         "readiness": {
             "component": "ClickableTable",
             "data": {
                 "query": (
-                    "SELECT SITE_ID AS site_id, SITE_NAME AS \"Site\", "
+                    "SELECT SITE_NAME AS \"Site\", "
                     "READINESS_ENUM AS \"State\", VEHICLE_ID AS \"Vehicle\", "
                     "TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS \"Arrived\", "
                     "IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') "
-                    "AS \"Departed\", DWELL_MINUTES AS \"On site (min)\" "
+                    "AS \"Departed\", DWELL_MINUTES AS \"On site (min)\", "
+                    # Hidden drilldown columns. The row id is the VISIT, not the
+                    # site: a site can be served several times a day and the
+                    # highlight must follow the clicked visit.
+                    "VISIT_ID AS visit_id, SITE_ID AS site_id, "
+                    "VEHICLE_ID AS vehicle_id, "
+                    "ST_X(SITE_GEOG) AS focus_lng, ST_Y(SITE_GEOG) AS focus_lat, "
+                    + snap_minute("ARRIVAL_TS") + " AS as_of_minute "
                     "FROM TABLE(FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(:region, "
                     + ASOF + ")) WHERE SERVICE_DATE = " + SD
                     + " ORDER BY CASE READINESS_ENUM WHEN 'IN_PROGRESS' THEN 0 "
@@ -700,23 +766,71 @@ VIEW = {
                 ),
                 "params": dict(CTX),
             },
-            "config": {"title": "Site readiness", "fitRows": 6, "idColumn": "site_id"},
-            "emits": {"selected_site": "selection"},
+            "config": {
+                "title": "Site readiness",
+                "fitRows": 6,
+                # This was `idColumn`, which ViewClickableTableArea does not
+                # read - so rowKey was undefined and the row click silently did
+                # nothing. Every other clickable table in the app uses rowKey.
+                "rowKey": "visit_id",
+                "columns": [
+                    {"field": "Site"},
+                    {"field": "State"},
+                    {"field": "Vehicle"},
+                    {"field": "Arrived"},
+                    {"field": "Departed"},
+                    {"field": "On site (min)"},
+                ],
+            },
+            # Clock jumps to ARRIVAL, so the vehicle reads as on site at the
+            # selected instant. selected_site stays a real selection key for the
+            # app because the Focus site FilterBar declares it as one.
+            "emits": {
+                "selected_visit": "selection",
+                "selected_site": "site_id",
+                "selected_vehicle": "vehicle_id",
+                "as_of_minute": "as_of_minute",
+                "map_focus_lng": "focus_lng",
+                "map_focus_lat": "focus_lat",
+            },
         },
         "inbound": {
-            "component": "Table",
+            "component": "ClickableTable",
             "data": {
                 "query": (
                     "SELECT VEHICLE_ID AS \"Vehicle\", MINUTES_OUT AS \"Minutes out\", "
                     "DISTANCE_KM AS \"Road km\", TO_VARCHAR(ETA_TS,'HH24:MI') AS \"ETA\", "
-                    "TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\" "
+                    "TO_VARCHAR(POSITION_TS,'HH24:MI') AS \"Position as of\", "
+                    # Hidden drilldown columns. Focus is the VEHICLE's own
+                    # position here (the site is already the page's anchor), and
+                    # there is deliberately no as_of_minute: an inbound row is
+                    # only meaningful at the instant already on the clock.
+                    "VEHICLE_ID AS vehicle_id, SITE_ID AS site_id, "
+                    "ST_X(VEHICLE_GEOG) AS focus_lng, ST_Y(VEHICLE_GEOG) AS focus_lat "
                     "FROM TABLE(FLEET_APP.DELIVERY_SYNC.LIVE_INBOUND_ETA("
                     ":region, " + PROFILE + ", " + SITE + ", " + ASOF + ", 20)) "
                     "WHERE MINUTES_OUT IS NOT NULL ORDER BY MINUTES_OUT LIMIT 25"
                 ),
                 "params": dict(CTX),
             },
-            "config": {"title": "Inbound to focus site (live routing)", "fitRows": 6},
+            "config": {
+                "title": "Inbound to focus site (live routing)",
+                "fitRows": 6,
+                "rowKey": "vehicle_id",
+                "columns": [
+                    {"field": "Vehicle"},
+                    {"field": "Minutes out"},
+                    {"field": "Road km"},
+                    {"field": "ETA"},
+                    {"field": "Position as of"},
+                ],
+            },
+            "emits": {
+                "selected_vehicle": "selection",
+                "selected_site": "site_id",
+                "map_focus_lng": "focus_lng",
+                "map_focus_lat": "focus_lat",
+            },
         },
     },
 }

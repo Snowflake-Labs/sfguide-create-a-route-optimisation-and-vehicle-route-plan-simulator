@@ -580,6 +580,23 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   // changes the data extent.
   const lockCamera = !!config.lockCamera;
 
+  // One-shot focus point (config.focusOn): a row click writes lng/lat into
+  // viewState and the camera pans/zooms there once. Works while lockCamera is
+  // on because it is an explicit gesture, not an automatic re-frame.
+  const focusOn = config.focusOn;
+  const focusPoint = useMemo(() => {
+    if (!focusOn) return null;
+    const rawLng = viewState[focusOn.lngKey];
+    const rawLat = viewState[focusOn.latKey];
+    // Guard null/'' explicitly: Number(null) is 0, which is a finite (and very
+    // wrong) coordinate, so a deselect that clears the keys must not focus 0,0.
+    if (rawLng == null || rawLng === '' || rawLat == null || rawLat === '') return null;
+    const lng = Number(rawLng);
+    const lat = Number(rawLat);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    return { lng, lat, zoom: focusOn.zoom };
+  }, [focusOn, viewState]);
+
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
       {specs.map((ls, i) => {
@@ -594,7 +611,7 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
       })}
       <MapView
         layers={orderedLayers}
-        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera }}
+        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera, focusPoint }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
         onHover={onHover}

@@ -181,6 +181,15 @@ export interface MapAreaConfig {
      *  auto re-frame. Selections, layer toggles and periodic refetches leave the
      *  camera exactly where the user left it. */
     lockCamera?: boolean;
+    /** One-shot camera focus driven by viewState. When both keys hold finite
+     *  numbers the camera pans to that point (and zooms to `zoom`, when given).
+     *  Typically written by a table row click, so a user gesture can move the
+     *  camera even on a `lockCamera` map. */
+    focusOn?: {
+        lngKey: string;
+        latKey: string;
+        zoom?: number;
+    };
 }
 export {};
 //# sourceMappingURL=layer-spec.d.ts.map
