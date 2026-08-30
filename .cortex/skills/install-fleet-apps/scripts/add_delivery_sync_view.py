@@ -198,8 +198,8 @@ VIEW = {
             "Point at the As Of card first - it names the exact service day and the "
             "instant being replayed.",
             "Read the readiness split: sites READY, IN_PROGRESS, and still EXPECTED.",
-            "Drag the replay clock forward and watch sites flip to READY as vehicles "
-            "depart.",
+            "Drag the replay clock forward and watch sites flip to READY as each "
+            "unload completes.",
             "On the map, call out the colour rules: green on site, red just left, "
             "yellow inside the live approach band, blue for a vehicle with nothing "
             "actionable.",
@@ -209,8 +209,8 @@ VIEW = {
             "whole business case.",
         ],
         "snowflakeCapabilities": [
-            "Geofence arrival and departure detected from raw pings with Dynamic "
-            "Tables, with no per-site status flag required",
+            "Geofence arrival, unload completion and departure detected from raw "
+            "pings with Dynamic Tables, with no per-site status flag required",
             "Live drive-time ETA and approach band computed by the routing engine "
             "(OpenRouteService on Snowpark Container Services) at the replay "
             "instant, never precomputed",
@@ -230,11 +230,17 @@ VIEW = {
             "Give the customer a credible arrival window instead of a day-long one",
         ],
         "method": (
-            "Arrival and departure are detected from geofence entry and exit, not from a "
+            "Arrival, unload completion and departure are detected from the pings "
+            "themselves, not from a "
             "status flag: every position ping is tested against the site's own radius "
             "(DIM_VEHICLE_DWELL_SLA.BUFFER_RADIUS_M), consecutive inside-pings are grouped "
-            "into a visit, and the arrival/departure pair is taken from the stationary core "
-            "of that visit. Every site's 15-minute approach ring, and the inbound ETA, are "
+            "into a visit, and the arrival/unload-complete pair is taken from the "
+            "stationary core "
+            "of that visit. Departure is a separate, stricter fact: the first ping "
+            "actually observed OUTSIDE the geofence. Unload complete is typically a "
+            "minute or two earlier, with the vehicle still parked inside the fence, so "
+            "the feed reports the two moments separately rather than calling the first "
+            "one a departure. Every site's 15-minute approach ring, and the inbound ETA, are "
             "computed live by the "
             "routing engine at the replay instant. The rings are drive-time, not radius, "
             "so they follow the road network; they are only distinguishable when you zoom "
@@ -272,20 +278,31 @@ VIEW = {
             "distance test too, not only a clock: a vehicle keeps the red colour while "
             "it is inside the same 15-minute drive-time band the ring draws, and once "
             "it is further out it is simply shown as heading to its next stop. "
+            "The notification feed speaks the same three-way vocabulary, so a feed row "
+            "and the map can never contradict each other: Arrived and Unload complete "
+            "both leave the vehicle on site, and only Departed says it has gone. "
         ),
         "caveats": (
             "A site reading EXPECTED is hindsight, not a forecast: the visit is in "
             "the data because it was detected later the same day. In production that "
             "state would come from the dispatch plan. READY and IN_PROGRESS are "
-            "direct detections. The telemetry itself is synthetic."
+            "direct detections. A visit whose telemetry ends while the vehicle is "
+            "still parked on the site gets no Departed row at all - on the New Jersey "
+            "reference day that is 34 of 134 visits - because no departure was ever "
+            "observed; the page says nothing rather than inventing one. "
+            "The telemetry itself is synthetic."
         ),
     },
     "agentKnowledge": {
         "preferredTool": "query_delivery_sync",
         "keyMetrics": [
             "site visits detected for the service date",
-            "sites READY (vehicle departed, load on the floor)",
-            "sites IN_PROGRESS (vehicle on site at the replay instant)",
+            "sites READY (unload complete, load on the floor - the vehicle may still "
+            "be standing on the site)",
+            "site visits mid-unload at the replay instant (KPI card 'Unloads In Progress', "
+            "readiness state IN_PROGRESS - counted per VISIT, from the unload window)",
+            "vehicles physically inside a site geofence at the replay instant "
+            "(map 'vehicles' layer, status 'On site now' - counted per VEHICLE, from position)",
             "sites still EXPECTED at the replay instant",
             "average time on site in minutes",
             "minutes out for inbound vehicles",
@@ -298,6 +315,21 @@ VIEW = {
             "Which sites are still waiting on a delivery?",
         ],
         "gotchas": (
+            "ANSWER ROUTING, read this first. \"Which vehicles are on site now?\" and any "
+            "other question about a VEHICLE's current state must be answered from the "
+            "map's 'vehicles' layer memo (statuses On site now / Just left / Approaching "
+            "/ En route / Idle), NEVER from the readiness table or the 'Unloads In "
+            "Progress' KPI. Those two describe different populations and routinely "
+            "disagree by design: the KPI and the readiness table count VISITS whose "
+            "unload window brackets the replay instant, while the map counts VEHICLES "
+            "inside a site geofence. A vehicle whose unload is already complete can "
+            "still be On site now while it has not physically left (its detail reads "
+            "\"On site, unload complete\"), and a vehicle mid-unload reads \"Unloading\" - "
+            "so 2 vehicles on site alongside 1 unload in progress is a correct pair of "
+            "numbers, not a contradiction. Say which of the two a number came from. "
+            "Note also that query_delivery_sync is HISTORICAL: it cannot see live status "
+            "at all, so never re-query it to settle a \"right now\" question - use the "
+            "on-screen map memo. "
             "Readiness is evaluated AT the replay hour, not at wall-clock now, so the "
             "same site reads EXPECTED earlier in the day and READY later. IMPORTANT: "
             "EXPECTED is NOT a forecast. A visit only exists because it was detected "
@@ -351,7 +383,22 @@ VIEW = {
             "geofence layer needs no routing and keeps working regardless. "
             "SOURCE_STATUS_HINT separates "
             "deliveries from pickups and idles but is descriptive only and plays no "
-            "part in detection."
+            "part in detection. THE FEED HAS THREE EVENT TYPES and they are not "
+            "interchangeable: Arrived (became stationary inside the fence), Unload "
+            "complete (stopped being stationary - STILL ON SITE, this is the "
+            "product-ready moment), and Departed (first ping actually observed outside "
+            "the fence). Only Departed answers \"has it left?\". Unload complete "
+            "deliberately does NOT, because on the reference day not one visit had the "
+            "vehicle outside its geofence at that instant - the real exit came a median "
+            "85 seconds later. A visit with NO Departed row means no departure was ever "
+            "observed, usually because the telemetry ends on site: say exactly that, "
+            "never that the vehicle is still unloading and never that it left. "
+            "In the readiness table the Ready at column shows "
+            "\"ready HH:MI\" while a visit is IN_PROGRESS and a bare time once it is "
+            "READY; a dash means the visit has not started yet. That column is unload "
+            "completion, NOT departure - every detected visit has a recorded unload "
+            "completion, otherwise it would not be a visit, but many have no observed "
+            "departure at all."
         ),
     },
     "layout": {
@@ -392,7 +439,14 @@ VIEW = {
                 "mapping": {
                     "metrics": [
                         {"column": "ready", "label": "Sites Ready", "format": "number"},
-                        {"column": "on_site", "label": "Vehicle On Site", "format": "number"},
+                        # NOT "Vehicle On Site". This counts visit rows whose
+                        # unload WINDOW brackets the replay instant, which is a
+                        # different population from the map's ON_SITE (a geofence
+                        # containment test on the plotted position). Sharing the
+                        # words "on site" with the map legend made a correct KPI
+                        # read as contradicting the map, and steered the agent to
+                        # answer a map question from this card.
+                        {"column": "on_site", "label": "Unloads In Progress", "format": "number"},
                         {"column": "expected", "label": "Still Expected", "format": "number"},
                         {"column": "avg_dwell", "label": "Avg Min On Site", "format": "number_2dp"},
                         # The exact replay instant, so the numbers are attributable
@@ -716,6 +770,22 @@ VIEW = {
                             "<b>{vehicle_id}</b><br/>{status_label}"
                             "<br/>{site_name}<br/>{detail}"
                         ),
+                        # Grounding Channel A for the map. Without this the agent
+                        # sees only "vehicles: N features" and answers "which
+                        # vehicles are on site now?" from the readiness table,
+                        # whose IN_PROGRESS is the unload WINDOW - a different
+                        # population from this layer's geofence ON_SITE. That is
+                        # exactly how it once named a vehicle the map had not
+                        # painted as on site. Grouped by the label the user reads
+                        # in the legend and the tooltip, so the memo and the
+                        # screen use the same words.
+                        "agentSummary": {
+                            "groupBy": "status_label",
+                            "label": "vehicle_id",
+                            "detail": "site_name",
+                            "maxPerGroup": 6,
+                            "noun": "vehicles",
+                        },
                         "data": {
                             "query": (
                                 "SELECT VEHICLE_ID AS vehicle_id, STATUS_ENUM AS status, "
@@ -774,11 +844,18 @@ VIEW = {
                     # with blank cells and no error. Display text lives in
                     # config.columns[].header.
                     "SELECT TO_VARCHAR(EVENT_TS,'HH24:MI:SS') AS at_time, "
-                    "EVENT_TYPE AS event_type, SITE_LABEL AS site_name, "
+                    # Display text, not the raw enum: UNLOAD_COMPLETE is the
+                    # widest value and reads as machinery in a feed a presenter
+                    # is talking over. The RAW value still keys the row (below),
+                    # so sorting and the click target are unaffected.
+                    "CASE EVENT_TYPE WHEN 'ARRIVED' THEN 'Arrived' "
+                    "WHEN 'UNLOAD_COMPLETE' THEN 'Unload complete' "
+                    "WHEN 'DEPARTED' THEN 'Departed' ELSE EVENT_TYPE END AS event_type, "
+                    "SITE_LABEL AS site_name, "
                     "VEHICLE_ID AS vehicle_id, DWELL_MINUTES AS dwell_minutes, "
                     # Hidden drilldown columns (not in config.columns).
-                    # A visit yields two events, so the row id must include the
-                    # event type or arrival and departure share one id and the
+                    # A visit yields up to three events, so the row id must
+                    # include the RAW event type or they share one id and the
                     # highlight lands on the wrong row.
                     "VISIT_ID || '-' || EVENT_TYPE AS event_id, "
                     "SITE_ID AS site_id, "
@@ -828,8 +905,21 @@ VIEW = {
                     "SELECT SITE_NAME AS site_name, "
                     "READINESS_ENUM AS readiness_state, VEHICLE_ID AS vehicle_id, "
                     "TO_VARCHAR(ARRIVAL_TS,'HH24:MI') AS arrived_at, "
-                    "IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-') "
-                    "AS departed_at, DWELL_MINUTES AS dwell_minutes, "
+                    # DT_SITE_VISITS only admits visits with a non-null
+                    # DEPARTURE_TS, so a blank here never means "unrecorded" - it
+                    # means the replay instant precedes unload completion.
+                    # The old IFF(...,'-') hid that, and the agent read the dash
+                    # as "no departure recorded yet" and said so. Name the time.
+                    #
+                    # This column is DEPARTURE_TS = unload complete = product
+                    # ready, which is NOT the vehicle leaving (it is usually still
+                    # parked inside the fence). It used to be headed "Departed"
+                    # and worded "departs HH:MI", which is the same overclaim the
+                    # feed made - see the EXIT_TS note in delivery_sync_layer.sql.
+                    "IFF(READINESS_ENUM='IN_PROGRESS', "
+                    "'ready ' || TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), "
+                    "IFF(READINESS_ENUM='READY', TO_VARCHAR(DEPARTURE_TS,'HH24:MI'), '-')) "
+                    "AS ready_at, DWELL_MINUTES AS dwell_minutes, "
                     # Hidden drilldown columns. The row id is the VISIT, not the
                     # site: a site can be served several times a day and the
                     # highlight must follow the clicked visit.
@@ -855,7 +945,7 @@ VIEW = {
                     {"field": "readiness_state", "header": "State"},
                     {"field": "vehicle_id", "header": "Vehicle"},
                     {"field": "arrived_at", "header": "Arrived"},
-                    {"field": "departed_at", "header": "Departed"},
+                    {"field": "ready_at", "header": "Ready at"},
                     {"field": "dwell_minutes", "header": "On site (min)"},
                 ],
             },

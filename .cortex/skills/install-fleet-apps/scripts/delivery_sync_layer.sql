@@ -5,11 +5,17 @@
 -- when did it leave?" so a downstream crew (receiving team, merchandiser,
 -- yard marshal) is told to move only once the product is actually there.
 --
--- Three events per (vehicle, site) visit:
---   APPROACHING - vehicle crossed INTO the site's live drive-time ring
---   ARRIVED     - vehicle became stationary inside the site geofence
---   DEPARTED    - vehicle stopped being stationary inside the geofence
---                 (this is the one that matters: work starts after unload)
+-- Four events per (vehicle, site) visit:
+--   APPROACHING     - vehicle crossed INTO the site's live drive-time ring
+--   ARRIVED         - vehicle became stationary inside the site geofence
+--   UNLOAD_COMPLETE - vehicle stopped being stationary inside the geofence
+--                     (this is the one that matters: work starts after unload).
+--                     It does NOT mean the vehicle left - it is usually still
+--                     parked inside the fence at this instant.
+--   DEPARTED        - vehicle was first OBSERVED OUTSIDE the geofence. Emitted
+--                     ONLY when that was observed; a visit whose telemetry ends
+--                     on site produces no DEPARTED event at all, because no
+--                     departure happened as far as this data knows.
 --
 -- GEOFENCE EPISODE DETECTION
 -- The detector is a port of the runway-crossing episode pattern from
@@ -253,6 +259,11 @@ agg AS (
     COUNT_IF(e.SPEED_KMH <= prm.STATIONARY_SPEED_KMH)             AS STATIONARY_PINGS,
     MIN(e.TS)                   AS FENCE_ENTRY_TS,
     MAX(e.TS)                   AS FENCE_EXIT_TS,
+    -- The vehicle's NEXT ping after this episode. SEQ is a per-vehicle monotonic
+    -- row number over EVERY ping (see `pts`), and this episode owns a contiguous
+    -- SEQ run, so MAX(SEQ)+1 is by construction the first ping that is not part
+    -- of it. Resolved to a timestamp in the final SELECT - see EXIT_TS.
+    MAX(e.SEQ) + 1              AS EXIT_SEQ,
     COUNT(*)                    AS FENCE_PINGS,
     ROUND(MAX(e.SPEED_KMH), 1)  AS MAX_SPEED_IN_FENCE,
     -- Chord: entry point to exit point. Small for a genuine stop (parked),
@@ -299,9 +310,39 @@ SELECT
   DATEDIFF('second', a.ARRIVAL_TS, a.DEPARTURE_TS) AS DWELL_SECONDS,
   ROUND(DATEDIFF('second', a.ARRIVAL_TS, a.DEPARTURE_TS) / 60.0, 1) AS DWELL_MINUTES,
   a.STATIONARY_PINGS, a.FENCE_ENTRY_TS, a.FENCE_EXIT_TS, a.FENCE_PINGS,
+  -- EXIT_TS - the moment the vehicle was first OBSERVED OUTSIDE this geofence,
+  -- NULL when that was never observed. This is the only column in the table that
+  -- evidences a departure.
+  --
+  -- WHY IT EXISTS. DEPARTURE_TS is MAX(TS) over the STATIONARY CORE, i.e. the
+  -- last ping on which the vehicle was seen not moving - the product-ready
+  -- moment. It is NOT evidence of leaving, and the notification feed used to
+  -- label it 'DEPARTED'. On UsNewJersey 2026-08-07, across all 134 visits, ZERO
+  -- had the vehicle outside the fence at its own DEPARTURE_TS: 107 had the next
+  -- ping still inside (real exit a median 85 s later, up to 201 s) and 27 had no
+  -- further ping at all. Worked example V-DRI-00023 at Phase III Trucking Inc:
+  -- DEPARTURE 05:18:46.008 is the vehicle's LAST ping ever, speed 0, 38.8 m
+  -- inside a 200 m fence - so at the 05:20 replay instant the feed announced a
+  -- departure while the map correctly showed the dot on the site. Same defect
+  -- class as the three fixed before it (two different facts under one label);
+  -- the earlier fixes moved the MAP onto the fact it plots, this one moves the
+  -- FEED onto the fact it claims.
+  --
+  -- Deliberately an EQUALITY join on EXIT_SEQ, not a range scan for "first ping
+  -- outside the fence after FENCE_EXIT_TS": the ping at MAX(SEQ)+1 is already
+  -- the first ping not in this episode, so a range join would cost a full
+  -- per-visit telemetry scan for an identical answer. The NOT ST_DWITHIN guard
+  -- covers the case where that next ping is STILL inside the fence (7 of the 134
+  -- - a sequence gap re-opened the same site as a new episode). Those claim no
+  -- exit; the later episode supplies its own.
+  IFF(x.TS IS NOT NULL
+      AND NOT ST_DWITHIN(x.POINT_GEOM, a.SITE_GEOG, a.GEOFENCE_RADIUS_M),
+      x.TS, NULL) AS EXIT_TS,
   a.MAX_SPEED_IN_FENCE, a.CHORD_M, a.SOURCE_STATUS_HINT,
   TO_DATE(a.ARRIVAL_TS) AS SERVICE_DATE
 FROM agg a CROSS JOIN prm
+LEFT JOIN pts x
+  ON x.REGION = a.REGION AND x.VEHICLE_ID = a.VEHICLE_ID AND x.SEQ = a.EXIT_SEQ
 LEFT JOIN dupnames d
   ON d.REGION = a.REGION AND d.NM = TRIM(a.SITE_NAME, '"')
 -- Per-vehicle minimum stop. PARAMS.MIN_STOP_SECONDS remains the account-wide
@@ -320,8 +361,34 @@ WHERE a.ARRIVAL_TS IS NOT NULL
 
 -- ---------------------------------------------------------------------
 -- 3. VW_SITE_VISIT_EVENTS - long form, one row per notifiable event.
---    ARRIVED and DEPARTED are historical facts from the detector.
---    PRODUCT_READY_TS = DEPARTURE_TS: the moment follow-on work can start.
+--
+--    THREE event types, each tied to the fact that actually supports it. They
+--    map one-to-one onto the live map states, which is the point: the feed and
+--    the map can no longer disagree about the same vehicle.
+--
+--      ARRIVED         @ ARRIVAL_TS    -> map ON_SITE / phase UNLOADING
+--      UNLOAD_COMPLETE @ DEPARTURE_TS  -> map ON_SITE / phase UNLOAD_DONE
+--      DEPARTED        @ EXIT_TS       -> map JUST_LEFT, then DRIVING
+--
+--    UNLOAD_COMPLETE was previously called DEPARTED, which was an overclaim:
+--    DEPARTURE_TS is the last STATIONARY ping, so the vehicle is still inside
+--    the fence at that moment (all 134 visits on the UsNewJersey reference day -
+--    see the EXIT_TS note on DT_SITE_VISITS). The feed announced a departure
+--    while the map correctly drew the dot on the site.
+--
+--    DEPARTED is now gated on EXIT_TS IS NOT NULL, so a visit whose telemetry
+--    ends on site yields NO departure row (34 of the 134). That is the same
+--    honest failure mode LIVE_FLEET_STATUS already takes: say nothing rather
+--    than claim a departure that was never observed.
+--
+--    PRODUCT_READY_TS = DEPARTURE_TS on both post-unload events: the moment
+--    follow-on work can start is unload completion, not the vehicle leaving.
+--
+--    DWELL_MINUTES IS NULL ON ARRIVED. It is the visit's FINAL on-site duration,
+--    so printing it on the arrival row leaks hindsight into a replay: at 05:20
+--    the "ARRIVED 05:19:00 V-DRI-00062" row claimed 6.9 on-site minutes for a
+--    visit one minute old. PRODUCT_READY_TS was already NULL on this arm for
+--    exactly this reason; DWELL_MINUTES had been missed.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DELIVERY_SYNC.VW_SITE_VISIT_EVENTS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -329,14 +396,21 @@ AS
 SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_LABEL, SITE_TYPE,
        SITE_GEOG, VISIT_SEQ, SERVICE_DATE, SOURCE_STATUS_HINT,
        'ARRIVED' AS EVENT_TYPE, ARRIVAL_TS AS EVENT_TS,
-       DWELL_MINUTES, NULL::TIMESTAMP_NTZ AS PRODUCT_READY_TS
+       NULL::NUMBER(10,1) AS DWELL_MINUTES, NULL::TIMESTAMP_NTZ AS PRODUCT_READY_TS
 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
 UNION ALL
 SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_LABEL, SITE_TYPE,
        SITE_GEOG, VISIT_SEQ, SERVICE_DATE, SOURCE_STATUS_HINT,
-       'DEPARTED' AS EVENT_TYPE, DEPARTURE_TS AS EVENT_TS,
+       'UNLOAD_COMPLETE' AS EVENT_TYPE, DEPARTURE_TS AS EVENT_TS,
        DWELL_MINUTES, DEPARTURE_TS AS PRODUCT_READY_TS
-FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS;
+FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+UNION ALL
+SELECT VISIT_ID, REGION, VEHICLE_ID, JOURNEY_ID, SITE_ID, SITE_NAME, SITE_LABEL, SITE_TYPE,
+       SITE_GEOG, VISIT_SEQ, SERVICE_DATE, SOURCE_STATUS_HINT,
+       'DEPARTED' AS EVENT_TYPE, EXIT_TS AS EVENT_TS,
+       DWELL_MINUTES, DEPARTURE_TS AS PRODUCT_READY_TS
+FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
+WHERE EXIT_TS IS NOT NULL;
 
 -- ---------------------------------------------------------------------
 -- 4. VW_SITE_READINESS - current state per site for a service date.
@@ -1148,6 +1222,11 @@ ALTER TASK FLEET_INTELLIGENCE.DELIVERY_SYNC.LOG_DELIVERY_EVENTS SUSPEND;
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.DELIVERY_SYNC
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Both of these are SELECT *, which in Snowflake is resolved and FROZEN at
+-- creation time. A new column on DT_SITE_VISITS (e.g. EXIT_TS) therefore does
+-- NOT appear here until the view is recreated - and VW_EVENTS then references a
+-- column its own source view cannot see. When hot-patching a live install, run
+-- the DT, then VW_SITE_VISIT_EVENTS, then these two, in that order.
 CREATE OR REPLACE VIEW FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT * FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS;

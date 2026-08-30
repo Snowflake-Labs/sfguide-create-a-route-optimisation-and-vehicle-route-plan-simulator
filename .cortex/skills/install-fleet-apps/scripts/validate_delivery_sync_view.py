@@ -132,6 +132,57 @@ def same_day_invariant_sql(region: str, minute: int) -> str:
     ).format(r=region, m=minute, sd=sd)
 
 
+def feed_map_coherence_sql(region: str, minute: int) -> str:
+    """Count vehicles whose LATEST feed event says DEPARTED while the map still
+    shows them ON_SITE at the same site.
+
+    Why this check exists
+    --------------------
+    The feed used to label DEPARTURE_TS as 'DEPARTED', but DEPARTURE_TS is
+    MAX(TS) over the STATIONARY CORE - the product-ready moment, not an exit. On
+    UsNewJersey 2026-08-07 not one of the 134 visits had the vehicle outside its
+    geofence at its own DEPARTURE_TS (107 next-ping-still-inside, real exit a
+    median 85 s later; 27 with no further ping at all). So at 05:20 the feed read
+    "DEPARTED / Phase III Trucking Inc / V-DRI-00023" while the tooltip on the
+    same vehicle read "On site now - On site, unload complete", the vehicle being
+    parked 38.8 m inside a 200 m fence with no later ping in existence.
+
+    The fourth instance of one class: two different facts rendered under one
+    label. The three fixes before it moved the MAP onto the fact the map plots;
+    the feed kept the old vocabulary, so nothing caught it. DEPARTED is now
+    emitted at EXIT_TS - the first ping actually observed OUTSIDE the fence - and
+    omitted entirely when that was never observed, which makes this invariant
+    structural rather than a tuning exercise.
+
+    Expected result is 0, and it is non-zero on the pre-fix code, which is what
+    makes it a guard rather than a restatement.
+
+    Written as LEFT JOIN + COUNT, NOT correlated EXISTS: a correlated EXISTS over
+    a table-function result fails "Unsupported subquery type cannot be evaluated".
+    """
+    sd = SD_SQL % region
+    asof = "DATEADD('minute', %d, %s::TIMESTAMP_NTZ)" % (minute, sd)
+    return (
+        # Live map status at the instant.
+        "WITH fs AS (SELECT VEHICLE_ID, STATUS_ENUM, SITE_ID FROM TABLE("
+        "FLEET_APP.DELIVERY_SYNC.LIVE_FLEET_STATUS('{r}', "
+        "(SELECT ORS_PROFILE FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
+        "WHERE REGION = '{r}' LIMIT 1), {a}, "
+        "(SELECT ROUND(APPROACH_SECONDS/60.0) FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
+        "WHERE REGION = '{r}' LIMIT 1), 20, 20))), "
+        # The vehicle's most recent feed row at or before the same instant -
+        # exactly what the notification feed shows at the top for that vehicle.
+        "last_ev AS (SELECT VEHICLE_ID, SITE_ID, EVENT_TYPE FROM "
+        "FLEET_APP.DELIVERY_SYNC.VW_EVENTS "
+        "WHERE REGION = '{r}' AND SERVICE_DATE = {sd} AND EVENT_TS <= {a} "
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY EVENT_TS DESC) = 1) "
+        "SELECT COUNT(*) AS N FROM fs "
+        "LEFT JOIN last_ev e ON e.VEHICLE_ID = fs.VEHICLE_ID "
+        "WHERE fs.STATUS_ENUM = 'ON_SITE' AND e.EVENT_TYPE = 'DEPARTED' "
+        "AND e.SITE_ID = fs.SITE_ID;"
+    ).format(r=region, a=asof, sd=sd)
+
+
 def run_sql(sql: str):
     with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
         f.write(sql)
@@ -283,6 +334,38 @@ def main() -> int:
                              % detail))
         else:
             print("  OK      %-28s no off-day site classifications (%d instants)"
+                  % (region, len(INVARIANT_MINUTES)))
+
+    # Feed-vs-map coherence: the notification feed and the map status must not
+    # describe the same vehicle differently. Swept over the same instants and for
+    # every region, for the same reason as above - a sparse dataset exposes it and
+    # a dense one masks it.
+    print("\n=== feed / map coherence invariant ===")
+    for region in region_list:
+        worst = []
+        errored = False
+        for minute in INVARIANT_MINUTES:
+            rows, err = run_sql(feed_map_coherence_sql(region, minute))
+            if err:
+                print("  SQL ERROR       %-28s %02d:%02d %s"
+                      % (region, minute // 60, minute % 60, err))
+                failures.append((region, "feed/map coherence", err))
+                errored = True
+                break
+            n = rows[0]["N"] if rows else 0
+            if n:
+                worst.append((minute, n))
+        if errored:
+            continue
+        if worst:
+            detail = ", ".join("%02d:%02d=%s" % (m // 60, m % 60, n) for m, n in worst)
+            print("  VIOLATED %-27s feed says DEPARTED while map says ON_SITE at %s"
+                  % (region, detail))
+            failures.append((region, "feed/map coherence",
+                             "vehicle(s) shown as departed in the feed and on site on "
+                             "the map (%s)" % detail))
+        else:
+            print("  OK      %-28s feed and map agree (%d instants)"
                   % (region, len(INVARIANT_MINUTES)))
 
     print()
