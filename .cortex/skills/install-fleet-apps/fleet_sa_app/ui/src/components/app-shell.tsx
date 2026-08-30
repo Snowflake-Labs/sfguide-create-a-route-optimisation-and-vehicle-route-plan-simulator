@@ -15,12 +15,35 @@ import { setDisplayConfigGlobal } from '@/lib/display-config';
 import { setStyleConfigGlobal, resolveRowHeights, resolveChartPalette } from '@/lib/style-config';
 import { AboutDialog } from './about-dialog';
 
+// Starter prompts on the empty-chat welcome screen. Either a flat list, or
+// themed groups (rendered in config order under their headings). Grouped form
+// lets a presenting SE scan by business outcome instead of by data question.
+export interface SampleQuestionGroup {
+  group: string;
+  questions: string[];
+}
+export type SampleQuestions = string[] | SampleQuestionGroup[];
+
+/** Flatten grouped or flat sample questions into config order. */
+export function flattenSampleQuestions(sq?: SampleQuestions): string[] {
+  if (!sq?.length) return [];
+  if (typeof sq[0] === 'string') return sq as string[];
+  return (sq as SampleQuestionGroup[]).flatMap((g) => g.questions ?? []);
+}
+
+/** Normalize either shape to groups; a flat list becomes one unlabeled group. */
+export function toSampleQuestionGroups(sq?: SampleQuestions): SampleQuestionGroup[] {
+  if (!sq?.length) return [];
+  if (typeof sq[0] === 'string') return [{ group: '', questions: sq as string[] }];
+  return (sq as SampleQuestionGroup[]).filter((g) => g.questions?.length);
+}
+
 export interface AppConfig {
   name: string;
   description: string;
   targetUsers: string[];
   capabilities: string[];
-  sampleQuestions: string[];
+  sampleQuestions: SampleQuestions;
   snowflake?: { database: string; schema: string; warehouse?: string };
   // Optional target for the cross-link to the admin app (resolved server-side
   // for admins only via /api/admin-link). Defaults to the FLEET_ADMIN_APP service.

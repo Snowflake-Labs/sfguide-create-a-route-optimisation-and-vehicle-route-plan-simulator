@@ -52,7 +52,9 @@
       ],
       "exampleQuestions": [
         "How many {{labels.entity_plural}} are moving right now?",
-        "What is our empty miles percentage?"
+        "What is our empty miles percentage?",
+        "Which {{labels.entity_plural}} are moving, idle, or on site at this moment?",
+        "Where do we start if we want to reduce empty miles?"
       ],
       "gotchas": "Positions are GPS pings; utilization is the share of pings in a MOVING state, not a duty-cycle measure."
     },
@@ -2837,7 +2839,8 @@
       "exampleQuestions": [
         "Which facility has the longest total dwell?",
         "Which facility type gets the most visits?",
-        "How many total visits across all facilities?"
+        "How many total visits across all facilities?",
+        "Which {{labels.site_plural}} cost us the most turnaround time?"
       ],
       "gotchas": "The four headline KPIs (facilities, total visits, avg dwell, max dwell) are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) answers facility-level and facility-type rankings. This view shows utilization only and has no geographic data; for facility locations on a map, use the SLA Alerts view."
     },
