@@ -2,18 +2,34 @@
 #
 # install-fleet-apps / create_agents.sh
 #
-# Creates the three Cortex Agents the new architecture needs, from the trimmed
+# Creates the four Cortex Agents the architecture needs, from the trimmed
 # (agnostic) specs under fleet_sa_app/app/:
-#   - FLEET_AGENT       (consumer) from agent-spec.json       -> attaches ROUTING_MCP
-#   - FLEET_OPS_AGENT   (operator) from ops-agent-spec.json   -> attaches FLEET_OPS_MCP
+#   - FLEET_AGENT       (consumer) from agent-spec.json        -> attaches ROUTING_MCP
+#   - FLEET_OPS_AGENT   (operator) from ops-agent-spec.json    -> attaches FLEET_OPS_MCP
 #   - FLEET_ADMIN_AGENT (installer) from admin-agent-spec.json -> attaches FLEET_ADMIN_MCP
+#   - FLEET_SUPER_AGENT (superuser) from super-agent-spec.json -> attaches ALL THREE
 #
-# Each agent attaches exactly one role-scoped MCP bundle (Tenet 3 role isolation);
-# the admin agent makes the previously-dormant FLEET_ADMIN_MCP reachable.
+# The first three attach exactly one role-scoped MCP bundle each. FLEET_SUPER_AGENT
+# attaches all three and exists for the single operator who wants one assistant
+# (notably in Cowork / Snowflake Intelligence, where a user cannot hand off between
+# agents mid-conversation). Tenet 3 still holds, because the isolation boundary is
+# the GRANT, not the spec: role_binding.sql grants FLEET_SUPER_AGENT to
+# FLEET_APP_ADMIN ONLY and never to FLEET_APP_USER, so an app user cannot reach the
+# ops or admin verbs through it.
+#
+# super-agent-spec.json is GENERATED from agent-spec.json by
+# scripts/build_super_agent_spec.py - do not hand-edit it. Two hand-maintained
+# copies of a 12,000-character instruction block drift within a release, and the
+# drift is invisible until the two agents answer the same question differently.
 #
 # Idempotent: CREATE OR REPLACE AGENT. The synapse MCP servers referenced by the
 # specs must exist first (run the synapse bundle install), and the SYNAPSE_USER
 # schema is ensured here.
+#
+# MUST be re-run after EVERY synapse bundle deploy: `synapse deploy` does
+# CREATE OR REPLACE MCP SERVER, and an agent binds to its MCP server at creation
+# time, so every agent goes stale when a bundle is redeployed. Invariant: each
+# agent's created_on is newer than its MCP server's.
 #
 # Usage:
 #   bash .cortex/skills/install-fleet-apps/scripts/create_agents.sh <connection>
@@ -25,8 +41,16 @@ APP_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/fleet_sa_app/app"
 USER_SPEC="$APP_DIR/agent-spec.json"
 OPS_SPEC="$APP_DIR/ops-agent-spec.json"
 ADMIN_SPEC="$APP_DIR/admin-agent-spec.json"
+SUPER_SPEC="$APP_DIR/super-agent-spec.json"
 
-for f in "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC"; do
+# Regenerate the derived super spec if the generator is present, so a stale copy
+# can never be deployed after an agent-spec.json edit.
+GEN="$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py"
+if [ -f "$GEN" ]; then
+  python3 "$GEN" >/dev/null || { echo "ERROR: failed to generate $SUPER_SPEC"; exit 1; }
+fi
+
+for f in "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC" "$SUPER_SPEC"; do
   [ -f "$f" ] || { echo "ERROR: missing agent spec $f"; exit 1; }
   python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" \
     || { echo "ERROR: $f is not valid JSON"; exit 1; }
@@ -59,8 +83,15 @@ SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"' EXIT
   echo "  FROM SPECIFICATION \$\$"
   cat "$ADMIN_SPEC"
   echo "\$\$;"
+  echo
+  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
+  echo "  COMMENT = '$TRACK'"
+  echo "  PROFILE = '{\"display_name\": \"Fleet Superuser (All Capabilities)\", \"color\": \"purple\"}'"
+  echo "  FROM SPECIFICATION \$\$"
+  cat "$SUPER_SPEC"
+  echo "\$\$;"
 } > "$SQL_FILE"
 
-echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT via $CONNECTION ..."
+echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT via $CONNECTION ..."
 snow sql -c "$CONNECTION" -f "$SQL_FILE"
-echo "[create_agents] done."
+echo "[create_agents] done. Reminder: FLEET_SUPER_AGENT is granted to FLEET_APP_ADMIN only (role_binding.sql)."

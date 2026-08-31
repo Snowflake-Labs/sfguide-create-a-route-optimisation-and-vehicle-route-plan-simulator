@@ -589,7 +589,7 @@ fi
 
 # ── 6. agents ───────────────────────────────────────────────────
 if [ "${SKIP_AGENTS:-0}" != "1" ]; then
-  note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT..."
+  note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT..."
   bash "$SCRIPTS/create_agents.sh" "$CONNECTION" \
     || { echo "ERROR: agent creation failed"; step "6 agents" FAILED; exit 1; }
   step "6 agents" OK
@@ -620,8 +620,8 @@ else
 fi
 
 # ── roles + grants (LAST: depends on SYNAPSE_USER objects from steps 7-8) ──
-# role_binding.sql grants USAGE on the 3 agents (step 7) and the
-# FLEET_SA_APP!ALL_ENDPOINTS_USAGE service role (step 8), all in
+# role_binding.sql grants USAGE on the 4 agents (step 6) and the
+# FLEET_SA_APP!ALL_ENDPOINTS_USAGE service role (step 7), all in
 # FLEET_INTELLIGENCE.SYNAPSE_USER. Running it earlier failed those grants on a
 # fresh install ("Schema ... SYNAPSE_USER does not exist"). It is fully
 # idempotent (no DROP/REVOKE), so this single authoritative pass after apps is

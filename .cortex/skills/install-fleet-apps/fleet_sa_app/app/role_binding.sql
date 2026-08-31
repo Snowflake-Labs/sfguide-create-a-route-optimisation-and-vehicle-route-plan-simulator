@@ -4,9 +4,11 @@
 -- bundle. Run as ACCOUNTADMIN (or a role with MANAGE GRANTS + ownership).
 --
 -- Role model:
---   FLEET_APP_USER  -> consumer: dashboards + FLEET_AGENT + Cortex Analyst (10 SVs) + ROUTING_MCP verbs (OPENROUTESERVICE_APP.ROUTING)
+--   FLEET_APP_USER  -> consumer: dashboards + FLEET_AGENT + Cortex Analyst (the
+--                      FLEET_INTELLIGENCE.SEMANTIC semantic views) + ROUTING_MCP
+--                      verbs (OPENROUTESERVICE_APP.ROUTING)
 --   FLEET_APP_OPS   -> operator: FLEET_OPS_AGENT + FLEET_OPS_MCP (service lifecycle / region / health)
---   FLEET_APP_ADMIN -> installer: FLEET_ADMIN_MCP (substrate checks / region)
+--   FLEET_APP_ADMIN -> installer: FLEET_ADMIN_MCP (substrate checks / region) + FLEET_SUPER_AGENT
 -- Hierarchy: ADMIN inherits OPS inherits USER.
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"role-binding"}}';
@@ -201,6 +203,31 @@ GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SYNAPSE_ADMIN TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON MCP SERVER FLEET_INTELLIGENCE.SYNAPSE_ADMIN.FLEET_ADMIN_MCP TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON ALL PROCEDURES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_ADMIN TO ROLE FLEET_APP_ADMIN;
+
+-- FLEET_SUPER_AGENT: the one agent that attaches ALL THREE MCP servers.
+--
+-- THIS GRANT IS THE TENET 3 BOUNDARY. The super agent's SPEC deliberately has no
+-- role isolation - that is the point of it - so isolation is enforced here, by
+-- granting it to FLEET_APP_ADMIN ONLY. Do NOT add FLEET_APP_USER (or PUBLIC): the
+-- role hierarchy is ADMIN inherits OPS inherits USER, so an admin already holds
+-- every MCP server the agent attaches, whereas granting it to FLEET_APP_USER
+-- would hand every app user the ability to suspend services and delete regions
+-- through the agent, with nothing else in the stack stopping them.
+--
+-- It exists because a Cowork / Snowflake Intelligence user cannot hand off between
+-- agents mid-conversation, so an operator working there needs one assistant that
+-- can both answer analytics questions and operate the platform.
+GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT TO ROLE FLEET_APP_ADMIN;
+
+-- The super agent's Cortex Analyst tools run as the caller, so the admin role
+-- needs the semantic views directly rather than only by inheritance (inheritance
+-- covers it today, but an explicit grant keeps the agent working if the hierarchy
+-- is ever flattened). FUTURE covers semantic views added later, including SV_OFFERS
+-- when the marketplace layer is installed after this file runs.
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_ADMIN;
 
 -- SPCS endpoint access: only these roles can open the app URL.
 GRANT SERVICE ROLE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP!ALL_ENDPOINTS_USAGE TO ROLE FLEET_APP_USER;
