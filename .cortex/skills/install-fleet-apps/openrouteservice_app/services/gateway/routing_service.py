@@ -909,10 +909,14 @@ def post_export(format="topojson"):
     """
     row = [id, profile, options, region]
     options is the ORS export body (a VARIANT built by the SQL layer):
-      {"bbox": [[minLon,minLat],[maxLon,maxLat]], "geometry": true}.
-    Default format is topojson so the response carries edge geometry (+ ors_ids
-    when the profile has OsmId storage enabled), which MATCH_PATH uses to resolve
-    matched edge ids to road geometry.
+      {"bbox": [[minLon,minLat],[maxLon,maxLat]], "geometry": true,
+       "additional_info": true}.
+    Default format is topojson so the response carries edge geometry plus the
+    internal graph edge id, which MATCH_PATH joins against /match edge_ids to
+    resolve them to road geometry. The id surfaces as `ors_ids` (plural, one
+    geometry per OSM way) when the profile has OsmId ext storage enabled, and
+    otherwise as `ors_id` (singular, one geometry per directed edge) - the latter
+    ONLY when the body sets additional_info, hence the SQL layer always sets it.
     region is the LAST column and can be NULL.
     """
     message = request.json

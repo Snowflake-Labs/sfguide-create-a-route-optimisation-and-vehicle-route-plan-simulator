@@ -398,11 +398,30 @@
    -- MATCH_PATH (trajectory snap-to-road) - matches a noisy GPS LineString to the
    -- road network and returns the matched road segments as a single GEOGRAPHY.
    -- Chain: /match (LineString -> ors edge_ids) then /export (bbox TopoJSON) to
-   -- resolve those edge ids to real OSM geometry (requires the profile's OsmId
-   -- ext storage, enabled by write_ors_config). Reversal of an arc does not change
-   -- its shape, so arcs are collected (ST_COLLECT) rather than strictly re-ordered.
-   -- GEOJSON is NULL when nothing matched (or OsmId storage is absent); RESPONSE
-   -- always carries the raw match result for inspection.
+   -- resolve those edge ids to real OSM geometry. Both sides expose the SAME
+   -- identifier - the GraphHopper internal EdgeIteratorState.getEdge() - so the join
+   -- is exact. Reversal of an arc does not change its shape, so arcs are collected
+   -- (ST_COLLECT) rather than strictly re-ordered. GEOJSON is NULL when nothing
+   -- matched; RESPONSE always carries the raw match result for inspection.
+   --
+   -- Three details are load-bearing; all three produced silent wrong answers before:
+   --
+   --   1. additional_info = TRUE on the /export payload. TopoJSON export has two
+   --      mutually exclusive property branches. With the OsmId ext storage enabled on
+   --      the profile it emits one geometry per OSM way carrying `ors_ids` (plural);
+   --      WITHOUT OsmId it emits one geometry per directed edge carrying `ors_id`
+   --      (singular) - and only when additional_info is set. Omitting the flag on a
+   --      non-OsmId profile suppresses the edge id entirely, so the join matched
+   --      nothing and GEOJSON was always NULL. Both property names are tested below
+   --      so either branch works; OsmId is NOT required. Needs engine >= v9.8.0
+   --      (ors_id was added by ORS PR #2244).
+   --   2. The signed arc index. TopoJSON encodes a reversed arc as -(1 + index), and
+   --      the non-OsmId branch reuses one arc for both directions of an edge, so a
+   --      large share of references are negative (~38% on a sample SF bbox). ABS()
+   --      is NOT the inverse - it yields index + 1 and silently draws a neighbouring
+   --      road. Decode with IFF(v < 0, -v - 1, v).
+   --   3. The bbox padding. Export emits an edge only when BOTH of its endpoints are
+   --      inside the bbox, so a matched edge straddling the boundary vanishes.
    -- The trailing '?' on the /match profile is load-bearing - see the note on MATCH.
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH_PATH(method VARCHAR, linestring ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, MATCHED_EDGES INT)
@@ -428,23 +447,24 @@
       ),
       bb AS (
         SELECT ARRAY_CONSTRUCT(
-                 ARRAY_CONSTRUCT(MIN(c.value[0]::FLOAT) - 0.003, MIN(c.value[1]::FLOAT) - 0.003),
-                 ARRAY_CONSTRUCT(MAX(c.value[0]::FLOAT) + 0.003, MAX(c.value[1]::FLOAT) + 0.003)
+                 ARRAY_CONSTRUCT(MIN(c.value[0]::FLOAT) - 0.01, MIN(c.value[1]::FLOAT) - 0.01),
+                 ARRAY_CONSTRUCT(MAX(c.value[0]::FLOAT) + 0.01, MAX(c.value[1]::FLOAT) + 0.01)
                ) AS bbox
         FROM LATERAL FLATTEN(input => linestring) c
       ),
       ex AS (
         SELECT OPENROUTESERVICE_APP.CORE._EXPORT_RAW(
                  method,
-                 OBJECT_CONSTRUCT('bbox', (SELECT bbox FROM bb), 'geometry', TRUE),
+                 OBJECT_CONSTRUCT('bbox', (SELECT bbox FROM bb), 'geometry', TRUE, 'additional_info', TRUE),
                  region) AS export_resp
       ),
       arcs AS (
-        SELECT DISTINCT ABS(a.value::INT) AS arc_idx
+        SELECT DISTINCT IFF(a.value::INT < 0, -a.value::INT - 1, a.value::INT) AS arc_idx
         FROM ex,
              LATERAL FLATTEN(input => ex.export_resp:objects:network:geometries) gg,
              LATERAL FLATTEN(input => gg.value:arcs) a
-        WHERE ARRAYS_OVERLAP(gg.value:properties:ors_ids::ARRAY, (SELECT edge_ids FROM ids))
+        WHERE ARRAY_CONTAINS(gg.value:properties:ors_id::INT, (SELECT edge_ids FROM ids))
+           OR ARRAYS_OVERLAP(gg.value:properties:ors_ids::ARRAY, (SELECT edge_ids FROM ids))
       ),
       lines AS (
         SELECT TO_GEOGRAPHY(OBJECT_CONSTRUCT('type', 'LineString', 'coordinates',

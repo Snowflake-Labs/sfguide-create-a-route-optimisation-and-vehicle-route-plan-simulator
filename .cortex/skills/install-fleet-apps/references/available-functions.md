@@ -20,7 +20,7 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 | `OPTIMIZATION(jobs, vehicles [, matrices, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
 | `OPTIMIZATION(challenge [, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
 | `SNAP_POINTS(method, locations, radius [, region])` | TABLE (IDX, INPUT_GEOG, SNAPPED_GEOG, SNAPPED_DISTANCE, NAME) |
-| `MATCH_PATH(method, linestring [, region])` | TABLE (RESPONSE, GEOJSON, MATCHED_EDGES) - HMM map matching; GEOJSON = matched road segments |
+| `MATCH_PATH(method, linestring [, region])` | TABLE (RESPONSE, GEOJSON, MATCHED_EDGES) - HMM map matching; GEOJSON = matched road segments. Needs engine >= v9.8.0 (see the note below) |
 
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
@@ -51,6 +51,26 @@ with error 9007 "Response format is not supported". The gateway appends a format
 Spring ignores. It stays harmless if the gateway is ever changed to skip the format for
 `match` (the query is then simply empty). Side effect: `OBSERVABILITY.ORS_REQUEST_LOG.PROFILE`
 records `<profile>?` for match calls.
+
+**Note on `MATCH_PATH` geometry resolution**: `/v2/match` never returns geometry - only
+internal graph `edge_ids`. `MATCH_PATH` resolves them by chaining a bbox `/v2/export`
+topojson call, joining `edge_id` to the export geometry properties. Three details are
+load-bearing:
+
+- The export payload MUST set `additional_info: true`. TopoJSON export has two mutually
+  exclusive property branches: with `OsmId` ext storage enabled on the profile it emits
+  one geometry per OSM way carrying `ors_ids` (plural), and without `OsmId` it emits one
+  geometry per directed edge carrying `ors_id` (singular) - but only when
+  `additional_info` is set. Omitting the flag on a non-OsmId profile suppresses the edge
+  id entirely, so the join matches nothing and `GEOJSON` comes back NULL while
+  `MATCHED_EDGES` still looks healthy. `MATCH_PATH` tests both property names, so
+  `OsmId` ext storage is NOT required and no graph rebuild is needed.
+- `ors_id` (singular) requires engine >= **v9.8.0** (ORS PR #2244). On v9.4.0 - v9.7.x
+  only the `OsmId` / `ors_ids` branch can produce geometry.
+- TopoJSON encodes a reversed arc as `-(1 + index)`, and the non-OsmId branch reuses one
+  arc for both directions of an edge, so a large share of arc references are negative.
+  `ABS()` is NOT the inverse (it yields `index + 1` and silently draws a neighbouring
+  road); decode with `IFF(v < 0, -v - 1, v)`.
 
 ## Utility Functions
 
