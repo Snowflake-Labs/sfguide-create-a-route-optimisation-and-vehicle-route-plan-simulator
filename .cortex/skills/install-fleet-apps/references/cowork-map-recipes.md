@@ -166,7 +166,22 @@ SELECT 'DRIVE_10MIN', '10 min from downtown', GEO FROM ring;
 
 What this does **not** recover from the SA app: layer toggles, per-layer styling (a dashed
 empty leg beside a solid loaded one), tooltips, click-to-drill, and the as-of slider. Those
-need upstream changes - see the parity issue filed against `snowflake-eng/cortex`.
+need upstream changes, filed against `snowflake-eng/cortex`:
+
+| Issue | Item |
+|---|---|
+| [#156981](https://github.com/snowflake-eng/cortex/issues/156981) | index of all the gaps, with our layer-count evidence |
+| [#156983](https://github.com/snowflake-eng/cortex/issues/156983) | multiple layers per MapSpec (the blocker) |
+| [#156984](https://github.com/snowflake-eng/cortex/issues/156984) | allow an MCP tool result as a map source |
+| [#156985](https://github.com/snowflake-eng/cortex/issues/156985) | column-driven styling: dashed, radius, width, h3 elevation |
+| [#156986](https://github.com/snowflake-eng/cortex/issues/156986) | oversized payload renders blank; document the cap, return `truncated` |
+| [#156988](https://github.com/snowflake-eng/cortex/issues/156988) | **live defect**: MapViewer basemap tiles are watermarked |
+
+On that last one: MapViewer fetches the unkeyed CARTO **raster** endpoint
+(`a.basemaps.cartocdn.com/light_all/...`), which returns HTTP 200 and a valid PNG with
+"API KEY REQUIRED" stamped across it. So every CoWork map currently shows a watermarked
+basemap, and no server-side check can detect it. This is the same trap that made us migrate
+both of our own apps to the keyless vector positron style.
 
 ## Choosing between a map and a link
 
