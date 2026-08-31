@@ -2281,6 +2281,14 @@ BEGIN
     -- Region's VROOM service shares the same lifecycle as ORS - drop alongside.
     LET vroom_name VARCHAR := 'VROOM_SERVICE_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || vroom_name;
+    -- The schedule-less launch task created by START_REGION_PROVISION is
+    -- per-region, so it goes with the region. Best-effort: a missing task (the
+    -- region was provisioned by the admin app instead) is not an error.
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TASK IF EXISTS OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' ||
+                          REGEXP_REPLACE(UPPER(:P_REGION), '[^A-Z0-9_]', '');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
@@ -4485,3 +4493,199 @@ $$;
 
 CALL OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS();
 CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();
+
+-- ===========================================================================
+-- START_REGION_PROVISION - launch a region build ASYNCHRONOUSLY from SQL
+-- ---------------------------------------------------------------------------
+-- WHY THIS EXISTS
+-- Until now the only way to start a region build was the admin app's
+-- POST /api/regions/provision, which inserts the job row and then fires an
+-- UN-AWAITED submitSqlAsync() from the Node process, relying on the container's
+-- event loop to keep the multi-hour CALL alive. Nothing equivalent existed in
+-- SQL, so a stored procedure (and therefore a synapse verb, and therefore the
+-- agent) could not provision a region: calling PROVISION_REGION_WRAPPER
+-- directly BLOCKS for tens of minutes to hours, which no agent tool call can
+-- survive.
+--
+-- Enqueuing alone does not work either: RESCUE_PENDING_PROVISIONS only
+-- FINALIZES stuck jobs, it never launches a PENDING one, so a job row with no
+-- statement handle sits there forever.
+--
+-- HOW
+-- A schedule-less TASK plus EXECUTE TASK. A task created without a SCHEDULE can
+-- only ever be run manually, so it never fires on its own; EXECUTE TASK submits
+-- one run and returns immediately, which is the async launch primitive this
+-- needs. Same spirit as STUDIO_START_JOB, which launches an async one-shot SPCS
+-- job service rather than doing the work inline.
+--
+-- The task is named per region and created with CREATE OR REPLACE, so its
+-- cardinality is bounded by the number of regions - there is nothing to garbage
+-- collect, and re-provisioning the same region reuses the one task.
+--
+-- ASYNC (CALL ...) inside a scripting block was considered and rejected: this
+-- codebase only ever uses it with a matching AWAIT ALL (05_matrix_pipeline.sql),
+-- and an async child without an AWAIT is not guaranteed to outlive the parent
+-- block, which is exactly the guarantee a multi-hour build needs.
+--
+-- Inputs
+--   P_REGION            -- region name; must exist in REGION_CATALOG
+--   P_DISPLAY_NAME      -- optional label; defaults to the region name
+--   P_PROFILES          -- optional comma-separated ORS profiles
+--   P_COMPUTE_SIZE      -- optional S/M/L/XL/XXL; defaults to XXL
+--   P_FORCE_REDOWNLOAD  -- re-download the PBF even if it is already staged
+--
+-- Returns JSON: {status, job_id, region, pbf_url, compute_size, profiles, note}
+-- Errors return {status:'error', error:'...'} rather than raising, so a caller
+-- gets a readable reason instead of a SQL exception.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION(
+    P_REGION           VARCHAR,
+    P_DISPLAY_NAME     VARCHAR DEFAULT NULL,
+    P_PROFILES         VARCHAR DEFAULT NULL,
+    P_COMPUTE_SIZE     VARCHAR DEFAULT NULL,
+    P_FORCE_REDOWNLOAD BOOLEAN DEFAULT FALSE
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner","action":"start-async"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    job_id        VARCHAR;
+    task_name     VARCHAR;
+    region_clean  VARCHAR;
+    display_name  VARCHAR;
+    profiles      VARCHAR;
+    compute_size  VARCHAR;
+    pbf_url       VARCHAR DEFAULT NULL;
+    min_lat       FLOAT DEFAULT NULL;
+    max_lat       FLOAT DEFAULT NULL;
+    min_lon       FLOAT DEFAULT NULL;
+    max_lon       FLOAT DEFAULT NULL;
+    found         INTEGER DEFAULT 0;
+    rs            RESULTSET;
+    call_sql      VARCHAR;
+BEGIN
+    -- Region name becomes part of a task identifier, so restrict it to
+    -- identifier-safe characters rather than quoting downstream.
+    region_clean := REGEXP_REPLACE(COALESCE(:P_REGION, ''), '[^A-Za-z0-9_]', '');
+    IF (region_clean = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region is required and must contain letters or digits')::STRING;
+    END IF;
+
+    -- Resolve the PBF URL and bounding box from the catalog so a caller never
+    -- has to supply them. A region with no PBF_URL (e.g. a natural-earth
+    -- supplemental row) cannot be built, and saying so is better than starting a
+    -- job that fails during download.
+    rs := (
+        SELECT PBF_URL AS U, MIN_LAT AS A, MAX_LAT AS B, MIN_LON AS C, MAX_LON AS D
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE (UPPER(REPLACE(LOOKUP_NAME, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_KEY, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_NAME, ' ', '')) = UPPER(:region_clean))
+          AND PBF_URL IS NOT NULL
+        ORDER BY PBF_SIZE_MB NULLS LAST
+        LIMIT 1
+    );
+    LET c1 CURSOR FOR rs;
+    FOR r IN c1 DO
+        pbf_url := r.U; min_lat := r.A; max_lat := r.B; min_lon := r.C; max_lon := r.D;
+        found := 1;
+    END FOR;
+
+    IF (found = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has no downloadable PBF in REGION_CATALOG. ' ||
+                     'Check the spelling, or refresh the catalog with REFRESH_REGION_CATALOG().')::STRING;
+    END IF;
+
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has an incomplete bounding box in REGION_CATALOG')::STRING;
+    END IF;
+
+    -- Refuse to start a second build for a region that already has one in
+    -- flight: two concurrent builds fight over the same service, pool and stage
+    -- path, and the loser corrupts the winner's graph.
+    SELECT COUNT(*) INTO :found
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE UPPER(REGION) = UPPER(:region_clean) AND STATUS IN ('PENDING', 'RUNNING');
+    IF (found > 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'a build for ' || :region_clean || ' is already PENDING or RUNNING. ' ||
+                     'Poll it with GET_PROVISION_STATUS() instead of starting another.')::STRING;
+    END IF;
+
+    display_name := COALESCE(NULLIF(TRIM(:P_DISPLAY_NAME), ''), :region_clean);
+    profiles     := COALESCE(NULLIF(TRIM(:P_PROFILES), ''), 'driving-car,driving-hgv,cycling-electric');
+    compute_size := UPPER(COALESCE(NULLIF(TRIM(:P_COMPUTE_SIZE), ''), 'XXL'));
+    IF (compute_size NOT IN ('S', 'M', 'L', 'XL', 'XXL')) THEN
+        compute_size := 'XXL';
+    END IF;
+
+    job_id    := 'PROVISION_' || UPPER(:region_clean) || '_' ||
+                 TO_VARCHAR(DATE_PART(EPOCH_MILLISECOND, SYSDATE()));
+    task_name := 'OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' || UPPER(:region_clean);
+
+    INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE, COMPUTE_SIZE, MESSAGE)
+    VALUES
+        (:job_id, :region_clean, :display_name, :pbf_url, :profiles, 'PENDING', 'NOT_STARTED',
+         :compute_size, 'Queued by START_REGION_PROVISION; launching build task.');
+
+    -- Arm the self-gating rescue task so this build gets finalized even if the
+    -- wrapper's own wait loop times out. It suspends itself again once idle.
+    BEGIN
+        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- Schedule-less task: never fires on its own, only via EXECUTE TASK below.
+    -- Numeric args are interpolated (they are FLOATs resolved from the catalog,
+    -- not caller input); the string args are single-quoted and were either
+    -- regex-sanitized or clamped to a fixed allowlist above.
+    call_sql :=
+        'CREATE OR REPLACE TASK ' || :task_name ||
+        ' USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = ''XSMALL''' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner","action":"launch-task"}}''' ||
+        ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
+        '''' || :job_id || ''', ' ||
+        '''' || :region_clean || ''', ' ||
+        '''' || REPLACE(:display_name, '''', '''''') || ''', ' ||
+        '''' || REPLACE(:pbf_url, '''', '''''') || ''', ' ||
+        :min_lat || ', ' || :max_lat || ', ' || :min_lon || ', ' || :max_lon || ', ' ||
+        '''' || :profiles || ''', ' ||
+        '''' || :compute_size || ''', ' ||
+        IFF(:P_FORCE_REDOWNLOAD, 'TRUE', 'FALSE') || ')';
+    EXECUTE IMMEDIATE :call_sql;
+
+    -- EXECUTE TASK submits one run and returns; it does NOT wait for the build.
+    EXECUTE IMMEDIATE 'EXECUTE TASK ' || :task_name;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'launched',
+        'job_id', :job_id,
+        'region', :region_clean,
+        'pbf_url', :pbf_url,
+        'profiles', :profiles,
+        'compute_size', :compute_size,
+        'note', 'Build started asynchronously. A region build takes tens of minutes to several ' ||
+                'hours depending on size; the region is NOT usable until it completes. Poll with ' ||
+                'GET_PROVISION_STATUS().'
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        -- Do not leave a PENDING row behind for a launch that never happened:
+        -- it would block the next attempt on the in-flight guard above.
+        BEGIN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET STATUS = 'ERROR', STAGE = 'ERROR', COMPLETED_AT = SYSDATE(),
+                ERROR_MSG = 'launch failed: ' || :SQLERRM
+            WHERE JOB_ID = :job_id;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', :SQLERRM)::STRING;
+END;
+$$;
