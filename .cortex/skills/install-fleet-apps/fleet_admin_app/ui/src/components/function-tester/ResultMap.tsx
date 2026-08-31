@@ -463,7 +463,20 @@ export function ResultMap({
       {trajectoryLayer && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(148,163,184)', display: 'inline-block' }} /> Raw GPS track (input)</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(255,107,53)', display: 'inline-block' }} /> Matched road geometry</span>
+          {/* Only advertise the orange key when matched geometry is actually on
+              the map. The scalar MATCH returns edge ids and no geometry at all,
+              and MATCH_PATH returns a NULL GEOJSON when the graph lacks the
+              OsmId ext storage - in both cases the legend used to promise a red
+              line that could never appear, which reads as a broken map. */}
+          {geojsonLayer
+            ? <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(255,107,53)', display: 'inline-block' }} /> Matched road geometry</span>
+            : fnName === 'MATCH'
+              ? <span style={{ color: '#94a3b8' }}>MATCH returns edge ids only - use MATCH_PATH for road geometry</span>
+              : <span style={{ color: '#f59e0b' }}>
+                  No matched geometry returned. MATCH_PATH resolves edge ids to roads via the /export
+                  TopoJSON, which only carries ors_ids when the profile graph was built with the OsmId
+                  ext storage. Check ORS_STATUS(region):profiles.&lt;profile&gt;.storages.
+                </span>}
         </div>
       )}
       {optimization && (
