@@ -35,6 +35,18 @@ SET SOURCE_PAGE  = COALESCE(SOURCE_PAGE,  'BACKLOAD_MATCHING'),
     DECISION_TYPE = COALESCE(DECISION_TYPE, 'SINGLE')
 WHERE SOURCE_PAGE IS NULL OR DECISION_TYPE IS NULL;
 
+-- MANDATORY after the ALTERs above. FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+-- is a `SELECT *` wrapper owned by the backload_matching pack, and a Snowflake view
+-- freezes its column list at creation time. Adding a column to the base table therefore
+-- leaves the wrapper declaring fewer columns than its query produces, and every read
+-- fails with "declared N column(s), but view query produces M column(s)" - which also
+-- makes SV_BACKLOAD_MATCHING impossible to create, silently removing the query_backload
+-- Cortex Analyst tool from every agent. Any writer that ALTERs this table must recreate
+-- the wrapper in the same breath.
+CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS;
+
 -- =====================================================================
 -- Phase E1: ORS road km / min cache + ETA-to-pickup
 -- =====================================================================

@@ -734,6 +734,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
               ADD COLUMN IF NOT EXISTS BUNDLE_ID VARCHAR`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
+    // MANDATORY after the four ALTERs above. FLEET_APP.BACKLOAD_MATCHING.
+    // VW_PROPOSAL_DECISIONS is a `SELECT *` wrapper created by the backload_matching
+    // pack in install step 4; a Snowflake view FREEZES its column list at creation, so
+    // adding a column to the base table leaves the wrapper declaring 10 columns while
+    // its query produces 14. Every read then fails with
+    //   "declared 10 column(s), but view query produces 14 column(s)"
+    // and SV_BACKLOAD_MATCHING cannot even be created, which silently removes the
+    // query_backload Cortex Analyst tool from every agent.
+    //
+    // This is a FRESH-INSTALL bug, not just a drift on old deployments: packs run in
+    // step 4 and the apps boot in step 7, so the wrapper is always created before these
+    // ALTERs run. Recreating it here - in the same place that mutates the base table -
+    // is what keeps the two in step.
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+              COMMENT = ${TRACK} AS
+            SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
     // ---------------------------------------------------------------
     // Backload Proposals COCKPIT layer (neutral, synthetic-backed).
     // Co-owned SoT with .cortex/skills/backload-matching/references/proposals-schema.sql
