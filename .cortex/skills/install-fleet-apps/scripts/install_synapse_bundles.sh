@@ -122,7 +122,17 @@ JSON
     || { echo "ERROR: npm install failed for $SRC"; tail -30 /tmp/synapse_${SRC}_npm.log; exit 1; }
   ( cd "$SRC_DIR" && npx synapse materialize --install "$TARGET" >/tmp/synapse_${SRC}_mat.log 2>&1 ) \
     || { echo "ERROR: synapse materialize failed for $SRC"; tail -30 /tmp/synapse_${SRC}_mat.log; exit 1; }
-  ( cd "$SRC_DIR" && npx synapse deploy --install "$TARGET" >/tmp/synapse_${SRC}_dep.log 2>&1 ) \
+  # --no-publish is REQUIRED. As of the vendored SHA, `synapse deploy` runs the
+  # Cortex Extension publish step by DEFAULT: it PUTs the materialized plugin into
+  # the workspace `SYNAPSE.COCO.PLUGINS` and creates `SYNAPSE.COCO.EXT_<APP>`.
+  # Those names are upstream's own account topology, hardcoded in cli/publish.ts,
+  # and the step needs CREATE CORTEX EXTENSION on that schema - so on any account
+  # but theirs it fails and takes the whole bundle deploy down with it. We
+  # distribute through SPCS + the Cortex Agent MCP server, not a CoCo plugin
+  # catalog, so the publish step has nothing to do here.
+  # (The sibling web-app step is harmless: it is skipped unless the bundle has a
+  # web/snowflake.yml, and none of the three do.)
+  ( cd "$SRC_DIR" && npx synapse deploy --install "$TARGET" --no-publish >/tmp/synapse_${SRC}_dep.log 2>&1 ) \
     || { echo "ERROR: synapse deploy failed for $SRC"; tail -30 /tmp/synapse_${SRC}_dep.log; exit 1; }
   echo "[synapse] $SRC deployed."
 done
@@ -131,15 +141,17 @@ echo "[synapse] verifying MCP servers..."
 snow sql -c "$CONNECTION" -q "SHOW MCP SERVERS;" --format=CSV 2>/dev/null \
   | grep -iE 'ROUTING_MCP|FLEET_OPS_MCP|FLEET_ADMIN_MCP' || echo "  (none listed yet)"
 
-# Post-deploy smoke verification. The vendored `synapse test:e2e` CLI hardcodes
-# `pnpm exec vitest run --dir tests/e2e`, which needs pnpm + vitest + a tests/e2e
-# suite that this repo does not ship, and its mock harness verifies envelope logic
-# in isolation rather than a real deploy. Instead we run a lightweight,
-# engine-independent smoke: CALL one read-only verb per audited bundle through the
-# real deployed sproc + envelope, then confirm a VERB_ATTEMPT audit row landed.
-# This exercises (and proves) the audited envelope end-to-end on every install
-# (Tenet 7 + Tenet 8 verification). Non-fatal: a WARN never blocks the install,
-# since engine/region state varies; set SYNAPSE_SKIP_SMOKE=1 to skip entirely.
+# Post-deploy smoke verification. Re-confirmed against the vendored SHA: the
+# `synapse test:e2e` CLI still spawns `pnpm exec vitest run --dir tests/e2e`, which
+# needs pnpm + vitest + a tests/e2e suite none of the three bundles ship, and its
+# harness verifies envelope logic against mocks rather than a real deploy. So it
+# stays unwired deliberately - do not re-litigate without adding those suites.
+# Instead we run a lightweight, engine-independent smoke: CALL one read-only verb
+# per audited bundle through the real deployed sproc + envelope, then confirm a
+# VERB_ATTEMPT audit row landed. This exercises (and proves) the audited envelope
+# end-to-end on every install (Tenet 7 + Tenet 8 verification). Non-fatal: a WARN
+# never blocks the install, since engine/region state varies; set
+# SYNAPSE_SKIP_SMOKE=1 to skip entirely.
 if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
   echo "[synapse] post-deploy smoke (audited-envelope verify)..."
   # bundle label | smoke CALL (read-only, no routing-engine dependency) | audit table
@@ -147,12 +159,26 @@ if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
     "ops|CALL FLEET_INTELLIGENCE.SYNAPSE_OPS.HEALTHCHECK(NULL)|FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT"
     "admin|CALL FLEET_INTELLIGENCE.SYNAPSE_ADMIN.CHECK_SUBSTRATE(NULL)|FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT"
   )
+  audit_count() {
+    snow sql -c "$CONNECTION" --format=CSV \
+      -q "SELECT COUNT(*) FROM $1;" 2>/dev/null | grep -iE '^[0-9]+$' | head -1
+  }
   for srow in "${SMOKE[@]}"; do
     IFS='|' read -r SLABEL SCALL STABLE <<< "$srow"
+    # Compare row counts BEFORE and AFTER. A total-count check passes on any
+    # non-empty table, so a redeploy whose envelope silently stopped writing (for
+    # example an audit INSERT resolving against the wrong schema) would still look
+    # OK on the strength of rows from previous runs. The delta is the actual claim.
+    BEFORE=$(audit_count "$STABLE")
     if snow sql -c "$CONNECTION" -q "$SCALL" >/tmp/synapse_smoke_${SLABEL}.log 2>&1; then
-      n=$(snow sql -c "$CONNECTION" --format=CSV \
-        -q "SELECT COUNT(*) FROM $STABLE;" 2>/dev/null | grep -iE '^[0-9]+$' | head -1)
-      echo "  [smoke] $SLABEL: OK (verb returned; ${n:-?} audit rows in VERB_ATTEMPT)"
+      AFTER=$(audit_count "$STABLE")
+      if [ -n "$BEFORE" ] && [ -n "$AFTER" ] && [ "$AFTER" -gt "$BEFORE" ]; then
+        echo "  [smoke] $SLABEL: OK (verb returned; audit row written, VERB_ATTEMPT $BEFORE -> $AFTER)"
+      elif [ -n "$AFTER" ] && [ "$AFTER" = "$BEFORE" ]; then
+        echo "  [smoke] $SLABEL: WARN (verb returned but NO new audit row: envelope did not write to $STABLE)"
+      else
+        echo "  [smoke] $SLABEL: WARN (verb returned; could not read $STABLE to confirm the audit row)"
+      fi
     else
       echo "  [smoke] $SLABEL: WARN (verb call did not succeed; see /tmp/synapse_smoke_${SLABEL}.log)"
     fi
