@@ -892,10 +892,18 @@ SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
 -- Anchored on MAX(TRIP_START) rather than on $TS_OFFSET so plan and actual stay
 -- aligned with each other (plan_vs_actual_performance compares them), and so
 -- re-running this loader is a no-op instead of shifting a second time.
+--
+-- COALESCE to 0 is load-bearing, not defensive noise. If either table is
+-- unexpectedly empty its MAX is NULL, the offset is NULL, and
+-- DATEADD('SECOND', NULL, PLANNED_START) returns NULL - which would blank all
+-- 13,721 planned timestamps and destroy the plan outright, strictly worse than
+-- the misalignment this block exists to fix. It would also be SILENT: the
+-- installer downgrades a loader error to a WARN and continues, so the only
+-- symptom would be an empty Dispatch board again. With 0 the UPDATE is a no-op.
 SET SCHED_TS_OFFSET = (
-  SELECT TIMESTAMPDIFF('SECOND',
+  SELECT COALESCE(TIMESTAMPDIFF('SECOND',
     (SELECT MAX(PLANNED_START) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE),
-    (SELECT MAX(TRIP_START)    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS))
+    (SELECT MAX(TRIP_START)    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)), 0)
 );
 
 UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE

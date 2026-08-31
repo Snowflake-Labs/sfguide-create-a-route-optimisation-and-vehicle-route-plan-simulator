@@ -1749,6 +1749,7 @@
           "max": 23,
           "step": 1,
           "default": 12,
+          "defaultSource": "SELECT HOUR(t.TS) AS SELECTED_HOUR FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT t WHERE t.REGION = :region GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1",
           "format": "hour",
           "play": true
         },

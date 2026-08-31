@@ -205,11 +205,24 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     note "  staged $STAGED_FILES seed files"
     sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
       "$REPO_ROOT/datasets/load-seed-data.sql" > /tmp/ifa_loader.sql
-    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 \
-      || note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
+    # Continue on error (the comment below is right that some engine-only sections
+    # legitimately do not apply here), but do NOT then claim the step was OK.
+    # Reporting OK on a failed seed load is the worst combination available: every
+    # downstream page is empty and nothing in the run says why, which costs an hour
+    # to trace back from "the dashboards are blank". Same class as the
+    # analytic-layer gate at step 3.5 and the delivery-sync validator.
+    SEED_LOAD_RC=0
+    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 || SEED_LOAD_RC=$?
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
+    if [ "$SEED_LOAD_RC" != "0" ]; then
+      note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
+      note "        last errors from /tmp/ifa_load.log:"
+      grep -iE 'error|does not exist|not authorized' /tmp/ifa_load.log 2>/dev/null \
+        | tail -5 | sed 's/^/          /' || true
+      SEED_STEP_STATUS=WARN
+    fi
   fi
-  step "2 data" OK
+  step "2 data" "${SEED_STEP_STATUS:-OK}"
 else
   step "2 data" SKIPPED
 fi
