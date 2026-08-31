@@ -142,6 +142,30 @@ JSON
 
   ( cd "$SRC_DIR" && { [ -d node_modules ] || npm install >/tmp/synapse_${SRC}_npm.log 2>&1; } ) \
     || { echo "ERROR: npm install failed for $SRC"; tail -30 /tmp/synapse_${SRC}_npm.log; exit 1; }
+  # Guard: no literal dollar-quote delimiter in a verb's own source.
+  #
+  # Snowflake has no custom dollar-quote tag (unlike Postgres), so the codegen
+  # must wrap every procedure body in a bare `$$ ... $$`. A literal double-dollar
+  # token anywhere in a verb's bundled JS therefore CLOSES the body early: the
+  # generated CREATE PROCEDURE fails to compile, `synapse deploy` fails, and the
+  # installer aborts at this step - leaving no roles, no agents and neither app,
+  # which is a very confusing failure to trace back to one token in one verb.
+  #
+  # Checked against the bundle SOURCE rather than the materialized install.sql,
+  # because that file legitimately contains the token in its own preamble
+  # (`EXECUTE IMMEDIATE $$...$$`) and in `CREATE MCP SERVER ... FROM SPECIFICATION
+  # $$`, so counting occurrences there yields false positives.
+  if grep -rn '\$\$' "$SRC_DIR/src" >/tmp/synapse_${SRC}_dollar.log 2>/dev/null; then
+    echo "ERROR: $SRC verb source contains a literal dollar-quote delimiter:"
+    sed 's/^/       /' /tmp/synapse_${SRC}_dollar.log
+    echo "       That token terminates the dollar-quoted procedure body early, so the generated"
+    echo "       CREATE PROCEDURE will not compile and the whole install aborts at this step."
+    echo "       Rewrite it to compare two single '\$' characters instead of a two-character literal"
+    echo "       (see procs/run_sql.ts isDollarQuote/findDollarQuote). Building the token at runtime"
+    echo "       does NOT work - esbuild constant-folds '\$' + '\$' back into the literal."
+    exit 1
+  fi
+
   ( cd "$SRC_DIR" && npx synapse materialize --install "$TARGET" >/tmp/synapse_${SRC}_mat.log 2>&1 ) \
     || { echo "ERROR: synapse materialize failed for $SRC"; tail -30 /tmp/synapse_${SRC}_mat.log; exit 1; }
   # --no-publish is REQUIRED. As of the vendored SHA, `synapse deploy` runs the

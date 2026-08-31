@@ -44,6 +44,33 @@ const DEFAULT_ROWS = 100;
 const MAX_ROWS = 1000;
 
 /**
+ * True when a dollar-quote delimiter starts at `k`.
+ *
+ * Deliberately tests two single '$' characters instead of comparing against a
+ * two-character literal. Snowflake has no custom dollar-quote tag (unlike
+ * Postgres) so the synapse codegen must wrap every procedure body in a bare
+ * dollar-quote delimiter, which means writing that delimiter literally ANYWHERE
+ * in a bundled verb closes the body early. That produced a SQL compilation
+ * error on the generated CREATE PROCEDURE, failed `synapse deploy`, and aborted
+ * the whole install at the bundle step - so no roles, agents or apps were
+ * created. Keeping the token out of the source keeps it out of the bundle, and
+ * is bundler-proof: an expression like '$' + '$' would be constant-folded back
+ * into the literal this has to avoid. install_synapse_bundles.sh greps the verb
+ * sources for it, so even a mention in a comment fails the build by design.
+ */
+function isDollarQuote(s: string, k: number): boolean {
+  return s.charAt(k) === '$' && s.charAt(k + 1) === '$';
+}
+
+/** Index of the next dollar-quote delimiter at or after `from`, else -1. */
+function findDollarQuote(s: string, from: number): number {
+  for (let k = from; k < s.length - 1; k += 1) {
+    if (isDollarQuote(s, k)) return k;
+  }
+  return -1;
+}
+
+/**
  * Strip SQL comments and string literals so the structural checks cannot be
  * fooled by their contents.
  *
@@ -85,9 +112,9 @@ function stripNoise(sql: string): string {
       }
       continue;
     }
-    if (two === '$$') {
+    if (isDollarQuote(sql, i)) {
       out += ' ';
-      const close = sql.indexOf('$$', i + 2);
+      const close = findDollarQuote(sql, i + 2);
       i = close === -1 ? n : close + 2;
       continue;
     }
