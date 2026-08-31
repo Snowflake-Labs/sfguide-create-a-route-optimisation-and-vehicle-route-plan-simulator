@@ -83,3 +83,25 @@ if [ -f "$SUSPEND_SIG_CHECK" ] && staged_any \
     exit 1
   }
 fi
+
+# ── 5. No install SQL may reference an object a LATER step creates ────────────
+# `IF EXISTS` covers an object but NOT its database, and `snow sql -f` stops at the
+# first error - so one forward reference at the top of a file silently skips every
+# statement below it. That is how a bare
+# `DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE` in the step-2.5
+# catalog left DIM_VEHICLE_DWELL_SLA unseeded, blanked Delivery Sync and broke the
+# packs, on fresh accounts only, while the installer reported OK.
+INSTALL_ORDER_CHECK="$SKILL_DIR/scripts/check_install_order.py"
+if [ -f "$INSTALL_ORDER_CHECK" ] && staged_any \
+  "$SKILL_DIR/scripts" \
+  "$SKILL_DIR/fleet_sa_app/app/packs" \
+  "$SKILL_DIR/fleet_sa_app/app/scoped_contract.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/role_binding.sql" \
+  "$SKILL_DIR/openrouteservice_app/app/modules"; then
+  echo "pre-commit: install-order (forward reference) check..."
+  python3 "$INSTALL_ORDER_CHECK" || {
+    echo "pre-commit FAILED: an install SQL file references an object a later step creates."
+    exit 1
+  }
+fi

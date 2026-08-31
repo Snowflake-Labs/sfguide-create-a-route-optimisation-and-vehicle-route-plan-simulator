@@ -220,11 +220,27 @@ fi
 # SKIP_PROJECTIONS=1 only when you know both are already current.
 if [ "${SKIP_PROJECTIONS:-0}" != "1" ]; then
   note "[2.5/8] vehicle-profile catalog + projection views (DIM_FLEET stamp; packs depend on these)..."
+  # Reported HONESTLY. This step used to print OK unconditionally even though both
+  # commands swallow failure with `|| note`, which hid a real regression: a bare
+  # `DROP VIEW IF EXISTS FLEET_APP...` at the top of the catalog script aborted the
+  # whole file on a fresh account (IF EXISTS does not cover a missing database), so
+  # DIM_VEHICLE_DWELL_SLA was never seeded, DELIVERY_SYNC had no monitored sites and
+  # rendered blank, and the packs failed on F_DIM_FLEET_SCOPED - while the summary
+  # table said OK. A step that cannot fail is not a check.
+  VPC_RC=0; PROJ_RC=0
   snow sql -c "$CONNECTION" -f "$SCRIPTS/vehicle_profile_catalog.sql" >/tmp/ifa_vpcatalog.log 2>&1 \
-    || note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"
+    || { VPC_RC=1; note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"; }
   snow sql -c "$CONNECTION" -f "$SCRIPTS/projection_views.sql" >/tmp/ifa_projviews.log 2>&1 \
-    || note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"
-  step "2.5 projections" OK
+    || { PROJ_RC=1; note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"; }
+  if [ "$VPC_RC" = "0" ] && [ "$PROJ_RC" = "0" ]; then
+    step "2.5 projections" OK
+  else
+    # The catalog is load-bearing for DELIVERY_SYNC and the packs, so surface it
+    # loudly rather than as a passing step with a warning line above it.
+    note "  NOTE: the catalog seeds DIM_VEHICLE_PROFILE / DIM_VEHICLE_DWELL_SLA and stamps DIM_FLEET."
+    note "        Downstream effects of a failure here: blank Delivery Sync, pack failures on F_DIM_FLEET_SCOPED."
+    step "2.5 projections" WARN
+  fi
 else
   step "2.5 projections" SKIPPED
 fi
@@ -459,8 +475,8 @@ fi
 if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   note "[4.5/8] creating Cortex Analyst semantic views (FLEET_INTELLIGENCE.SEMANTIC)..."
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_SQL" >/tmp/ifa_semantic.log 2>&1 \
-    || note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"
-  step "4.5 semantic" OK
+    && step "4.5 semantic" OK \
+    || { note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"; step "4.5 semantic" WARN; }
 else
   step "4.5 semantic" SKIPPED
 fi
@@ -554,8 +570,8 @@ fi
 if [ "${SKIP_ROLES:-0}" != "1" ]; then
   note "[8/8] applying roles + grants (all objects present)..."
   snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
-    || note "  WARN: some grants failed; see /tmp/ifa_roles.log"
-  step "8 roles" OK
+    && step "8 roles" OK \
+    || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
 else
   step "8 roles" SKIPPED
 fi
@@ -600,6 +616,10 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 SA_URL_DISP="${SA_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP;\"}"
 ADMIN_URL_DISP="${ADMIN_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP;\"}"
 FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
+# WARN steps are counted separately and surfaced in the headline. A degraded step
+# used to be invisible there: the summary only counted FAILED, so "all steps OK"
+# printed while a load-bearing script had actually failed and only WARNed.
+WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
@@ -638,6 +658,10 @@ echo
 echo "================================================================"
 if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps FINISHED WITH ${FAILED_STEPS} FAILED STEP(S) (${ELAPSED}s)"
+  [ "${WARN_STEPS:-0}" -gt 0 ] && echo " plus ${WARN_STEPS} DEGRADED step(s) - see the status table"
+elif [ "${WARN_STEPS:-0}" -gt 0 ]; then
+  echo " install-fleet-apps finished with ${WARN_STEPS} DEGRADED step(s) (${ELAPSED}s)"
+  echo " nothing aborted, but at least one step did not do all of its work - see the status table"
 else
   echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
 fi
@@ -647,7 +671,7 @@ echo "   SA app (consumer/analytics): $SA_URL_DISP"
 echo "   Admin app (build console):   $ADMIN_URL_DISP"
 echo "----------------------------------------------------------------"
 echo " Summary"
-echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS ))/${#STEP_STATUS[@]} OK"
+echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS - WARN_STEPS ))/${#STEP_STATUS[@]} OK, ${WARN_STEPS} degraded, ${FAILED_STEPS} failed"
 echo "   routing substrate: $ROUTING_SUBSTRATE"
 echo "   SAP mock:          $SAP_MOCK"
 echo "   friction log:      $FRICTION_LOG"

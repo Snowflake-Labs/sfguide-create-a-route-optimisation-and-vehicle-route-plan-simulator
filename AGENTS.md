@@ -64,6 +64,12 @@ bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 # agentKnowledge block (Channel C)
 python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
 
+# Validate that no install SQL file references an object a LATER install step creates.
+# `IF EXISTS` covers an object but not its database, and `snow sql -f` stops at the
+# first error, so one forward reference silently skips every statement below it - on
+# fresh accounts only, which is why this needs a static gate rather than a test run.
+python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
+
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
 # report OK / EMPTY / ERROR per area. This is the only check that answers "will the
 # pages have data?" - every other gate verifies objects were CREATED, not that they

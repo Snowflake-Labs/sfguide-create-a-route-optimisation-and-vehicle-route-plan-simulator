@@ -194,9 +194,24 @@ const PROFILE_ALTER = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE A
 // The dependent `SELECT *` view must be dropped first: Snowflake fixes a view's
 // column count at creation, so ADD COLUMN invalidates
 // FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE ("declared 13 column(s), but view
-// query produces 14"). The pack step recreates it; boot order makes this safe
-// because the packs run after this catalog on every install.
-const PROFILE_DROP_DEPENDENT_VIEW = `DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE`;
+// query produces 14"). The pack step recreates it.
+//
+// GUARDED, because `IF EXISTS` covers the VIEW and not the NAMESPACE: where
+// FLEET_APP does not exist the bare statement raises "Database 'FLEET_APP' does
+// not exist", and ensureVehicleProfileCatalog runs its statements in a plain
+// sequential loop, so one throw would skip both MERGEs and leave the catalog
+// unseeded. Boot order happens to make that unreachable today (the packs create
+// FLEET_APP first), but the seeding must not depend on that staying true - the
+// SQL twin of this file was broken by exactly this assumption.
+const PROFILE_DROP_DEPENDENT_VIEW = `EXECUTE IMMEDIATE $$
+BEGIN
+  DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE;
+  RETURN 'dropped dependent VW_VEHICLE_PROFILE; the pack step recreates it';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE not present; continuing';
+END;
+$$`;
 const PROFILE_ALTER_MIN_STOP = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER`;
 
 const DWELL_SLA_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
