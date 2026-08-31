@@ -1,0 +1,110 @@
+--- a/tests/unit/ddl.test.ts
++++ b/tests/unit/ddl.test.ts
+@@ -50,16 +50,32 @@
+     it('emits the canonical CREATE OR REPLACE PROCEDURE shape', () => {
+       const ddl = procDDL(sample, { body: 'return {ok: true};' });
+       expect(ddl).toContain('CREATE OR REPLACE PROCEDURE sample(');
+-      expect(ddl).toContain('RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS OWNER');
++      expect(ddl).toContain('EXECUTE AS OWNER');
+       expect(ddl).toContain('$$\nreturn {ok: true};\n$$;');
+     });
+ 
+-    it('appends IDEMPOTENCY_KEY STRING as the last arg', () => {
++    // LOCAL PATCH guard (see ../../VENDOR.md). Two invariants in one test:
++    // the tracking COMMENT is emitted at all, and it sits BEFORE `EXECUTE AS`.
++    // Snowflake rejects the reverse order with "unexpected COMMENT", which
++    // aborts the whole `synapse deploy` - no MCP server, so the agent silently
++    // has no tools. Cheap to regress on a re-vendor, expensive to diagnose.
++    it('emits the tracking COMMENT before EXECUTE AS', () => {
+       const ddl = procDDL(sample, { body: '' });
+-      // Last arg before the closing paren must be IDEMPOTENCY_KEY.
+-      expect(ddl).toMatch(/IDEMPOTENCY_KEY STRING\)/);
++      expect(ddl).toContain('"origin":"sf_sit-is-fleet"');
++      const comment = ddl.indexOf("COMMENT='");
++      const executeAs = ddl.indexOf('EXECUTE AS');
++      expect(comment).toBeGreaterThan(-1);
++      expect(comment).toBeLessThan(executeAs);
+     });
+ 
++    it('appends IDEMPOTENCY_KEY STRING DEFAULT NULL as the last arg', () => {
++      const ddl = procDDL(sample, { body: '' });
++      // Last arg before the closing paren must be IDEMPOTENCY_KEY, and it must
++      // carry a DEFAULT so an MCP dispatcher calling with named args can omit
++      // it (dc8827c3 added the DEFAULT but left this assertion on the old form).
++      expect(ddl).toMatch(/IDEMPOTENCY_KEY STRING DEFAULT NULL\)/);
++    });
++
+     it('quotes reserved-word args', () => {
+       const ddl = procDDL(sample, { body: '' });
+       expect(ddl).toContain('"GROUP" STRING');
+--- a/tests/unit/bundle.test.ts
++++ b/tests/unit/bundle.test.ts
+@@ -6,6 +6,12 @@
+ import { defineProc, t } from '../../src/index.js';
+ import { bundleProc } from '../../src/build/bundle.js';
+ 
++// Catalog target for the esbuild `define` substitution of __SYNAPSE_DATABASE__ /
++// __SYNAPSE_SCHEMA__. bundleProc gained this required third arg upstream in
++// dc8827c3 (FQ catalog) but the fixtures below were not updated, so every case
++// threw "Cannot read properties of undefined (reading 'database')".
++const CATALOG = { database: 'TEST_DB', schema: 'TEST_SCHEMA' };
++
+ describe('build/bundle', () => {
+   let tmpDir: string;
+   let entryPath: string;
+@@ -45,6 +51,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).not.toMatch(/^\s*import\s+/m);
+     expect(body).not.toMatch(/(?<![A-Za-z_$.])require\s*\(/);
+@@ -57,6 +64,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body.indexOf('function _n(v)')).toBeGreaterThanOrEqual(0);
+     // _n should be at the top, before the IIFE.
+@@ -69,6 +77,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     // The swap preserves the declarator shape (arrow expression) but replaces
+     // the body. Look for the sync-driver loop.
+@@ -91,6 +100,7 @@
+     const body = await bundleProc(
+       { proc, procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).toContain('"x": X');
+     expect(body).toContain('"y": Y');
+@@ -101,6 +111,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'my_audit_table', appIdField: 'rollout_id' },
++      CATALOG,
+     );
+     expect(body).not.toContain('__SYNAPSE_AUDIT_TABLE__');
+     expect(body).not.toContain('__SYNAPSE_APP_ID_FIELD__');
+@@ -157,6 +168,7 @@
+     const body = await bundleProc(
+       { proc, procModulePath: echoPath, exportName: 'echo' },
+       { table: 'verb_attempt', appIdField: 'rollout_id' },
++      CATALOG,
+     );
+ 
+     // Build the fake snowflake global. snowflake.execute returns a
+@@ -225,6 +237,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).not.toMatch(/\s&&\s/);
+     expect(body).not.toMatch(/\s\|\|\s/);

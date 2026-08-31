@@ -15,6 +15,8 @@
  *   result_hash     STRING                - SHA2(JSON.stringify(result)); null on error
  *   <appIdColumn>   STRING                - optional app-specific row key (e.g. rollout_id)
  */
+import { TRACKING_COMMENT } from './tracking.js';
+
 export interface AuditTableDDLOpts {
   /** Default 'verb_attempt'. */
   table?: string;
@@ -29,6 +31,10 @@ export function auditTableDDL(opts: AuditTableDDLOpts = {}): string {
   const hybrid = opts.hybrid !== false;
   const kind = hybrid ? 'HYBRID TABLE' : 'TABLE';
   const extra = opts.appIdColumn ? `,\n    ${opts.appIdColumn}    STRING` : '';
+  // LOCAL PATCH (see VENDOR.md): tracking tag required by AGENTS.md on every
+  // created object. The materialized install.sql is generated and gitignored, so
+  // the tag has to come from the generator rather than be added to the output.
+  const track = TRACKING_COMMENT;
   return `CREATE OR REPLACE ${kind} ${table} (
     id              STRING       NOT NULL PRIMARY KEY,
     at              TIMESTAMP_TZ NOT NULL,
@@ -41,5 +47,5 @@ export function auditTableDDL(opts: AuditTableDDLOpts = {}): string {
     error_message   STRING,
     idempotency_key STRING,
     result_hash     STRING${extra}
-);`;
+) COMMENT='${track}';`;
 }

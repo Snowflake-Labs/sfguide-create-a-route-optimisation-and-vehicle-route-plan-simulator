@@ -1,0 +1,81 @@
+--- a/src/ddl.ts
++++ b/src/ddl.ts
+@@ -15,6 +15,8 @@
+  *   result_hash     STRING                - SHA2(JSON.stringify(result)); null on error
+  *   <appIdColumn>   STRING                - optional app-specific row key (e.g. rollout_id)
+  */
++import { TRACKING_COMMENT } from './tracking.js';
++
+ export interface AuditTableDDLOpts {
+   /** Default 'verb_attempt'. */
+   table?: string;
+@@ -29,6 +31,10 @@
+   const hybrid = opts.hybrid !== false;
+   const kind = hybrid ? 'HYBRID TABLE' : 'TABLE';
+   const extra = opts.appIdColumn ? `,\n    ${opts.appIdColumn}    STRING` : '';
++  // LOCAL PATCH (see VENDOR.md): tracking tag required by AGENTS.md on every
++  // created object. The materialized install.sql is generated and gitignored, so
++  // the tag has to come from the generator rather than be added to the output.
++  const track = TRACKING_COMMENT;
+   return `CREATE OR REPLACE ${kind} ${table} (
+     id              STRING       NOT NULL PRIMARY KEY,
+     at              TIMESTAMP_TZ NOT NULL,
+@@ -41,5 +47,5 @@
+     error_message   STRING,
+     idempotency_key STRING,
+     result_hash     STRING${extra}
+-);`;
++) COMMENT='${track}';`;
+ }
+--- a/src/build/ddl.ts
++++ b/src/build/ddl.ts
+@@ -1,5 +1,6 @@
+ import type { ProcDef } from '../defineProc.js';
+ import type { Schema } from '../schema.js';
++import { TRACKING_COMMENT } from '../tracking.js';
+ 
+ /**
+  * Emit `CREATE OR REPLACE PROCEDURE` DDL for a `ProcDef`. The body is supplied
+@@ -48,6 +49,10 @@
+ }
+ 
+ /** Emit a single `CREATE OR REPLACE PROCEDURE ... AS $$ <body> $$;` statement. */
++// LOCAL PATCH (see ../../VENDOR.md): emits the AGENTS.md COMMENT tracking tag,
++// and it MUST sit BEFORE `EXECUTE AS`. Snowflake enforces this clause order and
++// rejects a trailing COMMENT with "unexpected COMMENT", which aborts the whole
++// `synapse deploy` so no MCP server is created and the agent has no tools.
+ export function procDDL(
+   proc: ProcDef<string, unknown, unknown>,
+   opts: ProcDDLOpts,
+@@ -62,7 +67,8 @@
+   argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL');
+ 
+   return `CREATE OR REPLACE PROCEDURE ${proc.name}(${argEntries.join(', ')})
+-RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'} AS
++RETURNS OBJECT LANGUAGE JAVASCRIPT COMMENT='${TRACKING_COMMENT}' EXECUTE AS ${opts.executeAs ?? 'OWNER'}
++AS
+ $$
+ ${opts.body}
+ $$;`;
+--- a/src/cli/materialize.ts
++++ b/src/cli/materialize.ts
+@@ -10,6 +10,7 @@
+ import { bundlePlugin } from '../build/plugin.js';
+ import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
+ import { auditTableDDL } from '../ddl.js';
++import { TRACKING_QUERY_TAG } from '../tracking.js';
+ import { readInstallConfig, installRuntime } from '../build/install.js';
+ import { resolveTargetDir, parseTargetFlags } from './target.js';
+ 
+@@ -121,6 +122,11 @@
+     `-- Runtime:  ${runtime}`,
+     `-- Target:   ${cfg.database}.${cfg.schema} via ${cfg.snowCliConn}`,
+     '',
++    // LOCAL PATCH (see ../../VENDOR.md): AGENTS.md requires a session query_tag on
++    // every session. install.sql is generated and gitignored, so the tag has to be
++    // emitted here rather than added to the file.
++    `ALTER SESSION SET query_tag = '${TRACKING_QUERY_TAG}';`,
++    '',
+     // USE ROLE pins deploy to the logical `admin` role so tables/procs/grants
+     // are owned by it, not whatever role happens to be the operator's default.
+     `USE ROLE ${deployRole};`,

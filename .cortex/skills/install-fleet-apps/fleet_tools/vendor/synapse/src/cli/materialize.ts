@@ -10,6 +10,7 @@ import { bundleRuntime } from '../build/runtime-js.js';
 import { bundlePlugin } from '../build/plugin.js';
 import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
 import { auditTableDDL } from '../ddl.js';
+import { TRACKING_QUERY_TAG } from '../tracking.js';
 import { readInstallConfig, installRuntime } from '../build/install.js';
 import { resolveTargetDir, parseTargetFlags } from './target.js';
 
@@ -120,6 +121,11 @@ export async function runMaterialize(app: ResolvedSynapseAppConfig, argv: string
     `-- Account:  ${cfg.account}`,
     `-- Runtime:  ${runtime}`,
     `-- Target:   ${cfg.database}.${cfg.schema} via ${cfg.snowCliConn}`,
+    '',
+    // LOCAL PATCH (see ../../VENDOR.md): AGENTS.md requires a session query_tag on
+    // every session. install.sql is generated and gitignored, so the tag has to be
+    // emitted here rather than added to the file.
+    `ALTER SESSION SET query_tag = '${TRACKING_QUERY_TAG}';`,
     '',
     // USE ROLE pins deploy to the logical `admin` role so tables/procs/grants
     // are owned by it, not whatever role happens to be the operator's default.

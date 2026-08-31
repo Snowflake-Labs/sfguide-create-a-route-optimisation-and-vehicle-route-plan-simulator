@@ -1,5 +1,6 @@
 import type { ProcDef } from '../defineProc.js';
 import type { Schema } from '../schema.js';
+import { TRACKING_COMMENT } from '../tracking.js';
 
 /**
  * Emit `CREATE OR REPLACE PROCEDURE` DDL for a `ProcDef`. The body is supplied
@@ -48,6 +49,10 @@ export interface ProcDDLOpts {
 }
 
 /** Emit a single `CREATE OR REPLACE PROCEDURE ... AS $$ <body> $$;` statement. */
+// LOCAL PATCH (see ../../VENDOR.md): emits the AGENTS.md COMMENT tracking tag,
+// and it MUST sit BEFORE `EXECUTE AS`. Snowflake enforces this clause order and
+// rejects a trailing COMMENT with "unexpected COMMENT", which aborts the whole
+// `synapse deploy` so no MCP server is created and the agent has no tools.
 export function procDDL(
   proc: ProcDef<string, unknown, unknown>,
   opts: ProcDDLOpts,
@@ -62,7 +67,8 @@ export function procDDL(
   argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL');
 
   return `CREATE OR REPLACE PROCEDURE ${proc.name}(${argEntries.join(', ')})
-RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'} AS
+RETURNS OBJECT LANGUAGE JAVASCRIPT COMMENT='${TRACKING_COMMENT}' EXECUTE AS ${opts.executeAs ?? 'OWNER'}
+AS
 $$
 ${opts.body}
 $$;`;

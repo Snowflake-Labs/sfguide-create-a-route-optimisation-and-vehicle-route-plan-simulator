@@ -50,8 +50,22 @@ describe('DDL emitter', () => {
     it('emits the canonical CREATE OR REPLACE PROCEDURE shape', () => {
       const ddl = procDDL(sample, { body: 'return {ok: true};' });
       expect(ddl).toContain('CREATE OR REPLACE PROCEDURE sample(');
-      expect(ddl).toContain('RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS OWNER');
+      expect(ddl).toContain('EXECUTE AS OWNER');
       expect(ddl).toContain('$$\nreturn {ok: true};\n$$;');
+    });
+
+    // LOCAL PATCH guard (see ../../VENDOR.md). Two invariants in one test:
+    // the tracking COMMENT is emitted at all, and it sits BEFORE `EXECUTE AS`.
+    // Snowflake rejects the reverse order with "unexpected COMMENT", which
+    // aborts the whole `synapse deploy` - no MCP server, so the agent silently
+    // has no tools. Cheap to regress on a re-vendor, expensive to diagnose.
+    it('emits the tracking COMMENT before EXECUTE AS', () => {
+      const ddl = procDDL(sample, { body: '' });
+      expect(ddl).toContain('"origin":"sf_sit-is-fleet"');
+      const comment = ddl.indexOf("COMMENT='");
+      const executeAs = ddl.indexOf('EXECUTE AS');
+      expect(comment).toBeGreaterThan(-1);
+      expect(comment).toBeLessThan(executeAs);
     });
 
     it('appends IDEMPOTENCY_KEY STRING DEFAULT NULL as the last arg', () => {
