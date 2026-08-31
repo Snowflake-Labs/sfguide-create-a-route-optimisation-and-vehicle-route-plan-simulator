@@ -69,6 +69,7 @@ SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 # SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
+VIEW_CATALOG_SQL="$SKILL_DIR/fleet_sa_app/app/view_catalog.sql"
 # Agent Playground scenario config (region-neutral). The 3 demo tools
 # (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
 # NO static demo data is seeded; only this scenario config is uploaded so the
@@ -515,6 +516,34 @@ if [ "${SKIP_SAP_KB:-0}" != "1" ] && [ -f "$SAP_KNOWLEDGE_SQL" ]; then
     || { note "  WARN: SAP knowledge base build failed; see /tmp/ifa_sap_kb.log"; step "4.7 sap-knowledge" FAILED; }
 else
   step "4.7 sap-knowledge" SKIPPED
+fi
+
+# ── 4.8 SA solution catalog (Cortex Search + table) ─────────────────────
+# Projects every SA app view's useCase / agentKnowledge blocks into
+# FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG + SOLUTION_CATALOG_SEARCH, so the
+# solution catalog is answerable OUTSIDE the app. In-app, the chat route
+# prepends the catalog at request time; in Cowork / Snowflake Intelligence the
+# agent has no app client, so without this table it cannot say what the
+# deployment demonstrates. Regenerated from app-views.json first so the table
+# can never lag the config it describes.
+#
+# --enable-templating NONE is REQUIRED: the authored prose contains ampersands
+# ('P&L') which the snow CLI's default variable substitution treats as a
+# variable reference and aborts on.
+#
+# Runs AFTER semantic views (same schema) and BEFORE agents (step 6, whose specs
+# bind the search service) and roles (step 8). Best-effort - a failure leaves the
+# agent without the catalog but must not abort the install.
+if [ "${SKIP_VIEW_CATALOG:-0}" != "1" ] && [ -f "$VIEW_CATALOG_SQL" ]; then
+  note "[4.8/8] building SA solution catalog (VIEW_CATALOG + SOLUTION_CATALOG_SEARCH)..."
+  python3 "$SCRIPTS/build_view_catalog.py" >/tmp/ifa_view_catalog.log 2>&1 \
+    || note "  WARN: catalog regeneration failed; using the committed view_catalog.sql"
+  snow sql -c "$CONNECTION" -f "$VIEW_CATALOG_SQL" --enable-templating NONE \
+      >>/tmp/ifa_view_catalog.log 2>&1 \
+    && step "4.8 view-catalog" OK \
+    || { note "  WARN: view catalog build failed; see /tmp/ifa_view_catalog.log"; step "4.8 view-catalog" FAILED; }
+else
+  step "4.8 view-catalog" SKIPPED
 fi
 
 # ── 5. synapse tool bundles ─────────────────────────────────────

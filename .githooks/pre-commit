@@ -34,6 +34,24 @@ if [ -f "$IMAGE_CHECK" ] && staged_any \
   }
 fi
 
+# ── 2b. Agent-side solution catalog must match app-views.json ─────────────────
+# view_catalog.sql is generated from the useCase / agentKnowledge blocks and is
+# what Cowork / Snowflake Intelligence reads (outside the app there is no
+# request-time catalog prefix). A stale file means the agent recommends views the
+# app no longer serves, or omits new ones - and nothing else would notice.
+CATALOG_BUILD="$SKILL_DIR/scripts/build_view_catalog.py"
+if [ -f "$CATALOG_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/app-config.json" \
+  "$SKILL_DIR/fleet_sa_app/app/view_catalog.sql" \
+  "$SKILL_DIR/scripts/build_view_catalog.py"; then
+  echo "pre-commit: solution-catalog freshness check..."
+  python3 "$CATALOG_BUILD" --check || {
+    echo "pre-commit FAILED: view_catalog.sql is stale - run python3 $CATALOG_BUILD"
+    exit 1
+  }
+fi
+
 # ── 2. View useCase coverage (Tenet 10, Channel D) ──────────────
 # A view with no useCase renders fine but shows no "i" overlay and is invisible
 # to the chat agent's solution catalog, so the failure is silent without a check.

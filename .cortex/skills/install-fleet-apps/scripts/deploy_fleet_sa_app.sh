@@ -160,6 +160,19 @@ if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   for f in app-config.json app-views.json; do
     snow stage copy "$APP_DIR/app/$f" "$CONFIG_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
   done
+  # The agent-side solution catalog is derived from app-views.json, so it must be
+  # rebuilt whenever the config is uploaded - otherwise a config-only redeploy
+  # leaves Cowork describing views the app no longer serves. Regenerate then
+  # apply. --enable-templating NONE is required (authored prose contains '&').
+  # Best-effort: never block an app deploy on the catalog.
+  if [ -f "$APP_DIR/app/view_catalog.sql" ]; then
+    echo "[4/7] Refresh solution catalog (VIEW_CATALOG + SOLUTION_CATALOG_SEARCH) ..."
+    python3 "$(dirname "${BASH_SOURCE[0]}")/build_view_catalog.py" >/tmp/fleet_sa_catalog.log 2>&1 \
+      || echo "  WARN: catalog regeneration failed; applying committed view_catalog.sql"
+    snow sql -c "$CONNECTION" -f "$APP_DIR/app/view_catalog.sql" --enable-templating NONE \
+        >>/tmp/fleet_sa_catalog.log 2>&1 \
+      || echo "  WARN: solution catalog refresh failed; see /tmp/fleet_sa_catalog.log"
+  fi
 else
   echo "[4/7] SKIP_CONFIG=1, skipping config bundle upload."
 fi
