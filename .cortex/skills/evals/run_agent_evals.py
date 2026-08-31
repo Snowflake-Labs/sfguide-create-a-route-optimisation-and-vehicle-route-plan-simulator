@@ -109,7 +109,7 @@ def main() -> int:
         return 2
     try:
         pat = agent_client.get_pat()
-        account_url = agent_client.resolve_account_url()
+        account_url = agent_client.resolve_account_url(connection)
     except agent_client.AgentError as exc:
         print(str(exc), file=sys.stderr)
         return 2

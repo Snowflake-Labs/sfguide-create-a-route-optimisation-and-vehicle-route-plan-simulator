@@ -56,8 +56,38 @@ for f in "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC" "$SUPER_SPEC"; do
     || { echo "ERROR: $f is not valid JSON"; exit 1; }
 done
 
+# Drop tools whose backing object is absent in THIS account.
+#
+# Snowflake validates every tool target when a request is SERVED, not when the
+# agent is created, so one tool pointing at a missing object fails the whole
+# request whatever was asked. On a fresh agnostic install the consumer agent bound
+# `query_offers` to SEMANTIC.SV_OFFERS, which install step 4.5 deliberately skips
+# (it needs MARKETPLACE, which is out of scope here) - so EVERY FLEET_AGENT
+# question, including pure routing ones, failed with a 400 while every
+# object-level install check passed.
+#
+# Pruning here rather than editing the specs keeps them declarative: install the
+# owning pack and re-run this script and the tool comes back. If the account
+# cannot be inspected the pruner exits 2 and we deploy the specs UNCHANGED, which
+# fails loudly at request time rather than silently shipping an emptied agent.
+PRUNE="$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/prune_agent_specs.py"
+if [ -f "$PRUNE" ]; then
+  PRUNED_DIR=$(mktemp -d)
+  if python3 "$PRUNE" --connection "$CONNECTION" --out-dir "$PRUNED_DIR" \
+       "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC" "$SUPER_SPEC"; then
+    USER_SPEC="$PRUNED_DIR/$(basename "$USER_SPEC")"
+    OPS_SPEC="$PRUNED_DIR/$(basename "$OPS_SPEC")"
+    ADMIN_SPEC="$PRUNED_DIR/$(basename "$ADMIN_SPEC")"
+    SUPER_SPEC="$PRUNED_DIR/$(basename "$SUPER_SPEC")"
+  else
+    echo "[create_agents] WARN: spec pruning skipped; deploying specs unchanged"
+  fi
+fi
+
 TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"' EXIT
+# Single trap for both temporaries - a second `trap ... EXIT` REPLACES the first,
+# so registering one here without PRUNED_DIR would leak the pruned-spec directory.
+SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
 
 {
   echo "ALTER SESSION SET query_tag = '$TRACK';"
