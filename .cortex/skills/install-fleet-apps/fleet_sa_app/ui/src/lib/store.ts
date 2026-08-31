@@ -97,6 +97,19 @@ interface AppState {
   // because useViewData aborts the previous request on every param change, the
   // dependent areas never complete a fetch while playing.
   inflight: number;
+  // Required-filter binds that currently have NO selectable value, keyed by bind
+  // name with the filter's label as the value.
+  //
+  // A required filter exists so dependent queries never see a null bind (see
+  // view-filter-bar.tsx). That contract holds only while the filter HAS options:
+  // when its query returns nothing there is no first row to seed, the bind stays
+  // null, and every dependent panel fires anyway. Several of those queries pass
+  // the bind into a table-function argument, where Snowflake cannot evaluate a
+  // SQL-side fallback and raises "Unsupported subquery type cannot be evaluated" -
+  // so the panels ERROR instead of being empty. Recording the gap here lets
+  // useViewData skip the fetch and return an empty result, which is the honest
+  // state and the one every consumer already renders.
+  blockedBinds: Record<string, string>;
 }
 
 interface AppActions {
@@ -117,6 +130,8 @@ interface AppActions {
   // stalls any consumer gating on it.
   beginFetch: () => void;
   endFetch: () => void;
+  // Register (label) or clear (null) a required bind that has no selectable value.
+  setBlockedBind: (key: string, label: string | null) => void;
   setDirty: (isDirty: boolean) => void;
   setContext: (key: string, value: unknown) => void;
   getPanelContext: () => PanelContext;
@@ -168,6 +183,7 @@ export const useAppStore = create<AppStore>()(
       detectedRole: null,
       adminAppUrl: null,
       inflight: 0,
+      blockedBinds: {},
 
       addUserMessage: (text: string) => {
         const msg: Message = {
@@ -442,6 +458,24 @@ export const useAppStore = create<AppStore>()(
 
       endFetch: () => {
         set((s) => ({ inflight: Math.max(0, s.inflight - 1) }));
+      },
+
+      // Required-filter binds with no selectable value (see AppState.blockedBinds).
+      // Writes are made no-ops when nothing changes: this is called from a filter's
+      // render effect, and setting an identical object each time would publish a new
+      // reference and re-render every consumer on every pass.
+      setBlockedBind: (key: string, label: string | null) => {
+        set((s) => {
+          const current = s.blockedBinds[key];
+          if (label === null) {
+            if (current === undefined) return {};
+            const next = { ...s.blockedBinds };
+            delete next[key];
+            return { blockedBinds: next };
+          }
+          if (current === label) return {};
+          return { blockedBinds: { ...s.blockedBinds, [key]: label } };
+        });
       },
 
       setDirty: (isDirty: boolean) => {

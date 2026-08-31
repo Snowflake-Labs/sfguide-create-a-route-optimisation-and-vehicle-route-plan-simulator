@@ -76,8 +76,34 @@ export function useViewData(
   // picker and is the region every view query is scoped to.
   const regionHint = typeof context.region === 'string' && context.region ? context.region : null;
 
+  // Does this query depend on a required filter that currently has no options?
+  //
+  // If so it MUST NOT be issued. The bind would go out as NULL, and several of
+  // these queries pass it into a table-function argument where the SQL-side
+  // `COALESCE(:bind,(SELECT ...))` fallback cannot be evaluated at all - Snowflake
+  // raises "Unsupported subquery type cannot be evaluated", so the panel shows a
+  // SQL error rather than being empty. Skipping yields an empty result instead,
+  // which is both honest and the state every consumer already renders; the filter
+  // itself explains why (see view-filter-bar.tsx).
+  const blockedBinds = useAppStore((s) => s.blockedBinds);
+  const blockedBy = paramRefs
+    ? Object.values(paramRefs)
+        .filter((ref) => ref.startsWith('viewState.'))
+        .map((ref) => blockedBinds[ref.slice('viewState.'.length)])
+        .find((label) => label !== undefined) ?? null
+    : null;
+
   const fetchData = useCallback(async () => {
     if (!query) return;
+    // Gated BEFORE beginFetch so the in-flight count stays balanced - an early
+    // return after incrementing would strand the counter and stall replay.
+    if (blockedBy !== null) {
+      setData({ columns: [], rows: [], totalRows: 0 });
+      setLoading(false);
+      setError(null);
+      setSuspended(null);
+      return;
+    }
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -133,7 +159,7 @@ export function useViewData(
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, paramsKey, viewsVersion, isDynamic, regionHint]);
+  }, [query, paramsKey, viewsVersion, isDynamic, regionHint, blockedBy]);
 
   useEffect(() => {
     fetchData();
