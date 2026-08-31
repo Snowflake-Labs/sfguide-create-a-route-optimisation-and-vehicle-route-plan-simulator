@@ -36,7 +36,7 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Two deviations from upstream, plus one new local file. Each is load-bearing: dropping
+Three deviations from upstream, plus one new local file. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
 replayable record and are already applied to this tree.
 
@@ -79,6 +79,26 @@ an upstream PR:
 
 The third hunk is ours: the clause-order guard described above.
 
+### patches/03-audit-table-fqn.patch
+
+File: `src/build/bundle.ts`.
+
+Qualifies the audit table with the install target's `database.schema` when
+substituting `__SYNAPSE_AUDIT_TABLE__`.
+
+Apps declare `audit: { table: 'verb_attempt' }` in `synapse.config.ts`, which the CLI
+evaluates **outside a bundle** - so `defineCatalog` cannot qualify it and the name
+arrives bare. The emitted proc body then runs `INSERT INTO verb_attempt`, resolved
+against whatever schema the **session** has at call time, which is not the deploy-time
+schema: agent and MCP callers arrive with their own context. This is the same failure
+mode `catalog.ts` was added upstream to eliminate, just on the audit path, which
+`defineCatalog` structurally cannot reach.
+
+The bundler already receives the target, so it qualifies the name. It is the same
+table either way - this is robustness, not a bug fix; the audit trail works today.
+An already-qualified name (contains a `.`) passes through untouched, and with no
+target the bare name is preserved. Three tests cover those cases.
+
 ### Retired: `IDEMPOTENCY_KEY STRING DEFAULT NULL`
 
 Repo commit `f23abece` patched the vendored dist to add this default, because the
@@ -98,10 +118,10 @@ reapply this patch.** The behaviour is still verified by
 2. Copy `src/`, `tests/`, `tsconfig.json`, `vitest.config.ts`, `package.json`, `README.md` from the new commit. Keep `src/tracking.ts` - it has no upstream counterpart.
 3. Re-apply the patches:
    ```bash
-   git apply patches/01-tracking-tags.patch patches/02-test-fixtures.patch
+   git apply patches/*.patch
    ```
    If a patch does not apply, reseat it by hand - upstream may have moved the code - then regenerate the patch file by diffing this tree against the fresh upstream copy.
-4. `npm install && npm run build && npm test` (expect 66 passing).
+4. `npm install && npm run build && npm test` (expect 68 passing).
 5. Re-materialize and re-deploy the three bundles, then **recreate the agents** (`synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so agents bound to the old server go stale).
 6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, and `IDEMPOTENCY_KEY STRING DEFAULT NULL`.
 7. Update the pinned commit and date in this file.

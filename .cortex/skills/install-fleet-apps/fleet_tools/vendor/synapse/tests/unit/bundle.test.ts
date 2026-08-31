@@ -116,9 +116,31 @@ export const noop = defineProc({
     expect(body).not.toContain('__SYNAPSE_AUDIT_TABLE__');
     expect(body).not.toContain('__SYNAPSE_APP_ID_FIELD__');
     // esbuild normalizes string literals to double-quoted form; astring
-    // round-trips them as such.
-    expect(body).toContain('"my_audit_table"');
+    // round-trips them as such. LOCAL PATCH: the audit table is qualified with
+    // the install target so the envelope's INSERT does not depend on the
+    // caller's session schema.
+    expect(body).toContain('"TEST_DB.TEST_SCHEMA.my_audit_table"');
     expect(body).toContain('"rollout_id"');
+  });
+
+  // LOCAL PATCH guards (see ../../VENDOR.md).
+  it('leaves an already-qualified audit table untouched', async () => {
+    const body = await bundleProc(
+      { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+      { table: 'OTHER_DB.OTHER_SCHEMA.verb_attempt' },
+      CATALOG,
+    );
+    expect(body).toContain('"OTHER_DB.OTHER_SCHEMA.verb_attempt"');
+    expect(body).not.toContain('TEST_DB.TEST_SCHEMA.OTHER_DB');
+  });
+
+  it('falls back to the bare audit table when there is no target', async () => {
+    const body = await bundleProc(
+      { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+      { table: 'verb_attempt' },
+      { database: '', schema: '' },
+    );
+    expect(body).toContain('"verb_attempt"');
   });
 
   it('runs synchronously in a vm with a fake snowflake global', async () => {

@@ -1,0 +1,45 @@
+--- a/src/build/bundle.ts
++++ b/src/build/bundle.ts
+@@ -360,8 +360,31 @@
+ }
+ 
+ /** Replace audit-config placeholders with the configured values. */
+-function injectAuditConfig(src: string, audit: AuditBundleConfig): string {
+-  let out = src.replace(/__SYNAPSE_AUDIT_TABLE__/g, audit.table);
++// LOCAL PATCH (see ../../VENDOR.md): qualify the audit table with the install
++// target's database.schema.
++//
++// Apps declare `audit: { table: 'verb_attempt' }` in synapse.config.ts, which the
++// CLI evaluates OUTSIDE a bundle - so `defineCatalog` cannot help there and the
++// name arrives bare. The emitted proc body then does `INSERT INTO verb_attempt`,
++// resolved against whatever schema the SESSION has when the verb is called. That
++// is not the deploy-time schema: agent/MCP callers arrive with their own context.
++// It happens to work today, but it is the exact failure mode `catalog.ts` was
++// added upstream to remove, so close it for the audit path too: the bundler
++// already knows the target, so qualify with it. Same table either way - strictly
++// more robust when the caller's schema differs.
++//
++// An already-qualified name (contains a '.') is passed through untouched, and
++// outside a target (unit tests, ad-hoc bundling) the bare name is preserved.
++function injectAuditConfig(
++  src: string,
++  audit: AuditBundleConfig,
++  catalog?: CatalogBundleConfig,
++): string {
++  const qualified =
++    catalog?.database && catalog?.schema && !audit.table.includes('.')
++      ? `${catalog.database}.${catalog.schema}.${audit.table}`
++      : audit.table;
++  let out = src.replace(/__SYNAPSE_AUDIT_TABLE__/g, qualified);
+   out = out.replace(/__SYNAPSE_APP_ID_FIELD__/g, audit.appIdField ?? '');
+   return out;
+ }
+@@ -423,7 +446,7 @@
+   bundled = rewriteAsyncHelper(bundled);
+ 
+   // 2. Replace audit-config placeholders.
+-  bundled = injectAuditConfig(bundled, audit);
++  bundled = injectAuditConfig(bundled, audit, catalog);
+ 
+   // 3. Inject _n at the top, append the args-capture suffix at the bottom.
+   const prelude = `${N_HELPER_SOURCE}\n\n`;

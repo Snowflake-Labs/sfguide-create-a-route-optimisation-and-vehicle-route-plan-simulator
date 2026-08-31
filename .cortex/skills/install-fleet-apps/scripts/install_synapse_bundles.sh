@@ -76,6 +76,8 @@ grep -q "COMMENT='\${TRACKING_COMMENT}' EXECUTE AS" "$VENDOR_DIR/dist/build/ddl.
   || { echo "ERROR: built synapse codegen is missing the procedure COMMENT tracking tag before EXECUTE AS (see vendor/synapse/VENDOR.md)"; exit 1; }
 grep -q "ALTER SESSION SET query_tag" "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the install.sql query_tag preamble (see vendor/synapse/VENDOR.md)"; exit 1; }
+grep -q "catalog?.database && catalog?.schema" "$VENDOR_DIR/dist/build/bundle.js" \
+  || { echo "ERROR: built synapse codegen is missing the audit-table FQN qualification (see vendor/synapse/VENDOR.md)"; exit 1; }
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
