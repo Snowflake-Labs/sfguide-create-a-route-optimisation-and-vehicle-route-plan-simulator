@@ -9,7 +9,15 @@ needs a check rather than a convention.
 
 Covers both authoring surfaces:
   * config views   - fleet_sa_app/app/app-views.json + app/starter/app-views.json
-  * code-registered - fleet_sa_app/ui/src/lib/packs/fleet/index.ts
+  * code-registered - fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json
+
+The code-registered showcase views used to declare their blocks as inline object
+literals in packs/fleet/index.ts. That surface was checked for `useCase` only,
+never for `agentKnowledge`, which is how two of the five (the VRP simulator and
+the ops console) shipped with no agent grounding at all; and because the catalog
+generator reads JSON, none of the five reached VIEW_CATALOG. The metadata now
+lives in pack-views.json and is held to the SAME rules as app-views.json, with a
+regression guard below asserting index.ts does not re-inline it.
 
 Also enforces two rules learned the hard way:
   * no top-level `info` key (the retired free-text field). A generator that owns a
@@ -39,8 +47,15 @@ import sys
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
 APP_DIR = SKILL_DIR / "fleet_sa_app" / "app"
-CONFIG_FILES = [APP_DIR / "app-views.json", APP_DIR / "starter" / "app-views.json"]
-PACK_FILE = SKILL_DIR / "fleet_sa_app" / "ui" / "src" / "lib" / "packs" / "fleet" / "index.ts"
+PACK_DIR = SKILL_DIR / "fleet_sa_app" / "ui" / "src" / "lib" / "packs" / "fleet"
+# pack-views.json holds the code-registered showcase views' metadata and is held
+# to exactly the same rules as the declarative sources.
+CONFIG_FILES = [
+    APP_DIR / "app-views.json",
+    APP_DIR / "starter" / "app-views.json",
+    PACK_DIR / "pack-views.json",
+]
+PACK_FILE = PACK_DIR / "index.ts"
 
 # Fields a useCase cannot be useful without: the headline is what the catalog
 # shows the agent, the business question is what an SE opens with.
@@ -100,23 +115,31 @@ def check_config(path: pathlib.Path, problems: list[str]) -> int:
 
 
 def check_pack(path: pathlib.Path, problems: list[str]) -> int:
+    """Regression guard: index.ts must not re-inline view metadata.
+
+    The five showcase views' useCase/agentKnowledge blocks live in
+    pack-views.json so build_view_catalog.py can read them. If a future edit
+    puts an inline `useCase:` back into index.ts, that view silently drops out
+    of VIEW_CATALOG again - the app still renders it, so nothing else notices.
+    Returns the number of registrations found.
+    """
     if not path.exists():
         problems.append(f"{path}: missing")
         return 0
     src = path.read_text()
     rel = path.relative_to(SKILL_DIR)
-    # Each registration is `viewRegistry.register({ ... })`; splitting on the call
-    # is enough to attribute a missing useCase to the right view id without
-    # parsing TypeScript.
     blocks = src.split("viewRegistry.register({")[1:]
     for block in blocks:
         m = re.search(r"id:\s*'([^']+)'", block)
         view_id = m.group(1) if m else "<unknown id>"
-        if "useCase:" not in block:
-            problems.append(
-                f"{rel}: {view_id} has no useCase block - code-registered views need "
-                f"one too (Tenet 10, Channel D)."
-            )
+        for key in ("useCase:", "agentKnowledge:"):
+            if key in block:
+                problems.append(
+                    f"{rel}: {view_id} declares an inline '{key}' block. That "
+                    f"metadata must live in pack-views.json, which is the only "
+                    f"copy build_view_catalog.py can read - inlining it here "
+                    f"drops the view from VIEW_CATALOG silently."
+                )
     return len(blocks)
 
 
@@ -184,8 +207,9 @@ def main() -> int:
         return 1
 
     print(
-        f"PASSED: useCase present on {n_config} config view(s) "
-        f"and {n_pack} code-registered view(s); no retired 'info' keys; "
+        f"PASSED: useCase + agentKnowledge present on {n_config} view(s) across "
+        f"the declarative and pack sources; {n_pack} code-registered view(s) "
+        f"carry no inlined metadata; no retired 'info' keys; "
         f"{n_cols} column field(s) lowercase; no Unicode dashes."
     )
     return 0
