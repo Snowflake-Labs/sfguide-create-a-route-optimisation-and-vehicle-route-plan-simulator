@@ -14,6 +14,11 @@
 -- implicitly, so no ALTER ... SUSPEND precedes a DROP (an ALTER on an
 -- already-suspended warehouse/task raises 090064 "Invalid state" and, under
 -- `snow sql -f`, ABORTS the whole file -- stranding every later drop).
+--
+-- For the same reason, any Snowflake Scripting block here MUST be wrapped in
+-- `EXECUTE IMMEDIATE $$ ... $$;`. The CLI splits the file on semicolons, so a
+-- bare `BEGIN ... END;` is cut at its first internal `;`, fails to compile, and
+-- aborts the file just like the 090064 case above.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-solution-cleanup","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -32,6 +37,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-s
 ALTER COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL STOP ALL;
 ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
 
+EXECUTE IMMEDIATE $$
 BEGIN
   SHOW COMPUTE POOLS;
   LET rs RESULTSET := (
@@ -45,6 +51,7 @@ BEGIN
   END FOR;
   RETURN 'stopped services on all ORS_POOL_* pools';
 END;
+$$;
 
 -- ============================================================================
 -- PHASE 2: Project + engine databases
@@ -85,6 +92,7 @@ DROP DATABASE IF EXISTS SAFEGRAPH_OPEN_CENSUS_FREE;
 DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
 
+EXECUTE IMMEDIATE $$
 BEGIN
   SHOW COMPUTE POOLS;
   LET rs RESULTSET := (
@@ -98,6 +106,7 @@ BEGIN
   END FOR;
   RETURN 'dropped all ORS_POOL_* pools';
 END;
+$$;
 
 -- Legacy native-app pool:
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL;
