@@ -1392,11 +1392,55 @@ BEGIN
     LET wait_iters INTEGER := CASE UPPER(:compute_size)
         WHEN 'S' THEN 120 WHEN 'L' THEN 480 WHEN 'XXL' THEN 720 ELSE 480 END;  -- x 30s
 
+    -- Capture the CURRENT graph build date so the return value can prove the
+    -- graph was actually recomputed. Without this the proc reported success
+    -- purely on "profiles came up ready", which is also true of a reload of the
+    -- untouched old graph - exactly the failure the suspend-before-purge fix
+    -- below addresses. Best effort: NULL when the region is already down.
+    LET graph_date_before VARCHAR DEFAULT NULL;
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):engine:graph_date::STRING AS D');
+        LET c_gd CURSOR FOR rs;
+        FOR rg IN c_gd DO graph_date_before := rg.D; END FOR;
+    EXCEPTION WHEN OTHER THEN graph_date_before := NULL;
+    END;
+
     -- Forced rebuild WITHOUT REBUILD_GRAPHS=true: the spec is always
     -- REBUILD_GRAPHS=false, so we explicitly purge the persisted graph dir and
     -- cycle the service. On resume ORS sees an empty graph dir and rebuilds from
     -- the PBF. This keeps ORS's destructive in-container wipe semantics out of
     -- the codebase entirely (no path can wipe a dir out from under a reuse).
+    --
+    -- SUSPEND BEFORE PURGE - the order is load-bearing. The graph dir is a
+    -- stage-mounted volume (@ORS_GRAPHS_SPCS_STAGE/<region> in the service
+    -- spec), so a RUNNING container holds its own copy and re-flushes it to the
+    -- stage when it stops. Purging first therefore did nothing: the REMOVE
+    -- reported dozens of files removed, the container wrote every one of them
+    -- straight back on shutdown, ORS reloaded the identical graph, and the proc
+    -- still returned "Rebuild complete" because the profiles came up ready.
+    -- The only visible symptom was an unchanged graph_build_date, which nothing
+    -- checked. Suspend and WAIT for SUSPENDED first so no writer is left.
+    LET suspended VARCHAR DEFAULT 'UNKNOWN';
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    -- ALTER SERVICE ... SUSPEND is asynchronous (status passes through
+    -- SUSPENDING), so poll rather than assuming a fixed wait is enough.
+    FOR i IN 1 TO 20 DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            rs := (SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_susp CURSOR FOR rs;
+            FOR rsv IN c_susp DO suspended := rsv.S; END FOR;
+        EXCEPTION WHEN OTHER THEN suspended := 'UNKNOWN';
+        END;
+        IF (UPPER(COALESCE(:suspended, '')) IN ('SUSPENDED', 'UNKNOWN')) THEN
+            BREAK;
+        END IF;
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
+    END FOR;
+
     BEGIN
         EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
     EXCEPTION WHEN OTHER THEN NULL;
@@ -1459,7 +1503,24 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false';
+    -- Report whether the graph was genuinely recomputed. An unchanged
+    -- graph_date means the purge did not take effect and ORS reloaded the old
+    -- graph, which must not be reported as a successful rebuild.
+    LET graph_date_after VARCHAR DEFAULT NULL;
+    BEGIN
+        graph_date_after := (SELECT TRY_PARSE_JSON(:status_raw):engine:graph_date::STRING);
+    EXCEPTION WHEN OTHER THEN graph_date_after := NULL;
+    END;
+    IF (:graph_date_before IS NOT NULL AND :graph_date_after IS NOT NULL
+        AND :graph_date_before = :graph_date_after) THEN
+        RETURN 'Rebuild DID NOT recompute the graph for ' || :P_REGION
+               || ' - graph_date is unchanged (' || :graph_date_after || '), so the'
+               || ' persisted graph was reloaded rather than rebuilt. Check that the'
+               || ' service reached SUSPENDED before the graph stage was purged.';
+    END IF;
+
+    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false'
+           || ', graph_date ' || COALESCE(:graph_date_before, 'unknown') || ' -> ' || COALESCE(:graph_date_after, 'unknown');
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
@@ -4371,6 +4432,14 @@ ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RE
 -- Idempotent migration: re-stage ors-config.yml with init_threads for every
 -- DEPLOYED region so the next suspend/resume loads profiles in parallel.
 -- Does not ALTER SERVICE - config is picked up on the next container start.
+--
+-- SCOPE WARNING: this is deliberately CONFIG-ONLY and must stay that way. The
+-- generated config also declares each profile's ext_storages (incl. OsmId), and
+-- an ext_storages delta only takes effect on a graph REBUILD, never on a plain
+-- restart. Do NOT add a rebuild here: this proc runs on every module load, so
+-- that would turn a routine redeploy into a continental graph rebuild. A region
+-- whose graph predates an ext_storages change must be repaired explicitly with
+-- REBUILD_REGION_GRAPHS(region).
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS()
 RETURNS STRING
@@ -4381,6 +4450,10 @@ AS
 $$
 DECLARE
     rs RESULTSET;
+    -- Separate resultset for the per-region profile probe below: the outer
+    -- cursor c_reg iterates over `rs`, so reusing it inside the loop would
+    -- re-point the cursor's own source mid-iteration.
+    rs_prof RESULTSET;
     regions_processed INTEGER DEFAULT 0;
     msg VARCHAR DEFAULT '';
     profiles VARCHAR DEFAULT '';
@@ -4420,9 +4493,29 @@ BEGIN
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            -- No job ever recorded profiles for this region. Skip rather than
-            -- guess: writing an empty profile set would produce a config with
-            -- every profile disabled (a broken graph on next resume).
+            -- Fallback for the bootstrapped default region, which has no
+            -- provision-job row at all: ask the running engine which profiles
+            -- it actually loaded. Without this the default region is skipped
+            -- forever and stays pinned to the static staged ors-config.yml,
+            -- which is how a default region shipped with no OsmId ext storage
+            -- (MATCH_PATH then returns MATCHED_EDGES > 0 but a NULL GEOJSON).
+            -- Mirrors the same fallback in APPLY_ORS_LIMITS and
+            -- DOWNSIZE_REGION_AFTER_BUILD.
+            BEGIN
+                rs_prof := (EXECUTE IMMEDIATE
+                    'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                    || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :reg || ''')::VARCHAR):profiles), '','') AS P');
+                LET c_prof CURSOR FOR rs_prof;
+                FOR rp IN c_prof DO profiles := rp.P; END FOR;
+            EXCEPTION WHEN OTHER THEN profiles := NULL;
+            END;
+        END IF;
+        IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            -- Neither a job row nor a reachable engine (e.g. the region is
+            -- suspended). Skip rather than guess: writing an empty profile set
+            -- would produce a config with every profile disabled (a broken
+            -- graph on next resume), and defaulting to 'driving-car' would
+            -- silently drop the region's other profiles.
             CONTINUE;
         END IF;
         pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
@@ -4433,7 +4526,8 @@ BEGIN
         regions_processed := regions_processed + 1;
         msg := msg || :reg || '; ';
     END FOR;
-    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg;
+    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg
+           || '(config only - an ext_storages change needs REBUILD_REGION_GRAPHS)';
 END;
 $$;
 

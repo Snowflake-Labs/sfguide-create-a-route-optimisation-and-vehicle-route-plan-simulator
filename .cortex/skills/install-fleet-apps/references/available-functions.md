@@ -72,6 +72,50 @@ load-bearing:
   `ABS()` is NOT the inverse (it yields `index + 1` and silently draws a neighbouring
   road); decode with `IFF(v < 0, -v - 1, v)`.
 
+**Note on `MATCH_PATH` geometry (`OsmId` ext storage required)**: `MATCH_PATH` resolves matched
+edge ids to road geometry by joining `/export` TopoJSON `properties.ors_ids`, which ORS emits
+ONLY when the profile's graph was built with the `OsmId` external storage. Without it `/export`
+returns the `{node_from, node_to, weight}` shape with no ids to join, so `MATCH_PATH` returns
+`MATCHED_EDGES > 0` and `GEOJSON = NULL` (`MATCH` itself is unaffected). `WRITE_ORS_CONFIG`
+always emits `OsmId`, so any region provisioned through the normal flow is fine. Deployments
+created before `OsmId` was added to `staged_files/ors-config.yml` have an OsmId-less DEFAULT
+region, because `BOOTSTRAP_DEFAULT_REGION` boots from that static file and never calls
+`WRITE_ORS_CONFIG`. Repair (a graph REBUILD is required - an ext_storages change does not take
+effect on a plain restart):
+
+```sql
+-- Pass the profiles EXPLICITLY. The region has no REGION_PROVISION_JOBS row, and every
+-- implicit derivation in this codebase falls back to 'driving-car' alone, which would
+-- silently drop the region's other profiles. Check the current set first with:
+--   SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON(CORE.ORS_STATUS('SanFrancisco')::VARCHAR):profiles), ',');
+CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG('SanFrancisco', 'SanFrancisco.osm.pbf', 'driving-car,cycling-electric', 'S');
+CALL OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS('SanFrancisco');
+```
+
+Order matters: the container reads the staged config on start and `REBUILD_REGION_GRAPHS` does
+not regenerate it. The rebuild purges the persisted graph and recreates the pool + ORS + VROOM
+services, so the region is unavailable for the duration (an S-tier city extract is a few
+minutes).
+
+Verify with the authoritative signal - the storages ORS actually loaded - NOT by probing
+`/export`, and check the graph really was recomputed:
+
+```sql
+WITH s AS (SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('SanFrancisco')::VARCHAR) AS j)
+SELECT j:engine:graph_date::STRING AS GRAPH_DATE,                     -- must be NEW
+       TO_JSON(OBJECT_KEYS(j:profiles:"cycling-electric":storages))   -- must contain OsmId
+FROM s;
+```
+
+If `graph_date` did not move, the purge did not take effect. On a deployment still running a
+`REBUILD_REGION_GRAPHS` older than the suspend-before-purge fix, the graph stage is purged while
+the container is still RUNNING; because the graph dir is a stage-mounted volume the container
+flushes its cached copy straight back on shutdown, ORS reloads the identical graph, and the proc
+still reports "Rebuild complete". Repair manually in this order: `ALTER SERVICE ... SUSPEND`,
+poll `SHOW SERVICES` until `SUSPENDED` (it passes through `SUSPENDING`), then
+`CALL WRITE_ORS_CONFIG(...)`, then `REMOVE @ORS_GRAPHS_SPCS_STAGE/<region>/`, confirm the `LIST`
+is empty, then `ALTER SERVICE ... RESUME`.
+
 ## Utility Functions
 
 | Function | Returns | Description |
