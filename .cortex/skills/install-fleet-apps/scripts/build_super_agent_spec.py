@@ -8,6 +8,12 @@ same analytics tools, the same Cortex Search services, the same response and
 orchestration instructions, with all three MCP servers attached and the
 operator/installer guidance appended.
 
+Native tools are UNIONED across all three specs, not copied from the consumer
+spec alone. The ops/admin specs carry a Cortex Analyst tool the consumer does not
+(query_deployment over SV_FLEET_DEPLOYMENT, which models deployment history), and
+a superuser that could not answer an operator's own question about the platform
+would be a hole rather than a superset.
+
 Hand-maintaining a second 12,000-character copy of those instructions guarantees
 drift - the two would disagree within a release, and the disagreement would be
 invisible until an agent answered differently depending on which one a user
@@ -35,6 +41,11 @@ import sys
 APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app"
 SOURCE = APP_DIR / "agent-spec.json"
 OUT = APP_DIR / "super-agent-spec.json"
+
+# Role-scoped specs whose NATIVE tools are folded in on top of the consumer spec.
+# Their instructions are NOT merged - those live in the suffixes below, so the
+# consumer spec stays the single source for everything the agents share.
+EXTRA_TOOL_SOURCES = ("ops-agent-spec.json", "admin-agent-spec.json")
 
 MCP_SERVERS = [
     "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP",
@@ -106,7 +117,13 @@ ORCHESTRATION_SUFFIX = (
     "'stop all spend now' -> action=cost_safe_mode; 'bring it back' -> action=resume_fleet; "
     "'turn auto-hibernate on/off' -> action=set_hibernate; 'scale up/down' -> action=scale (all "
     "three counts required). Everything except status needs confirmation.\n"
-    "- 'which verbs failed', 'show the audit trail' -> recent_verb_attempts.\n"
+    "- 'which verbs failed', 'show the audit trail' -> recent_verb_attempts for the last few "
+    "attempts; query_deployment when the question is aggregate ('how often', 'which verb fails "
+    "most', 'error rate over the last month').\n"
+    "- 'routing call volume', 'error rate or latency by region/endpoint/profile', 'how long did "
+    "provisioning take', 'which builds failed' -> query_deployment (Cortex Analyst over "
+    "SV_FLEET_DEPLOYMENT). It is HISTORY: never answer a live-state question from it, and never "
+    "answer a trend question by calling a verb repeatedly.\n"
     "\nDATA ACCESS ROUTING:\n"
     "- 'what tables/data/listings/semantic views does this use', 'what columns are in X' -> "
     "describe_data (metadata only, always safe).\n"
@@ -138,8 +155,36 @@ SAMPLE_QUESTIONS = [
 ]
 
 
+def union_tools(spec: dict, extra_paths: list[pathlib.Path]) -> tuple[list, dict]:
+    """Union native tools + tool_resources across the consumer and role specs.
+
+    First definition wins, so the consumer spec's wording is authoritative for any
+    tool the role specs also declare (search_solution_catalog, data_to_chart).
+    """
+    tools = list(spec.get("tools") or [])
+    resources = dict(spec.get("tool_resources") or {})
+    seen = {t["tool_spec"]["name"] for t in tools if "tool_spec" in t}
+
+    for path in extra_paths:
+        if not path.exists():
+            continue
+        extra = json.loads(path.read_text())
+        for tool in extra.get("tools") or []:
+            name = tool.get("tool_spec", {}).get("name")
+            if not name or name in seen:
+                continue
+            tools.append(tool)
+            seen.add(name)
+            if name in (extra.get("tool_resources") or {}):
+                resources[name] = extra["tool_resources"][name]
+    return tools, resources
+
+
 def build(source: pathlib.Path) -> dict:
     spec = json.loads(source.read_text())
+    tools, resources = union_tools(
+        spec, [source.parent / name for name in EXTRA_TOOL_SOURCES]
+    )
 
     instructions = dict(spec.get("instructions") or {})
     response = str(instructions.get("response") or "").rstrip()
@@ -152,10 +197,10 @@ def build(source: pathlib.Path) -> dict:
     out = {
         "models": spec.get("models") or {"orchestration": "auto"},
         "instructions": instructions,
-        # Same native tools as the consumer agent: the analytics reach is
-        # identical, only the MCP surface widens.
-        "tools": spec.get("tools") or [],
-        "tool_resources": spec.get("tool_resources") or {},
+        # Consumer tools plus any native tool only the ops/admin specs declare
+        # (today: query_deployment). The MCP surface widens too, below.
+        "tools": tools,
+        "tool_resources": resources,
         "mcp_servers": [{"server_spec": {"name": n}} for n in MCP_SERVERS],
     }
     return out
