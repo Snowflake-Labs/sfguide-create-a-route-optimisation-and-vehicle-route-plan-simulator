@@ -425,8 +425,17 @@ if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
     # The file completed, but the guarded builders report their own failures as
     # WARN strings in the result set rather than a non-zero exit - surface those
     # too, otherwise "OK" still overstates what happened.
-    if grep -q "^WARN:" /tmp/ifa_analytic.log || grep -q "WARN: BUILD_" /tmp/ifa_analytic.log; then
+    #
+    # Match ONLY the rendered result row (a table line starting with '|'). The
+    # log also contains the echoed SQL, and each guarded builder's own source
+    # carries a `RETURN 'WARN: BUILD_... failed'` literal in its EXCEPTION arm -
+    # so an unanchored "WARN: BUILD_" search matches the script's own text and
+    # reported the analytic layer as degraded on EVERY run, including runs where
+    # all three builders returned success. A gate that always warns is worse than
+    # no gate: it trains the operator to ignore the one signal that matters.
+    if grep -qE '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log; then
       note "  WARN: analytic layer completed with degraded sections; see /tmp/ifa_analytic.log"
+      grep -E '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log | head -6 | sed 's/^/    /'
       step "3.5 analytic" WARN
     else
       step "3.5 analytic" OK
