@@ -42,6 +42,16 @@ Return VARIANT:
 
 Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 
+**Note on `MATCH` / `MATCH_PATH`**: both wrappers pass the profile to `_MATCH_RAW` with a
+trailing `?` (e.g. `'cycling-electric?'`). This is load-bearing, do NOT strip it. ORS exposes
+`POST /v2/match/{profile}` only - it has no format-suffixed route (unlike `/snap` and
+`/export`), and its `@PostMapping("/{profile}/*")` catch-all answers any extra path segment
+with error 9007 "Response format is not supported". The gateway appends a format segment
+(`/json`) unconditionally in `get_ors_response`, so the `?` demotes it to a query string that
+Spring ignores. It stays harmless if the gateway is ever changed to skip the format for
+`match` (the query is then simply empty). Side effect: `OBSERVABILITY.ORS_REQUEST_LOG.PROFILE`
+records `<profile>?` for match calls.
+
 ## Utility Functions
 
 | Function | Returns | Description |

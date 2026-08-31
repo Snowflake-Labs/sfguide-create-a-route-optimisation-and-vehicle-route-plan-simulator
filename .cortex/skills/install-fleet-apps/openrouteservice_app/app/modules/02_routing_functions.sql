@@ -380,12 +380,20 @@
    -- LineString features are matched with the HMM map-matcher; the raw ORS response
    -- returns :edge_ids (arrays of internal graph edge ids per feature), NOT geometry.
    -- Use MATCH_PATH for a road-following polyline.
+   --
+   -- The trailing ''?'' on the profile is load-bearing, do NOT strip it. ORS exposes
+   -- POST /v2/match/{profile} ONLY - it has no format-suffixed route (unlike /snap
+   -- and /export), and its @PostMapping("/{profile}/*") catch-all answers any extra
+   -- path segment with error 9007 "Response format is not supported". The gateway
+   -- appends a format segment unconditionally, so ''?'' demotes that ''/json'' to a
+   -- query string, which Spring ignores. Harmless on a gateway that stops appending
+   -- the format (the query is then simply empty).
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH(method VARCHAR, features VARIANT, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"match"}}'
       AS
-      'SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(method, OBJECT_CONSTRUCT(''features'', features), region)';
+      'SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(method || ''?'', OBJECT_CONSTRUCT(''features'', features), region)';
 
    -- MATCH_PATH (trajectory snap-to-road) - matches a noisy GPS LineString to the
    -- road network and returns the matched road segments as a single GEOGRAPHY.
@@ -395,6 +403,7 @@
    -- its shape, so arcs are collected (ST_COLLECT) rather than strictly re-ordered.
    -- GEOJSON is NULL when nothing matched (or OsmId storage is absent); RESPONSE
    -- always carries the raw match result for inspection.
+   -- The trailing '?' on the /match profile is load-bearing - see the note on MATCH.
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH_PATH(method VARCHAR, linestring ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, MATCHED_EDGES INT)
       LANGUAGE SQL
@@ -403,7 +412,7 @@
       $$
       WITH m AS (
         SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(
-                 method,
+                 method || '?',
                  OBJECT_CONSTRUCT('features',
                    OBJECT_CONSTRUCT('type', 'FeatureCollection', 'features',
                      ARRAY_CONSTRUCT(OBJECT_CONSTRUCT(
