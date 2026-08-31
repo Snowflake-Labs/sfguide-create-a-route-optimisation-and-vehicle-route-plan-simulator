@@ -236,10 +236,13 @@ export function generateSql(fnName: string, region: RegionOption | null, profile
       const pts = (sampledPoints?.points && sampledPoints.points.length > 0)
         ? sampledPoints.points
         : [start!, end!, dest2!];
-      const locations = pts.map((p) => `[${p[0]},${p[1]}]`).join(',');
+      // ARRAY_CONSTRUCT, not PARSE_JSON: the wrapper declares `locations ARRAY`
+      // and Snowflake does not coerce VARIANT to ARRAY when matching a UDF
+      // signature, so PARSE_JSON fails to compile before the call is ever made.
+      const locations = pts.map((p) => `ARRAY_CONSTRUCT(${p[0]}, ${p[1]})`).join(', ');
       // ST_X/ST_Y are projected explicitly because the map reads plain lon/lat
       // columns; SNAPPED_GEOG is NULL when nothing was within the radius.
-      return `SELECT IDX,\n       NAME,\n       ROUND(SNAPPED_DISTANCE, 1) AS SNAPPED_DISTANCE_M,\n       ST_X(INPUT_GEOG) AS IN_LON,\n       ST_Y(INPUT_GEOG) AS IN_LAT,\n       ST_X(SNAPPED_GEOG) AS SNAP_LON,\n       ST_Y(SNAPPED_GEOG) AS SNAP_LAT\nFROM TABLE(${p}.SNAP_POINTS('${profile}', PARSE_JSON('[${locations}]'), ${SNAP_RADIUS_M}, ${rg}))\nORDER BY IDX`;
+      return `SELECT IDX,\n       NAME,\n       ROUND(SNAPPED_DISTANCE, 1) AS SNAPPED_DISTANCE_M,\n       ST_X(INPUT_GEOG) AS IN_LON,\n       ST_Y(INPUT_GEOG) AS IN_LAT,\n       ST_X(SNAPPED_GEOG) AS SNAP_LON,\n       ST_Y(SNAPPED_GEOG) AS SNAP_LAT\nFROM TABLE(${p}.SNAP_POINTS('${profile}', ARRAY_CONSTRUCT(${locations}), ${SNAP_RADIUS_M}, ${rg}))\nORDER BY IDX`;
     }
     case 'MATCH': {
       const track = trajectoryFor(trajectory, sampledPoints, [start!, end!]);
