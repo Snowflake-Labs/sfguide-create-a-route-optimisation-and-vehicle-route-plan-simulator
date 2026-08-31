@@ -573,3 +573,92 @@ IMPORTANT scope limits:
 - Readiness (EXPECTED / IN_PROGRESS / READY) is evaluated at a chosen instant by the Delivery Sync page, not stored here. This view only holds the completed arrival/departure pair.
 - A vehicle that merely drove past a site is NOT present: a visit requires a genuine stationary period inside the geofence.'
 ;
+
+-- ============ SV_BACKLOAD_MATCHING (FLEET_APP.BACKLOAD_MATCHING.*) ============
+-- SV_BACKLOAD_MATCHING - backhaul candidates + recorded matching decisions.
+-- Source: FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS
+--         + VW_PROPOSAL_DECISIONS (the backload_matching pack, which
+--         packs/manifest.yaml installs unconditionally, so this is safe on every
+--         deployment).
+--
+-- Was authored under semantic/sv_backload_matching.sql but never added here, so
+-- it was never created and the two Backload views had no Cortex Analyst tool at
+-- all - every backload question had to be answered from client-side memo text.
+--
+-- SCOPE: this models the backload INPUTS (idle trailers, external offers) and
+-- the DECISIONS the Backload Matching page writes back. It does NOT model a live
+-- solve: the solved plan is computed per click and never persisted. The two
+-- views' agentKnowledge blocks therefore route "what is available to match" and
+-- "what did we accept historically" here, and "this plan" questions to the
+-- on-screen memo.
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+
+  TABLES (
+    offers AS FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+      PRIMARY KEY (OFFER_ID)
+    , trailers AS FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
+      PRIMARY KEY (TRAILER_ID)
+    , decisions AS FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+      PRIMARY KEY (DECISION_ID)
+  )
+
+  FACTS (
+    offers.weight_kg AS WEIGHT_KG COMMENT = 'Offer load weight kg'
+    , offers.price_usd AS PRICE_USD COMMENT = 'Offer price USD'
+    , trailers.eta_min AS ETA_MIN COMMENT = 'Minutes to trailer ETA'
+    , trailers.max_payload_kg AS MAX_PAYLOAD_KG COMMENT = 'Trailer max payload kg'
+    , trailers.ev_range_km AS EV_RANGE_KM COMMENT = 'Electric range km'
+    , decisions.score AS SCORE COMMENT = 'Match score'
+    , decisions.empty_km AS EMPTY_KM COMMENT = 'Deadhead/empty km for the match'
+    , decisions.net_benefit_usd AS NET_BENEFIT_USD COMMENT = 'Net benefit of the decision USD'
+  )
+
+  DIMENSIONS (
+    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
+    , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
+    , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
+    , offers.dropoff_city AS DROPOFF_CITY WITH SYNONYMS ('destination city') COMMENT = 'Dropoff city'
+    , offers.product AS PRODUCT COMMENT = 'Product / commodity'
+    , offers.hazmat AS HAZMAT COMMENT = 'Hazmat flag'
+    , trailers.operating_country AS OPERATING_COUNTRY COMMENT = 'Trailer operating country'
+    , trailers.home_depot AS HOME_DEPOT WITH SYNONYMS ('depot') COMMENT = 'Trailer home depot'
+    , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
+    , trailers.status AS STATUS COMMENT = 'Trailer status'
+    , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
+    , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
+  )
+
+  METRICS (
+    offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
+    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
+    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
+    , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
+    , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
+    , trailers.avg_max_payload_kg AS AVG(max_payload_kg) COMMENT = 'Average max payload (kg)'
+    , decisions.total_decisions AS COUNT(DISTINCT DECISION_ID) WITH SYNONYMS ('number of decisions', 'matches') COMMENT = 'Distinct backload decisions'
+    , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
+    , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
+    , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
+    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
+  )
+
+  COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'
+
+  AI_SQL_GENERATION 'Backload matching semantic view.
+Entities (three independent facts, do NOT mix in one grouping):
+- offers (VW_EXTERNAL_OFFERS): external freight offers available to fill a backload.
+- trailers (VW_TRAILERS): trailers in transit / available, with ETA and capacity.
+- decisions (VW_PROPOSAL_DECISIONS): recorded accept decisions with match score, empty (deadhead) km, and net benefit USD. Use for "matches", "deadhead/empty km", "net benefit", and breakdowns by decision_source or decided_by.
+Conventions:
+- "matches" / "decisions" -> decisions.total_decisions.
+- "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
+- "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
+- internal vs external -> decisions.decision_source.
+IMPORTANT scope limit:
+- This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
+;

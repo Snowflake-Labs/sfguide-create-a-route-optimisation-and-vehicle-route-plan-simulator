@@ -56,6 +56,11 @@ ORDER = [
     ("4   contract",         SKILL / "fleet_sa_app" / "app" / "scoped_contract.sql"),
     ("4.2 delivery_sync",    SCRIPTS / "delivery_sync_layer.sql"),
     ("4.5 semantic",         SKILL / "fleet_sa_app" / "app" / "semantic_views.sql"),
+    # SV_OFFERS reads FLEET_INTELLIGENCE.MARKETPLACE, which NO install step
+    # creates (the admin app boot init / the freight-exchange skill do). It is
+    # therefore expected to reference an object this ordering does not provide,
+    # which is exactly why the installer runs it as its own best-effort file.
+    ("4.5 semantic (mkt)",   SKILL / "fleet_sa_app" / "app" / "semantic_views_marketplace.sql"),
     ("4.7 sap_knowledge",    SKILL / "fleet_sa_app" / "app" / "sap_knowledge.sql"),
     ("4.8 view_catalog",     SKILL / "fleet_sa_app" / "app" / "view_catalog.sql"),
     ("4.9 deployment_facts", SKILL / "fleet_sa_app" / "app" / "deployment_facts.sql"),

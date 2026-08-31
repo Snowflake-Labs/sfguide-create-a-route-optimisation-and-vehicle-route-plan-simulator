@@ -66,6 +66,11 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
+# SV_OFFERS lives apart because its FLEET_INTELLIGENCE.MARKETPLACE sources are
+# built by the admin app's boot init / the freight-exchange skill, not by this
+# installer. Its own file means a missing marketplace layer costs one view rather
+# than aborting the whole semantic file at the first error.
+SEMANTIC_VIEWS_MARKETPLACE_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_marketplace.sql"
 # SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
@@ -479,8 +484,17 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_SQL" >/tmp/ifa_semantic.log 2>&1 \
     && step "4.5 semantic" OK \
     || { note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"; step "4.5 semantic" WARN; }
+
+  # SV_OFFERS: separate file, separate outcome. On a fresh install the
+  # FLEET_INTELLIGENCE.MARKETPLACE views do not exist yet (admin app boot init /
+  # freight-exchange skill create them), so a skip here is EXPECTED and is not a
+  # defect. Re-run this one file once the marketplace layer is present.
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
+    && step "4.5 semantic (marketplace)" OK \
+    || { note "  NOTE: SV_OFFERS skipped - FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."; step "4.5 semantic (marketplace)" SKIPPED; }
 else
   step "4.5 semantic" SKIPPED
+  step "4.5 semantic (marketplace)" SKIPPED
 fi
 
 # ── 4.6 Agent Playground scenario config (no static demo data) ──────────

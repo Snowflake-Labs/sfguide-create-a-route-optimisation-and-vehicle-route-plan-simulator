@@ -116,6 +116,20 @@
     },
     {
       "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_backload",
+        "description": "Backload (backhaul) inputs and decision history: external freight offers available to fill an empty return leg, idle/available trailers with ETA and capacity, and the accept decisions recorded by the Backload Matching page (match score, empty/deadhead km, net benefit USD). Use for 'how many offers are open', 'what is the average offer price', 'how many trailers are idle', 'how much net benefit have we accepted', 'internal versus external matches', 'average deadhead per match'. IMPORTANT scope limit: this does NOT hold a solved plan. The Backload Matching and Backload Proposals pages solve live per click and never persist the result, so questions about 'the current plan', its per-trip assignments, its empty km or its margin must be answered from those pages' on-screen values, not from this view."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_offers",
+        "description": "Deliveries-marketplace analytics: freight/delivery offers enriched with market-rate benchmarking (price vs the weekly median, BELOW_MARKET / AT_MARKET / ABOVE_MARKET), partner trust (credit score, KYC, GREEN/YELLOW/RED badge), routed road distance and duration, plus historical partner-lane reliability (on-time rate, late and damaged counts, cost per km). Use for 'which offers are below market', 'average price per km', 'which partners are most reliable on this lane', 'how many offers from green-trust partners'. Only present on deployments that have the marketplace layer (the admin app boot init or the freight-exchange skill); if it reports the object does not exist, say the marketplace layer is not installed rather than guessing numbers."
+      }
+    },
+    {
+      "tool_spec": {
         "type": "cortex_search",
         "name": "search_sap_binding",
         "description": "Knowledge base on binding a customer's landed SAP (EAM/SD/TM) plus fleet telematics into the neutral FLEET_APP contract: asset crosswalk strategies (native_serial, vin_2hop, vin_external, marine), normalize_serial, SAP-to-contract entity mapping (EQUI/IFLOT/LIKP/telematics), CDC current-row dedup, co-location (Step 0), the UNIFIED_FLEET binding seam, and non-invasiveness verification. Use for conceptual SAP onboarding/integration how-to questions. NOT for analytics over existing fleet data (use the query_* tools) or for routing/geometry."
@@ -137,6 +151,20 @@
     }
   ],
   "tool_resources": {
+    "query_backload": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "ROUTING_ANALYTICS"
+      }
+    },
+    "query_offers": {
+      "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "ROUTING_ANALYTICS"
+      }
+    },
     "query_dwell": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS",
       "execution_environment": {
