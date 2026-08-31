@@ -9,10 +9,68 @@ server (per-bundle servers = role isolation):
 | `ops/` | `fleet-ops-tools` | `FLEET_INTELLIGENCE.SYNAPSE_OPS.FLEET_OPS_MCP` | `FLEET_APP_OPS` |
 | `admin/` | `fleet-admin-tools` | `FLEET_INTELLIGENCE.SYNAPSE_ADMIN.FLEET_ADMIN_MCP` | `FLEET_APP_ADMIN` |
 
-Only `ROUTING_MCP` is attached to the consumer agent (`FLEET_AGENT`). `FLEET_OPS_MCP`
-is attached to the separate, role-gated `FLEET_OPS_AGENT`; `FLEET_ADMIN_MCP` is
-not attached to any agent. So an end-user agent session can never see an Ops or
-Admin verb (Tenet 3).
+Agent attachment, per `scripts/create_agents.sh`:
+
+| Agent | Spec | MCP server(s) attached | Granted to |
+|---|---|---|---|
+| `FLEET_AGENT` | `agent-spec.json` | `ROUTING_MCP` | `FLEET_APP_USER` |
+| `FLEET_OPS_AGENT` | `ops-agent-spec.json` | `FLEET_OPS_MCP` | `FLEET_APP_OPS` |
+| `FLEET_ADMIN_AGENT` | `admin-agent-spec.json` | `FLEET_ADMIN_MCP` | `FLEET_APP_ADMIN` |
+| `FLEET_SUPER_AGENT` | `super-agent-spec.json` (GENERATED) | all three | `FLEET_APP_ADMIN` only |
+
+A consumer agent session can never see an Ops or Admin verb (Tenet 3). The super
+agent is the deliberate exception and it does NOT weaken that: the isolation
+boundary is the GRANT, not the spec. `role_binding.sql` grants
+`FLEET_SUPER_AGENT` to `FLEET_APP_ADMIN` only, and since the hierarchy is ADMIN
+inherits OPS inherits USER, an admin already holds every MCP server it attaches.
+Granting it to `FLEET_APP_USER` would hand every app user service suspension and
+region deletion, with nothing else in the stack stopping them - so do not.
+
+It exists because a Cowork / Snowflake Intelligence user cannot hand off between
+agents mid-conversation, so an operator working there needs one assistant that
+both answers analytics questions and operates the platform.
+
+`super-agent-spec.json` is GENERATED from `agent-spec.json` by
+`scripts/build_super_agent_spec.py` and must not be hand-edited. Two
+hand-maintained copies of a 12,000-character instruction block drift within a
+release, and the drift is invisible until the two agents answer the same question
+differently. `create_agents.sh` regenerates it before deploying, and
+`--check` fails a stale committed copy.
+
+## Verb inventory
+
+| Bundle | Verbs |
+|---|---|
+| user | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `catchment`, `delivery_optimization`, `network_optimization`, `snap_to_road`, `map_match`, `vrp_solve`, `evac_seed`, `evac_solve`, `query_overture_places`, `query_overture_addresses`, `introspect_sap`, `list_use_cases`, `describe_deployment`, `render_view`, **`describe_data`**, **`run_sql`**, **`deep_link`** |
+| ops | `service_control`, `service_status`, `service_inventory`, `healthcheck`, `set_active_region`, `set_active_context`, `activate_dataset`, `recent_verb_attempts`, `describe_deployment`, **`provision_region`**, **`region_status`**, **`drop_region`**, **`list_datasets`**, **`cost_control`** |
+| admin | `set_active_region`, `check_substrate`, `describe_deployment` |
+
+Notes on the data-access and lifecycle verbs:
+
+- **`run_sql` is read-only by allowlist, not by denylist.** The real boundary is
+  the synapse role: the verb runs as `FLEET_APP_USER` and can only touch what
+  that role already holds. The allowlist stops an accident, not a determined
+  caller. Three guards, in order: comments and string literals are blanked BEFORE
+  the leading keyword is read (a block comment cannot mask a `DROP`), any
+  non-trailing semicolon is rejected (a piggybacked statement is refused even
+  when the first statement is a valid `SELECT`), and the leading keyword must be
+  in `SELECT / WITH / SHOW / DESCRIBE / DESC / EXPLAIN`. Regression test:
+  `node --import tsx fleet_tools/user/verify_run_sql.mts` (27 cases).
+- **`provision_region` cannot be synchronous.** A build runs for tens of minutes
+  to hours, so the async launch lives in SQL
+  (`OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION`, a schedule-less TASK plus
+  `EXECUTE TASK`). Enqueuing alone does not work: `RESCUE_PENDING_PROVISIONS`
+  only FINALIZES stuck jobs, it never launches a PENDING one.
+- **There is no `generate_dataset` verb.** Generation runs inside the admin app's
+  Node process (`startGeneration`, in-memory job map + SSE + thousands of live
+  routing calls), which a stored procedure cannot host.
+  `OPENROUTESERVICE_APP.CORE.STUDIO_START_JOB` looks like a SQL entry point and
+  is not: it launches a job service from an `ors_studio_worker` image built
+  nowhere in this repo, with no tag in `image-versions.env`, called by nothing.
+  Wrapping it would yield a verb that reports "launched" and generates nothing.
+- **`cost_control` is one verb with an `action` argument** rather than four
+  near-identical tools, because the four are one decision and agents pick badly
+  between similarly-named siblings.
 
 ## Install (per account)
 
@@ -123,6 +181,18 @@ response`. Both were root-caused 2026-06-25.
    orchestrator (`install_fleet_apps.sh`) already runs bundles (step 5) before
    agents (step 6), so a fresh install is correct. But ANY out-of-band
    `install_synapse_bundles.sh` run (e.g. adding a verb, an evac/feature deploy)
-   MUST be followed by `create_agents.sh <connection>`. Quick check: every agent
-   `created_on` must be newer than its referenced MCP server `created_on`
+   MUST be followed by `create_agents.sh <connection>`. This now applies to FOUR
+   agents, `FLEET_SUPER_AGENT` included - it attaches all three MCP servers, so
+   it goes stale when ANY bundle is redeployed, not just one. Quick check: every
+   agent `created_on` must be newer than its referenced MCP server `created_on`
    (`SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER` vs `SHOW MCP SERVERS`).
+
+3. **A new verb needs no registration, but the agent needs to be told about it.**
+   Procs are auto-discovered by a directory walk of `src/procs/`
+   (`vendor/synapse/src/build/discover.ts`), so adding a file is enough for the
+   MCP server. It is NOT enough for the agent: without a routing line in the
+   relevant spec's `instructions.orchestration`, the agent either ignores the verb
+   or reaches for it ahead of a better tool. The specific failure that matters
+   here is `run_sql` being preferred over a `query_*` semantic-view tool, which
+   silently bypasses the governed path - hence the explicit
+   "prefer a query_* tool whenever one models the data" rule in every spec.

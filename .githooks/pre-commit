@@ -44,10 +44,27 @@ if [ -f "$CATALOG_BUILD" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
   "$SKILL_DIR/fleet_sa_app/app/app-config.json" \
   "$SKILL_DIR/fleet_sa_app/app/view_catalog.sql" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
   "$SKILL_DIR/scripts/build_view_catalog.py"; then
   echo "pre-commit: solution-catalog freshness check..."
   python3 "$CATALOG_BUILD" --check || {
     echo "pre-commit FAILED: view_catalog.sql is stale - run python3 $CATALOG_BUILD"
+    exit 1
+  }
+fi
+
+# ── 1b. Super agent spec freshness ──────────────────────────────
+# super-agent-spec.json is generated from agent-spec.json. Two hand-maintained
+# copies of a 12,000-character instruction block drift within a release, and the
+# drift is invisible until the two agents answer the same question differently.
+SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
+if [ -f "$SUPER_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/build_super_agent_spec.py"; then
+  echo "pre-commit: super agent spec freshness check..."
+  python3 "$SUPER_BUILD" --check || {
+    echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
     exit 1
   }
 fi
@@ -59,6 +76,7 @@ USECASE_CHECK="$SKILL_DIR/scripts/check_view_usecases.py"
 if [ -f "$USECASE_CHECK" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
   "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
   "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/index.ts"; then
   echo "pre-commit: view useCase coverage check..."
   python3 "$USECASE_CHECK" || {

@@ -172,6 +172,25 @@ python3 -c "import yaml" 2>/dev/null \
   && pass "PyYAML present" \
   || warn "PyYAML missing - validate_app_views.py cannot run"
 
+# --- 8. Cowork / Snowflake Intelligence discoverability of the agents.
+#        The agents are only visible in the Cowork agent picker to a role that
+#        holds USAGE on them, and the installer grants them to the FLEET_APP_*
+#        roles - NOT to whichever role a human happens to use. That means a
+#        correct install can still look like "Cowork does not know about our SA",
+#        which is a grant question, not an install failure. Checked here so it is
+#        surfaced before the install rather than discovered afterwards. ---
+echo
+echo "[8] Cowork agent discoverability"
+CURRENT_ROLE_OUT=$(q "SELECT CURRENT_ROLE() AS R;")
+GRANTS_OUT=$(q "SHOW GRANTS TO ROLE FLEET_APP_ADMIN;")
+if has "$CURRENT_ROLE_OUT" "ACCOUNTADMIN"; then
+  pass "running as ACCOUNTADMIN - it can always see the agents"
+elif has "$GRANTS_OUT" "FLEET_APP_ADMIN"; then
+  pass "FLEET_APP_ADMIN exists; confirm your own role inherits it to see FLEET_SUPER_AGENT in Cowork"
+else
+  warn "after install, grant your working role FLEET_APP_ADMIN (or USAGE on FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT) or the agent will not appear in the Cowork agent picker"
+fi
+
 echo
 if [ "$BLOCKING" = "1" ]; then
   echo "RESULT: BLOCKING problems found - do not start the install."
