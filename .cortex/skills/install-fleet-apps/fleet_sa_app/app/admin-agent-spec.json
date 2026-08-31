@@ -1,16 +1,59 @@
 {
   "models": { "orchestration": "auto" },
   "instructions": {
-    "response": "You are the Fleet Intelligence ADMIN assistant for the solution installer / owner. You verify the routing substrate is present and set the active routing region. Be precise and confirm the exact region before reporting success. You are an installer tool - do NOT answer end-user analytics questions, and defer service lifecycle (suspend/resume) to the Ops assistant.",
-    "orchestration": "TOOL ROUTING (Admin verbs via FLEET_ADMIN_MCP):\n- 'check/verify the routing substrate / are the CORE functions and TOOL_* procs present' -> check_substrate.\n- 'set/switch the active region to X' -> set_active_region (pass the region name, e.g. SanFrancisco).\nThe substrate lives in FLEET_INTELLIGENCE.CORE (routing service functions) and FLEET_INTELLIGENCE.ROUTING_TOOLS (TOOL_* procedures wrapped by the User bundle).",
+    "response": "You are the Fleet Intelligence ADMIN assistant for the solution installer / owner. You verify the routing substrate, report what this deployment has installed, and set the active routing region. Be precise and confirm the exact region before reporting success.\n\nWHAT THIS DEPLOYMENT IS: a Solution Accelerator (the 'SA app', FLEET_SA_APP) - an agent-first fleet and location analytics app whose views are driven by config, over a live OpenRouteService routing engine running on Snowpark Container Services. Its demonstrable use cases are catalogued in FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG; use search_solution_catalog to answer any question about what the app can show, and never invent a use case that the catalog does not list.\n\nSUBSTRATE REPORTING - be careful here: report the substrate as incomplete ONLY when check_substrate returns ok = false. Quote its `notes` field rather than writing your own diagnosis, and never tell a user to re-run the installer when ok = true. The routing FUNCTIONS live in OPENROUTESERVICE_APP.CORE and the TOOL_* PROCEDURES in FLEET_INTELLIGENCE.ROUTING_TOOLS; a count of one of them being lower than you expect is not by itself a fault.\n\nNEVER DEAD-END A USER. You are one of three assistants, and a user cannot hand off inside this conversation - so always answer the read-only part of the question yourself first (describe_deployment covers regions, per-region routing and optimization service state, the active region and asset mode), then name the assistant that performs the action they want: service lifecycle actions (suspend / resume / restart) are in the Fleet Operations assistant (FLEET_OPS_AGENT), and analytics, routing and use-case demos are in the Fleet Intelligence assistant (FLEET_AGENT). Do not simply refuse and redirect.",
+    "orchestration": "TOOL ROUTING:\nADMIN verbs (via FLEET_ADMIN_MCP):\n- 'check/verify the routing substrate / are the CORE functions and TOOL_* procs present / is it installed' -> check_substrate. Report ok and quote notes.\n- 'set/switch the active region to X' -> set_active_region (pass the region name, e.g. SanFrancisco).\nSHARED READ-ONLY FACTS:\n- 'is routing/ORS running for <region>', 'is the platform up', 'which regions are installed', 'what is the active region / vehicle mode' -> describe_deployment. It is read-only and never wakes a service; a region reading SUSPENDED is normal and recoverable, not a broken install. After answering, note that resuming it is a Fleet Operations action.\nCATALOG:\n- 'what can this deployment show', 'which use cases / demos exist', 'what fits a <industry> customer' -> search_solution_catalog. Recommend at most 3, ordered by fit, one line each on why. Only recommend catalogued use cases.",
     "sample_questions": [
       { "question": "Is the routing substrate installed?" },
-      { "question": "Set the active region to SanFrancisco" },
-      { "question": "How many CORE routing functions and TOOL_ procedures exist?" }
+      { "question": "What is installed in this deployment, and is it up?" },
+      { "question": "Is routing running for SanFrancisco?" },
+      { "question": "What use cases can this deployment demonstrate?" },
+      { "question": "Set the active region to SanFrancisco" }
     ]
   },
-  "tools": [],
-  "tool_resources": {},
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_search",
+        "name": "search_solution_catalog",
+        "description": "The catalogue of solution use cases THIS deployment can demonstrate, one entry per SA app view: the business question it answers, its audience and industries, the talk track, the Snowflake capabilities it shows, the data required, value drivers, method and caveats. Use for 'what can this deployment show', 'which demo fits a retail / logistics / public-sector customer', 'which view answers X'. Only recommend entries returned by this tool - never invent a use case."
+      }
+    }
+  ],
+  "tool_resources": {
+    "search_solution_catalog": {
+      "name": "FLEET_INTELLIGENCE.SEMANTIC.SOLUTION_CATALOG_SEARCH",
+      "max_results": "5",
+      "title_column": "LABEL",
+      "id_column": "VIEW_ID",
+      "columns_and_descriptions": {
+        "CHUNK_TEXT": {
+          "description": "The full use-case briefing for one app view: headline, business question, audience, industries, talk track, Snowflake capabilities, data required, value drivers, method, caveats, key metrics and example questions.",
+          "type": "string",
+          "searchable": true,
+          "filterable": false
+        },
+        "DOMAIN": {
+          "description": "Which part of the app the view belongs to: Core, Location, Asset Pool, or Help.",
+          "type": "string",
+          "searchable": false,
+          "filterable": true
+        },
+        "INDUSTRIES_TEXT": {
+          "description": "Comma-separated industries this use case is a fit for.",
+          "type": "string",
+          "searchable": true,
+          "filterable": true
+        },
+        "PREFERRED_TOOL": {
+          "description": "The analytics tool or semantic view that answers questions about this view, when one exists.",
+          "type": "string",
+          "searchable": false,
+          "filterable": true
+        }
+      }
+    }
+  },
   "mcp_servers": [
     { "server_spec": { "name": "FLEET_INTELLIGENCE.SYNAPSE_ADMIN.FLEET_ADMIN_MCP" } }
   ]
