@@ -68,16 +68,27 @@ def load_cases(path: Path) -> dict:
 
 
 def preflight_ors(connection: str | None) -> None:
-    """Fail fast if any ORS service is not RUNNING."""
+    """Fail fast if a service the agent's routing verbs NEED is not RUNNING.
+
+    DOWNLOADER is excluded. It fetches region PBFs during a graph build and is
+    irrelevant once the graph exists, and it deliberately auto-suspends afterwards -
+    so requiring it blocked the smoke check on a healthy stack whose ORS, VROOM and
+    gateway services were all RUNNING. A pre-flight that fails on something the run
+    does not use just teaches people to pass --skip-ors-check, which then also skips
+    the services that DO matter.
+    """
     rows = sf.query("SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP", connection=connection)
     if not rows:
         raise agent_client.AgentError(
             "No services found in OPENROUTESERVICE_APP. Is the routing engine deployed?"
         )
+    ignore = ("DOWNLOADER",)
     not_running = []
     for r in rows:
         status = str(r.get("status") or r.get("STATUS") or "").upper()
-        name = r.get("name") or r.get("NAME") or "?"
+        name = str(r.get("name") or r.get("NAME") or "?")
+        if name.upper() in ignore:
+            continue
         if status and status != "RUNNING":
             not_running.append(f"{name}={status}")
     if not_running:
