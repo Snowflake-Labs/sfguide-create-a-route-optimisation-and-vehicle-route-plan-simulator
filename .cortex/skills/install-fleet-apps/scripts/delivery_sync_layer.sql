@@ -92,7 +92,6 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- ---------------------------------------------------------------------
 -- 1. Tunable detector parameters (single row). Region-agnostic on purpose:
 --    the projection views are already scoped to the active dataset, and the
 --    geofence radius is resolved per (vehicle type, site type) from
@@ -435,6 +434,60 @@ SELECT
 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS v;
 
 -- ---------------------------------------------------------------------
+-- 4a. F_IS_DAY_RELEVANT - the SINGLE definition of "this visit belongs to the
+--     day being shown, as of this instant".
+--
+--     SERVICE_DATE is bucketed from ARRIVAL_TS, but a shift here runs about
+--     14:00-05:00 UTC, so a visit that arrives before midnight and departs after
+--     it carries the PREVIOUS date while still being the vehicle's current
+--     activity. LIVE_FLEET_STATUS selects those by wall-clock window, so with a
+--     strict `SERVICE_DATE = as_of::DATE` everywhere else the status correctly
+--     reported a vehicle ON_SITE / JUST_LEFT at a site that had no marker, no
+--     geofence and no ring, because every day-scoped layer had filtered it out.
+--     Measured on the SanFrancisco seed: 4 of 56 vehicles at 00:20, and 0 at
+--     03:00, 16:00 and 20:10 - the midnight boundary only.
+--
+--     A SCALAR function, deliberately. The rule was previously spelled out
+--     independently in five places (this function's callers, both geofence layers,
+--     LIVE_FLEET_STATUS and the invariant) and two of them disagreeing is what
+--     produced the defect - so a sixth copy would have been the wrong fix. It
+--     cannot be a table function shared via the FROM clause: a SQL UDTF may not
+--     call another UDTF in its body, and Snowflake reports that attempt as
+--     "Insufficient privileges to operate on Table function", which reads like a
+--     grant problem rather than an unsupported nesting.
+--
+--     The grace window is a PARAMETER, defaulting to PARAMS when NULL. It must be
+--     the SAME just-left window the caller used to classify the status: deriving it
+--     independently is what left one case behind on the first attempt - the status
+--     was called with a 20-minute just-left window while this rule derived 15 from
+--     PARAMS, so a vehicle 15.9 minutes gone read JUST_LEFT but fell outside the
+--     day set. A literal drifting from a PARAMS value is also how the earlier
+--     JUST_LEFT/ring inconsistency arose, hence config as the default rather than a
+--     hardcoded constant.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.DELIVERY_SYNC.F_IS_DAY_RELEVANT(
+  P_AS_OF TIMESTAMP_NTZ, P_SERVICE_DATE DATE, P_ARRIVAL_TS TIMESTAMP_NTZ,
+  P_EXIT_TS TIMESTAMP_NTZ, P_DEPARTURE_TS TIMESTAMP_NTZ, P_GRACE_MIN NUMBER)
+RETURNS BOOLEAN
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  P_SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
+  OR (
+    P_ARRIVAL_TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
+    AND COALESCE(P_EXIT_TS, P_DEPARTURE_TS,
+                 COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
+        >= DATEADD('minute',
+                   -1 * COALESCE(P_GRACE_MIN,
+                                 (SELECT ROUND(APPROACH_SECONDS / 60.0)
+                                  FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
+                                  LIMIT 1), 15),
+                   COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
+  )
+$$;
+
+-- ---------------------------------------------------------------------
 -- 4b. F_SITE_READINESS_ASOF - readiness evaluated AT AN INSTANT.
 --     VW_SITE_READINESS above reports the terminal state of each visit, so on
 --     historical data every visit is READY and nothing is ever IN_PROGRESS.
@@ -452,7 +505,8 @@ RETURNS TABLE (REGION VARCHAR, SERVICE_DATE DATE, SITE_ID VARCHAR, SITE_NAME VAR
                JOURNEY_ID VARCHAR, VISIT_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
                DEPARTURE_TS TIMESTAMP_NTZ, DWELL_MINUTES NUMBER(10,1),
                PRODUCT_READY_TS TIMESTAMP_NTZ, SOURCE_STATUS_HINT VARCHAR,
-               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1))
+               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1),
+               GEOFENCE_RADIUS_M NUMBER, IS_DAY_RELEVANT BOOLEAN)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -471,7 +525,14 @@ $$
     IFF(COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ) >= v.DEPARTURE_TS,
         ROUND(DATEDIFF('second', v.DEPARTURE_TS,
                        COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)) / 60.0, 1),
-        NULL)::NUMBER(12,1) AS MINUTES_SINCE_READY
+        NULL)::NUMBER(12,1) AS MINUTES_SINCE_READY,
+    v.GEOFENCE_RADIUS_M,
+    -- The one definition, applied here rather than restated: see F_IS_DAY_RELEVANT.
+    -- NULL grace: this function has no just-left parameter, so it takes the PARAMS
+    -- default. Callers that DO have one must pass it.
+    FLEET_INTELLIGENCE.DELIVERY_SYNC.F_IS_DAY_RELEVANT(
+      COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ),
+      v.SERVICE_DATE, v.ARRIVAL_TS, v.EXIT_TS, v.DEPARTURE_TS, NULL) AS IS_DAY_RELEVANT
   FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS v
   WHERE (P_REGION IS NULL OR v.REGION = P_REGION)
 $$;
@@ -884,12 +945,21 @@ $$
   -- containment test MUST intersect this: see the header note, an unscoped
   -- containment test names POIs that appear nowhere else on the page.
   -- SITE_LABEL (not the raw POI name) for parity with `visit_now` / `just_left`.
+  --
+  -- Scoped via the shared F_IS_DAY_RELEVANT rule rather than repeating
+  -- `SERVICE_DATE = as_of::DATE` here. That rule is the single definition of
+  -- "belongs to the day being shown" and it also covers a visit that straddles
+  -- midnight - which this function's own `visit_now` / `just_left` branches select
+  -- by wall clock and so could report against a site this CTE had filtered out.
   day_sites AS (
     SELECT SITE_ID, ANY_VALUE(SITE_LABEL) AS SITE_NAME
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
     WHERE REGION = P_REGION
-      AND SERVICE_DATE = COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)::DATE
       AND SITE_GEOG IS NOT NULL
+      AND FLEET_INTELLIGENCE.DELIVERY_SYNC.F_IS_DAY_RELEVANT(
+            COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ),
+            SERVICE_DATE, ARRIVAL_TS, EXIT_TS, DEPARTURE_TS,
+            P_JUST_LEFT_MIN)
     GROUP BY SITE_ID
   ),
   -- CONTAINMENT: the plotted position is inside the geofence of a site served
@@ -1258,6 +1328,20 @@ CREATE OR REPLACE VIEW FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE
   GROUP BY d.REGION, d.VEHICLE_TYPE;
 
 -- Live UDTF passthroughs so the app never references FLEET_INTELLIGENCE.
+-- Scalar passthrough for the shared day-relevance rule, so a view query can apply
+-- exactly the same predicate the functions do instead of restating it.
+CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.F_IS_DAY_RELEVANT(
+  P_AS_OF TIMESTAMP_NTZ, P_SERVICE_DATE DATE, P_ARRIVAL_TS TIMESTAMP_NTZ,
+  P_EXIT_TS TIMESTAMP_NTZ, P_DEPARTURE_TS TIMESTAMP_NTZ, P_GRACE_MIN NUMBER)
+RETURNS BOOLEAN
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  FLEET_INTELLIGENCE.DELIVERY_SYNC.F_IS_DAY_RELEVANT(
+    P_AS_OF, P_SERVICE_DATE, P_ARRIVAL_TS, P_EXIT_TS, P_DEPARTURE_TS, P_GRACE_MIN)
+$$;
+
 CREATE OR REPLACE FUNCTION FLEET_APP.DELIVERY_SYNC.F_SITE_READINESS_ASOF(
   P_REGION VARCHAR, P_AS_OF TIMESTAMP_NTZ)
 RETURNS TABLE (REGION VARCHAR, SERVICE_DATE DATE, SITE_ID VARCHAR, SITE_NAME VARCHAR,
@@ -1265,7 +1349,8 @@ RETURNS TABLE (REGION VARCHAR, SERVICE_DATE DATE, SITE_ID VARCHAR, SITE_NAME VAR
                JOURNEY_ID VARCHAR, VISIT_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
                DEPARTURE_TS TIMESTAMP_NTZ, DWELL_MINUTES NUMBER(10,1),
                PRODUCT_READY_TS TIMESTAMP_NTZ, SOURCE_STATUS_HINT VARCHAR,
-               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1))
+               READINESS_ENUM VARCHAR, MINUTES_SINCE_READY NUMBER(12,1),
+               GEOFENCE_RADIUS_M NUMBER, IS_DAY_RELEVANT BOOLEAN)
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS

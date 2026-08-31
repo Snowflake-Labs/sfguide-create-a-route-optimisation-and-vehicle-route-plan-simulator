@@ -170,8 +170,20 @@ def same_day_invariant_sql(region: str, minute: int) -> str:
         "DATEADD('minute', {m}, {sd}::TIMESTAMP_NTZ), "
         "(SELECT ROUND(APPROACH_SECONDS/60.0) FROM FLEET_APP.DELIVERY_SYNC.VW_ACTIVE_SCOPE "
         "WHERE REGION = '{r}' LIMIT 1), 20, 20))), "
-        "day_sites AS (SELECT DISTINCT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
-        "WHERE REGION = '{r}' AND SERVICE_DATE = {sd}) "
+        # The day set is resolved through the SHARED rule, with the SAME just-left
+        # window (20) passed to the status above. It deliberately is not a second
+        # `SERVICE_DATE = <day>` predicate: SERVICE_DATE is bucketed from ARRIVAL_TS,
+        # so a visit that straddles midnight belongs to the previous date while still
+        # being the vehicle's current activity, and restating the rule here is what
+        # made this check disagree with the function it was auditing. Deriving the
+        # grace independently is not enough either - a 20-minute status window judged
+        # against a PARAMS-derived 15 left one real case behind.
+        "day_sites AS (SELECT DISTINCT SITE_ID "
+        "FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS "
+        "WHERE REGION = '{r}' AND SITE_GEOG IS NOT NULL "
+        "AND FLEET_APP.DELIVERY_SYNC.F_IS_DAY_RELEVANT("
+        "DATEADD('minute', {m}, {sd}::TIMESTAMP_NTZ), "
+        "SERVICE_DATE, ARRIVAL_TS, EXIT_TS, DEPARTURE_TS, 20)) "
         "SELECT COUNT(*) AS N FROM fs WHERE fs.SITE_ID IS NOT NULL "
         "AND fs.SITE_ID NOT IN (SELECT SITE_ID FROM day_sites);"
     ).format(r=region, m=minute, sd=sd)
