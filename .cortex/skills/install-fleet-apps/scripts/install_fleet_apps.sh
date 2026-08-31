@@ -70,6 +70,7 @@ SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
 VIEW_CATALOG_SQL="$SKILL_DIR/fleet_sa_app/app/view_catalog.sql"
+DEPLOYMENT_FACTS_SQL="$SKILL_DIR/fleet_sa_app/app/deployment_facts.sql"
 # Agent Playground scenario config (region-neutral). The 3 demo tools
 # (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
 # NO static demo data is seeded; only this scenario config is uploaded so the
@@ -544,6 +545,22 @@ if [ "${SKIP_VIEW_CATALOG:-0}" != "1" ] && [ -f "$VIEW_CATALOG_SQL" ]; then
     || { note "  WARN: view catalog build failed; see /tmp/ifa_view_catalog.log"; step "4.8 view-catalog" FAILED; }
 else
   step "4.8 view-catalog" SKIPPED
+fi
+
+# ── 4.9 Shared deployment-facts proc (describe_deployment backing) ───────
+# One owner's-rights proc all three agents read for "what is installed and is it
+# up" (regions + per-region routing/optimization service state + active context +
+# substrate counts). Service run-state is a FACT, so the READ is shared while
+# suspend/resume stays an Ops action (Tenet 3). Runs after the catalog (it reports
+# the catalog size) and before agents (step 6). Best-effort.
+if [ "${SKIP_VIEW_CATALOG:-0}" != "1" ] && [ -f "$DEPLOYMENT_FACTS_SQL" ]; then
+  note "[4.9/8] creating shared deployment-facts proc..."
+  snow sql -c "$CONNECTION" -f "$DEPLOYMENT_FACTS_SQL" --enable-templating NONE \
+      >/tmp/ifa_deployment_facts.log 2>&1 \
+    && step "4.9 deployment-facts" OK \
+    || { note "  WARN: deployment-facts proc failed; see /tmp/ifa_deployment_facts.log"; step "4.9 deployment-facts" FAILED; }
+else
+  step "4.9 deployment-facts" SKIPPED
 fi
 
 # ── 5. synapse tool bundles ─────────────────────────────────────

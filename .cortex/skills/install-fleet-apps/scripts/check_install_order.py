@@ -56,6 +56,9 @@ ORDER = [
     ("4   contract",         SKILL / "fleet_sa_app" / "app" / "scoped_contract.sql"),
     ("4.2 delivery_sync",    SCRIPTS / "delivery_sync_layer.sql"),
     ("4.5 semantic",         SKILL / "fleet_sa_app" / "app" / "semantic_views.sql"),
+    ("4.7 sap_knowledge",    SKILL / "fleet_sa_app" / "app" / "sap_knowledge.sql"),
+    ("4.8 view_catalog",     SKILL / "fleet_sa_app" / "app" / "view_catalog.sql"),
+    ("4.9 deployment_facts", SKILL / "fleet_sa_app" / "app" / "deployment_facts.sql"),
     ("8   roles",            SKILL / "fleet_sa_app" / "app" / "role_binding.sql"),
 ]
 
