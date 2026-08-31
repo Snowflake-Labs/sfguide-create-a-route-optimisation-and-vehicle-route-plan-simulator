@@ -26,6 +26,15 @@ interface ViewSliderAreaProps {
       max?: number;
       step?: number;
       default?: number;
+      // SQL returning ONE row / ONE column: the initial value, resolved from the
+      // DATA instead of assumed. A literal `default` encodes a wall-clock
+      // assumption that silently does not hold: the delivery replay defaulted to
+      // 540 (09:00), but the seeded SanFrancisco telemetry runs 14:00-05:00 UTC,
+      // so 09:00 sits in an eight-hour hole with no pings at all. Every panel fed
+      // by the live fleet-status call returned zero rows and the map opened blank,
+      // on a dataset that is entirely healthy two hours either side. `default`
+      // stays as the fallback when this is absent, empty or errors.
+      defaultSource?: string;
       format?: string;        // 'hour' -> HH:00; 'time_of_day' -> HH:MM from minutes since midnight
       play?: boolean;         // show a play/pause auto-advance control
       playIntervalMs?: number; // MINIMUM ms per step when playing (default 1200);
@@ -134,15 +143,60 @@ export function ViewSliderArea({ areaConfig }: ViewSliderAreaProps) {
 
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
+  const context = useAppStore((s) => s.context);
   const [playing, setPlaying] = useState(false);
 
   const current = emitKey && viewState[emitKey] != null ? Number(viewState[emitKey]) : (config.default ?? min);
 
   // Seed the default into viewState once so dependent queries have a value.
+  // With `defaultSource` the seed is resolved from the data first, falling back to
+  // the literal `default` if the query is absent, errors, or returns nothing. The
+  // resolved value is clamped to [min,max] and snapped to `step` so it is a
+  // position the slider can actually represent.
   useEffect(() => {
-    if (emitKey && viewState[emitKey] == null && config.default != null) {
-      updateViewState({ [emitKey]: config.default });
+    if (!emitKey || viewState[emitKey] != null) return;
+    let cancelled = false;
+
+    const seed = (value: number | null | undefined) => {
+      if (cancelled) return;
+      const fallback = config.default;
+      const raw = value ?? fallback;
+      if (raw == null) return;
+      const clamped = Math.min(max, Math.max(min, Number(raw)));
+      const snapped = min + Math.round((clamped - min) / step) * step;
+      updateViewState({ [emitKey]: snapped });
+    };
+
+    if (!config.defaultSource) {
+      seed(null);
+      return;
     }
+
+    (async () => {
+      try {
+        const res = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sql: config.defaultSource,
+            params: { region: context.region ?? null },
+            region: (context.region as string) ?? undefined,
+          }),
+        });
+        if (!res.ok) return seed(null);
+        const body = (await res.json()) as { rows?: Array<Record<string, unknown>> };
+        const row = body.rows?.[0];
+        const first = row ? Object.values(row)[0] : null;
+        const num = first == null ? null : Number(first);
+        seed(num == null || Number.isNaN(num) ? null : num);
+      } catch {
+        seed(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

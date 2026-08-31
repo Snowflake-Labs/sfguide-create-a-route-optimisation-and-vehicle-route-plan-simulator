@@ -657,9 +657,16 @@ fi
 if [ "${SKIP_VERIFY:-0}" != "1" ]; then
   note "[9/9] verifying app views return data (non-blocking)..."
   if python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
+    # set -e safe: capture the rc without aborting the install. A bare
+    # `cmd; RC=$?` dies at `cmd` under `set -euo pipefail` before the rc is ever
+    # read - which made this "non-blocking" step the most blocking one in the
+    # script: any EMPTY or ERROR panel killed the run at the last step, so the
+    # final report (both app URLs, the step summary, the next-steps block) never
+    # printed and the install looked like it had crashed. Same idiom as the
+    # ROUTING_TOOLS capture above.
+    VERIFY_RC=0
     python3 "$SCRIPTS/validate_app_views.py" -c "$CONNECTION" \
-      --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1
-    VERIFY_RC=$?
+      --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1 || VERIFY_RC=$?
     VERIFY_TALLY=$(grep -E "^(OK|EMPTY|ERROR|BY_DESIGN)" /tmp/ifa_verify.log | tail -1)
     if [ "$VERIFY_RC" = "0" ]; then
       note "  all views returned data or are declared empty ($VERIFY_TALLY)"

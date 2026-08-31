@@ -83,6 +83,12 @@ LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 # asleep" separate from "the view is broken".
 ORS_DOWN_TOKENS = ("service_unreachable", "ors-service-")
 
+# Components that genuinely initialise their emitted value from their own query,
+# the way a FilterBar filter does: an option picker mounts with row one selected.
+# Everything else that emits (ClickableTable, MetricCards, Chart, Map) emits on
+# CLICK, so its first-render value is NULL - see viewstate_binds.
+QUERY_INITIALISED_CONTROLS = ("ComboBox", "Select", "Dropdown", "Filter", "FilterBar")
+
 # Which artifact owns which schema. Used by --repair, and worth reading as
 # documentation in its own right: it is the only place the mapping from "this
 # view is empty" to "run this" is written down.
@@ -262,12 +268,54 @@ def viewstate_binds(sess: Session, view: dict, ctx: dict, seeds: dict | None = N
         # Keyed on the presence of `default` rather than on the component name so
         # Slider / Checkbox / Select all work and a new control type does not
         # silently fall through to NULL.
-        if emits and "default" in conf:
+        #
+        # `defaultSource` wins when present, and is EXECUTED, for the same reason
+        # the context bar's date `boundsSource` is executed: a literal default
+        # encodes an assumption about the data that the data may not honour. If the
+        # harness kept using the literal it would keep testing an instant the app
+        # no longer opens on, and would report EMPTY for panels a user sees full.
+        if emits and ("default" in conf or "defaultSource" in conf):
+            value = conf.get("default")
+            src = conf.get("defaultSource")
+            if src:
+                rows, err = sess.rows(substitute(src, dict(ctx)), limit=1)
+                if rows and not err:
+                    first = next(iter(rows[0].values()), None)
+                    if first is not None:
+                        lo, hi = conf.get("min"), conf.get("max")
+                        step = conf.get("step") or 1
+                        num = float(first)
+                        if lo is not None:
+                            num = max(float(lo), num)
+                        if hi is not None:
+                            num = min(float(hi), num)
+                        base = float(lo) if lo is not None else 0.0
+                        num = base + round((num - base) / step) * step
+                        value = int(num) if float(num).is_integer() else num
+                else:
+                    notes.append(("slider:%s" % area_id,
+                                  "defaultSource returned nothing%s"
+                                  % (" (%s)" % err if err else "")))
             for key in emits:
-                binds[key] = conf["default"]
+                binds[key] = value
         # A control whose options come from a query (ComboBox, Select) initialises
         # to the first row, exactly like a FilterBar filter.
-        elif emits and isinstance(area.get("data"), dict) and area["data"].get("query"):
+        #
+        # Restricted to actual option pickers. This used to key only on "the area
+        # emits something AND has a data.query", which also caught every
+        # CLICK-driven display component - ClickableTable (18 areas) and
+        # MetricCards. For those the first-render value is NULL, not row one:
+        # nobody has clicked yet. The visible damage was on safety_risk_scorecard,
+        # whose KPI card emits `selected_severity` and whose query selects
+        # `total_events` first, so the harness bound severity to the event COUNT
+        # (79440) and every dependent panel died on `79440 = 'all'` with
+        # "Numeric value 'all' is not recognized" - three panels reported as
+        # product ERRORs when the app itself is fine (the same predicate with a
+        # NULL severity returns all 79440 events). A test that fabricates a
+        # selection the UI never makes reports defects that do not exist, and
+        # hides the IDLE state it should be asserting.
+        elif (comp in QUERY_INITIALISED_CONTROLS and emits
+              and isinstance(area.get("data"), dict) and area["data"].get("query")):
             sql = substitute(area["data"]["query"], dict(ctx))
             if not find_binds(sql):
                 rows, err = sess.rows(sql, limit=1)

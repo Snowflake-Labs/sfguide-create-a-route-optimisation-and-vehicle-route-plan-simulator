@@ -149,3 +149,33 @@ SET WEIGHT_TONS = p.WEIGHT_TONS,
     HAZMAT      = COALESCE(f.HAZMAT, FALSE)
 FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE p
 WHERE f.VEHICLE_TYPE = p.VEHICLE_TYPE;
+
+-- ---------------------------------------------------------------------------
+-- RECREATE the contract view this file dropped at the top.
+--
+-- The drop is unavoidable (ADD COLUMN invalidates a `SELECT *` view), but
+-- delegating the recreate to "the pack step" was wrong: the packs step is
+-- presence-probed and SKIPS a pack that is already installed, and its probe for
+-- unified_fleet is VW_FACT_TRIPS - a DIFFERENT view. So on any re-run of the
+-- installer (which is documented as idempotent, and is the normal way to resume
+-- after a failure) this file dropped VW_VEHICLE_PROFILE, the pack step reported
+-- "unified_fleet present" and skipped, and the view stayed dropped for good.
+-- That breaks every reader of the neutral contract: route_deviation/setup.sql
+-- reads DEVIATION_DISTANCE_RATIO and TELEPORT_DISTANCE_M from it, and the agent
+-- and Cortex Analyst resolve it by name.
+--
+-- Recreating it here removes the cross-step dependency entirely. Guarded because
+-- on a genuinely fresh account FLEET_APP does not exist yet at step 2.5 - in that
+-- case the pack step creates it as before, and this is a no-op.
+-- ---------------------------------------------------------------------------
+EXECUTE IMMEDIATE $$
+BEGIN
+  CREATE OR REPLACE VIEW FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+    COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+  SELECT * FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
+  RETURN 'recreated FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'FLEET_APP.UNIFIED_FLEET absent (fresh install); the pack step creates the view';
+END;
+$$;
