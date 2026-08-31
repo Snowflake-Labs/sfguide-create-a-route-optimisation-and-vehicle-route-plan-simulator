@@ -61,6 +61,11 @@ ORDER = [
     # therefore expected to reference an object this ordering does not provide,
     # which is exactly why the installer runs it as its own best-effort file.
     ("4.5 semantic (mkt)",   SKILL / "fleet_sa_app" / "app" / "semantic_views_marketplace.sql"),
+    # SV_EMERGENCY_RESPONSE reads FLEET_APP.EMERGENCY_RESPONSE, built by the emergency
+    # pack's Data Studio generator rather than by this ordered chain - so, like the
+    # marketplace view above, it is expected to reference an object this ordering does
+    # not provide, which is why the installer runs it as its own best-effort file.
+    ("4.5 semantic (emerg)", SKILL / "fleet_sa_app" / "app" / "semantic_views_emergency.sql"),
     ("4.7 sap_knowledge",    SKILL / "fleet_sa_app" / "app" / "sap_knowledge.sql"),
     ("4.8 view_catalog",     SKILL / "fleet_sa_app" / "app" / "view_catalog.sql"),
     ("4.9 deployment_facts", SKILL / "fleet_sa_app" / "app" / "deployment_facts.sql"),

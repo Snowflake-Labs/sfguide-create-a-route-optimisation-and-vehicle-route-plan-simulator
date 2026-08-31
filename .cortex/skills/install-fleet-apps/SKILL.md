@@ -175,6 +175,7 @@ ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FL
 -- Agent eval sets + the deployment-history semantic view (steps 6.6 and 4.95):
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.EVALS;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.SEMANTIC_OPS;
+DROP SEMANTIC VIEW IF EXISTS FLEET_INTELLIGENCE.SEMANTIC.SV_EMERGENCY_RESPONSE;
 DROP DATABASE IF EXISTS FLEET_APP;
 DROP DATABASE IF EXISTS STARTER_APP;
 -- SAP mock landscape (demo example landed by step 3.5):
@@ -203,6 +204,7 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 
 ## References
 
+- `references/cowork-map-recipes.md` - drawing SA-style maps in Snowflake CoWork with `data_to_map`: the contract (host-injected, SI-only, ONE layer per map), which semantic dimensions feed which layer type, measured payload budgets, tested live-ORS ring and VRP-tour SQL, the composite single-layer UNION pattern, and the four silent-failure traps.
 - `references/conventions.md` - query_tag + COMMENT tracking literals.
 - `references/infra.sql` - detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` - agnostic seed-data probe + load path.

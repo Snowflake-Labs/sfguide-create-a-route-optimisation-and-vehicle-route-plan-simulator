@@ -408,11 +408,25 @@ Conventions:
 -- (how many stores, revenue/EBITDA, household base) which the agent CAN answer via SQL.
 -- Revenue/EBITDA/interaction-mix/rent are SYNTHETIC proxies (see analytic_layer.sql).
 
+-- MAP-READY DIMENSIONS (Cowork data_to_map): store lat/lon, a simplified ZIP GeoJSON
+-- string, and the household H3 cell. Cowork's data_to_map builds a deck.gl layer from a
+-- Cortex Analyst result, but it can only read lat/lon FLOATs, a GeoJSON STRING, or an H3
+-- STRING - a GEOGRAPHY column cannot live in a semantic view at all. So the geometry is
+-- projected here rather than excluded. ZIP polygons are ST_SIMPLIFY'd because the raw
+-- ones reach 100 KB each (7 KB at 100 m tolerance), and data_to_map inlines rows into
+-- the spec with a cap: an oversized payload renders as a blank map, not an error.
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
 
   TABLES (
     stores AS FLEET_APP.LOCATION.VW_STORE_FACTS
       PRIMARY KEY (REGION, STORE_ID)
+    , zips AS FLEET_APP.LOCATION.VW_ZIP_AREAS
+      PRIMARY KEY (REGION, ZIP)
+      COMMENT = 'ZIP area dimension with a map-ready simplified boundary. Standalone (no join to stores).'
+    , hh_cells AS FLEET_APP.LOCATION.VW_HH_CELLS
+      PRIMARY KEY (REGION, H3)
+      COMMENT = 'Household density by H3 cell. Standalone, cell-grained.'
   )
 
   FACTS (
@@ -422,6 +436,10 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.sqft AS SQFT COMMENT = 'Synthetic store floor area (sqft)'
     , stores.annual_rent AS ANNUAL_RENT COMMENT = 'Synthetic annual rent'
     , stores.value_per_cost AS VALUE_PER_COST COMMENT = 'Revenue per unit of rent cost'
+    , zips.zip_population AS POPULATION COMMENT = 'ZIP resident population'
+    , zips.zip_households AS HOUSEHOLDS COMMENT = 'ZIP household count'
+    , zips.zip_median_income AS MEDIAN_INCOME COMMENT = 'ZIP median household income'
+    , hh_cells.cell_households AS HH COMMENT = 'Households in this H3 cell'
   )
 
   DIMENSIONS (
@@ -430,6 +448,19 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.store_role AS STORE_ROLE WITH SYNONYMS ('role', 'owned or candidate') COMMENT = 'OWNED (existing estate) or CANDIDATE (proposed new site)'
     , stores.store_category AS CATEGORY WITH SYNONYMS ('category', 'format') COMMENT = 'Store category'
     , stores.store_region AS REGION COMMENT = 'Region'
+    , stores.store_lat AS LAT WITH SYNONYMS ('latitude') COMMENT = 'Store latitude. Map-ready: use with store_lon as a latlon layer.'
+    , stores.store_lon AS LON WITH SYNONYMS ('longitude') COMMENT = 'Store longitude. Map-ready: use with store_lat as a latlon layer.'
+    , zips.zip_code AS ZIP WITH SYNONYMS ('zip', 'postcode', 'zip code') COMMENT = 'ZIP / postal code'
+    , zips.zip_state AS STATE COMMENT = 'ZIP state'
+    , zips.zip_region AS REGION COMMENT = 'Region the ZIP belongs to'
+    , zips.zip_geojson AS ST_ASGEOJSON(ST_SIMPLIFY(GEOG, 100))::VARCHAR
+      WITH SYNONYMS ('zip boundary', 'zip polygon', 'postcode boundary')
+      COMMENT = 'Map-ready ZIP boundary as a GeoJSON string, simplified to 100 m. Use as the geo column of a geojson layer for a choropleth. NOT for area or distance maths - use zip_land_sqmi.'
+    , zips.zip_land_sqmi AS LAND_SQMI COMMENT = 'ZIP land area in square miles'
+    , hh_cells.cell_h3 AS H3
+      WITH SYNONYMS ('h3', 'hex', 'h3 cell', 'household cell')
+      COMMENT = 'Map-ready H3 cell id as a STRING. Use as the h3 column of an h3 layer for a household-density hexmap.'
+    , hh_cells.cell_region AS REGION COMMENT = 'Region the H3 cell belongs to'
   )
 
   METRICS (
@@ -438,15 +469,25 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.total_ebitda AS SUM(annual_ebitda) WITH SYNONYMS ('total ebitda') COMMENT = 'Total synthetic annual EBITDA'
     , stores.total_households AS SUM(reference_hh) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total household base across the estate'
     , stores.avg_value_per_cost AS AVG(value_per_cost) WITH SYNONYMS ('value for money', 'revenue per rent') COMMENT = 'Average revenue per unit of rent'
+    , zips.zip_count AS COUNT(DISTINCT ZIP) WITH SYNONYMS ('number of zips') COMMENT = 'Distinct ZIP areas'
+    , zips.total_zip_population AS SUM(zip_population) WITH SYNONYMS ('population') COMMENT = 'Total resident population across ZIPs'
+    , zips.total_zip_households AS SUM(zip_households) COMMENT = 'Total households across ZIPs'
+    , zips.avg_zip_median_income AS AVG(zip_median_income) WITH SYNONYMS ('average income') COMMENT = 'Average ZIP median household income'
+    , hh_cells.total_cell_households AS SUM(cell_households) WITH SYNONYMS ('households by cell') COMMENT = 'Households summed across H3 cells'
+    , hh_cells.cell_count AS COUNT(DISTINCT H3) COMMENT = 'Distinct H3 cells'
   )
 
-  COMMENT = 'Location diagnostics estate: store estate (OWNED/CANDIDATE) with synthetic commercials and household base. Cannibalisation and closure are computed live in-app (ORS), not modeled here.'
+  COMMENT = 'Location diagnostics estate: store estate (OWNED/CANDIDATE) with synthetic commercials and household base, plus map-ready ZIP boundaries and household H3 cells. Cannibalisation and closure are computed live in-app (ORS), not modeled here.'
 
-  AI_SQL_GENERATION 'Location-diagnostics ESTATE semantic view (store-level facts only).
+  AI_SQL_GENERATION 'Location-diagnostics ESTATE semantic view (store-level facts, ZIP areas, household H3 cells).
 - stores (VW_STORE_FACTS): one row per store. store_role = OWNED (existing) or CANDIDATE (proposed). Use total_revenue/total_ebitda/total_households/store_count/avg_value_per_cost grouped by store_role or store_category. Commercials are synthetic proxies.
+- zips (VW_ZIP_AREAS): one row per ZIP, standalone (NOT joined to stores). Population, households, median income, land area, and a map-ready simplified boundary.
+- hh_cells (VW_HH_CELLS): one row per H3 cell, standalone. Household counts for a density hexmap.
 Conventions:
 - "how many stores" -> store_count; "total revenue/ebitda" -> total_revenue/total_ebitda grouped by store_role.
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
+- MAPPING: for a store map select store_lat + store_lon and use a latlon layer, coloring by store_role. For a ZIP choropleth select zip_geojson and use a geojson layer, coloring by a ZIP metric. For household density select cell_h3 and use an h3 layer, coloring by total_cell_households. Keep the row count modest when selecting zip_geojson - the boundary strings are large.
+- zips and hh_cells do NOT join to stores; answer each from its own table alone.
 IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
 ;
 
@@ -621,11 +662,27 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , offers.dropoff_city AS DROPOFF_CITY WITH SYNONYMS ('destination city') COMMENT = 'Dropoff city'
     , offers.product AS PRODUCT COMMENT = 'Product / commodity'
     , offers.hazmat AS HAZMAT COMMENT = 'Hazmat flag'
+    -- MAP-READY (Cowork data_to_map): coordinates as FLOATs and a straight-line lane as a
+    -- GeoJSON string. The lane is deliberately NOT a routed path - it is ST_MAKELINE
+    -- between pickup and dropoff, so it must never be quoted as drive distance or used
+    -- for deadhead maths. The routed tour comes from a live solve and is not modeled here.
+    , offers.pickup_lat AS PICKUP_LAT WITH SYNONYMS ('pickup latitude') COMMENT = 'Offer pickup latitude. Map-ready: use with pickup_lon as a latlon layer.'
+    , offers.pickup_lon AS PICKUP_LON WITH SYNONYMS ('pickup longitude') COMMENT = 'Offer pickup longitude. Map-ready: use with pickup_lat as a latlon layer.'
+    , offers.dropoff_lat AS DROPOFF_LAT WITH SYNONYMS ('dropoff latitude') COMMENT = 'Offer dropoff latitude'
+    , offers.dropoff_lon AS DROPOFF_LON WITH SYNONYMS ('dropoff longitude') COMMENT = 'Offer dropoff longitude'
+    , offers.lane_geojson AS ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(PICKUP_LON, PICKUP_LAT), ST_MAKEPOINT(DROPOFF_LON, DROPOFF_LAT)))::VARCHAR
+      WITH SYNONYMS ('lane', 'lane line', 'offer lane')
+      COMMENT = 'Map-ready STRAIGHT-LINE lane from pickup to dropoff as a GeoJSON string, for a geojson layer. This is a straight line, NOT a routed path: never present it as road distance, drive time, or deadhead km.'
     , trailers.operating_country AS OPERATING_COUNTRY COMMENT = 'Trailer operating country'
     , trailers.home_depot AS HOME_DEPOT WITH SYNONYMS ('depot') COMMENT = 'Trailer home depot'
     , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
     , trailers.status AS STATUS COMMENT = 'Trailer status'
     , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
+    -- MAP-READY: trailer home depot and current dropoff position as FLOATs.
+    , trailers.home_lat AS HOME_LAT WITH SYNONYMS ('home latitude', 'depot latitude') COMMENT = 'Trailer home depot latitude. Map-ready: use with home_lon as a latlon layer.'
+    , trailers.home_lon AS HOME_LON WITH SYNONYMS ('home longitude', 'depot longitude') COMMENT = 'Trailer home depot longitude. Map-ready: use with home_lat as a latlon layer.'
+    , trailers.current_lat AS DROPOFF_LAT WITH SYNONYMS ('current latitude', 'trailer latitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - latitude. Map-ready with current_lon.'
+    , trailers.current_lon AS DROPOFF_LON WITH SYNONYMS ('current longitude', 'trailer longitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - longitude. Map-ready with current_lat.'
     , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
@@ -659,6 +716,7 @@ Conventions:
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
 - internal vs external -> decisions.decision_source.
+- MAPPING: for an offer map select pickup_lat + pickup_lon and use a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
 ;

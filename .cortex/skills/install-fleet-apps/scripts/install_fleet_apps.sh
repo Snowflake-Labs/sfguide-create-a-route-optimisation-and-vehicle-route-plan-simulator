@@ -71,6 +71,11 @@ SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 # installer. Its own file means a missing marketplace layer costs one view rather
 # than aborting the whole semantic file at the first error.
 SEMANTIC_VIEWS_MARKETPLACE_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_marketplace.sql"
+# SV_EMERGENCY_RESPONSE: its own file because the emergency pack is not part of every
+# deployment (its data comes from the Data Studio emergency generator). Kept out of
+# semantic_views.sql so a missing pack cannot abort the whole semantic layer - `snow sql -f`
+# stops at the first error, so one absent source view would silently skip every view below.
+SEMANTIC_VIEWS_EMERGENCY_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql"
 # SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
@@ -521,9 +526,19 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
     && step "4.5 semantic (marketplace)" OK \
     || { note "  NOTE: SV_OFFERS skipped - FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."; step "4.5 semantic (marketplace)" SKIPPED; }
+
+  # SV_EMERGENCY_RESPONSE: same treatment, same reason. The emergency pack's source
+  # views only exist once its dataset has been generated, so a skip here is EXPECTED
+  # rather than a defect. This view is also what lets CoWork draw a hazard choropleth
+  # (its GEOJSON column is map-ready as-is), so re-run this one file after generating.
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_EMERGENCY_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_emergency.log 2>&1 \
+    && step "4.5 semantic (emergency)" OK \
+    || { note "  NOTE: SV_EMERGENCY_RESPONSE skipped - FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."; step "4.5 semantic (emergency)" SKIPPED; }
 else
   step "4.5 semantic" SKIPPED
   step "4.5 semantic (marketplace)" SKIPPED
+  step "4.5 semantic (emergency)" SKIPPED
 fi
 
 # ── 4.6 Agent Playground scenario config (no static demo data) ──────────
