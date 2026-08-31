@@ -123,6 +123,18 @@ UNION ALL SELECT 'How many stores are in the location estate, and how many are c
     {"tool_name": "query_location", "tool_input": "Store estate count split by OWNED versus CANDIDATE.", "tool_output": "SQL over SV_LOCATION returning site counts grouped by estate status."}
   ]
 }$$)
+UNION ALL SELECT 'How many hazard zones are in the Very High risk band, and how many people are we evacuating?', PARSE_JSON($${
+  "ground_truth_output": "The response should give a hazard-zone count for the Very High composite band and a participant count, both as concrete whole numbers. It must not describe an evacuation plan, trip list, or per-vehicle assignment - those are computed live by the wizard and are not in the data - and it must not treat the nearest-centre label as a dispatch assignment.",
+  "ground_truth_invocations": [
+    {"tool_name": "query_emergency", "tool_input": "Hazard zone count in the Very High composite band, and the total participant count.", "tool_output": "SQL over SV_EMERGENCY_RESPONSE returning zone_count filtered to composite_rating Very High, plus participant_count."}
+  ]
+}$$)
+UNION ALL SELECT 'Which care centres are closest to the highest-risk areas?', PARSE_JSON($${
+  "ground_truth_output": "The response should name specific care centres and relate them to high-risk hazard areas. It is acceptable to say the data supports proximity but not drive-time reachability, since reachability requires a live routing call. It must not invent a centre that is not in the data, and must not present the nearest-centre label as a capacity or dispatch plan.",
+  "ground_truth_invocations": [
+    {"tool_name": "query_emergency", "tool_input": "Care centres and the hazard bands or participant counts near them.", "tool_output": "SQL over SV_EMERGENCY_RESPONSE returning care centre names with hazard or participant context."}
+  ]
+}$$)
 UNION ALL SELECT 'What is the weather forecast for San Francisco tomorrow?', PARSE_JSON($${
   "ground_truth_output": "The response should state that weather is outside what this deployment covers and point at the kinds of fleet, routing and location questions it can answer. It must not fabricate a forecast, temperature or condition, and must not present a routing or trip figure as if it were weather.",
   "ground_truth_invocations": []
