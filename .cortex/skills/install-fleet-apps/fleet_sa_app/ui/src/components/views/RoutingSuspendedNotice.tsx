@@ -16,6 +16,11 @@ interface RoutingSuspendedNoticeProps {
 
 export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspendedNoticeProps) {
   const [retrying, setRetrying] = useState(false);
+  // A region with no ORS service at all is not "starting" - retrying will never
+  // help, so drop the Retry affordance and say what is actually wrong.
+  const notProvisioned = info.state === 'not_provisioned';
+  const heading = notProvisioned ? 'Routing engine not provisioned' : 'Routing engine is starting';
+  const showRetry = !!onRetry && !notProvisioned;
 
   const handleRetry = async () => {
     if (!onRetry) return;
@@ -47,13 +52,13 @@ export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspen
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-        <span aria-hidden style={{ fontSize: '15px', lineHeight: '20px' }}>&#9203;</span>
+        <span aria-hidden style={{ fontSize: '15px', lineHeight: '20px' }}>{notProvisioned ? '\u26A0' : '\u23F3'}</span>
         <div>
-          <div style={{ fontWeight: 600, marginBottom: '2px' }}>Routing engine is starting</div>
+          <div style={{ fontWeight: 600, marginBottom: '2px' }}>{heading}</div>
           <div>{info.message}</div>
         </div>
       </div>
-      {onRetry && (
+      {showRetry && (
         <div>
           <button
             type="button"

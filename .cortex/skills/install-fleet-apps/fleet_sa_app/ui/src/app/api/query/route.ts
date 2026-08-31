@@ -312,9 +312,9 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     // gateway's DNS/connection failure. Resume the region and return a typed,
     // friendly notice so the panel shows "resume triggered" instead of a raw error.
     const det = detectOrsSuspended(rawMsg);
-    if (det.suspended) {
-      const resumeRegion = resolveResumeRegion(det.region, regionHint);
-      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
     }
     logger.error('sf-error', { warehouse: WAREHOUSE }, err);

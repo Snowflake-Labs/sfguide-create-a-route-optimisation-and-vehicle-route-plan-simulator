@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.11'
+GATEWAY_VERSION = 'v1.1.12'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -1149,11 +1149,29 @@ def _validate_request(endpoint, payload, host=None):
             )
     return True, None
 
-_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN'}
+_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN', cause: str|None}
+
+# Failure causes that must NOT count towards opening the breaker.
+#
+# The breaker exists to shield an OVERLOADED engine from further load. A
+# SUSPENDED one is not overloaded: the connection fails in milliseconds, so
+# fail-fast buys nothing. Counting it actively causes harm, because once the
+# breaker is OPEN every subsequent call returns the generic `circuit_open`
+# instead of `service_unreachable` - and `service_unreachable` is the token the
+# app matches on to detect a suspended region and trigger its resume. A view
+# that issues several ORS calls per render (Delivery Sync makes six) crosses the
+# 5-failure threshold inside a single render, so the outage would go undetected
+# from the second render onwards and the region would never be resumed.
+BREAKER_EXEMPT_CAUSES = frozenset({'service_unreachable', 'service_warming_up'})
 
 
 def _breaker_check(host):
-    """Returns (allow, reason). allow=False means fail fast without calling ORS."""
+    """Returns (allow, reason). allow=False means fail fast without calling ORS.
+
+    `reason` is the error code that OPENED the breaker rather than a generic
+    'circuit_open', so a fail-fast response keeps naming the underlying
+    condition and stays detectable by callers.
+    """
     st = _BREAKER_STATE.get(host)
     if not st:
         return True, None
@@ -1163,7 +1181,7 @@ def _breaker_check(host):
             st['state'] = 'HALF_OPEN'
             logger.warning(f'circuit-breaker HALF_OPEN for {host} after cooldown')
             return True, None
-        return False, 'circuit_open'
+        return False, st.get('cause') or 'circuit_open'
     return True, None
 
 
@@ -1176,11 +1194,21 @@ def _breaker_on_success(host):
     st['state'] = 'CLOSED'
     st['failures'] = []
     st['open_until'] = 0
+    st['cause'] = None
 
 
-def _breaker_on_failure(host):
+def _breaker_on_failure(host, cause=None):
+    """Record a failure for `host`. `cause` is the error code that caused it.
+
+    Causes in BREAKER_EXEMPT_CAUSES are recorded (so a later fail-fast can name
+    them) but never advance the failure counter.
+    """
     now = time.monotonic()
-    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED'})
+    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED', 'cause': None})
+    if cause:
+        st['cause'] = cause
+    if cause in BREAKER_EXEMPT_CAUSES:
+        return
     # Drop failures outside the rolling window.
     cutoff = now - ORS_BREAKER_ROLLING_WINDOW_S
     st['failures'] = [t for t in st['failures'] if t >= cutoff]
@@ -1188,7 +1216,7 @@ def _breaker_on_failure(host):
     if st['state'] == 'HALF_OPEN' or len(st['failures']) >= ORS_BREAKER_FAILURE_THRESHOLD:
         st['state'] = 'OPEN'
         st['open_until'] = now + ORS_BREAKER_COOLDOWN_S
-        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
+        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cause={st.get("cause")}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
 
 
 def _emit_metric(endpoint, profile, host, status, latency_ms, req_bytes, resp_bytes,
@@ -1261,12 +1289,18 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
     if not allow:
         req_id = uuid.uuid4().hex
         _emit_metric(function, profile, host, 503, 0, req_bytes, None,
-                     error_code='circuit_open', caller=caller, region=region_hint, request_id=req_id)
+                     error_code=breaker_reason, caller=caller, region=region_hint, request_id=req_id)
+        # Report the code that OPENED the breaker, not a generic 'circuit_open'.
+        # Callers key off this string to tell a suspended region (resume it) from
+        # an overloaded one (back off), and collapsing both into one opaque code
+        # is what made a suspended region undetectable for the cooldown window.
         return {
-            'error': 'circuit_open',
-            'message': f'Circuit breaker is OPEN for {host} after repeated failures. '
-                       f'Calls will resume after the {ORS_BREAKER_COOLDOWN_S}s cooldown. '
+            'error': breaker_reason,
+            'message': f'Circuit breaker is OPEN for {host} after repeated failures '
+                       f'({breaker_reason}). Calls will resume after the '
+                       f'{ORS_BREAKER_COOLDOWN_S}s cooldown. '
                        f'See the Observability page for the failing endpoint history.',
+            'circuit_open': True,
             'ors_host': host,
         }
 
@@ -1291,7 +1325,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             # 2xx/3xx are success-shaped, both end the loop here.
             if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS:
                 last_error_payload = annotated
-                _breaker_on_failure(host)
+                _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
                 backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
                 # +/-25% jitter (full random distribution) so simultaneous
                 # callers do not synchronize retries. Using random.uniform
@@ -1325,7 +1359,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'Cannot connect to ORS{region_label} (attempt {attempt}) - suspended or not provisioned')
             _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
                          error_code='service_unreachable', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'service_unreachable')
             last_error_payload = {
                 'error': 'service_unreachable',
                 'graph_loading': False,
@@ -1349,7 +1383,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'ORS request timed out on {host} after {timeout_s}s')
             _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
                          error_code='timeout', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'timeout')
             return {
                 'error': 'timeout',
                 'message': f'ORS request timed out on {host} after {timeout_s}s. '

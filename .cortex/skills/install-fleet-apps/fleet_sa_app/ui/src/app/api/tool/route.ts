@@ -87,18 +87,18 @@ async function handlePost(req: Request) {
     // "OPTIMIZATION_UNAVAILABLE" result when the region's ORS/VROOM service is
     // suspended. Resume it and return the friendly notice instead of the raw shape.
     const det = detectSuspendedInResult(result);
-    if (det.suspended) {
-      const resumeRegion = resolveResumeRegion(det.region, regionHint);
-      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+    const detRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
+    if (detRegion) {
+      const payload = await resumeAndBuildPayload(detRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
     }
     return NextResponse.json({ ok: true, verb, result });
   } catch (err) {
     const rawMsg = err instanceof Error ? err.message : 'Tool call failed';
     const det = detectOrsSuspended(rawMsg);
-    if (det.suspended) {
-      const resumeRegion = resolveResumeRegion(det.region, regionHint);
-      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
     }
     logger.error('tool-call', { verb }, err);

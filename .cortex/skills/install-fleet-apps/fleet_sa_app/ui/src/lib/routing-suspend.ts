@@ -18,6 +18,19 @@ export const SUSPEND_REASON = 'ORS_SUSPENDED' as const;
 export type RegionTier = 'S' | 'L' | 'XXL';
 export type RoutingServiceKind = 'ORS' | 'VROOM' | 'GATEWAY';
 
+// Why the engine could not serve the request.
+//   'suspended'      - the service is down; a resume is the correct remedy.
+//   'not_ready'      - the service is up but cannot answer yet (graph still
+//                      loading after a resume, or the call exceeded its timeout
+//                      budget). Resuming is a no-op, so the copy must NOT
+//                      claim one.
+//   'not_provisioned'- the region has no ORS service at all. Neither a resume
+//                      nor waiting will help.
+// The distinction exists because the honest message differs, and because
+// claiming "a resume has been triggered" for a running-but-slow engine sends
+// the user off to wait for something that already happened.
+export type EngineState = 'suspended' | 'not_ready' | 'not_provisioned';
+
 // Typed payload the API routes return (HTTP 503) and the client renders.
 export interface SuspendedInfo {
   reason: typeof SUSPEND_REASON;
@@ -26,12 +39,17 @@ export interface SuspendedInfo {
   waitMinutes: string;
   service?: string;
   message: string;
+  // Whether a resume was actually issued. Absent on payloads built before this
+  // field existed, so treat undefined as 'suspended'.
+  state?: EngineState;
 }
 
 export interface SuspendDetection {
   suspended: boolean;
   region?: string;
   kind?: RoutingServiceKind;
+  // Only meaningful when suspended is true.
+  state?: EngineState;
 }
 
 // Normalize a region token to the SPCS service-name suffix form (UPPER, only
@@ -58,6 +76,35 @@ const SUSPEND_SIGNATURES = [
   /service_unreachable/i,
   /OPTIMIZATION_UNAVAILABLE/i,
   /connection refused/i,
+  /connection_failed/i,
+  // The gateway's circuit breaker fails fast without touching ORS. It now
+  // reports the code that opened it, but an older gateway image (or a breaker
+  // opened by mixed causes) can still emit the bare code, and a region that
+  // trips the breaker is unusable either way - so treat it as suspended and let
+  // the server's service-state check decide whether to actually resume.
+  /circuit_open/i,
+];
+
+// Signatures for an engine that is UP but cannot answer yet. Same detection
+// path, different remedy and different copy - see EngineState.
+const NOT_READY_SIGNATURES = [
+  /service_warming_up/i,
+  /graph_loading/i,
+  /graphs? (?:are |is )?still (?:building|loading)/i,
+  /graph is loading/i,
+  // The gateway's per-endpoint timeout. Emitted both when a resumed region is
+  // still loading its graph and when a genuinely healthy region is handed a
+  // request too large for its budget, which is exactly why this is 'not_ready'
+  // rather than 'suspended'.
+  //
+  // Deliberately NOT a bare /timeout/: that would also match a Snowflake
+  // statement timeout on a heavy non-routing query and mislabel it as a routing
+  // outage. Match only the two shapes a gateway timeout actually arrives in -
+  // the SQL guard's "ORS timeout host=..." raise, and the JSON error field seen
+  // by detectSuspendedInResult.
+  /\bORS (?:request )?time(?:d)? ?out\b/i,
+  /["']error["']\s*:\s*["']timeout["']/i,
+  /\btimed out after\b/i,
 ];
 
 // Extract the (kind, region) named in a "ors-service-<region>" /
@@ -75,10 +122,18 @@ function extractServiceRef(text: string): { kind?: RoutingServiceKind; region?: 
 // Detect a suspended-routing-engine condition from any error string / message.
 export function detectOrsSuspended(text: string | null | undefined): SuspendDetection {
   if (!text) return { suspended: false };
-  const hit = SUSPEND_SIGNATURES.some((re) => re.test(text));
-  if (!hit) return { suspended: false };
+  // Check suspended first: a payload naming both (e.g. a breaker opened by a
+  // timeout on a since-suspended host) is better treated as the actionable one.
+  const suspendedHit = SUSPEND_SIGNATURES.some((re) => re.test(text));
+  const notReadyHit = !suspendedHit && NOT_READY_SIGNATURES.some((re) => re.test(text));
+  if (!suspendedHit && !notReadyHit) return { suspended: false };
   const ref = extractServiceRef(text);
-  return { suspended: true, region: ref.region, kind: ref.kind };
+  return {
+    suspended: true,
+    region: ref.region,
+    kind: ref.kind,
+    state: suspendedHit ? 'suspended' : 'not_ready',
+  };
 }
 
 // Detect a suspended condition inside a structured result object (the typed
@@ -91,7 +146,7 @@ export function detectSuspendedInResult(result: unknown): SuspendDetection {
       const svc = typeof o.vroom_service === 'string' ? o.vroom_service : '';
       const region = typeof o.region === 'string' ? o.region : undefined;
       const fromSvc = detectOrsSuspended(svc);
-      return { suspended: true, region: region || fromSvc.region, kind: 'VROOM' };
+      return { suspended: true, region: region || fromSvc.region, kind: 'VROOM', state: 'suspended' };
     }
   }
   try {
@@ -116,12 +171,38 @@ export function waitCopyForTier(tier: RegionTier | null | undefined): string {
   }
 }
 
-// The single user-facing sentence shown wherever a suspended engine is detected.
-export function suspendedMessage(region: string, waitCopy: string): string {
+// The single user-facing sentence shown wherever an unavailable engine is
+// detected. `state` keeps the claim truthful: only say a resume was triggered
+// when one actually was.
+export function suspendedMessage(
+  region: string,
+  waitCopy: string,
+  state: EngineState = 'suspended',
+): string {
+  if (state === 'not_provisioned') {
+    return notProvisionedMessage(region);
+  }
+  if (state === 'not_ready') {
+    return (
+      `The routing engine for ${region} is starting up and cannot answer yet. ` +
+      `Loading its road graph usually takes ${waitCopy}. ` +
+      `Please try again in a moment.`
+    );
+  }
   return (
     `The routing engine for ${region} was suspended to save cost. ` +
     `A resume has been triggered and it usually takes ${waitCopy} to become ready. ` +
     `Please try again in a moment.`
+  );
+}
+
+// Message for a region that has no ORS service at all. Promising a resume here
+// is a promise that can never be kept.
+export function notProvisionedMessage(region: string): string {
+  return (
+    `No routing engine is provisioned for ${region}, so live routing is ` +
+    `unavailable for this region. Provision it from the admin app (Regions), ` +
+    `then reload this view.`
   );
 }
 

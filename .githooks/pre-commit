@@ -65,3 +65,21 @@ if [ -f "$ORS_RAISE_CHECK" ] && staged_any \
     exit 1
   }
 fi
+
+# ── 4. Gateway error codes must be visible to the suspend detector ────────────
+# The gateway has several codes for "region cannot serve this request"
+# (service_unreachable / circuit_open / timeout / service_warming_up). Any code
+# the client cannot classify means no typed 503, no auto-resume, and a blank or
+# raw-error panel while the engine stays suspended. Adding a code without
+# deciding how it is classified is the exact regression this catches.
+SUSPEND_SIG_CHECK="$SKILL_DIR/scripts/check_suspend_signatures.py"
+if [ -f "$SUSPEND_SIG_CHECK" ] && staged_any \
+  "$SKILL_DIR/openrouteservice_app/services/gateway/routing_service.py" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/routing-suspend.ts" \
+  "$SKILL_DIR/scripts/check_suspend_signatures.py"; then
+  echo "pre-commit: gateway error-code coverage check..."
+  python3 "$SUSPEND_SIG_CHECK" || {
+    echo "pre-commit FAILED: a gateway error code is invisible to the suspend detector."
+    exit 1
+  }
+fi

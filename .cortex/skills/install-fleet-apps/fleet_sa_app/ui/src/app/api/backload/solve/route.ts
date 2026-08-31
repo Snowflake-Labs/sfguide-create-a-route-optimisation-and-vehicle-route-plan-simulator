@@ -78,9 +78,9 @@ async function handlePost(req: Request) {
       // notice instead of the raw connection error.
       const det = detectOrsSuspended(msg);
       const detResult = det.suspended ? det : detectSuspendedInResult(result);
-      if (detResult.suspended) {
-        const resumeRegion = resolveResumeRegion(detResult.region, region);
-        const payload = await resumeAndBuildPayload(resumeRegion, detResult.kind);
+      const resumeRegion = detResult.suspended ? resolveResumeRegion(detResult.region, region) : null;
+      if (resumeRegion) {
+        const payload = await resumeAndBuildPayload(resumeRegion, detResult.kind, detResult.state);
         return NextResponse.json(payload, { status: 503 });
       }
       // VROOM code 3 aborts the whole solve when a single location cannot be
@@ -98,9 +98,9 @@ async function handlePost(req: Request) {
     const rawMsg = err instanceof Error ? err.message : 'Backload solve failed';
     // A suspended ORS/VROOM service can also surface as a thrown SQL/HTTP error.
     const det = detectOrsSuspended(rawMsg);
-    if (det.suspended) {
-      const resumeRegion = resolveResumeRegion(det.region, region);
-      const payload = await resumeAndBuildPayload(resumeRegion, det.kind);
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, region) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
     }
     logger.error('backload-solve', {}, err);

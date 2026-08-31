@@ -26,7 +26,7 @@ function synthesizeNoTextFallback(parts: MessagePart[]): string {
       : p.type === 'tool_error' ? detectOrsSuspended(p.error)
       : { suspended: false as const };
     if (det.suspended) {
-      return suspendedMessage(det.region || 'this region', waitCopyForTier(null));
+      return suspendedMessage(det.region || 'this region', waitCopyForTier(null), det.state ?? 'suspended');
     }
   }
   let reason = '';

@@ -251,20 +251,29 @@ export async function POST(request: NextRequest) {
       const handleSuspend = (det: SuspendDetection) => {
         if (!det.suspended) return;
         const region = resolveResumeRegion(det.region, activeRegion);
+        // No region could be identified: resuming a guessed default would resume
+        // the wrong engine and misreport which one, so say nothing here and let
+        // the model's own tool-error text stand.
+        if (!region) return;
         const key = region.toUpperCase();
         if (resumedRegions.has(key)) return;
         resumedRegions.add(key);
-        // Synchronous friendly message (default wait copy avoids an async tier
-        // lookup that could resolve after the stream closes).
+        // Stays synchronous on purpose: an async service-state lookup could
+        // resolve after the stream controller has closed. The state hint from
+        // the error string is enough to keep the copy honest, and an
+        // ALTER ... RESUME on an already-running service is a harmless no-op.
+        const state = det.state ?? 'suspended';
         const textPart: MessagePart = {
           type: 'text',
-          content: suspendedMessage(region, waitCopyForTier(null)),
+          content: suspendedMessage(region, waitCopyForTier(null), state),
         };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(textPart)}\n\n`));
-        // Fire-and-forget resume of the region's ORS + VROOM services.
-        triggerRegionResume(region).catch((e) =>
-          logger.warn('chat-resume-failed', { region, error: String(e) }),
-        );
+        // Fire-and-forget resume, but only when the engine is actually down.
+        if (state === 'suspended') {
+          triggerRegionResume(region).catch((e) =>
+            logger.warn('chat-resume-failed', { region, error: String(e) }),
+          );
+        }
       };
 
       try {
