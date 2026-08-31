@@ -206,13 +206,29 @@ const PROFILE_ALTER = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE A
 const PROFILE_DROP_DEPENDENT_VIEW = `EXECUTE IMMEDIATE $$
 BEGIN
   DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE;
-  RETURN 'dropped dependent VW_VEHICLE_PROFILE; the pack step recreates it';
+  RETURN 'dropped dependent VW_VEHICLE_PROFILE; recreated after column ALTERs';
 EXCEPTION
   WHEN OTHER THEN
     RETURN 'FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE not present; continuing';
 END;
 $$`;
 const PROFILE_ALTER_MIN_STOP = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER`;
+// Recreate the SELECT * contract view after all column ALTERs are done.
+// The pack step runs BEFORE the admin app boots, so this function is the
+// only place that can restore it. Without this, VW_VEHICLE_PROFILE stays
+// dropped and every consumer (route_deviation, the agent, Cortex Analyst)
+// silently breaks.
+const PROFILE_RECREATE_VIEW = `EXECUTE IMMEDIATE $$
+BEGIN
+  CREATE OR REPLACE VIEW FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+    COMMENT='${TRACK}' AS
+  SELECT * FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
+  RETURN 'recreated FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'FLEET_APP.UNIFIED_FLEET schema absent; the pack step creates the view';
+END;
+$$`;
 
 const DWELL_SLA_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
   VEHICLE_TYPE    VARCHAR NOT NULL,
@@ -269,8 +285,8 @@ function dwellSlaMergeSql(): string {
 // and before generation stamps DIM_FLEET.
 export async function ensureVehicleProfileCatalog(snowSql: SnowSqlFn): Promise<void> {
   const stmts = [PROFILE_DDL, PROFILE_ALTER, PROFILE_DROP_DEPENDENT_VIEW,
-                 PROFILE_ALTER_MIN_STOP, profileMergeSql(), DWELL_SLA_DDL,
-                 dwellSlaMergeSql()];
+                 PROFILE_ALTER_MIN_STOP, PROFILE_RECREATE_VIEW,
+                 profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
   for (const sql of stmts) {
     await snowSql(sql, 'FLEET_INTELLIGENCE', 'CORE');
   }

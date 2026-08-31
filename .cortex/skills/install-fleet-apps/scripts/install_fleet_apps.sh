@@ -621,26 +621,6 @@ else
   step "4.9 deployment-facts" SKIPPED
 fi
 
-# ── 4.95 Deployment-history semantic view (ops/admin query_deployment) ────
-# SEMANTIC_OPS.SV_FLEET_DEPLOYMENT: routing-call volume / error rate / latency per
-# region and endpoint, build outcomes and durations, and the audited verb attempts.
-# It is what makes the ops and admin agents answer AGGREGATE questions at all -
-# their verbs each report a single point in time - and it is the tool that clears
-# Snowsight's "Connect a semantic view" checklist item for those two agents.
-#
-# MUST run before step 6: an agent binds its Cortex Analyst tool to the semantic
-# view at CREATE AGENT time. Depends only on the OPENROUTESERVICE_APP tables from
-# step 1, so it is safe this early. Best-effort.
-if [ -f "$SEMANTIC_VIEWS_DEPLOY_SQL" ]; then
-  note "[4.95/8] creating deployment-history semantic view (SV_FLEET_DEPLOYMENT)..."
-  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_DEPLOY_SQL" --enable-templating NONE \
-      >/tmp/ifa_semantic_deploy.log 2>&1 \
-    && step "4.95 sv-deployment" OK \
-    || { note "  WARN: SV_FLEET_DEPLOYMENT failed; see /tmp/ifa_semantic_deploy.log"; step "4.95 sv-deployment" FAILED; }
-else
-  step "4.95 sv-deployment" SKIPPED
-fi
-
 # ── 5. synapse tool bundles ─────────────────────────────────────
 if [ "${SKIP_TOOLS:-0}" != "1" ]; then
   note "[5/8] installing synapse tool bundles..."
@@ -649,6 +629,26 @@ if [ "${SKIP_TOOLS:-0}" != "1" ]; then
   step "5 tools" OK
 else
   step "5 tools" SKIPPED
+fi
+
+# ── 5.5 Deployment-history semantic view (ops/admin query_deployment) ──────
+# SEMANTIC_OPS.SV_FLEET_DEPLOYMENT: routing-call volume / error rate / latency per
+# region and endpoint, build outcomes and durations, and the audited verb attempts.
+# It is what makes the ops and admin agents answer AGGREGATE questions at all -
+# their verbs each report a single point in time - and it is the tool that clears
+# Snowsight's "Connect a semantic view" checklist item for those two agents.
+#
+# MUST run after step 5 (synapse bundles create OPENROUTESERVICE_APP.ROUTING and
+# its VERB_ATTEMPT table) and before step 6 (agents bind Cortex Analyst tools to
+# the semantic view at CREATE AGENT time). Best-effort.
+if [ -f "$SEMANTIC_VIEWS_DEPLOY_SQL" ]; then
+  note "[5.5/8] creating deployment-history semantic view (SV_FLEET_DEPLOYMENT)..."
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_DEPLOY_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_deploy.log 2>&1 \
+    && step "5.5 sv-deployment" OK \
+    || { note "  WARN: SV_FLEET_DEPLOYMENT failed; see /tmp/ifa_semantic_deploy.log"; step "5.5 sv-deployment" FAILED; }
+else
+  step "5.5 sv-deployment" SKIPPED
 fi
 
 # ── 6. agents ───────────────────────────────────────────────────
