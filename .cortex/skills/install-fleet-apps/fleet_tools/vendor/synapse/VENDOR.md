@@ -36,13 +36,16 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Three deviations from upstream, plus one new local file. Each is load-bearing: dropping
+Four deviations from upstream, plus two new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
-replayable record and are already applied to this tree.
+replayable record and are already applied to this tree. Patches are scoped by FILE, not
+by concern, so `git apply` never has two patches editing the same file.
 
 ### patches/01-tracking-tags.patch
 
-Files: new `src/tracking.ts`, `src/ddl.ts`, `src/build/ddl.ts`, `src/cli/materialize.ts`.
+Files: new `src/tracking.ts`, `src/ddl.ts`, `src/build/ddl.ts`.
+(The `query_tag` half of this concern lives in `04-cli-materialize.patch`, because that
+file carries a second unrelated change and patches are kept file-scoped.)
 Origin: repo commits `7c7db973` and `13943c91`.
 
 AGENTS.md requires a session `query_tag` on every session and a JSON `COMMENT`
@@ -53,7 +56,7 @@ cannot drift:
 
 - `src/ddl.ts` - `COMMENT` on the `VERB_ATTEMPT` hybrid table
 - `src/build/ddl.ts` - `COMMENT` on each generated procedure
-- `src/cli/materialize.ts` - `ALTER SESSION SET query_tag` in the `install.sql` preamble
+- `src/cli/materialize.ts` - `ALTER SESSION SET query_tag` in the `install.sql` preamble (shipped in patch 04)
 
 **The procedure `COMMENT` must sit BEFORE `EXECUTE AS`.** Upstream emits
 `... EXECUTE AS OWNER AS`; appending `COMMENT` after `EXECUTE AS` makes Snowflake
@@ -66,7 +69,7 @@ via their JSON-tagged parent schema.
 
 ### patches/02-test-fixtures.patch
 
-Files: `tests/unit/ddl.test.ts`, `tests/unit/bundle.test.ts`.
+Files: `tests/unit/ddl.test.ts`, `tests/unit/bundle.test.ts`, new `tests/unit/materialize.test.ts`.
 
 Test-only. Two of these are **upstream bugs**, not our changes, and are candidates for
 an upstream PR:
@@ -99,6 +102,58 @@ table either way - this is robustness, not a bug fix; the audit trail works toda
 An already-qualified name (contains a `.`) passes through untouched, and with no
 target the bare name is preserved. Three tests cover those cases.
 
+### patches/04-cli-materialize.patch
+
+File: `src/cli/materialize.ts`. Carries two unrelated changes, because patches are
+file-scoped.
+
+**(a) The `install.sql` `query_tag` preamble** - the second half of the tracking-tag
+concern described under patch 01.
+
+**(b) `deploy` as the highest-precedence deploy role.** This one is a **total deploy
+failure** if dropped, and it is the subtlest trap in this vendor directory.
+
+`install.sql` emits `USE ROLE <deployRole>` and then creates the audit hybrid table,
+the verb procedures, the MCP server, and the grants - so the deploy role must be
+installer-grade. Upstream picks it as:
+
+```ts
+roles.admin ?? roles.owner ?? Object.values(roles)[0]
+```
+
+on the assumption that the logical role named `admin` is an installer role. In this
+repo the logical names are the **consumer app roles**, declared by the verbs' own
+`roles: [...]` fields and bound one-per-bundle by `install_synapse_bundles.sh`:
+
+| Bundle | `install.json` roles | upstream picks | why |
+|---|---|---|---|
+| user | `{"user": "FLEET_APP_USER"}` | `FLEET_APP_USER` | first-key fallback |
+| ops | `{"ops": "FLEET_APP_OPS"}` | `FLEET_APP_OPS` | first-key fallback |
+| admin | `{"admin": "FLEET_APP_ADMIN"}` | `FLEET_APP_ADMIN` | matches `roles.admin` |
+
+Every bundle therefore emits `USE ROLE <consumer role>` and dies on
+`CREATE OR REPLACE HYBRID TABLE verb_attempt` for want of `CREATE HYBRID TABLE`,
+before a single procedure, the MCP server, or any grant is created. Nothing installs.
+
+Note this was **not** a pre-existing condition: the previously vendored `dist` emitted
+no `USE ROLE` at all, so `install.sql` simply ran as the connection's role. The pin
+arrived with the re-vendor.
+
+Rebinding `admin` to an installer role does **not** fix it: the admin bundle's verbs
+declare `roles: ['admin']`, `build/install.ts` hard-fails when a proc-referenced
+logical role is unbound, and rebinding would mis-target that bundle's
+`GRANT USAGE ON PROCEDURE` at the installer role. Hence a dedicated `deploy` key that
+no verb can reference (verified unused across all 26 verbs). The rest of upstream's
+chain is preserved, so an app where `admin` genuinely is the installer role is
+unaffected.
+
+`install_synapse_bundles.sh` binds `deploy` to `CURRENT_ROLE()`, which reproduces the
+pre-pin behaviour exactly and keeps object ownership where it already was. Guarded by
+`tests/unit/materialize.test.ts` and by a string check in the install script.
+
+Upstream-PR candidate: the precedence silently deploys as an under-privileged role for
+any app whose `admin` role is an app role rather than an installer role.
+
 ### Retired: `IDEMPOTENCY_KEY STRING DEFAULT NULL`
 
 Repo commit `f23abece` patched the vendored dist to add this default, because the
@@ -121,7 +176,7 @@ reapply this patch.** The behaviour is still verified by
    git apply patches/*.patch
    ```
    If a patch does not apply, reseat it by hand - upstream may have moved the code - then regenerate the patch file by diffing this tree against the fresh upstream copy.
-4. `npm install && npm run build && npm test` (expect 68 passing).
+4. `npm install && npm run build && npm test` (expect 72 passing).
 5. Re-materialize and re-deploy the three bundles, then **recreate the agents** (`synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so agents bound to the old server go stale).
-6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, and `IDEMPOTENCY_KEY STRING DEFAULT NULL`.
+6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL.
 7. Update the pinned commit and date in this file.

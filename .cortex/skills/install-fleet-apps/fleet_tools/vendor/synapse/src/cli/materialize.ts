@@ -15,6 +15,33 @@ import { readInstallConfig, installRuntime } from '../build/install.js';
 import { resolveTargetDir, parseTargetFlags } from './target.js';
 
 /**
+ * Pick the role that `install.sql` runs as (`USE ROLE ...`), which therefore owns
+ * the audit table, procedures, MCP server, and grants it creates.
+ *
+ * LOCAL PATCH (see ../../VENDOR.md): `deploy` was added as the highest-precedence
+ * key. Upstream starts at `roles.admin`, on the assumption that the logical role
+ * named `admin` is an installer-grade role. That does not hold here: our logical
+ * role names are the CONSUMER app roles (`user` -> FLEET_APP_USER, `ops` ->
+ * FLEET_APP_OPS, `admin` -> FLEET_APP_ADMIN, each declared by the verbs' own
+ * `roles: [...]`). With one binding per bundle, upstream's chain resolves to that
+ * consumer role for all three bundles - directly via `roles.admin` for the admin
+ * bundle, and via the first-key fallback for user and ops. install.sql then does
+ * `USE ROLE FLEET_APP_USER` and dies on `CREATE OR REPLACE HYBRID TABLE
+ * verb_attempt` for want of CREATE HYBRID TABLE, before any procedure, the MCP
+ * server, or any grant is created. The failure is total, not partial.
+ *
+ * `admin` cannot simply be rebound to an installer role, because the admin bundle's
+ * verbs declare `roles: ['admin']` and `install.ts` requires every proc-referenced
+ * logical role to be bound; rebinding it would also mis-target that bundle's
+ * `GRANT USAGE ON PROCEDURE` at the installer role. Hence a dedicated `deploy` key,
+ * which no verb can reference. The rest of the chain is preserved so an app that
+ * does use `admin` as an installer role is unaffected.
+ */
+export function pickDeployRole(roles: Record<string, string>): string | undefined {
+  return roles.deploy ?? roles.admin ?? roles.owner ?? Object.values(roles)[0];
+}
+
+/**
  * Materialize `apps/_installed/<account>/<app>/install.sql` for a given install.
  * Branches on `install.runtime`:
  *   - 'sproc': schema -> seed -> proc DDL (incl. audit table) -> hand grants
@@ -110,7 +137,7 @@ export async function runMaterialize(app: ResolvedSynapseAppConfig, argv: string
   }
 
   // Assemble install.sql.
-  const deployRole = cfg.roles.admin ?? cfg.roles.owner ?? Object.values(cfg.roles)[0];
+  const deployRole = pickDeployRole(cfg.roles);
   if (!deployRole) {
     console.error('install.json has no roles defined; cannot pick a deploy role');
     process.exit(2);

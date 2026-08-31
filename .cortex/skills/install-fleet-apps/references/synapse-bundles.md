@@ -52,8 +52,30 @@ Consequences when working on the bundles:
   dropped a patch fails at install time rather than producing untagged objects.
 - Each bundle's `@snowflake/synapse` is a `file:` dependency symlinked to the vendor
   directory, so a rebuild is picked up with no per-bundle reinstall.
-- After changing framework source, run `npm test` in the vendor directory (66 tests);
-  the DDL suite guards the patched clause order.
+- After changing framework source, run `npm test` in the vendor directory (72 tests);
+  the DDL suite guards the patched clause order and the materialize suite guards the
+  deploy-role precedence.
+
+## install.json MUST bind a `deploy` role
+
+The generated `install.sql` opens with `USE ROLE <deployRole>` and then creates the
+`VERB_ATTEMPT` hybrid table, the verb procedures, the MCP server, and the grants, so
+that role has to be installer-grade. `install_synapse_bundles.sh` therefore writes:
+
+```json
+"roles": { "deploy": "<CURRENT_ROLE()>", "<bundle role key>": "<FLEET_APP_*>" }
+```
+
+Do not drop the `deploy` binding. Our logical role names are the CONSUMER app roles
+(`user` -> `FLEET_APP_USER`, `ops` -> `FLEET_APP_OPS`, `admin` -> `FLEET_APP_ADMIN`),
+and the framework's fallback chain (`deploy` -> `admin` -> `owner` -> first key) would
+otherwise land on one of those. `install.sql` then emits `USE ROLE FLEET_APP_USER` and
+fails on `CREATE OR REPLACE HYBRID TABLE verb_attempt` for want of
+`CREATE HYBRID TABLE` - before any procedure, the MCP server, or any grant is created,
+so the bundle deploys **nothing**. Note that `admin` cannot serve as the deploy key:
+the admin bundle's verbs declare `roles: ['admin']`, so it is already bound to a
+consumer role. Full reasoning in
+[`../fleet_tools/vendor/synapse/VENDOR.md`](../fleet_tools/vendor/synapse/VENDOR.md).
 
 ## Engine coupling note
 

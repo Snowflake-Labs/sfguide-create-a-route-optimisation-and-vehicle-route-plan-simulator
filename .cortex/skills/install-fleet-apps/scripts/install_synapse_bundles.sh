@@ -29,6 +29,26 @@ ACCOUNT=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT LOWER(CURRENT_ACCOUN
 [ -n "$ACCOUNT" ] || { echo "ERROR: could not resolve CURRENT_ACCOUNT() via $CONNECTION"; exit 1; }
 echo "[synapse] account=$ACCOUNT connection=$CONNECTION"
 
+# Resolve the role that install.sql will run as (`USE ROLE`), bound into
+# install.json as the logical role `deploy`.
+#
+# This must be the INSTALLING role, not a bundle's app role. install.sql creates the
+# VERB_ATTEMPT hybrid table, the verb procedures, the MCP server, and the grants, so
+# the deploy role needs CREATE privileges in the target schema. Our logical role
+# names are the consumer app roles (user -> FLEET_APP_USER, ops -> FLEET_APP_OPS,
+# admin -> FLEET_APP_ADMIN), and without an explicit `deploy` binding the framework
+# falls back to one of those: install.sql then emits `USE ROLE FLEET_APP_USER` and
+# fails on the hybrid table for want of CREATE HYBRID TABLE, deploying nothing at
+# all. See vendor/synapse/VENDOR.md (deploy-role patch) for the full chain.
+#
+# CURRENT_ROLE() reproduces the pre-`USE ROLE` behaviour exactly: install.sql used to
+# run as whatever role the connection had. Roles can contain '$' and other
+# identifier characters, so the filter is looser than the account one.
+DEPLOY_ROLE=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT CURRENT_ROLE();" 2>/dev/null \
+  | grep -iE '^"?[A-Za-z0-9_$-]+"?$' | grep -viE '^"?CURRENT_ROLE\(\)"?$' | head -1 | tr -d '"')
+[ -n "$DEPLOY_ROLE" ] || { echo "ERROR: could not resolve CURRENT_ROLE() via $CONNECTION (needed as the install.sql deploy role)"; exit 1; }
+echo "[synapse] deploy role=$DEPLOY_ROLE (install.sql runs as this role)"
+
 # ── Build the vendored synapse framework from source ──────────────────────────
 # The framework is vendored as SOURCE at a pinned upstream SHA (see
 # fleet_tools/vendor/synapse/VENDOR.md) and dist/ is generated output, NOT
@@ -78,6 +98,8 @@ grep -q "ALTER SESSION SET query_tag" "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the install.sql query_tag preamble (see vendor/synapse/VENDOR.md)"; exit 1; }
 grep -q "catalog?.database && catalog?.schema" "$VENDOR_DIR/dist/build/bundle.js" \
   || { echo "ERROR: built synapse codegen is missing the audit-table FQN qualification (see vendor/synapse/VENDOR.md)"; exit 1; }
+grep -q "roles.deploy" "$VENDOR_DIR/dist/cli/materialize.js" \
+  || { echo "ERROR: built synapse codegen is missing the 'deploy' deploy-role precedence (see vendor/synapse/VENDOR.md). Without it install.sql runs USE ROLE <consumer app role> and fails on CREATE OR REPLACE HYBRID TABLE verb_attempt, deploying nothing."; exit 1; }
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
@@ -113,7 +135,7 @@ for row in "${BUNDLES[@]}"; do
   "schema": "$SCHEMA",
   "snowCliConn": "$CONNECTION",
   "mcpServerName": "$MCP",
-  "roles": { "$ROLEKEY": "$ROLENAME" },
+  "roles": { "deploy": "$DEPLOY_ROLE", "$ROLEKEY": "$ROLENAME" },
   "materializedFrom": "git:$GIT_SHA"
 }
 JSON
