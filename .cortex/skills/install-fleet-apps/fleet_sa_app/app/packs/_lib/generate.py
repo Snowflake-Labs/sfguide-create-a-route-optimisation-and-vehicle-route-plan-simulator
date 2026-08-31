@@ -86,7 +86,7 @@ def materialization(entity: dict, binding: dict, model: dict) -> str:
 def create_stmt(schema: str, name: str, body: str, mat: str, entity: dict, model: dict) -> str:
     if mat == "dynamic_table":
         lag = entity.get("target_lag") or model.get("dynamic_target_lag", "1 hour")
-        wh = entity.get("warehouse") or model.get("warehouse", "MY_WH")
+        wh = entity.get("warehouse") or model.get("warehouse", "ROUTING_ANALYTICS")
         return (f"CREATE OR REPLACE DYNAMIC TABLE {schema}.{name}\n"
                 f"  TARGET_LAG = '{lag}' WAREHOUSE = {wh}\n"
                 f"  COMMENT='{TRACK_JSON}' AS\n{body};\n")

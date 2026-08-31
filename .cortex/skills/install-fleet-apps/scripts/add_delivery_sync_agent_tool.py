@@ -41,7 +41,7 @@ TOOL_SPEC = {
 
 TOOL_RESOURCE = {
     "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERY_SYNC",
-    "execution_environment": {"type": "warehouse", "warehouse": "MY_WH"},
+    "execution_environment": {"type": "warehouse", "warehouse": "ROUTING_ANALYTICS"},
 }
 
 # Inserted into the orchestration routing block, right after the query_dwell line

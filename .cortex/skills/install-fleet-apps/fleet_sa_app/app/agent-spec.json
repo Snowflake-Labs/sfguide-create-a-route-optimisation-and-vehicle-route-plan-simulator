@@ -141,56 +141,56 @@
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_fleet_ops": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_route_deviation": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_asset_velocity": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_catchment": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_location": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_sourcing": {
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_SOURCING",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "query_overture_global": {
       "semantic_view": "OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "search_sap_binding": {
@@ -223,7 +223,7 @@
       "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERY_SYNC",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     },
     "search_solution_catalog": {
