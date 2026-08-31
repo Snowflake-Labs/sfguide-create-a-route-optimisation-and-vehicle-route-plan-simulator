@@ -24,7 +24,7 @@ export const check_substrate = defineProc({
       .describe('Count of routing functions in OPENROUTESERVICE_APP.CORE (the engine database).'),
     tool_procs: t.number().describe('Count of TOOL_* procedures in FLEET_INTELLIGENCE.ROUTING_TOOLS.'),
     provisioned_regions: t.number().describe('Count of provisioned routing regions in the region map.'),
-    semantic_views: t.number().describe('Count of analytic semantic views in FLEET_INTELLIGENCE.SEMANTIC.'),
+    semantic_views: t.number().describe('Count of Cortex Analyst semantic views in FLEET_INTELLIGENCE.SEMANTIC.'),
     notes: t
       .string()
       .describe('One-line human summary of substrate state. Quote this verbatim rather than inferring a diagnosis.'),
@@ -49,8 +49,12 @@ export const check_substrate = defineProc({
       `SELECT COUNT(*) AS n FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME, 'TOOL_')`,
     );
     const regions = await num(`SELECT COUNT(*) AS n FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP`);
+    // Semantic views are NOT in INFORMATION_SCHEMA.VIEWS - they have their own
+    // INFORMATION_SCHEMA.SEMANTIC_VIEWS (columns CATALOG/SCHEMA/NAME). Counting
+    // VIEWS returned 0 on a full 8-SV install, the same class of confidently
+    // wrong zero this verb exists to stop reporting.
     const svs = await num(
-      `SELECT COUNT(*) AS n FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'SEMANTIC'`,
+      `SELECT COUNT(*) AS n FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.SEMANTIC_VIEWS WHERE "SCHEMA" = 'SEMANTIC'`,
     );
 
     const ok = core > 0 && tools > 0;

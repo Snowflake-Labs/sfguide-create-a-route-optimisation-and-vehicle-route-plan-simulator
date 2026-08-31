@@ -67,9 +67,18 @@ BEGIN
     FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES
    WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME, 'TOOL_');
 
-  SELECT COUNT(*) INTO :v_sem_views
-    FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.VIEWS
-   WHERE TABLE_SCHEMA = 'SEMANTIC';
+  -- Semantic views live in INFORMATION_SCHEMA.SEMANTIC_VIEWS (columns
+  -- CATALOG/SCHEMA/NAME), NOT INFORMATION_SCHEMA.VIEWS - counting the latter
+  -- reported 0 on a full 8-SV install. Guarded so an older account without the
+  -- info-schema view still gets the rest of the rollup.
+  BEGIN
+    SELECT COUNT(*) INTO :v_sem_views
+      FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.SEMANTIC_VIEWS
+     WHERE "SCHEMA" = 'SEMANTIC';
+  EXCEPTION
+    WHEN OTHER THEN
+      v_sem_views := 0;
+  END;
 
   -- Solution catalog (built by build_view_catalog.py). Absent on an older install,
   -- so tolerate its absence rather than failing the whole rollup.
