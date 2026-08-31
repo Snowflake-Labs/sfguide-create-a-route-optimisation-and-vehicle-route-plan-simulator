@@ -13,6 +13,7 @@ import { useAppStore } from '@/lib/store';
 import type { DisplayConfig, StyleConfig } from '@/lib/types';
 import { setDisplayConfigGlobal } from '@/lib/display-config';
 import { setStyleConfigGlobal, resolveRowHeights, resolveChartPalette } from '@/lib/style-config';
+import { applyDeepLink } from '@/lib/deep-link';
 import { AboutDialog } from './about-dialog';
 
 // Starter prompts on the empty-chat welcome screen. Either a flat list, or
@@ -104,6 +105,7 @@ export function AppShell() {
   const setAdminAppUrl = useAppStore((s) => s.setAdminAppUrl);
   const setDisplayConfig = useAppStore((s) => s.setDisplayConfig);
   const setStyleConfig = useAppStore((s) => s.setStyleConfig);
+  const showView = useAppStore((s) => s.showView);
 
   // Seed the role dropdown from the user's detected role (hint only; the
   // operator can still pick any role to evaluate). Failures are non-fatal.
@@ -221,12 +223,19 @@ export function AppShell() {
           }
         }
         bumpViewsVersion();
+
+        // Deep link, LAST. Ordering is load-bearing: it must run after view
+        // registration (or ?view= resolves to nothing) and after the contextBar
+        // defaults above (or those defaults overwrite the link's region/dataset).
+        // Failures are swallowed inside applyDeepLink - a stale link should open
+        // the app, not break it.
+        applyDeepLink({ setContext, showView });
       })
       .catch((err) => {
         console.error('[AppShell] Failed to load config:', err);
         setConfigError('Failed to load app configuration');
       });
-  }, [setContext, bumpViewsVersion, setSnowflakeFqn, setDisplayConfig]);
+  }, [setContext, bumpViewsVersion, setSnowflakeFqn, setDisplayConfig, showView]);
 
   const handleMouseDown = useCallback(() => {
     dragging.current = true;

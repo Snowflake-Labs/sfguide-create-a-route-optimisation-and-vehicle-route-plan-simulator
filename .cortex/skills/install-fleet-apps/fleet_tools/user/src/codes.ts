@@ -141,4 +141,6 @@ export const DataCodes = {
   SQL_NOT_READ_ONLY: 'SQL_NOT_READ_ONLY',
   /** max_rows was not a positive integer. */
   INVALID_MAX_ROWS: 'INVALID_MAX_ROWS',
+  /** deep_link was given a view id that is not in VIEW_CATALOG. */
+  UNKNOWN_VIEW_ID: 'UNKNOWN_VIEW_ID',
 } as const;
