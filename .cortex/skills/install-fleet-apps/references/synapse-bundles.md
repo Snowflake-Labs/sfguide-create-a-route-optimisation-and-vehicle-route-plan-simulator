@@ -21,7 +21,9 @@ bash .cortex/skills/install-fleet-apps/scripts/install_synapse_bundles.sh <conne
 ```
 
 The script:
-1. Installs the vendored framework deps once (`fleet_tools/vendor/synapse`, public npm only).
+1. Installs the vendored framework deps (`fleet_tools/vendor/synapse`, public npm only)
+   **and builds the framework from source with `tsc`**. See "Vendored framework is
+   source, not dist" below - the `synapse` CLI does not exist until this runs.
 2. Resolves the active account via `CURRENT_ACCOUNT()`.
 3. For each bundle: `npm install`, generates a fresh per-account
    `_installed/<account>/<bundle>/install.json` (binds the active connection +
@@ -30,6 +32,28 @@ The script:
 
 The committed `_installed/wgb26798/` targets are account-pinned references only;
 the per-account script never reuses them, so a clean install works on any account.
+
+## Vendored framework is source, not dist
+
+`fleet_tools/vendor/synapse` holds upstream `packages/synapse` **source** pinned to a
+SHA, with local patches applied on top; `dist/` is generated and is **not committed**.
+Full provenance, the patch inventory, and the re-vendor procedure live in
+[`../fleet_tools/vendor/synapse/VENDOR.md`](../fleet_tools/vendor/synapse/VENDOR.md).
+
+Consequences when working on the bundles:
+
+- `install_synapse_bundles.sh` runs `npm install` (including dev deps, for
+  `typescript`) and `npm run build` before touching Snowflake, and **rebuilds whenever
+  `src/` is newer than `dist/cli/index.js`**. A stale `dist` is the dangerous case: the
+  deploy looks completely normal while emitting old codegen.
+- The script then string-checks the built output for the two local codegen patches
+  (procedure `COMMENT` positioned before `EXECUTE AS`, and the `install.sql`
+  `query_tag` preamble) and aborts if either is missing, so a re-vendor that silently
+  dropped a patch fails at install time rather than producing untagged objects.
+- Each bundle's `@snowflake/synapse` is a `file:` dependency symlinked to the vendor
+  directory, so a rebuild is picked up with no per-bundle reinstall.
+- After changing framework source, run `npm test` in the vendor directory (66 tests);
+  the DDL suite guards the patched clause order.
 
 ## Engine coupling note
 
@@ -62,10 +86,12 @@ response`. Both were root-caused 2026-06-25.
    => ?)`. Without a default on the trailing arg, Snowflake raises *"named
    arguments [...] do not match any signature"* BEFORE the proc body runs (hence
    no audit row), and the agent surfaces it as the generic "Error parsing
-   response". The default is emitted by the vendored generator
-   `fleet_tools/vendor/synapse/dist/build/ddl.js` (`procDDL`, the
-   `argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL')` line). Do NOT drop
-   the `DEFAULT NULL` if that file is ever re-synced from upstream.
+   response". The default is emitted by the generator
+   `fleet_tools/vendor/synapse/src/build/ddl.ts` (`procDDL`, the
+   `argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL')` line) and asserted by a
+   unit test. As of the pinned vendor SHA this is **upstream behaviour**, not a local
+   patch - upstream fixed the identical bug in `dc8827c3` - so a re-sync will not lose
+   it. Verify it anyway after any re-vendor.
 
 2. **Recreate the agents AFTER (re)deploying the bundles.** `npx synapse deploy`
    does `CREATE OR REPLACE MCP SERVER`, which replaces `ROUTING_MCP` /

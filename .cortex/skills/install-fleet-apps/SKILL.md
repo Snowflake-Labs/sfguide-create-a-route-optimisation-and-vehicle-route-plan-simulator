@@ -194,6 +194,8 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 - `references/infra.sql` - detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` - agnostic seed-data probe + load path.
 - `references/synapse-bundles.md` - per-account materialize + deploy.
+- `references/upstream-synapse-app-patterns.md` - survey of the upstream synapse `apps/` for portable patterns (warehouse, endpoint grants, verb conventions).
+- `references/agent-map-knowledge.md` - what the chat agent knows about the map layers.
 - `references/routing-engine.md` - engine detection + native provisioning (default; skip with `--no-engine`).
 - `references/build-images.md` - build + push the 4 ORS/VROOM engine images.
 - `references/available-functions.md` - engine SQL functions, profiles, service limits, matrix builders.

@@ -29,12 +29,53 @@ ACCOUNT=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT LOWER(CURRENT_ACCOUN
 [ -n "$ACCOUNT" ] || { echo "ERROR: could not resolve CURRENT_ACCOUNT() via $CONNECTION"; exit 1; }
 echo "[synapse] account=$ACCOUNT connection=$CONNECTION"
 
-# One-time: install the vendored synapse framework's runtime deps (public npm).
-if [ ! -d "$TOOLS_DIR/vendor/synapse/node_modules" ]; then
-  echo "[synapse] installing vendored framework deps..."
-  ( cd "$TOOLS_DIR/vendor/synapse" && npm install --omit=dev >/tmp/synapse_vendor.log 2>&1 ) \
+# ── Build the vendored synapse framework from source ──────────────────────────
+# The framework is vendored as SOURCE at a pinned upstream SHA (see
+# fleet_tools/vendor/synapse/VENDOR.md) and dist/ is generated output, NOT
+# committed. So the CLI used below (`synapse materialize` / `synapse deploy`)
+# does not exist until tsc has run. Two failure modes this guards against:
+#   - no dist at all on a fresh clone -> "synapse: command not found"
+#   - a STALE dist after a src/ or patch change -> the deploy silently emits
+#     old codegen (e.g. a procedure DDL without the tracking COMMENT, or with
+#     COMMENT in the position Snowflake rejects), which is very hard to spot
+#     because the deploy itself looks normal.
+# Hence: rebuild whenever dist/ is missing or older than any source file, and
+# fail loudly on a tsc error rather than proceeding with whatever dist exists.
+VENDOR_DIR="$TOOLS_DIR/vendor/synapse"
+
+# Dev deps (typescript) are required to build, so this is a full install, not
+# --omit=dev as before. node_modules is gitignored.
+if [ ! -d "$VENDOR_DIR/node_modules" ]; then
+  echo "[synapse] installing vendored framework deps (incl. typescript)..."
+  ( cd "$VENDOR_DIR" && npm install >/tmp/synapse_vendor.log 2>&1 ) \
     || { echo "ERROR: vendor synapse npm install failed"; tail -30 /tmp/synapse_vendor.log; exit 1; }
 fi
+
+# Rebuild if dist/ is absent, or if any tracked source file is newer than the
+# built CLI entrypoint. `find -newer` over src/ + config is enough: package.json
+# changes imply an npm install, which the block above handles.
+NEEDS_BUILD=0
+if [ ! -f "$VENDOR_DIR/dist/cli/index.js" ]; then
+  NEEDS_BUILD=1
+elif [ -n "$(find "$VENDOR_DIR/src" "$VENDOR_DIR/tsconfig.json" -newer "$VENDOR_DIR/dist/cli/index.js" -print -quit 2>/dev/null)" ]; then
+  NEEDS_BUILD=1
+fi
+
+if [ "$NEEDS_BUILD" -eq 1 ]; then
+  echo "[synapse] building vendored framework (tsc)..."
+  ( cd "$VENDOR_DIR" && npm run build >/tmp/synapse_vendor_build.log 2>&1 ) \
+    || { echo "ERROR: vendored synapse build (tsc) failed - refusing to deploy a stale dist"; tail -40 /tmp/synapse_vendor_build.log; exit 1; }
+else
+  echo "[synapse] vendored framework dist is up to date"
+fi
+
+# Sanity-check the built codegen still carries the local patches (VENDOR.md).
+# Cheap string checks on the emitted CLI/build output; a re-vendor that dropped a
+# patch would otherwise only surface as an untagged object or a failed deploy.
+grep -q "COMMENT='\${TRACKING_COMMENT}' EXECUTE AS" "$VENDOR_DIR/dist/build/ddl.js" \
+  || { echo "ERROR: built synapse codegen is missing the procedure COMMENT tracking tag before EXECUTE AS (see vendor/synapse/VENDOR.md)"; exit 1; }
+grep -q "ALTER SESSION SET query_tag" "$VENDOR_DIR/dist/cli/materialize.js" \
+  || { echo "ERROR: built synapse codegen is missing the install.sql query_tag preamble (see vendor/synapse/VENDOR.md)"; exit 1; }
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
