@@ -46,6 +46,15 @@ fail() { printf '  BLOCKING  %s\n' "$1"; BLOCKING=1; }
 # One helper so every probe is a single statement whose output we can inspect.
 q() { snow sql -c "$CONNECTION" -q "$1" 2>&1; }
 
+# Same as q() but forces CSV. MANDATORY for any SHOW command.
+# `snow sql` renders its default output as a fixed-width table sized to the
+# terminal, and a wide result (SHOW SERVICES has ~30 columns) is squeezed until
+# EVERY cell renders empty - the grid still has the right number of rows, so the
+# output looks plausible while containing none of the values. A substring or grep
+# check against that is guaranteed to find nothing, which reported an account
+# holding 12 ORS/VROOM services as having none. CSV is width-independent.
+qc() { snow sql -c "$CONNECTION" --format csv -q "$1" 2>&1; }
+
 # Substring test on a VARIABLE, never `... | grep -q ...`.
 # Under `set -o pipefail`, grep -q exits at the first match and closes the pipe,
 # `snow` then dies of SIGPIPE, and the pipeline reports failure even though the
@@ -99,7 +108,7 @@ if has_i "$ROLE_OUT" "ACCOUNTADMIN"; then
   pass "role is ACCOUNTADMIN (all required privileges implied)"
 else
   warn "role is not ACCOUNTADMIN - verify CREATE DATABASE / WAREHOUSE / COMPUTE POOL / ROLE / INTEGRATION and IMPORT SHARE"
-  q "SHOW GRANTS TO ROLE IDENTIFIER(CURRENT_ROLE());" \
+  qc "SHOW GRANTS TO ROLE IDENTIFIER(CURRENT_ROLE());" \
     | grep -iE "CREATE (DATABASE|WAREHOUSE|COMPUTE POOL|ROLE|INTEGRATION)|IMPORT SHARE" \
     | sed 's/^/       /' | head -8
 fi
@@ -134,7 +143,7 @@ fi
 #        raise - it returns NULL and the layer silently disappears. ---
 echo
 echo "[5] ORS engine"
-OUT=$(q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;")
+OUT=$(qc "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;")
 if has_i "$OUT" "does not exist" || has_i "$OUT" "not authorized"; then
   warn "OPENROUTESERVICE_APP absent - expected on a first install (the engine is built by this run unless --no-engine)"
 else
@@ -182,7 +191,7 @@ python3 -c "import yaml" 2>/dev/null \
 echo
 echo "[8] Cowork agent discoverability"
 CURRENT_ROLE_OUT=$(q "SELECT CURRENT_ROLE() AS R;")
-GRANTS_OUT=$(q "SHOW GRANTS TO ROLE FLEET_APP_ADMIN;")
+GRANTS_OUT=$(qc "SHOW GRANTS TO ROLE FLEET_APP_ADMIN;")
 if has "$CURRENT_ROLE_OUT" "ACCOUNTADMIN"; then
   pass "running as ACCOUNTADMIN - it can always see the agents"
 elif has "$GRANTS_OUT" "FLEET_APP_ADMIN"; then

@@ -21,11 +21,30 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-s
 -- ============================================================================
 -- PHASE 1: Stop services on fleet/ORS compute pools (so pools + DBs drop clean)
 --          STOP ALL on a pool with no services is a no-op, never an error.
+--
+--          The per-region pools are enumerated, NOT listed. A hardcoded list is
+--          silently wrong the moment anyone provisions a region that is not on
+--          it: an account carrying Brazil/Colombia/Mexico/UnitedStatesOfAmerica
+--          alongside SanFrancisco/Europe kept four HIGHMEM_X64_M pools running
+--          after a "full" teardown, because only two were named here. Filtering
+--          with STARTSWITH rather than LIKE avoids `_` being a LIKE wildcard.
 -- ============================================================================
 ALTER COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL STOP ALL;
 ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
-ALTER COMPUTE POOL IF EXISTS ORS_POOL_SANFRANCISCO STOP ALL;
-ALTER COMPUTE POOL IF EXISTS ORS_POOL_EUROPE STOP ALL;
+
+BEGIN
+  SHOW COMPUTE POOLS;
+  LET rs RESULTSET := (
+    SELECT "name" AS n
+    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    WHERE STARTSWITH("name", 'ORS_POOL_')
+  );
+  LET c CURSOR FOR rs;
+  FOR r IN c DO
+    EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS "' || r.n || '" STOP ALL';
+  END FOR;
+  RETURN 'stopped services on all ORS_POOL_* pools';
+END;
 
 -- ============================================================================
 -- PHASE 2: Project + engine databases
@@ -61,11 +80,25 @@ DROP DATABASE IF EXISTS SAFEGRAPH_OPEN_CENSUS_FREE;
 
 -- ============================================================================
 -- PHASE 5: Compute pools (fleet/ORS only; leave unrelated project pools)
+--          Per-region pools are enumerated - see the PHASE 1 note.
 -- ============================================================================
 DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
-DROP COMPUTE POOL IF EXISTS ORS_POOL_SANFRANCISCO;
-DROP COMPUTE POOL IF EXISTS ORS_POOL_EUROPE;
+
+BEGIN
+  SHOW COMPUTE POOLS;
+  LET rs RESULTSET := (
+    SELECT "name" AS n
+    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    WHERE STARTSWITH("name", 'ORS_POOL_')
+  );
+  LET c CURSOR FOR rs;
+  FOR r IN c DO
+    EXECUTE IMMEDIATE 'DROP COMPUTE POOL IF EXISTS "' || r.n || '"';
+  END FOR;
+  RETURN 'dropped all ORS_POOL_* pools';
+END;
+
 -- Legacy native-app pool:
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL;
 
@@ -81,6 +114,9 @@ DROP INTEGRATION IF EXISTS FLEET_APP_CARTO_EAI;
 DROP INTEGRATION IF EXISTS FLEET_APP_OSM_EAI;
 DROP INTEGRATION IF EXISTS ORS_CARTO_EAI;
 DROP INTEGRATION IF EXISTS ORS_OSM_EAI;
+-- Geocoding egress EAI (added by a later engine module than CARTO/OSM, so it
+-- was missing from this list and survived every teardown):
+DROP INTEGRATION IF EXISTS ORS_GEOCODE_EAI;
 -- Legacy native-app EAIs (pre-relocation installs):
 DROP INTEGRATION IF EXISTS OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_INTEGRATION_REF_EXTERNAL_ACCESS;
 DROP INTEGRATION IF EXISTS OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_CARTO_REF_EXTERNAL_ACCESS;
