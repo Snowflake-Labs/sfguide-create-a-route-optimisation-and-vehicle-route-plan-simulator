@@ -64,24 +64,69 @@ MAY_BE_EMPTY = {
     # layer is emitted regardless so the view stays correct on a dataset with
     # stores, which means "empty here" is the expected result, not a bug.
     "geofence-100": "NJ has no 100 m (STORE/DESTINATION) sites",
+    # The mirror of the above: a dataset whose monitored POIs are all 100 m types
+    # (the SanFrancisco seed is all RESTAURANT/LOCATION) has no 200 m WAREHOUSE
+    # site to draw. Both layers are emitted unconditionally so the view stays
+    # correct on either taxonomy, which means exactly one of them is empty on any
+    # single-taxonomy dataset. Mirrors the same pair in view-expectations.yaml.
+    "geofence-200": "a 100 m-only taxonomy (e.g. the SanFrancisco seed) has no 200 m WAREHOUSE sites",
 }
 
 BINDS_SQL = {
     ":date_range_start": "DATEADD('day', -365, CURRENT_DATE())::DATE",
     ":date_range_end": "CURRENT_DATE()::DATE",
-    ":as_of_minute": "540",     # Slider config.default (09:00, minutes since midnight)
+    # :as_of_minute is resolved PER REGION at runtime and injected as a literal -
+    # see resolve_asof_minute(). It cannot be a scalar subquery here because the
+    # delivery_sync queries embed this bind inside table-function arguments, where
+    # Snowflake rejects a subquery with "Unsupported subquery type cannot be
+    # evaluated". The literal 540 (09:00) that used to sit here is exactly the
+    # assumption that broke the page: the SanFrancisco seed runs 14:00-05:00 UTC,
+    # so 09:00 has about 72 pings against 128,931 at peak and LIVE_FLEET_STATUS
+    # returned no vehicles at all. A test must not hardcode the very assumption it
+    # is meant to be checking.
     ":selected_site": "NULL",    # nothing clicked on first render
     ":dataset_id": "NULL",
     ":vehicle_type": "NULL",
 }
 
+# Busiest ten-minute telemetry bucket of the resolved service day: an instant that
+# has vehicles by construction, for any region or dataset.
+ASOF_MINUTE_SQL = (
+    "SELECT HOUR(TS)*60 + FLOOR(MINUTE(TS)/10)*10 AS M "
+    "FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT "
+    "WHERE REGION = '%s' AND TS::DATE = %s "
+    "GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1"
+)
+
 # Instants (minutes since midnight) the same-day invariant is swept over. NOT
 # just the slider default: the ON_SITE regression was a parked-vehicle failure
-# only visible in the early-morning window, so 05:00 is load-bearing here.
+# only visible in the early-morning window, so an early instant is load-bearing.
 # Issued as ONE statement per instant - do NOT fold them into a single query with
 # a correlated table function over a minutes list, which aborts with Snowflake
 # internal error 300010.
-INVARIANT_MINUTES = (300, 540, 780, 1020)   # 05:00, 09:00, 13:00, 17:00
+#
+# Derived from the data rather than fixed wall-clock. The previous fixed tuple
+# (05:00, 09:00, 13:00, 17:00) put two of its four probes in an eight-hour hole in
+# the SanFrancisco telemetry, where LIVE_FLEET_STATUS returns nothing: an
+# invariant swept over no rows cannot be violated, so those probes were passing
+# vacuously. These are the busiest ten-minute buckets of the shown service day,
+# spread across the operational window, so every probe has vehicles to judge.
+INVARIANT_MINUTES_SQL = (
+    "WITH b AS ("
+    "  SELECT HOUR(TS)*60 + FLOOR(MINUTE(TS)/10)*10 AS M, COUNT(*) AS N"
+    "  FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT"
+    "  WHERE REGION = '%s' AND TS::DATE = %s"
+    "  GROUP BY 1"
+    "), q AS ("
+    "  SELECT M, N, NTILE(4) OVER (ORDER BY M) AS Q FROM b WHERE N > 0"
+    "), r AS ("
+    "  SELECT M, Q, N, ROW_NUMBER() OVER (PARTITION BY Q ORDER BY N DESC, M) AS RN FROM q"
+    ") SELECT M FROM r WHERE RN = 1 ORDER BY M"
+)
+
+# Fallback if the region has no telemetry on the resolved day: the old fixed set,
+# so the sweep still runs rather than silently checking nothing.
+INVARIANT_MINUTES_FALLBACK = (300, 540, 780, 1020)
 
 # Resolved service day for a region: the busiest day, tie-broken deterministically.
 # MIRRORS the `SD` fragment in add_delivery_sync_view.py - if that changes, change
@@ -201,6 +246,60 @@ def run_sql(sql: str):
         os.unlink(path)
 
 
+def resolve_asof_minute(region: str) -> int:
+    """The instant the page opens on for this region, resolved from the data.
+
+    Returns minutes since midnight of the busiest ten-minute telemetry bucket on
+    the resolved service day, snapped to the slider's 10-minute step. Falls back
+    to 540 only when the region has no telemetry that day, so the sweep still
+    runs rather than silently checking nothing.
+    """
+    rows, err = run_sql(ASOF_MINUTE_SQL % (region, SD_SQL % region) + ";")
+    if err or not rows:
+        return 540
+    try:
+        return int(rows[0]["M"])
+    except (KeyError, TypeError, ValueError):
+        return 540
+
+
+def resolve_invariant_minutes(region: str) -> tuple:
+    """Instants to sweep the status invariants over, spread across the real
+    operational window instead of fixed wall-clock hours."""
+    rows, err = run_sql(INVARIANT_MINUTES_SQL % (region, SD_SQL % region) + ";")
+    if err or not rows:
+        return INVARIANT_MINUTES_FALLBACK
+    out = []
+    for r in rows:
+        try:
+            out.append(int(r["M"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(out) or INVARIANT_MINUTES_FALLBACK
+
+
+def region_has_visits(region: str) -> bool:
+    """Whether this region's POI taxonomy actually yields monitored site visits.
+
+    This is the enforcement gate, and it used to be `region == "UsNewJersey"`.
+    A hardcoded region name means the harness enforces NOTHING on any account whose
+    demo region is named something else - which is every account that does not
+    happen to have that dataset loaded. It printed "PASSED: all enforced areas
+    non-empty" while enforcing zero areas, on a run where the vehicles layer and
+    the inbound panel were both empty. The intent in the original comment was
+    "the region the demo runs on", and that is a property of the data.
+    """
+    rows, err = run_sql(
+        "SELECT COUNT(*) AS N FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+        "WHERE REGION = '%s';" % region)
+    if err or not rows:
+        return False
+    try:
+        return int(rows[0]["N"]) > 0
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def collect_queries(view: dict):
     found = []
 
@@ -248,9 +347,12 @@ def main() -> int:
         # Only the region the demo runs on is required to be non-empty; other
         # regions legitimately have no visits (their POI taxonomies are not in
         # the monitored site types), so they are reported but not enforced.
-        enforce = region == "UsNewJersey"
-        print("\n=== region %s %s ==="
-              % (region, "(enforced non-empty)" if enforce else "(reported only)"))
+        # Resolved from the data - see region_has_visits().
+        enforce = region_has_visits(region)
+        asof_minute = resolve_asof_minute(region)
+        print("\n=== region %s %s  (as of %02d:%02d) ==="
+              % (region, "(enforced non-empty)" if enforce else "(reported only)",
+                 asof_minute // 60, asof_minute % 60))
         for path, query, params, layer_id in queries:
             # Report by layer id when there is one - "geofence-100" says what broke;
             # "areas.map.config.layers[3]" makes you go and count brackets.
@@ -258,6 +360,7 @@ def main() -> int:
             sql = query
             for name, expr in BINDS_SQL.items():
                 sql = sql.replace(name, expr)
+            sql = sql.replace(":as_of_minute", str(asof_minute))
             sql = sql.replace(":region", "'%s'" % region)
 
             # A leftover bind means one the harness does not model; that is itself
@@ -312,7 +415,8 @@ def main() -> int:
     for region in region_list:
         worst = []
         errored = False
-        for minute in INVARIANT_MINUTES:
+        sweep = resolve_invariant_minutes(region)
+        for minute in sweep:
             rows, err = run_sql(same_day_invariant_sql(region, minute))
             if err:
                 print("  SQL ERROR       %-28s %02d:%02d %s"
@@ -333,8 +437,9 @@ def main() -> int:
                              "vehicle(s) target a site not on the shown service day (%s)"
                              % detail))
         else:
-            print("  OK      %-28s no off-day site classifications (%d instants)"
-                  % (region, len(INVARIANT_MINUTES)))
+            print("  OK      %-28s no off-day site classifications (%d instants: %s)"
+                  % (region, len(sweep),
+                     ", ".join("%02d:%02d" % (m // 60, m % 60) for m in sweep)))
 
     # Feed-vs-map coherence: the notification feed and the map status must not
     # describe the same vehicle differently. Swept over the same instants and for
@@ -344,7 +449,8 @@ def main() -> int:
     for region in region_list:
         worst = []
         errored = False
-        for minute in INVARIANT_MINUTES:
+        sweep = resolve_invariant_minutes(region)
+        for minute in sweep:
             rows, err = run_sql(feed_map_coherence_sql(region, minute))
             if err:
                 print("  SQL ERROR       %-28s %02d:%02d %s"
@@ -365,8 +471,9 @@ def main() -> int:
                              "vehicle(s) shown as departed in the feed and on site on "
                              "the map (%s)" % detail))
         else:
-            print("  OK      %-28s feed and map agree (%d instants)"
-                  % (region, len(INVARIANT_MINUTES)))
+            print("  OK      %-28s feed and map agree (%d instants: %s)"
+                  % (region, len(sweep),
+                     ", ".join("%02d:%02d" % (m // 60, m % 60) for m in sweep)))
 
     print()
     if failures:
