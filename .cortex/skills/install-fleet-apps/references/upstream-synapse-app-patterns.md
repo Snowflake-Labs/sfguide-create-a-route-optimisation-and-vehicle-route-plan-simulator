@@ -60,10 +60,16 @@ created or tagged it. Size is the lesser issue: the app's queries are point look
 and small aggregates, so Large buys nothing.
 
 **Fix:** point all three at `ROUTING_ANALYTICS`, which the installer already creates
-with a tracking COMMENT. Both service YAMLs are image-version-bump surfaces per
-AGENTS.md fix discipline. Ensure the app/service role holds `USAGE` (and `OPERATE`)
-on it - upstream learning 3b flags the forgotten grant as the standard failure mode
-when switching warehouses.
+with a tracking COMMENT. Size is the lesser issue: the app's queries are point lookups
+and small aggregates, so Large buys nothing.
+
+**STATUS: FIXED.** All three sites now use `ROUTING_ANALYTICS`. Because the engine,
+seed, and analytic scripts that create that warehouse can each be skipped
+(`--no-engine`, seed already present), the warehouse is also ensured idempotently -
+with its tracking COMMENT - in both app deploy scripts and in
+`install_synapse_bundles.sh`, so no ordering assumption is required. This closes
+upstream learning 3b as well: an app whose spec names a warehouse that does not exist
+deploys "successfully" and then fails every query at runtime.
 
 ### a2. Long-lived-connection keepalive and reconnect - NOT APPLICABLE
 
@@ -94,6 +100,12 @@ re-apply it in both deploy scripts after the `ALTER SERVICE`, so a service recre
 cannot lock non-owner roles out. Granting `USAGE` to a role does not require owning
 that role, so no extra privilege is needed.
 
+**STATUS: FIXED.** Both deploy scripts now grant database + schema + service `USAGE`
+after the `ALTER SERVICE ... RESUME`, on every deploy. The SA app grants to
+`FLEET_APP_USER`/`OPS`/`ADMIN`; the admin console deliberately grants only to
+`OPS`/`ADMIN`. Non-fatal per role: a standalone deploy on an account that has not run
+the installer yet warns instead of failing, since the roles may not exist.
+
 ### a4. Per-request `SHOW GRANTS TO USER` with no cache - APPLICABLE, low priority
 
 Upstream learning 4 advises caching identity/roster lookups because every Snowflake
@@ -109,10 +121,14 @@ caller session) and we are not exposed to the ~2-minute caller-JWT rotation.
 authorization cache, so the TTL must be short and it should be recorded as a
 deliberate staleness window.
 
+**STATUS: NOT DONE**, deliberately. It is a latency optimization on an authorization
+path, and caching an authorization decision is exactly the kind of change that wants
+its own review rather than riding along in a framework upgrade. Left as a documented
+candidate.
+
 ## (b) Verb / audit conventions for the 26 fleet verbs
 
 ### b1. Layer app error codes on the framework set by spreading
-
 `apps/mtg-intelligence/src/errors.ts` does:
 
 ```ts
@@ -127,6 +143,11 @@ so every verb can `ctx.fail` with either a canonical framework code
 and admin have **zero**, which is why their mutation verbs currently fail untyped.
 Feeds the `validate`-hook work.
 
+**STATUS: already in place.** 7 verbs carry `validate` hooks, including the mutation
+verbs this was aimed at (`set_active_region` in both ops and admin,
+`set_active_context`). The remaining gap is that ops and admin still declare no
+app-specific codes of their own, so their failures fall back to framework codes.
+
 ### b2. Wire the audit config through the catalog, not a literal
 
 `apps/mtg-intelligence/synapse.config.ts`:
@@ -140,6 +161,16 @@ The audit table name comes from the same `defineCatalog` map as everything else,
 the FQN is substituted at bundle time instead of being repeated as a string. This is
 the direct template for our `defineCatalog` adoption, and it shows the intended
 coupling: catalog first, then config referencing it.
+
+**STATUS: solved one layer down instead.** Copying this shape literally would not have
+worked: `synapse.config.ts` is evaluated by the CLI **outside a bundle**, where
+`defineCatalog` returns bare names by design, so upstream's audit table is bare too.
+The qualification now happens in the bundler, which does know the install target - see
+the audit-FQN patch in
+[`../fleet_tools/vendor/synapse/VENDOR.md`](../fleet_tools/vendor/synapse/VENDOR.md).
+Our verbs' other references stay explicit because they point at objects in other
+databases, which `defineCatalog` cannot qualify; that reasoning is recorded in
+`fleet_tools/user/src/catalog.ts`.
 
 ### b3. Record rejected approaches next to decisions
 
