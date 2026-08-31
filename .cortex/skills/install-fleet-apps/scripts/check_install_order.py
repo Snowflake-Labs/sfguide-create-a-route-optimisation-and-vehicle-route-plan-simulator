@@ -64,6 +64,10 @@ ORDER = [
     ("4.7 sap_knowledge",    SKILL / "fleet_sa_app" / "app" / "sap_knowledge.sql"),
     ("4.8 view_catalog",     SKILL / "fleet_sa_app" / "app" / "view_catalog.sql"),
     ("4.9 deployment_facts", SKILL / "fleet_sa_app" / "app" / "deployment_facts.sql"),
+    ("4.95 sv_deployment",   SKILL / "fleet_sa_app" / "app" / "semantic_views_deployment.sql"),
+    # Eval input tables. Self-contained (own schema, no cross-references), but
+    # included so a future edit that reaches into the contract is caught.
+    ("6.6 agent_evals",      SKILL / "fleet_sa_app" / "app" / "agent_evals.sql"),
     ("8   roles",            SKILL / "fleet_sa_app" / "app" / "role_binding.sql"),
 ]
 

@@ -1,0 +1,45 @@
+# Agent evaluation run config - FLEET_OPS_AGENT (operator).
+#
+# answer_correctness IS DELIBERATELY ABSENT.
+# This agent's capabilities are almost entirely synapse MCP verbs, and evaluations
+# do not call MCP tools ("the agent doesn't call any MCP server tool during the
+# run"). Scoring answer correctness would therefore mark the agent wrong for a
+# platform limitation on every operational question, or - if the rubric were
+# loosened to compensate - mark it right for answering nothing. Neither number
+# would mean anything.
+#
+# What IS measurable, and is measured here:
+#   tool_selection_accuracy - deterministic, and the ops dataset's ground truth
+#                             names the one non-MCP tool that should be chosen
+#                             (query_deployment) for each history question.
+#   logical_consistency     - reference-free; catches an orchestrator that
+#                             contradicts its own instructions, answers a
+#                             live-state question from history, or claims a
+#                             destructive action succeeded.
+#
+# The MCP verb path is covered instead by .cortex/skills/evals/run_agent_evals.py,
+# which asserts against the VERB_ATTEMPT audit table on a live deployment.
+#
+# See fleet_agent.yaml for why there is no dataset: block.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "LAST"
+  run_params:
+    label: "Fleet ops agent baseline"
+    description: "Deployment-history tool selection and orchestration consistency. answer_correctness omitted because MCP verbs are not invoked during evaluations."
+  source_metadata:
+    type: "dataset"
+    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_OPS_AGENT"
+
+# METRIC VERSIONS. Snowflake rejects an explicit `version: "v1"` with "Version 'v1'
+# is not valid. To reference the v1 metric, omit the version field and use
+# '<metric>' directly." - v1 is the default and is addressed by naming the metric
+# as a plain string. Pin an explicit version (v2 / v3) once your account allows
+# their judge models: scores from different metric versions are NOT comparable and
+# Snowsight renders each version as its own chart and column.
+metrics:
+  - "logical_consistency"
+  - "tool_selection_accuracy"

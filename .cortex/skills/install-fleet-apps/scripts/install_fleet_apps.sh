@@ -76,6 +76,13 @@ SEMANTIC_VIEWS_MARKETPLACE_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_marke
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
 VIEW_CATALOG_SQL="$SKILL_DIR/fleet_sa_app/app/view_catalog.sql"
 DEPLOYMENT_FACTS_SQL="$SKILL_DIR/fleet_sa_app/app/deployment_facts.sql"
+# Deployment-history semantic view (SEMANTIC_OPS.SV_FLEET_DEPLOYMENT) backing the
+# ops/admin agents' query_deployment Cortex Analyst tool. Its own schema, so the
+# FLEET_APP_USER FUTURE grant on FLEET_INTELLIGENCE.SEMANTIC cannot reach it.
+SEMANTIC_VIEWS_DEPLOY_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_deployment.sql"
+# Registers the four agents with the account's Snowflake CoWork object. Without it
+# an account that has a CoWork object hides the agents from the CoWork agent list.
+COWORK_BINDING_SQL="$SKILL_DIR/fleet_sa_app/app/cowork_binding.sql"
 # Agent Playground scenario config (region-neutral). The 3 demo tools
 # (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
 # NO static demo data is seeded; only this scenario config is uploaded so the
@@ -599,6 +606,26 @@ else
   step "4.9 deployment-facts" SKIPPED
 fi
 
+# ── 4.95 Deployment-history semantic view (ops/admin query_deployment) ────
+# SEMANTIC_OPS.SV_FLEET_DEPLOYMENT: routing-call volume / error rate / latency per
+# region and endpoint, build outcomes and durations, and the audited verb attempts.
+# It is what makes the ops and admin agents answer AGGREGATE questions at all -
+# their verbs each report a single point in time - and it is the tool that clears
+# Snowsight's "Connect a semantic view" checklist item for those two agents.
+#
+# MUST run before step 6: an agent binds its Cortex Analyst tool to the semantic
+# view at CREATE AGENT time. Depends only on the OPENROUTESERVICE_APP tables from
+# step 1, so it is safe this early. Best-effort.
+if [ -f "$SEMANTIC_VIEWS_DEPLOY_SQL" ]; then
+  note "[4.95/8] creating deployment-history semantic view (SV_FLEET_DEPLOYMENT)..."
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_DEPLOY_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_deploy.log 2>&1 \
+    && step "4.95 sv-deployment" OK \
+    || { note "  WARN: SV_FLEET_DEPLOYMENT failed; see /tmp/ifa_semantic_deploy.log"; step "4.95 sv-deployment" FAILED; }
+else
+  step "4.95 sv-deployment" SKIPPED
+fi
+
 # ── 5. synapse tool bundles ─────────────────────────────────────
 if [ "${SKIP_TOOLS:-0}" != "1" ]; then
   note "[5/8] installing synapse tool bundles..."
@@ -617,6 +644,51 @@ if [ "${SKIP_AGENTS:-0}" != "1" ]; then
   step "6 agents" OK
 else
   step "6 agents" SKIPPED
+fi
+
+# ── 6.5 Snowflake CoWork registration ───────────────────────────
+# On an account that has a Snowflake CoWork object (created automatically the first
+# time anyone opens the CoWork settings page), an agent is INVISIBLE in the CoWork
+# agent list until it is added to that object - reachable only by direct link. This
+# step adds all four. Idempotent (each ADD AGENT has its own exception handler,
+# because a repeat raises "already present" and would otherwise abort the file).
+#
+# Best-effort: a role without CREATE SNOWFLAKE INTELLIGENCE must not fail the
+# install, it just leaves the agents reachable by direct link only. Skip with
+# SKIP_COWORK=1.
+if [ "${SKIP_COWORK:-0}" != "1" ] && [ -f "$COWORK_BINDING_SQL" ]; then
+  note "[6.5/8] registering agents with the Snowflake CoWork object..."
+  snow sql -c "$CONNECTION" -f "$COWORK_BINDING_SQL" --enable-templating NONE \
+      >/tmp/ifa_cowork.log 2>&1 \
+    && step "6.5 cowork" OK \
+    || { note "  WARN: CoWork registration failed; see /tmp/ifa_cowork.log"; step "6.5 cowork" WARN; }
+else
+  step "6.5 cowork" SKIPPED
+fi
+
+# ── 6.6 Agent evaluation sets ───────────────────────────────────
+# Creates the four Snowsight-visible evaluation datasets (one per agent) so the
+# "Create the first eval set" checklist item is satisfied on a fresh install.
+#
+# The RUN is opt-in (RUN_AGENT_EVALS=1) and NOT the default, because a run invokes
+# each agent once per dataset row and then an LLM judge per metric per row - real,
+# unbudgeted spend during an install. Dataset creation alone is cheap.
+#
+# Non-blocking. Skip entirely with SKIP_AGENT_EVALS=1.
+if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]; then
+  if [ "${RUN_AGENT_EVALS:-0}" = "1" ]; then
+    note "[6.6/8] creating agent eval sets AND running baseline evaluations (RUN_AGENT_EVALS=1)..."
+    EVAL_ARGS=""
+  else
+    note "[6.6/8] creating agent eval sets (runs are opt-in: RUN_AGENT_EVALS=1)..."
+    EVAL_ARGS="--no-run"
+  fi
+  bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
+      >/tmp/ifa_agent_evals.log 2>&1 \
+    && step "6.6 agent-evals" OK \
+    || { note "  WARN: agent eval setup failed; see /tmp/ifa_agent_evals.log"; step "6.6 agent-evals" WARN; }
+else
+  step "6.6 agent-evals" SKIPPED
 fi
 
 # ── 7. apps (resolved infra threaded via exported env) ──────────

@@ -1,0 +1,34 @@
+# Agent evaluation run config - FLEET_SUPER_AGENT (superuser).
+#
+# Same reachable surface as the consumer agent PLUS the deployment-history analyst
+# tool (query_deployment over SV_FLEET_DEPLOYMENT). Its ops/admin ACTION verbs are
+# MCP verbs and are therefore never called during an evaluation run - the dataset
+# handles that by asking one action question whose correct answer is "confirm
+# first", which is a behaviour the orchestrator can be graded on without any verb
+# firing.
+#
+# See fleet_agent.yaml for why there is no dataset: block, and the metrics block
+# below for how metric versions are addressed.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "LAST"
+  run_params:
+    label: "Fleet superuser agent baseline"
+    description: "Consumer analytics plus deployment history, and confirm-before-acting on a destructive request. MCP action verbs are out of scope for evaluations."
+  source_metadata:
+    type: "dataset"
+    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_SUPER_AGENT"
+
+# METRIC VERSIONS. Snowflake rejects an explicit `version: "v1"` with "Version 'v1'
+# is not valid. To reference the v1 metric, omit the version field and use
+# '<metric>' directly." - v1 is the default and is addressed by naming the metric
+# as a plain string. Pin an explicit version (v2 / v3) once your account allows
+# their judge models: scores from different metric versions are NOT comparable and
+# Snowsight renders each version as its own chart and column.
+metrics:
+  - "answer_correctness"
+  - "logical_consistency"
+  - "tool_selection_accuracy"

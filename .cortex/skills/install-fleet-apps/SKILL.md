@@ -128,7 +128,8 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 | `CARTO_EAI` | resolved (`ORS_CARTO_EAI` else `FLEET_APP_CARTO_EAI`) | basemap tile egress |
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
-| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` | `0` | shorten idempotent re-runs |
+| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` / `SKIP_COWORK` / `SKIP_AGENT_EVALS` | `0` | shorten idempotent re-runs |
+| `RUN_AGENT_EVALS` | `0` | also RUN a baseline Cortex Agent evaluation per agent in step 6.6, not just create the eval sets. Off by default because a run invokes each agent once per dataset row plus an LLM judge per metric (real spend). |
 
 ## Required Privileges
 
@@ -142,6 +143,9 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 | CREATE ROLE + MANAGE GRANTS | account | `FLEET_APP_USER/OPS/ADMIN`, `FLEET_APP_DYNAMIC_READER` |
 | CREATE AGENT, CREATE MCP SERVER | schema | consumer/ops agents + synapse bundles |
 | SNOWFLAKE.CORTEX_USER | database role | Cortex Analyst / agent calls |
+| CREATE SNOWFLAKE INTELLIGENCE | account | register the agents with the Snowflake CoWork object (step 6.5). Optional: without it the agents stay reachable by direct link and Snowsight only. |
+| CREATE DATASET, CREATE STAGE, CREATE FILE FORMAT, CREATE TASK | schema (`FLEET_INTELLIGENCE.EVALS`) | agent evaluation sets (step 6.6) |
+| USE AI FUNCTIONS, EXECUTE TASK | account | running a Cortex Agent evaluation (`RUN_AGENT_EVALS=1`); evaluations score with `AI_COMPLETE` and are driven by a task |
 
 ACCOUNTADMIN satisfies all of the above but is not required if the above are granted to a custom role.
 
@@ -162,6 +166,15 @@ DROP SERVICE IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP;
 DROP SERVICE IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP;
 DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT;
 DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT;
+-- Snowflake CoWork registration (step 6.5). Dropping an agent does NOT remove it
+-- from the CoWork object, so remove it explicitly or the list keeps a dead entry.
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT;
+-- Agent eval sets + the deployment-history semantic view (steps 6.6 and 4.95):
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.EVALS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.SEMANTIC_OPS;
 DROP DATABASE IF EXISTS FLEET_APP;
 DROP DATABASE IF EXISTS STARTER_APP;
 -- SAP mock landscape (demo example landed by step 3.5):
