@@ -90,6 +90,67 @@ views:
           Ranks POIs by dwell at the selected hour. A quiet hour on a small
           dataset legitimately has no qualifying POI.
 
+  site_impact:
+    areas:
+      candidate-isochrone:
+        expect: skip
+        reason: >-
+          Takes a `geometry` bind supplied by the client from the already-drawn
+          candidate isochrone, so there is no server-side value to resolve and
+          nothing here can execute it faithfully. Exercised by clicking the
+          candidate in the app, not by this harness.
+      areas.overlaps:
+        expect: may_be_empty
+        reason: >-
+          MEASURED, not assumed: overlap is a real property of the (candidate,
+          band) pair, and both filters default to their first option - candidate
+          ordered by POI_NAME (ST0013 "Bua Thai", 9.39 km from the nearest owned
+          store) and the smallest band (10 min). That candidate has no owned-store
+          overlap at 10 or 15 min and two at 20 min, while ST0011 (5.64 km) has
+          two at 10 min. So zero cannibalisation is the correct answer for the
+          opening selection, not a broken panel. The click-through path is covered
+          in the app rather than here.
+      overlap-intensity-hex:
+        expect: may_be_empty
+        reason: Hex intensity is derived from areas.overlaps - see that entry.
+      selected-overlap-outline:
+        expect: may_be_empty
+        reason: >-
+          Outlines the overlap chosen from the overlaps table - a SECOND-level
+          selection. The harness seeds one level (the store), so there is no
+          chosen overlap here, and with the default candidate there is no overlap
+          to choose either.
+      areas.overlapzips:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see selected-overlap-outline.
+      areas.overlap_drawer:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see selected-overlap-outline.
+
+  closure_impact:
+    areas:
+      closure-selected-overlap-outline:
+        expect: may_be_empty
+        reason: >-
+          Second-level selection: outlines the overlap chosen from the overlaps
+          table, which the harness's single level of seeding does not set. The
+          overlaps table itself returns rows, so the underlying analysis is
+          covered.
+      areas.closure_drawer:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see closure-selected-overlap-outline.
+
+  mix_sourcing:
+    areas:
+      transfer-legs:
+        expect: may_be_empty
+        reason: >-
+          A TRANSFER leg exists only when the optimizer recommends consolidating
+          through a hub. For a customer it recommends serving direct, there is no
+          transfer leg to draw - mutually exclusive with the direct/outbound legs
+          on the same map, like actual_on_plan/actual_deviation above. Both of
+          those return rows for the seeded customer.
+
   dwell_sla:
     areas:
       areas.map:
@@ -108,6 +169,17 @@ views:
         reason: >-
           Plots safety events at the selected severity. A clean dataset has none,
           and the seed courier dataset generates few.
+
+  live_asset_operations:
+    areas:
+      empty_legs:
+        expect: may_be_empty
+        reason: >-
+          Draws deadhead (TRIP_KIND = 'EMPTY') legs. The agnostic ebike seed
+          contains only laden trips - 13,721 rows, every one LADEN - so there is
+          nothing for this layer to draw. The layer is correct and stays in the
+          view for the line-haul/backload datasets that do carry empty running;
+          it is the DATASET that has no empty legs, not the query that is broken.
 
 # ---------------------------------------------------------------------------
 # Code-registered views hold their SQL in TypeScript, so the harness cannot

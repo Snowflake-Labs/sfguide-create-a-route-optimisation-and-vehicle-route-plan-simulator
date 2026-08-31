@@ -878,6 +878,30 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
 SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
     TRIP_END   = DATEADD('SECOND', $TS_OFFSET, TRIP_END);
 
+-- Planned schedule: shift onto the same window as the ACTUALS it is compared
+-- against. This was missed, and the miss is invisible until someone opens the
+-- page: the baked plan sat at 2026-06-01..06-08 while the shifted telemetry and
+-- trips sat at 2026-08-24..08-31, roughly 84 days apart. Because the context
+-- bar's date range is derived FROM THE DATA (trips), the window can never
+-- overlap the plan, so every work-item panel filtered on REQUESTED_START_TS
+-- returned nothing - the Dispatch / Execution board rendered an empty job list
+-- and an empty resource chart, and its KPI card showed 0/0/0/0 rather than
+-- erroring, because COUNT(*) over no rows is still one row. Same failure mode
+-- the FACT_OFFERS shift below already documents.
+--
+-- Anchored on MAX(TRIP_START) rather than on $TS_OFFSET so plan and actual stay
+-- aligned with each other (plan_vs_actual_performance compares them), and so
+-- re-running this loader is a no-op instead of shifting a second time.
+SET SCHED_TS_OFFSET = (
+  SELECT TIMESTAMPDIFF('SECOND',
+    (SELECT MAX(PLANNED_START) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE),
+    (SELECT MAX(TRIP_START)    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS))
+);
+
+UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE
+SET PLANNED_START = DATEADD('SECOND', $SCHED_TS_OFFSET, PLANNED_START),
+    PLANNED_END   = DATEADD('SECOND', $SCHED_TS_OFFSET, PLANNED_END);
+
 -- Freight offers: shift so the newest offer = now. The Freight Exchange page
 -- defaults to a 24h "max age" filter; without this every seeded offer ages out
 -- and the grid renders 0/300.
