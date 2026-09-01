@@ -59,22 +59,24 @@ export const list_datasets = defineProc({
     try {
       const raw = await ctx.conn.execScalar<string>(
         `SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
-             'dataset_id', DATASET_ID,
-             'label', LABEL,
-             'region', REGION,
-             'vehicle_type', VEHICLE_TYPE,
-             'is_active', IS_ACTIVE,
-             'created_at', TO_VARCHAR(CREATED_AT)
-           )) WITHIN GROUP (ORDER BY REGION, VEHICLE_TYPE, CREATED_AT DESC), ARRAY_CONSTRUCT())::STRING
+             'dataset_id', d.DATASET_ID,
+             'label', d.LABEL,
+             'region', d.REGION,
+             'vehicle_type', d.VEHICLE_TYPE,
+             'is_active', d.IS_ACTIVE,
+             'created_at', TO_VARCHAR(d.CREATED_AT)
+           )) WITHIN GROUP (ORDER BY d.REGION, d.VEHICLE_TYPE, d.CREATED_AT DESC), ARRAY_CONSTRUCT())::STRING
          FROM (
-           SELECT *
-           FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-           WHERE (? IS NULL OR UPPER(REGION) = UPPER(?))
-             AND (? IS NULL OR UPPER(VEHICLE_TYPE) = UPPER(?))
-             AND (NOT ? OR IS_ACTIVE)
-           ORDER BY REGION, VEHICLE_TYPE, CREATED_AT DESC
+           SELECT d.*
+           FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+           LEFT JOIN FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j ON j.JOB_ID = d.DATASET_ID
+           WHERE COALESCE(j.STATUS, 'COMPLETED') NOT IN ('DELETED', 'CANCELLED')
+             AND (? IS NULL OR UPPER(d.REGION) = UPPER(?))
+             AND (? IS NULL OR UPPER(d.VEHICLE_TYPE) = UPPER(?))
+             AND (NOT ? OR d.IS_ACTIVE)
+           ORDER BY d.REGION, d.VEHICLE_TYPE, d.CREATED_AT DESC
            LIMIT 200
-         )`,
+         ) d`,
         [region, region, vt, vt, activeOnly],
       );
       const parsed = raw == null ? [] : JSON.parse(String(raw));

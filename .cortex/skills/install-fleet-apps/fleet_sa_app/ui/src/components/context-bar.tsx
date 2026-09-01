@@ -144,10 +144,12 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sql:
-              'SELECT DATASET_ID AS dataset_id, LABEL AS label, IS_ACTIVE AS is_active, ' +
-              'VEHICLE_TYPE AS vehicle_type, REGION AS region ' +
-              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS ' +
-              'ORDER BY IS_ACTIVE DESC, CREATED_AT DESC',
+              'SELECT d.DATASET_ID AS dataset_id, d.LABEL AS label, d.IS_ACTIVE AS is_active, ' +
+              'd.VEHICLE_TYPE AS vehicle_type, d.REGION AS region ' +
+              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d ' +
+              'LEFT JOIN FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j ON j.JOB_ID = d.DATASET_ID ' +
+              'WHERE COALESCE(j.STATUS, \'COMPLETED\') NOT IN (\'DELETED\', \'CANCELLED\') ' +
+              'ORDER BY d.IS_ACTIVE DESC, d.CREATED_AT DESC',
           }),
         });
         if (!res.ok) return;
