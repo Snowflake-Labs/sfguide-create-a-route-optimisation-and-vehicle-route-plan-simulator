@@ -2,8 +2,8 @@
 #
 # install-fleet-apps / create_agents.sh
 #
-# Creates the four Cortex Agents the architecture needs, from the trimmed
-# (agnostic) specs under fleet_sa_app/app/:
+# Creates or updates the four Cortex Agents the architecture needs, from the
+# trimmed (agnostic) specs under fleet_sa_app/app/:
 #   - FLEET_AGENT       (consumer) from agent-spec.json        -> attaches ROUTING_MCP
 #   - FLEET_OPS_AGENT   (operator) from ops-agent-spec.json    -> attaches FLEET_OPS_MCP
 #   - FLEET_ADMIN_AGENT (installer) from admin-agent-spec.json -> attaches FLEET_ADMIN_MCP
@@ -22,34 +22,48 @@
 # copies of a 12,000-character instruction block drift within a release, and the
 # drift is invisible until the two agents answer the same question differently.
 #
-# Idempotent: CREATE OR REPLACE AGENT. The synapse MCP servers referenced by the
-# specs must exist first (run the synapse bundle install), and the SYNAPSE_USER
-# schema is ensured here.
+# LIFECYCLE (per the Snowflake best-practices guide for evaluating Cortex Agents):
+#   - absent:  CREATE AGENT (auto-creates VERSION$1 + LIVE)
+#   - present: ALTER AGENT MODIFY LIVE VERSION SET SPECIFICATION (preserves
+#              grants, eval history, and monitoring traces)
+#   After either path: COMMIT a named version, then assign the PRODUCTION alias.
+#   The committed version is what scheduled evaluations and API traffic target;
+#   the alias is how callers address it without knowing the version number.
+#
+# WHY NOT CREATE OR REPLACE: that command drops every grant on the agent AND
+# destroys all evaluation runs and monitoring traces. Since this script must be
+# re-run after every synapse bundle deploy (because `synapse deploy` does
+# CREATE OR REPLACE MCP SERVER and agents bind to their MCP at creation/alter
+# time), CREATE OR REPLACE would wipe eval history on a routine cadence - making
+# scheduled evaluations, version comparison, and CI/CD quality gates pointless.
+#
+# The --recreate flag is available for deliberate destructive resets (e.g. when
+# the agent schema or ownership needs to change). It falls back to CREATE OR
+# REPLACE and re-applies grants.
 #
 # MUST be re-run after EVERY synapse bundle deploy: `synapse deploy` does
-# CREATE OR REPLACE MCP SERVER, and an agent binds to its MCP server at creation
-# time, so every agent goes stale when a bundle is redeployed. Invariant: each
-# agent's created_on is newer than its MCP server's.
-#
-# CREATE OR REPLACE AGENT DROPS EVERY GRANT ON THE AGENT - so this script
-# RE-APPLIES the four USAGE grants at the end. It has to: recreating an agent
-# silently revokes access for the role that reaches it, and the authoritative
-# grant pass (role_binding.sql) is install step 8 while this is step 6. A full
-# install therefore self-corrects, but a STANDALONE re-run of this script - which
-# is exactly what the bundle-deploy invariant above tells you to do - used to
-# leave all four agents reachable by ACCOUNTADMIN only. The symptom is Snowsight
-# showing "grant users access to the agent" unchecked, and every app user losing
-# the consumer agent. The re-grant block is best-effort by design: on a fresh
-# install the FLEET_APP_* roles do not exist yet at step 6, so a missing role is
-# reported as PENDING rather than failing the install. role_binding.sql stays the
-# single authoritative source for the grants; this block only mirrors the four
-# agent statements so the script cannot leave the account worse than it found it.
+# CREATE OR REPLACE MCP SERVER, and ALTER AGENT MODIFY LIVE VERSION SET
+# SPECIFICATION re-binds the spec (including mcp_servers) so the agent picks up
+# the new MCP server. Invariant: each agent's last-committed version is newer
+# than its MCP server's created_on.
 #
 # Usage:
 #   bash .cortex/skills/install-fleet-apps/scripts/create_agents.sh <connection>
+#   bash .../create_agents.sh <connection> --recreate
 set -euo pipefail
 
-CONNECTION="${1:?usage: create_agents.sh <connection>}"
+CONNECTION="${1:?usage: create_agents.sh <connection> [--recreate]}"
+shift || true
+
+RECREATE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --recreate) RECREATE=1 ;;
+    *) echo "ERROR: unknown argument $1"; exit 1 ;;
+  esac
+  shift
+done
+
 REPO_ROOT=$(git rev-parse --show-toplevel)
 APP_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/fleet_sa_app/app"
 USER_SPEC="$APP_DIR/agent-spec.json"
@@ -71,20 +85,8 @@ for f in "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC" "$SUPER_SPEC"; do
 done
 
 # Drop tools whose backing object is absent in THIS account.
-#
-# Snowflake validates every tool target when a request is SERVED, not when the
-# agent is created, so one tool pointing at a missing object fails the whole
-# request whatever was asked. On a fresh agnostic install the consumer agent bound
-# `query_offers` to SEMANTIC.SV_OFFERS, which install step 4.5 deliberately skips
-# (it needs MARKETPLACE, which is out of scope here) - so EVERY FLEET_AGENT
-# question, including pure routing ones, failed with a 400 while every
-# object-level install check passed.
-#
-# Pruning here rather than editing the specs keeps them declarative: install the
-# owning pack and re-run this script and the tool comes back. If the account
-# cannot be inspected the pruner exits 2 and we deploy the specs UNCHANGED, which
-# fails loudly at request time rather than silently shipping an emptied agent.
 PRUNE="$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/prune_agent_specs.py"
+PRUNED_DIR=""
 if [ -f "$PRUNE" ]; then
   PRUNED_DIR=$(mktemp -d)
   if python3 "$PRUNE" --connection "$CONNECTION" --out-dir "$PRUNED_DIR" \
@@ -99,64 +101,147 @@ if [ -f "$PRUNE" ]; then
 fi
 
 TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-# A second `trap ... EXIT` REPLACES the first rather than adding to it, so every
-# trap in this script must name EVERY temporary registered so far - dropping one
-# leaks it. The grant step below re-registers this trap with GRANT_FILE added.
-SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+SCHEMA_SQL="CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER COMMENT = '$TRACK';"
 
-{
-  echo "ALTER SESSION SET query_tag = '$TRACK';"
-  echo "CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER COMMENT = '$TRACK';"
-  echo
-  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT"
-  echo "  COMMENT = '$TRACK'"
-  echo "  PROFILE = '{\"display_name\": \"Fleet Intelligence (Analytics + Routing)\", \"color\": \"blue\"}'"
-  echo "  FROM SPECIFICATION \$\$"
-  cat "$USER_SPEC"
-  echo "\$\$;"
-  echo
-  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT"
-  echo "  COMMENT = '$TRACK'"
-  echo "  PROFILE = '{\"display_name\": \"Fleet Operations (Services)\", \"color\": \"green\"}'"
-  echo "  FROM SPECIFICATION \$\$"
-  cat "$OPS_SPEC"
-  echo "\$\$;"
-  echo
-  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT"
-  echo "  COMMENT = '$TRACK'"
-  echo "  PROFILE = '{\"display_name\": \"Fleet Admin (Install)\", \"color\": \"orange\"}'"
-  echo "  FROM SPECIFICATION \$\$"
-  cat "$ADMIN_SPEC"
-  echo "\$\$;"
-  echo
-  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
-  echo "  COMMENT = '$TRACK'"
-  echo "  PROFILE = '{\"display_name\": \"Fleet Superuser (All Capabilities)\", \"color\": \"purple\"}'"
-  echo "  FROM SPECIFICATION \$\$"
-  cat "$SUPER_SPEC"
-  echo "\$\$;"
-} > "$SQL_FILE"
+note() { echo "[create_agents] $*"; }
+q()    { snow sql -c "$CONNECTION" -q "$TAG_SQL $1" --enable-templating NONE 2>&1; }
 
-echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT via $CONNECTION ..."
-snow sql -c "$CONNECTION" -f "$SQL_FILE"
+# Agent name -> spec file -> display name -> color
+AGENTS=(
+  "FLEET_AGENT:$USER_SPEC:Fleet Intelligence (Analytics + Routing):blue"
+  "FLEET_OPS_AGENT:$OPS_SPEC:Fleet Operations (Services):green"
+  "FLEET_ADMIN_AGENT:$ADMIN_SPEC:Fleet Admin (Install):orange"
+  "FLEET_SUPER_AGENT:$SUPER_SPEC:Fleet Superuser (All Capabilities):purple"
+)
 
-# ── re-apply the agent USAGE grants that CREATE OR REPLACE just dropped ──
+# Ensure the schema exists (single call, not per-agent).
+q "$SCHEMA_SQL" >/dev/null
+
+# Probe which agents already exist. TAG_SQL prepends a statement, so snow sql
+# returns multiple result sets [[{status}],[{agent},{agent}...]]. Take the LAST
+# result set (the SHOW output), not the first (the tag status).
+EXISTING_AGENTS=$(snow sql -c "$CONNECTION" --format json \
+  -q "$TAG_SQL SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER;" 2>/dev/null \
+  | python3 -c "
+import json,sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+rows = data[-1] if data and isinstance(data[0], list) else data
+for r in rows:
+    print(r.get('name',''))
+" 2>/dev/null || true)
+
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+SQL_FILE=$(mktemp)
+GRANT_FILE=$(mktemp)
+trap 'rm -f "$SQL_FILE" "$GRANT_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
+
+note "deploying agents via $CONNECTION (recreate=$RECREATE) ..."
+
+for entry in "${AGENTS[@]}"; do
+  IFS=: read -r AGENT_NAME SPEC_FILE DISPLAY_NAME COLOR <<<"$entry"
+  FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.${AGENT_NAME}"
+  PROFILE="{\"display_name\": \"${DISPLAY_NAME}\", \"color\": \"${COLOR}\"}"
+  SPEC=$(cat "$SPEC_FILE")
+
+  AGENT_EXISTS=0
+  if echo "$EXISTING_AGENTS" | grep -qx "$AGENT_NAME"; then
+    AGENT_EXISTS=1
+  fi
+
+  if [ "$AGENT_EXISTS" = "1" ] && [ "$RECREATE" = "0" ]; then
+    # ── ALTER path: preserves grants, eval history, monitoring traces ──
+    note "  $AGENT_NAME: ALTER (exists, preserving history)"
+
+    # Update the live version's specification. If no live version exists (it is
+    # not auto-created after a COMMIT), create one from the last committed version
+    # first. The ADD LIVE VERSION call fails harmlessly if one already exists, so
+    # we try it and absorb the error via EXECUTE IMMEDIATE (snow sql -f does not
+    # support bare BEGIN...EXCEPTION...END).
+    q "EXECUTE IMMEDIATE \$\$ BEGIN BEGIN ALTER AGENT ${FQN} ADD LIVE VERSION FROM LAST; EXCEPTION WHEN OTHER THEN NULL; END; END; \$\$;" >/dev/null
+
+    # Write the spec to a temp file to avoid shell-escaping the JSON.
+    {
+      echo "$TAG_SQL"
+      echo "ALTER AGENT ${FQN} MODIFY LIVE VERSION SET SPECIFICATION = \$\$"
+      echo "$SPEC"
+      echo "\$\$;"
+      echo "ALTER AGENT ${FQN} SET COMMENT = '${TRACK}', PROFILE = '${PROFILE}';"
+      echo "ALTER AGENT ${FQN} COMMIT COMMENT = 'deploy ${STAMP}';"
+    } > "$SQL_FILE"
+
+    snow sql -c "$CONNECTION" -f "$SQL_FILE" \
+      || { note "ERROR: ALTER path failed for $AGENT_NAME"; exit 1; }
+
+    # Assign the PRODUCTION alias to the version just committed. MODIFY VERSION
+    # needs the actual VERSION$N name (LAST is a shortcut for API calls, not for
+    # ALTER AGENT DDL), so we capture it from SHOW VERSIONS.
+    COMMITTED_VER=$(snow sql -c "$CONNECTION" --format json \
+      -q "SHOW VERSIONS IN AGENT ${FQN}" 2>/dev/null \
+      | python3 -c "
+import json,sys
+data = json.load(sys.stdin)
+rows = data[-1] if data and isinstance(data[0], list) else data
+named = sorted([r for r in rows if r.get('name')], key=lambda r: r['created_on'], reverse=True)
+print(named[0]['name'] if named else '')
+" 2>/dev/null || echo "")
+
+    if [ -n "$COMMITTED_VER" ]; then
+      q "ALTER AGENT ${FQN} MODIFY VERSION ${COMMITTED_VER} SET ALIAS = PRODUCTION;" >/dev/null \
+        && note "    -> committed ${COMMITTED_VER}, alias PRODUCTION" \
+        || note "    WARN: committed ${COMMITTED_VER} but alias failed"
+    else
+      note "    WARN: could not determine committed version for alias"
+    fi
+  else
+    # ── CREATE path: fresh agent (or --recreate) ──
+    if [ "$RECREATE" = "1" ] && [ "$AGENT_EXISTS" = "1" ]; then
+      note "  $AGENT_NAME: CREATE OR REPLACE (--recreate, grants will be re-applied)"
+    else
+      note "  $AGENT_NAME: CREATE (new agent)"
+    fi
+
+    {
+      echo "$TAG_SQL"
+      if [ "$RECREATE" = "1" ]; then
+        echo "CREATE OR REPLACE AGENT ${FQN}"
+      else
+        echo "CREATE AGENT ${FQN}"
+      fi
+      echo "  COMMENT = '${TRACK}'"
+      echo "  PROFILE = '${PROFILE}'"
+      echo "  FROM SPECIFICATION \$\$"
+      echo "$SPEC"
+      echo "\$\$;"
+    } > "$SQL_FILE"
+
+    snow sql -c "$CONNECTION" -f "$SQL_FILE" \
+      || { note "ERROR: CREATE path failed for $AGENT_NAME"; exit 1; }
+
+    # CREATE auto-creates VERSION$1 as default. Set the PRODUCTION alias.
+    q "ALTER AGENT ${FQN} MODIFY VERSION VERSION\$1 SET ALIAS = PRODUCTION;" >/dev/null \
+      && note "    -> created VERSION\$1, alias PRODUCTION" \
+      || note "    WARN: created but alias failed"
+  fi
+done
+
+# ── re-apply the agent USAGE grants ──
 #
-# Mirrors role_binding.sql verbatim (its lines for FLEET_AGENT / FLEET_OPS_AGENT /
-# FLEET_ADMIN_AGENT / FLEET_SUPER_AGENT). Keep the two in sync; role_binding.sql
-# remains authoritative.
+# On the ALTER path grants survive, so this is a no-op safety net.
+# On the CREATE/--recreate path this is load-bearing: CREATE OR REPLACE drops
+# every grant.
+#
+# Mirrors role_binding.sql verbatim (its lines for the four agents). Keep the
+# two in sync; role_binding.sql remains authoritative.
 #
 # TENET 3: FLEET_SUPER_AGENT goes to FLEET_APP_ADMIN ONLY. Never add
-# FLEET_APP_USER here - the super agent attaches all three MCP bundles, so that
-# would hand every app user service suspension and region deletion, and this
-# GRANT is the only thing preventing it.
+# FLEET_APP_USER here.
 #
-# Each grant sits in its own exception handler because `snow sql -f` aborts the
-# whole file at the first error, and on a fresh install the roles legitimately do
-# not exist yet. The block then reports, per agent, whether a USAGE grant is
-# actually present - so a silent revocation cannot pass unnoticed again.
-GRANT_FILE=$(mktemp); trap 'rm -f "$SQL_FILE" "$GRANT_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
-
+# Each grant sits in its own exception handler because on a fresh install the
+# roles do not exist yet at step 6.
 cat > "$GRANT_FILE" <<'GRANTSQL'
 EXECUTE IMMEDIATE $$
 DECLARE
@@ -198,41 +283,58 @@ END;
 $$;
 GRANTSQL
 
-echo "[create_agents] re-applying agent USAGE grants (CREATE OR REPLACE dropped them) ..."
+note "applying agent USAGE grants ..."
 snow sql -c "$CONNECTION" -f "$GRANT_FILE"
 
-# Verify per agent that a USAGE grant is actually present, not just OWNERSHIP.
-# Done from the shell rather than in Snowflake Scripting: the cursor FOR loop
-# needs a declared cursor, and four one-line probes are easier to read in CI
-# output than a packed status string. Reported, never fatal - PENDING is the
-# correct state on a fresh install, where role_binding.sql (step 8) follows.
-echo "[create_agents] verifying agent grants ..."
+# Verify per agent: USAGE grant present + committed version + PRODUCTION alias.
+note "verifying agents ..."
 GRANTS_PENDING=0
-for AGENT in FLEET_AGENT FLEET_OPS_AGENT FLEET_ADMIN_AGENT FLEET_SUPER_AGENT; do
+for entry in "${AGENTS[@]}"; do
+  IFS=: read -r AGENT_NAME _ _ _ <<<"$entry"
+  FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.${AGENT_NAME}"
+
+  # Grant check (no TAG_SQL prefix, so single result set)
   GRANTEE=$(snow sql -c "$CONNECTION" --format json \
-    -q "SHOW GRANTS ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.${AGENT}" 2>/dev/null \
+    -q "SHOW GRANTS ON AGENT ${FQN}" 2>/dev/null \
     | python3 -c "
 import json,sys
 try:
-    rows = json.load(sys.stdin)
+    data = json.load(sys.stdin)
 except Exception:
     print(''); sys.exit(0)
-rows = rows[0] if rows and isinstance(rows[0], list) else rows
+rows = data[-1] if data and isinstance(data[0], list) else data
 print(next((r.get('grantee_name','') for r in rows
             if str(r.get('privilege','')).upper() == 'USAGE'), ''))
 " 2>/dev/null || echo "")
+
+  # Version + alias check
+  VERSION_INFO=$(snow sql -c "$CONNECTION" --format json \
+    -q "SHOW VERSIONS IN AGENT ${FQN}" 2>/dev/null \
+    | python3 -c "
+import json,sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('0 versions, no alias'); sys.exit(0)
+rows = data[-1] if data and isinstance(data[0], list) else data
+named = [r for r in rows if r.get('name')]
+aliases = [r.get('alias','') for r in named if r.get('alias')]
+prod = 'PRODUCTION' in [a.upper() for a in aliases if a]
+print(f'{len(named)} version(s), production={prod}')
+" 2>/dev/null || echo "unknown")
+
   if [ -n "$GRANTEE" ]; then
-    echo "  [grant] ${AGENT}: OK (USAGE -> ${GRANTEE})"
+    echo "  ${AGENT_NAME}: grant=OK(${GRANTEE}) ${VERSION_INFO}"
   else
-    echo "  [grant] ${AGENT}: PENDING (no USAGE grant)"
+    echo "  ${AGENT_NAME}: grant=PENDING ${VERSION_INFO}"
     GRANTS_PENDING=1
   fi
 done
 
 if [ "$GRANTS_PENDING" = "1" ]; then
-  echo "[create_agents] done, but some agents have NO USAGE grant:"
-  echo "[create_agents]   fresh install -> install step 8 (role_binding.sql) applies it;"
-  echo "[create_agents]   otherwise     -> run role_binding.sql, the authoritative grant pass."
+  note "done, but some agents have NO USAGE grant:"
+  note "  fresh install -> install step 8 (role_binding.sql) applies it;"
+  note "  otherwise     -> run role_binding.sql, the authoritative grant pass."
 else
-  echo "[create_agents] done. All four agents carry a USAGE grant."
+  note "done. All four agents carry a USAGE grant and a PRODUCTION alias."
 fi
