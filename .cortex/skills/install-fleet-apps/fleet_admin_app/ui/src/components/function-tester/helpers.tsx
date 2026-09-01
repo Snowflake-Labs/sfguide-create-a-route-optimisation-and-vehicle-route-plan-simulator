@@ -530,3 +530,49 @@ export function parseIsochroneOrigin(sql: string): [number, number] | null {
   if (!isFinite(lon) || !isFinite(lat)) return null;
   return [lon, lat];
 }
+
+export interface MatchInvocation {
+  profile: string;
+  region: string | null;
+  track: [number, number][];
+}
+
+/**
+ * Recover a MATCH / MATCH_PATH call's arguments from the SQL that was actually
+ * executed.  Needed for two reasons: the page drops `trajectory` as soon as
+ * the user edits the textarea, and the follow-up MATCH_PATH must use the
+ * profile/region that were really run - reading them from the dropdowns would
+ * silently resolve geometry against a different graph.
+ */
+export function parseMatchInvocation(sql: string): MatchInvocation | null {
+  if (!sql) return null;
+  const prof = sql.match(/\bMATCH(?:_PATH)?\s*\(\s*'([^']+)'/i);
+  if (!prof) return null;
+
+  let track: [number, number][] = [];
+  // MATCH embeds a GeoJSON FeatureCollection inside PARSE_JSON('...').
+  const fc = sql.match(/PARSE_JSON\s*\(\s*'(\{[\s\S]*?\})'\s*\)/i);
+  if (fc) {
+    try {
+      const parsed = JSON.parse(fc[1]);
+      const geom = parsed?.features?.[0]?.geometry ?? parsed?.geometry ?? parsed;
+      if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
+        track = geom.coordinates.filter(
+          (c: any) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]),
+        ) as [number, number][];
+      }
+    } catch { /* malformed inline JSON */ }
+  } else {
+    // MATCH_PATH passes ARRAY_CONSTRUCT(lon, lat) pairs.
+    for (const m of sql.matchAll(/ARRAY_CONSTRUCT\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/gi)) {
+      const lon = Number(m[1]); const lat = Number(m[2]);
+      if (Number.isFinite(lon) && Number.isFinite(lat)) track.push([lon, lat]);
+    }
+  }
+  if (track.length < 2) return null;
+
+  // Region is the trailing string literal before the closing paren.
+  const reg = sql.match(/,\s*'([^']+)'\s*\)\s*(?:AS\s+\w+\s*)?$/im)
+    ?? sql.match(/,\s*'([^']+)'\s*\)\)/i);
+  return { profile: prof[1], region: reg ? reg[1] : null, track };
+}

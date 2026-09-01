@@ -14,6 +14,7 @@ import {
   matchSupport,
   optionalFunctionProbeSql,
   OPTIONAL_FUNCTIONS,
+  parseMatchInvocation,
 } from '@/components/function-tester/helpers';
 import { ResultMap } from '@/components/function-tester/ResultMap';
 import { useActivePreset } from '@/hooks/useActivePreset';
@@ -174,6 +175,9 @@ export function FunctionTesterPage() {
   // null until probed; then the subset of OPTIONAL_FUNCTIONS actually installed.
   const [installedOptional, setInstalledOptional] = useState<string[] | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
+  const [matchedGeojson, setMatchedGeojson] = useState<any | null>(null);
+  const [matchedPending, setMatchedPending] = useState(false);
+  const [matchedNote, setMatchedNote] = useState<string | null>(null);
   const [roadNonce, setRoadNonce] = useState(0);
   const [sampleNonce, setSampleNonce] = useState(0);
   const userEditedRef = useRef(false);
@@ -181,6 +185,7 @@ export function FunctionTesterPage() {
   const lastPresetProfileRef = useRef<string | null>(null);
   const roadSeqRef = useRef(0);
   const trajectorySeqRef = useRef(0);
+  const matchSeqRef = useRef(0);
   const nocacheNextRef = useRef(false);
   const selectedRegionKeyRef = useRef<string | null>(null);
 
@@ -428,6 +433,9 @@ export function FunctionTesterPage() {
     setRunning(true);
     setResult(null);
     setError(null);
+    setMatchedGeojson(null);
+    setMatchedPending(false);
+    setMatchedNote(null);
     setLastExecutedSql(sqlInput);
     const start = Date.now();
     try {
@@ -438,14 +446,51 @@ export function FunctionTesterPage() {
       });
       const data = await resp.json();
       setDuration(Date.now() - start);
-      if (data.error) setError(data.error);
-      else setResult(data.result);
+      if (data.error) { setError(data.error); }
+      else {
+        setResult(data.result);
+        // MATCH returns edge ids and no geometry. Automatically resolve road
+        // geometry via MATCH_PATH using the profile/region parsed from the SQL
+        // that actually ran (NOT the dropdowns - those could differ).
+        if (selectedFn === 'MATCH' && data.result
+            && (installedOptional === null || installedOptional.includes('MATCH_PATH'))) {
+          const inv = parseMatchInvocation(sqlInput);
+          if (inv) {
+            const mySeq = ++matchSeqRef.current;
+            setMatchedPending(true);
+            const p = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
+            const coords = inv.track.map((c) => `ARRAY_CONSTRUCT(${c[0]}, ${c[1]})`).join(', ');
+            const rg = inv.region ? `'${inv.region}'` : 'NULL';
+            const mpSql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON, MATCHED_EDGES `
+              + `FROM TABLE(${p}.MATCH_PATH('${inv.profile}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
+            try {
+              const r2 = await fetch('/api/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: mpSql }),
+              });
+              const mp = await r2.json();
+              if (mySeq === matchSeqRef.current) {
+                const raw = Array.isArray(mp.result) ? mp.result[0] : null;
+                const gj = raw ? (raw.GEOJSON ?? raw.geojson) : null;
+                if (mp.error) setMatchedNote(`Road geometry unavailable: ${mp.error}`);
+                else if (!gj) setMatchedNote('MATCH_PATH returned no geometry - the profile graph may lack the OsmId ext storage.');
+                else { try { setMatchedGeojson(JSON.parse(gj)); } catch { setMatchedNote('Could not parse returned geometry.'); } }
+              }
+            } catch (e2: any) {
+              if (mySeq === matchSeqRef.current) setMatchedNote(e2?.message || 'Road geometry request failed.');
+            } finally {
+              if (mySeq === matchSeqRef.current) setMatchedPending(false);
+            }
+          }
+        }
+      }
     } catch (err: any) {
       setDuration(Date.now() - start);
       setError(err.message);
     }
     setRunning(false);
-  }, [sqlInput]);
+  }, [sqlInput, selectedFn, sfDatabase, installedOptional]);
 
   const graphsLoading = selectedRegion?.graphReadiness?.service_ready === false;
 
@@ -632,6 +677,9 @@ export function FunctionTesterPage() {
         regionBoundary={selectedRegion?.boundaryGeoJson ?? null}
         executedSql={lastExecutedSql}
         trajectory={trajectory}
+        matchedGeojson={matchedGeojson}
+        matchedPending={matchedPending}
+        matchedNote={matchedNote}
       />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {

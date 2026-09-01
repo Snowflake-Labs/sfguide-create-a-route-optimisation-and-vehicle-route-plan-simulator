@@ -7,7 +7,7 @@ import Basemap from '@/components/shared/basemap';
 import {
   GeoData, OptimizationParsed, OPTIMIZATION_PALETTE,
   extractGeoData, parseMatrixResult, parseOptimizationResult, travelTimeColor,
-  parseIsochroneOrigin, parseSnapResult,
+  parseIsochroneOrigin, parseSnapResult, parseMatchInvocation,
 } from './helpers';
 import { useFitMap, isFiniteVS } from '@/components/shared/useFitMap';
 import RecenterButton from '@/components/shared/RecenterButton';
@@ -25,6 +25,9 @@ export function ResultMap({
   regionBoundary = null,
   executedSql,
   trajectory = null,
+  matchedGeojson = null,
+  matchedPending = false,
+  matchedNote = null,
 }: {
   result: any;
   fnName: string;
@@ -34,6 +37,10 @@ export function ResultMap({
   executedSql: string;
   /** Noisy GPS track fed to MATCH / MATCH_PATH, drawn as the unmatched input. */
   trajectory?: [number, number][] | null;
+  /** Road geometry resolved by an automatic follow-up MATCH_PATH call (separate from result). */
+  matchedGeojson?: any | null;
+  matchedPending?: boolean;
+  matchedNote?: string | null;
 }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
@@ -181,14 +188,22 @@ export function ResultMap({
     return layers;
   }, [snap]);
 
+  // When the user edits/pastes MATCH SQL the trajectory prop is null (the page
+  // drops it on edit). Fall back to parsing the input track from the SQL itself.
+  const effectiveTrajectory = useMemo<[number, number][] | null>(() => {
+    if (trajectory && trajectory.length >= 2) return trajectory;
+    if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
+    return parseMatchInvocation(executedSql)?.track ?? null;
+  }, [trajectory, fnName, executedSql]);
+
   // MATCH / MATCH_PATH: the input track is what makes the matched road visible
   // as a correction; without it the result looks like an ordinary route.
   const trajectoryLayer = useMemo(() => {
-    if (!trajectory || trajectory.length < 2) return null;
+    if (!effectiveTrajectory || effectiveTrajectory.length < 2) return null;
     if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
     return new PathLayer({
       id: 'match-input-track',
-      data: [{ path: trajectory }],
+      data: [{ path: effectiveTrajectory }],
       pickable: true,
       getPath: (d: any) => d.path,
       getColor: [148, 163, 184, 200],
@@ -199,14 +214,14 @@ export function ResultMap({
       dashJustified: true,
       extensions: [new PathStyleExtension({ dash: true })],
     });
-  }, [trajectory, fnName]);
+  }, [effectiveTrajectory, fnName]);
 
   const trajectoryPointsLayer = useMemo(() => {
-    if (!trajectory || trajectory.length === 0) return null;
+    if (!effectiveTrajectory || effectiveTrajectory.length === 0) return null;
     if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
     return new ScatterplotLayer({
       id: 'match-input-fixes',
-      data: trajectory.map((p, i) => ({ position: p, label: `GPS fix ${i + 1}` })),
+      data: effectiveTrajectory.map((p, i) => ({ position: p, label: `GPS fix ${i + 1}` })),
       pickable: true,
       getPosition: (d: any) => d.position,
       getFillColor: [148, 163, 184, 230],
@@ -217,7 +232,26 @@ export function ResultMap({
       stroked: true,
       lineWidthMinPixels: 1,
     });
-  }, [trajectory, fnName]);
+  }, [effectiveTrajectory, fnName]);
+
+  // Derived road geometry from the automatic MATCH_PATH follow-up.
+  // Kept in its own layer so it never contaminates the result panel.
+  const matchedLayer = useMemo(() => {
+    if (!matchedGeojson) return null;
+    const data = matchedGeojson.type
+      ? matchedGeojson
+      : { type: 'Feature', geometry: matchedGeojson, properties: {} };
+    return new GeoJsonLayer({
+      id: 'match-derived-road',
+      data,
+      pickable: true,
+      stroked: true,
+      filled: false,
+      lineWidthMinPixels: 4,
+      getLineColor: [255, 107, 53, 230] as any,
+      getLineWidth: 4,
+    });
+  }, [matchedGeojson]);
 
   const matrixLayers = useMemo(() => {
     if (!matrix) return [];
@@ -321,10 +355,10 @@ export function ResultMap({
       ? matrixLayers
       : snapLayers.length > 0
         ? snapLayers
-        : [geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer].filter(Boolean),
-    [optimization, optimizationLayers, matrix, matrixLayers, snapLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer]);
+        : [geojsonLayer, matchedLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer].filter(Boolean),
+    [optimization, optimizationLayers, matrix, matrixLayers, snapLayers, geojsonLayer, matchedLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer]);
 
-  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization || snap.length > 0 || trajectoryLayer);
+  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization || snap.length > 0 || trajectoryLayer || matchedLayer);
 
   const isFinitePt = (p: any): p is LngLat =>
     Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
@@ -349,10 +383,11 @@ export function ResultMap({
       if (geo.geojson) out.push(...coordsFromGeoJSON(geo.geojson));
       for (const p of geo.points) out.push([p[0], p[1]]);
       if (isoOrigin) out.push([isoOrigin[0], isoOrigin[1]]);
-      if (trajectoryLayer && trajectory) for (const p of trajectory) out.push([p[0], p[1]]);
+      if (trajectoryLayer && effectiveTrajectory) for (const p of effectiveTrajectory) out.push([p[0], p[1]]);
+      if (matchedGeojson) out.push(...coordsFromGeoJSON(matchedGeojson.type ? matchedGeojson : { type: 'Feature', geometry: matchedGeojson, properties: {} }));
     }
     return out.filter(isFinitePt);
-  }, [optimization, matrix, snap, geo, isoOrigin, trajectory, trajectoryLayer]);
+  }, [optimization, matrix, snap, geo, isoOrigin, effectiveTrajectory, trajectoryLayer, matchedGeojson]);
 
   const presetCoords = useMemo<LngLat[]>(() => {
     if (regionBoundary) {
@@ -422,6 +457,9 @@ export function ResultMap({
     if (layer?.id === 'match-input-track') {
       return { text: 'Raw GPS track (input)', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     }
+    if (layer?.id === 'match-derived-road') {
+      return { text: 'Matched road geometry (derived via MATCH_PATH)', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
     if (layer?.id === 'result-geojson' && object.properties) {
       const props = object.properties;
       const parts: string[] = [];
@@ -463,20 +501,19 @@ export function ResultMap({
       {trajectoryLayer && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(148,163,184)', display: 'inline-block' }} /> Raw GPS track (input)</span>
-          {/* Only advertise the orange key when matched geometry is actually on
-              the map. The scalar MATCH returns edge ids and no geometry at all,
-              and MATCH_PATH returns a NULL GEOJSON when the graph lacks the
-              OsmId ext storage - in both cases the legend used to promise a red
-              line that could never appear, which reads as a broken map. */}
-          {geojsonLayer
-            ? <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(255,107,53)', display: 'inline-block' }} /> Matched road geometry</span>
-            : fnName === 'MATCH'
-              ? <span style={{ color: '#94a3b8' }}>MATCH returns edge ids only - use MATCH_PATH for road geometry</span>
-              : <span style={{ color: '#f59e0b' }}>
-                  No matched geometry returned. MATCH_PATH resolves edge ids to roads via the /export
-                  TopoJSON, which only carries ors_ids when the profile graph was built with the OsmId
-                  ext storage. Check ORS_STATUS(region):profiles.&lt;profile&gt;.storages.
-                </span>}
+          {(geojsonLayer || matchedLayer)
+            ? <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(255,107,53)', display: 'inline-block' }} /> Matched road geometry{matchedLayer && !geojsonLayer ? ' (derived via MATCH_PATH)' : ''}</span>
+            : matchedPending
+              ? <span style={{ color: '#94a3b8' }}>Resolving road geometry via MATCH_PATH...</span>
+              : matchedNote
+                ? <span style={{ color: '#f59e0b' }}>{matchedNote}</span>
+                : fnName === 'MATCH'
+                  ? <span style={{ color: '#94a3b8' }}>MATCH returns edge ids only - use MATCH_PATH for road geometry</span>
+                  : <span style={{ color: '#f59e0b' }}>
+                      No matched geometry returned. MATCH_PATH resolves edge ids to roads via the /export
+                      TopoJSON, which only carries ors_ids when the profile graph was built with the OsmId
+                      ext storage. Check ORS_STATUS(region):profiles.&lt;profile&gt;.storages.
+                    </span>}
         </div>
       )}
       {optimization && (
