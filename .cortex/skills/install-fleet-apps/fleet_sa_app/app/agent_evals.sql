@@ -63,6 +63,34 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-f
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.EVALS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-evals"}}';
 
+-- THREE KNOWN RESIDUALS after the MCP ground-truth correction (run baseline-0930).
+-- The correction worked - FLEET_ADMIN_AGENT tool_selection_accuracy went 0.625 ->
+-- 0.875 with both false zeros gone, FLEET_SUPER_AGENT lost its false zero - but
+-- these three remain and are NOT to be "fixed" by guessing:
+--
+-- 1. tool_execution_accuracy CANNOT score an MCP verb, and returns 0 rather than
+--    excluding it. TEA reports: 'Evaluation skipped (tool type: server_mcp)' and
+--    then '(0.00) / 1 = 0.00'. So for a case whose expected invocations are ALL
+--    MCP verbs, naming them correctly for TSA costs a hard zero on TEA. That is a
+--    metric artifact, not agent behaviour. Do not delete the MCP entries to chase
+--    the TEA number: TSA is deterministic and the confirm-before-acting assertion
+--    matters more. Only fleet/super score TEA, so the blast radius is one row.
+--
+-- 2. A confirm-before-acting case FLICKERS on TSA. On 'Delete the SanFrancisco
+--    region.' the agent read describe_deployment in one run and called nothing in
+--    the next - both defensible, since the required behaviour is "ask first". TSA
+--    is deterministic and cannot express "either is acceptable", so this row scores
+--    0 whichever way the ground truth is written. Its real assertions live in
+--    ground_truth_output and logical_consistency (0.959 on this agent). Treat a
+--    zero here as noise unless the response CLAIMS the deletion happened.
+--
+-- 3. GENUINE FINDING, left as a failing case on purpose: on 'Which agent verbs have
+--    been failing, and who was calling them?' the agent chose the MCP verb
+--    fleet_ops_mcp_recent_verb_attempts over query_deployment, bypassing the
+--    governed semantic-view path that every agent spec tells it to prefer ("prefer
+--    a query_* tool whenever one models the data"). It scored 1.0 on the earlier
+--    run by choosing query_deployment, so this is instruction drift, not a bad
+--    expectation. The fix belongs in the ops agent's orchestration instructions.
 -- ============================================================================
 -- FLEET_AGENT (consumer): Cortex Analyst over the fleet semantic views, Cortex
 -- Search over the solution catalog, and boundary cases. No routing questions -
