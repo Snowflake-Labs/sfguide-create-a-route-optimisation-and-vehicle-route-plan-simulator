@@ -59,6 +59,20 @@ views:
 
   plan_vs_actual_performance:
     areas:
+      planned:
+        expect: may_be_empty
+        reason: >-
+          The planned-path map layer filters journeys whose deviation fraction
+          exceeds the threshold (default 0.10). The harness seeds a journey
+          with PLANNED_PATH_GEOG IS NOT NULL, but that journey may not meet
+          the deviation threshold or may be excluded by the LIMIT 1 non-
+          deterministic pick. The idle pass always returns rows (all journeys);
+          the selection pass narrows to one journey which may be filtered out.
+      actual:
+        expect: may_be_empty
+        reason: >-
+          Same as planned - the actual-path layer shares the same deviation
+          threshold filter and selection narrowing.
       actual_on_plan:
         expect: may_be_empty
         reason: Mutually exclusive with actual_deviation - see journey_inspector.
