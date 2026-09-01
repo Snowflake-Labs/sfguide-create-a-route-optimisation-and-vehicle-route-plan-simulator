@@ -42,7 +42,11 @@ SCHEMA_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER"
 STAGE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE"
 # Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
-IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+# The image repo is the one exception: it must NOT have a static default, because
+# an account can hold two repos (engine images are pinned to the ORS one) and a
+# hardcoded default made the effective repo depend on the invocation path rather
+# than on account state - fragmenting an app's tags across both. Resolved below,
+# after the pre-flight, since it needs $CONNECTION.
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 COMPUTE_POOL="${COMPUTE_POOL:-OPENROUTESERVICE_APP_COMPUTE_POOL}"
 
@@ -72,6 +76,14 @@ if ! grep -qF "fleet_sa_app:${IMAGE_TAG}" "$SERVICE_YAML"; then
 fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  connection=$CONNECTION"
+
+# Resolve the image repo: an explicit env export (installer path) wins, else the
+# repo the live service already points at (so a redeploy never migrates repos),
+# else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
+# shellcheck source=lib/resolve_image_repo.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_image_repo.sh"
+IMAGE_REPO_SQL_NAME=$(resolve_image_repo "$CONNECTION" fleet_sa_app "$SERVICE_FQN") || exit 1
+echo "  image repo=$IMAGE_REPO_SQL_NAME"
 
 # ── 1. Build the Next.js standalone bundle (prebuilt-.next Docker path) ──
 if [ "${SKIP_IMAGE:-0}" != "1" ]; then

@@ -41,7 +41,11 @@ TAG_SQL="ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\"
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
 SPEC_STAGE_NAME="${SPEC_STAGE_NAME:-OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE}"
 SPEC_STAGE="@${SPEC_STAGE_NAME}/services/fleet_admin_app"
-IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+# The image repo is deliberately NOT defaulted here: an account can hold two
+# repos (engine images are pinned to the ORS one by provision_engine.sh) and a
+# hardcoded default made the effective repo depend on the invocation path rather
+# than on account state - which fragmented this app's tags across both repos.
+# Resolved after the pre-flight, since resolution needs $CONNECTION.
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 # OSM catalog egress (geofabrik + bbbike) for Region Builder "Refresh Catalog".
 # Resolved by install_fleet_apps.sh (reuse ORS_OSM_EAI else FLEET_APP_OSM_EAI);
@@ -74,6 +78,14 @@ if ! grep -qF "fleet_admin_app:${IMAGE_TAG}" "$SERVICE_YAML"; then
 fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  pool=$COMPUTE_POOL  connection=$CONNECTION"
+
+# Resolve the image repo: an explicit env export (installer path) wins, else the
+# repo the live service already points at (so a redeploy never migrates repos),
+# else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
+# shellcheck source=lib/resolve_image_repo.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_image_repo.sh"
+IMAGE_REPO_SQL_NAME=$(resolve_image_repo "$CONNECTION" fleet_admin_app "$SERVICE_FQN") || exit 1
+echo "  image repo=$IMAGE_REPO_SQL_NAME"
 
 # ── 1. Build the Next.js standalone bundle (prebuilt-.next Docker path) ──
 if [ "${SKIP_IMAGE:-0}" != "1" ]; then
