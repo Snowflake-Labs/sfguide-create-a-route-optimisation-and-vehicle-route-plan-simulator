@@ -1,0 +1,24 @@
+# Scheduled evaluation config - FLEET_SUPER_AGENT (superuser).
+# See super_agent.yaml for the full metric rationale.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "PRODUCTION"
+  run_params:
+    label: "Fleet superuser agent scheduled"
+    description: "Daily cadence evaluation of the production super agent."
+  source_metadata:
+    type: "dataset"
+    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_SUPER_AGENT"
+
+metrics:
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

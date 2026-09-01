@@ -69,12 +69,12 @@ TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"m
 # rather than relying on the connection's defaults.
 TAG_SQL="ALTER SESSION SET query_tag = '$TRACK'; USE WAREHOUSE ${EVAL_WAREHOUSE}; USE SCHEMA ${EVAL_DB}.${EVAL_SCHEMA};"
 
-# agent name : input table : dataset name : yaml file
+# agent name : input table : dataset name : baseline yaml : scheduled yaml
 AGENTS=(
-  "FLEET_AGENT:EVAL_INPUT_FLEET_AGENT:EVAL_DS_FLEET_AGENT:fleet_agent.yaml"
-  "FLEET_SUPER_AGENT:EVAL_INPUT_FLEET_SUPER_AGENT:EVAL_DS_FLEET_SUPER_AGENT:super_agent.yaml"
-  "FLEET_OPS_AGENT:EVAL_INPUT_FLEET_OPS_AGENT:EVAL_DS_FLEET_OPS_AGENT:ops_agent.yaml"
-  "FLEET_ADMIN_AGENT:EVAL_INPUT_FLEET_ADMIN_AGENT:EVAL_DS_FLEET_ADMIN_AGENT:admin_agent.yaml"
+  "FLEET_AGENT:EVAL_INPUT_FLEET_AGENT:EVAL_DS_FLEET_AGENT:fleet_agent.yaml:fleet_agent_scheduled.yaml"
+  "FLEET_SUPER_AGENT:EVAL_INPUT_FLEET_SUPER_AGENT:EVAL_DS_FLEET_SUPER_AGENT:super_agent.yaml:super_agent_scheduled.yaml"
+  "FLEET_OPS_AGENT:EVAL_INPUT_FLEET_OPS_AGENT:EVAL_DS_FLEET_OPS_AGENT:ops_agent.yaml:ops_agent_scheduled.yaml"
+  "FLEET_ADMIN_AGENT:EVAL_INPUT_FLEET_ADMIN_AGENT:EVAL_DS_FLEET_ADMIN_AGENT:admin_agent.yaml:admin_agent_scheduled.yaml"
 )
 
 note() { echo "[agent-evals] $*"; }
@@ -107,14 +107,17 @@ q "CREATE OR REPLACE FILE FORMAT ${EVAL_DB}.${EVAL_SCHEMA}.YAML_FILE_FORMAT
      COMMENT = '$TRACK';" >/dev/null
 
 for entry in "${AGENTS[@]}"; do
-  IFS=: read -r agent _tbl _ds yaml <<<"$entry"
+  IFS=: read -r agent _tbl _ds yaml sched_yaml <<<"$entry"
   selected "$agent" || continue
-  note "uploading $yaml ..."
+  note "uploading $yaml + $sched_yaml ..."
   # Keep YAML uncompressed (docs recommendation) and overwrite so a config edit
   # is picked up on the next run.
   q "PUT file://$YAML_DIR/$yaml @${EVAL_DB}.${EVAL_SCHEMA}.${STAGE}
        AUTO_COMPRESS = FALSE OVERWRITE = TRUE;" >/dev/null \
     || { echo "ERROR: PUT of $yaml failed"; exit 1; }
+  q "PUT file://$YAML_DIR/$sched_yaml @${EVAL_DB}.${EVAL_SCHEMA}.${STAGE}
+       AUTO_COMPRESS = FALSE OVERWRITE = TRUE;" >/dev/null \
+    || { echo "ERROR: PUT of $sched_yaml failed"; exit 1; }
 done
 
 # ── 3. datasets ─────────────────────────────────────────────────
@@ -139,7 +142,7 @@ except Exception:
 )
 
 for entry in "${AGENTS[@]}"; do
-  IFS=: read -r agent tbl ds yaml <<<"$entry"
+  IFS=: read -r agent tbl ds yaml _sched <<<"$entry"
   selected "$agent" || continue
   if echo "$existing_datasets" | grep -qx "$ds"; then
     note "dataset $ds already exists - reusing"
@@ -163,8 +166,46 @@ for entry in "${AGENTS[@]}"; do
   fi
 done
 
+# ── 4. scheduled evaluation tasks ────────────────────────────────
+# One TASK per agent, targeting the PRODUCTION alias, running daily at 06:00 UTC.
+# Created SUSPENDED by default: four daily runs over ~12 rows with 3-4 judged
+# metrics is real recurring spend. Resume with ENABLE_SCHEDULED_EVALS=1 or
+# manually via ALTER TASK ... RESUME.
+ENABLE_SCHED="${ENABLE_SCHEDULED_EVALS:-0}"
+note "creating scheduled evaluation tasks (enable=$ENABLE_SCHED) ..."
+
+for entry in "${AGENTS[@]}"; do
+  IFS=: read -r agent _tbl _ds _yaml sched_yaml <<<"$entry"
+  selected "$agent" || continue
+  TASK_NAME="EVAL_SCHED_${agent}"
+  cfg="@${EVAL_DB}.${EVAL_SCHEMA}.${STAGE}/${sched_yaml}"
+  # CREATE OR REPLACE is safe here - tasks have no eval history to preserve.
+  out=$(q "CREATE OR REPLACE TASK ${EVAL_DB}.${EVAL_SCHEMA}.${TASK_NAME}
+    WAREHOUSE = ${EVAL_WAREHOUSE}
+    SCHEDULE = 'USING CRON 0 6 * * * UTC'
+    COMMENT = '${TRACK}'
+  AS
+    CALL EXECUTE_AI_EVALUATION(
+      'START',
+      OBJECT_CONSTRUCT('run_name', 'scheduled-' || UUID_STRING()),
+      '${cfg}'
+    );" || true)
+  if echo "$out" | grep -qiE "^.*Error |exception"; then
+    note "  WARN: could not create task $TASK_NAME"
+    echo "$out" | tail -4
+  else
+    note "  created $TASK_NAME (SUSPENDED)"
+  fi
+
+  if [ "$ENABLE_SCHED" = "1" ]; then
+    q "ALTER TASK ${EVAL_DB}.${EVAL_SCHEMA}.${TASK_NAME} RESUME;" >/dev/null \
+      && note "  resumed $TASK_NAME" \
+      || note "  WARN: could not resume $TASK_NAME"
+  fi
+done
+
 if [ "$RUN_EVALS" != "1" ]; then
-  note "datasets ready. Skipping runs (--no-run)."
+  note "datasets + tasks ready. Skipping baseline runs (--no-run)."
   note "run later with: bash $0 $CONNECTION"
   exit 0
 fi
@@ -174,7 +215,7 @@ STAMP=$(date -u +%Y%m%d-%H%M)
 note "starting baseline evaluation runs (this invokes each agent per dataset row and an LLM judge per metric - real spend) ..."
 
 for entry in "${AGENTS[@]}"; do
-  IFS=: read -r agent tbl ds yaml <<<"$entry"
+  IFS=: read -r agent tbl ds yaml _sched <<<"$entry"
   selected "$agent" || continue
   run_name="baseline-${STAMP}"
   cfg="@${EVAL_DB}.${EVAL_SCHEMA}.${STAGE}/${yaml}"
@@ -206,3 +247,4 @@ done
 
 note "done. Inspect results in Snowsight (AI & ML > Agents > <agent> > Evaluations),"
 note "or with SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA('${EVAL_DB}','SYNAPSE_USER','<agent>','CORTEX AGENT','baseline-${STAMP}')."
+note "Scheduled tasks: SHOW TASKS IN SCHEMA ${EVAL_DB}.${EVAL_SCHEMA}; resume with ALTER TASK ... RESUME or ENABLE_SCHEDULED_EVALS=1."

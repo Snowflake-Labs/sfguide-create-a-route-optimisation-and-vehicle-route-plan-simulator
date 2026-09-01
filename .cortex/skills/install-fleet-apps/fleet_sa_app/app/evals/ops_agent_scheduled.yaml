@@ -1,0 +1,20 @@
+# Scheduled evaluation config - FLEET_OPS_AGENT (operator).
+# See ops_agent.yaml for why answer_correctness and tool_execution_accuracy are omitted.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "PRODUCTION"
+  run_params:
+    label: "Fleet ops agent scheduled"
+    description: "Daily cadence evaluation of the production ops agent."
+  source_metadata:
+    type: "dataset"
+    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_OPS_AGENT"
+
+metrics:
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
