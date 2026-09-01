@@ -153,8 +153,17 @@ except Exception:
 for entry in "${AGENTS[@]}"; do
   IFS=: read -r agent tbl ds yaml _sched <<<"$entry"
   selected "$agent" || continue
-  if echo "$existing_datasets" | grep -qx "$ds"; then
-    note "dataset $ds already exists - reusing"
+  # A DATASET IS AN IMMUTABLE SNAPSHOT OF THE INPUT TABLE.
+  # Step 1 above re-applies agent_evals.sql on every run, so the input TABLE is
+  # always current - but an existing dataset still serves the ground truth as it
+  # was when the dataset was created. Reusing it after a ground-truth edit
+  # therefore scores the agent against the OLD expectations, silently and with no
+  # error. Pass REFRESH_DATASETS=1 whenever agent_evals.sql changed.
+  if [ "${REFRESH_DATASETS:-0}" = "1" ] && echo "$existing_datasets" | grep -qx "$ds"; then
+    note "REFRESH_DATASETS=1 -> dropping stale dataset $ds so it re-snapshots $tbl ..."
+    q "DROP DATASET IF EXISTS ${EVAL_DB}.${AGENT_SCHEMA}.${ds};" >/dev/null || true
+  elif echo "$existing_datasets" | grep -qx "$ds"; then
+    note "dataset $ds already exists - reusing (set REFRESH_DATASETS=1 after editing agent_evals.sql)"
     continue
   fi
   note "creating dataset $ds from $tbl (in ${AGENT_SCHEMA}, the agent's schema) ..."

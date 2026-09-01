@@ -1,28 +1,32 @@
 # Agent evaluation run config - FLEET_OPS_AGENT (operator).
 #
-# answer_correctness IS DELIBERATELY ABSENT.
-# This agent's capabilities are almost entirely synapse MCP verbs, and evaluations
-# do not call MCP tools ("the agent doesn't call any MCP server tool during the
-# run"). Scoring answer correctness would therefore mark the agent wrong for a
-# platform limitation on every operational question, or - if the rubric were
-# loosened to compensate - mark it right for answering nothing. Neither number
-# would mean anything.
+# answer_correctness IS ABSENT - BY CHOICE, NOT BECAUSE MCP IS UNREACHABLE.
+# The docs say evaluations "don't currently support MCP servers as tools" and that
+# the agent "doesn't call any MCP server tool during the run". That is NOT true on
+# this account: baseline runs on 2026-09-01 invoked fleet_ops_mcp_service_inventory,
+# fleet_ops_mcp_cost_control and fleet_ops_mcp_describe_deployment, with matching
+# ACTOR = SYSTEM rows in SYNAPSE_OPS.VERB_ATTEMPT. See agent_evals.sql for the full
+# evidence. So answer_correctness COULD be enabled here.
+# It stays off for two practical reasons: an operational answer depends on live
+# service state and so drifts between runs, and adding a metric restarts the trend
+# charts (scores from different metric sets and versions are not comparable).
+# Revisit deliberately, not incidentally.
 #
-# tool_execution_accuracy IS ALSO ABSENT for the same reason: the ops dataset's
-# ground-truth invocations name the single non-MCP analyst tool (query_deployment),
-# but the real ops surface is MCP verbs that the evaluation cannot invoke.
+# tool_execution_accuracy is likewise off for now, to keep this agent's metric set
+# stable against the existing baseline.
 #
-# What IS measurable, and is measured here:
-#   tool_selection_accuracy - deterministic, and the ops dataset's ground truth
-#                             names the one non-MCP tool that should be chosen
-#                             (query_deployment) for each history question.
+# What IS measured here:
+#   tool_selection_accuracy - deterministic. Ground truth names query_deployment
+#                             for the history questions, and the read-only
+#                             inspection verb for the confirm-before-acting case
+#                             (expecting NO tools there scored a false 0).
 #   logical_consistency     - reference-free; catches an orchestrator that
 #                             contradicts its own instructions, answers a
 #                             live-state question from history, or claims a
 #                             destructive action succeeded.
 #
-# The MCP verb path is covered instead by .cortex/skills/evals/run_agent_evals.py,
-# which asserts against the VERB_ATTEMPT audit table on a live deployment.
+# run_agent_evals.py remains complementary: it asserts the VERB_ATTEMPT audit
+# envelope, which an evaluation run does not inspect.
 #
 # See fleet_agent.yaml for why there is no dataset: block.
 

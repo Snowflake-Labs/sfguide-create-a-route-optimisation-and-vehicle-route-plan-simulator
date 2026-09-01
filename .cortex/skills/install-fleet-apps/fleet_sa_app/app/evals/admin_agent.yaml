@@ -1,9 +1,12 @@
 # Agent evaluation run config - FLEET_ADMIN_AGENT (installer).
 #
-# answer_correctness and tool_execution_accuracy are omitted for the same reason
-# as the ops agent: this agent's substrate and region verbs are synapse MCP verbs,
-# which evaluations never invoke. See ops_agent.yaml for the full reasoning, and
-# fleet_agent.yaml for why there is no dataset: block.
+# answer_correctness and tool_execution_accuracy are omitted for the same reason as
+# the ops agent - and note that reason is METRIC-SET STABILITY, not the documented
+# "evaluations never invoke MCP verbs" limitation, which does NOT hold on this
+# account: baseline runs invoked fleet_admin_mcp_describe_deployment with matching
+# ACTOR = SYSTEM rows in SYNAPSE_ADMIN.VERB_ATTEMPT. See ops_agent.yaml for the
+# reasoning and agent_evals.sql for the evidence, and fleet_agent.yaml for why there
+# is no dataset: block.
 
 evaluation:
   agent_params:
