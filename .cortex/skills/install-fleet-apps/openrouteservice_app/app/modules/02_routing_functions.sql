@@ -404,7 +404,7 @@
    -- (ST_COLLECT) rather than strictly re-ordered. GEOJSON is NULL when nothing
    -- matched; RESPONSE always carries the raw match result for inspection.
    --
-   -- Three details are load-bearing; all three produced silent wrong answers before:
+   -- Four details are load-bearing; all four produced silent wrong answers before:
    --
    --   1. additional_info = TRUE on the /export payload. TopoJSON export has two
    --      mutually exclusive property branches. With the OsmId ext storage enabled on
@@ -422,6 +422,14 @@
    --      road. Decode with IFF(v < 0, -v - 1, v).
    --   3. The bbox padding. Export emits an edge only when BOTH of its endpoints are
    --      inside the bbox, so a matched edge straddling the boundary vanishes.
+   --   4. Positional arc-to-edge pairing. On the OsmId branch, `arcs[i]` pairs 1:1
+   --      with `ors_ids[i]` within each geometry (verified: n_arcs == n_ids on all
+   --      839 geometries in a sample SF bbox). Matching at the geometry level with
+   --      ARRAYS_OVERLAP and then taking ALL arcs over-selects the entire OSM way -
+   --      measured 78 arcs for 36 matched edges (54% residual), painting stray spurs
+   --      on roads the trajectory never used. The fix is `ors_ids[a.index]` so only
+   --      the arc whose own edge id was matched is included. COALESCE falls back to
+   --      the singular `ors_id` for non-OsmId profiles (one edge per geometry).
    -- The trailing '?' on the /match profile is load-bearing - see the note on MATCH.
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH_PATH(method VARCHAR, linestring ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, MATCHED_EDGES INT)
@@ -463,8 +471,10 @@
         FROM ex,
              LATERAL FLATTEN(input => ex.export_resp:objects:network:geometries) gg,
              LATERAL FLATTEN(input => gg.value:arcs) a
-        WHERE ARRAY_CONTAINS(gg.value:properties:ors_id::INT, (SELECT edge_ids FROM ids))
-           OR ARRAYS_OVERLAP(gg.value:properties:ors_ids::ARRAY, (SELECT edge_ids FROM ids))
+        WHERE ARRAY_CONTAINS(
+                COALESCE(gg.value:properties:ors_ids[a.index],
+                         gg.value:properties:ors_id)::INT,
+                (SELECT edge_ids FROM ids))
       ),
       lines AS (
         SELECT TO_GEOGRAPHY(OBJECT_CONSTRUCT('type', 'LineString', 'coordinates',

@@ -54,7 +54,7 @@ records `<profile>?` for match calls.
 
 **Note on `MATCH_PATH` geometry resolution**: `/v2/match` never returns geometry - only
 internal graph `edge_ids`. `MATCH_PATH` resolves them by chaining a bbox `/v2/export`
-topojson call, joining `edge_id` to the export geometry properties. Three details are
+topojson call, joining `edge_id` to the export geometry properties. Four details are
 load-bearing:
 
 - The export payload MUST set `additional_info: true`. TopoJSON export has two mutually
@@ -71,6 +71,13 @@ load-bearing:
   arc for both directions of an edge, so a large share of arc references are negative.
   `ABS()` is NOT the inverse (it yields `index + 1` and silently draws a neighbouring
   road); decode with `IFF(v < 0, -v - 1, v)`.
+- **Positional arc-to-edge pairing.** On the `OsmId` branch, `arcs[i]` pairs 1:1 with
+  `ors_ids[i]` within each geometry. Matching at the geometry level (e.g.
+  `ARRAYS_OVERLAP(ors_ids, edge_ids)`) and then taking ALL arcs of the matching geometry
+  over-selects the entire OSM way - measured 78 arcs for 36 matched edges (54% residual),
+  painting stray road segments the trajectory never traversed. The predicate must be
+  positional: `ors_ids[a.index]` so only the arc whose own edge id was matched is
+  included. `COALESCE(ors_ids[a.index], ors_id)` handles both export branches.
 
 **Note on `MATCH_PATH` geometry (`OsmId` ext storage required)**: `MATCH_PATH` resolves matched
 edge ids to road geometry by joining `/export` TopoJSON `properties.ors_ids`, which ORS emits
