@@ -10,7 +10,7 @@ import { bundleRuntime } from '../build/runtime-js.js';
 import { bundlePlugin } from '../build/plugin.js';
 import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
 import { auditTableDDL } from '../ddl.js';
-import { TRACKING_QUERY_TAG } from '../tracking.js';
+import { TRACKING_COMMENT, TRACKING_QUERY_TAG } from '../tracking.js';
 import { readInstallConfig, installRuntime } from '../build/install.js';
 import { resolveTargetDir, parseTargetFlags } from './target.js';
 
@@ -162,9 +162,15 @@ export async function runMaterialize(app: ResolvedSynapseAppConfig, argv: string
     // ON ACCOUNT / CREATE SCHEMA ON DATABASE can still proceed against an
     // already-existing target. Snowflake checks the privilege before IF NOT
     // EXISTS, so the bare form errors even when the object exists.
-    `EXECUTE IMMEDIATE $$BEGIN CREATE DATABASE IF NOT EXISTS ${cfg.database}; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
+    //
+    // LOCAL PATCH (see ../../VENDOR.md): both carry the COMMENT tracking tag.
+    // On a fresh account these statements are what actually create the bundle
+    // database and schema, and the schema is the designated tracking proxy for
+    // the untaggable CREATE MCP SERVER (see ../tracking.ts) - so leaving them
+    // untagged would leave the MCP server untracked entirely.
+    `EXECUTE IMMEDIATE $$BEGIN CREATE DATABASE IF NOT EXISTS ${cfg.database} COMMENT = '${TRACKING_COMMENT}'; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
     `USE DATABASE ${cfg.database};`,
-    `EXECUTE IMMEDIATE $$BEGIN CREATE SCHEMA IF NOT EXISTS ${cfg.schema}; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
+    `EXECUTE IMMEDIATE $$BEGIN CREATE SCHEMA IF NOT EXISTS ${cfg.schema} COMMENT = '${TRACKING_COMMENT}'; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
     `USE SCHEMA ${cfg.schema};`,
     '',
     `SET db = '${cfg.database}';`,

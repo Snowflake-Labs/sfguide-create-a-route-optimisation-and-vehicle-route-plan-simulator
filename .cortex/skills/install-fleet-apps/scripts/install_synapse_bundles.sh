@@ -23,9 +23,18 @@ GIT_SHA=$(git rev-parse HEAD)
 command -v node >/dev/null 2>&1 || { echo "ERROR: node not found"; exit 1; }
 command -v snow >/dev/null 2>&1 || { echo "ERROR: snow not found"; exit 1; }
 
+# Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
+# query_tag has to be prepended to each -q payload. NOTE: that makes the CLI emit
+# a leading `status` / `Statement executed successfully.` result block, and the
+# literal string `status` matches the identifier filters below - so the probes
+# strip that block explicitly rather than relying on `head -1`.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"synapse-bundle"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+NO_STATUS='^(status|Statement executed successfully\.)$'
+
 # Resolve the active account (lowercased) for the per-account install dir.
-ACCOUNT=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT LOWER(CURRENT_ACCOUNT());" 2>/dev/null \
-  | grep -iE '^[a-z0-9_-]+$' | head -1)
+ACCOUNT=$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT LOWER(CURRENT_ACCOUNT());" 2>/dev/null \
+  | grep -viE "$NO_STATUS" | grep -iE '^[a-z0-9_-]+$' | head -1)
 [ -n "$ACCOUNT" ] || { echo "ERROR: could not resolve CURRENT_ACCOUNT() via $CONNECTION"; exit 1; }
 echo "[synapse] account=$ACCOUNT connection=$CONNECTION"
 
@@ -44,8 +53,8 @@ echo "[synapse] account=$ACCOUNT connection=$CONNECTION"
 # CURRENT_ROLE() reproduces the pre-`USE ROLE` behaviour exactly: install.sql used to
 # run as whatever role the connection had. Roles can contain '$' and other
 # identifier characters, so the filter is looser than the account one.
-DEPLOY_ROLE=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT CURRENT_ROLE();" 2>/dev/null \
-  | grep -iE '^"?[A-Za-z0-9_$-]+"?$' | grep -viE '^"?CURRENT_ROLE\(\)"?$' | head -1 | tr -d '"')
+DEPLOY_ROLE=$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ROLE();" 2>/dev/null \
+  | grep -viE "$NO_STATUS" | grep -iE '^"?[A-Za-z0-9_$-]+"?$' | grep -viE '^"?CURRENT_ROLE\(\)"?$' | head -1 | tr -d '"')
 [ -n "$DEPLOY_ROLE" ] || { echo "ERROR: could not resolve CURRENT_ROLE() via $CONNECTION (needed as the install.sql deploy role)"; exit 1; }
 echo "[synapse] deploy role=$DEPLOY_ROLE (install.sql runs as this role)"
 
@@ -100,6 +109,8 @@ grep -q "catalog?.database && catalog?.schema" "$VENDOR_DIR/dist/build/bundle.js
   || { echo "ERROR: built synapse codegen is missing the audit-table FQN qualification (see vendor/synapse/VENDOR.md)"; exit 1; }
 grep -q "roles.deploy" "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the 'deploy' deploy-role precedence (see vendor/synapse/VENDOR.md). Without it install.sql runs USE ROLE <consumer app role> and fails on CREATE OR REPLACE HYBRID TABLE verb_attempt, deploying nothing."; exit 1; }
+grep -q "CREATE SCHEMA IF NOT EXISTS \${cfg.schema} COMMENT = " "$VENDOR_DIR/dist/cli/materialize.js" \
+  || { echo "ERROR: built synapse codegen is missing the COMMENT tracking tag on the bundle CREATE DATABASE/SCHEMA (see vendor/synapse/VENDOR.md). On a fresh account that leaves the bundle schema untagged, and the schema is the tracking proxy for the untaggable CREATE MCP SERVER."; exit 1; }
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
@@ -184,7 +195,7 @@ JSON
 done
 
 echo "[synapse] verifying MCP servers..."
-snow sql -c "$CONNECTION" -q "SHOW MCP SERVERS;" --format=CSV 2>/dev/null \
+snow sql -c "$CONNECTION" -q "$TAG_SQL SHOW MCP SERVERS;" --format=CSV 2>/dev/null \
   | grep -iE 'ROUTING_MCP|FLEET_OPS_MCP|FLEET_ADMIN_MCP' || echo "  (none listed yet)"
 
 # Post-deploy smoke verification. Re-confirmed against the vendored SHA: the
@@ -207,7 +218,7 @@ if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
   )
   audit_count() {
     snow sql -c "$CONNECTION" --format=CSV \
-      -q "SELECT COUNT(*) FROM $1;" 2>/dev/null | grep -iE '^[0-9]+$' | head -1
+      -q "$TAG_SQL SELECT COUNT(*) FROM $1;" 2>/dev/null | grep -iE '^[0-9]+$' | head -1
   }
   for srow in "${SMOKE[@]}"; do
     IFS='|' read -r SLABEL SCALL STABLE <<< "$srow"
@@ -216,7 +227,7 @@ if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
     # example an audit INSERT resolving against the wrong schema) would still look
     # OK on the strength of rows from previous runs. The delta is the actual claim.
     BEFORE=$(audit_count "$STABLE")
-    if snow sql -c "$CONNECTION" -q "$SCALL" >/tmp/synapse_smoke_${SLABEL}.log 2>&1; then
+    if snow sql -c "$CONNECTION" -q "$TAG_SQL $SCALL" >/tmp/synapse_smoke_${SLABEL}.log 2>&1; then
       AFTER=$(audit_count "$STABLE")
       if [ -n "$BEFORE" ] && [ -n "$AFTER" ] && [ "$AFTER" -gt "$BEFORE" ]; then
         echo "  [smoke] $SLABEL: OK (verb returned; audit row written, VERB_ATTEMPT $BEFORE -> $AFTER)"

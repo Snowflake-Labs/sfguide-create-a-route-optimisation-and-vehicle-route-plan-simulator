@@ -37,7 +37,7 @@
        BOUNDARY_BAKED_AT  DATE,
        UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
    )
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
 
    -- =============================================================================
    -- REGION_ORS_MAP bootstrap (Mirror of REGION_ORS_MAP DDL in 03_region_management.sql; keep in sync.)
@@ -61,7 +61,7 @@
        CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
        UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
    )
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}';
 
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD (folder VARCHAR, filename VARCHAR, URL VARCHAR)
       RETURNS varchar
@@ -195,7 +195,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DIRECTIONS(method VARCHAR, jstart ARRAY, jend ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
@@ -207,7 +207,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DIRECTIONS(method VARCHAR, locations VARIANT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
@@ -219,7 +219,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
@@ -231,7 +231,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, smoothing INT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.1","attributes":{"component":"routing","feature":"smoothing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"smoothing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
@@ -244,7 +244,7 @@
       range_type VARCHAR DEFAULT 'time', region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.1","attributes":{"component":"routing","feature":"multi-isochrone"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"multi-isochrone"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
@@ -265,7 +265,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"boundary-clip"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"boundary-clip"}}'
       AS
       $$
       SELECT
@@ -288,7 +288,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [], region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
@@ -302,7 +302,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(challenge VARIANT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
@@ -316,7 +316,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX(method VARCHAR, locations ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._MATRIX_RAW(method, OBJECT_CONSTRUCT(''locations'', locations, ''metrics'', ARRAY_CONSTRUCT(''distance'', ''duration''), ''resolve_locations'', true), region)';
 
@@ -324,7 +324,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX(method VARCHAR, options VARIANT, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._MATRIX_RAW(method, options, region)';
 
@@ -332,7 +332,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(method VARCHAR, origin ARRAY, destinations ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._MATRIX_TABULAR_RAW(method, origin, destinations, region)';
 
@@ -340,7 +340,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR_W(region VARCHAR, method VARCHAR, origin ARRAY, destinations ARRAY)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(method, origin, destinations, region)';
 
@@ -352,7 +352,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SNAP(method VARCHAR, locations ARRAY, radius INT, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._SNAP_RAW(method, OBJECT_CONSTRUCT(''locations'', locations, ''radius'', radius), region)';
 
@@ -362,7 +362,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SNAP_POINTS(method VARCHAR, locations ARRAY, radius INT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (IDX INT, INPUT_GEOG GEOGRAPHY, SNAPPED_GEOG GEOGRAPHY, SNAPPED_DISTANCE FLOAT, NAME STRING)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"snap"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"snap"}}'
       AS
       $$
       SELECT
@@ -391,7 +391,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH(method VARCHAR, features VARIANT, region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"match"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"match"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._MATCH_RAW(method || ''?'', OBJECT_CONSTRUCT(''features'', features), region)';
 
@@ -426,7 +426,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATCH_PATH(method VARCHAR, linestring ARRAY, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, MATCHED_EDGES INT)
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing","feature":"match-path"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing","feature":"match-path"}}'
       AS
       $$
       WITH m AS (
@@ -482,7 +482,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_STATUS(region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
       LANGUAGE SQL
-      COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._ORS_STATUS_RAW(region)';
 
@@ -500,12 +500,12 @@
       created_at TIMESTAMP DEFAULT SYSDATE(),
       updated_at TIMESTAMP DEFAULT SYSDATE()
    )
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}';
  
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.CHECK_HEALTH()
    RETURNS BOOLEAN
    LANGUAGE SQL
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"routing"}}'
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"routing"}}'
    AS
    'SELECT CASE WHEN OPENROUTESERVICE_APP.CORE._ORS_STATUS_RAW(NULL) IS NOT NULL THEN TRUE ELSE FALSE END';
 
@@ -520,7 +520,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON FLOAT, LAT FLOAT)
    RETURNS OBJECT
    LANGUAGE SQL
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"region-catalog","feature":"reverse-lookup"}}'
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"reverse-lookup"}}'
    AS
    $$
    SELECT OBJECT_CONSTRUCT(
@@ -549,7 +549,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.POINT_IN_REGION(LON FLOAT, LAT FLOAT, REGION VARCHAR)
    RETURNS BOOLEAN
    LANGUAGE SQL
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"region-catalog","feature":"reverse-lookup"}}'
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"reverse-lookup"}}'
    AS
    $$
    SELECT COALESCE(
@@ -569,7 +569,7 @@
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SAMPLE_ADDRESSES_FOR_REGION(P_REGION VARCHAR)
    RETURNS ARRAY
    LANGUAGE SQL
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"region-catalog","feature":"address-validation"}}'
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"address-validation"}}'
    AS
    $$
    SELECT ARRAY_AGG(addr.value)

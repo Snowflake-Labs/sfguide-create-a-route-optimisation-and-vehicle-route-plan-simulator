@@ -37,6 +37,11 @@ ENGINE_REPO="OPENROUTESERVICE_APP.core.image_repository"
 
 note() { echo "[provision-engine] $*"; }
 
+# Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
+# query_tag has to be prepended to each -q payload rather than set once up front.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"engine"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+
 # ── 0. preflight: container runtime ─────────────────────────────
 # Auto-detect prefers docker: a default podman machine is 2 GB and OOMs the ORS
 # image build, and Docker Desktop is usually larger-provisioned. Override with
@@ -63,12 +68,13 @@ else
   note "  crane NOT found: falling back to '$CONTAINER_CMD push' (may hang on SPCS manifest commit). Recommended: brew install crane"
 fi
 command -v snow >/dev/null 2>&1 || { echo "ERROR: 'snow' CLI not found"; exit 1; }
-snow sql -c "$CONN" -q "SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
+snow sql -c "$CONN" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONN' does not work"; exit 1; }
 
 # ── 1. ensure OPENROUTESERVICE_APP engine infra (db/schemas/stages/repo) ──
 note "[1/6] ensuring OPENROUTESERVICE_APP engine infra..."
 snow sql -c "$CONN" -q "
+  $TAG_SQL
   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
@@ -169,6 +175,7 @@ if [ "${SKIP_MODULES:-0}" != "1" ]; then
   done
   # Resume observability ingest + retention tasks (created suspended by module 08).
   snow sql -c "$CONN" -q "
+    $TAG_SQL
     ALTER TASK IF EXISTS OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK RESUME;
     ALTER TASK IF EXISTS OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK RESUME;
   " >/dev/null 2>&1 || true
@@ -178,7 +185,7 @@ fi
 
 # ── 6. verify ───────────────────────────────────────────────────
 note "[6/6] engine services (ORS_SERVICE_${REGION} builds its graph on first boot, 5-15 min):"
-snow sql -c "$CONN" -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 2>/dev/null | tail -12 || true
+snow sql -c "$CONN" -q "$TAG_SQL SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 2>/dev/null | tail -12 || true
 
 echo
 echo "================================================================"

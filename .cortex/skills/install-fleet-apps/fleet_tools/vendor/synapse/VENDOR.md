@@ -36,7 +36,7 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Four deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Five deviations from upstream, plus two new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
 replayable record and are already applied to this tree. Patches are scoped by FILE, not
 by concern, so `git apply` never has two patches editing the same file.
@@ -104,11 +104,20 @@ target the bare name is preserved. Three tests cover those cases.
 
 ### patches/04-cli-materialize.patch
 
-File: `src/cli/materialize.ts`. Carries two unrelated changes, because patches are
+File: `src/cli/materialize.ts`. Carries three unrelated changes, because patches are
 file-scoped.
 
 **(a) The `install.sql` `query_tag` preamble** - the second half of the tracking-tag
 concern described under patch 01.
+
+**(c) A `COMMENT` tracking tag on the bundle `CREATE DATABASE` / `CREATE SCHEMA`.**
+Both statements are `IF NOT EXISTS` inside an exception-swallowing `EXECUTE IMMEDIATE`,
+so on the normal install path (installer pre-creates the target) they no-op and the tag
+is irrelevant. On a **fresh account** they are what actually creates the bundle database
+and schema. That matters more than a typical missing tag because `src/tracking.ts`
+designates the parent schema as the tracking proxy for `CREATE MCP SERVER`, which has no
+COMMENT clause of its own - so an untagged schema leaves the MCP server untracked
+entirely. Guarded by a string check in `install_synapse_bundles.sh`.
 
 **(b) `deploy` as the highest-precedence deploy role.** This one is a **total deploy
 failure** if dropped, and it is the subtlest trap in this vendor directory.
@@ -166,6 +175,26 @@ Upstream fixed the identical bug independently in `dc8827c3`, so at the pinned S
 `src/build/ddl.ts` already emits `IDEMPOTENCY_KEY STRING DEFAULT NULL`. **Do not
 reapply this patch.** The behaviour is still verified by
 `appends IDEMPOTENCY_KEY STRING DEFAULT NULL as the last arg`.
+
+### patches/05-connector-query-tag.patch
+
+File: `src/connector.ts`.
+
+AGENTS.md requires the tracking `query_tag` on every session. This connection had
+none. It is the one used by `synapse deploy`, `synapse test-e2e`, and the stdio MCP
+server, so every statement it issued - including the audited envelope's own
+`VERB_ATTEMPT` inserts - was unattributable in `QUERY_HISTORY`.
+
+The tag is applied by an `applyQueryTag()` helper awaited in BOTH connect paths
+(`connectAndWrap`, used by `createConn`, and `createConnFromCli`, which cannot pass
+connect options because the SDK only reads `connections.toml` when
+`createConnection()` is called with no arguments). The Node SDK has no
+`sessionParameters` connect option - that is the Python connector - so an explicit
+`ALTER SESSION` right after connect is the only mechanism.
+
+Note this does NOT cover verbs invoked through the Snowflake-managed MCP server:
+that session is not code-controlled, so no change here can tag it. The deployed
+procedures carry their own COMMENT tag instead.
 
 ## Re-vendoring procedure
 

@@ -32,6 +32,11 @@ GIT_SHA=$(git rev-parse --short HEAD)
 GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP"
+
+# Each `snow sql` invocation is a NEW session, so the AGENTS.md query_tag has to
+# be prepended per payload. Used by the read-only probes below; the DDL blocks
+# spell the tag out inline.
+TAG_SQL="ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';"
 # Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
 SPEC_STAGE_NAME="${SPEC_STAGE_NAME:-OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE}"
@@ -182,6 +187,7 @@ fi
 # ── 3. Resolve endpoint URL ─────────────────────────────────────
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
+  $TAG_SQL
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))

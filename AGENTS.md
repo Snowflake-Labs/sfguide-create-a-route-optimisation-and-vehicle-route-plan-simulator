@@ -86,6 +86,21 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.
 # fresh accounts only, which is why this needs a static gate rather than a test run.
 python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
 
+# Validate the two mandatory tracking mechanisms: a session `query_tag` on every
+# SQL session, and a JSON `COMMENT` tag on every created object. Both failures are
+# invisible at runtime (an untagged object works, an untagged session returns the
+# right rows); what breaks is credit attribution and `routing-solution-cleanup`,
+# which finds objects to drop ONLY by their COMMENT tag - so an untagged SPCS
+# service or compute pool survives a teardown and keeps billing. Also catches
+# schema drift that looks correct but matches no consumer filter (a
+# `"version":"1.0"` string instead of `{"major":1,"minor":0}`, a missing
+# `is_quickstart`/`source`, a name without the `oss-` prefix), and DDL run by a
+# `snow sql -q` with no tag in the SAME invocation (each invocation is a new
+# session, so an earlier tag does not carry over). Checks inside procedure bodies
+# too - a `$$`-aware split alone would let a nested CREATE inherit the enclosing
+# procedure's COMMENT. Platform exceptions are an explicit in-file allowlist.
+python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
+
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
 # report OK / EMPTY / ERROR per area. This is the only check that answers "will the
 # pages have data?" - every other gate verifies objects were CREATED, not that they
@@ -121,7 +136,7 @@ bash .cortex/skills/install-fleet-apps/scripts/setup_agent_evals.sh <connection>
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, and when an SA app view is missing its `useCase` block):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, and when a session or created object is missing its tracking tag):
 
 ```bash
 chmod +x .githooks/pre-commit
@@ -319,7 +334,15 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Commit directly to `main` or `dev`** - both are protected. All work goes on `feat/<GITHUB_LOGIN>-<feat-name>` with PRs targeting `dev`. Only humans promote `dev` → `main`.
 - **Hardcode the user branch name** - always derive the login from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-obielov-sa-synapse-app` into AGENTS.md, skill files, or scripts.
 - **Create a new branch per change** - there is one branch per user per feature (`feat/<GITHUB_LOGIN>-<feat-name>`). No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same feature branch.
-- **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
+- **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py` via `.githooks/pre-commit`.
+  - **The tag schema is part of the requirement, not decoration.** `version` must be `{"major":N,"minor":N}` (NOT a `"1.0"` string), `attributes` must carry `is_quickstart` and `source`, and `name` must be `oss-` prefixed. A tag missing these still parses and still looks right, so nothing fails - but every consumer filtering on `version.major` or `attributes.is_quickstart` silently matches none of those objects.
+  - **Each `snow sql` invocation is a NEW session.** A `query_tag` set by a previous invocation does not carry over, so any `-q` payload that runs DDL/DML must include the tag itself. This is why the installer scripts define a `TRACK` / `TAG_SQL` pair and prepend it per call rather than tagging once up front. Note that prepending a statement makes the CLI emit a leading `status` / `Statement executed successfully.` result block, which breaks naive output parsing: `--format json` starts returning one result set PER statement (a list of lists), and the literal string `status` matches loose identifier filters like `^[a-z0-9_-]+$`. Fix the parse, do not drop the tag.
+  - **Four documented platform exceptions**, where Snowflake itself makes the tag impossible. These are an explicit allowlist in the gate; adding a fifth must be a deliberate edit, never a silent pass:
+    - **Service functions** (`SERVICE=...`): reject both an inline COMMENT and `ALTER FUNCTION ... SET COMMENT`. Ensure the parent procedure carries a tag.
+    - **`CREATE SEMANTIC VIEW`**: has exactly ONE object-level COMMENT and it holds the Cortex Analyst model description that the agent reads. The two uses collide on one slot, so the JSON tag is deliberately omitted rather than degrading Analyst.
+    - **`CREATE DATABASE ... FROM LISTING` / `FROM SHARE`**: read-only share mounts accept no COMMENT clause and cannot be ALTERed afterwards.
+    - **`CREATE MCP SERVER`**: has no COMMENT clause at all; tracked via its JSON-tagged parent schema instead (see `fleet_tools/vendor/synapse/src/tracking.ts`).
+  - Session-scoped `TEMP`/`TEMPORARY` objects are also exempt: they are dropped at session end, so they are never left behind for the cleanup skill to find and cannot accrue cost.
 
 ## Skill Dependency Graph
 

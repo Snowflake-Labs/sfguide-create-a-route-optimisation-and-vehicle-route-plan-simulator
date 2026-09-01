@@ -141,3 +141,28 @@ if [ -f "$INSTALL_ORDER_CHECK" ] && staged_any \
     exit 1
   }
 fi
+
+# ── 6. Tracking tags (session query_tag + object COMMENT) ─────────────────────
+# Both mechanisms are invisible at runtime: an untagged object works perfectly and
+# an untagged session returns the right rows. What breaks is downstream - credit
+# attribution by origin, and the cleanup skill (routing-solution-cleanup), which
+# discovers objects to drop ONLY by their COMMENT tag. An untagged SPCS service or
+# compute pool therefore survives a teardown and keeps billing.
+# Also catches the subtler schema drift: a `"version":"1.0"` string instead of
+# `{"major":1,"minor":0}`, or a missing `is_quickstart`/`source`. Those parse fine
+# and look correct, but a consumer filtering on them matches none of the objects.
+# Wide trigger on purpose - the tags live in SQL, shell, Python and notebooks - and
+# the check prunes its own walk so it runs in about a second.
+TRACKING_CHECK="$SKILL_DIR/scripts/check_tracking_tags.py"
+if [ -f "$TRACKING_CHECK" ] && staged_any \
+  ".cortex/skills/" \
+  "benchmarks/" \
+  "datasets/" \
+  "docs/" \
+  "semantic/"; then
+  echo "pre-commit: tracking tag coverage check..."
+  python3 "$TRACKING_CHECK" || {
+    echo "pre-commit FAILED: a session or created object is missing its tracking tag, or a tag has the wrong schema (see AGENTS.md 'Do NOT')."
+    exit 1
+  }
+fi

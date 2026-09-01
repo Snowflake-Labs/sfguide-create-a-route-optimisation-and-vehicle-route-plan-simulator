@@ -104,11 +104,18 @@ declare -a STEP_STATUS
 note() { echo "[install-fleet-apps] $*"; }
 step() { STEP_STATUS+=("$1|$2"); }
 
+# Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
+# query_tag must be prepended to each -q payload (it never carries over from a
+# previous invocation). TRACK is also the COMMENT payload for objects this
+# script creates directly.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+
 # helper: does a SHOW return the named object? args: <show-sql> <name-regex>
 obj_exists() {
   # NOTE: snow CLI >=3.x has no 'plain' format (valid: TABLE/JSON/JSON_EXT/CSV).
   # CSV gives unbordered, greppable rows; object names appear as plain cells.
-  snow sql -c "$CONNECTION" --format=CSV -q "$1" 2>/dev/null | grep -qiE "$2"
+  snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL $1" 2>/dev/null | grep -qiE "$2"
 }
 
 # helper: resolve a public SPCS endpoint URL, retrying while it provisions.
@@ -119,7 +126,7 @@ resolve_endpoint() {
   local svc="$1" ep="$2" tries="${3:-10}" url=""
   for _ in $(seq 1 "$tries"); do
     url=$(snow sql -c "$CONNECTION" --format=CSV \
-      -q "SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
+      -q "$TAG_SQL SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
       2>/dev/null | grep -E '^https://[a-z0-9-]+\.' | grep -viE 'provisioning|in progress' | head -1 || true)
     [ -n "$url" ] && { echo "$url"; return 0; }
     sleep 18
@@ -132,7 +139,7 @@ note "[0/8] preflight..."
 for t in snow docker node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
-snow sql -c "$CONNECTION" -q "SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
+snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
 step "0 preflight" OK
 
@@ -145,11 +152,11 @@ step "0 preflight" OK
 # downstream GRANT target exists regardless of step ordering.
 note "[0.5/8] pre-creating FLEET_APP_* role names..."
 snow sql -c "$CONNECTION" -q "
-  ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
-  CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER;
+  $TAG_SQL
+  CREATE ROLE IF NOT EXISTS FLEET_APP_USER COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_OPS COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER COMMENT = '$TRACK';
 " >/tmp/ifa_preroles.log 2>&1 || note "  WARN: role pre-create reported errors (see /tmp/ifa_preroles.log)"
 
 # ── 1. infra (reuse OPENROUTESERVICE_APP else self-provision FLEET-owned) ──
@@ -190,7 +197,7 @@ step "1 infra" OK
 if [ "${SKIP_DATA:-0}" != "1" ]; then
   note "[2/8] resolving data layer..."
   HAVE_DATA=$(snow sql -c "$CONNECTION" --format=CSV -q \
-    "SELECT IFF((SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)>0 AND (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)>0,'YES','NO');" \
+    "$TAG_SQL SELECT IFF((SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)>0 AND (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)>0,'YES','NO');" \
     2>/dev/null | grep -iE '^(YES|NO)$' | head -1 || echo "NO")
   if [ "$HAVE_DATA" = "YES" ]; then
     note "  reusing existing agnostic data"
@@ -209,7 +216,7 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     # Sanity check: a silent 0-file upload (e.g. wrong path, glob mismatch) otherwise only
     # surfaces much later as empty tables. Fail fast here with a clear message.
     STAGED_FILES=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "LIST @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE; SELECT COUNT(*) AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));" \
+      "$TAG_SQL LIST @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE; SELECT COUNT(*) AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));" \
       2>/dev/null | grep -oE '^[0-9]+$' | tail -1 || echo 0)
     if [ "${STAGED_FILES:-0}" -lt 1 ]; then
       echo "ERROR: seed stage @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE has 0 files after copy (expected the datasets/ tree)"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1
@@ -291,7 +298,7 @@ if [ -f "$SAP_MOCK_SQL" ]; then
   note "[2.6/8] SAP mock landscape (MOCK_SAP + MOCK_TELEMATICS; demo example, raw-only)..."
   if snow sql -c "$CONNECTION" -f "$SAP_MOCK_SQL" >/tmp/ifa_sap_mock.log 2>&1; then
     SAP_MOCK_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "SELECT COUNT(*) FROM MOCK_SAP.FLEET.EQUI;" \
+      "$TAG_SQL SELECT COUNT(*) FROM MOCK_SAP.FLEET.EQUI;" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     SAP_MOCK="OK (${SAP_MOCK_N:-0} EQUI rows in MOCK_SAP.FLEET)"
     note "  SAP mock landed: $SAP_MOCK"
@@ -358,7 +365,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # so the friction log AND the final summary highlight it loudly instead of it
     # surfacing as a silent "routing service issues" at agent runtime.
     TOOL_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
+      "$TAG_SQL SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     if [ "${TOOL_N:-0}" -lt 11 ]; then
       [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
@@ -390,7 +397,7 @@ fi
 if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_CATALOG' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_CATALOG'; then
   note "[3.4] seeding REGION_CATALOG from baked parquet..."
   CAT_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE'); SELECT COUNT(*) AS N FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;" \
+    "$TAG_SQL CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE'); SELECT COUNT(*) AS N FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;" \
     >/tmp/ifa_seed_catalog.log 2>&1 && grep -Eo '^[0-9]+$' /tmp/ifa_seed_catalog.log | tail -1 || echo 0)
   if [ "${CAT_N:-0}" -lt 1 ]; then
     note "  WARN: REGION_CATALOG still empty after seed (see /tmp/ifa_seed_catalog.log)"
@@ -415,7 +422,7 @@ fi
 if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_MATRIX' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_MATRIX'; then
   note "[3.4b] seeding travel-time matrix from baked parquet..."
   if snow sql -c "$CONNECTION" -q \
-    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');" \
+    "$TAG_SQL CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');" \
     >/tmp/ifa_seed_matrix.log 2>&1; then
     note "  travel-time matrix seeded"
     step "3.4b seed-matrix" OK
@@ -549,7 +556,7 @@ fi
 if [ "${SKIP_DEMO:-0}" != "1" ] && [ -f "$AGENT_DEMOS_JSON" ]; then
   if obj_exists "SHOW STAGES LIKE 'ORS_SPCS_STAGE' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'ORS_SPCS_STAGE'; then
     note "[4.6] uploading agent-demos.json to the ORS config stage..."
-    snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE;" >/tmp/ifa_demos.log 2>&1 || true
+    snow sql -c "$CONNECTION" -q "$TAG_SQL CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE COMMENT = '$TRACK';" >/tmp/ifa_demos.log 2>&1 || true
     snow stage copy "$AGENT_DEMOS_JSON" @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/ --overwrite -c "$CONNECTION" >>/tmp/ifa_demos.log 2>&1 \
       && step "4.6 playground-config" OK \
       || { note "  WARN: agent-demos.json upload failed; see /tmp/ifa_demos.log"; step "4.6 playground-config" FAILED; }
@@ -682,21 +689,28 @@ else
 fi
 
 # ── 6.6 Agent evaluation sets ───────────────────────────────────
-# Creates the four Snowsight-visible evaluation datasets (one per agent) so the
-# "Create the first eval set" checklist item is satisfied on a fresh install.
+# Creates the four Snowsight-visible evaluation datasets (one per agent) AND runs a
+# baseline evaluation against each, because BOTH agent-readiness checklist items
+# ("Create the first eval set" and "Run an evaluation") are only satisfied once a
+# RUN exists - a dataset on its own clears neither. Snowsight's Evaluations tab
+# shows its "create a dataset / use existing dataset" starting points until the
+# agent's first run is recorded, so a datasets-only install always left all four
+# agents looking unconfigured.
 #
-# The RUN is opt-in (RUN_AGENT_EVALS=1) and NOT the default, because a run invokes
-# each agent once per dataset row and then an LLM judge per metric per row - real,
-# unbudgeted spend during an install. Dataset creation alone is cheap.
+# COST. A run invokes each agent once per dataset row (14+17+8+8 = 47) and then an
+# LLM judge per metric per row. That is real spend, so it is skippable: pass
+# NO_RUN_AGENT_EVALS=1 to create the eval sets only, or SKIP_AGENT_EVALS=1 to skip
+# the step entirely. RUN_AGENT_EVALS=1 is still accepted (now the default) so
+# existing invocations keep working.
 #
-# Non-blocking. Skip entirely with SKIP_AGENT_EVALS=1.
+# Non-blocking: a slow or failed run must never fail the install.
 if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]; then
-  if [ "${RUN_AGENT_EVALS:-0}" = "1" ]; then
-    note "[6.6/8] creating agent eval sets AND running baseline evaluations (RUN_AGENT_EVALS=1)..."
-    EVAL_ARGS=""
-  else
-    note "[6.6/8] creating agent eval sets (runs are opt-in: RUN_AGENT_EVALS=1)..."
+  if [ "${NO_RUN_AGENT_EVALS:-0}" = "1" ]; then
+    note "[6.6/8] creating agent eval sets only (NO_RUN_AGENT_EVALS=1; checklists stay open until a run)..."
     EVAL_ARGS="--no-run"
+  else
+    note "[6.6/8] creating agent eval sets AND running baseline evaluations (skip with NO_RUN_AGENT_EVALS=1)..."
+    EVAL_ARGS=""
   fi
   bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
       >/tmp/ifa_agent_evals.log 2>&1 \
@@ -799,7 +813,7 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
-  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
+  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
   echo "- SA app:    $SA_URL_DISP"

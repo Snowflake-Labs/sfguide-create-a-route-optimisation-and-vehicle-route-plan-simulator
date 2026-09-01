@@ -55,7 +55,7 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
 -- fit the gateway (up to 3 instances) + downloader under load. Existing
 -- deployments are converged by the boot ALTER in the admin app's
 -- instrumentation.ts.
-ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- Verify compute pool state. Services queue automatically if pool is STARTING.
 -- No re-run needed; the pool reaches ACTIVE within ~2 minutes and services start.
@@ -99,7 +99,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    SPECIFICATION_FILE = 'downloader_spec.yaml'
    AUTO_SUSPEND_SECS = 14400
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"core"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"core"}}';
 
 -- Gateway receives DIRECT app/agent HTTP calls, so its auto-suspend idle timer
 -- reflects real usage (unlike city/ORS services, which only see gateway-routed
@@ -115,7 +115,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    MIN_INSTANCES = 1
    MAX_INSTANCES = 3
    AUTO_SUSPEND_SECS = 3600
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.
 -- install-fleet-apps ships the control surface as FLEET_SA_APP + FLEET_ADMIN_APP

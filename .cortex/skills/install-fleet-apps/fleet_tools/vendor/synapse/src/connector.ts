@@ -1,5 +1,6 @@
 import * as snowflake from 'snowflake-sdk';
 import type { Binds } from 'snowflake-sdk';
+import { TRACKING_QUERY_TAG } from './tracking.js';
 
 export interface ConnConfig {
   account: string;
@@ -155,7 +156,26 @@ export async function createConnFromCli(
     });
   }
 
+  await applyQueryTag(sfConn);
   return wrapSfConn(sfConn);
+}
+
+/**
+ * LOCAL PATCH (see ../VENDOR.md): AGENTS.md requires the tracking `query_tag` on
+ * every session. This connection is used by `synapse deploy`, `test-e2e`, and the
+ * stdio MCP server, and it carried no tag - so every statement it ran, including
+ * the envelope's own VERB_ATTEMPT audit inserts, was unattributable.
+ *
+ * The Node SDK has no `sessionParameters` connect option (that is the Python
+ * connector), so the tag is set with an explicit statement right after connect.
+ */
+async function applyQueryTag(sfConn: snowflake.Connection): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    sfConn.execute({
+      sqlText: `ALTER SESSION SET query_tag = '${TRACKING_QUERY_TAG}'`,
+      complete: err => err ? reject(err) : resolve(),
+    });
+  });
 }
 
 function wrapSfConn(sfConn: snowflake.Connection): Conn {
@@ -204,5 +224,6 @@ async function connectAndWrap(
       sfConn.connect(cb);
     }
   });
+  await applyQueryTag(sfConn);
   return wrapSfConn(sfConn);
 }

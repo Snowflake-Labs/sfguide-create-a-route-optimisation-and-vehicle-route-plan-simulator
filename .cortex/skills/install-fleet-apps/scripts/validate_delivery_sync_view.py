@@ -47,6 +47,14 @@ APP = (pathlib.Path(__file__).resolve().parents[1]
        / "fleet_sa_app" / "app" / "app-views.json")
 
 CONNECTION = sys.argv[1] if len(sys.argv) > 1 else "fleet_test_evals"
+
+# AGENTS.md: every session carries the tracking query_tag. Each `snow sql` run is
+# a new session, so run_sql() prepends this to the generated script.
+QUERY_TAG = (
+    '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps",'
+    '"version":{"major":1,"minor":0},'
+    '"attributes":{"is_quickstart":1,"source":"sql","component":"delivery-sync-validator"}}'
+)
 VIEW_ID = sys.argv[2] if len(sys.argv) > 2 else "delivery_sync"
 
 # Mirrors app-shell.tsx date_range handling for the `last_365_days` default
@@ -242,6 +250,7 @@ def feed_map_coherence_sql(region: str, minute: int) -> str:
 
 def run_sql(sql: str):
     with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
+        f.write("ALTER SESSION SET query_tag = '%s';\n" % QUERY_TAG)
         f.write(sql)
         path = f.name
     try:
@@ -251,7 +260,14 @@ def run_sql(sql: str):
         if r.returncode != 0:
             err = (r.stderr or r.stdout).strip().splitlines()
             return None, " | ".join(x.strip() for x in err[-3:])[:240]
-        return json.loads(r.stdout), None
+        data = json.loads(r.stdout)
+        # With more than one statement, `snow sql --format json` returns one
+        # result set PER statement (a list of lists) instead of a flat list of
+        # rows. The query_tag preamble above makes that always the case, so
+        # unwrap to the last result set - the caller's actual query.
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            data = data[-1]
+        return data, None
     except Exception as exc:                                  # noqa: BLE001
         return None, "%s: %s" % (type(exc).__name__, exc)
     finally:

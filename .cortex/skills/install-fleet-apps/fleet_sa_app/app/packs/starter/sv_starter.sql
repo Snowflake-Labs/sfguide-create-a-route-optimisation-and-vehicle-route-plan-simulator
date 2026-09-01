@@ -11,7 +11,7 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-starter-sv","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS STARTER_APP.SEMANTIC
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","attributes":{"component":"data-contract-semantic"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"data-contract-semantic"}}';
 
 CREATE OR REPLACE SEMANTIC VIEW STARTER_APP.SEMANTIC.SV_STARTER
   tables (

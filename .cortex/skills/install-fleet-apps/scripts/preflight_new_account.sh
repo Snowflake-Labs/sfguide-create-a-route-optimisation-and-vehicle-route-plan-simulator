@@ -43,8 +43,16 @@ pass() { printf '  OK        %s\n' "$1"; }
 warn() { printf '  DEGRADED  %s\n' "$1"; DEGRADED=1; }
 fail() { printf '  BLOCKING  %s\n' "$1"; BLOCKING=1; }
 
+# Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
+# query_tag is prepended inside the helpers - one place covers every probe below,
+# including the `CREATE DATABASE ... FROM LISTING` acquisition in step 3.
+# Callers only ever substring-test this output (or match `^| <digits>`), so the
+# extra leading "Statement executed successfully." block is inert here.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"preflight"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+
 # One helper so every probe is a single statement whose output we can inspect.
-q() { snow sql -c "$CONNECTION" -q "$1" 2>&1; }
+q() { snow sql -c "$CONNECTION" -q "$TAG_SQL $1" 2>&1; }
 
 # Same as q() but forces CSV. MANDATORY for any SHOW command.
 # `snow sql` renders its default output as a fixed-width table sized to the
@@ -53,7 +61,7 @@ q() { snow sql -c "$CONNECTION" -q "$1" 2>&1; }
 # output looks plausible while containing none of the values. A substring or grep
 # check against that is guaranteed to find nothing, which reported an account
 # holding 12 ORS/VROOM services as having none. CSV is width-independent.
-qc() { snow sql -c "$CONNECTION" --format csv -q "$1" 2>&1; }
+qc() { snow sql -c "$CONNECTION" --format csv -q "$TAG_SQL $1" 2>&1; }
 
 # Substring test on a VARIABLE, never `... | grep -q ...`.
 # Under `set -o pipefail`, grep -q exits at the first match and closes the pipe,

@@ -19,6 +19,12 @@ import sys
 import requests
 import snowflake.connector
 
+QUERY_TAG = (
+    '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps",'
+    '"version":{"major":1,"minor":0},'
+    '"attributes":{"is_quickstart":1,"source":"sql","component":"map-download"}}'
+)
+
 
 def download_file(url: str, dest: str) -> None:
     print(f"Downloading from: {url}")
@@ -41,6 +47,9 @@ def upload_to_stage(conn, local_file: str, region_name: str) -> None:
     stage_location = f"@openrouteservice_app.core.ors_spcs_stage/{region_name}"
     print(f"Uploading to {stage_location} ...")
     cur = conn.cursor()
+    # AGENTS.md: every session must carry the tracking query_tag before it runs
+    # any statement. The PUT below writes to a stage, so this is not optional.
+    cur.execute(f"ALTER SESSION SET query_tag = '{QUERY_TAG}'")
     cur.execute(
         f"PUT 'file://{local_file}' '{stage_location}' AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
     )
