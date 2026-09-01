@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """check_agent_eval_thresholds.py - CI quality gate for Cortex Agent evaluations.
 
-Reads GET_AI_EVALUATION_DATA for the newest run per agent and compares
-EVAL_AGG_SCORE against per-metric thresholds. Exits non-zero on breach.
+Reads GET_AI_EVALUATION_DATA for the newest run per agent and compares the MEAN
+EVAL_AGG_SCORE per metric against per-metric thresholds. Exits non-zero on breach.
+
+WHY THE MEAN AND NOT EACH RECORD
+Thresholds are per-metric baselines taken from an agent's average score, which is
+also what Snowsight charts. Comparing them against individual records fails a
+healthy deployment: on run baseline-20260901-0930 FLEET_SUPER_AGENT averaged 0.778
+tool_selection_accuracy (well above the 0.40 gate) while single records legitimately
+scored 0.20 - a compound question answered with two calls to the same tool, and a
+confirm-before-acting case that deterministic TSA cannot express. Per-record
+checking reported 13 breaches on an agent that passes every metric.
 
 Thresholds are advisory baselines, not aspirational targets: the guide
 recommends setting them from observed baselines, not from target scores.
@@ -10,7 +19,7 @@ Adjust them once you have a few runs to establish the normal range.
 
 Usage:
     python3 scripts/check_agent_eval_thresholds.py -c <connection>
-    python3 scripts/check_agent_eval_thresholds.py -c <connection> --run baseline-20260901-0848
+    python3 scripts/check_agent_eval_thresholds.py -c <connection> --run baseline-20260901-0930
 """
 import argparse
 import json
@@ -58,51 +67,75 @@ def run_sql(connection: str, sql: str) -> list:
         return []
 
 
+def latest_run(connection: str, agent: str) -> str | None:
+    """Newest evaluation run name for an agent, or None if it has never been run.
+
+    GET_AI_EVALUATION_DATA requires a run_name, so the run has to be discovered
+    first. GET_AI_OBSERVABILITY_LOGS carries it in
+    record_attributes:"snow.ai.observability.run.name", which is one of the two
+    fields the docs guarantee to be present.
+    """
+    rows = run_sql(connection, f"""
+        SELECT record_attributes:"snow.ai.observability.run.name"::string AS RUN_NAME
+        FROM TABLE(SNOWFLAKE.LOCAL.GET_AI_OBSERVABILITY_LOGS(
+            '{EVAL_DB}', '{AGENT_SCHEMA}', '{agent}', 'CORTEX AGENT'
+        ))
+        WHERE record_attributes:"snow.ai.observability.run.name" IS NOT NULL
+        GROUP BY 1
+        ORDER BY MAX(timestamp) DESC
+        LIMIT 1
+    """)
+    if not rows:
+        return None
+    row = rows[0]
+    return row.get("RUN_NAME", row.get("run_name"))
+
+
 def check_agent(connection: str, agent: str, run_name: str | None) -> list[str]:
     """Returns a list of breach messages, empty if all OK."""
-    fqn = f"{EVAL_DB}.{AGENT_SCHEMA}.{agent}"
+    if not run_name:
+        run_name = latest_run(connection, agent)
+        if not run_name:
+            # An agent that has never been evaluated is a GATE FAILURE, not a skip.
+            # This used to print "skipping" and then the gate reported PASSED with
+            # nothing checked at all - a vacuous gate.
+            return [f"  {agent}: no evaluation run found - nothing to gate on"]
+        print(f"  {agent}: latest run = {run_name}")
 
-    if run_name:
-        # Check a specific run
-        rows = run_sql(connection, f"""
-            SELECT * FROM TABLE(SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA(
-                '{EVAL_DB}', '{AGENT_SCHEMA}', '{agent}', 'CORTEX AGENT', '{run_name}'
-            ))
-        """)
-    else:
-        # Find the newest run. GET_AI_EVALUATION_DATA needs a run_name, so first
-        # list runs from SHOW DATASETS output is not it. Instead we query the
-        # event table for the latest eval run name for this agent.
-        # Simpler: try the most common run name patterns.
-        # Actually, the only reliable way is to try a known run or ask the caller
-        # to supply one. For CI, the run_name is known.
-        print(f"  {agent}: no --run specified, skipping (supply --run for CI gate)")
-        return []
+    rows = run_sql(connection, f"""
+        SELECT * FROM TABLE(SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA(
+            '{EVAL_DB}', '{AGENT_SCHEMA}', '{agent}', 'CORTEX AGENT', '{run_name}'
+        ))
+    """)
 
-    if not rows:
-        return [f"{agent}: no evaluation data found for run '{run_name}'"]
-
-    breaches = []
+    # Aggregate to one mean per metric BEFORE comparing - see the module docstring.
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    mins: dict[str, float] = {}
     for row in rows:
         metric = row.get("METRIC_NAME", row.get("metric_name", ""))
         score = row.get("EVAL_AGG_SCORE", row.get("eval_agg_score"))
-        if score is None:
+        if score is None or metric not in THRESHOLDS:
             continue
         score = float(score)
-        threshold = THRESHOLDS.get(metric)
-        if threshold is None:
-            continue
-        status = "OK" if score >= threshold else "BREACH"
-        line = f"  {agent}.{metric}: {score:.2f} (threshold {threshold:.2f}) [{status}]"
-        print(line)
-        if score < threshold:
-            breaches.append(line)
+        sums[metric] = sums.get(metric, 0.0) + score
+        counts[metric] = counts.get(metric, 0) + 1
+        mins[metric] = score if metric not in mins else min(mins[metric], score)
 
-    if not breaches:
-        # No matching metrics found at all
-        metrics_found = [r.get("METRIC_NAME", r.get("metric_name", "")) for r in rows]
-        if not any(m in THRESHOLDS for m in metrics_found):
-            print(f"  {agent}: no threshold-able metrics in run (found: {metrics_found})")
+    if not counts:
+        metrics_found = sorted({r.get("METRIC_NAME", r.get("metric_name", "")) for r in rows})
+        return [f"  {agent}: no threshold-able metrics in run '{run_name}' (found: {metrics_found})"]
+
+    breaches = []
+    for metric in sorted(counts):
+        mean = sums[metric] / counts[metric]
+        threshold = THRESHOLDS[metric]
+        status = "OK" if mean >= threshold else "BREACH"
+        line = (f"  {agent}.{metric}: mean {mean:.3f} over {counts[metric]} record(s), "
+                f"min {mins[metric]:.2f} (threshold {threshold:.2f}) [{status}]")
+        print(line)
+        if mean < threshold:
+            breaches.append(line)
 
     return breaches
 
