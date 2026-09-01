@@ -65,9 +65,53 @@ Hazard cells are individually tiny but there are ~1200 of them, so filter by
 
 ## Live routing geometry (Tenet 9)
 
-Drive-time rings and solved tours must be computed at interaction time, never read from a
-materialised table. Both are reachable from a single SELECT because the routing contract
-exposes them as **table functions with a `GEOJSON GEOGRAPHY` column**.
+Drive-time rings, point-to-point routes, and solved tours must be computed at interaction
+time, never read from a materialised table. All three are reachable from a single SELECT
+because the routing contract exposes them as **table functions with a `GEOJSON GEOGRAPHY`
+column**.
+
+### Point-to-point route (DIRECTIONS)
+
+```sql
+SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEO
+     , DISTANCE                                -- metres
+     , DURATION                                -- seconds
+FROM TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS(
+       'driving-car',                           -- METHOD: the PROFILE only
+       ARRAY_CONSTRUCT(                         -- LOCATIONS: VARIANT array of [lon,lat]
+         ARRAY_CONSTRUCT((-122.4194)::FLOAT, (37.7749)::FLOAT),
+         ARRAY_CONSTRUCT((-122.3875)::FLOAT, (37.6213)::FLOAT)
+       )::VARIANT,
+       'SanFrancisco',
+       NULL::VARCHAR));                         -- PROVIDER, typed NULL
+```
+
+Returns one row: a routed `LineString` GEOGRAPHY, `DISTANCE` in **metres**, and `DURATION`
+in **seconds**. For multi-waypoint routes, add intermediate `[lon,lat]` entries to the
+`LOCATIONS` array (order = visit order).
+
+The same four traps from ISOCHRONES apply here:
+
+1. **`METHOD` is the profile alone** - `'driving-car'`, not `'directions/driving-car'`.
+2. **Silent NULL on failure** - a bad call returns NULL geometry with no error; project
+   `RESPONSE` while developing.
+3. **`::FLOAT` casts required** - bare numeric literals fail signature matching.
+4. **`NULL::VARCHAR` for PROVIDER** - untyped NULL fails.
+
+### Other contract functions (scalar, not table)
+
+| Function | Returns | Notes |
+|---|---|---|
+| `ROUTING_PLATFORM.CONTRACT.MATRIX(method, options, region, provider)` | `VARIANT` (durations/distances matrix) | `options` is an OBJECT with `locations`, `metrics`, `sources`, `destinations` |
+| `ROUTING_PLATFORM.CONTRACT.SNAP(method, locations, radius, region, provider)` | `VARIANT` | `locations` is an ARRAY of `[lon,lat]`; `radius` in metres |
+| `ROUTING_PLATFORM.CONTRACT.MATCH(method, features, region, provider)` | `VARIANT` | `features` is a GeoJSON FeatureCollection VARIANT |
+
+For a road-following polyline from a GPS track (map matching + geometry export), use
+`OPENROUTESERVICE_APP.CORE.MATCH_PATH` which chains `/match` + `/export` internally.
+
+For the tabular origin-to-destinations matrix, use
+`OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(method, origin, destinations, region)` - returns
+seconds + metres in a table.
 
 ### Drive-time ring
 
@@ -182,6 +226,22 @@ On that last one: MapViewer fetches the unkeyed CARTO **raster** endpoint
 "API KEY REQUIRED" stamped across it. So every CoWork map currently shows a watermarked
 basemap, and no server-side check can detect it. This is the same trap that made us migrate
 both of our own apps to the keyless vector positron style.
+
+## MCP tool results are not mappable
+
+`data_to_map` requires `tool_result_id` from a **SQL / analyst** tool result
+(`system_execute_sql` or `cortex_analyst_text_to_sql`). An MCP server tool result - such as
+`run_sql`, `get_directions`, or any other synapse verb - is **not accepted** as a source.
+The call is silently ignored and the agent burns the rest of the turn trying alternatives.
+
+Tracked upstream as [cortex#156984](https://github.com/snowflake-eng/cortex/issues/156984).
+
+Practical consequence for routing geometry: a routed LineString from `get_directions` (MCP)
+cannot be fed to `data_to_map`. To draw a route on a CoWork map today, the geometry must
+come from a `query_*` semantic-view result that projects a GeoJSON column. No semantic view
+currently projects routed geometry - the `lane_geojson` in `query_backload` is a straight
+line, not an ORS route - so the honest path for a "draw my route" question is to report the
+distance/duration figures and offer `deep_link` to the app view that can render it.
 
 ## Choosing between a map and a link
 

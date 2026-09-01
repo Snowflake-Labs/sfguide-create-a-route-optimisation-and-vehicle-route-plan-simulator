@@ -130,12 +130,14 @@ export const run_sql = defineProc({
     'Run a READ-ONLY SQL query against this account and return the rows. Use ONLY when no ' +
     'semantic view models the data: prefer the query_* Cortex Analyst tools whenever one covers ' +
     'the question, because they are the governed path. Good uses: something no semantic view ' +
-    'models (safety events, work items, region or dataset inventory), a precise lookup, or a ' +
-    'join across contract views. Only SELECT, WITH, SHOW, DESCRIBE and EXPLAIN are accepted - ' +
-    'anything that writes is rejected - and exactly one statement per call. Results are capped ' +
-    '(100 rows by default, 1000 maximum) and the response reports whether it was truncated; if ' +
-    'it was, say so rather than presenting a partial answer as complete. Call describe_data ' +
-    'first if you need the schema.',
+    'models (safety events, work items, region or dataset inventory), a precise lookup, a ' +
+    'join across contract views, or querying the ROUTING_PLATFORM.CONTRACT functions ' +
+    '(DIRECTIONS, ISOCHRONES, OPTIMIZATION, MATRIX, SNAP, MATCH) for live routing geometry ' +
+    'or distance/duration that no semantic view projects. Only SELECT, WITH, SHOW, DESCRIBE ' +
+    'and EXPLAIN are accepted - anything that writes is rejected - and exactly one statement ' +
+    'per call. Results are capped (100 rows by default, 1000 maximum) and the response ' +
+    'reports whether it was truncated; if it was, say so rather than presenting a partial ' +
+    'answer as complete. Call describe_data first if you need the schema.',
   roles: ['user'],
   args: {
     sql: t
