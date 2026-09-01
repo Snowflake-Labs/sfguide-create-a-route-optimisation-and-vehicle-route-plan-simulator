@@ -24,7 +24,8 @@ evaluation:
     description: "Consumer analytics plus deployment history, and confirm-before-acting on a destructive request. MCP action verbs are out of scope for evaluations."
   source_metadata:
     type: "dataset"
-    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_SUPER_AGENT"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_SUPER_AGENT"
 
 # METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
 # fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).

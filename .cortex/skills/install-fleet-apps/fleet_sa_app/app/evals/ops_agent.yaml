@@ -38,7 +38,8 @@ evaluation:
     description: "Deployment-history tool selection and orchestration consistency. answer_correctness omitted because MCP verbs are not invoked during evaluations."
   source_metadata:
     type: "dataset"
-    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_OPS_AGENT"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_OPS_AGENT"
 
 # METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
 # fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).

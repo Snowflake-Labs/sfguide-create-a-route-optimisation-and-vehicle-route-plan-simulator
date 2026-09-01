@@ -61,6 +61,15 @@ YAML_DIR="$APP_DIR/evals"
 
 EVAL_DB="FLEET_INTELLIGENCE"
 EVAL_SCHEMA="EVALS"
+# DATASETS MUST LIVE IN THE AGENT'S OWN SCHEMA, not in EVALS.
+# Snowsight's agent-readiness probe for "Create the first eval set" is scoped to the
+# schema holding the agent: with all four datasets in FLEET_INTELLIGENCE.EVALS the
+# item stayed unchecked on every agent even after four COMPLETED runs (which DID tick
+# "Run an evaluation"). Creating the same dataset in SYNAPSE_USER ticked it
+# immediately, with no new run. Verified on FLEET_ADMIN_AGENT 2026-09-01.
+# The input TABLES, stage, file format and tasks stay in EVALS - only the DATASET
+# objects move. This matches create_agents.sh, which hardcodes the same schema.
+AGENT_SCHEMA="SYNAPSE_USER"
 STAGE="EVAL_CONFIG"
 EVAL_WAREHOUSE="${EVAL_WAREHOUSE:-ROUTING_ANALYTICS}"
 TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-evals"}}'
@@ -132,7 +141,7 @@ done
 # and every re-run then died on "already exists". An "already exists" error is
 # additionally tolerated below, so the script cannot be broken by a probe miss.
 existing_datasets=$(
-  snow sql -c "$CONNECTION" -q "SHOW DATASETS IN SCHEMA ${EVAL_DB}.${EVAL_SCHEMA};" \
+  snow sql -c "$CONNECTION" -q "SHOW DATASETS IN SCHEMA ${EVAL_DB}.${AGENT_SCHEMA};" \
     --format json 2>/dev/null \
   | python3 -c 'import json,sys
 try:
@@ -148,11 +157,11 @@ for entry in "${AGENTS[@]}"; do
     note "dataset $ds already exists - reusing"
     continue
   fi
-  note "creating dataset $ds from $tbl ..."
+  note "creating dataset $ds from $tbl (in ${AGENT_SCHEMA}, the agent's schema) ..."
   out=$(q "CALL SYSTEM\$CREATE_EVALUATION_DATASET(
              'CORTEX AGENT',
              '${EVAL_DB}.${EVAL_SCHEMA}.${tbl}',
-             '${EVAL_DB}.${EVAL_SCHEMA}.${ds}',
+             '${EVAL_DB}.${AGENT_SCHEMA}.${ds}',
              OBJECT_CONSTRUCT('query_text', 'INPUT_QUERY', 'expected_tools', 'GROUND_TRUTH')
            );" || true)
   if echo "$out" | grep -qi "already exists"; then

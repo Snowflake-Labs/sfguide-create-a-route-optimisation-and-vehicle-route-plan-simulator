@@ -31,7 +31,11 @@ evaluation:
     description: "Cortex Analyst and Cortex Search coverage plus boundary cases. MCP routing verbs are out of scope for evaluations."
   source_metadata:
     type: "dataset"
-    dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_AGENT"
+    # SYNAPSE_USER, not EVALS: the dataset must live in the AGENT'S OWN SCHEMA or
+    # Snowsight's "Create the first eval set" readiness item stays unchecked even
+    # after COMPLETED runs. The input TABLE it was built from stays in EVALS.
+    # See setup_agent_evals.sh (AGENT_SCHEMA) for the evidence.
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_AGENT"
 
 # METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide: v3 uses
 # claude-sonnet-4-6 (1M context), which reduces the odds of context window
