@@ -196,6 +196,17 @@ print(named[0]['name'] if named else '')
     else
       note "    WARN: could not determine committed version for alias"
     fi
+
+    # COMMIT CONSUMES the live version, and Snowflake does NOT recreate it (see
+    # the Cortex Agent versioning docs). Snowsight's agent chat targets DRAFT,
+    # which IS the live version, so a committed-only agent answers every
+    # Snowsight question with "399535 ... Version 'live' not found" - the agent
+    # looks broken while every named version is healthy. Restore it here, at the
+    # END of the deploy, so the invariant holds: one live version + one
+    # PRODUCTION-aliased named version. Exception-absorbed so a re-run is safe.
+    q "EXECUTE IMMEDIATE \$\$ BEGIN BEGIN ALTER AGENT ${FQN} ADD LIVE VERSION FROM LAST; EXCEPTION WHEN OTHER THEN NULL; END; END; \$\$;" >/dev/null \
+      && note "    -> live version restored (Snowsight DRAFT)" \
+      || note "    WARN: could not restore live version"
   else
     # ── CREATE path: fresh agent (or --recreate) ──
     if [ "$RECREATE" = "1" ] && [ "$AGENT_EXISTS" = "1" ]; then
@@ -225,6 +236,50 @@ print(named[0]['name'] if named else '')
     q "ALTER AGENT ${FQN} MODIFY VERSION VERSION\$1 SET ALIAS = PRODUCTION;" >/dev/null \
       && note "    -> created VERSION\$1, alias PRODUCTION" \
       || note "    WARN: created but alias failed"
+
+    # CREATE already makes a live version alongside VERSION$1, so this is a
+    # no-op belt-and-braces (the exception handler absorbs "already exists").
+    # Kept symmetrical with the ALTER path so neither path can drift.
+    q "EXECUTE IMMEDIATE \$\$ BEGIN BEGIN ALTER AGENT ${FQN} ADD LIVE VERSION FROM LAST; EXCEPTION WHEN OTHER THEN NULL; END; END; \$\$;" >/dev/null || true
+  fi
+done
+
+# ── verify the version invariant on every agent ──
+#
+# Each agent must end with BOTH a live version (SHOW VERSIONS row with a NULL
+# name - this is what Snowsight calls DRAFT) AND a PRODUCTION-aliased named
+# version. Both failures are invisible at deploy time: the DDL all succeeds and
+# the agent looks fine in SHOW AGENTS, but a missing live version makes it
+# unusable from Snowsight. Non-fatal, because a warning here must not abort an
+# otherwise-good install - but it must be loud.
+note "verifying version invariant (live + PRODUCTION alias) ..."
+for entry in "${AGENTS[@]}"; do
+  IFS=: read -r AGENT_NAME _rest <<<"$entry"
+  FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.${AGENT_NAME}"
+  VERDICT=$(snow sql -c "$CONNECTION" --format json \
+    -q "SHOW VERSIONS IN AGENT ${FQN}" 2>/dev/null \
+    | python3 -c "
+import json,sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('UNKNOWN: could not read SHOW VERSIONS'); raise SystemExit(0)
+rows = data[-1] if data and isinstance(data[0], list) else data
+live = [r for r in rows if not r.get('name')]
+prod = [r for r in rows if (r.get('alias') or '').upper() == 'PRODUCTION']
+if live and prod:
+    print('OK')
+else:
+    missing = []
+    if not live: missing.append('live version (Snowsight DRAFT)')
+    if not prod: missing.append('PRODUCTION alias')
+    print('MISSING: ' + ', '.join(missing))
+" 2>/dev/null || echo "UNKNOWN: verification failed")
+  if [ "$VERDICT" = "OK" ]; then
+    note "  $AGENT_NAME: OK (live + PRODUCTION)"
+  else
+    note "  WARN: $AGENT_NAME $VERDICT"
+    note "        remedy: ALTER AGENT ${FQN} ADD LIVE VERSION FROM LAST;"
   fi
 done
 
