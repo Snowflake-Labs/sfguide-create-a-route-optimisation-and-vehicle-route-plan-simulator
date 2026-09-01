@@ -31,6 +31,20 @@
 # time, so every agent goes stale when a bundle is redeployed. Invariant: each
 # agent's created_on is newer than its MCP server's.
 #
+# CREATE OR REPLACE AGENT DROPS EVERY GRANT ON THE AGENT - so this script
+# RE-APPLIES the four USAGE grants at the end. It has to: recreating an agent
+# silently revokes access for the role that reaches it, and the authoritative
+# grant pass (role_binding.sql) is install step 8 while this is step 6. A full
+# install therefore self-corrects, but a STANDALONE re-run of this script - which
+# is exactly what the bundle-deploy invariant above tells you to do - used to
+# leave all four agents reachable by ACCOUNTADMIN only. The symptom is Snowsight
+# showing "grant users access to the agent" unchecked, and every app user losing
+# the consumer agent. The re-grant block is best-effort by design: on a fresh
+# install the FLEET_APP_* roles do not exist yet at step 6, so a missing role is
+# reported as PENDING rather than failing the install. role_binding.sql stays the
+# single authoritative source for the grants; this block only mirrors the four
+# agent statements so the script cannot leave the account worse than it found it.
+#
 # Usage:
 #   bash .cortex/skills/install-fleet-apps/scripts/create_agents.sh <connection>
 set -euo pipefail
@@ -85,8 +99,9 @@ if [ -f "$PRUNE" ]; then
 fi
 
 TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-# Single trap for both temporaries - a second `trap ... EXIT` REPLACES the first,
-# so registering one here without PRUNED_DIR would leak the pruned-spec directory.
+# A second `trap ... EXIT` REPLACES the first rather than adding to it, so every
+# trap in this script must name EVERY temporary registered so far - dropping one
+# leaks it. The grant step below re-registers this trap with GRANT_FILE added.
 SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
 
 {
@@ -124,4 +139,100 @@ SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
 
 echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT via $CONNECTION ..."
 snow sql -c "$CONNECTION" -f "$SQL_FILE"
-echo "[create_agents] done. Reminder: FLEET_SUPER_AGENT is granted to FLEET_APP_ADMIN only (role_binding.sql)."
+
+# ── re-apply the agent USAGE grants that CREATE OR REPLACE just dropped ──
+#
+# Mirrors role_binding.sql verbatim (its lines for FLEET_AGENT / FLEET_OPS_AGENT /
+# FLEET_ADMIN_AGENT / FLEET_SUPER_AGENT). Keep the two in sync; role_binding.sql
+# remains authoritative.
+#
+# TENET 3: FLEET_SUPER_AGENT goes to FLEET_APP_ADMIN ONLY. Never add
+# FLEET_APP_USER here - the super agent attaches all three MCP bundles, so that
+# would hand every app user service suspension and region deletion, and this
+# GRANT is the only thing preventing it.
+#
+# Each grant sits in its own exception handler because `snow sql -f` aborts the
+# whole file at the first error, and on a fresh install the roles legitimately do
+# not exist yet. The block then reports, per agent, whether a USAGE grant is
+# actually present - so a silent revocation cannot pass unnoticed again.
+GRANT_FILE=$(mktemp); trap 'rm -f "$SQL_FILE" "$GRANT_FILE"; rm -rf "${PRUNED_DIR:-}"' EXIT
+
+cat > "$GRANT_FILE" <<'GRANTSQL'
+EXECUTE IMMEDIATE $$
+DECLARE
+  granted INTEGER DEFAULT 0;
+  skipped INTEGER DEFAULT 0;
+BEGIN
+  BEGIN
+    GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT
+      TO ROLE FLEET_APP_USER;
+    granted := granted + 1;
+  EXCEPTION WHEN OTHER THEN skipped := skipped + 1;
+  END;
+
+  BEGIN
+    GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT
+      TO ROLE FLEET_APP_OPS;
+    granted := granted + 1;
+  EXCEPTION WHEN OTHER THEN skipped := skipped + 1;
+  END;
+
+  BEGIN
+    GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT
+      TO ROLE FLEET_APP_ADMIN;
+    granted := granted + 1;
+  EXCEPTION WHEN OTHER THEN skipped := skipped + 1;
+  END;
+
+  -- Tenet 3 boundary: ADMIN only.
+  BEGIN
+    GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT
+      TO ROLE FLEET_APP_ADMIN;
+    granted := granted + 1;
+  EXCEPTION WHEN OTHER THEN skipped := skipped + 1;
+  END;
+
+  RETURN 'agent grants: ' || granted || ' applied, ' || skipped
+      || ' skipped (a skip means the role does not exist yet = fresh install)';
+END;
+$$;
+GRANTSQL
+
+echo "[create_agents] re-applying agent USAGE grants (CREATE OR REPLACE dropped them) ..."
+snow sql -c "$CONNECTION" -f "$GRANT_FILE"
+
+# Verify per agent that a USAGE grant is actually present, not just OWNERSHIP.
+# Done from the shell rather than in Snowflake Scripting: the cursor FOR loop
+# needs a declared cursor, and four one-line probes are easier to read in CI
+# output than a packed status string. Reported, never fatal - PENDING is the
+# correct state on a fresh install, where role_binding.sql (step 8) follows.
+echo "[create_agents] verifying agent grants ..."
+GRANTS_PENDING=0
+for AGENT in FLEET_AGENT FLEET_OPS_AGENT FLEET_ADMIN_AGENT FLEET_SUPER_AGENT; do
+  GRANTEE=$(snow sql -c "$CONNECTION" --format json \
+    -q "SHOW GRANTS ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.${AGENT}" 2>/dev/null \
+    | python3 -c "
+import json,sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+rows = rows[0] if rows and isinstance(rows[0], list) else rows
+print(next((r.get('grantee_name','') for r in rows
+            if str(r.get('privilege','')).upper() == 'USAGE'), ''))
+" 2>/dev/null || echo "")
+  if [ -n "$GRANTEE" ]; then
+    echo "  [grant] ${AGENT}: OK (USAGE -> ${GRANTEE})"
+  else
+    echo "  [grant] ${AGENT}: PENDING (no USAGE grant)"
+    GRANTS_PENDING=1
+  fi
+done
+
+if [ "$GRANTS_PENDING" = "1" ]; then
+  echo "[create_agents] done, but some agents have NO USAGE grant:"
+  echo "[create_agents]   fresh install -> install step 8 (role_binding.sql) applies it;"
+  echo "[create_agents]   otherwise     -> run role_binding.sql, the authoritative grant pass."
+else
+  echo "[create_agents] done. All four agents carry a USAGE grant."
+fi
