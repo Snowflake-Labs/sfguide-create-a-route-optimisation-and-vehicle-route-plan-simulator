@@ -14,7 +14,11 @@ evaluation:
   agent_params:
     agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
     agent_type: "CORTEX AGENT"
-    agent_version: "LAST"
+    # DEFAULT, not LAST - see fleet_agent.yaml. LAST binds the run to the mutable
+    # live/draft spec, and this agent is exactly where that bit: a run that was
+    # INVOCATION_IN_PROGRESS vanished ("Run ... does not exist") when the draft was
+    # rewritten underneath it.
+    agent_version: "DEFAULT"
   run_params:
     label: "Fleet superuser agent baseline"
     description: "Consumer analytics plus deployment history, and confirm-before-acting on a destructive request. MCP action verbs are out of scope for evaluations."
@@ -22,13 +26,17 @@ evaluation:
     type: "dataset"
     dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_SUPER_AGENT"
 
-# METRIC VERSIONS. Snowflake rejects an explicit `version: "v1"` with "Version 'v1'
-# is not valid. To reference the v1 metric, omit the version field and use
-# '<metric>' directly." - v1 is the default and is addressed by naming the metric
-# as a plain string. Pin an explicit version (v2 / v3) once your account allows
-# their judge models: scores from different metric versions are NOT comparable and
-# Snowsight renders each version as its own chart and column.
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
+# fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).
+#
+# tool_execution_accuracy is included because the super_agent dataset carries
+# ground_truth_invocations with expected tool names and descriptions.
 metrics:
-  - "answer_correctness"
-  - "logical_consistency"
-  - "tool_selection_accuracy"
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

@@ -129,7 +129,7 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
 | `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` / `SKIP_COWORK` / `SKIP_AGENT_EVALS` | `0` | shorten idempotent re-runs |
-| `RUN_AGENT_EVALS` | `0` | also RUN a baseline Cortex Agent evaluation per agent in step 6.6, not just create the eval sets. Off by default because a run invokes each agent once per dataset row plus an LLM judge per metric (real spend). |
+| `NO_RUN_AGENT_EVALS` | `0` | create the four agent eval sets in step 6.6 but do NOT run a baseline evaluation. Runs are ON by default because both Snowsight agent-readiness checklist items ("Create the first eval set" and "Run an evaluation") are satisfied only once a RUN exists - a dataset alone clears neither, and a wipe/reinstall destroys runs while leaving datasets in place. Set to `1` to avoid the spend (47 agent invocations plus an LLM judge per metric per row). |
 
 ## Required Privileges
 
@@ -145,7 +145,7 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 | SNOWFLAKE.CORTEX_USER | database role | Cortex Analyst / agent calls |
 | CREATE SNOWFLAKE INTELLIGENCE | account | register the agents with the Snowflake CoWork object (step 6.5). Optional: without it the agents stay reachable by direct link and Snowsight only. |
 | CREATE DATASET, CREATE STAGE, CREATE FILE FORMAT, CREATE TASK | schema (`FLEET_INTELLIGENCE.EVALS`) | agent evaluation sets (step 6.6) |
-| USE AI FUNCTIONS, EXECUTE TASK | account | running a Cortex Agent evaluation (`RUN_AGENT_EVALS=1`); evaluations score with `AI_COMPLETE` and are driven by a task |
+| USE AI FUNCTIONS, EXECUTE TASK | account | running a Cortex Agent evaluation (step 6.6, on by default; skip with `NO_RUN_AGENT_EVALS=1`); evaluations score with `AI_COMPLETE` and are driven by a task |
 
 ACCOUNTADMIN satisfies all of the above but is not required if the above are granted to a custom role.
 

@@ -15,10 +15,17 @@ evaluation:
   agent_params:
     agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT"
     agent_type: "CORTEX AGENT"
-    # LAST = the most recently committed version. Pin an explicit VERSION$N once a
-    # baseline exists, so a scheduled run cannot score differently for reasons
-    # unrelated to the dataset.
-    agent_version: "LAST"
+    # DEFAULT = the agent's default COMMITTED version, and deliberately NOT "LAST".
+    # LAST resolves to the mutable live/draft spec, so anything that rewrites the
+    # draft mid-run (a Snowsight save, create_agents.sh, a parallel deploy) ORPHANS
+    # the run: STATUS and GET_AI_EVALUATION_DATA both start reporting
+    # "Run ... does not exist" for a run that was INVOCATION_IN_PROGRESS moments
+    # earlier, and the completed scores are lost with it. Observed twice on
+    # 2026-09-01 (FLEET_SUPER_AGENT mid-run, then FLEET_AGENT after completing).
+    # The three runs pinned to DEFAULT in the same session survived untouched.
+    # DEFAULT also works on a fresh install with a single version, so it needs no
+    # per-account VERSION$N literal.
+    agent_version: "DEFAULT"
   run_params:
     label: "Fleet consumer agent baseline"
     description: "Cortex Analyst and Cortex Search coverage plus boundary cases. MCP routing verbs are out of scope for evaluations."
@@ -26,13 +33,22 @@ evaluation:
     type: "dataset"
     dataset_name: "FLEET_INTELLIGENCE.EVALS.EVAL_DS_FLEET_AGENT"
 
-# METRIC VERSIONS. Snowflake rejects an explicit `version: "v1"` with "Version 'v1'
-# is not valid. To reference the v1 metric, omit the version field and use
-# '<metric>' directly." - v1 is the default and is addressed by naming the metric
-# as a plain string. Pin an explicit version (v2 / v3) once your account allows
-# their judge models: scores from different metric versions are NOT comparable and
-# Snowsight renders each version as its own chart and column.
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide: v3 uses
+# claude-sonnet-4-6 (1M context), which reduces the odds of context window
+# overload on long agent traces and matches our pinned orchestration model.
+# Scores from different metric versions are NOT comparable, and Snowsight renders
+# each version as its own chart and column - so stay on the same version across
+# runs. v1's judge model (claude-4-sonnet) is being deprecated; pinning v3 avoids
+# a silent rollforward that breaks score comparability.
+#
+# tool_execution_accuracy is included because the fleet_agent dataset carries
+# ground_truth_invocations with expected tool names and descriptions.
 metrics:
-  - "answer_correctness"
-  - "logical_consistency"
-  - "tool_selection_accuracy"
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

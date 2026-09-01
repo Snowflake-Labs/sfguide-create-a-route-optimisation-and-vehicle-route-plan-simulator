@@ -20,8 +20,14 @@
 #   4. unless --no-run, starts EXECUTE_AI_EVALUATION per agent and polls STATUS
 #
 # COST. Step 4 invokes each agent once per dataset row and then runs an LLM judge
-# per metric per row. That is real spend, which is why the installer calls this
-# with --no-run by default and the run is opt-in (RUN_AGENT_EVALS=1).
+# per metric per row. That is real spend, but it is NOT optional for readiness:
+# BOTH Snowsight checklist items ("Create the first eval set" and "Run an
+# evaluation") stay open until a RUN exists, so the installer runs it by default
+# and offers NO_RUN_AGENT_EVALS=1 (which passes --no-run here) as the opt-out.
+#
+# NOTE a wipe/reinstall destroys prior runs while leaving the DATASETS in place, so
+# a rebuilt account needs step 4 again even though step 3 reports "already exists -
+# reusing" for every dataset. A datasets-only install always looks unconfigured.
 #
 # PRIVILEGES (per the Cortex Agent evaluations docs): SNOWFLAKE.CORTEX_USER,
 # USE AI FUNCTIONS (or USE AI FUNCTION AI_COMPLETE), EXECUTE TASK ON ACCOUNT,
