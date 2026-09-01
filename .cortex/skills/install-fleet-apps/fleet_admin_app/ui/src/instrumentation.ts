@@ -78,7 +78,9 @@ export async function register(): Promise<void> {
     // generation run that never completed its scaleDown().
     try {
       const { reconcileStaleJobs } = await import('@/server/studio/jobs');
-      const reconciled = await reconcileStaleJobs(runSql, 30);
+      // null = no age filter: at boot the in-memory job map is always empty,
+      // so every RUNNING row is provably orphaned regardless of age.
+      const reconciled = await reconcileStaleJobs(runSql, null);
       if (reconciled > 0) {
         log('WARN', 'BootInit', `Reconciled ${reconciled} orphaned studio job(s)`);
         try {
@@ -94,6 +96,26 @@ export async function register(): Promise<void> {
         (err as Error)?.message?.slice(0, 200)
       }`);
     }
+
+    // Periodic reconciler: catches jobs whose worker dies while the container
+    // stays up (the boot reconcile only covers restarts, and the in-process
+    // watchdog dies with the worker). Uses HEARTBEAT_AT with a 20-min window,
+    // comfortably longer than the 60 s flush interval. MAX_INSTANCES = 1 today
+    // so the in-memory exclusion is per-process correct; a future scale-out
+    // would need cross-instance coordination.
+    const RECONCILE_INTERVAL_MS = 5 * 60_000;
+    setInterval(async () => {
+      try {
+        const { reconcileStaleJobs } = await import('@/server/studio/jobs');
+        const n = await reconcileStaleJobs(runSql, 20);
+        if (n > 0) {
+          log('WARN', 'PeriodicReconcile', `Reconciled ${n} stale studio job(s)`);
+          try {
+            await runSql(`CALL OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()`);
+          } catch { /* best-effort */ }
+        }
+      } catch { /* never crash the interval */ }
+    }, RECONCILE_INTERVAL_MS);
 
     log('INFO', 'BootInit', `boot init complete in ${Date.now() - t0}ms`);
   })();

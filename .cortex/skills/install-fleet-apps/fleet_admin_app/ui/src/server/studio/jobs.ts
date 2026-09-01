@@ -82,11 +82,12 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
       // Clean up the DIM_DATASETS registry row so cancelled jobs don't ghost
       // in the SA app picker. Empty jobs are fully reverted; partial jobs are
-      // deactivated so the prior healthy dataset is re-promoted.
+      // deactivated only when a peer dataset exists to fall back to (a short
+      // dataset is better than blank pages).
       try {
         if ((job.pointsGenerated || 0) === 0 && (job.tripsGenerated || 0) === 0) {
           await revertArchivePriorDatasets(snowSql, job.region, job.vehicleType, jobId);
-        } else {
+        } else if (await hasPeerDataset(snowSql, jobId, job.region, job.vehicleType)) {
           await deactivateDataset(snowSql, jobId, job.region, job.vehicleType);
         }
       } catch (_) { /* best-effort */ }
@@ -142,7 +143,7 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
         if (region && vt) {
           if (pts === 0) {
             await revertArchivePriorDatasets(snowSql, region, vt, jobId);
-          } else {
+          } else if (await hasPeerDataset(snowSql, jobId, region, vt)) {
             await deactivateDataset(snowSql, jobId, region, vt);
           }
         }
@@ -156,19 +157,24 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
   }
 }
 
-export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: number = 30): Promise<number> {
+export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: number | null = 30): Promise<number> {
   try {
     const inMemoryIds = [...activeJobs.keys()];
     const inMemFilter = inMemoryIds.length > 0
       ? `AND JOB_ID NOT IN (${inMemoryIds.map(escVal).join(',')})`
       : '';
+    // staleMinutes=null means "no age filter" - used at boot where the in-memory
+    // map is empty by definition and every RUNNING row is provably orphaned.
+    const ageFilter = staleMinutes !== null
+      ? `AND COALESCE(HEARTBEAT_AT, STARTED_AT) < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())`
+      : '';
     const result = await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
        SET STATUS='FAILED',
            COMPLETED_AT=SYSDATE(),
-           ERROR_MESSAGE='Worker crashed or container restarted (auto-reconciled at boot)'
+           ERROR_MESSAGE='Worker lost - container restarted mid-run (auto-reconciled at boot)'
        WHERE STATUS='RUNNING'
-         AND STARTED_AT < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())
+         ${ageFilter}
          ${inMemFilter}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
@@ -663,6 +669,28 @@ async function archivePriorDatasets(
   }
 }
 
+// Check whether a peer dataset exists for the same (REGION, VEHICLE_TYPE).
+// Used by cancel paths to avoid deactivating the only dataset in a scope,
+// which would leave every page for that scope blank.
+async function hasPeerDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+  region: string,
+  vehicleType: string,
+): Promise<boolean> {
+  try {
+    const rows = await snowSql(
+      `SELECT 1 FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND DATASET_ID <> ${escVal(datasetId)}
+       LIMIT 1`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    return rows.length > 0;
+  } catch { return false; }
+}
+
 // Deactivate a dataset that has partial data (cancelled after rows were written)
 // without deleting it. Promotes the newest healthy peer so the app never serves
 // a partial dataset as the active one.
@@ -860,7 +888,8 @@ async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
        SET LOG_TEXT = PARSE_JSON($$${payload}$$),
            POINTS_GENERATED = ${Number(job.pointsGenerated) || 0},
-           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0}
+           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0},
+           HEARTBEAT_AT = SYSDATE()
        WHERE JOB_ID = ${escVal(job.jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
