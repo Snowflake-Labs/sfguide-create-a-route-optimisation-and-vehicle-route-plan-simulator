@@ -208,11 +208,35 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     find "$REPO_ROOT/datasets" -name '.DS_Store' -delete 2>/dev/null || true
     # datasets/ has nested subdirs (intro/, metadata/, synthetic_ebikes/<table>/...) that the
     # loader COPY INTOs from by path, so the upload MUST preserve directory structure (--recursive).
-    # NOTE: ~85 MB uploaded file-by-file (per-file MD5/compress) - expect a few minutes with no
-    # per-file progress output; it is not stalled.
-    note "  uploading ~85 MB seed parquet (file-by-file; expect a few minutes)..."
-    snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite --recursive >/tmp/ifa_stage.log 2>&1 \
-      || { echo "ERROR: staging seed parquet failed"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1; }
+    # Upload each top-level directory in parallel (the loader COPY INTOs by directory path, so
+    # concurrency across directories is safe). The two root-level SQL files (load-seed-data.sql,
+    # export-preset.sql) are uploaded separately.
+    note "  uploading ~204 MB seed parquet (parallel per directory; expect ~2-3 min)..."
+    STAGE_PIDS=()
+    for d in "$REPO_ROOT"/datasets/*/; do
+      [ -d "$d" ] || continue
+      dname=$(basename "$d")
+      snow stage copy "$d" "@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/$dname/" \
+        -c "$CONNECTION" --overwrite --recursive --parallel 8 \
+        >/tmp/ifa_stage_${dname}.log 2>&1 &
+      STAGE_PIDS+=($!)
+    done
+    # Root-level SQL files (loader + export-preset) go to the stage root.
+    for f in "$REPO_ROOT"/datasets/*.sql; do
+      [ -f "$f" ] || continue
+      snow stage copy "$f" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ \
+        -c "$CONNECTION" --overwrite >/tmp/ifa_stage_rootsql.log 2>&1 &
+      STAGE_PIDS+=($!)
+    done
+    STAGE_FAIL=0
+    for pid in "${STAGE_PIDS[@]}"; do
+      wait "$pid" || STAGE_FAIL=$((STAGE_FAIL + 1))
+    done
+    if [ "$STAGE_FAIL" -gt 0 ]; then
+      echo "ERROR: $STAGE_FAIL seed upload process(es) failed"
+      for f in /tmp/ifa_stage_*.log; do tail -5 "$f" 2>/dev/null; done
+      step "2 data" FAILED; exit 1
+    fi
     # Sanity check: a silent 0-file upload (e.g. wrong path, glob mismatch) otherwise only
     # surfaces much later as empty tables. Fail fast here with a clear message.
     STAGED_FILES=$(snow sql -c "$CONNECTION" --format=CSV -q \
