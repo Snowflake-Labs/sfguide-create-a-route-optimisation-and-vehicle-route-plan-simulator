@@ -133,6 +133,19 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
     "$CONTAINER_CMD" push "$ref"
   }
 
+  # Registry-to-registry copy for upstream images with zero added layers. Skips
+  # the local daemon, the tar round-trip, and amd64 emulation on ARM Macs.
+  # --platform linux/amd64 flattens the upstream multi-arch manifest list; SPCS
+  # needs a single-platform manifest.
+  copy_image() { # <upstream-ref> <dest-ref>
+    if command -v crane >/dev/null 2>&1; then
+      snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
+      crane copy --platform linux/amd64 "$1" "$2" && return 0
+      echo "  crane copy failed for $1 -> $2; falling back to local build"
+    fi
+    return 1
+  }
+
   build_push() { # <context-subdir> <image-name> <tag>
     note "  -> $2:$3"
     "$CONTAINER_CMD" build --rm --platform linux/amd64 \
@@ -141,7 +154,26 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
     push_image "$REPO_URL/$2:$3" >/tmp/ifa_push_$2.log 2>&1 \
       || { echo "ERROR: push $2 failed (see /tmp/ifa_push_$2.log). For reliable SPCS pushes install crane: brew install crane"; tail -20 /tmp/ifa_push_$2.log; exit 1; }
   }
-  build_push openrouteservice openrouteservice      "$OPENROUTESERVICE_TAG"
+
+  # The openrouteservice Dockerfile is a bare `FROM openrouteservice/openrouteservice:<tag>`
+  # with zero added layers, so a registry-to-registry copy is digest-identical to
+  # building it locally - and skips a ~500 MB docker save + tar round-trip (~15 min).
+  # Guard: if the Dockerfile grows a layer beyond the two-line passthrough, or the
+  # tags diverge, fall back to build_push (the copy would no longer be equivalent).
+  ORS_DOCKERFILE="$ORS_APP_DIR/services/openrouteservice/Dockerfile"
+  ORS_NON_BOILERPLATE=$(grep -cvE '^\s*(#|ARG |FROM |$)' "$ORS_DOCKERFILE" || true)
+  if [ "${ORS_NON_BOILERPLATE:-0}" -eq 0 ] \
+     && [ "$OPENROUTESERVICE_TAG" = "$OPENROUTESERVICE_BASE_TAG" ]; then
+    note "  -> openrouteservice:$OPENROUTESERVICE_TAG (crane copy from Docker Hub - zero added layers)"
+    if ! copy_image "openrouteservice/openrouteservice:${OPENROUTESERVICE_BASE_TAG}" \
+                    "$REPO_URL/openrouteservice:${OPENROUTESERVICE_TAG}"; then
+      note "  crane copy unavailable or failed; falling back to local build"
+      build_push openrouteservice openrouteservice "$OPENROUTESERVICE_TAG"
+    fi
+  else
+    note "  openrouteservice Dockerfile has custom layers or tags diverge; building locally"
+    build_push openrouteservice openrouteservice "$OPENROUTESERVICE_TAG"
+  fi
   build_push downloader       downloader            "$DOWNLOADER_TAG"
   build_push gateway          routing_reverse_proxy "$ROUTING_REVERSE_PROXY_TAG"
   build_push vroom            vroom-docker          "$VROOM_DOCKER_TAG"
