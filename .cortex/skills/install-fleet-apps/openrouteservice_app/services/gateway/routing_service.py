@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.12'
+GATEWAY_VERSION = 'v1.1.13'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -559,7 +559,13 @@ def post_directions_tabular_with_format(format="geojson"):
 
 def _handle_directions(input_rows, format, ors_host=None):
     host = ors_host or resolve_ors_host(None)
-    return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, host)])
+    return output_rows
 
 
 @app.post("/directions")
@@ -578,7 +584,10 @@ def post_directions_with_format(format="geojson"):
     for row in input_rows:
         region = _extract_region(row, 3)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], get_ors_response('directions', row[1], row[2], format, ors_host)])
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, ors_host)])
     return _make_response(output_rows)
 
 
