@@ -689,33 +689,33 @@ else
 fi
 
 # ── 6.6 Agent evaluation sets ───────────────────────────────────
-# Creates the four Snowsight-visible evaluation datasets (one per agent) AND runs a
-# baseline evaluation against each, because BOTH agent-readiness checklist items
-# ("Create the first eval set" and "Run an evaluation") are only satisfied once a
-# RUN exists - a dataset on its own clears neither. Snowsight's Evaluations tab
-# shows its "create a dataset / use existing dataset" starting points until the
-# agent's first run is recorded, so a datasets-only install always left all four
-# agents looking unconfigured.
+# Creates the four Snowsight-visible evaluation datasets (one per agent). The
+# datasets satisfy the "Create the first eval set" readiness checklist item.
 #
-# COST. A run invokes each agent once per dataset row (14+17+8+8 = 47) and then an
-# LLM judge per metric per row. That is real spend, so it is skippable: pass
-# NO_RUN_AGENT_EVALS=1 to create the eval sets only, or SKIP_AGENT_EVALS=1 to skip
-# the step entirely. RUN_AGENT_EVALS=1 is still accepted (now the default) so
-# existing invocations keep working.
+# BASELINE RUNS are OPT-IN: pass RUN_AGENT_EVALS=1 to also run a baseline
+# evaluation against each dataset. A run invokes each agent once per dataset row
+# (14+17+8+8 = 47) and then an LLM judge per metric per row - real spend (~15 min)
+# that is not needed for a functional install. Pass SKIP_AGENT_EVALS=1 to skip the
+# step entirely. NO_RUN_AGENT_EVALS=1 is accepted as a no-op (datasets-only is now
+# the default).
 #
 # Non-blocking: a slow or failed run must never fail the install.
 if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]; then
-  if [ "${NO_RUN_AGENT_EVALS:-0}" = "1" ]; then
-    note "[6.6/8] creating agent eval sets only (NO_RUN_AGENT_EVALS=1; checklists stay open until a run)..."
-    EVAL_ARGS="--no-run"
-  else
-    note "[6.6/8] creating agent eval sets AND running baseline evaluations (skip with NO_RUN_AGENT_EVALS=1)..."
+  if [ "${RUN_AGENT_EVALS:-0}" = "1" ]; then
+    note "[6.6/8] creating agent eval sets AND running baseline evaluations (RUN_AGENT_EVALS=1)..."
     EVAL_ARGS=""
+  else
+    note "[6.6/8] creating agent eval sets only (pass RUN_AGENT_EVALS=1 for a baseline run)..."
+    EVAL_ARGS="--no-run"
   fi
   bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
       >/tmp/ifa_agent_evals.log 2>&1 \
     && step "6.6 agent-evals" OK \
     || { note "  WARN: agent eval setup failed; see /tmp/ifa_agent_evals.log"; step "6.6 agent-evals" WARN; }
+  if [ -n "$EVAL_ARGS" ]; then
+    note "  to run the baseline later (satisfies the 'Run an evaluation' checklist item):"
+    note "    bash $SCRIPTS/setup_agent_evals.sh $CONNECTION"
+  fi
 else
   step "6.6 agent-evals" SKIPPED
 fi

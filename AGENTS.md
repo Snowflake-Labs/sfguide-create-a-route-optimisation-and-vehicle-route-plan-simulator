@@ -125,8 +125,9 @@ bash .cortex/skills/install-fleet-apps/scripts/preflight_new_account.sh -c <conn
 # keeps showing its "create a dataset" starting points until the first run is recorded.
 # run_agent_evals.py above is a DIFFERENT harness that tests the MCP verb path, which
 # Snowsight evaluations cannot reach at all. Runs cost credits (47 agent invocations
-# plus an LLM judge per metric per row), so the installer runs them by default but
-# accepts NO_RUN_AGENT_EVALS=1 for eval sets only, or SKIP_AGENT_EVALS=1 to skip 6.6.
+# plus an LLM judge per metric per row), so the installer creates eval DATASETS by
+# default but does NOT run baselines (opt in with RUN_AGENT_EVALS=1). Pass
+# SKIP_AGENT_EVALS=1 to skip step 6.6 entirely.
 # NOTE a wipe/reinstall destroys prior runs while leaving the datasets in place, so a
 # rebuilt account shows the checklist gap again until the baseline is re-run.
 bash .cortex/skills/install-fleet-apps/scripts/setup_agent_evals.sh <connection>
