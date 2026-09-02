@@ -123,13 +123,14 @@ obj_exists() {
 # a query right after deploy often returns "provisioning in progress" (no URL).
 # args: <fully-qualified-service> <endpoint-name>  -> echoes https://... or "".
 resolve_endpoint() {
-  local svc="$1" ep="$2" tries="${3:-10}" url=""
-  for _ in $(seq 1 "$tries"); do
+  local svc="$1" ep="$2" tries="${3:-10}" url="" i=0
+  local waits=(3 5 8 12 18 18 18 18 30 30)
+  for i in $(seq 0 $((tries-1))); do
     url=$(snow sql -c "$CONNECTION" --format=CSV \
       -q "$TAG_SQL SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
       2>/dev/null | grep -E '^https://[a-z0-9-]+\.' | grep -viE 'provisioning|in progress' | head -1 || true)
     [ -n "$url" ] && { echo "$url"; return 0; }
-    sleep 18
+    sleep "${waits[$i]:-18}"
   done
   echo ""
 }
@@ -758,9 +759,15 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
     || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
   ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
     || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
-  # Resolve public endpoints (retries while they provision, ~1-3 min post-RESUME).
-  SA_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app)
-  ADMIN_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app)
+  # Resolve public endpoints concurrently (retries while they provision, ~1-3 min post-RESUME).
+  resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app > /tmp/ifa_sa_url.txt &
+  EP_SA_PID=$!
+  resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app > /tmp/ifa_admin_url.txt &
+  EP_ADMIN_PID=$!
+  wait "$EP_SA_PID" || true
+  wait "$EP_ADMIN_PID" || true
+  SA_URL=$(cat /tmp/ifa_sa_url.txt 2>/dev/null || echo "")
+  ADMIN_URL=$(cat /tmp/ifa_admin_url.txt 2>/dev/null || echo "")
   step "7 apps" OK
 else
   step "7 apps" SKIPPED
