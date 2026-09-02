@@ -755,10 +755,33 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   # ALLOW_DIRTY=1: the installer's own --regenerate step (layer 4) rewrites
   # pack setup.sql files, which always dirties the tree. The deploy scripts'
   # dirty-tree guard is for standalone human-driven deploys, not automated installs.
-  ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
-    || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
-  ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
-    || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
+  if [ "${SERIAL_APPS:-0}" = "1" ]; then
+    note "  SERIAL_APPS=1 - deploying sequentially"
+    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+      || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
+      || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
+  else
+    note "  deploying both apps in parallel (logs: /tmp/ifa_sa_deploy.log, /tmp/ifa_admin_deploy.log)"
+    note "  (pass SERIAL_APPS=1 to force sequential deploys)"
+    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+      >/tmp/ifa_sa_deploy.log 2>&1 & APP_SA_PID=$!
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
+      >/tmp/ifa_admin_deploy.log 2>&1 & APP_ADMIN_PID=$!
+    SA_RC=0; ADMIN_RC=0
+    wait "$APP_SA_PID" || SA_RC=$?
+    wait "$APP_ADMIN_PID" || ADMIN_RC=$?
+    if [ "$SA_RC" -ne 0 ]; then
+      echo "ERROR: SA app deploy failed (rc=$SA_RC); see /tmp/ifa_sa_deploy.log"
+      tail -30 /tmp/ifa_sa_deploy.log
+      step "7 apps" FAILED; exit 1
+    fi
+    if [ "$ADMIN_RC" -ne 0 ]; then
+      echo "ERROR: admin app deploy failed (rc=$ADMIN_RC); see /tmp/ifa_admin_deploy.log"
+      tail -30 /tmp/ifa_admin_deploy.log
+      step "7 apps" FAILED; exit 1
+    fi
+  fi
   # Resolve public endpoints concurrently (retries while they provision, ~1-3 min post-RESUME).
   resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app > /tmp/ifa_sa_url.txt &
   EP_SA_PID=$!
