@@ -20,6 +20,10 @@ import { ResultMap } from '@/components/function-tester/ResultMap';
 import { useActivePreset } from '@/hooks/useActivePreset';
 import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
 
+function sqlLiteral(s: string): string {
+  return String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
 interface RoadPointsResult {
   points: [number, number][] | null;
   reason?: string;
@@ -115,7 +119,7 @@ async function fetchTrajectory(
   if (seedPoints.length < 2) return { coords: null, reason: 'not enough sample points' };
   const p = db ? `${db}.CORE` : 'CORE';
   const [a, b] = seedPoints;
-  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${a[0]}, ${a[1]}), ARRAY_CONSTRUCT(${b[0]}, ${b[1]}), '${region}'))`;
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON FROM TABLE(${p}.DIRECTIONS('${sqlLiteral(profile)}', ARRAY_CONSTRUCT(${a[0]}, ${a[1]}), ARRAY_CONSTRUCT(${b[0]}, ${b[1]}), '${sqlLiteral(region)}'))`;
   try {
     const resp = await fetch('/api/query', {
       method: 'POST',
@@ -460,9 +464,9 @@ export function FunctionTesterPage() {
             setMatchedPending(true);
             const p = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
             const coords = inv.track.map((c) => `ARRAY_CONSTRUCT(${c[0]}, ${c[1]})`).join(', ');
-            const rg = inv.region ? `'${inv.region}'` : 'NULL';
+            const rg = inv.region ? `'${sqlLiteral(inv.region)}'` : 'NULL';
             const mpSql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON, MATCHED_EDGES `
-              + `FROM TABLE(${p}.MATCH_PATH('${inv.profile}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
+              + `FROM TABLE(${p}.MATCH_PATH('${sqlLiteral(inv.profile)}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
             try {
               const r2 = await fetch('/api/query', {
                 method: 'POST',
