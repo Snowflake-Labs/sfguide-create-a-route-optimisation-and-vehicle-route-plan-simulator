@@ -69,7 +69,7 @@ tools:
         properties:
           source:
             type: string
-            description: Optional source label (DAT, TRUCKSTOP, CONVOY, UBER_FREIGHT, TIMOCOM, WTRANSNET, TELEROUTE, B2P).
+            description: Optional source-channel label (DISPATCH, MARKETPLACE, PARTNER_APP, INTERNAL). These are the only values the offer data holds.
           limit:
             type: number
             description: Max rows to return (default 50).

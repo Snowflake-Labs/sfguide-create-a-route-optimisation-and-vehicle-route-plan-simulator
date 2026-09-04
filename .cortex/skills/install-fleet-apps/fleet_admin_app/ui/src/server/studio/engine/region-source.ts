@@ -11,6 +11,7 @@
 
 import type { GenerationConfig } from '../profiles';
 import { regionCatalogMatch } from '../../lib/region-catalog-match';
+import brandTerms from './brand-terms.json';
 
 /** Escape a string for embedding in a single-quoted SQL literal. */
 export function sqlLit(s: string): string {
@@ -57,4 +58,32 @@ export function spatialFilter(geomExpr: string, bbox: RegionBbox, boundaryAlias 
 /** Convenience: pull region + bbox off the GenerationConfig. */
 export function regionFrom(config: GenerationConfig): { region: string; bbox: RegionBbox } {
   return { region: config.region, bbox: config.bbox };
+}
+
+/**
+ * SQL predicate that excludes Overture places whose name carries a brand this
+ * solution must stay neutral about.
+ *
+ * Why this exists: POI names come from a third-party map dataset, so they are
+ * real business names, and a few of them are the very brands the demo must not
+ * appear built for. On a live dataset three generated offers rendered a pickup or
+ * dropoff label naming the customer, which makes a neutral demo look
+ * customer-specific even though nothing in the code named a customer.
+ *
+ * The term list lives in brand-terms.json, which is also what the pre-commit
+ * brand gate reads. Holding it in one place is not tidiness: duplicating the
+ * strings into TypeScript made the gate flag its own filter.
+ *
+ * Applied at POI SELECTION so a brand name never enters DIM_POIS, and therefore
+ * never reaches a trip, an offer, a listing text, a map tooltip or an agent
+ * answer.
+ */
+export const BRAND_EXCLUDED_NAMES: string[] = brandTerms.poi_exclude;
+
+export function brandNeutralNameFilter(nameExpr: string): string {
+  const terms = BRAND_EXCLUDED_NAMES.map((t) => `'%${t}%'`).join(', ');
+  // Must be NOT (x ILIKE ANY (...)). Snowflake rejects `NOT ILIKE ANY` outright
+  // with a syntax error, so the negation has to wrap the whole predicate.
+  // COALESCE keeps unnamed places: a NULL name is not a brand.
+  return `NOT (COALESCE(${nameExpr}, '') ILIKE ANY (${terms}))`;
 }

@@ -21,10 +21,10 @@ This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimens
 
 | Layer | INSTALLED (agnostic) | EXCLUDED (industry-vertical) |
 |---|---|---|
-| Packs | `unified_fleet`, `fleet_ops`, `dwell`, `route_deviation`, `route_optimization`, `catchment`, `starter` | `marketplace`, `backload`, `dhl_ntbo` |
-| UI views | Fleet/Asset Status, Asset Map, Demand Density (H3), Trip Inspection, Operator Performance, Top Origins, Dwell & Congestion, Route Deviation, Asset Utilization, VRP, Catchment | Freight Marketplace, Backload Matching, DHL pages |
-| Agents | `SV_FLEET_OPS`, `SV_DWELL_ANALYTICS`, `SV_ROUTE_DEVIATION`, `SV_ASSET_VELOCITY`, `SV_CATCHMENT` + neutral routing verbs | `SV_DELIVERIES`, `SV_BACKLOAD_MATCHING`, `SV_DHL_BACKLOAD` |
-| Seed data | `SYNTHETIC_DATASETS.UNIFIED.*` / `NEUTRAL.*`, `FLEET_INTELLIGENCE.CORE`, DWELL/DEVIATION/ROUTE_OPT CONFIG, `CATCHMENT` base tables | freight offers/partners, DHL tables |
+| Packs | `unified_fleet`, `fleet_ops`, `dwell`, `route_deviation`, `route_optimization`, `catchment`, `starter` | `marketplace`, `backload` (retired vertical packs) |
+| UI views | Fleet/Asset Status, Asset Map, Demand Density (H3), Trip Inspection, Operator Performance, Top Origins, Dwell & Congestion, Route Deviation, Asset Utilization, VRP, Catchment | Freight Marketplace, Backload Matching, retired vertical pages |
+| Agents | `SV_FLEET_OPS`, `SV_DWELL_ANALYTICS`, `SV_ROUTE_DEVIATION`, `SV_ASSET_VELOCITY`, `SV_CATCHMENT` + neutral routing verbs | `SV_DELIVERIES`, `SV_BACKLOAD_MATCHING` |
+| Seed data | `SYNTHETIC_DATASETS.UNIFIED.*` / `NEUTRAL.*`, `FLEET_INTELLIGENCE.CORE`, DWELL/DEVIATION/ROUTE_OPT CONFIG, `CATCHMENT` base tables | freight offers/partners, retired vertical tables |
 
 The installer always installs the **complete** agnostic set - there is no per-use-case selection prompt.
 

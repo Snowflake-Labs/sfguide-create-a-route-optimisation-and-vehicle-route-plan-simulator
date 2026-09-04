@@ -1,6 +1,6 @@
 ---
 name: freight-exchange
-description: "Deploy the Freight Exchange page: a dispatcher-grade marketplace cockpit that mirrors what users do today on Timocom, WTransnet, Teleroute, B2P (NA: DAT, Truckstop, Convoy, Uber Freight). Adds a parallel React route to the ORS Control App that lets dispatchers browse, filter, and inspect synthesized freight offers per active preset, with trust scores (credit/KYC/blacklist), market-rate badges (vs. weekly p25/p50/p75 USD/km from a RATE_INDEX dynamic table), and partner lane history. Reads from FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data, so switching preset auto-refreshes the page. Use when: setting up the Freight Exchange demo, dispatcher cockpit, freight marketplace, load board, trust-score badges, market-rate badges, Timocom-style UI parity. Do NOT use for: solver-led fleet-wide backload (use backload-matching), route-optimization VRP, route-deviation, retail-catchment, fleet-intelligence car/e-bike demos. Triggers: freight exchange, freight marketplace, load board, dispatcher cockpit, browse offers, filter offers, trust badge, market rate, lane history, partner credit score, Timocom UI, WTransnet UI, Teleroute UI, B2P UI, DAT UI, Truckstop UI, marketplace page, MARKETPLACE schema."
+description: "Deploy the Freight Exchange page: a dispatcher-grade marketplace cockpit that mirrors what dispatchers do today across several external load boards. Adds a parallel React route to the ORS Control App that lets dispatchers browse, filter, and inspect synthesized freight offers per active preset, with trust scores (credit/KYC/blacklist), market-rate badges (vs. weekly p25/p50/p75 USD/km from a RATE_INDEX dynamic table), and partner lane history. Reads from FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data, so switching preset auto-refreshes the page. Use when: setting up the Freight Exchange demo, dispatcher cockpit, freight marketplace, load board, offer aggregation, trust-score badges, market-rate badges, load-board UI parity. Do NOT use for: solver-led fleet-wide backload (use backload-matching), route-optimization VRP, route-deviation, retail-catchment, fleet-intelligence car/e-bike demos. Triggers: freight exchange, freight marketplace, load board, load boards, dispatcher cockpit, offer aggregation, browse offers, filter offers, trust badge, market rate, rate benchmark, lane history, partner credit score, marketplace page, MARKETPLACE schema."
 depends_on:
   - install-fleet-apps
   - backload-matching
@@ -16,9 +16,16 @@ Adds a new **Freight Exchange** entry to the ORS Control App sidebar (under *Sol
 
 ## Use Case Narrative
 
-Today a DHL Freight / Maersk Inland / DSV / Schneider dispatcher juggles 4 browser tabs (TC Truck&Cargo, WTransnet Bolsa, Teleroute, B2P or DAT/Truckstop in NA) plus their internal scheduling tool. Each tab has its own filter UI, each has its own credit/trust signal, each has its own price benchmark. Information overload is the explicit pain point Martin Ahleff named in the May 5, 2026 NTBO call.
+Today a line-haul dispatcher juggles several external load-board tabs plus their
+internal scheduling tool. Each board has its own filter UI, its own credit and
+trust signal, and its own price benchmark, and nothing reconciles them. The
+explicit pain point is *information overload*: there is no single canonical
+source of truth for either price or counterparty trust.
 
-Phase A of this skill replaces those 4 tabs' **browse + filter** experience with a single sortable grid + map. Phase B adds the two pieces dispatchers actually pay Timocom for: **carrier trust score** (credit, KYC, blacklist) and **market-rate benchmark** (is this offer above or below corridor p50?).
+Phase A of this skill replaces those tabs' **browse + filter** experience with a
+single sortable grid + map. Phase B adds the two pieces dispatchers actually pay
+an exchange for: **carrier trust score** (credit, KYC, blacklist) and
+**market-rate benchmark** (is this offer above or below corridor p50?).
 
 Phases C (action engine: post / chat / bid / saved searches + alerts) and D (compliance: docs / cross-border / round-trip / tariff calculator) are tracked in `references/productisation.md`.
 
@@ -173,7 +180,7 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
 
 ## Out of Scope
 
-- Live Timocom / WTransnet / Teleroute / B2P / DAT / Truckstop API integration (synthetic only).
+- Live external load-board / freight-exchange API integration (synthetic only).
 - Reverse posting (free truck / load) - Phase C.
 - Chat / bidding / counter-offers - Phase C.
 - Saved searches + push notifications - Phase C.

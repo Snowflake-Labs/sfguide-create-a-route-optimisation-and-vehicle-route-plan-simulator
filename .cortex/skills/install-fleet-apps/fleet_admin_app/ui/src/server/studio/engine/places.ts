@@ -15,7 +15,7 @@
 
 import type { SnowSqlFn } from './types';
 import type { GenerationConfig } from '../profiles';
-import { regionBoundaryCte, spatialFilter, sqlLit } from './region-source';
+import { regionBoundaryCte, spatialFilter, sqlLit, brandNeutralNameFilter } from './region-source';
 import { h3ResForArea } from './spatial';
 
 const RO = 'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION';
@@ -74,6 +74,7 @@ async function insertPlaces(
     WHERE p.GEOMETRY IS NOT NULL
       AND p.CATEGORIES:primary IS NOT NULL
       AND ${spatialFilter('p.GEOMETRY', config.bbox)}
+      AND ${brandNeutralNameFilter('p.NAMES:primary::TEXT')}
     QUALIFY ROW_NUMBER() OVER (
               PARTITION BY p.CATEGORIES:primary::TEXT,
                            H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${h3Res})
