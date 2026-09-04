@@ -73,7 +73,7 @@ MERGE INTO MATCH_PARAMS tgt USING (
     ('MAX_PICKUP_HORIZON_DAYS',   '7',     'number', 'core',   TRUE,  'Only consider loads with a pickup within N days of the vehicle free time.'),
     ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance (needs the region graph); great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
     ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100), so road detours are not pruned before ORS refinement.'),
-    ('MAX_PROPOSALS_PER_TRAILER', '3',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+    ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
     ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads. Higher = internal-first.'),
     ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
     ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -84,27 +84,66 @@ MERGE INTO MATCH_PARAMS tgt USING (
     ('WEIGHT_FIT_MARGIN_KG',      '0',     'number', 'core',   TRUE,  'Safety margin (kg) added to load weight when checking ENFORCE_WEIGHT_FIT.'),
     ('REQUIRE_HAZMAT_CERT',       'true',  'bool',   'core',   TRUE,  'Hazmat loads must go on a hazmat-certified vehicle.'),
     -- ---- VRP optimizer (per-load VROOM respecting delivery + return + window) ----
-    ('MAX_CANDIDATE_TRUCKS',      '8',     'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver. Lower = faster road solves.'),
+    ('MAX_CANDIDATE_TRUCKS',      '50',    'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver. Lower = faster road solves.'),
     ('MAX_TRUCKS_PER_ORDER',      '3',     'number', 'core',   TRUE,  'How many ranked vehicle recommendations to keep per load in VRP mode.'),
     ('VRP_CONCURRENCY',           '4',     'number', 'core',   TRUE,  'Per-load best fit (road): how many loads to solve in parallel per chunk.'),
     ('PICKUP_WINDOW_HRS',         '12',    'number', 'core',   TRUE,  'Plus/minus tolerance (hours) around the requested pickup time.'),
     -- ---- fleet-wide 1:1 solve (connected-component clustering + per-cluster VROOM) ----
-    ('CLUSTER_CAP',               '250',   'number', 'core',   TRUE,  'Max stops (vehicles + 2*loads) per VROOM cluster before a dense component is spatially sub-split.'),
+    ('CLUSTER_CAP',               '600',   'number', 'core',   TRUE,  'Max stops (vehicles + 2*loads) per VROOM cluster before a dense component is spatially sub-split.'),
     -- ---- profit-max backhaul plan (consolidate multiple loads per vehicle) ----
     ('BPMP_MAX_STOPS',            '4',     'number', 'core',   TRUE,  'Max loads consolidated onto one vehicle in the profit-max backhaul plan. Each load = pickup + delivery (2 VROOM tasks).'),
     ('BPMP_MAX_DEADHEAD_KM',      '250',   'number', 'core',   TRUE,  'Hard cap on a vehicle total DEADHEAD (empty) km across the whole return tour. The loaded haul is revenue-bearing and is NOT capped here.'),
     ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (empty + loaded + onward) in km.'),
     ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor: shipment priority = clamp(round(loaded-km revenue / scale), 1..100).'),
     ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy multi-stop builder.'),
+    -- ---- planning horizon / fleet sizing ----
+    ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival. Also the spread of the synthetic free-time and pickup windows.'),
+    ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'Max own waiting loads exposed as internal demand. Sized to a full-day national load pool, not a demo slice.'),
+    -- ---- multi-leg (triangle) matching ----
+    ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching: hop 1 carries the vehicle part-way, hop 2 carries it toward the target region. Off = single-hop matching only.'),
+    ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain. 2 = the classic triangle (empty -> load A -> load B -> target).'),
+    ('TRIANGLE_MIN_PROGRESS_PCT', '15',    'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target. Rejects chains whose first hop drives away from the target before coming back.'),
+    ('TRIANGLE_MAX_LEG1_DETOUR_KM','400',  'number', 'core',   TRUE,  'Hard cap on how far leg 1 may leave the direct empty->target corridor (km).'),
+    ('TRIANGLE_MAX_TOTAL_EMPTY_KM','250',  'number', 'core',   TRUE,  'Cap on total empty km across the whole chain (empty->pickup1 plus delivery1->pickup2).'),
+    ('TRIANGLE_LEG1_OPTIONS',     '12',    'number', 'core',   TRUE,  'Top N leg-1 loads kept per vehicle (ranked by progress per empty km) before the load-to-load self-join. The bound that keeps chain enumeration linear.'),
+    ('MAX_TRIANGLES_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked chains to keep per vehicle.'),
+    ('TARGET_MODE',               'home_depot','string','core', TRUE,  'home_depot = chain toward the vehicle home depot; dispatcher_choice = chain toward a target supplied per request.'),
+    ('TARGET_RADIUS_KM',          '250',   'number', 'core',   TRUE,  'Leg 2 must deliver within this distance of the target to count as a completed chain (km).'),
+    ('CASCADE_GRADE_THRESHOLD',   '70',    'number', 'core',   TRUE,  'Composite score at which the internal-first cascade stops widening. Reached on an internal-only chain = the external pool is never queried.'),
+    -- ---- equipment / capability fit (seeded OFF: refinement, not a launch gate) ----
+    ('ENFORCE_EQUIPMENT_FIT',     'false', 'bool',   'core',   TRUE,  'Reject pairs whose load requires equipment the vehicle does not carry (for example enclosed-body only for high-value goods).'),
+    ('EQUIPMENT_STRICT',          'false', 'bool',   'core',   TRUE,  'true = a load with no stated equipment requirement still needs an exact match; false = unstated requirement fits any vehicle.'),
     -- ---- future constraints (disabled until enabled by the dispatcher) ----
     ('TRADELANE_INCLUDE',         '',      'string', 'future', FALSE, 'Comma list of allowed pickup->delivery country lanes.'),
     ('TRADELANE_EXCLUDE',         '',      'string', 'future', FALSE, 'Comma list of forbidden country lanes.'),
-    ('RETURN_TO_HOME_REGION',     'false', 'bool',   'future', FALSE, 'Prefer loads that route the vehicle back toward its home depot (triangle trips).')
+    ('RETURN_TO_HOME_REGION',     'true',  'bool',   'core',   TRUE,  'Score loads by the progress they make toward the target region (see TARGET_MODE). This is what makes a chain a return plan rather than an arbitrary onward trip.')
   AS v(PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
 ) src
 ON tgt.PARAM_KEY = src.PARAM_KEY
 WHEN NOT MATCHED THEN INSERT (PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
   VALUES (src.PARAM_KEY, src.PARAM_VALUE, src.PARAM_TYPE, src.CATEGORY, src.ENABLED, src.DESCRIPTION);
+
+-- The MERGE above is insert-only so a dispatcher's tuning survives a re-run.
+-- That alone would leave an EXISTING deployment on the old demo-scale defaults
+-- forever, and would leave RETURN_TO_HOME_REGION disabled - which makes the
+-- whole chained-matching path silently inert. Converge those rows, but ONLY
+-- while they still hold their exact seeded value, so a deliberate override is
+-- never overwritten.
+UPDATE MATCH_PARAMS SET PARAM_VALUE = '50',  UPDATED_AT = SYSDATE()
+  WHERE PARAM_KEY = 'MAX_CANDIDATE_TRUCKS'      AND PARAM_VALUE = '8';
+UPDATE MATCH_PARAMS SET PARAM_VALUE = '600', UPDATED_AT = SYSDATE()
+  WHERE PARAM_KEY = 'CLUSTER_CAP'               AND PARAM_VALUE = '250';
+UPDATE MATCH_PARAMS SET PARAM_VALUE = '5',   UPDATED_AT = SYSDATE()
+  WHERE PARAM_KEY = 'MAX_PROPOSALS_PER_TRAILER' AND PARAM_VALUE = '3';
+UPDATE MATCH_PARAMS
+   SET PARAM_VALUE  = 'true',
+       CATEGORY     = 'core',
+       ENABLED      = TRUE,
+       DESCRIPTION  = 'Score loads by the progress they make toward the target region (see TARGET_MODE). This is what makes a chain a return plan rather than an arbitrary onward trip.',
+       UPDATED_AT   = SYSDATE()
+ WHERE PARAM_KEY = 'RETURN_TO_HOME_REGION'
+   AND PARAM_VALUE = 'false'
+   AND CATEGORY = 'future';
 
 -- ----------------------------------------------------------------------------
 -- 2. PROPOSALS - generated vehicle -> load proposals (working + saved)

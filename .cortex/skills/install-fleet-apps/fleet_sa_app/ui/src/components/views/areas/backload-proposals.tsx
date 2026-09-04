@@ -294,13 +294,27 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return s;
   }, [scored]);
 
+  // Loads a vehicle may consolidate, per strategy family. Read from
+  // MATCH_PARAMS so BPMP_MAX_STOPS is honoured rather than hardcoded.
+  const bpmpMaxStops = useMemo(() => {
+    const v = Number(params.find((p) => p.PARAM_KEY === 'BPMP_MAX_STOPS')?.PARAM_VALUE);
+    return Number.isFinite(v) && v > 0 ? v : 4;
+  }, [params]);
+
   // Build the VROOM challenge for a strategy family.
   const buildChallenge = useCallback((fam: StrategyFamily, badKeys?: Set<string>) => {
     if (!cls) return null;
     const profile = cls.ORS_PROFILE;
     const classCapacityKg = cls.PAYLOAD_KG_TYP || 1000;
     const effPerKm = cls.COST_EUR_PER_KM || 0.85;
-    const maxStops = fam === 'bpmp' ? 4 : fam === 'vrp' ? 1 : 2;
+    // LOADS per vehicle, not VROOM tasks. A shipment is TWO tasks (pickup +
+    // delivery), so max_tasks must be doubled. The previous code passed the
+    // load count straight through as max_tasks, which meant the 'vrp' family
+    // (max_tasks: 1) could not admit a single shipment - it can never fit a
+    // pickup AND its delivery - and 'bpmp' silently capped at 2 loads instead
+    // of BPMP_MAX_STOPS. Both families returned plausible-looking results, so
+    // nothing surfaced the loss.
+    const maxLoadsPerVehicle = fam === 'bpmp' ? bpmpMaxStops : 1;
     // A point is unroutable when the bulk pre-filter flagged it. Drop any vehicle
     // (start OR end) or shipment (pickup OR delivery) that touches one - a single
     // such point otherwise aborts the whole VROOM solve with code 3.
@@ -318,7 +332,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
           end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
           capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
           skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-          max_tasks: maxStops,
+          max_tasks: maxLoadsPerVehicle * 2,
           costs: { fixed: 140 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) },
         } as Record<string, unknown>;
       });
@@ -353,7 +367,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     // solve-time geometry. PATH_COORDS is therefore null and routePath falls
     // back to the DIRECTIONS path.
     return { challenge: { vehicles, shipments, options: { g: false } }, idToTrailer, idToLoad };
-  }, [cls, trailers, loads, maxVehicles, maxLoads]);
+  }, [cls, trailers, loads, maxVehicles, maxLoads, bpmpMaxStops]);
 
   const parseSolve = useCallback((
     resp: Record<string, unknown> | null, fam: StrategyFamily,

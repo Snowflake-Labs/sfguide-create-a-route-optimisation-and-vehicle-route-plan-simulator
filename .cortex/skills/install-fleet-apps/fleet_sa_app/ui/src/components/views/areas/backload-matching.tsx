@@ -308,7 +308,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
           ? [capacityKg, Number(t.MAX_PALLETS) || synthPallets(capacityKg), Number(t.MAX_VOLUME_M3) || synthVolumeM3(capacityKg)]
           : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-        max_tasks: maxStops,
+        // maxStops counts LOADS; a shipment is two VROOM tasks (pickup +
+        // delivery), so the task cap is doubled. Passing the load count
+        // straight through made the slider's own "1 = pure backload" setting
+        // unsatisfiable (one task cannot hold a pickup and its delivery).
+        max_tasks: maxStops * 2,
         max_travel_time: Math.max(1800, base.durSec + Math.round(detourSlackHrs * 3600)),
         max_distance: Math.max(10_000, Math.round(base.distMeters * (1 + deviationPct / 100))),
         costs: { fixed: Math.round(fixedDispatchUsd * COST_SCALE), per_km: Math.round(effPerKmUsd * COST_SCALE) },
@@ -1146,7 +1150,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* SOLVER */}
       <div style={sectionHdr}>SOLVER (VROOM-native)</div>
       <div style={sectionBox}>
-        {slider('Max stops per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks', maxStops, setMaxStops, 1, 6)}
+        {slider('Max loads per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks (set to 2x this value, since each shipment is a pickup task plus a delivery task)', maxStops, setMaxStops, 1, 6)}
         {slider('Detour budget', "Extra hours allowed on top of each trailer's empty drive home. Adds linearly per vehicle.\n\nVROOM field: vehicle.max_travel_time", detourSlackHrs, setDetourSlackHrs, 0, 12, 1, ' h', '+')}
         {slider('Allowed deviation', "Distance cap as a percentage above each trailer's empty drive home. 200% = tour may be up to 3x the empty distance.\n\nVROOM field: vehicle.max_distance", deviationPct, setDeviationPct, 0, 500, 10, '%', '+')}
         {slider('Internal-first', 'Bias toward internal volumes vs external offers. 100 = always internal first, 50 = equal, 0 = always external first.\n\nVROOM field: job.priority', internalFirstWeight, setInternalFirstWeight, 0, 100)}
