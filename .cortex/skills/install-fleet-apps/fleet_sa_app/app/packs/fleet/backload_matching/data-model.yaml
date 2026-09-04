@@ -88,6 +88,7 @@ entities:
       - { name: OPERATING_COUNTRY, type: VARCHAR }
       - { name: MAX_PAYLOAD_KG, type: NUMBER }
       - { name: ETA_MIN,        type: NUMBER }
+      - { name: VEHICLE_EQUIPMENT, type: VARCHAR }
       - { name: EV_RANGE_KM,    type: NUMBER }
     sql: |
       WITH last_drop AS (
@@ -151,6 +152,12 @@ entities:
         ) / 1000.0                                          AS TARGET_GAP_KM,
         'IN_TRANSIT'                                        AS STATUS,
         FALSE                                               AS HAZMAT_CERT,
+        -- Synthetic equipment fit, assigned deterministically per vehicle from
+        -- the same vocabulary the offer pool uses, so ENFORCE_EQUIPMENT_FIT is
+        -- demonstrable end to end. Seeded OFF: a real fleet supplies this from
+        -- its own asset master.
+        ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
+          MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
         (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
         NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
       FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f

@@ -102,7 +102,8 @@ MERGE INTO MATCH_PARAMS tgt USING (
     -- ---- multi-leg (triangle) matching ----
     ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching: hop 1 carries the vehicle part-way, hop 2 carries it toward the target region. Off = single-hop matching only.'),
     ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain. 2 = the classic triangle (empty -> load A -> load B -> target).'),
-    ('TRIANGLE_MIN_PROGRESS_PCT', '15',    'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target. Rejects chains whose first hop drives away from the target before coming back.'),
+    ('TRIANGLE_MIN_PROGRESS_PCT', '5',     'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target. A scale-free floor that discards trivially small progress on a long return.'),
+    ('TRIANGLE_MIN_PROGRESS_RATIO','1.0',   'number', 'core',   TRUE,  'Leg 1 must return at least this many km of progress toward the target per empty km driven to reach it. 1.0 = the empty run must at least pay for itself. This is the rule that rejects the classic bad chain: a long empty run for a load that then heads away from the target. Measured on the active region, the MEDIAN nearby load makes NEGATIVE progress, so this gate is load-bearing, not cosmetic.'),
     ('TRIANGLE_MAX_LEG1_DETOUR_KM','400',  'number', 'core',   TRUE,  'Hard cap on how far leg 1 may leave the direct empty->target corridor (km).'),
     ('TRIANGLE_MAX_TOTAL_EMPTY_KM','250',  'number', 'core',   TRUE,  'Cap on total empty km across the whole chain (empty->pickup1 plus delivery1->pickup2).'),
     ('TRIANGLE_LEG1_OPTIONS',     '12',    'number', 'core',   TRUE,  'Top N leg-1 loads kept per vehicle (ranked by progress per empty km) before the load-to-load self-join. The bound that keeps chain enumeration linear.'),
@@ -135,6 +136,8 @@ UPDATE MATCH_PARAMS SET PARAM_VALUE = '600', UPDATED_AT = SYSDATE()
   WHERE PARAM_KEY = 'CLUSTER_CAP'               AND PARAM_VALUE = '250';
 UPDATE MATCH_PARAMS SET PARAM_VALUE = '5',   UPDATED_AT = SYSDATE()
   WHERE PARAM_KEY = 'MAX_PROPOSALS_PER_TRAILER' AND PARAM_VALUE = '3';
+UPDATE MATCH_PARAMS SET PARAM_VALUE = '5',   UPDATED_AT = SYSDATE()
+  WHERE PARAM_KEY = 'TRIANGLE_MIN_PROGRESS_PCT' AND PARAM_VALUE = '15';
 UPDATE MATCH_PARAMS
    SET PARAM_VALUE  = 'true',
        CATEGORY     = 'core',
@@ -200,6 +203,8 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":
 -- ============================================================================
 -- Views. Drop dependents before recreate (column-count invariant).
 -- ============================================================================
+DROP VIEW IF EXISTS VW_TRIANGLES;
+DROP VIEW IF EXISTS VW_LEG1_CANDIDATES;
 DROP VIEW IF EXISTS VW_CANDIDATES_SCORED;
 DROP VIEW IF EXISTS VW_CANDIDATES;
 DROP VIEW IF EXISTS VW_LOADS;
@@ -324,6 +329,7 @@ SELECT
               ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)) / 1000.0 AS TARGET_GAP_KM,
   t.MAX_PAYLOAD_KG,
   t.HAZMAT_CERT,
+  t.VEHICLE_EQUIPMENT,
   t.EV_RANGE_KM
 FROM VW_TRAILERS t
 JOIN p ON TRUE
@@ -413,13 +419,257 @@ JOIN VW_LOADS l
   ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * 3 * 1000);
 
 -- ----------------------------------------------------------------------------
--- 8. Sanity report
+-- 8. VW_LEG1_CANDIDATES - first hop of a chain: loads a vehicle can take from
+--    where it becomes free, to ANYWHERE, ranked by how much of the gap to its
+--    target they close per empty km driven.
+--
+--    This is the hop that single-hop matching cannot express. Single-hop asks
+--    "is there a load from here to my target"; the first hop of a chain asks
+--    "is there a load from here that gets me CLOSER to my target", which is a
+--    much larger candidate set and the reason chaining finds work that direct
+--    matching does not.
+--
+--    PROGRESS is measured against the great-circle gap to the target, so it is
+--    scale-free and works on a metro dataset and a continental one alike.
+--    TRIANGLE_MIN_PROGRESS_PCT is what rejects the classic bad chain: a load
+--    that drives hundreds of empty km in the wrong direction first.
+--
+--    Bounded by TRIANGLE_LEG1_OPTIONS per vehicle. This is the bound that keeps
+--    the load-to-load self-join in VW_TRIANGLES linear instead of quadratic -
+--    without it, a 5000-load internal pool alone is 25M pairs per vehicle.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW VW_LEG1_CANDIDATES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH p AS (
+  SELECT
+    MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',             TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+    MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+    MAX(IFF(PARAM_KEY='PICKUP_DATE_SLACK_HRS',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS SLACK_HRS,
+    MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+    MAX(IFF(PARAM_KEY='ENFORCE_PICKUP_DATE',      LOWER(PARAM_VALUE)='true', NULL))  AS ENFORCE_DATE,
+    MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+    MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',     TRY_TO_DOUBLE(PARAM_VALUE), 0))            AS WEIGHT_MARGIN,
+    MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+    MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_PCT', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5) AS MIN_PROGRESS_PCT,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_RATIO', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.0) AS MIN_PROGRESS_RATIO,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_LEG1_OPTIONS',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 12) AS LEG1_OPTIONS,
+    COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM
+  FROM MATCH_PARAMS
+),
+spd AS (
+  SELECT GREATEST(1, COALESCE(MAX(AVG_SPEED_KMH), 60)) AS AVG_SPEED_KMH
+  FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
+  WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM CONFIG LIMIT 1)
+),
+base AS (
+  SELECT
+    t.TRAILER_ID, t.OPERATING_COUNTRY, t.VEHICLE_EQUIPMENT, t.MAX_PAYLOAD_KG, t.HAZMAT_CERT,
+    t.EMPTY_CITY, t.EMPTY_LON, t.EMPTY_LAT, t.EMPTY_GEOM, t.EMPTY_FROM_TS, t.AVAILABILITY_BASIS,
+    t.TARGET_LABEL, t.TARGET_LON, t.TARGET_LAT, t.TARGET_GEOM, t.TARGET_GAP_KM,
+    l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.SOURCE_SYSTEM, l.REQUIRED_EQUIPMENT,
+    l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.PICKUP_GEOM,
+    l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.DELIVERY_GEOM,
+    l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.HAZMAT, l.PRICE_USD, l.PRODUCT, l.APPROX_DISTANCE_KM,
+    ST_DISTANCE(t.EMPTY_GEOM, l.PICKUP_GEOM) / 1000.0        AS APPROACH_KM,
+    ST_DISTANCE(l.DELIVERY_GEOM, t.TARGET_GEOM) / 1000.0     AS RESIDUAL_GAP_KM,
+    -- Straight-line ETA at the class cruise speed, plus 40 min of handling.
+    -- Deliberately an ESTIMATE: it only has to order the two hops correctly.
+    -- Road time comes from the live matrix call before anything is proposed.
+    DATEADD('minute',
+      ROUND(l.APPROX_DISTANCE_KM / (SELECT AVG_SPEED_KMH FROM spd) * 60) + 40,
+      l.REQUESTED_PICKUP_TS)                                 AS LEG1_DELIVERY_ETA_TS,
+    p.MIN_PROGRESS_PCT, p.MIN_PROGRESS_RATIO, p.LEG1_OPTIONS, p.TARGET_RADIUS_KM, p.MAX_EMPTY_KM, p.ENF_EQUIP
+  FROM VW_TRAILERS_GEO t
+  JOIN p ON TRUE
+  JOIN VW_LOADS l
+    ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+   AND (NOT p.ENFORCE_DATE
+        OR t.EMPTY_FROM_TS <= DATEADD('hour', p.SLACK_HRS, l.REQUESTED_PICKUP_TS))
+   AND l.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, t.EMPTY_FROM_TS)
+   AND (NOT p.ENF_WEIGHT OR COALESCE(t.MAX_PAYLOAD_KG, 1e12) >= COALESCE(l.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+   AND (NOT p.REQ_HAZMAT OR NOT COALESCE(l.HAZMAT, FALSE) OR COALESCE(t.HAZMAT_CERT, FALSE))
+   AND (NOT p.ENF_EQUIP
+        OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+        OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(t.VEHICLE_EQUIPMENT, 'ANY'))
+),
+scored AS (
+  SELECT
+    b.*,
+    b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM                                    AS PROGRESS_KM,
+    100.0 * (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / NULLIF(b.TARGET_GAP_KM, 0) AS PROGRESS_PCT,
+    (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / GREATEST(1, b.APPROACH_KM)     AS PROGRESS_PER_EMPTY_KM,
+    -- A first hop that already lands inside the target radius is not a chain,
+    -- it is a direct return, and single-hop matching already proposes it.
+    -- Excluding it keeps this view and VW_CANDIDATES non-overlapping and makes
+    -- a chain mean exactly what was asked for: the case where no direct load
+    -- back existed.
+    (b.RESIDUAL_GAP_KM > b.TARGET_RADIUS_KM)                               AS NEEDS_SECOND_HOP
+  FROM base b
+)
+SELECT
+  s.*,
+  (s.PROGRESS_KM > 0
+   AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+   AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT) AS PROGRESS_CHECK
+FROM scored s
+WHERE s.NEEDS_SECOND_HOP
+  AND s.PROGRESS_KM > 0
+  AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+  AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY s.TRAILER_ID
+  ORDER BY s.PROGRESS_PER_EMPTY_KM DESC, s.APPROACH_KM ASC
+) <= s.LEG1_OPTIONS;
+
+-- ----------------------------------------------------------------------------
+-- 9. VW_TRIANGLES - the chained proposal skeleton: empty run to load A, carry A,
+--    empty run to load B, carry B, and land inside the target radius.
+--
+--    Costs here are great-circle. They exist to RANK and PRUNE; the road cost
+--    of every surviving leg comes from one live matrix call before anything is
+--    shown (Tenet 9 - no precomputed routing output).
+--
+--    Time ordering is enforced structurally (leg 2 cannot be picked up before
+--    leg 1 is delivered) rather than left to the solver, because VROOM has no
+--    precedence constraint and would otherwise be free to return the legs in
+--    either order.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW VW_TRIANGLES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH p AS (
+  SELECT
+    MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',            TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+    MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+    MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+    MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+    MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',    TRY_TO_DOUBLE(PARAM_VALUE), 0))             AS WEIGHT_MARGIN,
+    MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+    MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_ENABLED',           LOWER(PARAM_VALUE)='true', NULL)), TRUE) AS TRIANGLE_ENABLED,
+    COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',           TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_TOTAL_EMPTY_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS MAX_TOTAL_EMPTY_KM,
+    COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_LEG1_DETOUR_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 400) AS MAX_LEG1_DETOUR_KM,
+    COALESCE(MAX(IFF(PARAM_KEY='MAX_TRIANGLES_PER_TRAILER',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5)   AS MAX_PER_TRAILER,
+    COALESCE(MAX(IFF(PARAM_KEY='COST_PER_EMPTY_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.20) AS COST_PER_EMPTY_KM,
+    COALESCE(MAX(IFF(PARAM_KEY='REVENUE_PER_LOADED_KM',      TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.10) AS REV_PER_LOADED_KM
+  FROM MATCH_PARAMS
+),
+pairs AS (
+  SELECT
+    a.TRAILER_ID, a.OPERATING_COUNTRY, a.VEHICLE_EQUIPMENT, a.MAX_PAYLOAD_KG, a.HAZMAT_CERT,
+    a.EMPTY_CITY, a.EMPTY_LON, a.EMPTY_LAT, a.EMPTY_FROM_TS, a.AVAILABILITY_BASIS,
+    a.TARGET_LABEL, a.TARGET_LON, a.TARGET_LAT, a.TARGET_GAP_KM,
+
+    a.LOAD_ID       AS LEG1_LOAD_ID,
+    a.IS_INTERNAL   AS LEG1_IS_INTERNAL,
+    a.SOURCE        AS LEG1_SOURCE,
+    a.SOURCE_SYSTEM AS LEG1_SOURCE_SYSTEM,
+    a.PICKUP_CITY   AS LEG1_PICKUP_CITY,
+    a.PICKUP_LON    AS LEG1_PICKUP_LON,
+    a.PICKUP_LAT    AS LEG1_PICKUP_LAT,
+    a.DELIVERY_CITY AS LEG1_DELIVERY_CITY,
+    a.DELIVERY_LON  AS LEG1_DELIVERY_LON,
+    a.DELIVERY_LAT  AS LEG1_DELIVERY_LAT,
+    a.REQUESTED_PICKUP_TS   AS LEG1_PICKUP_TS,
+    a.LEG1_DELIVERY_ETA_TS,
+    a.WEIGHT_KG     AS LEG1_WEIGHT_KG,
+    a.PRICE_USD     AS LEG1_PRICE_USD,
+    a.PRODUCT       AS LEG1_PRODUCT,
+    a.APPROACH_KM   AS LEG1_EMPTY_KM,
+    a.APPROX_DISTANCE_KM AS LEG1_LOADED_KM,
+    a.PROGRESS_KM   AS LEG1_PROGRESS_KM,
+    a.PROGRESS_PCT  AS LEG1_PROGRESS_PCT,
+    a.RESIDUAL_GAP_KM AS GAP_AFTER_LEG1_KM,
+
+    b.LOAD_ID       AS LEG2_LOAD_ID,
+    b.IS_INTERNAL   AS LEG2_IS_INTERNAL,
+    b.SOURCE        AS LEG2_SOURCE,
+    b.SOURCE_SYSTEM AS LEG2_SOURCE_SYSTEM,
+    b.PICKUP_CITY   AS LEG2_PICKUP_CITY,
+    b.PICKUP_LON    AS LEG2_PICKUP_LON,
+    b.PICKUP_LAT    AS LEG2_PICKUP_LAT,
+    b.DELIVERY_CITY AS LEG2_DELIVERY_CITY,
+    b.DELIVERY_LON  AS LEG2_DELIVERY_LON,
+    b.DELIVERY_LAT  AS LEG2_DELIVERY_LAT,
+    b.REQUESTED_PICKUP_TS AS LEG2_PICKUP_TS,
+    b.WEIGHT_KG     AS LEG2_WEIGHT_KG,
+    b.PRICE_USD     AS LEG2_PRICE_USD,
+    b.PRODUCT       AS LEG2_PRODUCT,
+    ST_DISTANCE(a.DELIVERY_GEOM, b.PICKUP_GEOM) / 1000.0 AS LEG2_EMPTY_KM,
+    b.APPROX_DISTANCE_KM AS LEG2_LOADED_KM,
+    ST_DISTANCE(b.DELIVERY_GEOM, a.TARGET_GEOM) / 1000.0 AS FINAL_GAP_KM,
+
+    -- Cascade rung: which pools this chain drew on. The ladder stops at the
+    -- first rung that produces an acceptable chain, so recording the rung is
+    -- what lets the UI say "no internal-only chain existed" instead of quietly
+    -- showing an external one.
+    CASE
+      WHEN a.IS_INTERNAL AND b.IS_INTERNAL           THEN 1
+      WHEN a.IS_INTERNAL AND NOT b.IS_INTERNAL       THEN 2
+      WHEN NOT a.IS_INTERNAL AND b.IS_INTERNAL       THEN 3
+      ELSE 4
+    END AS CASCADE_RUNG,
+
+    p.TARGET_RADIUS_KM, p.MAX_TOTAL_EMPTY_KM, p.MAX_LEG1_DETOUR_KM,
+    p.MAX_PER_TRAILER, p.COST_PER_EMPTY_KM, p.REV_PER_LOADED_KM
+  FROM VW_LEG1_CANDIDATES a
+  JOIN p ON p.TRIANGLE_ENABLED
+  JOIN VW_LOADS b
+    ON b.LOAD_ID <> a.LOAD_ID
+   -- hop 2 starts near where hop 1 ended
+   AND ST_DWITHIN(a.DELIVERY_GEOM, b.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+   -- hop 2 actually finishes the return
+   AND ST_DWITHIN(b.DELIVERY_GEOM, a.TARGET_GEOM, p.TARGET_RADIUS_KM * 1000)
+   -- hop 2 cannot be collected before hop 1 is delivered
+   AND b.REQUESTED_PICKUP_TS >= a.LEG1_DELIVERY_ETA_TS
+   AND b.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, a.EMPTY_FROM_TS)
+   AND (NOT p.ENF_WEIGHT OR COALESCE(a.MAX_PAYLOAD_KG, 1e12) >= COALESCE(b.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+   AND (NOT p.REQ_HAZMAT OR NOT COALESCE(b.HAZMAT, FALSE) OR COALESCE(a.HAZMAT_CERT, FALSE))
+   AND (NOT p.ENF_EQUIP
+        OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+        OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(a.VEHICLE_EQUIPMENT, 'ANY'))
+),
+enriched AS (
+  SELECT
+    q.*,
+    q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM                     AS TOTAL_EMPTY_KM,
+    q.LEG1_LOADED_KM + q.LEG2_LOADED_KM                   AS TOTAL_LOADED_KM,
+    q.LEG1_EMPTY_KM + q.LEG1_LOADED_KM
+      + q.LEG2_EMPTY_KM + q.LEG2_LOADED_KM                AS TOTAL_KM,
+    -- The chain's own economics. NET_BENEFIT is the figure a dispatcher weighs
+    -- against doing nothing; the direct-return baseline it is compared with is
+    -- computed alongside the proposal, not here.
+    (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+      - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+    (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
+    q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
+    q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,
+    q.LEG2_PICKUP_TS >= q.LEG1_DELIVERY_ETA_TS                    AS SEQUENCE_CHECK
+  FROM pairs q
+)
+SELECT
+  e.*,
+  (e.TOTAL_EMPTY_CHECK AND e.LEG1_DETOUR_CHECK AND e.TARGET_CHECK AND e.SEQUENCE_CHECK) AS ELIGIBLE
+FROM enriched e
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY e.TRAILER_ID
+  -- internal-first, then most value, then least empty running
+  ORDER BY e.CASCADE_RUNG ASC, e.NET_BENEFIT_USD DESC, e.TOTAL_EMPTY_KM ASC
+) <= e.MAX_PER_TRAILER;
+
+-- ----------------------------------------------------------------------------
+-- 10. Sanity report
 -- ----------------------------------------------------------------------------
 SELECT 'MATCH_PARAMS'         AS object, COUNT(*) AS n FROM MATCH_PARAMS
 UNION ALL SELECT 'VW_LOADS',            COUNT(*) FROM VW_LOADS
 UNION ALL SELECT 'VW_TRAILERS_GEO',     COUNT(*) FROM VW_TRAILERS_GEO
 UNION ALL SELECT 'VW_CANDIDATES',       COUNT(*) FROM VW_CANDIDATES
 UNION ALL SELECT 'VW_CANDIDATES_SCORED',COUNT(*) FROM VW_CANDIDATES_SCORED
+UNION ALL SELECT 'VW_LEG1_CANDIDATES',  COUNT(*) FROM VW_LEG1_CANDIDATES
+UNION ALL SELECT 'VW_TRIANGLES',        COUNT(*) FROM VW_TRIANGLES
 ORDER BY 1;
 
 -- End of proposals-schema.sql
