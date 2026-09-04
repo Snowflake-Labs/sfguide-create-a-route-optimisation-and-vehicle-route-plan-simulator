@@ -557,6 +557,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT vcp.*
           FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
           WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        ),
+        p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -566,18 +572,23 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
           t.DESTINATION_LON                                                           AS DROPOFF_LON,
           t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-          -- Future-aware pickup window: anchor at "now + 30..630 min" so the
-          -- vehicle's shift (which can never start in the past) can always
-          -- overlap. Old behaviour anchored at TRIP_START which is in the past
-          -- on fresh installs and produced no overlap with the shift window.
+          -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
+          -- horizon rather than the next ~10 hours. Vehicle availability is now
+          -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
+          -- today would be reachable only by the handful of vehicles free today
+          -- and would silently starve every later vehicle of candidates.
           GREATEST(
             t.TRIP_START,
-            DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+            DATEADD('minute',
+              MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+              CURRENT_TIMESTAMP())
           )                                                                           AS PICKUP_FROM_TS,
           DATEADD(hour, 4,
             GREATEST(
               t.TRIP_START,
-              DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+              DATEADD('minute',
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
             )
           )                                                                           AS PICKUP_TO_TS,
           -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
@@ -591,7 +602,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
         WHERE EXISTS (SELECT 1 FROM cls)
-        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
+        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -640,20 +651,42 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT vcp.*
           FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
           WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        ),
+        p AS (
+          SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Rebase each offer's pickup window onto the live planning horizon,
+        -- preserving its own window LENGTH. The generated timestamps are
+        -- relative to generation time, so on any dataset older than a day they
+        -- are already in the past - and once vehicle availability became
+        -- forward-looking, a past pickup can never be served, which would empty
+        -- the external half of the pool without any error.
+        shifted AS (
+          SELECT
+            f.*,
+            GREATEST(
+              f.PICKUP_FROM_TS,
+              DATEADD('minute',
+                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
+            ) AS PICKUP_FROM_TS_ADJ,
+            GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+          FROM offers f
         )
         SELECT
           f.OFFER_ID,
           f.SOURCE,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-          COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+          COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
           COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
-          f.PICKUP_FROM_TS,
-          f.PICKUP_TO_TS,
+          f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+          DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
           -- (which is HGV-shaped at the table level) into the active class's
           -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
@@ -669,9 +702,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.PRICE_USD                              AS PRICE_EUR,
           f.HAZMAT,
           f.LISTING_TEXT
-        FROM offers f
-        LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+        FROM shifted f
+        LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
         WHERE EXISTS (SELECT 1 FROM cls)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -921,16 +954,44 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO
         COMMENT = ${TRACK}
         AS
+        WITH p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        )
         SELECT
           t.TRAILER_ID, t.OPERATING_COUNTRY, t.HOME_DEPOT, t.HOME_LON, t.HOME_LAT,
           t.DROPOFF_CITY AS EMPTY_CITY, t.DROPOFF_LON AS EMPTY_LON, t.DROPOFF_LAT AS EMPTY_LAT,
           ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT) AS EMPTY_GEOM,
-          DATEADD('minute', -1 * MOD(ABS(HASH(t.TRAILER_ID)), 720), CURRENT_TIMESTAMP()) AS EMPTY_FROM_TS,
+          -- Dispatch-time availability. A vehicle whose trip is still running is
+          -- plannable NOW for the moment it frees up, so its free time is that
+          -- future arrival - this is what lets a return leg be planned at
+          -- dispatch time instead of on arrival.
+          CASE
+            WHEN t.ETA_TS > CURRENT_TIMESTAMP() THEN t.ETA_TS
+            ELSE DATEADD('minute',
+                   MOD(ABS(HASH(t.TRAILER_ID)), GREATEST(1, (COALESCE(p.LEAD_DAYS, 4) * 1440)::INT)),
+                   CURRENT_TIMESTAMP())
+          END AS EMPTY_FROM_TS,
+          -- 'eta' = a real future arrival drove the free time. 'projected' = the
+          -- synthetic drop-off is already in the past, so the free time is spread
+          -- deterministically across the lead-time horizon to keep the demo shaped
+          -- like a live fleet. Surface this rather than hiding the synthesis.
+          IFF(t.ETA_TS > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
           t.ETA_TS AS LAST_DROPOFF_TS,
           ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS NEXT_START_GEOM,
           t.HOME_LON AS NEXT_START_LON, t.HOME_LAT AS NEXT_START_LAT, t.HOME_DEPOT AS NEXT_START_LOCATION_TEXT,
+          -- Chain target. TARGET_MODE=home_depot resolves to the home depot;
+          -- dispatcher_choice overrides these per request at query time (a view
+          -- cannot hold a per-request target), and falls back to the depot.
+          t.HOME_LON AS TARGET_LON, t.HOME_LAT AS TARGET_LAT,
+          ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS TARGET_GEOM,
+          t.HOME_DEPOT AS TARGET_LABEL,
+          ST_DISTANCE(ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT),
+                      ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)) / 1000.0 AS TARGET_GAP_KM,
           t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.EV_RANGE_KM
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS t
+        JOIN p ON TRUE
         WHERE t.DROPOFF_LON IS NOT NULL AND t.DROPOFF_LAT IS NOT NULL`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },

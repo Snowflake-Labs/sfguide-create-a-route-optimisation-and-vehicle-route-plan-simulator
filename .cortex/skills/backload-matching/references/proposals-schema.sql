@@ -261,18 +261,35 @@ FROM VW_EXTERNAL_OFFERS eo
 WHERE eo.PICKUP_LON IS NOT NULL AND eo.PICKUP_LAT IS NOT NULL;
 
 -- ----------------------------------------------------------------------------
--- 5. VW_TRAILERS_GEO - trailer free-point + return(home) geometry for matching.
---    EMPTY   = last drop-off (where the vehicle becomes free).
---    NEXT_START = home depot (return-to-home bias for the solver end location).
---    EMPTY_FROM_TS is anchored to "now - 0..12h" (deterministic per TRAILER_ID)
---    so the free-time sits in the same live window as the load pickups (bootstrap
---    anchors internal/external pickups at "now + 30..1160 min"). Without this the
---    synthetic drop-off timestamps are ~weeks old and every pair fails the pickup
---    horizon. LAST_DROPOFF_TS keeps the real drop-off time for display.
+-- 5. VW_TRAILERS_GEO - trailer free-point, return(home) and chain-target
+--    geometry for matching.
+--      EMPTY      = last drop-off (where the vehicle becomes free).
+--      NEXT_START = home depot (return-to-home bias for the solver end).
+--      TARGET     = where the chain must ultimately deliver the vehicle. Under
+--                   TARGET_MODE=home_depot that is the depot; dispatcher_choice
+--                   overrides it per request (a view cannot hold a per-request
+--                   target) and falls back to the depot.
+--
+--    EMPTY_FROM_TS is DISPATCH-TIME availability: a vehicle whose trip is still
+--    running is plannable NOW for the moment it frees up, so its free time is
+--    that future arrival. This is what lets the return leg be planned at
+--    dispatch time rather than on arrival. Where the synthetic drop-off is
+--    already in the past there is no future arrival to use, so the free time is
+--    spread deterministically across PLANNING_LEAD_DAYS; AVAILABILITY_BASIS
+--    reports which of the two applied ('eta' vs 'projected') instead of hiding
+--    the synthesis. The previous behaviour anchored free time at "now minus
+--    0..12h", i.e. every vehicle was ALREADY empty, which cannot express
+--    planning days ahead at all.
+--
+--    LAST_DROPOFF_TS keeps the real drop-off time for display.
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW VW_TRAILERS_GEO
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
+WITH p AS (
+  SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+  FROM MATCH_PARAMS
+)
 SELECT
   t.TRAILER_ID,
   t.OPERATING_COUNTRY,
@@ -283,16 +300,29 @@ SELECT
   t.DROPOFF_LON                               AS EMPTY_LON,
   t.DROPOFF_LAT                               AS EMPTY_LAT,
   ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT)  AS EMPTY_GEOM,
-  DATEADD('minute', -1 * MOD(ABS(HASH(t.TRAILER_ID)), 720), CURRENT_TIMESTAMP()) AS EMPTY_FROM_TS,
+  CASE
+    WHEN t.ETA_TS > CURRENT_TIMESTAMP() THEN t.ETA_TS
+    ELSE DATEADD('minute',
+           MOD(ABS(HASH(t.TRAILER_ID)), GREATEST(1, (COALESCE(p.LEAD_DAYS, 4) * 1440)::INT)),
+           CURRENT_TIMESTAMP())
+  END                                         AS EMPTY_FROM_TS,
+  IFF(t.ETA_TS > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
   t.ETA_TS                                    AS LAST_DROPOFF_TS,
   ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)        AS NEXT_START_GEOM,
   t.HOME_LON                                  AS NEXT_START_LON,
   t.HOME_LAT                                  AS NEXT_START_LAT,
   t.HOME_DEPOT                                AS NEXT_START_LOCATION_TEXT,
+  t.HOME_LON                                  AS TARGET_LON,
+  t.HOME_LAT                                  AS TARGET_LAT,
+  ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)        AS TARGET_GEOM,
+  t.HOME_DEPOT                                AS TARGET_LABEL,
+  ST_DISTANCE(ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT),
+              ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)) / 1000.0 AS TARGET_GAP_KM,
   t.MAX_PAYLOAD_KG,
   t.HAZMAT_CERT,
   t.EV_RANGE_KM
 FROM VW_TRAILERS t
+JOIN p ON TRUE
 WHERE t.DROPOFF_LON IS NOT NULL AND t.DROPOFF_LAT IS NOT NULL;
 
 -- ----------------------------------------------------------------------------
