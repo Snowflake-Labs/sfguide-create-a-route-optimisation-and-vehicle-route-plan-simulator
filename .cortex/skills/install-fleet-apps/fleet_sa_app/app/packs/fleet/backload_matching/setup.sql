@@ -178,6 +178,13 @@ shifted AS (
 SELECT
   f.OFFER_ID,
   f.SOURCE,
+  -- SOURCE is a CHANNEL label whose values mix internal and external
+  -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer
+  -- "did this come from outside". SOURCE_SYSTEM is the system identity: a
+  -- real integration replaces the literal with its own system key, and no
+  -- consumer changes. Deliberately vendor-free.
+  'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+  COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
   COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,

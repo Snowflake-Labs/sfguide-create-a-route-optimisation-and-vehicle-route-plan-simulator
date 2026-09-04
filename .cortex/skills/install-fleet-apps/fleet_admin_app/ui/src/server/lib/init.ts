@@ -677,6 +677,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
         SELECT
           f.OFFER_ID,
           f.SOURCE,
+          -- SOURCE is a CHANNEL label whose values mix internal and external
+          -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot
+          -- answer "did this come from outside". SOURCE_SYSTEM is the system
+          -- identity: a real integration replaces the literal with its own
+          -- system key and no consumer changes. Deliberately vendor-free.
+          'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+          COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
           COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
@@ -925,6 +932,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         AS
         SELECT
           iv.ID AS LOAD_ID, TRUE AS IS_INTERNAL, 'INTERNAL' AS SOURCE,
+          'INTERNAL' AS SOURCE_SYSTEM,
+          'ANY' AS REQUIRED_EQUIPMENT,
           iv.PICKUP_CITY, iv.PICKUP_LON, iv.PICKUP_LAT,
           ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT) AS PICKUP_GEOM,
           iv.DROPOFF_CITY AS DELIVERY_CITY, iv.DROPOFF_LON AS DELIVERY_LON, iv.DROPOFF_LAT AS DELIVERY_LAT,
@@ -938,6 +947,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         UNION ALL
         SELECT
           eo.OFFER_ID AS LOAD_ID, FALSE AS IS_INTERNAL, eo.SOURCE,
+          eo.SOURCE_SYSTEM,
+          COALESCE(eo.VEHICLE_EQUIPMENT, 'ANY') AS REQUIRED_EQUIPMENT,
           eo.PICKUP_CITY, eo.PICKUP_LON, eo.PICKUP_LAT,
           ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT) AS PICKUP_GEOM,
           eo.DROPOFF_CITY AS DELIVERY_CITY, eo.DROPOFF_LON AS DELIVERY_LON, eo.DROPOFF_LAT AS DELIVERY_LAT,

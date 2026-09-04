@@ -1127,3 +1127,110 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_A
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_USER;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_ADMIN;
+
+-- ===========================================================================
+-- External freight-exchange search seam (data seam, Tenet 1)
+-- ===========================================================================
+-- Mirrors the request shape a dispatcher actually makes against an outside
+-- exchange: "I am empty HERE, I want to get THERE, show me loads within N km
+-- in this time window". A real exchange integration replaces ONLY this function
+-- body (or repoints it at a landed feed) and every consumer - the chain
+-- matcher, the cascade, the app - is unchanged. That is the whole point of
+-- putting the search behind a contract function instead of letting consumers
+-- read the offer table directly.
+--
+-- Deliberately parameterised rather than reading MATCH_PARAMS: this is a pure
+-- search primitive, and the caller already resolves the radius / horizon /
+-- target from config. Keeping config out of the body means a swapped-in live
+-- implementation does not have to know about MATCH_PARAMS at all.
+--
+-- Vendor-free by construction: it returns SOURCE_SYSTEM (a system identity),
+-- never an exchange brand name.
+--
+-- Semantics:
+--   P_TARGET_LON/LAT NULL -> no destination filter (search "to anywhere", which
+--                            is exactly the first hop of a chain).
+--   P_FROM_TS / P_TO_TS NULL -> that side of the window is unbounded.
+--   APPROACH_KM   = empty km from the origin to the offer pickup.
+--   TARGET_GAP_KM = remaining great-circle km from the offer dropoff to target,
+--                   i.e. how much of the return is still outstanding after it.
+--                   NULL when no target was supplied.
+-- ===========================================================================
+CREATE OR REPLACE FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(
+  P_ORIGIN_LON       FLOAT,
+  P_ORIGIN_LAT       FLOAT,
+  P_RADIUS_KM        FLOAT,
+  P_TARGET_LON       FLOAT,
+  P_TARGET_LAT       FLOAT,
+  P_TARGET_RADIUS_KM FLOAT,
+  P_FROM_TS          TIMESTAMP_LTZ,
+  P_TO_TS            TIMESTAMP_LTZ,
+  P_MAX_ROWS         NUMBER
+)
+RETURNS TABLE (
+  OFFER_ID          VARCHAR,
+  SOURCE            VARCHAR,
+  SOURCE_SYSTEM     VARCHAR,
+  VEHICLE_EQUIPMENT VARCHAR,
+  PICKUP_CITY       VARCHAR,
+  PICKUP_LON        FLOAT,
+  PICKUP_LAT        FLOAT,
+  DROPOFF_CITY      VARCHAR,
+  DROPOFF_LON       FLOAT,
+  DROPOFF_LAT       FLOAT,
+  PICKUP_FROM_TS    TIMESTAMP_LTZ,
+  PICKUP_TO_TS      TIMESTAMP_LTZ,
+  WEIGHT_KG         NUMBER,
+  PRODUCT           VARCHAR,
+  PRICE_USD         NUMBER,
+  HAZMAT            BOOLEAN,
+  APPROACH_KM       FLOAT,
+  TARGET_GAP_KM     FLOAT,
+  LISTING_TEXT      VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT
+    o.OFFER_ID,
+    o.SOURCE,
+    o.SOURCE_SYSTEM,
+    o.VEHICLE_EQUIPMENT,
+    o.PICKUP_CITY,
+    o.PICKUP_LON,
+    o.PICKUP_LAT,
+    o.DROPOFF_CITY,
+    o.DROPOFF_LON,
+    o.DROPOFF_LAT,
+    o.PICKUP_FROM_TS,
+    o.PICKUP_TO_TS,
+    o.WEIGHT_KG,
+    o.PRODUCT,
+    o.PRICE_USD,
+    o.HAZMAT,
+    ST_DISTANCE(ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
+                ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT)) / 1000.0 AS APPROACH_KM,
+    IFF(P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL, NULL,
+        ST_DISTANCE(ST_MAKEPOINT(o.DROPOFF_LON, o.DROPOFF_LAT),
+                    ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT)) / 1000.0)   AS TARGET_GAP_KM,
+    o.LISTING_TEXT
+  FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS o
+  WHERE o.PICKUP_LON IS NOT NULL AND o.PICKUP_LAT IS NOT NULL
+    AND ST_DWITHIN(ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT),
+                   ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
+                   COALESCE(P_RADIUS_KM, 100) * 1000)
+    AND (P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL
+         OR ST_DWITHIN(ST_MAKEPOINT(o.DROPOFF_LON, o.DROPOFF_LAT),
+                       ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT),
+                       COALESCE(P_TARGET_RADIUS_KM, 250) * 1000))
+    AND (P_FROM_TS IS NULL OR o.PICKUP_TO_TS   >= P_FROM_TS)
+    AND (P_TO_TS   IS NULL OR o.PICKUP_FROM_TS <= P_TO_TS)
+  QUALIFY ROW_NUMBER() OVER (
+    ORDER BY ST_DISTANCE(ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
+                         ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT))
+  ) <= COALESCE(P_MAX_ROWS, 500)
+$$;
+
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_ADMIN;
