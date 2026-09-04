@@ -229,6 +229,28 @@ code_views:
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+  triangle_proposals:
+    objects:
+      # Same ownership caveat as backload_proposals: created only by the admin
+      # app's init.ts at container boot, so assert them explicitly.
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
+      - FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
+    # A chain is a LONG-HAUL construct: it only exists when a vehicle empties
+    # further from its target than the target radius. On a single-metro preset
+    # every load already delivers inside that radius, so a direct return always
+    # exists and zero chains is the CORRECT answer, not a broken page. Measured:
+    # the widest home-gap on a metro preset is ~17 km against a 250 km radius.
+    # Declared here so the harness does not read a correct empty result as a
+    # regression - on a continental preset the same views return chains.
+    allow_empty:
+      - reason: >
+          No two-hop chain is needed unless a vehicle empties beyond the target
+          radius. Metro presets never do, so the chain views are legitimately
+          empty there and populate on a wide-area preset.
+        objects:
+          - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+          - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
   app_shell:
     objects:
       # Not a view, but every view inherits it: the context bar and the region

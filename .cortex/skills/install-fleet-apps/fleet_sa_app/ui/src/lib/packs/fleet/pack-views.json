@@ -6,8 +6,18 @@
     "useCase": {
       "headline": "Turn a depot and a pile of stops into a solved, drivable multi-vehicle route plan in one click.",
       "businessQuestion": "What is the cheapest set of routes that covers all of today's stops with the vehicles we actually have?",
-      "audience": ["Transport planner", "Dispatcher", "Operations manager", "Supply chain lead"],
-      "industries": ["Distribution", "Last-mile delivery", "Field service", "Waste and municipal fleets"],
+      "audience": [
+        "Transport planner",
+        "Dispatcher",
+        "Operations manager",
+        "Supply chain lead"
+      ],
+      "industries": [
+        "Distribution",
+        "Last-mile delivery",
+        "Field service",
+        "Waste and municipal fleets"
+      ],
       "talkTrack": [
         "Set the depot, the number of vehicles and the stop count, then solve.",
         "Show the solved tours on the map, one colour per vehicle, following real roads.",
@@ -57,8 +67,18 @@
     "useCase": {
       "headline": "Plan the evacuation of people who cannot evacuate themselves: hazard exposure, who is inside the risk zone, and a solved multi-depot van plan.",
       "businessQuestion": "If this hazard escalates, who do we collect first, with which vehicles, and how many trips does it actually take?",
-      "audience": ["Emergency management director", "Public health and care operations", "Transport coordinator", "Resilience planner"],
-      "industries": ["Public sector and emergency management", "Healthcare and paratransit", "Utilities", "Insurance and reinsurance"],
+      "audience": [
+        "Emergency management director",
+        "Public health and care operations",
+        "Transport coordinator",
+        "Resilience planner"
+      ],
+      "industries": [
+        "Public sector and emergency management",
+        "Healthcare and paratransit",
+        "Utilities",
+        "Insurance and reinsurance"
+      ],
       "talkTrack": [
         "Step 1: colour the region by hazard risk and pick wildfire or flood, so exposure is visible before anyone talks about vehicles.",
         "Step 2: seed care centers and the people who depend on them, sampled inside the live drive-time reach of those centers.",
@@ -118,8 +138,18 @@
     "useCase": {
       "headline": "Fill the empty return leg: match idle vehicles to waiting internal loads first, then to external freight offers, and price the result.",
       "businessQuestion": "Our vehicles run back empty. Which waiting loads could they carry instead, and what is that worth?",
-      "audience": ["Dispatcher", "Head of transport", "Freight buyer", "CFO"],
-      "industries": ["Road freight and haulage", "Trailer and container operators", "Retail and grocery distribution", "Bulk and industrial transport"],
+      "audience": [
+        "Dispatcher",
+        "Head of transport",
+        "Freight buyer",
+        "CFO"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Bulk and industrial transport"
+      ],
       "talkTrack": [
         "Frame the problem in one line: an empty return leg is fuel, driver hours and tyres spent on no revenue.",
         "Set the sliders - how many vehicles, how many internal loads, how many external offers, and how much detour is acceptable.",
@@ -173,8 +203,18 @@
     "useCase": {
       "headline": "Four backhaul strategies run side by side and fused into one graded recommendation per vehicle, with the reasons a load was rejected shown on the card.",
       "businessQuestion": "Which backhaul should this vehicle take, how confident are we, and why was the obvious-looking load actually ineligible?",
-      "audience": ["Head of transport", "Dispatch supervisor", "Network optimization lead", "Freight buyer"],
-      "industries": ["Road freight and haulage", "Trailer and container operators", "Retail and grocery distribution", "Third-party logistics"],
+      "audience": [
+        "Head of transport",
+        "Dispatch supervisor",
+        "Network optimization lead",
+        "Freight buyer"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Third-party logistics"
+      ],
       "talkTrack": [
         "Explain why there are four strategies: quick scan, per-load routing, fleet-wide one-to-one, and profit-max all answer the same question differently.",
         "Run ensemble mode and read the grade per vehicle plus how many of the four strategies agree - agreement is the confidence signal.",
@@ -225,13 +265,24 @@
     "label": "Ops Console",
     "description": "Operator controls: suspend/resume services, set the active region, and check platform health.",
     "category": "Admin",
-    "tags": ["ops", "admin"],
-    "roles": ["ops"],
+    "tags": [
+      "ops",
+      "admin"
+    ],
+    "roles": [
+      "ops"
+    ],
     "useCase": {
       "headline": "Operator controls for the platform behind the demos: service lifecycle, the active region, and health at a glance.",
       "businessQuestion": "Is the routing platform healthy, which region is active, and what do I resume before a demo or suspend after one?",
-      "audience": ["Solution Engineer", "Platform operator", "Snowflake account team"],
-      "industries": ["Internal enablement"],
+      "audience": [
+        "Solution Engineer",
+        "Platform operator",
+        "Snowflake account team"
+      ],
+      "industries": [
+        "Internal enablement"
+      ],
       "talkTrack": [
         "Before presenting, check service health here so a suspended region is never discovered mid-demo.",
         "Resume the region you are about to show, and give the graph time to load before opening a routing view.",
@@ -243,7 +294,9 @@
         "Role-scoped controls: this page is gated to the operator role and its tool bundle is separate from the consumer one",
         "Cost control by suspending compute the moment it is idle"
       ],
-      "dataRequired": ["No customer data - this operates the deployment itself"],
+      "dataRequired": [
+        "No customer data - this operates the deployment itself"
+      ],
       "valueDrivers": [
         "A demo that starts warm instead of failing on a cold service",
         "Idle compute suspended deliberately rather than forgotten"
@@ -266,6 +319,69 @@
         "show me the recent verb calls and any that failed"
       ],
       "gotchas": "This page drives the OPERATOR verb bundle, which is role-gated to FLEET_APP_OPS and is a separate tool surface from the consumer agent's. A service reading SUSPENDED is the NORMAL idle state, not a fault - say so and offer to resume rather than reporting a problem. A service showing no-suspend (AUTO_SUSPEND_SECS=0) is also expected: it means an active build or the keep-warm window is deliberately pinning it. Resuming a region reloads its road graph and is not instant, so a RUNNING status does not by itself mean routing is answerable yet. Suspending the SA or admin app itself is blocked deliberately."
+    }
+  },
+  "triangle_proposals": {
+    "label": "Triangle Proposals",
+    "description": "Chained two-hop backhaul: when no single load brings a vehicle back, carry one load part of the way and a second load the rest. Internal loads are exhausted before an outside exchange is consulted, every leg is costed live on the road network, and each chain is shown against the cost of simply running home empty.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Recovers return trips that single-hop matching cannot see, by chaining two loads through an intermediate drop and pricing the chain against the cost of running home empty.",
+      "businessQuestion": "There is no load from here back to where this vehicle is needed. Is there a pair of loads that gets it home via an intermediate stop, and is that chain actually better than running empty?",
+      "audience": [
+        "Head of transport",
+        "Dispatch supervisor",
+        "Network optimization lead",
+        "Freight buyer"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Third-party logistics"
+      ],
+      "talkTrack": [
+        "Start with the gap this fills: single-hop matching asks 'is there a load from here to my target'. A chain asks 'is there a load that gets me CLOSER', which is a far larger candidate set.",
+        "Show the cascade rung on a card. Rung 1 means both hops came from our own loads and the external exchange was never queried - that ordering is a policy, not a scoring nudge.",
+        "Press Cost legs on road network and point out that one matrix call prices every leg of every candidate chain live, with nothing precomputed.",
+        "Walk the status-quo line on a card: chain empty km against the empty run home, and net against doing nothing. This is the number a planner argues with.",
+        "Show a chain flagged as not beating the baseline and make the point that the tool says so rather than presenting it as a win.",
+        "Read the constraint chips: total empty km, first-hop detour, reaches target, hop order. Hop order is enforced structurally so a chain can never be delivered out of sequence.",
+        "If the active dataset is a single metro area, explain that the page correctly reports no chain is needed, because every load already delivers within the target radius. Chaining is a long-haul pattern."
+      ],
+      "snowflakeCapabilities": [
+        "Chain enumeration as a bounded load-to-load self-join in SQL over the neutral contract views, so the candidate set is explainable rather than a black box",
+        "One live travel-time matrix call against the routing engine on Snowpark Container Services prices every leg of every candidate chain at interaction time",
+        "The outside-load lookup sits behind a contract table function, so a real freight-exchange integration replaces one function body with no change to this page"
+      ],
+      "dataRequired": [
+        "Vehicle locations with a forward-looking availability time and a return target",
+        "Own waiting loads and external offers with pickup windows, weight and geography",
+        "Revenue per loaded km and cost per empty km",
+        "A provisioned routing region covering the lanes in the chain"
+      ],
+      "valueDrivers": [
+        "Return trips recovered that a direct-match search structurally cannot find",
+        "Own capacity used before money is spent on an outside exchange",
+        "A defensible comparison against running empty, which is what earns planner trust"
+      ],
+      "method": "Chain skeletons are enumerated in SQL: first hops are loads that carry the vehicle CLOSER to its target (a first hop that already arrives is a direct return and is excluded), kept only when progress toward the target at least pays for the empty km spent reaching it, and bounded to the best few per vehicle before a second hop is joined on. Hop ordering is enforced by an estimated first-leg delivery time because the solver has no precedence constraint. Surviving chains are then costed on the live road network with a single matrix call, scored on utilisation, how completely they close the return, and empty km saved, and filtered by an internal-first cascade that stops at the first rung meeting the acceptance score.",
+      "caveats": "Vehicles, loads and offers are synthetic, and revenue per loaded km and cost per empty km are stated assumptions rather than source data. Vehicle equipment is synthesized and the equipment constraint is seeded off. Chaining only applies over long distances: on a single-metro dataset the page correctly reports that no chain is needed. Read-only - nothing is written back. Requires the region routing services to be running."
+    },
+    "agentKnowledge": {
+      "keyMetrics": [
+        "chains (costed two-hop candidates), vehicles covered, and the cascade rung the ladder stopped at (1 own-loads-only .. 4 external-on-both-hops)",
+        "per chain: both hops as pickup -> delivery with own/external on each, empty km, loaded km, remaining distance to target, grade and eligibility",
+        "status-quo comparison per chain: chain empty km against the empty run home, chain net against doing nothing, and whether the chain beats that baseline",
+        "the on-screen chains are published as __memo_triangle_proposals (trailer, rung, both hops, empty and loaded km, net vs baseline, beats-baseline, grade)"
+      ],
+      "exampleQuestions": [
+        "which vehicles have a two-hop chain home?",
+        "did we need to go to an external exchange for any of these chains?",
+        "which chains do not beat simply running home empty?",
+        "why is there no chain for this vehicle?",
+        "how much empty running does the best chain save?"
+      ]
     }
   }
 }
