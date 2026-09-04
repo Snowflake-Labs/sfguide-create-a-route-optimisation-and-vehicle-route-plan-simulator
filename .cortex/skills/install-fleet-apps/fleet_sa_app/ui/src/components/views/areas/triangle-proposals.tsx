@@ -43,6 +43,11 @@ import { COLOR_VEHICLE, COLOR_INTERNAL, COLOR_EXTERNAL, COLOR_LEG_EMPTY } from '
 const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 const PHYS = 'FLEET_INTELLIGENCE.BACKLOAD_MATCHING';
 
+// The routing gateway guards the number of locations per matrix call. A square
+// matrix over N points is N*N cells, so keep N well inside that guardrail and
+// cost the highest-ranked chains rather than truncating a response.
+const MAX_MATRIX_POINTS = 150;
+
 /** One chain skeleton straight out of VW_TRIANGLES (great-circle costed). */
 interface Chain {
   TRAILER_ID: string;
@@ -210,12 +215,21 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
   // candidate set, then each leg is looked up from it. The same matrix also
   // yields the baseline (empty straight to target), so the comparison is on
   // identical road data rather than one road figure against one straight line.
+  //
+  // MATRIX_TABULAR takes (profile, ORIGIN coords, DESTINATION coords, region)
+  // and the gateway derives sources/destinations from the two arrays' LENGTHS,
+  // so a full square matrix means passing the same coordinate list twice. It
+  // requests metrics ['distance','duration'], hence distances in metres.
   // ---------------------------------------------------------------------
   const runCosting = useCallback(async () => {
     if (!chains.length) return;
     setLoading(true); setErr(null); setSuspended(null);
     try {
       // Distinct points, de-duplicated to a 5dp key so the matrix stays small.
+      // Chains are consumed in rank order (internal-first, then best net) and
+      // cut off at the gateway's location guardrail rather than silently
+      // truncating the matrix, which would return a short row and mis-cost the
+      // legs that fell off the end.
       const idx = new Map<string, number>();
       const pts: [number, number][] = [];
       const add = (lon: number, lat: number): number => {
@@ -226,27 +240,35 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
         pts.push([lon, lat]); idx.set(k, i);
         return i;
       };
-      const rows = chains.map((c) => ({
-        c,
-        iEmpty: add(num(c.EMPTY_LON), num(c.EMPTY_LAT)),
-        iP1: add(num(c.LEG1_PICKUP_LON), num(c.LEG1_PICKUP_LAT)),
-        iD1: add(num(c.LEG1_DELIVERY_LON), num(c.LEG1_DELIVERY_LAT)),
-        iP2: add(num(c.LEG2_PICKUP_LON), num(c.LEG2_PICKUP_LAT)),
-        iD2: add(num(c.LEG2_DELIVERY_LON), num(c.LEG2_DELIVERY_LAT)),
-        iTgt: add(num(c.TARGET_LON), num(c.TARGET_LAT)),
-      }));
+      const rows: { c: Chain; iEmpty: number; iP1: number; iD1: number; iP2: number; iD2: number; iTgt: number }[] = [];
+      let dropped = 0;
+      for (const c of chains) {
+        // A chain contributes at most 6 points; stop before overshooting.
+        if (pts.length + 6 > MAX_MATRIX_POINTS) { dropped += 1; continue; }
+        rows.push({
+          c,
+          iEmpty: add(num(c.EMPTY_LON), num(c.EMPTY_LAT)),
+          iP1: add(num(c.LEG1_PICKUP_LON), num(c.LEG1_PICKUP_LAT)),
+          iD1: add(num(c.LEG1_DELIVERY_LON), num(c.LEG1_DELIVERY_LAT)),
+          iP2: add(num(c.LEG2_PICKUP_LON), num(c.LEG2_PICKUP_LAT)),
+          iD2: add(num(c.LEG2_DELIVERY_LON), num(c.LEG2_DELIVERY_LAT)),
+          iTgt: add(num(c.TARGET_LON), num(c.TARGET_LAT)),
+        });
+      }
 
-      const locs = `ARRAY_CONSTRUCT(${pts.map(([lo, la]) => `ARRAY_CONSTRUCT(${lo}, ${la})`).join(', ')})`;
-      const all = `ARRAY_CONSTRUCT(${pts.map((_, i) => i).join(', ')})`;
+      const coords = `ARRAY_CONSTRUCT(${pts.map(([lo, la]) => `ARRAY_CONSTRUCT(${lo}, ${la})`).join(', ')})`;
       const sql =
-        `SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${sqlLiteral(profile)}', ` +
-        `${locs}, ${all}, ${region ? `'${sqlLiteral(region)}'` : 'NULL'}) AS M`;
+        `SELECT TO_VARCHAR(M:distances) AS D, TO_VARCHAR(M:durations) AS T FROM (SELECT ` +
+        `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${sqlLiteral(profile)}', ` +
+        `${coords}, ${coords}, ${region ? `'${sqlLiteral(region)}'` : 'NULL'}) AS M)`;
       const res = await sfRead(sql);
-      const raw = res[0]?.M;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const dist: number[][] | undefined = parsed?.distances;
-      if (!Array.isArray(dist)) {
-        throw new Error('The routing engine returned no distance matrix, so legs cannot be costed on the road network.');
+      const parse = (v: unknown): number[][] | null => {
+        if (v == null) return null;
+        try { return typeof v === 'string' ? JSON.parse(v) : (v as number[][]); } catch { return null; }
+      };
+      const dist = parse(res[0]?.D);
+      if (!Array.isArray(dist) || !Array.isArray(dist[0])) {
+        throw new Error('The routing engine returned no distance matrix, so legs cannot be costed on the road network. Check that the region services are running.');
       }
       const km = (a: number, b: number): number | null => {
         const v = dist?.[a]?.[b];
@@ -293,8 +315,8 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setCostBasis('road');
       setSelectedKey(kept[0]?.key ?? '');
       setStatus(reached == null
-        ? `Costed ${out.length} chains on the road network. None reached the ${threshold} acceptance score, so every rung is shown as a near miss.`
-        : `Costed ${out.length} chains on the road network. Stopped at rung ${reached} (${RUNG_LABEL[reached]}) - the cascade did not need to widen further.`);
+        ? `Costed ${out.length} chains on the road network${dropped ? `, ${dropped} deferred to stay inside the matrix location limit` : ''}. None reached the ${threshold} acceptance score, so every rung is shown as a near miss.`
+        : `Costed ${out.length} chains on the road network${dropped ? `, ${dropped} deferred to stay inside the matrix location limit` : ''}. Stopped at rung ${reached} (${RUNG_LABEL[reached]}) - the cascade did not need to widen further.`);
     } catch (e: unknown) {
       if (isRoutingSuspendedError(e)) setSuspended((e as { info: SuspendedInfo }).info);
       else setErr(e instanceof Error ? e.message : String(e));
