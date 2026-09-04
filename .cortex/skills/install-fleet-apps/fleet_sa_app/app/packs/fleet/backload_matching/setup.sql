@@ -13,6 +13,10 @@ CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VEHICLE_CLASS_PROFILE;
 
+CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS;
+
 CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS;
@@ -38,6 +42,10 @@ home_anchor AS (
 cls AS (
   SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
   WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
+),
+p AS (
+  SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+  FROM FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
 )
 SELECT
   f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -51,8 +59,37 @@ SELECT
   ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
   ld.LAST_TRIP_END                                    AS ETA_TS,
   DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
+  -- Dispatch-time availability: a vehicle still in transit is plannable
+  -- NOW for the moment it frees up, so its free time is that future
+  -- arrival. Where the synthetic drop-off is already past there is no
+  -- future arrival to use, so the free time is spread deterministically
+  -- across PLANNING_LEAD_DAYS. AVAILABILITY_BASIS reports which applied
+  -- rather than hiding the synthesis.
+  CASE
+    WHEN ld.LAST_TRIP_END > CURRENT_TIMESTAMP() THEN ld.LAST_TRIP_END
+    ELSE DATEADD('minute',
+           MOD(ABS(HASH(f.VEHICLE_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)),
+           CURRENT_TIMESTAMP())
+  END                                                 AS AVAILABLE_FROM_TS,
+  IFF(ld.LAST_TRIP_END > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
+  -- Chain target under TARGET_MODE=home_depot. A per-request target
+  -- (dispatcher_choice) is supplied at query time and falls back to this.
+  COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS TARGET_LON,
+  COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS TARGET_LAT,
+  COALESCE(h.NAME, 'Home Depot')                      AS TARGET_LABEL,
+  ST_DISTANCE(
+    ST_MAKEPOINT(ld.DROPOFF_LON, ld.DROPOFF_LAT),
+    ST_MAKEPOINT(COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)),
+                 COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)))
+  ) / 1000.0                                          AS TARGET_GAP_KM,
   'IN_TRANSIT'                                        AS STATUS,
   FALSE                                               AS HAZMAT_CERT,
+  -- Synthetic equipment fit, assigned deterministically per vehicle from
+  -- the same vocabulary the offer pool uses, so ENFORCE_EQUIPMENT_FIT is
+  -- demonstrable end to end. Seeded OFF: a real fleet supplies this from
+  -- its own asset master.
+  ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
+    MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
   (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
   NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
 FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
@@ -68,6 +105,16 @@ CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
 WITH cls AS (
   SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
   WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
+),
+-- Pickup windows are spread across the PLANNING_LEAD_DAYS horizon, not the
+-- next ~10 hours. Vehicle availability is forward-looking (see TRAILERS),
+-- so a pool bunched into today is reachable only by vehicles free today
+-- and silently starves every later vehicle of candidates.
+p AS (
+  SELECT
+    COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+  FROM FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
 )
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -79,12 +126,16 @@ SELECT
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
   GREATEST(
     t.TRIP_START,
-    DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+    DATEADD('minute',
+      MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+      CURRENT_TIMESTAMP())
   )                                                                           AS PICKUP_FROM_TS,
   DATEADD(hour, 4,
     GREATEST(
       t.TRIP_START,
-      DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+      DATEADD('minute',
+        MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
     )
   )                                                                           AS PICKUP_TO_TS,
   (
@@ -99,27 +150,57 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.D
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
   AND EXISTS (SELECT 1 FROM cls)
-QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120;
+QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p);
 
 CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 WITH cls AS (
   SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
   WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
+),
+p AS (
+  SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+  FROM FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
+),
+-- Rebase each offer's pickup window onto the live planning horizon while
+-- preserving its own window LENGTH. Generated timestamps are relative to
+-- generation time, so on any dataset older than a day they already sit in
+-- the past - and with forward-looking vehicle availability a past pickup
+-- can never be served, which empties the external half of the demand pool
+-- with no error anywhere.
+shifted AS (
+  SELECT
+    f.*,
+    GREATEST(
+      f.PICKUP_FROM_TS,
+      DATEADD('minute',
+        MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
+    ) AS PICKUP_FROM_TS_ADJ,
+    GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+  FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
+  WHERE f.REGION = (SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
 )
 SELECT
   f.OFFER_ID,
   f.SOURCE,
+  -- SOURCE is a CHANNEL label whose values mix internal and external
+  -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer
+  -- "did this come from outside". SOURCE_SYSTEM is the system identity: a
+  -- real integration replaces the literal with its own system key, and no
+  -- consumer changes. Deliberately vendor-free.
+  'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+  COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-  COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+  COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
   COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
-  f.PICKUP_FROM_TS,
-  f.PICKUP_TO_TS,
+  f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+  DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(
     (SELECT SHIPMENT_KG_MAX FROM cls),
     GREATEST(
@@ -130,12 +211,11 @@ SELECT
   COALESCE(f.PRODUCT, 'General freight')   AS PRODUCT,
   f.PRICE_USD                              AS PRICE_USD,
   COALESCE(f.HAZMAT, FALSE)                AS HAZMAT,
-  f.SOURCE || ' load: ' || COALESCE(p.NAME, 'Pickup') || ' -> ' || COALESCE(d.NAME, 'Dropoff') AS LISTING_TEXT
-FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
-LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
-LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-WHERE f.REGION = (SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-  AND EXISTS (SELECT 1 FROM cls);
+  f.SOURCE || ' load: ' || COALESCE(p2.NAME, 'Pickup') || ' -> ' || COALESCE(d.NAME, 'Dropoff') AS LISTING_TEXT
+FROM shifted f
+LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
+LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
+WHERE EXISTS (SELECT 1 FROM cls);
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql)
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_USER;

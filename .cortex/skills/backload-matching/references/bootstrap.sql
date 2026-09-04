@@ -211,6 +211,17 @@ WITH cls AS (
   SELECT vcp.*
   FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+),
+-- Pickup windows spread across PLANNING_LEAD_DAYS, and the pool sized by
+-- INTERNAL_POOL_CAP. Vehicle availability is forward-looking (see
+-- proposals-schema.sql VW_TRAILERS_GEO), so a pool bunched into the next few
+-- hours would be reachable only by vehicles free today and would silently
+-- starve every later vehicle of candidates.
+p AS (
+  SELECT
+    COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+  FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
 )
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -222,12 +233,16 @@ SELECT
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
   GREATEST(
     t.TRIP_START,
-    DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+    DATEADD('minute',
+      MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+      CURRENT_TIMESTAMP())
   )                                                                           AS PICKUP_FROM_TS,
   DATEADD(hour, 4,
     GREATEST(
       t.TRIP_START,
-      DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+      DATEADD('minute',
+        MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
     )
   )                                                                           AS PICKUP_TO_TS,
   (
@@ -242,7 +257,7 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND EXISTS (SELECT 1 FROM cls)
-QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120;
+QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p);
 
 -- ----------------------------------------------------------------------------
 -- 4b. Ensure FACT_FREIGHT_OFFERS exists and is populated for the active region.
@@ -346,10 +361,41 @@ WITH cls AS (
   SELECT vcp.*
   FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+),
+pp AS (
+  SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+  FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+),
+-- Rebase each offer's pickup window onto the live planning horizon while
+-- preserving its own window LENGTH. The seeded timestamps are relative to seed
+-- time, so on any older dataset they already sit in the past - and with
+-- forward-looking vehicle availability a past pickup can never be served, which
+-- empties the external half of the demand pool with no error anywhere.
+shifted AS (
+  SELECT
+    f.*,
+    GREATEST(
+      f.PICKUP_FROM_TS,
+      DATEADD('minute',
+        MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM pp) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
+    ) AS PICKUP_FROM_TS_ADJ,
+    GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+  WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 )
 SELECT
   f.OFFER_ID,
   f.SOURCE,
+  -- SOURCE is a CHANNEL label whose values mix internal and external
+  -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer "did
+  -- this come from outside". SOURCE_SYSTEM is the system identity: a real
+  -- integration replaces the literal with its own system key and no consumer
+  -- changes. Deliberately vendor-free. Held as a literal here (rather than read
+  -- from the source table) because this reference script targets the legacy
+  -- FACT_FREIGHT_OFFERS shape, which carries no equipment column.
+  'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+  'ANY'                                    AS VEHICLE_EQUIPMENT,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
   COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
@@ -358,8 +404,8 @@ SELECT
   COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
-  f.PICKUP_FROM_TS,
-  f.PICKUP_TO_TS,
+  f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+  DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(
     (SELECT SHIPMENT_KG_MAX FROM cls),
     GREATEST(
@@ -371,11 +417,10 @@ SELECT
   f.PRICE_USD                              AS PRICE_EUR,
   f.HAZMAT,
   f.LISTING_TEXT
-FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+FROM shifted f
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-  AND EXISTS (SELECT 1 FROM cls);
+WHERE EXISTS (SELECT 1 FROM cls);
 
 -- ----------------------------------------------------------------------------
 -- 6. Sanity report

@@ -166,3 +166,22 @@ if [ -f "$TRACKING_CHECK" ] && staged_any \
     exit 1
   }
 fi
+
+# ── 7. Brand neutrality (customer / vendor / competitor / individual names) ────
+# Every view, demo, dataset and agent answer must be brand-neutral. This is not a
+# style rule: three real leaks existed before the check was added, and none of
+# them failed anything. A seed script wrote freight-exchange brand names straight
+# into the offer SOURCE column, the shipped notebook seeded 30 rows with brands in
+# the human-readable listing text, and an agent tool advertised eight vendor names
+# as filter values the data never held.
+# Runs on EVERY commit, with no staged-path filter: a brand can be reintroduced in
+# prose, in SQL, in a notebook or in an agent spec, so scoping the trigger would
+# just leave a gap. It prunes its own walk and takes about a second.
+BRAND_CHECK="$SKILL_DIR/scripts/check_no_brands.py"
+if [ -f "$BRAND_CHECK" ]; then
+  echo "pre-commit: brand neutrality check..."
+  python3 "$BRAND_CHECK" || {
+    echo "pre-commit FAILED: a customer, vendor, competitor or individual name was found."
+    exit 1
+  }
+fi

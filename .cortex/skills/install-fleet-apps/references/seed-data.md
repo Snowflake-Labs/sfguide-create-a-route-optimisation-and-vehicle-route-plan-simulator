@@ -40,7 +40,8 @@ a mode-AGNOSTIC dataset (`VEHICLE_TYPE = ebike` is just a data dimension):
    The loader lives at repo-root `datasets/` (NOT under any skill folder),
    so it survives deprecation of the routing-engine skill.
 4. **Agnostic guard** - re-run `scripts/seed_data.sql`. Its step 3 now drops only
-   `FLEET_INTELLIGENCE.DHL_NTBO` (a retired vendor-specific schema). It does NOT
+   a retired vendor-specific schema (see `scripts/seed_data.sql` for the exact
+   name it drops). It does NOT
    purge freight offers, partners, partner history, or the MARKETPLACE /
    BACKLOAD_MATCHING schemas - those are agnostic marketplace entities the seed
    deliberately ships and several views depend on them.

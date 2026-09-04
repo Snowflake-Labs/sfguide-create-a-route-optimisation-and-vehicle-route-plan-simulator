@@ -88,7 +88,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 ## Productisation notes (out of scope for the demo)
 
 - **Real-time refresh**: replace the polled `VW_TRAILERS` with Snowpipe Streaming on a `TELEMETRY_RAW` topic; rebuild the view as a Dynamic Table with a 5-minute target lag.
-- **Live freight-exchange feeds**: the four EU portals (Timocom, WTransnet, Teleroute, B2P) all publish offers via REST APIs or webhook subscriptions. A small Snowpark Container Services worker can normalize them into `EXTERNAL_OFFERS` with the same schema.
+- **Live freight-exchange feeds**: external load boards typically publish offers via REST APIs or webhook subscriptions. A small Snowpark Container Services worker can normalize them into `EXTERNAL_OFFERS` with the same schema.
 - **Solver scale**: VROOM solves 200+ vehicles × 1000+ jobs in a few seconds. Beyond that, partition by region (NRW, Bavaria, Île-de-France) and solve in parallel.
 - **Pre-computed matrices**: for repeated what-if solves on the same point set, call `OPENROUTESERVICE_APP.CORE._OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` with a cached matrix. (Cache table not seeded in v1.1.35; follow-up work.)
 - **Pinned stops** (`vehicle.steps[]`): dispatcher overrides where a specific stop is locked to a specific trailer. (UI hook not shipped in v1.1.35; follow-up work.)

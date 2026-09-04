@@ -515,6 +515,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
           DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
           'IN_TRANSIT'                                        AS STATUS,
           FALSE                                               AS HAZMAT_CERT,
+          -- Synthetic equipment fit. Assigned deterministically per vehicle from
+          -- the same vocabulary the offer pool uses, so ENFORCE_EQUIPMENT_FIT is
+          -- demonstrable end to end. Seeded OFF: a real fleet supplies this from
+          -- its own asset master, and gating on a fabricated value would reject
+          -- real loads for no reason.
+          ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
+            MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
           (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
           NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
         FROM fleet f
@@ -557,6 +564,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT vcp.*
           FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
           WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        ),
+        p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -566,18 +579,23 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
           t.DESTINATION_LON                                                           AS DROPOFF_LON,
           t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-          -- Future-aware pickup window: anchor at "now + 30..630 min" so the
-          -- vehicle's shift (which can never start in the past) can always
-          -- overlap. Old behaviour anchored at TRIP_START which is in the past
-          -- on fresh installs and produced no overlap with the shift window.
+          -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
+          -- horizon rather than the next ~10 hours. Vehicle availability is now
+          -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
+          -- today would be reachable only by the handful of vehicles free today
+          -- and would silently starve every later vehicle of candidates.
           GREATEST(
             t.TRIP_START,
-            DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+            DATEADD('minute',
+              MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+              CURRENT_TIMESTAMP())
           )                                                                           AS PICKUP_FROM_TS,
           DATEADD(hour, 4,
             GREATEST(
               t.TRIP_START,
-              DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+              DATEADD('minute',
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
             )
           )                                                                           AS PICKUP_TO_TS,
           -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
@@ -591,7 +609,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
         WHERE EXISTS (SELECT 1 FROM cls)
-        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
+        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -640,20 +658,49 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT vcp.*
           FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
           WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        ),
+        p AS (
+          SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Rebase each offer's pickup window onto the live planning horizon,
+        -- preserving its own window LENGTH. The generated timestamps are
+        -- relative to generation time, so on any dataset older than a day they
+        -- are already in the past - and once vehicle availability became
+        -- forward-looking, a past pickup can never be served, which would empty
+        -- the external half of the pool without any error.
+        shifted AS (
+          SELECT
+            f.*,
+            GREATEST(
+              f.PICKUP_FROM_TS,
+              DATEADD('minute',
+                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
+            ) AS PICKUP_FROM_TS_ADJ,
+            GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+          FROM offers f
         )
         SELECT
           f.OFFER_ID,
           f.SOURCE,
+          -- SOURCE is a CHANNEL label whose values mix internal and external
+          -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot
+          -- answer "did this come from outside". SOURCE_SYSTEM is the system
+          -- identity: a real integration replaces the literal with its own
+          -- system key and no consumer changes. Deliberately vendor-free.
+          'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+          COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-          COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+          COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
           COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
-          f.PICKUP_FROM_TS,
-          f.PICKUP_TO_TS,
+          f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+          DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
           -- (which is HGV-shaped at the table level) into the active class's
           -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
@@ -669,9 +716,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.PRICE_USD                              AS PRICE_EUR,
           f.HAZMAT,
           f.LISTING_TEXT
-        FROM offers f
-        LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+        FROM shifted f
+        LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
         WHERE EXISTS (SELECT 1 FROM cls)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -785,7 +832,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('MAX_PICKUP_HORIZON_DAYS',   '7',     'number', 'core',   TRUE,  'Only consider loads with a pickup within N days of the vehicle free time.'),
           ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
           ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
-          ('MAX_PROPOSALS_PER_TRAILER', '3',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+          ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
           ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
           ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
           ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -794,24 +841,78 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('ENFORCE_WEIGHT_FIT',        'true',  'bool',   'core',   TRUE,  'Reject pairs where vehicle MAX_PAYLOAD_KG < load WEIGHT_KG + WEIGHT_FIT_MARGIN_KG.'),
           ('WEIGHT_FIT_MARGIN_KG',      '0',     'number', 'core',   TRUE,  'Safety margin (kg) added to load weight when checking ENFORCE_WEIGHT_FIT.'),
           ('REQUIRE_HAZMAT_CERT',       'true',  'bool',   'core',   TRUE,  'Hazmat loads must go on a hazmat-certified vehicle.'),
-          ('MAX_CANDIDATE_TRUCKS',      '8',     'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver.'),
+          ('MAX_CANDIDATE_TRUCKS',      '50',    'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver.'),
           ('MAX_TRUCKS_PER_ORDER',      '3',     'number', 'core',   TRUE,  'How many ranked vehicle recommendations to keep per load in VRP mode.'),
           ('VRP_CONCURRENCY',           '4',     'number', 'core',   TRUE,  'Per-load best fit (road): how many loads to solve in parallel per chunk.'),
           ('PICKUP_WINDOW_HRS',         '12',    'number', 'core',   TRUE,  'Plus/minus tolerance (hours) around the requested pickup time.'),
-          ('CLUSTER_CAP',               '250',   'number', 'core',   TRUE,  'Max stops per VROOM cluster before a dense component is spatially sub-split.'),
+          ('CLUSTER_CAP',               '600',   'number', 'core',   TRUE,  'Max stops per VROOM cluster before a dense component is spatially sub-split.'),
           ('BPMP_MAX_STOPS',            '4',     'number', 'core',   TRUE,  'Max loads consolidated onto one vehicle in the profit-max backhaul plan.'),
           ('BPMP_MAX_DEADHEAD_KM',      '250',   'number', 'core',   TRUE,  'Hard cap on a vehicle total DEADHEAD (empty) km across the whole return tour.'),
           ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (km).'),
           ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor: shipment priority = clamp(round(loaded-km revenue / scale), 1..100).'),
           ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy builder.'),
+          ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival.'),
+          ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'Max own waiting loads exposed as internal demand. Sized to a full-day load pool, not a demo slice.'),
+          ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching: hop 1 carries the vehicle part-way, hop 2 carries it toward the target region.'),
+          ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain. 2 = the classic triangle (empty -> load A -> load B -> target).'),
+          ('TRIANGLE_MIN_PROGRESS_PCT', '5',     'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target.'),
+          ('TRIANGLE_MIN_PROGRESS_RATIO','1.0',   'number', 'core',   TRUE,  'Leg 1 must return at least this many km of progress toward the target per empty km driven to reach it. 1.0 = the empty run must at least pay for itself.'),
+          ('TRIANGLE_MAX_LEG1_DETOUR_KM','400',  'number', 'core',   TRUE,  'Hard cap on how far leg 1 may leave the direct empty->target corridor (km).'),
+          ('TRIANGLE_MAX_TOTAL_EMPTY_KM','250',  'number', 'core',   TRUE,  'Cap on total empty km across the whole chain.'),
+          ('TRIANGLE_LEG1_OPTIONS',     '12',    'number', 'core',   TRUE,  'Top N leg-1 loads kept per vehicle before the load-to-load self-join.'),
+          ('MAX_TRIANGLES_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked chains to keep per vehicle.'),
+          ('TARGET_MODE',               'home_depot','string','core', TRUE,  'home_depot = chain toward the vehicle home depot; dispatcher_choice = chain toward a target supplied per request.'),
+          ('TARGET_RADIUS_KM',          '250',   'number', 'core',   TRUE,  'Leg 2 must deliver within this distance of the target to count as a completed chain (km).'),
+          ('CASCADE_GRADE_THRESHOLD',   '70',    'number', 'core',   TRUE,  'Composite score at which the internal-first cascade stops widening.'),
+          ('ENFORCE_EQUIPMENT_FIT',     'false', 'bool',   'core',   TRUE,  'Reject pairs whose load requires equipment the vehicle does not carry.'),
+          ('EQUIPMENT_STRICT',          'false', 'bool',   'core',   TRUE,  'true = a load with no stated equipment requirement still needs an exact match.'),
           ('TRADELANE_INCLUDE',         '',      'string', 'future', FALSE, 'Comma list of allowed pickup->delivery country lanes.'),
           ('TRADELANE_EXCLUDE',         '',      'string', 'future', FALSE, 'Comma list of forbidden country lanes.'),
-          ('RETURN_TO_HOME_REGION',     'false', 'bool',   'future', FALSE, 'Prefer loads that route the vehicle back toward its home depot (triangle trips).')
+          ('RETURN_TO_HOME_REGION',     'true',  'bool',   'core',   TRUE,  'Score loads by the progress they make toward the target region (see TARGET_MODE).')
         AS v(PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
       ) src
       ON tgt.PARAM_KEY = src.PARAM_KEY
       WHEN NOT MATCHED THEN INSERT (PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
         VALUES (src.PARAM_KEY, src.PARAM_VALUE, src.PARAM_TYPE, src.CATEGORY, src.ENABLED, src.DESCRIPTION)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    // The MERGE above is insert-only so a dispatcher's tuning survives a boot.
+    // That alone would pin an EXISTING deployment to the old demo-scale defaults
+    // forever, and would leave RETURN_TO_HOME_REGION disabled - which makes the
+    // whole chained-matching path silently inert (params present, no behaviour).
+    // Converge those rows, but ONLY while they still hold their exact seeded
+    // value, so a deliberate override is never overwritten.
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '50', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'MAX_CANDIDATE_TRUCKS' AND PARAM_VALUE = '8'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '600', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'CLUSTER_CAP' AND PARAM_VALUE = '250'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '5', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'MAX_PROPOSALS_PER_TRAILER' AND PARAM_VALUE = '3'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '5', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'TRIANGLE_MIN_PROGRESS_PCT' AND PARAM_VALUE = '15'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = 'true', CATEGORY = 'core', ENABLED = TRUE,
+                  DESCRIPTION = 'Score loads by the progress they make toward the target region (see TARGET_MODE).',
+                  UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'RETURN_TO_HOME_REGION'
+              AND PARAM_VALUE = 'false' AND CATEGORY = 'future'`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -836,6 +937,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // Drop dependents before recreate (column-count invariant on re-run).
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
@@ -845,6 +948,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         AS
         SELECT
           iv.ID AS LOAD_ID, TRUE AS IS_INTERNAL, 'INTERNAL' AS SOURCE,
+          'INTERNAL' AS SOURCE_SYSTEM,
+          'ANY' AS REQUIRED_EQUIPMENT,
           iv.PICKUP_CITY, iv.PICKUP_LON, iv.PICKUP_LAT,
           ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT) AS PICKUP_GEOM,
           iv.DROPOFF_CITY AS DELIVERY_CITY, iv.DROPOFF_LON AS DELIVERY_LON, iv.DROPOFF_LAT AS DELIVERY_LAT,
@@ -858,6 +963,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         UNION ALL
         SELECT
           eo.OFFER_ID AS LOAD_ID, FALSE AS IS_INTERNAL, eo.SOURCE,
+          eo.SOURCE_SYSTEM,
+          COALESCE(eo.VEHICLE_EQUIPMENT, 'ANY') AS REQUIRED_EQUIPMENT,
           eo.PICKUP_CITY, eo.PICKUP_LON, eo.PICKUP_LAT,
           ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT) AS PICKUP_GEOM,
           eo.DROPOFF_CITY AS DELIVERY_CITY, eo.DROPOFF_LON AS DELIVERY_LON, eo.DROPOFF_LAT AS DELIVERY_LAT,
@@ -874,16 +981,44 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO
         COMMENT = ${TRACK}
         AS
+        WITH p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        )
         SELECT
           t.TRAILER_ID, t.OPERATING_COUNTRY, t.HOME_DEPOT, t.HOME_LON, t.HOME_LAT,
           t.DROPOFF_CITY AS EMPTY_CITY, t.DROPOFF_LON AS EMPTY_LON, t.DROPOFF_LAT AS EMPTY_LAT,
           ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT) AS EMPTY_GEOM,
-          DATEADD('minute', -1 * MOD(ABS(HASH(t.TRAILER_ID)), 720), CURRENT_TIMESTAMP()) AS EMPTY_FROM_TS,
+          -- Dispatch-time availability. A vehicle whose trip is still running is
+          -- plannable NOW for the moment it frees up, so its free time is that
+          -- future arrival - this is what lets a return leg be planned at
+          -- dispatch time instead of on arrival.
+          CASE
+            WHEN t.ETA_TS > CURRENT_TIMESTAMP() THEN t.ETA_TS
+            ELSE DATEADD('minute',
+                   MOD(ABS(HASH(t.TRAILER_ID)), GREATEST(1, (COALESCE(p.LEAD_DAYS, 4) * 1440)::INT)),
+                   CURRENT_TIMESTAMP())
+          END AS EMPTY_FROM_TS,
+          -- 'eta' = a real future arrival drove the free time. 'projected' = the
+          -- synthetic drop-off is already in the past, so the free time is spread
+          -- deterministically across the lead-time horizon to keep the demo shaped
+          -- like a live fleet. Surface this rather than hiding the synthesis.
+          IFF(t.ETA_TS > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
           t.ETA_TS AS LAST_DROPOFF_TS,
           ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS NEXT_START_GEOM,
           t.HOME_LON AS NEXT_START_LON, t.HOME_LAT AS NEXT_START_LAT, t.HOME_DEPOT AS NEXT_START_LOCATION_TEXT,
-          t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.EV_RANGE_KM
+          -- Chain target. TARGET_MODE=home_depot resolves to the home depot;
+          -- dispatcher_choice overrides these per request at query time (a view
+          -- cannot hold a per-request target), and falls back to the depot.
+          t.HOME_LON AS TARGET_LON, t.HOME_LAT AS TARGET_LAT,
+          ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS TARGET_GEOM,
+          t.HOME_DEPOT AS TARGET_LABEL,
+          ST_DISTANCE(ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT),
+                      ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)) / 1000.0 AS TARGET_GAP_KM,
+          t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.VEHICLE_EQUIPMENT, t.EV_RANGE_KM
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS t
+        JOIN p ON TRUE
         WHERE t.DROPOFF_LON IS NOT NULL AND t.DROPOFF_LAT IS NOT NULL`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -960,6 +1095,227 @@ export async function ensureBackloadAndAssetVelocityObjects(
         JOIN p ON TRUE
         JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l
           ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * 3 * 1000)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    // ---------------------------------------------------------------
+    // Chained (two-hop) matching. VW_LEG1_CANDIDATES finds first hops that
+    // carry a vehicle CLOSER to its target (not all the way, which is what
+    // single-hop matching already covers); VW_TRIANGLES joins a second hop
+    // onto each and keeps only chains that finish the return. Must stay after
+    // VW_LOADS / VW_TRAILERS_GEO above.
+    // Co-owned with .cortex/skills/backload-matching/references/proposals-schema.sql.
+    // ---------------------------------------------------------------
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+        COMMENT = ${TRACK}
+        AS
+        WITH p AS (
+          SELECT
+            MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',             TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+            MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+            MAX(IFF(PARAM_KEY='PICKUP_DATE_SLACK_HRS',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS SLACK_HRS,
+            MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+            MAX(IFF(PARAM_KEY='ENFORCE_PICKUP_DATE',      LOWER(PARAM_VALUE)='true', NULL))  AS ENFORCE_DATE,
+            MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+            MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',     TRY_TO_DOUBLE(PARAM_VALUE), 0))            AS WEIGHT_MARGIN,
+            MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+            MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_PCT', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5) AS MIN_PROGRESS_PCT,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_RATIO', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.0) AS MIN_PROGRESS_RATIO,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_LEG1_OPTIONS',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 12) AS LEG1_OPTIONS,
+            COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        spd AS (
+          SELECT GREATEST(1, COALESCE(MAX(AVG_SPEED_KMH), 60)) AS AVG_SPEED_KMH
+          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
+          WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        ),
+        base AS (
+          SELECT
+            t.TRAILER_ID, t.OPERATING_COUNTRY, t.VEHICLE_EQUIPMENT, t.MAX_PAYLOAD_KG, t.HAZMAT_CERT,
+            t.EMPTY_CITY, t.EMPTY_LON, t.EMPTY_LAT, t.EMPTY_GEOM, t.EMPTY_FROM_TS, t.AVAILABILITY_BASIS,
+            t.TARGET_LABEL, t.TARGET_LON, t.TARGET_LAT, t.TARGET_GEOM, t.TARGET_GAP_KM,
+            l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.SOURCE_SYSTEM, l.REQUIRED_EQUIPMENT,
+            l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.PICKUP_GEOM,
+            l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.DELIVERY_GEOM,
+            l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.HAZMAT, l.PRICE_USD, l.PRODUCT, l.APPROX_DISTANCE_KM,
+            ST_DISTANCE(t.EMPTY_GEOM, l.PICKUP_GEOM) / 1000.0        AS APPROACH_KM,
+            ST_DISTANCE(l.DELIVERY_GEOM, t.TARGET_GEOM) / 1000.0     AS RESIDUAL_GAP_KM,
+            -- Straight-line ETA at the class cruise speed, plus 40 min of handling.
+            -- Deliberately an ESTIMATE: it only has to order the two hops correctly.
+            -- Road time comes from the live matrix call before anything is proposed.
+            DATEADD('minute',
+              ROUND(l.APPROX_DISTANCE_KM / (SELECT AVG_SPEED_KMH FROM spd) * 60) + 40,
+              l.REQUESTED_PICKUP_TS)                                 AS LEG1_DELIVERY_ETA_TS,
+            p.MIN_PROGRESS_PCT, p.MIN_PROGRESS_RATIO, p.LEG1_OPTIONS, p.TARGET_RADIUS_KM, p.MAX_EMPTY_KM, p.ENF_EQUIP
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO t
+          JOIN p ON TRUE
+          JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l
+            ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+           AND (NOT p.ENFORCE_DATE
+                OR t.EMPTY_FROM_TS <= DATEADD('hour', p.SLACK_HRS, l.REQUESTED_PICKUP_TS))
+           AND l.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, t.EMPTY_FROM_TS)
+           AND (NOT p.ENF_WEIGHT OR COALESCE(t.MAX_PAYLOAD_KG, 1e12) >= COALESCE(l.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+           AND (NOT p.REQ_HAZMAT OR NOT COALESCE(l.HAZMAT, FALSE) OR COALESCE(t.HAZMAT_CERT, FALSE))
+           AND (NOT p.ENF_EQUIP
+                OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+                OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(t.VEHICLE_EQUIPMENT, 'ANY'))
+        ),
+        scored AS (
+          SELECT
+            b.*,
+            b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM                                    AS PROGRESS_KM,
+            100.0 * (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / NULLIF(b.TARGET_GAP_KM, 0) AS PROGRESS_PCT,
+            (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / GREATEST(1, b.APPROACH_KM)     AS PROGRESS_PER_EMPTY_KM,
+            -- A first hop that already lands inside the target radius is not a chain,
+            -- it is a direct return, and single-hop matching already proposes it.
+            -- Excluding it keeps this view and VW_CANDIDATES non-overlapping and makes
+            -- a chain mean exactly what was asked for: the case where no direct load
+            -- back existed.
+            (b.RESIDUAL_GAP_KM > b.TARGET_RADIUS_KM)                               AS NEEDS_SECOND_HOP
+          FROM base b
+        )
+        SELECT
+          s.*,
+          (s.PROGRESS_KM > 0
+           AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+           AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT) AS PROGRESS_CHECK
+        FROM scored s
+        WHERE s.NEEDS_SECOND_HOP
+          AND s.PROGRESS_KM > 0
+          AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+          AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY s.TRAILER_ID
+          ORDER BY s.PROGRESS_PER_EMPTY_KM DESC, s.APPROACH_KM ASC
+        ) <= s.LEG1_OPTIONS`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
+        COMMENT = ${TRACK}
+        AS
+        WITH p AS (
+          SELECT
+            MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',            TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+            MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+            MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+            MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+            MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',    TRY_TO_DOUBLE(PARAM_VALUE), 0))             AS WEIGHT_MARGIN,
+            MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+            MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_ENABLED',           LOWER(PARAM_VALUE)='true', NULL)), TRUE) AS TRIANGLE_ENABLED,
+            COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',           TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_TOTAL_EMPTY_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS MAX_TOTAL_EMPTY_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_LEG1_DETOUR_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 400) AS MAX_LEG1_DETOUR_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='MAX_TRIANGLES_PER_TRAILER',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5)   AS MAX_PER_TRAILER,
+            COALESCE(MAX(IFF(PARAM_KEY='COST_PER_EMPTY_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.20) AS COST_PER_EMPTY_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='REVENUE_PER_LOADED_KM',      TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.10) AS REV_PER_LOADED_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        pairs AS (
+          SELECT
+            a.TRAILER_ID, a.OPERATING_COUNTRY, a.VEHICLE_EQUIPMENT, a.MAX_PAYLOAD_KG, a.HAZMAT_CERT,
+            a.EMPTY_CITY, a.EMPTY_LON, a.EMPTY_LAT, a.EMPTY_FROM_TS, a.AVAILABILITY_BASIS,
+            a.TARGET_LABEL, a.TARGET_LON, a.TARGET_LAT, a.TARGET_GAP_KM,
+        
+            a.LOAD_ID       AS LEG1_LOAD_ID,
+            a.IS_INTERNAL   AS LEG1_IS_INTERNAL,
+            a.SOURCE        AS LEG1_SOURCE,
+            a.SOURCE_SYSTEM AS LEG1_SOURCE_SYSTEM,
+            a.PICKUP_CITY   AS LEG1_PICKUP_CITY,
+            a.PICKUP_LON    AS LEG1_PICKUP_LON,
+            a.PICKUP_LAT    AS LEG1_PICKUP_LAT,
+            a.DELIVERY_CITY AS LEG1_DELIVERY_CITY,
+            a.DELIVERY_LON  AS LEG1_DELIVERY_LON,
+            a.DELIVERY_LAT  AS LEG1_DELIVERY_LAT,
+            a.REQUESTED_PICKUP_TS   AS LEG1_PICKUP_TS,
+            a.LEG1_DELIVERY_ETA_TS,
+            a.WEIGHT_KG     AS LEG1_WEIGHT_KG,
+            a.PRICE_USD     AS LEG1_PRICE_USD,
+            a.PRODUCT       AS LEG1_PRODUCT,
+            a.APPROACH_KM   AS LEG1_EMPTY_KM,
+            a.APPROX_DISTANCE_KM AS LEG1_LOADED_KM,
+            a.PROGRESS_KM   AS LEG1_PROGRESS_KM,
+            a.PROGRESS_PCT  AS LEG1_PROGRESS_PCT,
+            a.RESIDUAL_GAP_KM AS GAP_AFTER_LEG1_KM,
+        
+            b.LOAD_ID       AS LEG2_LOAD_ID,
+            b.IS_INTERNAL   AS LEG2_IS_INTERNAL,
+            b.SOURCE        AS LEG2_SOURCE,
+            b.SOURCE_SYSTEM AS LEG2_SOURCE_SYSTEM,
+            b.PICKUP_CITY   AS LEG2_PICKUP_CITY,
+            b.PICKUP_LON    AS LEG2_PICKUP_LON,
+            b.PICKUP_LAT    AS LEG2_PICKUP_LAT,
+            b.DELIVERY_CITY AS LEG2_DELIVERY_CITY,
+            b.DELIVERY_LON  AS LEG2_DELIVERY_LON,
+            b.DELIVERY_LAT  AS LEG2_DELIVERY_LAT,
+            b.REQUESTED_PICKUP_TS AS LEG2_PICKUP_TS,
+            b.WEIGHT_KG     AS LEG2_WEIGHT_KG,
+            b.PRICE_USD     AS LEG2_PRICE_USD,
+            b.PRODUCT       AS LEG2_PRODUCT,
+            ST_DISTANCE(a.DELIVERY_GEOM, b.PICKUP_GEOM) / 1000.0 AS LEG2_EMPTY_KM,
+            b.APPROX_DISTANCE_KM AS LEG2_LOADED_KM,
+            ST_DISTANCE(b.DELIVERY_GEOM, a.TARGET_GEOM) / 1000.0 AS FINAL_GAP_KM,
+        
+            -- Cascade rung: which pools this chain drew on. The ladder stops at the
+            -- first rung that produces an acceptable chain, so recording the rung is
+            -- what lets the UI say "no internal-only chain existed" instead of quietly
+            -- showing an external one.
+            CASE
+              WHEN a.IS_INTERNAL AND b.IS_INTERNAL           THEN 1
+              WHEN a.IS_INTERNAL AND NOT b.IS_INTERNAL       THEN 2
+              WHEN NOT a.IS_INTERNAL AND b.IS_INTERNAL       THEN 3
+              ELSE 4
+            END AS CASCADE_RUNG,
+        
+            p.TARGET_RADIUS_KM, p.MAX_TOTAL_EMPTY_KM, p.MAX_LEG1_DETOUR_KM,
+            p.MAX_PER_TRAILER, p.COST_PER_EMPTY_KM, p.REV_PER_LOADED_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES a
+          JOIN p ON p.TRIANGLE_ENABLED
+          JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS b
+            ON b.LOAD_ID <> a.LOAD_ID
+           -- hop 2 starts near where hop 1 ended
+           AND ST_DWITHIN(a.DELIVERY_GEOM, b.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+           -- hop 2 actually finishes the return
+           AND ST_DWITHIN(b.DELIVERY_GEOM, a.TARGET_GEOM, p.TARGET_RADIUS_KM * 1000)
+           -- hop 2 cannot be collected before hop 1 is delivered
+           AND b.REQUESTED_PICKUP_TS >= a.LEG1_DELIVERY_ETA_TS
+           AND b.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, a.EMPTY_FROM_TS)
+           AND (NOT p.ENF_WEIGHT OR COALESCE(a.MAX_PAYLOAD_KG, 1e12) >= COALESCE(b.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+           AND (NOT p.REQ_HAZMAT OR NOT COALESCE(b.HAZMAT, FALSE) OR COALESCE(a.HAZMAT_CERT, FALSE))
+           AND (NOT p.ENF_EQUIP
+                OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+                OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(a.VEHICLE_EQUIPMENT, 'ANY'))
+        ),
+        enriched AS (
+          SELECT
+            q.*,
+            q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM                     AS TOTAL_EMPTY_KM,
+            q.LEG1_LOADED_KM + q.LEG2_LOADED_KM                   AS TOTAL_LOADED_KM,
+            q.LEG1_EMPTY_KM + q.LEG1_LOADED_KM
+              + q.LEG2_EMPTY_KM + q.LEG2_LOADED_KM                AS TOTAL_KM,
+            -- The chain's own economics. NET_BENEFIT is the figure a dispatcher weighs
+            -- against doing nothing; the direct-return baseline it is compared with is
+            -- computed alongside the proposal, not here.
+            (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+            (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
+            q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
+            q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,
+            q.LEG2_PICKUP_TS >= q.LEG1_DELIVERY_ETA_TS                    AS SEQUENCE_CHECK
+          FROM pairs q
+        )
+        SELECT
+          e.*,
+          (e.TOTAL_EMPTY_CHECK AND e.LEG1_DETOUR_CHECK AND e.TARGET_CHECK AND e.SEQUENCE_CHECK) AS ELIGIBLE
+        FROM enriched e
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY e.TRAILER_ID
+          -- internal-first, then most value, then least empty running
+          ORDER BY e.CASCADE_RUNG ASC, e.NET_BENEFIT_USD DESC, e.TOTAL_EMPTY_KM ASC
+        ) <= e.MAX_PER_TRAILER`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // Asset Velocity views (ROUTE_OPTIMIZATION) are NOT created here. They are
