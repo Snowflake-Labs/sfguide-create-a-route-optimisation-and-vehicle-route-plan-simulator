@@ -1,6 +1,6 @@
 ---
 name: backload-matching
-description: "Deploy the Backload Matching Engine demo: a fleet-wide VRP solve over idle-bound trailers + internal volumes + external freight-exchange offers, anchored on the OPENROUTESERVICE_APP.CORE.OPTIMIZATION function. The page picks one or many trailers, calls OPTIMIZATION once, and renders empty/loaded legs, KPI savings, and a Cortex rationale. Use when: setting up the DHL Freight backload demo, asset velocity / trailer rotation use cases, freight-exchange aggregation, internal-first vs external-second proposals, multi-trailer joint dispatch. Do NOT use for: route optimization VRP from PLACES (use route-optimization), route deviation analysis (use route-deviation), retail catchment (use retail-catchment), fleet intelligence car/e-bike demos, or single-leg directions tests (use FunctionTester). Triggers: backload, backload matching, empty mile, empty leg, asset velocity, trailer rotation, freight exchange, freight exchanges, idle trailer, idle-bound trailer, Timocom, WTransnet, Teleroute, B2P, DHL, DHL Freight, dispatcher proposal, internal-first match, supply chain action engine, NTBO, line-haul VRP, drop-and-hook."
+description: "Deploy the Backload Matching Engine demo: a fleet-wide VRP solve over idle-bound trailers + internal volumes + external freight-exchange offers, anchored on the OPENROUTESERVICE_APP.CORE.OPTIMIZATION function. The page picks one or many trailers, calls OPTIMIZATION once, and renders empty/loaded legs, KPI savings, and a Cortex rationale. Also deploys CHAINED (two-hop) matching for the case where no single load brings a vehicle back: internal-first cascade, live road costing, and a comparison against running home empty. Use when: setting up a line-haul backload demo, asset velocity / trailer rotation use cases, freight-exchange aggregation, internal-first vs external-second proposals, multi-trailer joint dispatch, triangle or multi-leg return planning. Do NOT use for: route optimization VRP from PLACES (use route-optimization), route deviation analysis (use route-deviation), retail catchment (use retail-catchment), fleet intelligence car/e-bike demos, or single-leg directions tests (use FunctionTester). Triggers: backload, backload matching, empty mile, empty leg, asset velocity, trailer rotation, freight exchange, freight exchanges, idle trailer, idle-bound trailer, dispatcher proposal, internal-first match, supply chain action engine, line-haul VRP, drop-and-hook, triangle traffic, triangle trip, multi-leg return, two-hop chain, chained backhaul, return leg planning."
 depends_on:
   - install-fleet-apps
   - route-optimization
@@ -12,19 +12,54 @@ metadata:
 
 # Deploy Backload Matching Engine
 
-Adds a parallel page to the ORS Control App that solves the *backload* problem for any line-haul fleet with imbalanced lanes: trailers reaching the continent and waiting up to three days for a return load. The page issues a **single `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` call** that jointly assigns N idle-bound trailers to a pool of internal volumes (own waiting shipments) and external offers (synthesized in the style of Timocom, WTransnet, Teleroute, B2P), minimizing total empty kilometres. Internal-first preference is encoded as VROOM `priority`; ADR/equipment gating uses VROOM `skills`; direction-to-home bias is encoded in each vehicle's `end` location. Accepted plans are written back to `PROPOSAL_DECISIONS` to close the *Action Engine* loop.
+Adds a parallel page to the ORS Control App that solves the *backload* problem for any line-haul fleet with imbalanced lanes: trailers reaching the continent and waiting up to three days for a return load. The page issues a **single `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` call** that jointly assigns N idle-bound trailers to a pool of internal volumes (own waiting shipments) and external offers (synthesized, vendor-neutral), minimizing total empty kilometres. Internal-first preference is encoded as VROOM `priority`; capability gating uses VROOM `skills`; direction-to-home bias is encoded in each vehicle's `end` location. Accepted plans are written back to `PROPOSAL_DECISIONS` to close the *Action Engine* loop.
 
 The existing **Route Optimization** and **Asset Velocity** pages are **not modified** - Backload is an additive, parallel page.
 
 ## Use Case Narrative
 
-See `references/use-case-narrative.md` for the full story. Summary anchored in the May 5 NTBO call with DHL Freight (Volker Nachtsheim / Martin Ahleff) and the Asset Velocity Case 4 slide:
+See `references/use-case-narrative.md` for the full story. Summary, drawn from
+discovery with a long-haul road-freight operator and generalised:
 
-- ~2,500 trailers, ~100 Nordic dispatchers, ~20 new orders/min across Europe.
-- Trailers reach the continent and wait up to **3 days** in Paris for backloads.
-- Today: manual portal-hopping across Timocom, WTransnet, Teleroute, B2P.
-- Desired: fleet-wide *"give me a structural plan for tomorrow"* - internal-first, external-second.
-- Generalises 1:1 to Maersk Inland, K+N Road, DSV, XPO, Geodis, Dachser, FedEx Freight, Schneider, J.B. Hunt - anyone with imbalanced lanes.
+- A few thousand trailers, tens to low hundreds of dispatchers, a continuous
+  stream of new orders across a continent.
+- Trailers reach the far end of a lane and wait up to **3 days** for a backload.
+- Today: manual portal-hopping across several external freight exchanges.
+- Desired: fleet-wide *"give me a structural plan for tomorrow"* - internal-first,
+  external-second.
+- Generalises to any operator with imbalanced lanes: line-haul hauliers, trailer
+  and container operators, retail distribution, 3PLs.
+
+### Chained (two-hop) returns
+
+The capability operators most often lack is the **chain**: when no single load
+brings a vehicle back, carry one load part of the way and a second load the rest.
+Single-hop matching structurally cannot find this, because it asks "is there a
+load from here to my target" rather than "is there a load that gets me closer".
+
+`VW_LEG1_CANDIDATES` + `VW_TRIANGLES` (see `references/proposals-schema.sql`)
+enumerate chains as a bounded load-to-load self-join, and the Triangle Proposals
+page prices every leg live and grades the result. Three properties matter:
+
+- **Internal-first is a cascade, not a weight.** Own loads are exhausted before
+  an external exchange is consulted; the rung reached is recorded so the page can
+  say "no own load completed the return" rather than quietly showing an external
+  one.
+- **Progress is gated by a RATIO, not a percentage.** A first hop must return at
+  least as much progress toward the target as the empty km spent reaching it
+  (`TRIANGLE_MIN_PROGRESS_RATIO`). A percentage-of-gap gate was measured to be
+  wrong at both extremes. Worth knowing: the median load near an emptying vehicle
+  makes *negative* progress, so this gate does real work.
+- **Chains are a long-haul construct.** A chain only exists when a vehicle empties
+  beyond `TARGET_RADIUS_KM` of its target. On a single-metro dataset every load
+  already delivers inside that radius, so zero chains is the correct answer and
+  the page says so.
+
+The external lookup sits behind `FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH`,
+a contract table function whose signature mirrors a real exchange request (empty
+position, target, radius, time window). Swapping in a live feed replaces one
+function body with no consumer change. Passing a NULL target means "to anywhere",
+which is exactly the first hop of a chain.
 
 ## Prerequisites
 
@@ -167,7 +202,9 @@ The Control App image rollback is handled by re-deploying the previous image tag
 
 ## Out of Scope
 
-- Live Timocom / WTransnet / Teleroute / B2P API integration (synthetic only - productisation note in `references/optimization-vrp-mapping.md`).
+- Live external freight-exchange API integration (synthetic only; the seam is
+  `EXTERNAL_OFFER_SEARCH` and the productisation note is in
+  `references/optimization-vrp-mapping.md`).
 - Asset Velocity 7-day idle alerting / email engine (the existing `Asset Velocity` tab covers KPIs; this skill stays focused on the solver).
-- DGF / myDHLI POD-map use case.
+- Proof-of-delivery document mapping.
 - Real-time streaming pipeline (we ship a polled view first; productisation: Snowpipe Streaming for `EXTERNAL_OFFERS`).
