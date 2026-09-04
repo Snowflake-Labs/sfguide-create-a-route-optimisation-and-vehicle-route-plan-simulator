@@ -23,9 +23,15 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
      VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+   -- Basemap egress. The apps render CARTO VECTOR basemaps (MapLibre GL JS
+   -- fetching a keyless positron style), which the browser loads directly from
+   -- the CDN - so no server-side egress is needed for maps today. Retained and
+   -- repointed at the vector hosts so a same-origin tile proxy can be
+   -- reinstated without recreating the integration, and because the app
+   -- services pass this EAI in their ALTER SERVICE statements.
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_CARTO_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
-     VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
+     VALUE_LIST = ('basemaps.cartocdn.com:443','tiles.basemaps.cartocdn.com:443','tiles-a.basemaps.cartocdn.com:443','tiles-b.basemaps.cartocdn.com:443','tiles-c.basemaps.cartocdn.com:443','tiles-d.basemaps.cartocdn.com:443')
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
@@ -49,7 +55,7 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
 -- fit the gateway (up to 3 instances) + downloader under load. Existing
 -- deployments are converged by the boot ALTER in the admin app's
 -- instrumentation.ts.
-ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- Verify compute pool state. Services queue automatically if pool is STARTING.
 -- No re-run needed; the pool reaches ACTIVE within ~2 minutes and services start.
@@ -93,7 +99,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    SPECIFICATION_FILE = 'downloader_spec.yaml'
    AUTO_SUSPEND_SECS = 14400
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"core"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"core"}}';
 
 -- Gateway receives DIRECT app/agent HTTP calls, so its auto-suspend idle timer
 -- reflects real usage (unlike city/ORS services, which only see gateway-routed
@@ -109,7 +115,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    MIN_INSTANCES = 1
    MAX_INSTANCES = 3
    AUTO_SUSPEND_SECS = 3600
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.
 -- install-fleet-apps ships the control surface as FLEET_SA_APP + FLEET_ADMIN_APP

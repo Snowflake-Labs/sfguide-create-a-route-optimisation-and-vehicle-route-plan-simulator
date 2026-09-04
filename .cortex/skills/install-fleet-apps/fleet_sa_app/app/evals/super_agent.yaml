@@ -1,0 +1,43 @@
+# Agent evaluation run config - FLEET_SUPER_AGENT (superuser).
+#
+# Same reachable surface as the consumer agent PLUS the deployment-history analyst
+# tool (query_deployment over SV_FLEET_DEPLOYMENT). Its ops/admin ACTION verbs are
+# MCP verbs and are therefore never called during an evaluation run - the dataset
+# handles that by asking one action question whose correct answer is "confirm
+# first", which is a behaviour the orchestrator can be graded on without any verb
+# firing.
+#
+# See fleet_agent.yaml for why there is no dataset: block, and the metrics block
+# below for how metric versions are addressed.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT"
+    agent_type: "CORTEX AGENT"
+    # DEFAULT, not LAST - see fleet_agent.yaml. LAST binds the run to the mutable
+    # live/draft spec, and this agent is exactly where that bit: a run that was
+    # INVOCATION_IN_PROGRESS vanished ("Run ... does not exist") when the draft was
+    # rewritten underneath it.
+    agent_version: "DEFAULT"
+  run_params:
+    label: "Fleet superuser agent baseline"
+    description: "Consumer analytics plus deployment history, and confirm-before-acting on a destructive request. MCP action verbs are out of scope for evaluations."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_SUPER_AGENT"
+
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
+# fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).
+#
+# tool_execution_accuracy is included because the super_agent dataset carries
+# ground_truth_invocations with expected tool names and descriptions.
+metrics:
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

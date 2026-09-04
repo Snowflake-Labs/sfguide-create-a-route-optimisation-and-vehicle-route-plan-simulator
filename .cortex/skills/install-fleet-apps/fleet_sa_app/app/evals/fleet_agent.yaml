@@ -1,0 +1,58 @@
+# Agent evaluation run config - FLEET_AGENT (consumer).
+#
+# NO `dataset:` BLOCK ON PURPOSE. When EXECUTE_AI_EVALUATION('START', ...) runs
+# with a dataset: block present it tries to create the dataset on EVERY run and
+# fails once the name exists - even when only run_name changed. The dataset is
+# created once by scripts/setup_agent_evals.sh via SYSTEM$CREATE_EVALUATION_DATASET
+# and referenced here by name.
+#
+# This agent's routing capability is a synapse MCP verb, and evaluations do not
+# call MCP tools, so the dataset asks only Cortex Analyst / Cortex Search
+# questions plus boundary cases. The MCP path is covered by the separate live
+# harness .cortex/skills/evals/run_agent_evals.py. See agent_evals.sql.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT"
+    agent_type: "CORTEX AGENT"
+    # DEFAULT = the agent's default COMMITTED version, and deliberately NOT "LAST".
+    # LAST resolves to the mutable live/draft spec, so anything that rewrites the
+    # draft mid-run (a Snowsight save, create_agents.sh, a parallel deploy) ORPHANS
+    # the run: STATUS and GET_AI_EVALUATION_DATA both start reporting
+    # "Run ... does not exist" for a run that was INVOCATION_IN_PROGRESS moments
+    # earlier, and the completed scores are lost with it. Observed twice on
+    # 2026-09-01 (FLEET_SUPER_AGENT mid-run, then FLEET_AGENT after completing).
+    # The three runs pinned to DEFAULT in the same session survived untouched.
+    # DEFAULT also works on a fresh install with a single version, so it needs no
+    # per-account VERSION$N literal.
+    agent_version: "DEFAULT"
+  run_params:
+    label: "Fleet consumer agent baseline"
+    description: "Cortex Analyst and Cortex Search coverage plus boundary cases. MCP routing verbs are out of scope for evaluations."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS: the dataset must live in the AGENT'S OWN SCHEMA or
+    # Snowsight's "Create the first eval set" readiness item stays unchecked even
+    # after COMPLETED runs. The input TABLE it was built from stays in EVALS.
+    # See setup_agent_evals.sh (AGENT_SCHEMA) for the evidence.
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_AGENT"
+
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide: v3 uses
+# claude-sonnet-4-6 (1M context), which reduces the odds of context window
+# overload on long agent traces and matches our pinned orchestration model.
+# Scores from different metric versions are NOT comparable, and Snowsight renders
+# each version as its own chart and column - so stay on the same version across
+# runs. v1's judge model (claude-4-sonnet) is being deprecated; pinning v3 avoids
+# a silent rollforward that breaks score comparability.
+#
+# tool_execution_accuracy is included because the fleet_agent dataset carries
+# ground_truth_invocations with expected tool names and descriptions.
+metrics:
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

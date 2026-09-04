@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
+import { usePublishMapState } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
 import {
   computeScoredPairs, rankByWeights, groupByTrailer, loadWeights, saveWeights,
@@ -22,7 +23,9 @@ import {
   type ProposalRow, type ParamRow, type TrailerLoc, type EnsembleWeights,
   type StrategyFamily,
 } from './backload-ensemble';
-import { sqlLiteral } from './backload-matching/helpers';
+import { sqlLiteral, findUnroutablePoints, coordKey } from './backload-matching/helpers';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, isRoutingSuspendedError, RoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
 import StatusBar from './backload-proposals/StatusBar';
 import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
@@ -73,6 +76,11 @@ const STRATEGY_OPTIONS: StrategyOption[] = [
   { key: 'bpmp', label: 'Profit-max backhaul (road)' },
 ];
 
+// A single VROOM code-3 unroutable location aborts the whole solve; VROOM names
+// only one coord per solve. A bulk pre-filter removes the bulk up front; this
+// caps the residual drop-and-retry so a pathological dataset can't loop forever.
+const PROPOSALS_MAX_UNROUTABLE_RETRIES = 16;
+
 function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const R = 6371, toRad = (x: number) => (x * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
@@ -86,6 +94,9 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
     body: JSON.stringify({ sql }),
   });
   const body = await res.json();
+  // Typed 503 first: a suspended payload carries no `error` key, so the fallback
+  // below would otherwise report a bare "HTTP 503" for an outage.
+  if (res.status === 503 && isSuspendedBody(body)) throw new RoutingSuspendedError(body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   const rows = (body.rows as Record<string, unknown>[]) || [];
   return rows.map((r) => {
@@ -95,14 +106,77 @@ async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
   });
 }
 
-async function apiSolve(challenge: object, region: string): Promise<Record<string, unknown> | null> {
-  const res = await fetch('/api/backload/solve', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ challenge, region }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return (body.result as Record<string, unknown>) ?? null;
+// Thrown by apiSolve and sfRead when the routing engine is suspended so the
+// caller can show the shared resume notice (server has already triggered the
+// resume). Aliased to the shared class so both paths land in ONE catch.
+const SuspendedError = RoutingSuspendedError;
+
+// True when a VROOM location [lon,lat] matches (within ~11m). VROOM echoes the
+// failing coordinate to ~6dp; match with the same epsilon coordKey uses.
+function locMatches(loc: unknown, lon: number, lat: number): boolean {
+  return Array.isArray(loc) && Math.abs(Number(loc[0]) - lon) < 1e-4 && Math.abs(Number(loc[1]) - lat) < 1e-4;
+}
+
+// Densest cluster centre: the point with the most neighbours within 300km. Used
+// as the routability-probe anchor - guaranteed to sit on the main road graph so
+// island / off-road / disconnected points are flagged when probed to/from it.
+function densestPoint(pts: [number, number][]): [number, number] | null {
+  if (!pts.length) return null;
+  let best = pts[0], bestCount = -1;
+  for (const cand of pts) {
+    let cnt = 0;
+    for (const other of pts) if (haversineKm(cand[0], cand[1], other[0], other[1]) <= 300) cnt++;
+    if (cnt > bestCount) { bestCount = cnt; best = cand; }
+  }
+  return best;
+}
+
+// Solve a VROOM challenge, shearing any code-3 unroutable location and
+// re-solving. VROOM names only ONE offending coordinate per solve, so the bulk
+// pre-filter (findUnroutablePoints) removes most up front and this loop mops up
+// the rare residual (a point that snaps leniently in MATRIX yet still aborts the
+// solve, or one the pre-filter's majority-backoff skipped). On cap-exhaust it
+// returns a null result so the family yields nothing without aborting siblings;
+// a genuine non-code-3 error still throws (and a suspended engine throws
+// SuspendedError so the caller can show the resume notice).
+async function solveVrpWithRetry(
+  vehicles: Record<string, unknown>[],
+  shipments: Record<string, unknown>[],
+  region: string,
+): Promise<{ result: Record<string, unknown> | null; excluded: number }> {
+  let workV = vehicles;
+  let workS = shipments;
+  const dropped: string[] = [];
+  let excluded = 0;
+  for (let attempt = 0; attempt <= PROPOSALS_MAX_UNROUTABLE_RETRIES; attempt++) {
+    if (!workV.length || !workS.length) return { result: null, excluded };
+    const res = await fetch('/api/backload/solve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge: { vehicles: workV, shipments: workS, options: { g: false } }, region }),
+    });
+    const body = await res.json();
+    if (res.status === 503 && isSuspendedBody(body)) throw new SuspendedError(body);
+    if (res.ok) return { result: (body.result as Record<string, unknown>) ?? null, excluded };
+    // Shear one unroutable coordinate (structured field, else parse the message).
+    let bad = body.unroutable as { lon: number; lat: number } | undefined;
+    if (!bad && typeof body.error === 'string') {
+      const m = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(body.error);
+      if (m) bad = { lon: Number(m[1]), lat: Number(m[2]) };
+    }
+    const key = bad ? coordKey(bad.lon, bad.lat) : null;
+    if (!bad || (key && dropped.includes(key))) throw new Error(body.error || `HTTP ${res.status}`);
+    dropped.push(key!);
+    const nv = workV.filter((v) => !(locMatches(v.start, bad!.lon, bad!.lat) || locMatches(v.end, bad!.lon, bad!.lat)));
+    const ns = workS.filter((s) => {
+      const pu = (s.pickup as { location?: unknown }).location;
+      const dl = (s.delivery as { location?: unknown }).location;
+      return !(locMatches(pu, bad!.lon, bad!.lat) || locMatches(dl, bad!.lon, bad!.lat));
+    });
+    excluded += (workV.length - nv.length) + (workS.length - ns.length);
+    workV = nv; workS = ns;
+  }
+  // Cap exhausted: yield nothing for this family rather than abort the run.
+  return { result: null, excluded };
 }
 
 // Road path for a single pair via ORS DIRECTIONS through [empty, pickup,
@@ -153,6 +227,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [busy, setBusy] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -188,6 +263,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       setScored(scRows as unknown as ScoredCandidate[]);
       setParams(pRows as unknown as ParamRow[]);
     } catch (e) {
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       const msg = e instanceof Error ? e.message : 'Failed to load backload data';
       // The cockpit data layer (VW_LOADS / VW_CANDIDATES_SCORED / MATCH_PARAMS in
       // FLEET_INTELLIGENCE.BACKLOAD_MATCHING) is provisioned by the admin app boot
@@ -219,32 +295,39 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   }, [scored]);
 
   // Build the VROOM challenge for a strategy family.
-  const buildChallenge = useCallback((fam: StrategyFamily) => {
+  const buildChallenge = useCallback((fam: StrategyFamily, badKeys?: Set<string>) => {
     if (!cls) return null;
     const profile = cls.ORS_PROFILE;
     const classCapacityKg = cls.PAYLOAD_KG_TYP || 1000;
     const effPerKm = cls.COST_EUR_PER_KM || 0.85;
     const maxStops = fam === 'bpmp' ? 4 : fam === 'vrp' ? 1 : 2;
+    // A point is unroutable when the bulk pre-filter flagged it. Drop any vehicle
+    // (start OR end) or shipment (pickup OR delivery) that touches one - a single
+    // such point otherwise aborts the whole VROOM solve with code 3.
+    const isBad = (lon: number, lat: number) => (badKeys ? badKeys.has(coordKey(lon, lat)) : false);
 
     const idToTrailer = new Map<number, Trailer>();
-    const vehicles = trailers.slice(0, maxVehicles).map((t, i) => {
-      const id = i + 1;
-      idToTrailer.set(id, t);
-      return {
-        id, profile,
-        start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
-        end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
-        capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
-        skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-        max_tasks: maxStops,
-        costs: { fixed: 120 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) },
-      } as Record<string, unknown>;
-    });
+    const vehicles = trailers.slice(0, maxVehicles)
+      .filter((t) => !isBad(num(t.EMPTY_LON), num(t.EMPTY_LAT)) && !isBad(num(t.NEXT_START_LON), num(t.NEXT_START_LAT)))
+      .map((t, i) => {
+        const id = i + 1;
+        idToTrailer.set(id, t);
+        return {
+          id, profile,
+          start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
+          end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
+          capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
+          skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
+          max_tasks: maxStops,
+          costs: { fixed: 140 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) },
+        } as Record<string, unknown>;
+      });
 
     const idToLoad = new Map<number, Load>();
     let nextId = 1000;
     const shipments: Record<string, unknown>[] = [];
     for (const l of loads.slice(0, maxLoads)) {
+      if (isBad(num(l.PICKUP_LON), num(l.PICKUP_LAT)) || isBad(num(l.DELIVERY_LON), num(l.DELIVERY_LAT))) continue;
       const id = nextId++;
       idToLoad.set(id, l);
       const kg = Math.min(num(l.WEIGHT_KG), classCapacityKg);
@@ -261,7 +344,15 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
         priority,
       });
     }
-    return { challenge: { vehicles, shipments, options: { g: true } }, idToTrailer, idToLoad };
+    // g:false - do NOT ask VROOM to return per-route road geometry. For a large
+    // region (e.g. Europe/car) the geometry for many long cross-country routes
+    // pushes the _OPTIMIZATION_RAW external-function response past its 20MB cap
+    // (Snowflake 100335). The solve still runs (VROOM sources its matrix from
+    // ORS internally); the selected route's road path is fetched lazily via ORS
+    // DIRECTIONS (routeGeo) at selection time, so nothing on the map needs the
+    // solve-time geometry. PATH_COORDS is therefore null and routePath falls
+    // back to the DIRECTIONS path.
+    return { challenge: { vehicles, shipments, options: { g: false } }, idToTrailer, idToLoad };
   }, [cls, trailers, loads, maxVehicles, maxLoads]);
 
   const parseSolve = useCallback((
@@ -335,25 +426,55 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const runFamilies = useCallback(async (families: StrategyFamily[]) => {
     if (!cfg || !cls) return;
     setBusy('Generating proposals\u2026'); setSolveError(null); setInfo(null);
-    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({});
+    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({}); setSuspended(null);
     try {
+      // Bulk routability pre-filter, shared across families (coords are identical
+      // across strategies). Removes island / off-road / disconnected points up
+      // front so one unroutable stop doesn't abort the whole VROOM solve. The
+      // helper is fail-open and backs off if it would flag a majority, so a
+      // suspended engine won't strip everything - the retry loop + solve-path
+      // suspended-detection handle that case.
+      let badKeys = new Set<string>();
+      if (families.some((f) => f !== 'baseline')) {
+        const vTrailers = trailers.slice(0, maxVehicles);
+        const anchor = densestPoint(vTrailers.map((t) => [num(t.EMPTY_LON), num(t.EMPTY_LAT)] as [number, number]).filter(([lo, la]) => okPt(lo, la)));
+        if (anchor) {
+          const uniq = new Map<string, [number, number]>();
+          const add = (lon: number, lat: number) => { if (okPt(lon, lat)) uniq.set(coordKey(lon, lat), [lon, lat]); };
+          for (const t of vTrailers) { add(num(t.EMPTY_LON), num(t.EMPTY_LAT)); add(num(t.NEXT_START_LON), num(t.NEXT_START_LAT)); }
+          for (const l of loads.slice(0, maxLoads)) { add(num(l.PICKUP_LON), num(l.PICKUP_LAT)); add(num(l.DELIVERY_LON), num(l.DELIVERY_LAT)); }
+          setBusy('Checking stop routability\u2026');
+          try { badKeys = await findUnroutablePoints(cls.ORS_PROFILE, [...uniq.values()], anchor, cfg.region); }
+          catch { badKeys = new Set(); }
+        }
+      }
+
       const all: ProposalRow[] = [];
+      let retryExcluded = 0;
       for (const fam of families) {
         if (fam === 'baseline') { all.push(...baselineProposals()); continue; }
-        const built = buildChallenge(fam);
+        const built = buildChallenge(fam, badKeys);
         if (!built || !built.challenge.vehicles.length || !built.challenge.shipments.length) continue;
         setBusy(`Solving ${FAMILY_LABELS[fam]}\u2026`);
-        const resp = await apiSolve(built.challenge, cfg.region);
-        all.push(...parseSolve(resp, fam, built.idToTrailer, built.idToLoad));
+        const { result, excluded } = await solveVrpWithRetry(
+          built.challenge.vehicles as Record<string, unknown>[],
+          built.challenge.shipments as Record<string, unknown>[],
+          cfg.region,
+        );
+        retryExcluded = Math.max(retryExcluded, excluded);
+        all.push(...parseSolve(result, fam, built.idToTrailer, built.idToLoad));
       }
-      if (!all.length) setSolveError('No proposals produced. Ensure the routing service is running for this region and that vehicles/loads exist for the active preset.');
-      else setInfo(families.length > 1 ? `Ensemble complete - ${families.length} strategies graded. Tune the scoring weights to re-rank instantly.` : 'Match complete.');
+      const totalExcluded = badKeys.size + retryExcluded;
+      const excludedNote = totalExcluded > 0 ? ` Excluded ${totalExcluded} unroutable stop(s).` : '';
+      if (!all.length) setSolveError('No proposals produced. Ensure the routing service is running for this region and that vehicles/loads exist for the active preset.' + excludedNote);
+      else setInfo((families.length > 1 ? `Ensemble complete - ${families.length} strategies graded. Tune the scoring weights to re-rank instantly.` : 'Match complete.') + excludedNote);
       setProposals(all);
       setRanAt(Date.now());
     } catch (e) {
-      setSolveError(e instanceof Error ? e.message : 'Solve failed');
+      if (e instanceof SuspendedError) { setSuspended(e.info); }
+      else setSolveError(e instanceof Error ? e.message : 'Solve failed');
     } finally { setBusy(null); }
-  }, [cfg, cls, baselineProposals, buildChallenge, parseSolve]);
+  }, [cfg, cls, trailers, loads, maxVehicles, maxLoads, baselineProposals, buildChallenge, parseSolve]);
 
   const onRun = useCallback(() => runFamilies([strategy as StrategyFamily]), [runFamilies, strategy]);
   const onRunEnsemble = useCallback(() => runFamilies(ensembleBasis === 'road' ? ['baseline', 'vrp', 'fleet', 'bpmp'] : ['baseline']), [runFamilies, ensembleBasis]);
@@ -521,6 +642,33 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return null;
   }, [selectedKey, routeGeo, selectedPair]);
 
+  // Agent grounding, Channel B. The layers live inside ProposalMap, so describe the
+  // semantic arrays this page feeds it rather than reaching into the child: same
+  // counts, and it stays correct if the child changes how it draws them. Gated on
+  // having any vehicles or loads so a still-loading page publishes null instead of
+  // an empty map the agent would report as "nothing to dispatch".
+  usePublishMapState(
+    useMemo(
+      () => {
+        const layers = [
+          { id: 'vehicles', type: 'scatterplot', featureCount: mapVehicles.length },
+          { id: 'loads', type: 'scatterplot', featureCount: mapLoads.length },
+          { id: 'proposal-links', type: 'arc', featureCount: mapLinks.length },
+          { id: 'selected-stops', type: 'scatterplot', featureCount: mapStops.length },
+          { id: 'selected-route', type: 'path', featureCount: routePath ? 1 : 0 },
+        ].map((l) => ({ ...l, rendered: l.featureCount > 0 }));
+        if (!mapVehicles.length && !mapLoads.length) return null;
+        return {
+          layerCount: layers.length,
+          layers,
+          emptyLayers: layers.filter((l) => !l.rendered).map((l) => l.id),
+          selection: selectedKey ? { selected_pair: selectedKey } : undefined,
+        };
+      },
+      [mapVehicles.length, mapLoads.length, mapLinks.length, mapStops.length, routePath, selectedKey],
+    ),
+  );
+
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
@@ -617,6 +765,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       </div>
 
       {/* Status bar */}
+      {suspended && (<RoutingSuspendedNotice info={suspended} onRetry={onRun} />)}
       <StatusBar
         busy={busy}
         error={solveError}

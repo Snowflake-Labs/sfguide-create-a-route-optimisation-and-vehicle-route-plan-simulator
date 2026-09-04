@@ -2,7 +2,16 @@ import { NextRequest } from 'next/server';
 import { logger } from '@/lib/logger';
 import { getAgentConfig, buildCortexUrl, buildCortexRequestBody } from '@/lib/agent-config';
 import { parseCortexStream } from '@/lib/cortex-stream';
-import type { MessagePart } from '@/lib/types';
+import type { MessagePart, SolutionCatalogEntry, UseCase } from '@/lib/types';
+import { compactUseCaseLine } from '@/lib/use-case';
+import {
+  detectOrsSuspended,
+  detectSuspendedInResult,
+  suspendedMessage,
+  waitCopyForTier,
+  type SuspendDetection,
+} from '@/lib/routing-suspend';
+import { resolveResumeRegion, triggerRegionResume } from '@/lib/routing-resume';
 
 export async function POST(request: NextRequest) {
   const reqId = crypto.randomUUID().slice(0, 8);
@@ -31,26 +40,57 @@ export async function POST(request: NextRequest) {
         exampleQuestions?: string[];
         gotchas?: string;
       };
+      useCase?: UseCase;
     };
     const parts = [`[Panel context: Currently showing "${view.label}" (${view.description}).`];
     const vs = panelContext.viewState as Record<string, unknown> | undefined;
     if (vs && Object.keys(vs).length > 0) {
-      // Keys prefixed __memo_ carry bounded, pre-joined KPI/metric strings that an
-      // area published for the agent (Gap 1). Render them under their own label so
-      // headline metric values are not mislabeled as active filters.
+      // Keys prefixed __memo_ carry bounded, pre-joined strings that an area
+      // published for the agent: KPI values, but also table slices, chart shape
+      // summaries, and open detail records (see lib/agent-memo.ts). Render them
+      // under their own label so on-screen values are not mislabeled as filters.
       const entries = Object.entries(vs).filter(([, v]) => v != null);
       const memoEntries = entries.filter(([k]) => k.startsWith('__memo_'));
       const filterEntries = entries.filter(([k]) => !k.startsWith('__memo_'));
       const activeFilters = filterEntries.map(([k, v]) => `${k}=${v}`).join(', ');
       if (activeFilters) parts.push(`Active filters: ${activeFilters}.`);
       if (memoEntries.length) {
-        const memoText = memoEntries
-          .map(([k, v]) => {
-            const group = k.slice('__memo_'.length);
-            return memoEntries.length > 1 ? `${group}: ${v}` : String(v);
-          })
-          .join(' | ');
-        parts.push(`On-screen metric values: ${memoText}.`);
+        // Always name the area. A view now publishes several memos (KPI strip plus
+        // each table and chart), so the group name is what lets the agent say
+        // WHICH panel a number came from instead of blending them into one list.
+        const rendered = memoEntries.map(([k, v]) => `${k.slice('__memo_'.length)}: ${v}`);
+        // Trim order: KPI memos are the headline numbers and must survive, so rank
+        // by memo kind. Publishers self-describe ("table:", "<kind> chart:",
+        // "open record"/"open detail panel"), and a KPI memo is bare "label=value",
+        // so an unrecognized prefix sorts first by design.
+        const memoRank = (s: string): number => {
+          const body = s.slice(s.indexOf(': ') + 2);
+          if (body.startsWith('table:')) return 1;
+          if (/^\w+ chart:/.test(body)) return 2;
+          if (body.startsWith('open ')) return 3;
+          return 0;
+        };
+        rendered.sort((a, b) => memoRank(a) - memoRank(b));
+        // Total budget across all panels. Each publisher self-bounds to ~500
+        // chars, but a busy view has 5+ areas and the map block plus the useCase
+        // block still have to fit in the same prompt. Trim whole panels rather
+        // than characters, so nothing is half-quoted.
+        const MEMO_TOTAL_MAX = 3000;
+        let memoText = '';
+        let dropped = 0;
+        for (let i = 0; i < rendered.length; i++) {
+          const next = memoText ? `${memoText} | ${rendered[i]}` : rendered[i];
+          if (next.length > MEMO_TOTAL_MAX) {
+            dropped = rendered.length - i;
+            break;
+          }
+          memoText = next;
+        }
+        if (dropped > 0) memoText += ` | (+${dropped} more panels not shown)`;
+        parts.push(`On-screen values by panel: ${memoText}.`);
+        parts.push(
+          'Those on-screen values are what the user is looking at right now - quote them when asked what is on screen, and prefer them over re-running a query, which can disagree with the panel (several views are scoped to a replay instant or a client-side sort). Table memos are a bounded top-N sample of the rendered rows and say how many rows exist; never report the sample size as the total, and query the semantic view for any row, column, or category outside the sample.',
+        );
       }
     }
     const ak = view.agentKnowledge;
@@ -59,6 +99,26 @@ export async function POST(request: NextRequest) {
       if (ak.keyMetrics?.length) parts.push(`Key metrics here: ${ak.keyMetrics.join('; ')}.`);
       if (ak.exampleQuestions?.length) parts.push(`Typical questions: ${ak.exampleQuestions.join(' / ')}.`);
       if (ak.gotchas) parts.push(`Note: ${ak.gotchas}`);
+    }
+    // Presenter detail for the view that is actually open, so "how would I demo
+    // this?" / "what does this prove?" / "what would I tell the customer?" are
+    // answerable without the user leaving the view. Only the open view gets the
+    // full block; every other view is one line in the catalog below.
+    const uc = view.useCase;
+    if (uc) {
+      parts.push(`This view exists to answer: ${uc.businessQuestion}`);
+      if (uc.talkTrack?.length) {
+        parts.push(`Demo flow for this view, in order: ${uc.talkTrack.map((s, i) => `(${i + 1}) ${s}`).join(' ')}`);
+      }
+      if (uc.snowflakeCapabilities?.length) {
+        parts.push(`Snowflake capabilities this view proves: ${uc.snowflakeCapabilities.join('; ')}.`);
+      }
+      if (uc.valueDrivers?.length) parts.push(`Customer value: ${uc.valueDrivers.join('; ')}.`);
+      if (uc.dataRequired?.length) {
+        parts.push(`To run this on customer data they must bring: ${uc.dataRequired.join('; ')}.`);
+      }
+      if (uc.method) parts.push(`How the numbers are derived: ${uc.method}`);
+      if (uc.caveats) parts.push(`Be upfront about these limits if asked: ${uc.caveats}`);
     }
     parts.push('Use this context when the user asks about their data, campaigns, performance, or anything the view relates to. Do NOT use it only if the question is clearly about a different topic entirely. When you use the view context, start with "Looking at [view name] (filtered by [active filters]):" matching exactly what the context chip shows. Do NOT suggest or mention any other views in your response.]');
     contextPrefix = parts.join(' ') + '\n\n';
@@ -109,6 +169,16 @@ export async function POST(request: NextRequest) {
     contextPrefix += `[Available panel views - use the exact markdown link format below when your response would benefit from the user exploring data or taking action in the UI:\n${viewLinks}\n\nInclude a view link when: the question is about data that view surfaces, the user could take a useful action in the view, or the answer alone leaves the user without an obvious next step. Do not include links for general or conceptual questions. One or two links per response at most. Always use the markdown link format - never plain text view names.]\n\n`;
   } else if (contextPrefix) {
     contextPrefix += '\n';
+  }
+
+  // Solution catalog: cross-view discovery. availableViews above answers "where do
+  // I click for this data"; this answers "what can we offer this customer", which
+  // is the question a Solution Engineer actually opens with. One bounded line per
+  // view, role-filtered upstream in getPanelContext.
+  const solutionCatalog = (panelContext?.solutionCatalog || []) as SolutionCatalogEntry[];
+  if (solutionCatalog.length > 0) {
+    const lines = solutionCatalog.map((e) => `  ${compactUseCaseLine(e)}`).join('\n');
+    contextPrefix += `[Solution catalog - the use cases this deployment can actually demonstrate:\n${lines}\n\nUse this catalog when the user asks what use cases or demos are available, what to show a given industry or persona, or what fits a customer problem or pain point they describe. Recommend at most 3, ordered by fit, and say in one line why each fits their situation. Link every recommendation with the exact [Label](view:id) markdown format shown above. Only recommend use cases from this catalog - never invent a use case, and never imply a capability that no listed use case covers. If nothing in the catalog fits, say so plainly and name the closest adjacent one. When the user asks for detail about one of them, open it with a view link rather than describing it at length, since the view itself carries the full demo flow.]\n\n`;
   }
 
   // Active dashboard context (region / vehicle / dataset / date range) so the
@@ -164,9 +234,48 @@ export async function POST(request: NextRequest) {
 
   const cortexBody = buildCortexRequestBody(config, cortexMessages, threadId, parentMessageId);
 
+  // Active region for resolving which routing engine to resume when a tool
+  // reports a suspended service without naming the host explicitly.
+  const activeRegion = activeCtx.region ? String(activeCtx.region) : null;
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      // A suspended ORS/VROOM region surfaces to the agent path only as tool
+      // content (typed reason:OPTIMIZATION_UNAVAILABLE or a raw DNS/matrix
+      // error), never as an HTTP error. Detect it deterministically here,
+      // trigger a server-side resume once per region (fire-and-forget; the app
+      // runs as ACCOUNTADMIN), and inject a friendly text part so the user is
+      // told the engine is starting even if the model emits no text.
+      const resumedRegions = new Set<string>();
+      const handleSuspend = (det: SuspendDetection) => {
+        if (!det.suspended) return;
+        const region = resolveResumeRegion(det.region, activeRegion);
+        // No region could be identified: resuming a guessed default would resume
+        // the wrong engine and misreport which one, so say nothing here and let
+        // the model's own tool-error text stand.
+        if (!region) return;
+        const key = region.toUpperCase();
+        if (resumedRegions.has(key)) return;
+        resumedRegions.add(key);
+        // Stays synchronous on purpose: an async service-state lookup could
+        // resolve after the stream controller has closed. The state hint from
+        // the error string is enough to keep the copy honest, and an
+        // ALTER ... RESUME on an already-running service is a harmless no-op.
+        const state = det.state ?? 'suspended';
+        const textPart: MessagePart = {
+          type: 'text',
+          content: suspendedMessage(region, waitCopyForTier(null), state),
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(textPart)}\n\n`));
+        // Fire-and-forget resume, but only when the engine is actually down.
+        if (state === 'suspended') {
+          triggerRegionResume(region).catch((e) =>
+            logger.warn('chat-resume-failed', { region, error: String(e) }),
+          );
+        }
+      };
+
       try {
         const cortexResponse = await fetch(url, {
           method: 'POST',
@@ -195,6 +304,10 @@ export async function POST(request: NextRequest) {
         await parseCortexStream(cortexResponse, {
           onPart: (part: MessagePart) => {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(part)}\n\n`));
+            // Additive: if the tool result/error signals a suspended engine,
+            // resume it and append a friendly notice (original part still shown).
+            if (part.type === 'tool_result') handleSuspend(detectSuspendedInResult(part.output));
+            else if (part.type === 'tool_error') handleSuspend(detectOrsSuspended(part.error));
           },
           onStatus: (status: string, message: string) => {
             controller.enqueue(
@@ -209,6 +322,7 @@ export async function POST(request: NextRequest) {
           onError: (error: string) => {
             const errorPart: MessagePart = { type: 'tool_error', toolName: 'system', error };
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPart)}\n\n`));
+            handleSuspend(detectOrsSuspended(error));
           },
           onDone: () => {
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));

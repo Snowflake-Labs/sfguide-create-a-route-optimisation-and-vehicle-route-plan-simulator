@@ -80,6 +80,17 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
     log('INFO', 'Studio', `Cancelled in-memory job ${jobId}`);
     if (snowSql) {
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
+      // Clean up the DIM_DATASETS registry row so cancelled jobs don't ghost
+      // in the SA app picker. Empty jobs are fully reverted; partial jobs are
+      // deactivated only when a peer dataset exists to fall back to (a short
+      // dataset is better than blank pages).
+      try {
+        if ((job.pointsGenerated || 0) === 0 && (job.tripsGenerated || 0) === 0) {
+          await revertArchivePriorDatasets(snowSql, job.region, job.vehicleType, jobId);
+        } else if (await hasPeerDataset(snowSql, jobId, job.region, job.vehicleType)) {
+          await deactivateDataset(snowSql, jobId, job.region, job.vehicleType);
+        }
+      } catch (_) { /* best-effort */ }
     }
     return { ok: true, mode: 'in-memory' };
   }
@@ -112,6 +123,32 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
        WHERE JOB_ID=${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
+    // Clean up registry for the orphan path (read region/vt from the job row).
+    try {
+      const meta = await snowSql(
+        `SELECT REGION, POINTS_GENERATED FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+         WHERE JOB_ID = ${escVal(jobId)} LIMIT 1`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      if (meta.length) {
+        const region = (meta[0] as any).REGION as string;
+        const pts = Number((meta[0] as any).POINTS_GENERATED ?? 0);
+        // Read vehicle_type from DIM_DATASETS (GENERATION_JOBS stores ors_profile, not vehicle_type).
+        const dsRow = await snowSql(
+          `SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           WHERE DATASET_ID = ${escVal(jobId)} LIMIT 1`,
+          'FLEET_INTELLIGENCE', 'CORE',
+        );
+        const vt = dsRow.length ? (dsRow[0] as any).VEHICLE_TYPE as string : null;
+        if (region && vt) {
+          if (pts === 0) {
+            await revertArchivePriorDatasets(snowSql, region, vt, jobId);
+          } else if (await hasPeerDataset(snowSql, jobId, region, vt)) {
+            await deactivateDataset(snowSql, jobId, region, vt);
+          }
+        }
+      }
+    } catch (_) { /* best-effort */ }
     log('INFO', 'Studio', `Force-cancelled orphaned job ${jobId}`);
     return { ok: true, mode: 'orphan' };
   } catch (e: any) {
@@ -120,25 +157,63 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
   }
 }
 
-export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: number = 30): Promise<number> {
+export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: number | null = 30): Promise<number> {
   try {
     const inMemoryIds = [...activeJobs.keys()];
     const inMemFilter = inMemoryIds.length > 0
       ? `AND JOB_ID NOT IN (${inMemoryIds.map(escVal).join(',')})`
       : '';
+    // staleMinutes=null means "no age filter" - used at boot where the in-memory
+    // map is empty by definition and every RUNNING row is provably orphaned.
+    const ageFilter = staleMinutes !== null
+      ? `AND COALESCE(HEARTBEAT_AT, STARTED_AT) < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())`
+      : '';
     const result = await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
        SET STATUS='FAILED',
            COMPLETED_AT=SYSDATE(),
-           ERROR_MESSAGE='Worker crashed or container restarted (auto-reconciled at boot)'
+           ERROR_MESSAGE='Worker lost - container restarted mid-run (auto-reconciled at boot)'
        WHERE STATUS='RUNNING'
-         AND STARTED_AT < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())
+         ${ageFilter}
          ${inMemFilter}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
     const n = result?.[0]?.['number of rows updated'] ?? 0;
     if (n > 0) {
       log('INFO', 'Studio', `Reconciled ${n} stale RUNNING job(s) at boot`);
+    }
+    // Prune DIM_DATASETS rows whose job is DELETED, CANCELLED, or FAILED with
+    // no data. Seed datasets (no matching GENERATION_JOBS row) are left alone.
+    try {
+      const pruned = await snowSql(
+        `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+         USING FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+         WHERE d.DATASET_ID = j.JOB_ID
+           AND (j.STATUS IN ('DELETED','CANCELLED')
+                OR (j.STATUS = 'FAILED' AND j.POINTS_GENERATED = 0 AND j.TRIPS_GENERATED = 0))`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      const pn = pruned?.[0]?.['number of rows deleted'] ?? 0;
+      if (pn > 0) {
+        log('INFO', 'Studio', `Pruned ${pn} orphaned DIM_DATASETS row(s) at boot`);
+      }
+      // Re-activate the newest dataset per (REGION, VEHICLE_TYPE) that lost its
+      // active row. Using a MERGE so it is a single statement.
+      await snowSql(
+        `MERGE INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS tgt
+         USING (
+           SELECT REGION, VEHICLE_TYPE,
+                  MAX_BY(DATASET_ID, CREATED_AT) AS NEWEST
+           FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           GROUP BY REGION, VEHICLE_TYPE
+           HAVING MAX(IFF(IS_ACTIVE, 1, 0)) = 0
+         ) src
+         ON tgt.DATASET_ID = src.NEWEST
+         WHEN MATCHED THEN UPDATE SET IS_ACTIVE = TRUE`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+    } catch (e: any) {
+      log('WARN', 'Studio', `Registry reconcile at boot failed (non-fatal): ${e.message?.slice(0, 200)}`);
     }
     return n;
   } catch (e: any) {
@@ -147,7 +222,7 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
   }
 }
 
-export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
+export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number>; activeReassigned: boolean }> {
   const tables = [
     'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_OFFERS',
     'DIM_PARTNERS', 'FACT_PARTNER_HISTORY',
@@ -202,8 +277,43 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   } catch (e: any) {
     log('WARN', 'Studio', `Failed to mark job ${jobId} as DELETED: ${e.message?.slice(0, 200)}`);
   }
+  // Remove the DIM_DATASETS registry row and reassign IS_ACTIVE if needed.
+  let activeReassigned = false;
+  try {
+    const dsRows = await snowSql(
+      `SELECT REGION, VEHICLE_TYPE, IS_ACTIVE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE DATASET_ID = ${escVal(jobId)} LIMIT 1`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    if (dsRows.length) {
+      const dsRegion = (dsRows[0] as any).REGION as string;
+      const dsVehicle = (dsRows[0] as any).VEHICLE_TYPE as string;
+      const wasActive = (dsRows[0] as any).IS_ACTIVE === true || (dsRows[0] as any).IS_ACTIVE === 'true';
+      await snowSql(
+        `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE DATASET_ID = ${escVal(jobId)}`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      if (wasActive) {
+        const upd = await snowSql(
+          `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           SET IS_ACTIVE = TRUE
+           WHERE DATASET_ID = (
+             SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             WHERE REGION = ${escVal(dsRegion)}
+               AND VEHICLE_TYPE = ${escVal(dsVehicle)}
+             ORDER BY CREATED_AT DESC
+             LIMIT 1
+           )`,
+          'FLEET_INTELLIGENCE', 'CORE',
+        );
+        activeReassigned = Number((upd[0] as any)?.['number of rows updated'] ?? 0) > 0;
+      }
+    }
+  } catch (e: any) {
+    log('WARN', 'Studio', `Registry cleanup failed for job ${jobId}: ${e.message?.slice(0, 200)}`);
+  }
   log('INFO', 'Studio', `Deleted data for job ${jobId}: ${JSON.stringify(deleted)}`);
-  return { deleted };
+  return { deleted, activeReassigned };
 }
 
 async function ensureRouteOptimizationSeedData(
@@ -468,8 +578,7 @@ export async function deleteDataset(
   snowSql: SnowSqlFn,
   datasetId: string,
 ): Promise<{ datasetId: string; deleted: Record<string, number>; activeReassigned: boolean }> {
-  // Read the dataset row first so we can refuse-delete on the only-active
-  // case and know the (region, vehicle_type) for re-activation logic.
+  // Read the dataset row first so we can refuse-delete on the only-active case.
   const rows = await snowSql(
     `SELECT REGION, VEHICLE_TYPE, IS_ACTIVE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
      WHERE DATASET_ID = ${escVal(datasetId)} LIMIT 1`,
@@ -497,31 +606,8 @@ export async function deleteDataset(
       );
     }
   }
-  // Physical purge of fact/dim rows for this JOB_ID.
-  const { deleted } = await deleteJobData(datasetId, snowSql);
-  // Remove the registry row.
-  await snowSql(
-    `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     WHERE DATASET_ID = ${escVal(datasetId)}`,
-    'FLEET_INTELLIGENCE', 'CORE',
-  );
-  // If we just removed the active row, promote the most recent remaining.
-  let activeReassigned = false;
-  if (wasActive) {
-    const upd = await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = TRUE
-       WHERE DATASET_ID = (
-         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-         WHERE REGION = ${escVal(region)}
-           AND VEHICLE_TYPE = ${escVal(vehicleType)}
-         ORDER BY CREATED_AT DESC
-         LIMIT 1
-       )`,
-      'FLEET_INTELLIGENCE', 'CORE',
-    );
-    activeReassigned = Number((upd[0] as any)?.['number of rows updated'] ?? 0) > 0;
-  }
+  // Physical purge of fact/dim rows + registry row (deleteJobData owns both).
+  const { deleted, activeReassigned } = await deleteJobData(datasetId, snowSql);
   return { datasetId, deleted, activeReassigned };
 }
 
@@ -580,6 +666,63 @@ async function archivePriorDatasets(
     log('WARN', 'Studio',
         `archivePriorDatasets INSERT failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
         { jobId: newJobId });
+  }
+}
+
+// Check whether a peer dataset exists for the same (REGION, VEHICLE_TYPE).
+// Used by cancel paths to avoid deactivating the only dataset in a scope,
+// which would leave every page for that scope blank.
+async function hasPeerDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+  region: string,
+  vehicleType: string,
+): Promise<boolean> {
+  try {
+    const rows = await snowSql(
+      `SELECT 1 FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND DATASET_ID <> ${escVal(datasetId)}
+       LIMIT 1`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    return rows.length > 0;
+  } catch { return false; }
+}
+
+// Deactivate a dataset that has partial data (cancelled after rows were written)
+// without deleting it. Promotes the newest healthy peer so the app never serves
+// a partial dataset as the active one.
+async function deactivateDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+  region: string,
+  vehicleType: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = FALSE
+       WHERE DATASET_ID = ${escVal(datasetId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = TRUE
+       WHERE DATASET_ID = (
+         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         WHERE REGION = ${escVal(region)}
+           AND VEHICLE_TYPE = ${escVal(vehicleType)}
+           AND DATASET_ID <> ${escVal(datasetId)}
+         ORDER BY CREATED_AT DESC
+         LIMIT 1
+       )`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `deactivateDataset failed for ${datasetId} (non-fatal): ${e.message?.slice(0, 200)}`);
   }
 }
 
@@ -745,7 +888,8 @@ async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
        SET LOG_TEXT = PARSE_JSON($$${payload}$$),
            POINTS_GENERATED = ${Number(job.pointsGenerated) || 0},
-           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0}
+           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0},
+           HEARTBEAT_AT = SYSDATE()
        WHERE JOB_ID = ${escVal(job.jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
@@ -959,7 +1103,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const pois = await loadPOIs(config, snowSql);
+      const pois = await loadPOIs(config, snowSql, (msg) => broadcast(job, 'progress', { status: msg }));
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
       // Marketplace data (offers / partners / lane history) is generated for

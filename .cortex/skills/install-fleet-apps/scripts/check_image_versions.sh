@@ -117,6 +117,22 @@ for yaml_file in "$OPENROUTESERVICE_APP_DIR"/services/*/*.yaml; do
   fi
 done
 
+# ── Gateway build-version drift guard ───────────────────────────
+# routing_service.py bakes GATEWAY_VERSION into the image and returns it via
+# ORS_STATUS(region):gateway_version. It is the reliable stale-image detector
+# (SPCS serves images by tag and does not re-pull an unchanged tag). It MUST
+# equal ROUTING_REVERSE_PROXY_TAG so the value the running gateway reports is
+# trustworthy; otherwise verify_gateway_version.sh would compare against a lie.
+GATEWAY_PY="$OPENROUTESERVICE_APP_DIR/services/gateway/routing_service.py"
+if [ -f "$GATEWAY_PY" ]; then
+  GW_VER=$(grep -oE "^GATEWAY_VERSION[[:space:]]*=[[:space:]]*'[^']*'" "$GATEWAY_PY" | sed -E "s/.*'([^']*)'.*/\1/" | head -1)
+  if [ -z "$GW_VER" ]; then
+    error "could not read GATEWAY_VERSION from $(basename "$GATEWAY_PY")"
+  elif [ "$GW_VER" != "$ROUTING_REVERSE_PROXY_TAG" ]; then
+    error "GATEWAY_VERSION ($GW_VER) in routing_service.py != ROUTING_REVERSE_PROXY_TAG ($ROUTING_REVERSE_PROXY_TAG). Bump both together so the gateway reports its true build."
+  fi
+fi
+
 if [ $errors -gt 0 ]; then
   echo ""
   echo "FAILED: $errors version mismatch(es) found."

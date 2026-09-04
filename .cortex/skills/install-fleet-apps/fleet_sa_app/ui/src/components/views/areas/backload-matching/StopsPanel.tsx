@@ -32,8 +32,12 @@ export default function StopsPanel({ assignment, showWaitTimes = true }: Props) 
         <span style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)' }}>
           {stops.length} stops &middot; {pickupCount} pickup{pickupCount === 1 ? '' : 's'} &middot; {dropoffCount} dropoff{dropoffCount === 1 ? '' : 's'}
           {breakCount ? ` \u00b7 ${breakCount} break${breakCount === 1 ? '' : 's'}` : ''}
-          {' \u00b7 '}empty {Math.round(assignment.EMPTY_KM)} km &middot; loaded {Math.round(assignment.LOADED_KM)} km
+          {' \u00b7 '}empty {Math.round(assignment.EMPTY_KM)} km
+          {assignment.EMPTY_OUT_KM !== undefined && (assignment.EMPTY_BACK_KM ?? 0) > 0
+            ? ` (${Math.round(assignment.EMPTY_OUT_KM)} out + ${Math.round(assignment.EMPTY_BACK_KM as number)} back)` : ''}
+          {' \u00b7 '}loaded {Math.round(assignment.LOADED_KM)} km
           {assignment.DETOUR_KM !== undefined ? ` \u00b7 detour +${Math.round(assignment.DETOUR_KM)} km` : ''}
+          {assignment.SAVED_KM !== undefined ? ` \u00b7 deadhead avoided ~${Math.round(assignment.SAVED_KM)} km` : ''}
           {assignment.TOUR_HRS ? ` \u00b7 ${assignment.TOUR_HRS.toFixed(1)} h` : ` \u00b7 ${assignment.SCORE.toFixed(0)}s`}
           {showWaitTimes && totalWait > 0 ? ` \u00b7 wait ${Math.round(totalWait / 60)} min total` : ''}
         </span>

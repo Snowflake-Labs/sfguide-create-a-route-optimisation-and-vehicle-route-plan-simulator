@@ -2,6 +2,7 @@
 
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedInlineHint } from '@/components/views/RoutingSuspendedInlineHint';
 
 interface ViewComboBoxAreaProps {
   areaConfig: {
@@ -17,7 +18,7 @@ interface ViewComboBoxAreaProps {
 
 export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
   const staticOptions = areaConfig.config?.options;
-  const { data, loading } = useViewData(staticOptions ? undefined : areaConfig.data?.query, areaConfig.data?.params);
+  const { data, loading, suspended, refetch } = useViewData(staticOptions ? undefined : areaConfig.data?.query, areaConfig.data?.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
@@ -77,6 +78,7 @@ export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
           </option>
         ))}
       </select>
+      {suspended && <RoutingSuspendedInlineHint info={suspended} onRetry={refetch} />}
     </div>
   );
 }

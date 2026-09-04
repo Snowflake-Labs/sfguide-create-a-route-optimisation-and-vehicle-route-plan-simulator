@@ -6,31 +6,163 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 SKILL_DIR=".cortex/skills/install-fleet-apps"
-CHECK_SCRIPT="$SKILL_DIR/scripts/check_image_versions.sh"
-
-if [ ! -x "$CHECK_SCRIPT" ] && [ ! -f "$CHECK_SCRIPT" ]; then
-  exit 0
-fi
-
 STAGED=$(git diff --cached --name-only)
-needs_check=0
-for path in \
+
+# True when any staged path starts with one of the given prefixes. Uses an `if`
+# condition (never `cmd && return`) so a non-match cannot trip `set -e`.
+staged_any() {
+  local prefix
+  for prefix in "$@"; do
+    if echo "$STAGED" | grep -q "^${prefix}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ── 1. Image tag consistency ────────────────────────────────────
+IMAGE_CHECK="$SKILL_DIR/scripts/check_image_versions.sh"
+if [ -f "$IMAGE_CHECK" ] && staged_any \
   "$SKILL_DIR/image-versions.env" \
   "$SKILL_DIR/openrouteservice_app/services/" \
   "$SKILL_DIR/openrouteservice_app/app/modules/" \
-  "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; do
-  if echo "$STAGED" | grep -q "^${path}"; then
-    needs_check=1
-    break
-  fi
-done
-
-if [ "$needs_check" -eq 0 ]; then
-  exit 0
+  "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; then
+  echo "pre-commit: image version consistency check..."
+  bash "$IMAGE_CHECK" || {
+    echo "pre-commit FAILED: fix image tag drift (see image-versions.env), then re-commit."
+    exit 1
+  }
 fi
 
-echo "pre-commit: image version consistency check..."
-bash "$CHECK_SCRIPT" || {
-  echo "pre-commit FAILED: fix image tag drift (see image-versions.env), then re-commit."
-  exit 1
-}
+# ── 2b. Agent-side solution catalog must match app-views.json ─────────────────
+# view_catalog.sql is generated from the useCase / agentKnowledge blocks and is
+# what Cowork / Snowflake Intelligence reads (outside the app there is no
+# request-time catalog prefix). A stale file means the agent recommends views the
+# app no longer serves, or omits new ones - and nothing else would notice.
+CATALOG_BUILD="$SKILL_DIR/scripts/build_view_catalog.py"
+if [ -f "$CATALOG_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/app-config.json" \
+  "$SKILL_DIR/fleet_sa_app/app/view_catalog.sql" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
+  "$SKILL_DIR/scripts/build_view_catalog.py"; then
+  echo "pre-commit: solution-catalog freshness check..."
+  python3 "$CATALOG_BUILD" --check || {
+    echo "pre-commit FAILED: view_catalog.sql is stale - run python3 $CATALOG_BUILD"
+    exit 1
+  }
+fi
+
+# ── 1b. Super agent spec freshness ──────────────────────────────
+# super-agent-spec.json is generated from agent-spec.json. Two hand-maintained
+# copies of a 12,000-character instruction block drift within a release, and the
+# drift is invisible until the two agents answer the same question differently.
+SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
+if [ -f "$SUPER_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/build_super_agent_spec.py"; then
+  echo "pre-commit: super agent spec freshness check..."
+  python3 "$SUPER_BUILD" --check || {
+    echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
+    exit 1
+  }
+fi
+
+# ── 2. View useCase coverage (Tenet 10, Channel D) ──────────────
+# A view with no useCase renders fine but shows no "i" overlay and is invisible
+# to the chat agent's solution catalog, so the failure is silent without a check.
+USECASE_CHECK="$SKILL_DIR/scripts/check_view_usecases.py"
+if [ -f "$USECASE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/index.ts"; then
+  echo "pre-commit: view useCase coverage check..."
+  python3 "$USECASE_CHECK" || {
+    echo "pre-commit FAILED: every view needs a useCase block (see TENETS.md tenet 10)."
+    exit 1
+  }
+fi
+
+# ── 3. Live-routing views must fail loudly on a suspended engine ─────────────
+# A suspended ORS service does not throw: it returns NULL payloads, so a view
+# that filters those away renders BLANK instead of triggering the app's
+# auto-resume + "engine starting" notice. Silent by construction, hence a check.
+ORS_RAISE_CHECK="$SKILL_DIR/scripts/check_ors_raise.py"
+if [ -f "$ORS_RAISE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
+  "$SKILL_DIR/scripts/analytic_layer.sql" \
+  "$SKILL_DIR/scripts/delivery_sync_layer.sql"; then
+  echo "pre-commit: suspended-ORS raise coverage check..."
+  python3 "$ORS_RAISE_CHECK" || {
+    echo "pre-commit FAILED: a live-routing view would render blank on a suspended engine."
+    exit 1
+  }
+fi
+
+# ── 4. Gateway error codes must be visible to the suspend detector ────────────
+# The gateway has several codes for "region cannot serve this request"
+# (service_unreachable / circuit_open / timeout / service_warming_up). Any code
+# the client cannot classify means no typed 503, no auto-resume, and a blank or
+# raw-error panel while the engine stays suspended. Adding a code without
+# deciding how it is classified is the exact regression this catches.
+SUSPEND_SIG_CHECK="$SKILL_DIR/scripts/check_suspend_signatures.py"
+if [ -f "$SUSPEND_SIG_CHECK" ] && staged_any \
+  "$SKILL_DIR/openrouteservice_app/services/gateway/routing_service.py" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/routing-suspend.ts" \
+  "$SKILL_DIR/scripts/check_suspend_signatures.py"; then
+  echo "pre-commit: gateway error-code coverage check..."
+  python3 "$SUSPEND_SIG_CHECK" || {
+    echo "pre-commit FAILED: a gateway error code is invisible to the suspend detector."
+    exit 1
+  }
+fi
+
+# ── 5. No install SQL may reference an object a LATER step creates ────────────
+# `IF EXISTS` covers an object but NOT its database, and `snow sql -f` stops at the
+# first error - so one forward reference at the top of a file silently skips every
+# statement below it. That is how a bare
+# `DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE` in the step-2.5
+# catalog left DIM_VEHICLE_DWELL_SLA unseeded, blanked Delivery Sync and broke the
+# packs, on fresh accounts only, while the installer reported OK.
+INSTALL_ORDER_CHECK="$SKILL_DIR/scripts/check_install_order.py"
+if [ -f "$INSTALL_ORDER_CHECK" ] && staged_any \
+  "$SKILL_DIR/scripts" \
+  "$SKILL_DIR/fleet_sa_app/app/packs" \
+  "$SKILL_DIR/fleet_sa_app/app/scoped_contract.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/role_binding.sql" \
+  "$SKILL_DIR/openrouteservice_app/app/modules"; then
+  echo "pre-commit: install-order (forward reference) check..."
+  python3 "$INSTALL_ORDER_CHECK" || {
+    echo "pre-commit FAILED: an install SQL file references an object a later step creates."
+    exit 1
+  }
+fi
+
+# ── 6. Tracking tags (session query_tag + object COMMENT) ─────────────────────
+# Both mechanisms are invisible at runtime: an untagged object works perfectly and
+# an untagged session returns the right rows. What breaks is downstream - credit
+# attribution by origin, and the cleanup skill (routing-solution-cleanup), which
+# discovers objects to drop ONLY by their COMMENT tag. An untagged SPCS service or
+# compute pool therefore survives a teardown and keeps billing.
+# Also catches the subtler schema drift: a `"version":"1.0"` string instead of
+# `{"major":1,"minor":0}`, or a missing `is_quickstart`/`source`. Those parse fine
+# and look correct, but a consumer filtering on them matches none of the objects.
+# Wide trigger on purpose - the tags live in SQL, shell, Python and notebooks - and
+# the check prunes its own walk so it runs in about a second.
+TRACKING_CHECK="$SKILL_DIR/scripts/check_tracking_tags.py"
+if [ -f "$TRACKING_CHECK" ] && staged_any \
+  ".cortex/skills/" \
+  "benchmarks/" \
+  "datasets/" \
+  "docs/" \
+  "semantic/"; then
+  echo "pre-commit: tracking tag coverage check..."
+  python3 "$TRACKING_CHECK" || {
+    echo "pre-commit FAILED: a session or created object is missing its tracking tag, or a tag has the wrong schema (see AGENTS.md 'Do NOT')."
+    exit 1
+  }
+fi

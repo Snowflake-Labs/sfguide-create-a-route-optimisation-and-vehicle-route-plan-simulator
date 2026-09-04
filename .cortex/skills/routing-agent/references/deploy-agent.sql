@@ -309,6 +309,240 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- TOOL_SNAP: snap free-text coordinates/places to the nearest routable road edge
+-- (per-point nearest-edge snapping via ORS /snap, NOT trajectory map matching).
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    RADIUS_METERS NUMBER DEFAULT 350,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_radius INT;
+    v_points VARIANT;
+    v_unsnapped INT;
+    v_total INT;
+BEGIN
+    v_radius := COALESCE(:RADIUS_METERS, 350)::INT;
+    IF (v_radius <= 0) THEN
+        v_radius := 350;
+    END IF;
+
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    -- Cycling variants + ebike map to the only built cycling graph (see TOOL_DIRECTIONS).
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    -- Resolve the requested profile against the profiles actually built in the
+    -- default region (best-effort; failure -> rename-only behavior).
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1: geocode the free-text description to a coords array [[lon,lat], ...].
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract all locations/coordinates from this description and return their coordinates. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    IF (v_coords IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'SNAP FAILED: Could not parse any coordinates from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 2: snap each point to the nearest routable edge. v_radius is a validated
+    -- INT so it is safe to inline; coords are passed as a bound VARIANT parameter.
+    LET snap_sql VARCHAR := 'SELECT
+            ARRAY_AGG(OBJECT_CONSTRUCT_KEEP_NULL(
+                ''idx'', s.IDX,
+                ''input_lon'', ST_X(s.INPUT_GEOG),
+                ''input_lat'', ST_Y(s.INPUT_GEOG),
+                ''snapped_lon'', ST_X(s.SNAPPED_GEOG),
+                ''snapped_lat'', ST_Y(s.SNAPPED_GEOG),
+                ''snapped_distance_m'', s.SNAPPED_DISTANCE,
+                ''name'', s.NAME
+            )) WITHIN GROUP (ORDER BY s.IDX),
+            COUNT_IF(s.SNAPPED_GEOG IS NULL),
+            COUNT(*)
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?), ' || v_radius || ', NULL)) s';
+
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :snap_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_points, v_unsnapped, v_total;
+    CLOSE c2;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'radius_meters', v_radius,
+        'points', v_points,
+        'unsnapped_count', v_unsnapped,
+        'total_points', v_total,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_SNAP failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- TOOL_MATCH: map-match a free-text/coordinate trajectory to the road network and
+-- return the matched road segments as GeoJSON (HMM map matching via ORS /match,
+-- geometry resolved via /export). This is trajectory map matching, unlike TOOL_SNAP.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_coord_count INT;
+    v_resp VARIANT;
+    v_geojson VARIANT;
+    v_matched_edges INT;
+BEGIN
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1: geocode the free-text trajectory into an ORDERED coords array.
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract the ordered sequence of points/coordinates that form this trajectory or path and return their coordinates in order. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    v_coord_count := COALESCE(ARRAY_SIZE(v_coords), 0);
+    IF (v_coords IS NULL OR v_coord_count < 2) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'MATCH FAILED: A trajectory needs at least 2 ordered points; could not parse enough from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 2: map-match the trajectory and resolve matched edges to geometry.
+    LET match_sql VARCHAR := 'SELECT mp.RESPONSE, ST_ASGEOJSON(mp.GEOJSON)::VARIANT, mp.MATCHED_EDGES
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.MATCH_PATH(''' || v_used || ''', PARSE_JSON(?), NULL)) mp';
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :match_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_resp, v_geojson, v_matched_edges;
+    CLOSE c2;
+
+    IF (v_resp:error IS NOT NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('MATCH FAILED: OpenRouteService returned an error: ', v_resp:error::VARCHAR), 'locations_requested', v_locations, 'status', 'FAILED');
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'matched_geometry', v_geojson,
+        'matched_edges', v_matched_edges,
+        'edge_ids', v_resp:edge_ids,
+        'graph_timestamp', v_resp:graph_timestamp,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_MATCH failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
@@ -1075,6 +1309,22 @@ def _escape_sql_string(s: str) -> str:
     """Escape single quotes for safe SQL string interpolation."""
     return s.replace("'", "''")
 
+# Suspended-engine detection: a suspended regional ORS/VROOM makes the gateway
+# return an embedded error / thrown error naming an unresolvable service host.
+# Mirrors SUSPEND_SIGNATURES in the SA app's lib/routing-suspend.ts so the chat
+# layer can resume + show a friendly notice instead of a raw connection error.
+def _ors_suspended(txt) -> bool:
+    t = str(txt or '').lower()
+    sigs = ['failed to resolve', 'nameresolutionerror', 'max retries exceeded',
+            'name or service not known', 'matrix pre-compute failed',
+            'matrix precompute failed', 'matrix_precompute_failed',
+            'service_unreachable', 'connection refused', 'optimization_unavailable']
+    return any(s in t for s in sigs)
+
+def _vroom_svc(region) -> str:
+    import re
+    return 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + re.sub(r'[^A-Z0-9_]', '', str(region).upper())
+
 def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
         # An explicit NULL region bind from the verb bypasses the SQL DEFAULT, so
@@ -1161,10 +1411,27 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             '{region}'
         ))
         """
-        opt_result = session.sql(opt_query).collect()[0]['RESULT']
+        _opt_rows = session.sql(opt_query).collect()
+        if not _opt_rows:
+            # The OPTIMIZATION TVF flattens resp:routes; a suspended/cold VROOM
+            # returns an empty/error body -> 0 rows. Surface a typed reason so the
+            # chat layer resumes the engine and shows a friendly notice (indexing
+            # [0] here would otherwise throw a generic "list index out of range").
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.'
+            }
+        opt_result = _opt_rows[0]['RESULT']
         opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
 
         if 'error' in opt_data:
+            if _ors_suspended(opt_data['error']):
+                return {
+                    'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                    'vroom_service': _vroom_svc(region),
+                    'error': f'Route optimization service for {region} is not responding (it may be suspended or starting). Resume it and retry.'
+                }
             return {
                 'error': f"OPTIMIZATION FAILED: OpenRouteService returned an error: {opt_data['error']}",
                 'deliveries_requested': delivery_data.get('locations', []),
@@ -1209,6 +1476,12 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
     except KeyError as e:
         return {'error': f'OPTIMIZATION FAILED: Missing expected field in geocoding response: {str(e)}', 'status': 'FAILED'}
     except Exception as e:
+        if _ors_suspended(str(e)):
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding ({str(e)}). Resume it and retry.'
+            }
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
@@ -1354,8 +1627,14 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails, region: region,
-                 requested_profile: PROFILE, used_profile: usedProfile,
+        // Zero rows here usually means the region's VROOM/ORS engine is suspended
+        // or cold-starting (a suspended engine makes the gateway return an
+        // empty/error body). Surface a typed reason so the chat layer resumes it
+        // and shows a friendly notice instead of a blank plan.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
+                 jobs: jobDetails, requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
     var rawResp = optRes.getColumnValue(1);
@@ -1403,7 +1682,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1552,7 +1837,11 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', region: region,
+        // Suspended/cold engine returns an empty/error body -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1571,7 +1860,13 @@ try {
         geometry: geojson
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1659,7 +1954,11 @@ try {
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
-        return { error: 'Isochrone returned no results for this location', status: 'FAILED',
+        // A suspended/cold regional ORS returns no isochrone -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (it may be suspended or starting). Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1752,7 +2051,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 

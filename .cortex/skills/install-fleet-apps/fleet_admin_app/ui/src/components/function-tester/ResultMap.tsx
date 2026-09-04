@@ -2,12 +2,12 @@
 import { useMemo } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, PathLayer, IconLayer, TextLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer } from '@deck.gl/layers';
+import { PathStyleExtension } from '@deck.gl/extensions';
+import Basemap from '@/components/shared/basemap';
 import {
-  GeoData, OptimizationParsed, OPTIMIZATION_PALETTE, cartoBasemap,
+  GeoData, OptimizationParsed, OPTIMIZATION_PALETTE,
   extractGeoData, parseMatrixResult, parseOptimizationResult, travelTimeColor,
-  parseIsochroneOrigin,
+  parseIsochroneOrigin, parseSnapResult, parseMatchInvocation,
 } from './helpers';
 import { useFitMap, isFiniteVS } from '@/components/shared/useFitMap';
 import RecenterButton from '@/components/shared/RecenterButton';
@@ -24,6 +24,10 @@ export function ResultMap({
   regionBbox = null,
   regionBoundary = null,
   executedSql,
+  trajectory = null,
+  matchedGeojson = null,
+  matchedPending = false,
+  matchedNote = null,
 }: {
   result: any;
   fnName: string;
@@ -31,10 +35,17 @@ export function ResultMap({
   regionBbox?: RegionBbox | null;
   regionBoundary?: any | null;
   executedSql: string;
+  /** Noisy GPS track fed to MATCH / MATCH_PATH, drawn as the unmatched input. */
+  trajectory?: [number, number][] | null;
+  /** Road geometry resolved by an automatic follow-up MATCH_PATH call (separate from result). */
+  matchedGeojson?: any | null;
+  matchedPending?: boolean;
+  matchedNote?: string | null;
 }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
   const optimization = useMemo(() => fnName === 'OPTIMIZATION' ? parseOptimizationResult(result) : null, [result, fnName]);
+  const snap = useMemo(() => fnName === 'SNAP_POINTS' ? parseSnapResult(result) : [], [result, fnName]);
 
   const geojsonLayer = useMemo(() => {
     if (!geo.geojson) return null;
@@ -127,6 +138,120 @@ export function ResultMap({
       lineWidthMinPixels: 3,
     });
   }, [isoOrigin]);
+
+  // SNAP: the value is the correction, so draw input, snapped point, and the
+  // connector between them rather than a single marker per row.
+  const snapLayers = useMemo(() => {
+    if (snap.length === 0) return [];
+    const connectors = snap
+      .filter((r) => r.snapped)
+      .map((r) => ({ path: [r.input, r.snapped!], idx: r.idx, distanceM: r.distanceM }));
+    const layers: any[] = [];
+    if (connectors.length > 0) {
+      layers.push(new PathLayer({
+        id: 'snap-connectors',
+        data: connectors,
+        pickable: true,
+        getPath: (d: any) => d.path,
+        getColor: [148, 163, 184, 220],
+        getWidth: 3,
+        widthMinPixels: 2,
+        widthMaxPixels: 4,
+      }));
+    }
+    layers.push(new ScatterplotLayer({
+      id: 'snap-inputs',
+      data: snap,
+      pickable: true,
+      getPosition: (d: any) => d.input,
+      getFillColor: (d: any) => (d.snapped ? [148, 163, 184, 230] : [239, 68, 68, 240]),
+      getLineColor: [255, 255, 255, 220],
+      getRadius: 70,
+      radiusMinPixels: 5,
+      radiusMaxPixels: 9,
+      stroked: true,
+      lineWidthMinPixels: 2,
+    }));
+    layers.push(new ScatterplotLayer({
+      id: 'snap-snapped',
+      data: snap.filter((r) => r.snapped),
+      pickable: true,
+      getPosition: (d: any) => d.snapped,
+      getFillColor: [48, 209, 88, 240],
+      getLineColor: [255, 255, 255, 240],
+      getRadius: 100,
+      radiusMinPixels: 7,
+      radiusMaxPixels: 12,
+      stroked: true,
+      lineWidthMinPixels: 2,
+    }));
+    return layers;
+  }, [snap]);
+
+  // When the user edits/pastes MATCH SQL the trajectory prop is null (the page
+  // drops it on edit). Fall back to parsing the input track from the SQL itself.
+  const effectiveTrajectory = useMemo<[number, number][] | null>(() => {
+    if (trajectory && trajectory.length >= 2) return trajectory;
+    if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
+    return parseMatchInvocation(executedSql)?.track ?? null;
+  }, [trajectory, fnName, executedSql]);
+
+  // MATCH / MATCH_PATH: the input track is what makes the matched road visible
+  // as a correction; without it the result looks like an ordinary route.
+  const trajectoryLayer = useMemo(() => {
+    if (!effectiveTrajectory || effectiveTrajectory.length < 2) return null;
+    if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
+    return new PathLayer({
+      id: 'match-input-track',
+      data: [{ path: effectiveTrajectory }],
+      pickable: true,
+      getPath: (d: any) => d.path,
+      getColor: [148, 163, 184, 200],
+      getWidth: 3,
+      widthMinPixels: 2,
+      widthMaxPixels: 4,
+      getDashArray: [6, 4],
+      dashJustified: true,
+      extensions: [new PathStyleExtension({ dash: true })],
+    });
+  }, [effectiveTrajectory, fnName]);
+
+  const trajectoryPointsLayer = useMemo(() => {
+    if (!effectiveTrajectory || effectiveTrajectory.length === 0) return null;
+    if (fnName !== 'MATCH' && fnName !== 'MATCH_PATH') return null;
+    return new ScatterplotLayer({
+      id: 'match-input-fixes',
+      data: effectiveTrajectory.map((p, i) => ({ position: p, label: `GPS fix ${i + 1}` })),
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: [148, 163, 184, 230],
+      getLineColor: [255, 255, 255, 200],
+      getRadius: 45,
+      radiusMinPixels: 3,
+      radiusMaxPixels: 6,
+      stroked: true,
+      lineWidthMinPixels: 1,
+    });
+  }, [effectiveTrajectory, fnName]);
+
+  // Derived road geometry from the automatic MATCH_PATH follow-up.
+  // Kept in its own layer so it never contaminates the result panel.
+  const matchedLayer = useMemo(() => {
+    if (!matchedGeojson) return null;
+    const data = matchedGeojson.type
+      ? matchedGeojson
+      : { type: 'Feature', geometry: matchedGeojson, properties: {} };
+    return new GeoJsonLayer({
+      id: 'match-derived-road',
+      data,
+      pickable: true,
+      stroked: true,
+      filled: false,
+      lineWidthMinPixels: 4,
+      getLineColor: [255, 107, 53, 230] as any,
+      getLineWidth: 4,
+    });
+  }, [matchedGeojson]);
 
   const matrixLayers = useMemo(() => {
     if (!matrix) return [];
@@ -224,15 +349,16 @@ export function ResultMap({
     return layers;
   }, [optimization]);
 
-  const basemap = useMemo(() => cartoBasemap(), []);
   const layers = useMemo(() => optimization
-    ? [basemap, ...optimizationLayers]
+    ? optimizationLayers
     : matrix
-      ? [basemap, ...matrixLayers]
-      : [basemap, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer].filter(Boolean),
-    [basemap, optimization, optimizationLayers, matrix, matrixLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer]);
+      ? matrixLayers
+      : snapLayers.length > 0
+        ? snapLayers
+        : [geojsonLayer, matchedLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer].filter(Boolean),
+    [optimization, optimizationLayers, matrix, matrixLayers, snapLayers, geojsonLayer, matchedLayer, isoOriginLayer, startEndLayer, pointsLayer, trajectoryLayer, trajectoryPointsLayer]);
 
-  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization);
+  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization || snap.length > 0 || trajectoryLayer || matchedLayer);
 
   const isFinitePt = (p: any): p is LngLat =>
     Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
@@ -248,13 +374,20 @@ export function ResultMap({
     } else if (matrix) {
       for (const s of matrix.sources) if (s.location) out.push([s.location[0], s.location[1]]);
       for (const d of matrix.destinations) if (d.location) out.push([d.location[0], d.location[1]]);
+    } else if (snap.length > 0) {
+      for (const r of snap) {
+        out.push([r.input[0], r.input[1]]);
+        if (r.snapped) out.push([r.snapped[0], r.snapped[1]]);
+      }
     } else {
       if (geo.geojson) out.push(...coordsFromGeoJSON(geo.geojson));
       for (const p of geo.points) out.push([p[0], p[1]]);
       if (isoOrigin) out.push([isoOrigin[0], isoOrigin[1]]);
+      if (trajectoryLayer && effectiveTrajectory) for (const p of effectiveTrajectory) out.push([p[0], p[1]]);
+      if (matchedGeojson) out.push(...coordsFromGeoJSON(matchedGeojson.type ? matchedGeojson : { type: 'Feature', geometry: matchedGeojson, properties: {} }));
     }
     return out.filter(isFinitePt);
-  }, [optimization, matrix, geo, isoOrigin]);
+  }, [optimization, matrix, snap, geo, isoOrigin, effectiveTrajectory, trajectoryLayer, matchedGeojson]);
 
   const presetCoords = useMemo<LngLat[]>(() => {
     if (regionBoundary) {
@@ -310,6 +443,23 @@ export function ResultMap({
     if (layer?.id === 'optimization-depot') {
       return { text: 'Depot', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     }
+    if (layer?.id === 'snap-inputs') {
+      const dist = object.distanceM != null ? `${object.distanceM} m off road` : 'not snapped (outside radius)';
+      return { text: `Input ${object.idx}\n${dist}`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '6px 10px', borderRadius: '4px', whiteSpace: 'pre-line' } };
+    }
+    if (layer?.id === 'snap-snapped') {
+      const name = object.name ? `${object.name}\n` : '';
+      return { text: `${name}Snapped ${object.distanceM ?? '?'} m`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '6px 10px', borderRadius: '4px', whiteSpace: 'pre-line' } };
+    }
+    if (layer?.id === 'match-input-fixes') {
+      return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
+    if (layer?.id === 'match-input-track') {
+      return { text: 'Raw GPS track (input)', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
+    if (layer?.id === 'match-derived-road') {
+      return { text: 'Matched road geometry (derived via MATCH_PATH)', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
     if (layer?.id === 'result-geojson' && object.properties) {
       const props = object.properties;
       const parts: string[] = [];
@@ -339,6 +489,33 @@ export function ResultMap({
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, background: 'rgba(255,107,53,0.4)', border: '2px solid rgb(255,107,53)', display: 'inline-block' }} /> Reachable area</span>
         </div>
       )}
+      {snap.length > 0 && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(148,163,184)', display: 'inline-block' }} /> Input point</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(48,209,88)', display: 'inline-block' }} /> Snapped to road</span>
+          {snap.some((r) => !r.snapped) && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Not snapped</span>
+          )}
+        </div>
+      )}
+      {trajectoryLayer && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(148,163,184)', display: 'inline-block' }} /> Raw GPS track (input)</span>
+          {(geojsonLayer || matchedLayer)
+            ? <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, background: 'rgb(255,107,53)', display: 'inline-block' }} /> Matched road geometry{matchedLayer && !geojsonLayer ? ' (derived via MATCH_PATH)' : ''}</span>
+            : matchedPending
+              ? <span style={{ color: '#94a3b8' }}>Resolving road geometry via MATCH_PATH...</span>
+              : matchedNote
+                ? <span style={{ color: '#f59e0b' }}>{matchedNote}</span>
+                : fnName === 'MATCH'
+                  ? <span style={{ color: '#94a3b8' }}>MATCH returns edge ids only - use MATCH_PATH for road geometry</span>
+                  : <span style={{ color: '#f59e0b' }}>
+                      No matched geometry returned. MATCH_PATH resolves edge ids to roads via the /export
+                      TopoJSON, which only carries ors_ids when the profile graph was built with the OsmId
+                      ext storage. Check ORS_STATUS(region):profiles.&lt;profile&gt;.storages.
+                    </span>}
+        </div>
+      )}
       {optimization && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           {optimization.vehicles.map(v => {
@@ -358,14 +535,17 @@ export function ResultMap({
       )}
       <div ref={containerRef} style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {dims && isFiniteVS(viewState) ? (
-          <DeckGL
-            viewState={viewState}
-            onViewStateChange={onViewStateChange}
-            controller={true}
-            layers={layers}
-            getTooltip={getTooltip}
-            style={{ width: '100%', height: '100%' }}
-          />
+          <>
+            <Basemap viewState={viewState} />
+            <DeckGL
+              viewState={viewState}
+              onViewStateChange={onViewStateChange}
+              controller={true}
+              layers={layers}
+              getTooltip={getTooltip}
+              style={{ width: '100%', height: '100%' }}
+            />
+          </>
         ) : null}
         <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>

@@ -1,0 +1,80 @@
+--- a/src/cli/materialize.ts
++++ b/src/cli/materialize.ts
+@@ -10,10 +10,38 @@
+ import { bundlePlugin } from '../build/plugin.js';
+ import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
+ import { auditTableDDL } from '../ddl.js';
++import { TRACKING_COMMENT, TRACKING_QUERY_TAG } from '../tracking.js';
+ import { readInstallConfig, installRuntime } from '../build/install.js';
+ import { resolveTargetDir, parseTargetFlags } from './target.js';
+ 
+ /**
++ * Pick the role that `install.sql` runs as (`USE ROLE ...`), which therefore owns
++ * the audit table, procedures, MCP server, and grants it creates.
++ *
++ * LOCAL PATCH (see ../../VENDOR.md): `deploy` was added as the highest-precedence
++ * key. Upstream starts at `roles.admin`, on the assumption that the logical role
++ * named `admin` is an installer-grade role. That does not hold here: our logical
++ * role names are the CONSUMER app roles (`user` -> FLEET_APP_USER, `ops` ->
++ * FLEET_APP_OPS, `admin` -> FLEET_APP_ADMIN, each declared by the verbs' own
++ * `roles: [...]`). With one binding per bundle, upstream's chain resolves to that
++ * consumer role for all three bundles - directly via `roles.admin` for the admin
++ * bundle, and via the first-key fallback for user and ops. install.sql then does
++ * `USE ROLE FLEET_APP_USER` and dies on `CREATE OR REPLACE HYBRID TABLE
++ * verb_attempt` for want of CREATE HYBRID TABLE, before any procedure, the MCP
++ * server, or any grant is created. The failure is total, not partial.
++ *
++ * `admin` cannot simply be rebound to an installer role, because the admin bundle's
++ * verbs declare `roles: ['admin']` and `install.ts` requires every proc-referenced
++ * logical role to be bound; rebinding it would also mis-target that bundle's
++ * `GRANT USAGE ON PROCEDURE` at the installer role. Hence a dedicated `deploy` key,
++ * which no verb can reference. The rest of the chain is preserved so an app that
++ * does use `admin` as an installer role is unaffected.
++ */
++export function pickDeployRole(roles: Record<string, string>): string | undefined {
++  return roles.deploy ?? roles.admin ?? roles.owner ?? Object.values(roles)[0];
++}
++
++/**
+  * Materialize `apps/_installed/<account>/<app>/install.sql` for a given install.
+  * Branches on `install.runtime`:
+  *   - 'sproc': schema -> seed -> proc DDL (incl. audit table) -> hand grants
+@@ -109,7 +137,7 @@
+   }
+ 
+   // Assemble install.sql.
+-  const deployRole = cfg.roles.admin ?? cfg.roles.owner ?? Object.values(cfg.roles)[0];
++  const deployRole = pickDeployRole(cfg.roles);
+   if (!deployRole) {
+     console.error('install.json has no roles defined; cannot pick a deploy role');
+     process.exit(2);
+@@ -121,6 +149,11 @@
+     `-- Runtime:  ${runtime}`,
+     `-- Target:   ${cfg.database}.${cfg.schema} via ${cfg.snowCliConn}`,
+     '',
++    // LOCAL PATCH (see ../../VENDOR.md): AGENTS.md requires a session query_tag on
++    // every session. install.sql is generated and gitignored, so the tag has to be
++    // emitted here rather than added to the file.
++    `ALTER SESSION SET query_tag = '${TRACKING_QUERY_TAG}';`,
++    '',
+     // USE ROLE pins deploy to the logical `admin` role so tables/procs/grants
+     // are owned by it, not whatever role happens to be the operator's default.
+     `USE ROLE ${deployRole};`,
+@@ -129,9 +162,15 @@
+     // ON ACCOUNT / CREATE SCHEMA ON DATABASE can still proceed against an
+     // already-existing target. Snowflake checks the privilege before IF NOT
+     // EXISTS, so the bare form errors even when the object exists.
+-    `EXECUTE IMMEDIATE $$BEGIN CREATE DATABASE IF NOT EXISTS ${cfg.database}; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
++    //
++    // LOCAL PATCH (see ../../VENDOR.md): both carry the COMMENT tracking tag.
++    // On a fresh account these statements are what actually create the bundle
++    // database and schema, and the schema is the designated tracking proxy for
++    // the untaggable CREATE MCP SERVER (see ../tracking.ts) - so leaving them
++    // untagged would leave the MCP server untracked entirely.
++    `EXECUTE IMMEDIATE $$BEGIN CREATE DATABASE IF NOT EXISTS ${cfg.database} COMMENT = '${TRACKING_COMMENT}'; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
+     `USE DATABASE ${cfg.database};`,
+-    `EXECUTE IMMEDIATE $$BEGIN CREATE SCHEMA IF NOT EXISTS ${cfg.schema}; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
++    `EXECUTE IMMEDIATE $$BEGIN CREATE SCHEMA IF NOT EXISTS ${cfg.schema} COMMENT = '${TRACKING_COMMENT}'; EXCEPTION WHEN OTHER THEN NULL; END;$$;`,
+     `USE SCHEMA ${cfg.schema};`,
+     '',
+     `SET db = '${cfg.database}';`,

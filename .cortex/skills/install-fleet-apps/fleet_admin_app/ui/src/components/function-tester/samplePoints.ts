@@ -288,6 +288,42 @@ function sampleMatrixTabular(bbox: BBox, constraints: ProfileConstraints, rand: 
   return sampleWithSeparation(4, bbox, constraints, rand, roadPoints, 0, boundary);
 }
 
+// SNAP is only interesting when the input point is NOT already on a road: the
+// whole point of the function is the nearest-edge correction, so a pool point
+// used verbatim would return SNAPPED_DISTANCE ~ 0 and an invisible delta.
+// Nudge each sampled point 20-60 m in a random bearing so the snap is visible.
+const SNAP_JITTER_MIN_M = 20;
+const SNAP_JITTER_MAX_M = 60;
+
+function jitterPoint(pt: [number, number], rand: () => number, minM: number, maxM: number): [number, number] {
+  const meters = minM + rand() * (maxM - minM);
+  const angle = rand() * 2 * Math.PI;
+  const dLat = (meters / 1000) * Math.cos(angle) / DEG_TO_KM_LAT;
+  const dLon = (meters / 1000) * Math.sin(angle) / degToKmLon(pt[1]);
+  return [+(pt[0] + dLon).toFixed(5), +(pt[1] + dLat).toFixed(5)];
+}
+
+function sampleSnap(bbox: BBox, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  const count = 5;
+  const pts: [number, number][] = [];
+  for (let i = 0; i < count; i++) {
+    const base = sampleOne(bbox, rand, roadPoints, 0.1, boundary);
+    pts.push(jitterPoint(base, rand, SNAP_JITTER_MIN_M, SNAP_JITTER_MAX_M));
+  }
+  return {
+    points: pts,
+    hint: 'Sample points are deliberately offset 20-60 m off the road so the snap correction is visible.',
+  };
+}
+
+// MATCH / MATCH_PATH need a trajectory that plausibly follows roads, not
+// scattered points - the HMM matcher rejects an implausible track. Sample only
+// the two route endpoints here; the page turns them into a real trajectory by
+// running DIRECTIONS and decimating + jittering the returned geometry.
+function sampleTrajectorySeed(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  return sampleWithSeparation(2, bbox, constraints, rand, roadPoints, 0, boundary);
+}
+
 function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
   const latEdgeKm = 1;
   const lonEdgeKm = 1;
@@ -358,11 +394,41 @@ export function samplePoints(input: SamplePointsInput): SampledPoints | null {
       return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
     case 'OPTIMIZATION':
       return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
+    case 'SNAP_POINTS':
+      return sampleSnap(bbox, rand, roadPoints, boundary);
+    case 'MATCH':
+    case 'MATCH_PATH':
+      return sampleTrajectorySeed(bbox, constraints, rand, roadPoints, boundary);
     default:
       return null;
   }
 }
 
-export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION'];
+export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION', 'SNAP_POINTS', 'MATCH', 'MATCH_PATH'];
+
+// Functions whose SQL needs a road-following trajectory rather than loose points.
+export const TRAJECTORY_FUNCTIONS = ['MATCH', 'MATCH_PATH'];
+
+// Decimate a route geometry down to `count` roughly evenly spaced coordinates and
+// add GPS-like noise, producing the kind of noisy track a telematics feed emits.
+export function buildNoisyTrajectory(
+  routeCoords: [number, number][],
+  count: number,
+  jitterMeters: number,
+  seed?: number,
+): [number, number][] {
+  const clean = routeCoords.filter(
+    (p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]),
+  );
+  if (clean.length === 0) return [];
+  const n = Math.max(2, Math.min(count, clean.length));
+  const rand = mulberry32(seed ?? 1);
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round((i * (clean.length - 1)) / (n - 1));
+    out.push(jitterPoint(clean[idx], rand, jitterMeters * 0.4, jitterMeters));
+  }
+  return out;
+}
 
 export { haversineKm, isBBoxValid, mulberry32, getProfileConstraints, pointInBoundary };

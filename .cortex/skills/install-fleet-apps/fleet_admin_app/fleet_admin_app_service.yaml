@@ -9,19 +9,20 @@
 # via the SPCS-injected OAuth token + SNOWFLAKE_HOST, and runs the same
 # idempotent boot-init (instrumentation.ts) as the legacy control app.
 #
-# EXTERNAL ACCESS: the map basemap proxy (/api/tiles -> *.basemaps.cartocdn.com)
-# requires EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI). That is a SERVICE
-# property, NOT part of this spec body; deploy_fleet_admin_app.sh sets it on
-# every ALTER SERVICE. Without it, /api/tiles returns 502 and maps render
-# geometry but no basemap.
+# BASEMAPS: the maps render CARTO VECTOR basemaps - MapLibre GL JS loads the
+# keyless positron style straight from *.basemaps.cartocdn.com in the browser,
+# so no server-side basemap egress is involved. deploy_fleet_admin_app.sh still
+# passes ORS_CARTO_EAI on every ALTER SERVICE (alongside the OSM EAI, which the
+# Region Builder catalog scrape genuinely needs), so a same-origin tile proxy
+# could be reinstated without touching the integration.
 spec:
   containers:
     - name: fleet-admin-app
-      image: /openrouteservice_app/core/image_repository/fleet_admin_app:v0.1.32
+      image: /openrouteservice_app/core/image_repository/fleet_admin_app:v0.1.46
       env:
         HOSTNAME: "0.0.0.0"   # bind Next standalone to all interfaces
         SNOWFLAKE_DATABASE: "OPENROUTESERVICE_APP"
-        SNOWFLAKE_WAREHOUSE: "MY_WH"
+        SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"
         SNOWFLAKE_ROLE: "ACCOUNTADMIN"
         APP_VERSION: "0.1.3"
         LOG_LEVEL: "info"

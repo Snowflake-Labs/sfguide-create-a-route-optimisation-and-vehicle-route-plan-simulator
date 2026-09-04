@@ -13,14 +13,38 @@ import { useAppStore } from '@/lib/store';
 import type { DisplayConfig, StyleConfig } from '@/lib/types';
 import { setDisplayConfigGlobal } from '@/lib/display-config';
 import { setStyleConfigGlobal, resolveRowHeights, resolveChartPalette } from '@/lib/style-config';
+import { applyDeepLink } from '@/lib/deep-link';
 import { AboutDialog } from './about-dialog';
+
+// Starter prompts on the empty-chat welcome screen. Either a flat list, or
+// themed groups (rendered in config order under their headings). Grouped form
+// lets a presenting SE scan by business outcome instead of by data question.
+export interface SampleQuestionGroup {
+  group: string;
+  questions: string[];
+}
+export type SampleQuestions = string[] | SampleQuestionGroup[];
+
+/** Flatten grouped or flat sample questions into config order. */
+export function flattenSampleQuestions(sq?: SampleQuestions): string[] {
+  if (!sq?.length) return [];
+  if (typeof sq[0] === 'string') return sq as string[];
+  return (sq as SampleQuestionGroup[]).flatMap((g) => g.questions ?? []);
+}
+
+/** Normalize either shape to groups; a flat list becomes one unlabeled group. */
+export function toSampleQuestionGroups(sq?: SampleQuestions): SampleQuestionGroup[] {
+  if (!sq?.length) return [];
+  if (typeof sq[0] === 'string') return [{ group: '', questions: sq as string[] }];
+  return (sq as SampleQuestionGroup[]).filter((g) => g.questions?.length);
+}
 
 export interface AppConfig {
   name: string;
   description: string;
   targetUsers: string[];
   capabilities: string[];
-  sampleQuestions: string[];
+  sampleQuestions: SampleQuestions;
   snowflake?: { database: string; schema: string; warehouse?: string };
   // Optional target for the cross-link to the admin app (resolved server-side
   // for admins only via /api/admin-link). Defaults to the FLEET_ADMIN_APP service.
@@ -81,6 +105,7 @@ export function AppShell() {
   const setAdminAppUrl = useAppStore((s) => s.setAdminAppUrl);
   const setDisplayConfig = useAppStore((s) => s.setDisplayConfig);
   const setStyleConfig = useAppStore((s) => s.setStyleConfig);
+  const showView = useAppStore((s) => s.showView);
 
   // Seed the role dropdown from the user's detected role (hint only; the
   // operator can still pick any role to evaluate). Failures are non-fatal.
@@ -152,6 +177,12 @@ export function AppShell() {
               continue;
             }
             if (field.type === 'date_range' && field.default) {
+              // `data_range` (the default) is resolved at runtime by the
+              // DateRangePicker from the region's actual min/max data dates, so
+              // seed NOTHING here - a wall-clock window would sit outside the
+              // data and a stale seed would flash before the bounds land.
+              if (field.default === 'data_range') continue;
+              // Legacy wall-clock defaults, kept only for an older stage config.
               if (field.default === 'last_30_days') {
                 const d = new Date();
                 d.setDate(d.getDate() - 30);
@@ -192,12 +223,19 @@ export function AppShell() {
           }
         }
         bumpViewsVersion();
+
+        // Deep link, LAST. Ordering is load-bearing: it must run after view
+        // registration (or ?view= resolves to nothing) and after the contextBar
+        // defaults above (or those defaults overwrite the link's region/dataset).
+        // Failures are swallowed inside applyDeepLink - a stale link should open
+        // the app, not break it.
+        applyDeepLink({ setContext, showView });
       })
       .catch((err) => {
         console.error('[AppShell] Failed to load config:', err);
         setConfigError('Failed to load app configuration');
       });
-  }, [setContext, bumpViewsVersion, setSnowflakeFqn, setDisplayConfig]);
+  }, [setContext, bumpViewsVersion, setSnowflakeFqn, setDisplayConfig, showView]);
 
   const handleMouseDown = useCallback(() => {
     dragging.current = true;

@@ -1,14 +1,34 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig } from './types';
+import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig, SolutionCatalogEntry } from './types';
 import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
+import { toCatalogEntry } from './use-case';
+import {
+  detectSuspendedInResult,
+  detectOrsSuspended,
+  suspendedMessage,
+  waitCopyForTier,
+} from './routing-suspend';
 
 // Build a graceful fallback message when a stream ends with no usable text part
 // (e.g. the agent gave up after a failed/blocked tool call). Derives a short
 // reason from the last tool error so the user is never left with a blank turn.
 function synthesizeNoTextFallback(parts: MessagePart[]): string {
+  // Safety net for the agent path: if a tool signaled a suspended routing
+  // engine, prefer the friendly "engine starting, retry in ~N min" copy. (The
+  // /api/chat interception normally injects this as a text part already, so
+  // this only matters if that part was dropped.)
+  for (const p of parts) {
+    const det =
+      p.type === 'tool_result' ? detectSuspendedInResult(p.output)
+      : p.type === 'tool_error' ? detectOrsSuspended(p.error)
+      : { suspended: false as const };
+    if (det.suspended) {
+      return suspendedMessage(det.region || 'this region', waitCopyForTier(null), det.state ?? 'suspended');
+    }
+  }
   let reason = '';
   for (const p of parts) {
     if (p.type === 'tool_error' && p.error) {
@@ -69,6 +89,27 @@ interface AppState {
   // Resolved FLEET_ADMIN_APP URL (admins only, from /api/admin-link); null hides
   // the header cross-link.
   adminAppUrl: string | null;
+  // Number of view-data queries currently in flight, across ALL areas. Each
+  // useViewData call increments on request start and decrements on settle, so a
+  // value of 0 means every area has finished fetching for the current params.
+  // The replay Slider gates its auto-advance on this: a blind timer outruns the
+  // queries (a step fires 5 requests, the live ORS ETA alone averages ~1s) and
+  // because useViewData aborts the previous request on every param change, the
+  // dependent areas never complete a fetch while playing.
+  inflight: number;
+  // Required-filter binds that currently have NO selectable value, keyed by bind
+  // name with the filter's label as the value.
+  //
+  // A required filter exists so dependent queries never see a null bind (see
+  // view-filter-bar.tsx). That contract holds only while the filter HAS options:
+  // when its query returns nothing there is no first row to seed, the bind stays
+  // null, and every dependent panel fires anyway. Several of those queries pass
+  // the bind into a table-function argument, where Snowflake cannot evaluate a
+  // SQL-side fallback and raises "Unsupported subquery type cannot be evaluated" -
+  // so the panels ERROR instead of being empty. Recording the gap here lets
+  // useViewData skip the fetch and return an empty result, which is the honest
+  // state and the one every consumer already renders.
+  blockedBinds: Record<string, string>;
 }
 
 interface AppActions {
@@ -84,6 +125,13 @@ interface AppActions {
   showDynamicView: (raw: unknown, title?: string | null) => void;
   updateViewState: (patch: Record<string, unknown>) => void;
   setMapState: (mapState: MapStateDescriptor | null) => void;
+  // Paired in-flight accounting for view-data queries. MUST be 1:1 - a begin
+  // without a matching end leaves inflight above zero forever and permanently
+  // stalls any consumer gating on it.
+  beginFetch: () => void;
+  endFetch: () => void;
+  // Register (label) or clear (null) a required bind that has no selectable value.
+  setBlockedBind: (key: string, label: string | null) => void;
   setDirty: (isDirty: boolean) => void;
   setContext: (key: string, value: unknown) => void;
   getPanelContext: () => PanelContext;
@@ -134,6 +182,8 @@ export const useAppStore = create<AppStore>()(
       selectedRole: 'admin' as AppRole,
       detectedRole: null,
       adminAppUrl: null,
+      inflight: 0,
+      blockedBinds: {},
 
       addUserMessage: (text: string) => {
         const msg: Message = {
@@ -399,6 +449,35 @@ export const useAppStore = create<AppStore>()(
         set((s) => ({ panel: { ...s.panel, mapState } }));
       },
 
+      // In-flight accounting for view-data queries (see AppState.inflight).
+      // Clamped at zero so an unbalanced extra decrement cannot drive the count
+      // negative and mask a genuine leak.
+      beginFetch: () => {
+        set((s) => ({ inflight: s.inflight + 1 }));
+      },
+
+      endFetch: () => {
+        set((s) => ({ inflight: Math.max(0, s.inflight - 1) }));
+      },
+
+      // Required-filter binds with no selectable value (see AppState.blockedBinds).
+      // Writes are made no-ops when nothing changes: this is called from a filter's
+      // render effect, and setting an identical object each time would publish a new
+      // reference and re-render every consumer on every pass.
+      setBlockedBind: (key: string, label: string | null) => {
+        set((s) => {
+          const current = s.blockedBinds[key];
+          if (label === null) {
+            if (current === undefined) return {};
+            const next = { ...s.blockedBinds };
+            delete next[key];
+            return { blockedBinds: next };
+          }
+          if (current === label) return {};
+          return { blockedBinds: { ...s.blockedBinds, [key]: label } };
+        });
+      },
+
       setDirty: (isDirty: boolean) => {
         set((s) => ({ panel: { ...s.panel, hasUnsavedChanges: isDirty } }));
       },
@@ -461,7 +540,7 @@ export const useAppStore = create<AppStore>()(
       getPanelContext: (): PanelContext => {
         const { panel, context, viewContextEnabled, selectedRole } = get();
         if (!viewContextEnabled) {
-          return { activeView: null, viewState: {}, availableViews: [], context, hasUnsavedChanges: false, mapState: null };
+          return { activeView: null, viewState: {}, availableViews: [], solutionCatalog: [], context, hasUnsavedChanges: false, mapState: null };
         }
         let activeView = null;
         if (panel.activeViewId) {
@@ -471,17 +550,26 @@ export const useAppStore = create<AppStore>()(
             label: def?.label || panel.activeViewId,
             description: def?.description || '',
             agentKnowledge: def?.agentKnowledge,
+            useCase: def?.useCase,
           };
         }
-        const availableViews = viewRegistry.list(selectedRole).map((v: { id: string; label: string; description: string }) => ({
+        const visible = viewRegistry.list(selectedRole);
+        const availableViews = visible.map((v: { id: string; label: string; description: string }) => ({
           id: v.id,
           label: v.label,
           description: v.description,
         }));
+        // Cross-view discovery channel: every role-visible view that carries a
+        // useCase, one bounded line each. Role-filtered from the same list as
+        // availableViews so the agent never offers a view the user cannot open.
+        const solutionCatalog: SolutionCatalogEntry[] = visible
+          .filter((v) => v.useCase)
+          .map((v) => toCatalogEntry(v.id, v.label, v.useCase!));
         return {
           activeView,
           viewState: panel.viewState,
           availableViews,
+          solutionCatalog,
           context,
           hasUnsavedChanges: panel.hasUnsavedChanges,
           mapState: panel.mapState,

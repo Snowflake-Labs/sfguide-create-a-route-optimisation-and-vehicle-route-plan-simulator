@@ -16,8 +16,11 @@ import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { ViewProps, MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
+import { parseSvcStatus, regionServiceName, throwIfSuspended, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 type Hazard = 'WILDFIRE' | 'FLOOD';
 interface HazardZone { zoneId: string; geojson: string; wildfire_level: number; flood_level: number; }
@@ -141,6 +144,10 @@ async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown>>
     }
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 160)}`);
   }
+  // A suspended routing engine returns a typed 503 whose body has NO `error`
+  // key, so it MUST be classified before the generic fallback below - otherwise
+  // the friendly resume copy is discarded and the wizard shows "HTTP 503".
+  throwIfSuspended(res.status, body);
   if (!res.ok) throw new Error(String(body.error || `HTTP ${res.status}`));
   return body;
 }
@@ -200,21 +207,7 @@ async function apiOps(verb: string, args: unknown[]): Promise<{ forbidden: boole
 // of per-instance objects with a `status` field; an empty array / missing json
 // means the service exists but has no running instances (suspended). A truly
 // non-existent service makes the ops call THROW ("does not exist"), handled by
-// the caller, so this never returns MISSING.
-function parseSvcStatus(raw: Record<string, unknown>): 'RUNNING' | 'SUSPENDED' | 'UNKNOWN' {
-  const js = raw?.status_json as string | undefined;
-  if (js == null || js === '') return 'SUSPENDED';
-  try {
-    const arr = JSON.parse(js);
-    if (Array.isArray(arr)) {
-      if (!arr.length) return 'SUSPENDED';
-      const statuses = arr.map((i: { status?: string }) => String(i?.status ?? '').toUpperCase());
-      if (statuses.every((s) => s === 'RUNNING' || s === 'READY')) return 'RUNNING';
-      return 'SUSPENDED'; // PENDING / starting -> keep waiting
-    }
-  } catch { /* fall through */ }
-  return 'UNKNOWN';
-}
+// the caller, so this never returns MISSING. (Shared impl in lib/routing-suspend.)
 
 type EnsureOutcome = 'running' | 'resumed' | 'timeout' | 'missing' | 'forbidden';
 
@@ -256,6 +249,9 @@ async function ensureOptimizationService(svc: string): Promise<EnsureOutcome> {
 
 export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
+  // Region bbox: frames the map on the active region as soon as the context
+  // dropdown changes, before hazard zones or participants are seeded.
+  const regionCoords = useRegionCamera(region);
   const setMapState = useAppStore((s) => s.setMapState);
 
   const [avail, setAvail] = useState<'checking' | 'ready' | 'unavailable'>('checking');
@@ -279,6 +275,11 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const [unassignedPids, setUnassignedPids] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when any wizard step hit a suspended routing engine (server has already
+  // triggered the resume). Rendered as the shared notice, not as a red error.
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
+  // Bumped by the suspended-notice Retry to re-run the region data load.
+  const [reloadKey, setReloadKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Every loaded/seeded care center is a depot (no cap); the "Vans" input is the
@@ -518,7 +519,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setAvail('checking'); setError(null);
+      setAvail('checking'); setError(null); setSuspended(null);
       setStep(1); setParticipants([]); setUnionGeo(null); setRouteGeo(null);
       setTrips([]); setPlanStats(null); setSelectedTripKey(null); setUnassignedPids([]);
       try {
@@ -541,11 +542,14 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         setZones(zones2); setCenters(centers2);
         setAvail(zones2.length > 0 && centers2.length > 0 ? 'ready' : 'unavailable');
       } catch (e) {
-        if (!cancelled) { setError(e instanceof Error ? e.message : 'load failed'); setAvail('unavailable'); }
+        if (cancelled) return;
+        if (isRoutingSuspendedError(e)) { setSuspended(e.info); setAvail('unavailable'); return; }
+        setError(e instanceof Error ? e.message : 'load failed'); setAvail('unavailable');
       }
     })();
     return () => { cancelled = true; };
-  }, [region]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region, reloadKey]);
 
   const seed = useCallback(async () => {
     setBusy(true); setError(null); setNotice(null); setRouteGeo(null);
@@ -564,8 +568,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       } catch (e) {
         if (!isTimeoutError(e)) throw e;
         setNotice(`Routing engine is warming up for ${regionLbl}. Retrying...`);
-        const orsSvc = 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
-          + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        const orsSvc = regionServiceName(region, 'ORS');
         let outcome: EnsureOutcome = 'timeout';
         try { outcome = await ensureOptimizationService(orsSvc); } catch { /* best-effort warm; retry regardless */ }
         await sleep(outcome === 'resumed' ? 8000 : 3000);
@@ -592,7 +595,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         flLvl: Number(p.fl_lvl ?? 0), flLbl: String(p.fl_lbl ?? 'No Rating'),
       })));
       setStep(3);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Seeding failed'); }
+    } catch (e) {
+      if (isRoutingSuspendedError(e)) setSuspended(e.info);
+      else setError(e instanceof Error ? e.message : 'Seeding failed');
+    }
     finally { setBusy(false); setNotice(null); }
   }, [region, hazard, minutes, targetCount]);
 
@@ -658,8 +664,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       });
       const challenge = JSON.stringify({ vehicles, jobs });
       const regionLbl = region ?? 'the active region';
-      const defaultSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_'
-        + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+      const defaultSvc = regionServiceName(region, 'VROOM');
       let r = await apiTool('evac_solve', [challenge, region ?? null]);
       let ensured = false;
       // The proc returns reason 'OPTIMIZATION_UNAVAILABLE' when the region's VROOM
@@ -728,7 +733,10 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
         splitForSpeed, tripCap,
       });
       setStep(4);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Solve failed'); }
+    } catch (e) {
+      if (isRoutingSuspendedError(e)) setSuspended(e.info);
+      else setError(e instanceof Error ? e.message : 'Solve failed');
+    }
     finally { setBusy(false); setNotice(null); }
   }, [centers, numVehicles, maxTrips, capacity, participants, hazard, evacLevel, region, optimizeMode]);
 
@@ -882,6 +890,18 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
   const inputStyle = { width: '100%', padding: '8px 10px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)', color: 'var(--text-primary, #111827)' };
   const btn = (enabled: boolean) => ({ padding: '8px 16px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: enabled ? 'pointer' : 'not-allowed', backgroundColor: 'var(--surface-accent-strong, #2563eb)', color: '#fff', opacity: enabled ? 1 : 0.6 });
 
+  // A suspended routing engine is NOT missing data: say so (and offer a retry)
+  // rather than sending the user to the Data Studio to regenerate a region that
+  // is already seeded. Clearing `suspended` re-runs the region effect.
+  if (suspended) {
+    return (
+      <div style={{ padding: '24px', maxWidth: 640 }}>
+        <h2 style={{ fontSize: '16px', fontWeight: 700, margin: '0 0 8px' }}>Emergency Response</h2>
+        <RoutingSuspendedNotice info={suspended} onRetry={() => { setSuspended(null); setAvail('checking'); setReloadKey((k) => k + 1); }} />
+      </div>
+    );
+  }
+
   if (avail === 'unavailable') {
     return (
       <div style={{ padding: '24px', maxWidth: 640 }}>
@@ -1025,7 +1045,7 @@ export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}
       </div>
 
       <div style={{ position: 'relative', height: '100%' }}>
-        <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: `${region}:${step}:${participants.length}` }}
+        <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: `${region}:${step}:${participants.length}`, regionKey: region, regionCoords }}
           getTooltip={(info: any) => {
             const o = info?.object; if (!o) return null;
             if (o.center_name) return { text: o.center_name };

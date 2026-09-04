@@ -5,11 +5,14 @@
 // ROUTING_PLATFORM.CONTRACT (matrix) and OPENROUTESERVICE_APP.CORE.DIRECTIONS
 // (empty-leg polyline) at interaction time - never precomputed into tables.
 
+import type { LngLat } from '@/lib/map/map-fit';
+import { throwIfSuspended } from '@/lib/routing-suspend';
+
 export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
 // Default freight economics. USD per loaded km is the pricing unit; internal
 // volumes inherit the same model, external offers carry their real PRICE_USD.
-export const USD_PER_LOADED_KM = 1.2;
+export const USD_PER_LOADED_KM = 1.3;
 export const KMH_DEFAULT = 60;      // avg speed fallback for time-budget math
 export const COST_SCALE = 100;      // USD -> VROOM integer cost units
 
@@ -65,11 +68,25 @@ export interface Assignment {
   DROPOFF_LON: number; DROPOFF_LAT: number;
   EMPTY_KM: number; LOADED_KM: number; SCORE: number;
   DETOUR_KM?: number; SAVED_KM?: number;
+  // Empty (deadhead) km split into its two real legs: idle location -> first
+  // pickup (out) and last task stop -> tour end (back). EMPTY_KM is their sum.
+  EMPTY_OUT_KM?: number;
+  EMPTY_BACK_KM?: number;
+  // Reposition baseline the vehicle would have driven empty anyway (idle -> end),
+  // from computeEmptyLegBaselines (real ORS matrix, haversine/fixed fallback).
+  // SAVED_KM = max(0, BASELINE_EMPTY_KM - EMPTY_KM) and is only meaningful when
+  // BASELINE_SOURCE is not 'fixed-open'.
+  BASELINE_EMPTY_KM?: number;
+  BASELINE_SOURCE?: EmptyLegBaseline['source'];
   PRODUCT: string; PICKUP_CITY: string; PROPOSAL_DROPOFF_CITY: string;
   HOME_LON: number; HOME_LAT: number;
   TRAILER_DROPOFF_LON: number; TRAILER_DROPOFF_LAT: number;
+  // Tour end point and last task stop - the two ends of the return empty leg.
+  END_LON?: number; END_LAT?: number;
+  LAST_TASK_LON?: number; LAST_TASK_LAT?: number;
   ROUTE_GEOJSON?: unknown;
-  EMPTY_GEOJSON?: unknown;
+  EMPTY_GEOJSON?: unknown;        // idle location -> first pickup
+  EMPTY_RETURN_GEOJSON?: unknown; // last task stop -> tour end (reposition home)
   STOPS: Stop[];
   TOUR_KM?: number;
   TOUR_HRS?: number;
@@ -105,6 +122,9 @@ export async function sfRead(sql: string, opts: { signal?: AbortSignal } = {}): 
     body: JSON.stringify({ sql }), signal: opts.signal,
   });
   const body = await res.json();
+  // A suspended routing engine returns a typed 503 with NO `error` key, so this
+  // check has to come first or the outage is flattened into "HTTP 503".
+  throwIfSuspended(res.status, body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   const rows = (body.rows as Record<string, unknown>[]) || [];
   return rows.map((r) => {
@@ -284,24 +304,203 @@ export async function computeEmptyLegBaselines(
   return out;
 }
 
-// Empty-leg road polyline (trailer dropoff -> first pickup) via ORS DIRECTIONS.
-// Returns a GeoJSON geometry object or null. Numeric-only waypoints -> inlined
-// array literal is injection-safe.
-export async function fetchEmptyLegGeoJSON(
-  profile: string, from: [number, number], to: [number, number], region: string,
-): Promise<unknown | null> {
-  const pts = [from, to].filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0));
-  if (pts.length < 2) return null;
+// Solver snap radius (meters). The optimization/VROOM path enforces the region
+// maximum_snapping_radius (1000m for standard regions). MATRIX snaps more
+// leniently, so a point can return a finite duration yet still abort the whole
+// solve with VROOM code 3 ("could not find routable point within a radius of
+// 1000.0 meters"). Any point whose snapped_distance exceeds this must be dropped
+// before the solve. Continental-preset regions use 5000m; pass snapRadiusM to
+// override when the active region uses a larger radius.
+export const SOLVER_SNAP_RADIUS_M = 1000;
+
+// Stable coordinate key for de-duping / matching dropped points. VROOM echoes
+// the failing coordinate rounded to ~6dp; matching to 4dp (~11m) is safe and
+// mirrors the retry loop's coordNear epsilon (1e-4).
+export function coordKey(lon: number, lat: number): string {
+  return `${Number(lon).toFixed(4)},${Number(lat).toFixed(4)}`;
+}
+
+// Bulk routability pre-filter. A single unroutable location aborts the ENTIRE
+// VROOM solve (code 3) and VROOM names only ONE offending coordinate per solve,
+// so a dataset with N unroutable points needs N sequential failed solves to
+// clear via the drop-and-retry loop. When a large region (e.g. Europe) seeds
+// freight across the whole bbox, N easily exceeds the retry cap and the solve
+// never converges. This helper removes the bulk in a handful of MATRIX calls
+// BEFORE the first solve.
+//
+// Given unique [lon,lat] points and a known-routable central anchor, it probes
+// each point BOTH directions via MATRIX_TABULAR:
+//   inbound  (anchor -> point): durations[0][j] + destinations[j].snapped_distance
+//   outbound (point -> anchor): durations[j][0]
+// A point is unroutable when its snapped_distance is null / greater than the
+// solver radius (off-road / mid-ocean), OR when either direction has a null
+// duration (point on a disconnected road component - e.g. a coastal stub
+// reachable inbound but dead outbound; see the Friesland case). Returns the set
+// of coordKey()s to exclude. Fails OPEN: any probe/parse error keeps the batch
+// so a transient MATRIX hiccup never blocks a valid solve.
+export async function findUnroutablePoints(
+  profile: string,
+  points: [number, number][],
+  anchor: [number, number],
+  region: string | null | undefined,
+  opts: { signal?: AbortSignal; snapRadiusM?: number; batchSize?: number } = {},
+): Promise<Set<string>> {
+  const bad = new Set<string>();
+  if (!points.length) return bad;
+  const prof = profile.replace(/[^a-z0-9-]/gi, '');
+  const regionLit = region ? `'${sqlLiteral(String(region))}'` : 'NULL';
+  const snapMax = opts.snapRadiusM ?? SOLVER_SNAP_RADIUS_M;
+  // Keep each MATRIX call comfortably under the gateway location guardrail.
+  const batchSize = Math.max(1, Math.min(opts.batchSize ?? 150, 150));
+  const anchorArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${Number(anchor[0])}, ${Number(anchor[1])}))`;
+  const fmtArr = (pts: [number, number][]) =>
+    'ARRAY_CONSTRUCT(' + pts.map(([lo, la]) => `ARRAY_CONSTRUCT(${Number(lo)}, ${Number(la)})`).join(',') + ')';
+  const parse = (v: unknown): unknown => {
+    if (v == null) return null;
+    if (typeof v === 'string') { try { return JSON.parse(v); } catch { return null; } }
+    return v;
+  };
+
+  for (let i = 0; i < points.length; i += batchSize) {
+    const batch = points.slice(i, i + batchSize);
+    const destArr = fmtArr(batch);
+    // Two function calls (inbound + outbound) hoisted into a subquery so each
+    // MATRIX_TABULAR is evaluated once; extract durations/destinations from the
+    // shared inbound result.
+    const sql =
+      `SELECT TO_VARCHAR(MI:durations) AS DUR_IN, TO_VARCHAR(MI:destinations) AS DESTS, ` +
+      `TO_VARCHAR(MO:durations) AS DUR_OUT FROM (SELECT ` +
+      `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${prof}', ${anchorArr}, ${destArr}, ${regionLit}) AS MI, ` +
+      `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${prof}', ${destArr}, ${anchorArr}, ${regionLit}) AS MO)`;
+    try {
+      const rows = await sfRead(sql, { signal: opts.signal });
+      const r = rows[0] as { DUR_IN?: unknown; DESTS?: unknown; DUR_OUT?: unknown } | undefined;
+      const durIn = parse(r?.DUR_IN) as number[][] | null;
+      const dests = parse(r?.DESTS) as Array<{ snapped_distance?: number } | null> | null;
+      const durOut = parse(r?.DUR_OUT) as number[][] | null;
+      // If the batch response is unusable, keep every point (fail open).
+      if (!Array.isArray(durIn) || !Array.isArray(durIn[0])) continue;
+      for (let j = 0; j < batch.length; j++) {
+        const inD = durIn[0]?.[j];
+        const outD = Array.isArray(durOut) ? durOut[j]?.[0] : undefined;
+        const snap = Array.isArray(dests) ? dests[j]?.snapped_distance : undefined;
+        const nullIn = inD == null || !Number.isFinite(Number(inD));
+        const nullOut = outD == null || !Number.isFinite(Number(outD));
+        const farSnap = snap == null || !Number.isFinite(Number(snap)) || Number(snap) > snapMax;
+        if (nullIn || nullOut || farSnap) bad.add(coordKey(batch[j][0], batch[j][1]));
+      }
+    } catch {
+      // Transient MATRIX error: keep this batch's points, let the solve-time
+      // retry loop catch any real unroutable point.
+    }
+  }
+  // Sanity backoff: the pre-filter must only ever remove a MINORITY of genuinely
+  // unroutable points (bad data is ~1% of a preset). If it flags a large
+  // fraction, the probe is untrustworthy - a suspended/degraded ORS returns null
+  // durations rather than throwing, a mis-snapped anchor makes everything look
+  // far, and a proxy/parse hiccup can null whole batches. Treating those as
+  // "unroutable" would wrongly strip every trailer/shipment. Back off entirely
+  // (drop nothing) and let the solve path handle it: /api/backload/solve detects
+  // a suspended engine and triggers resume, and the drop-and-retry loop shears
+  // any real code-3 point one at a time.
+  if (points.length && bad.size > Math.floor(points.length * 0.5)) return new Set();
+  return bad;
+}
+
+// ORS routes through at most this many waypoints in one DIRECTIONS call. Longer
+// tours fall back to straight links rather than failing the request.
+export const MAX_DIRECTIONS_WAYPOINTS = 50;
+
+// Drop unusable waypoints (non-finite, null island) and collapse consecutive
+// duplicates - DIRECTIONS rejects zero-length legs, and VROOM `break` steps
+// often repeat the location of the step before them.
+function cleanWaypoints(pts: [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [lon, lat] of pts) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || (lon === 0 && lat === 0)) continue;
+    const prev = out[out.length - 1];
+    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;
+    out.push([Number(lon), Number(lat)]);
+  }
+  return out;
+}
+
+// Road polyline + real road distance through N waypoints via ORS DIRECTIONS.
+// Returns null on failure so callers can fall back to haversine km / straight
+// links. Numeric-only waypoints -> inlined array literal is injection-safe.
+export async function fetchDirections(
+  profile: string, waypoints: [number, number][], region: string,
+): Promise<{ geo: unknown; km: number | null } | null> {
+  const pts = cleanWaypoints(waypoints);
+  if (pts.length < 2 || pts.length > MAX_DIRECTIONS_WAYPOINTS) return null;
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const reg = sqlLiteral(region);
-  const locs = JSON.stringify(pts.map(([lon, lat]) => [Number(lon), Number(lat)]));
-  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
+  const locs = JSON.stringify(pts);
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS G, DISTANCE AS D FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${prof}', OBJECT_CONSTRUCT('coordinates', PARSE_JSON('${locs}'))::VARIANT, '${reg}'))`;
   try {
     const rows = await sfRead(sql);
-    const g = (rows[0] as { G?: string } | undefined)?.G;
-    if (!g) return null;
-    return JSON.parse(g);
+    const r = rows[0] as { G?: string; D?: number | string } | undefined;
+    if (!r?.G) return null;
+    const meters = Number(r.D);
+    return { geo: JSON.parse(r.G), km: Number.isFinite(meters) && meters > 0 ? meters / 1000 : null };
   } catch {
     return null;
   }
+}
+
+// Empty-leg road polyline + real road distance via ORS DIRECTIONS. Used for both
+// deadhead legs of a tour: idle location -> first pickup, and last task stop ->
+// tour end. Returns null on failure so callers fall back to haversine km and
+// simply draw no dashed line.
+export async function fetchEmptyLeg(
+  profile: string, from: [number, number], to: [number, number], region: string,
+): Promise<{ geo: unknown; km: number | null } | null> {
+  return fetchDirections(profile, [from, to], region);
+}
+
+// Geometry-only wrapper (kept for callers that do not need the distance).
+export async function fetchEmptyLegGeoJSON(
+  profile: string, from: [number, number], to: [number, number], region: string,
+): Promise<unknown | null> {
+  const leg = await fetchEmptyLeg(profile, from, to, region);
+  return leg ? leg.geo : null;
+}
+
+// Loaded tour polyline for one assignment, fetched lazily after the solve. The
+// solve itself is run with VROOM geometry disabled (options.g=false) because the
+// decoded per-route geometry blows the 20MB _OPTIMIZATION_RAW response cap on
+// large regions - see the solve call in backload-matching.tsx.
+//
+// Waypoints span the first pickup through the last task stop: `start` (vehicle
+// idle location) and `end` (tour end) are excluded because those two legs are
+// the deadheads, drawn separately from EMPTY_GEOJSON / EMPTY_RETURN_GEOJSON.
+// Falls back to a straight LineString through the same waypoints so the tour is
+// never silently missing from the map.
+export async function fetchTourPath(
+  profile: string, stops: Stop[], region: string,
+): Promise<unknown | null> {
+  const pts = cleanWaypoints(
+    stops.filter((s) => s.kind !== 'start' && s.kind !== 'end')
+      .map((s) => [Number(s.lon), Number(s.lat)] as [number, number]),
+  );
+  if (pts.length < 2) return null;
+  const road = await fetchDirections(profile, pts, region);
+  if (road?.geo) return road.geo;
+  return { type: 'LineString', coordinates: pts };
+}
+
+// Cut a tour polyline at the point closest to `at`, returning the leading
+// portion. Used so the solid "loaded" path stops at the last task stop and the
+// dashed empty-leg layer owns the reposition tail instead of it being painted as
+// if the vehicle were loaded.
+export function trimPathAt(path: LngLat[], at: [number, number]): LngLat[] {
+  if (path.length < 2) return path;
+  let bestIdx = path.length - 1;
+  let bestD = Infinity;
+  for (let i = 0; i < path.length; i += 1) {
+    const d = haversineKm(path[i][0], path[i][1], at[0], at[1]);
+    if (d < bestD) { bestD = d; bestIdx = i; }
+  }
+  // Keep at least two points so the layer still renders something sane.
+  return path.slice(0, Math.max(2, bestIdx + 1));
 }

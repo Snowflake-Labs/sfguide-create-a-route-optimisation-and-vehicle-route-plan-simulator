@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '@/lib/store';
+import { throwIfSuspended, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface WorkflowInstance {
   instance_id: string;
@@ -62,6 +64,7 @@ export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaPro
   const [rows, setRows] = useState<WorkflowInstance[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [sortKey, setSortKey] = useState<keyof WorkflowInstance>('updated_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -71,6 +74,7 @@ export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaPro
   const fetchInstances = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setSuspended(null);
     try {
       const sql = `SELECT instance_id, workflow_type, status, current_step_index, started_by, created_at, updated_at FROM ${fqn}.WORKFLOW_INSTANCES WHERE (status = :status OR :status IS NULL) ORDER BY updated_at DESC NULLS LAST`;
       const res = await fetch('/api/query', {
@@ -78,10 +82,14 @@ export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaPro
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql, params: { status: statusFilter || null } }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = await res.json();
+      const body = await res.json().catch(() => ({}));
+      // Typed 503 first: a suspended payload has no `error` key.
+      throwIfSuspended(res.status, body);
+      if (!res.ok) throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      const result = body as { rows?: unknown[] };
       setRows((result.rows ?? []) as WorkflowInstance[]);
     } catch (e) {
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       setError(e instanceof Error ? e.message : 'Failed to load workflows');
     } finally {
       setLoading(false);
@@ -161,10 +169,11 @@ export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaPro
           Loading...
         </div>
       )}
+      {suspended && <RoutingSuspendedNotice info={suspended} onRetry={fetchInstances} compact />}
       {error && (
         <div style={{ padding: '16px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
       )}
-      {!loading && !error && (
+      {!loading && !error && !suspended && (
         <div style={{ overflow: 'auto', flex: 1 }}>
           {sorted.length === 0 ? (
             <div style={{ padding: '48px', textAlign: 'center', color: 'var(--text-secondary, #9ca3af)', fontSize: '13px' }}>

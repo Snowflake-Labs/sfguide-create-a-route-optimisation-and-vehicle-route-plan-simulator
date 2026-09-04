@@ -16,7 +16,7 @@
 -- is safe to run regardless of which demo skills were deployed.
 -- =============================================================================
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-safe-teardown"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-safe-teardown"}}';
 
 -- -----------------------------------------------------------------------------
 -- 1. Suspend the scheduled / serverless tasks that keep waking compute

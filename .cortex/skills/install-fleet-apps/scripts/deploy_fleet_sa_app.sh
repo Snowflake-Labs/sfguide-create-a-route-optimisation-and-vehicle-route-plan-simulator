@@ -32,12 +32,21 @@ GIT_SHA=$(git rev-parse --short HEAD)
 GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP"
+
+# Each `snow sql` invocation is a NEW session, so the AGENTS.md query_tag has to
+# be prepended per payload. Used by the read-only probes below; the DDL blocks
+# spell the tag out inline.
+TAG_SQL="ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';"
 CONFIG_STAGE="@FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE/config"
 SCHEMA_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER"
 STAGE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE"
 # Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
-IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+# The image repo is the one exception: it must NOT have a static default, because
+# an account can hold two repos (engine images are pinned to the ORS one) and a
+# hardcoded default made the effective repo depend on the invocation path rather
+# than on account state - fragmenting an app's tags across both. Resolved below,
+# after the pre-flight, since it needs $CONNECTION.
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 COMPUTE_POOL="${COMPUTE_POOL:-OPENROUTESERVICE_APP_COMPUTE_POOL}"
 
@@ -67,6 +76,14 @@ if ! grep -qF "fleet_sa_app:${IMAGE_TAG}" "$SERVICE_YAML"; then
 fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  connection=$CONNECTION"
+
+# Resolve the image repo: an explicit env export (installer path) wins, else the
+# repo the live service already points at (so a redeploy never migrates repos),
+# else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
+# shellcheck source=lib/resolve_image_repo.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_image_repo.sh"
+IMAGE_REPO_SQL_NAME=$(resolve_image_repo "$CONNECTION" fleet_sa_app "$SERVICE_FQN") || exit 1
+echo "  image repo=$IMAGE_REPO_SQL_NAME"
 
 # ── 1. Build the Next.js standalone bundle (prebuilt-.next Docker path) ──
 if [ "${SKIP_IMAGE:-0}" != "1" ]; then
@@ -151,8 +168,15 @@ fi
 if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   # First-deploy bootstrap: the service schema + config/spec stage must exist
   # before any stage copy or CREATE SERVICE. Idempotent (IF NOT EXISTS).
+  #
+  # The query warehouse is ensured here too. The service spec sets
+  # SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS and every app query runs on it, so if it
+  # does not exist the app deploys "successfully" and then fails every single
+  # query at runtime. The engine/seed/analytic scripts all create it, but they can
+  # be skipped (--no-engine, seed already present), so do not rely on ordering.
   snow sql -c "$CONNECTION" -q "
     ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"core\"}}';
     CREATE SCHEMA IF NOT EXISTS $SCHEMA_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE STAGE IF NOT EXISTS $STAGE_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_sa_bootstrap.log 2>&1 || { echo "ERROR: schema/stage bootstrap failed"; tail -20 /tmp/fleet_sa_bootstrap.log; exit 1; }
@@ -160,6 +184,19 @@ if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   for f in app-config.json app-views.json; do
     snow stage copy "$APP_DIR/app/$f" "$CONFIG_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
   done
+  # The agent-side solution catalog is derived from app-views.json, so it must be
+  # rebuilt whenever the config is uploaded - otherwise a config-only redeploy
+  # leaves Cowork describing views the app no longer serves. Regenerate then
+  # apply. --enable-templating NONE is required (authored prose contains '&').
+  # Best-effort: never block an app deploy on the catalog.
+  if [ -f "$APP_DIR/app/view_catalog.sql" ]; then
+    echo "[4/7] Refresh solution catalog (VIEW_CATALOG + SOLUTION_CATALOG_SEARCH) ..."
+    python3 "$(dirname "${BASH_SOURCE[0]}")/build_view_catalog.py" >/tmp/fleet_sa_catalog.log 2>&1 \
+      || echo "  WARN: catalog regeneration failed; applying committed view_catalog.sql"
+    snow sql -c "$CONNECTION" -f "$APP_DIR/app/view_catalog.sql" --enable-templating NONE \
+        >>/tmp/fleet_sa_catalog.log 2>&1 \
+      || echo "  WARN: solution catalog refresh failed; see /tmp/fleet_sa_catalog.log"
+  fi
 else
   echo "[4/7] SKIP_CONFIG=1, skipping config bundle upload."
 fi
@@ -204,12 +241,34 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN
       FROM ${CONFIG_STAGE}
       SPECIFICATION_FILE = 'fleet_sa_app_service.yaml';
-    -- CARTO basemap tile proxy (/api/tiles) needs egress to *.basemaps.cartocdn.com.
+    -- Basemaps are CARTO VECTOR styles fetched by the browser, so no server-side
+    -- basemap egress is needed; the EAI is kept attached so a same-origin tile
+    -- proxy can be reinstated without changing the service.
     -- EAIs are a service property (not expressible in the spec YAML), so set it here.
     -- Resolved infra: reuses ORS_CARTO_EAI when present, else FLEET_APP_CARTO_EAI.
     ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_sa_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_sa_alter.log; exit 1; }
+
+  # Endpoint (ingress) access. Opening the app in a browser requires the caller's
+  # role to hold USAGE on the SERVICE OBJECT itself - this is separate from any data
+  # grant, and without it only the deploying (owner) role can open the app while the
+  # data grants look perfectly fine. It must be re-applied on EVERY deploy: a
+  # service teardown/recreate silently drops it, locking out every non-owner role.
+  # Granting USAGE to a role does not require owning that role, so no extra
+  # privilege is needed here. Non-fatal: the fleet app roles are created by the
+  # installer, so a standalone deploy against an account that has not run it yet
+  # should warn rather than fail.
+  for grant_role in FLEET_APP_USER FLEET_APP_OPS FLEET_APP_ADMIN; do
+    snow sql -c "$CONNECTION" -q "
+      ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+      GRANT USAGE ON DATABASE ${SCHEMA_FQN%%.*} TO ROLE $grant_role;
+      GRANT USAGE ON SCHEMA $SCHEMA_FQN TO ROLE $grant_role;
+      GRANT USAGE ON SERVICE $SERVICE_FQN TO ROLE $grant_role;
+    " >/tmp/fleet_sa_grant_${grant_role}.log 2>&1 \
+      && echo "  [grant] $grant_role: USAGE on service endpoint" \
+      || echo "  [grant] $grant_role: WARN (not granted; role may not exist yet - see /tmp/fleet_sa_grant_${grant_role}.log)"
+  done
 else
   echo "[5-6/7] SKIP_SERVICE=1, skipping service rotate."
 fi
@@ -217,6 +276,7 @@ fi
 # ── 4. Resolve endpoint URL ─────────────────────────────────────
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
+  $TAG_SQL
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))

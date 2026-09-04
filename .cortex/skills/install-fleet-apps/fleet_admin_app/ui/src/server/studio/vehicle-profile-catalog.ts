@@ -61,6 +61,15 @@ export interface VehicleProfileRow {
   deviationDistanceRatio: number; // fraction over expected distance that flags a deviation
   teleportDistanceM: number;      // GPS jump (m) between consecutive pings that flags a teleport
   speedingRatio: number;          // posted-speed multiplier above which a ping is flagged IS_SPEEDING
+  // Shortest stationary span the DELIVERY_SYNC detector accepts as a genuine
+  // site visit. Per vehicle type because the single HGV-tuned 180s value halved
+  // recall on lighter modes: on the seeded ebike dataset 6,961 of 14,604
+  // candidate visits (48%) were shorter than 180s while the generator's own
+  // configured destination dwell median is 120s. The floor sits just above the
+  // genuine noise spike (189 candidates under 30s, 741 in 30-59s, then a smooth
+  // tail) rather than at zero, so a courier held at a light inside a 100 m fence
+  // is still rejected.
+  minStopSeconds: number;
   dwellSla: DwellSlaRow[];         // per LOCATION_TYPE warn/critical minutes + geofence buffer
 }
 
@@ -75,6 +84,16 @@ const BASELINE_DWELL_SLA: DwellSlaRow[] = [
   { locationType: 'STORE',       warningMin: 2,   criticalMin: 8,   bufferRadiusM: 100 },
   { locationType: 'DETOUR',      warningMin: 2,   criticalMin: 5,   bufferRadiusM: 100 },
   { locationType: 'IDLE',        warningMin: 120, criticalMin: 240, bufferRadiusM: 100 },
+  // The LOCATION_TYPE vocabulary is per-preset, not universal: `urban-ebike`
+  // maps every POI to RESTAURANT and `urban-car` falls through to the mapper
+  // default LOCATION (see studio/profiles.ts category_map). Consumers that
+  // INNER JOIN this table on LOCATION_TYPE to resolve BUFFER_RADIUS_M - notably
+  // the DELIVERY_SYNC detector - therefore matched nothing outside the HGV
+  // presets and silently produced zero rows. These three keep the table a
+  // complete cover of the vocabulary the generator can actually emit.
+  { locationType: 'RESTAURANT',  warningMin: 2,   criticalMin: 8,   bufferRadiusM: 100 }, // courier drop, mirrors STORE
+  { locationType: 'LOCATION',    warningMin: 3,   criticalMin: 10,  bufferRadiusM: 100 }, // generic catch-all, mirrors DESTINATION
+  { locationType: 'ADDRESS',     warningMin: 3,   criticalMin: 10,  bufferRadiusM: 100 }, // declared `_default` of urban-ebike
 ];
 
 const DWELL_SCALE: Record<VehicleType, number> = { hgv: 1.0, car: 0.6, ebike: 0.5 };
@@ -103,6 +122,7 @@ const ASSET_SPEC: Record<VehicleType, {
   weightTons: number; heightM: number; lengthM: number; widthM: number; axleloadT: number;
   hazmatProb: number; subtypeDist: SubtypeShare[] | null;
   deviationDistanceRatio: number; teleportDistanceM: number; speedingRatio: number;
+  minStopSeconds: number;
 }> = {
   hgv: {
     weightTons: 40.0, heightM: 4.00, lengthM: 16.50, widthM: 2.55, axleloadT: 11.50,
@@ -114,16 +134,19 @@ const ASSET_SPEC: Record<VehicleType, {
       { subtype: 'TANKER', pct: 3 },
     ],
     deviationDistanceRatio: 0.25, teleportDistanceM: 2500, speedingRatio: 1.05,
+    minStopSeconds: 180,
   },
   car: {
     weightTons: 2.0, heightM: 2.00, lengthM: 4.50, widthM: 1.85, axleloadT: 1.20,
     hazmatProb: 0, subtypeDist: null,
     deviationDistanceRatio: 0.20, teleportDistanceM: 1000, speedingRatio: 1.08,
+    minStopSeconds: 120,
   },
   ebike: {
     weightTons: 0.1, heightM: 1.20, lengthM: 1.80, widthM: 0.70, axleloadT: 0.05,
     hazmatProb: 0, subtypeDist: null,
     deviationDistanceRatio: 0.15, teleportDistanceM: 300, speedingRatio: 1.15,
+    minStopSeconds: 60,
   },
 };
 
@@ -137,6 +160,7 @@ export const VEHICLE_PROFILE_CATALOG: VehicleProfileRow[] = (Object.keys(ASSET_S
     hazmatProb: a.hazmatProb, subtypeDist: a.subtypeDist,
     deviationDistanceRatio: a.deviationDistanceRatio, teleportDistanceM: a.teleportDistanceM,
     speedingRatio: a.speedingRatio,
+    minStopSeconds: a.minStopSeconds,
     dwellSla: scaledDwellSla(vt),
   };
 });
@@ -158,13 +182,53 @@ const PROFILE_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHI
   SUBTYPE_DIST            VARIANT,
   DEVIATION_DISTANCE_RATIO FLOAT   NOT NULL,
   TELEPORT_DISTANCE_M     NUMBER   NOT NULL,
-  SPEEDING_RATIO          FLOAT
+  SPEEDING_RATIO          FLOAT,
+  MIN_STOP_SECONDS        NUMBER
 ) COMMENT = '${TRACK}'`;
 
 // Idempotent column add for accounts whose DIM_VEHICLE_PROFILE predates SPEEDING_RATIO
 // (the CREATE IF NOT EXISTS above won't alter an existing table). Nullable so the ADD
 // never violates NOT NULL on tables that still hold rows; the MERGE always supplies a value.
 const PROFILE_ALTER = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS SPEEDING_RATIO FLOAT`;
+// Same idempotent-add contract for MIN_STOP_SECONDS (see VehicleProfileRow).
+// The dependent `SELECT *` view must be dropped first: Snowflake fixes a view's
+// column count at creation, so ADD COLUMN invalidates
+// FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE ("declared 13 column(s), but view
+// query produces 14"). The pack step recreates it.
+//
+// GUARDED, because `IF EXISTS` covers the VIEW and not the NAMESPACE: where
+// FLEET_APP does not exist the bare statement raises "Database 'FLEET_APP' does
+// not exist", and ensureVehicleProfileCatalog runs its statements in a plain
+// sequential loop, so one throw would skip both MERGEs and leave the catalog
+// unseeded. Boot order happens to make that unreachable today (the packs create
+// FLEET_APP first), but the seeding must not depend on that staying true - the
+// SQL twin of this file was broken by exactly this assumption.
+const PROFILE_DROP_DEPENDENT_VIEW = `EXECUTE IMMEDIATE $$
+BEGIN
+  DROP VIEW IF EXISTS FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE;
+  RETURN 'dropped dependent VW_VEHICLE_PROFILE; recreated after column ALTERs';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE not present; continuing';
+END;
+$$`;
+const PROFILE_ALTER_MIN_STOP = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS MIN_STOP_SECONDS NUMBER`;
+// Recreate the SELECT * contract view after all column ALTERs are done.
+// The pack step runs BEFORE the admin app boots, so this function is the
+// only place that can restore it. Without this, VW_VEHICLE_PROFILE stays
+// dropped and every consumer (route_deviation, the agent, Cortex Analyst)
+// silently breaks.
+const PROFILE_RECREATE_VIEW = `EXECUTE IMMEDIATE $$
+BEGIN
+  CREATE OR REPLACE VIEW FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+    COMMENT='${TRACK}' AS
+  SELECT * FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
+  RETURN 'recreated FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'FLEET_APP.UNIFIED_FLEET schema absent; the pack step creates the view';
+END;
+$$`;
 
 const DWELL_SLA_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
   VEHICLE_TYPE    VARCHAR NOT NULL,
@@ -179,7 +243,7 @@ function profileMergeSql(): string {
     const dist = r.subtypeDist ? `PARSE_JSON($$${JSON.stringify(r.subtypeDist)}$$)` : 'NULL';
     return `SELECT '${r.vehicleType}' AS VEHICLE_TYPE, '${r.orsProfile}' AS ORS_PROFILE, '${r.operatingMode}' AS OPERATING_MODE, ` +
       `${r.weightTons} AS WEIGHT_TONS, ${r.heightM} AS HEIGHT_M, ${r.lengthM} AS LENGTH_M, ${r.widthM} AS WIDTH_M, ${r.axleloadT} AS AXLELOAD_T, ` +
-      `${r.hazmatProb} AS HAZMAT_PROB, ${dist} AS SUBTYPE_DIST, ${r.deviationDistanceRatio} AS DEVIATION_DISTANCE_RATIO, ${r.teleportDistanceM} AS TELEPORT_DISTANCE_M, ${r.speedingRatio} AS SPEEDING_RATIO`;
+      `${r.hazmatProb} AS HAZMAT_PROB, ${dist} AS SUBTYPE_DIST, ${r.deviationDistanceRatio} AS DEVIATION_DISTANCE_RATIO, ${r.teleportDistanceM} AS TELEPORT_DISTANCE_M, ${r.speedingRatio} AS SPEEDING_RATIO, ${r.minStopSeconds} AS MIN_STOP_SECONDS`;
   }).join('\n      UNION ALL ');
   // MERGE updates existing rows too, so re-tuned defaults propagate on next boot.
   return `MERGE INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE tgt
@@ -192,9 +256,10 @@ function profileMergeSql(): string {
       WEIGHT_TONS = src.WEIGHT_TONS, HEIGHT_M = src.HEIGHT_M, LENGTH_M = src.LENGTH_M,
       WIDTH_M = src.WIDTH_M, AXLELOAD_T = src.AXLELOAD_T, HAZMAT_PROB = src.HAZMAT_PROB,
       SUBTYPE_DIST = src.SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO = src.DEVIATION_DISTANCE_RATIO,
-      TELEPORT_DISTANCE_M = src.TELEPORT_DISTANCE_M, SPEEDING_RATIO = src.SPEEDING_RATIO
-    WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO)
-      VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.OPERATING_MODE, src.WEIGHT_TONS, src.HEIGHT_M, src.LENGTH_M, src.WIDTH_M, src.AXLELOAD_T, src.HAZMAT_PROB, src.SUBTYPE_DIST, src.DEVIATION_DISTANCE_RATIO, src.TELEPORT_DISTANCE_M, src.SPEEDING_RATIO)`;
+      TELEPORT_DISTANCE_M = src.TELEPORT_DISTANCE_M, SPEEDING_RATIO = src.SPEEDING_RATIO,
+      MIN_STOP_SECONDS = src.MIN_STOP_SECONDS
+    WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO, MIN_STOP_SECONDS)
+      VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.OPERATING_MODE, src.WEIGHT_TONS, src.HEIGHT_M, src.LENGTH_M, src.WIDTH_M, src.AXLELOAD_T, src.HAZMAT_PROB, src.SUBTYPE_DIST, src.DEVIATION_DISTANCE_RATIO, src.TELEPORT_DISTANCE_M, src.SPEEDING_RATIO, src.MIN_STOP_SECONDS)`;
 }
 
 function dwellSlaMergeSql(): string {
@@ -219,7 +284,9 @@ function dwellSlaMergeSql(): string {
 // every boot. Must run BEFORE any contract view/UDTF that reads the catalog
 // and before generation stamps DIM_FLEET.
 export async function ensureVehicleProfileCatalog(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [PROFILE_DDL, PROFILE_ALTER, profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
+  const stmts = [PROFILE_DDL, PROFILE_ALTER, PROFILE_DROP_DEPENDENT_VIEW,
+                 PROFILE_ALTER_MIN_STOP, PROFILE_RECREATE_VIEW,
+                 profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
   for (const sql of stmts) {
     await snowSql(sql, 'FLEET_INTELLIGENCE', 'CORE');
   }

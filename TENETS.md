@@ -214,14 +214,21 @@ estate/region/params change, and diverges from what a customer would actually bu
 ## 10. Agent-aware by construction
 
 **Tenet.** Every consumer-facing view - new or changed - must be answerable by the left-panel
-Cortex agent. The on-screen numbers, rankings, and the map's meaning must reach the agent through
-the panel-context channels; a view that renders data the agent cannot see or reason about is
-incomplete. The three grounding channels are injected in
+Cortex agent, and every view must tell a Solution Engineer what it is for. The on-screen numbers,
+the map's meaning, and the view's purpose must reach the agent through the panel-context channels;
+a view that renders data the agent cannot see, or that no one can tell you the point of, is
+incomplete. The four grounding channels are injected in
 `fleet_sa_app/ui/src/app/api/chat/route.ts`: **Channel A** - `viewState` flattened to `key=value`
 (publish bounded, pre-joined STRING memos under the reserved `__memo_<area>` key); **Channel B** -
 `mapState` (layer counts, blank-layer diagnosis, bbox, legend, and one clicked `selectedFeature`
 that only populates when the layer has `clickEmits`); **Channel C** - `agentKnowledge` in
-`app-views.json` (`preferredTool` + `keyMetrics` + `exampleQuestions` + `gotchas`).
+`app-views.json` (`preferredTool` + `keyMetrics` + `exampleQuestions` + `gotchas`); **Channel D** -
+`useCase` in `app-views.json` or the pack registration, composed to markdown by `lib/use-case.ts`
+for the per-view "i" overlay and folded into `panelContext.solutionCatalog` (one bounded line per
+role-visible view) so the agent can answer cross-view discovery questions - what use cases exist,
+what fits this industry or persona, what to demo for a problem a customer describes. A, B and C are
+about the data ON this view; D is about WHY the view exists, and is the only channel the agent can
+use before the user has opened anything.
 
 **How to apply.** When adding or altering a view: (1) publish its headline metrics as a bounded,
 pre-joined STRING under `__memo_<area>` in `viewState` (a nested object serializes to
@@ -230,10 +237,22 @@ pre-joined STRING under `__memo_<area>` in `viewState` (a nested object serializ
 verified tool-to-semantic-view pairing; if no semantic view models the data (e.g. safety events,
 work-items), OMIT `preferredTool` and say so in `gotchas` rather than implying a tool can answer.
 (3) Add `clickEmits` to the primary point/choropleth layer so "tell me about the one I clicked"
-works. (4) Sanity-check by asking the agent a representative question about the on-screen result.
+works. (4) Carry a `useCase` (`headline` + `businessQuestion` are mandatory; `audience`,
+`industries`, `talkTrack`, `snowflakeCapabilities`, `dataRequired`, `valueDrivers`, `method`,
+`caveats` optional). `snowflakeCapabilities` must be TRUTHFUL: claim live routing only where the
+view actually calls ORS at interaction time (tenet 9), and tell a Dynamic Table or native-geospatial
+story where that is what the view proves. `caveats` must name synthetic data and any metric that is
+hindsight rather than a forecast. `method` is the home for methodology prose - there is no separate
+free-text `info` field. Enforced by `scripts/check_view_usecases.py` (wired into `.githooks/pre-commit`).
+(5) Sanity-check by asking the agent a representative question about the on-screen result, and one
+cross-view question ("what could we show a retail customer?") to confirm the catalog entry reads well.
 Keep every memo bounded (top-N rows, key columns, capped length).
 
 **Anti-pattern.** Shipping a view whose KPIs, table rows, or chart values exist only client-side
 with no channel; an `agentKnowledge.preferredTool` pointed at a semantic view that does not model
-the data, so the agent invents numbers or misroutes; or dumping raw rows/objects into `viewState`
-(which breaks the Channel A `key=value` flattening).
+the data, so the agent invents numbers or misroutes; dumping raw rows/objects into `viewState`
+(which breaks the Channel A `key=value` flattening); shipping a view with no `useCase`, which
+renders perfectly while showing no "i" overlay and staying invisible to the agent's catalog - a
+silent failure, hence the check; or editing a view block in `app-views.json` that a script under
+`scripts/` generates wholesale, because the next run of that generator reverts the edit (fix the
+generator first - see `add_delivery_sync_view.py`).

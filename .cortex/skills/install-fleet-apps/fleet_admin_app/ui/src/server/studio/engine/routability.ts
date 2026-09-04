@@ -63,20 +63,28 @@ function snapThresholdForProfile(profile: string): number {
 // (tiny self-matrix per candidate) and use the first that snaps. No dependency
 // on any polygon interior-point function (Snowflake has no ST_POINTONSURFACE,
 // and ST_CENTROID of a multipolygon can also fall in water).
-async function findRoutableSource(
+async function findRoutableSources(
   pois: POI[],
   profileEsc: string,
   regionEsc: string,
   snowSql: SnowSqlFn,
-): Promise<{ lng: number; lat: number } | null> {
-  if (pois.length === 0) return null;
-  const MAX_CANDIDATES = 5;
+  want = 3,
+): Promise<{ lng: number; lat: number }[]> {
+  if (pois.length === 0) return [];
+  // Probe more evenly-spread candidates than we need, keep the first `want`
+  // that snap. Multiple, spatially-separated sources make the reachability
+  // probe robust to a source that happens to sit on a small disconnected
+  // component (island / enclave): a POI counts as routable if it is reachable
+  // both ways from ANY source, so a single bad source cannot drop the mainland.
+  const MAX_CANDIDATES = 12;
   const stride = Math.max(1, Math.floor(pois.length / MAX_CANDIDATES));
   const candidates: POI[] = [];
   for (let i = 0; i < pois.length && candidates.length < MAX_CANDIDATES; i += stride) {
     candidates.push(pois[i]);
   }
+  const sources: { lng: number; lat: number }[] = [];
   for (const c of candidates) {
+    if (sources.length >= want) break;
     const pt = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${c.lng}, ${c.lat}))`;
     const sql = `
       SELECT TO_VARCHAR(M:durations[0]) AS DURATIONS
@@ -92,13 +100,13 @@ async function findRoutableSource(
       const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
       const d = Array.isArray(durations) ? durations[0] : null;
       if (d != null && Number.isFinite(Number(d))) {
-        return { lng: c.lng, lat: c.lat };
+        sources.push({ lng: c.lng, lat: c.lat });
       }
     } catch {
       // Try the next candidate; a single bad probe is non-fatal.
     }
   }
-  return null;
+  return sources;
 }
 
 async function filterRoutablePois(
@@ -114,72 +122,80 @@ async function filterRoutablePois(
   const profileEsc = profile.replace(/'/g, "''");
   const regionEsc = region.replace(/'/g, "''");
 
-  // Source the reachability probe from a real, snappable POI (see
-  // findRoutableSource). Fall back to the bbox centroid only if no candidate
-  // POI snapped - in that case the graph/region is likely broken and the
-  // "too aggressive" guard below will return the unfiltered list anyway.
-  const source = await findRoutableSource(pois, profileEsc, regionEsc, snowSql);
-  const centerLng = source ? source.lng : (bbox.min_lng + bbox.max_lng) / 2;
-  const centerLat = source ? source.lat : (bbox.min_lat + bbox.max_lat) / 2;
-  const sourcesArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${centerLng}, ${centerLat}))`;
+  // Probe reachability from a few real, snappable POIs (see findRoutableSources).
+  // A POI counts routable if reachable BOTH ways from ANY source, so multiple
+  // spatially-separated sources make the probe robust to a source that lands on
+  // a small disconnected component. If NO candidate snapped, the graph/region is
+  // likely broken - keep the unfiltered list (the probe cannot be trusted).
+  const sources = await findRoutableSources(pois, profileEsc, regionEsc, snowSql);
+  const sourcesArr = 'ARRAY_CONSTRUCT(' +
+    (sources.length
+      ? sources.map(s => `ARRAY_CONSTRUCT(${s.lng}, ${s.lat})`).join(',')
+      : `ARRAY_CONSTRUCT(${(bbox.min_lng + bbox.max_lng) / 2}, ${(bbox.min_lat + bbox.max_lat) / 2})`) +
+    ')';
+  const nSources = Math.max(1, sources.length);
 
   const BATCH_SIZE = 1000;
   const SNAP_THRESHOLD_M = snapThresholdForProfile(profile);
   const reachable = new Array<boolean>(pois.length).fill(false);
   let droppedNullDuration = 0;
   let droppedFarSnap = 0;
+  let droppedOutbound = 0;
 
   for (let i = 0; i < pois.length; i += BATCH_SIZE) {
     const batch = pois.slice(i, i + BATCH_SIZE);
     const destsArr = 'ARRAY_CONSTRUCT(' +
       batch.map(p => `ARRAY_CONSTRUCT(${p.lng}, ${p.lat})`).join(',') +
       ')';
+    // Inbound MI (sources x batch): MI:durations[s][j] + MI:destinations[j].snapped_distance.
+    // Outbound MO (batch x sources): MO:durations[j][s]. A POI is only routable
+    // for the solver if BOTH directions have a finite path (a point on a
+    // disconnected stub can be reachable inbound but dead outbound).
     const sql = `
-      SELECT TO_VARCHAR(M:durations[0]) AS DURATIONS,
-             TO_VARCHAR(M:destinations) AS DESTINATIONS
+      SELECT TO_VARCHAR(MI:durations) AS DUR_IN,
+             TO_VARCHAR(MI:destinations) AS DESTINATIONS,
+             TO_VARCHAR(MO:durations) AS DUR_OUT
       FROM (
-        SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-          '${profileEsc}',
-          ${sourcesArr},
-          ${destsArr},
-          '${regionEsc}'
-        ) AS M
+        SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${profileEsc}', ${sourcesArr}, ${destsArr}, '${regionEsc}') AS MI,
+               OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${profileEsc}', ${destsArr}, ${sourcesArr}, '${regionEsc}') AS MO
       )
     `;
     try {
       const rows = await snowSql(sql);
-      const rawDur = rows?.[0]?.DURATIONS;
+      const rawDurIn = rows?.[0]?.DUR_IN;
       const rawDest = rows?.[0]?.DESTINATIONS;
-      if (!rawDur) {
+      const rawDurOut = rows?.[0]?.DUR_OUT;
+      if (!rawDurIn) {
         log('WARN', 'Studio', `POI filter batch ${i}-${i + batch.length}: empty result, keeping batch`);
         for (let j = 0; j < batch.length; j++) reachable[i + j] = true;
         continue;
       }
-      const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
+      const durIn = JSON.parse(typeof rawDurIn === 'string' ? rawDurIn : String(rawDurIn));
+      const durOut = rawDurOut ? JSON.parse(typeof rawDurOut === 'string' ? rawDurOut : String(rawDurOut)) : [];
       const destinations = rawDest ? JSON.parse(typeof rawDest === 'string' ? rawDest : String(rawDest)) : [];
-      if (!Array.isArray(durations)) {
+      if (!Array.isArray(durIn) || !Array.isArray(durIn[0])) {
         log('WARN', 'Studio', `POI filter batch ${i}: non-array durations, keeping batch`);
         for (let j = 0; j < batch.length; j++) reachable[i + j] = true;
         continue;
       }
+      const fin = (v: unknown) => v != null && Number.isFinite(Number(v));
       for (let j = 0; j < batch.length; j++) {
-        const d = durations[j];
-        if (d == null || !Number.isFinite(Number(d))) {
-          droppedNullDuration++;
-          continue;
-        }
+        // snapped_distance is a per-destination property, source-independent.
         const dest = Array.isArray(destinations) ? destinations[j] : null;
-        // Treat a null destination object as not routable: ORS could not snap the POI to any
-        // road in the active graph. Older code kept these because snap was undefined.
-        if (dest == null) {
-          droppedNullDuration++;
-          continue;
-        }
+        if (dest == null) { droppedNullDuration++; continue; }
         const snap = dest?.snapped_distance;
         if (snap == null || !Number.isFinite(Number(snap)) || Number(snap) > SNAP_THRESHOLD_M) {
-          droppedFarSnap++;
-          continue;
+          droppedFarSnap++; continue;
         }
+        // Reachable inbound from any source?
+        let anyIn = false, anyOut = false;
+        for (let s = 0; s < nSources; s++) {
+          if (!anyIn && fin(durIn[s]?.[j])) anyIn = true;
+          if (!anyOut && fin(Array.isArray(durOut) ? durOut[j]?.[s] : undefined)) anyOut = true;
+          if (anyIn && anyOut) break;
+        }
+        if (!anyIn) { droppedNullDuration++; continue; }
+        if (!anyOut) { droppedOutbound++; continue; }
         reachable[i + j] = true;
       }
     } catch (e: any) {
@@ -191,18 +207,25 @@ async function filterRoutablePois(
   const filtered = pois.filter((_p, i) => reachable[i]);
   const dropped = pois.length - filtered.length;
   log('INFO', 'Studio', `POI routability filter: ${filtered.length}/${pois.length} routable`, {
-    detail: { dropped, droppedNullDuration, droppedFarSnap, profile, region, source: [centerLng, centerLat], sourceFromPoi: source != null, snapThresholdM: SNAP_THRESHOLD_M },
+    detail: { dropped, droppedNullDuration, droppedFarSnap, droppedOutbound, profile, region, sources: sources.length, snapThresholdM: SNAP_THRESHOLD_M },
   });
 
-  if (filtered.length < Math.max(50, Math.floor(pois.length * 0.5))) {
-    const msg = `POI filter dropped too many (${dropped}/${pois.length}); falling back to unfiltered list ` +
-      (source ? `(source POI [${centerLng},${centerLat}] snapped but most POIs unreachable)` : `(no candidate POI snapped to the graph - probable region/graph mismatch)`);
+  // Only fall back to the unfiltered pool when the probe cannot be trusted (no
+  // source snapped -> region/graph mismatch) or almost nothing survived (the
+  // dataset could not be seeded). For a continent-scale region where a large
+  // share of POIs sit on islands / across the sea, dropping that share is the
+  // CORRECT outcome, not a filter that is "too aggressive" - keeping the routable
+  // subset is exactly what prevents the downstream VROOM code-3 solve aborts.
+  const ROUTABLE_FLOOR = 50;
+  if (sources.length === 0 || filtered.length < ROUTABLE_FLOOR) {
+    const msg = `POI filter kept too few (${filtered.length}/${pois.length}); falling back to unfiltered list ` +
+      (sources.length ? `(sources snapped but almost no POIs routable - probable graph mismatch)` : `(no candidate POI snapped to the graph - probable region/graph mismatch)`);
     log('WARN', 'Studio', msg);
-    onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable - too aggressive, using unfiltered list`);
+    onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable - unusable, using unfiltered list`);
     return pois;
   }
 
-  onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable (dropped ${droppedNullDuration} unreachable, ${droppedFarSnap} far-snap)`);
+  onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable (dropped ${droppedNullDuration} unreachable, ${droppedFarSnap} far-snap, ${droppedOutbound} outbound-dead)`);
   return filtered;
 }
 

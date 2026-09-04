@@ -3,6 +3,8 @@ import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { requireUser } from '@/lib/ingress-identity';
+import { detectOrsSuspended, detectSuspendedInResult } from '@/lib/routing-suspend';
+import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
 
 // Max serialized challenge size forwarded to the solver. VROOM's own body-parser
 // limit is 50mb (for large precomputed matrices), but a matrix-free challenge
@@ -71,6 +73,16 @@ async function handlePost(req: Request) {
     const errObj = result as { error?: unknown; message?: unknown } | null;
     if (errObj && typeof errObj === 'object' && 'error' in errObj && errObj.error) {
       const msg = typeof errObj.message === 'string' ? errObj.message : String(errObj.error);
+      // Suspended routing engine: the region's ORS/VROOM service is down (DNS
+      // failure inside the gateway). Resume it and return a typed, friendly
+      // notice instead of the raw connection error.
+      const det = detectOrsSuspended(msg);
+      const detResult = det.suspended ? det : detectSuspendedInResult(result);
+      const resumeRegion = detResult.suspended ? resolveResumeRegion(detResult.region, region) : null;
+      if (resumeRegion) {
+        const payload = await resumeAndBuildPayload(resumeRegion, detResult.kind, detResult.state);
+        return NextResponse.json(payload, { status: 503 });
+      }
       // VROOM code 3 aborts the whole solve when a single location cannot be
       // routed (e.g. a point snapped onto a disconnected road component). It
       // names the offending coordinate: "Unfound route(s) from location
@@ -83,9 +95,17 @@ async function handlePost(req: Request) {
     }
     return NextResponse.json({ ok: true, result });
   } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Backload solve failed';
+    // A suspended ORS/VROOM service can also surface as a thrown SQL/HTTP error.
+    const det = detectOrsSuspended(rawMsg);
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, region) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
     logger.error('backload-solve', {}, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Backload solve failed' },
+      { error: rawMsg },
       { status: 500 },
     );
   }

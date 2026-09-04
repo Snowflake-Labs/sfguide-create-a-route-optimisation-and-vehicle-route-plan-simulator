@@ -32,11 +32,20 @@ GIT_SHA=$(git rev-parse --short HEAD)
 GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP"
+
+# Each `snow sql` invocation is a NEW session, so the AGENTS.md query_tag has to
+# be prepended per payload. Used by the read-only probes below; the DDL blocks
+# spell the tag out inline.
+TAG_SQL="ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';"
 # Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
 SPEC_STAGE_NAME="${SPEC_STAGE_NAME:-OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE}"
 SPEC_STAGE="@${SPEC_STAGE_NAME}/services/fleet_admin_app"
-IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+# The image repo is deliberately NOT defaulted here: an account can hold two
+# repos (engine images are pinned to the ORS one by provision_engine.sh) and a
+# hardcoded default made the effective repo depend on the invocation path rather
+# than on account state - which fragmented this app's tags across both repos.
+# Resolved after the pre-flight, since resolution needs $CONNECTION.
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 # OSM catalog egress (geofabrik + bbbike) for Region Builder "Refresh Catalog".
 # Resolved by install_fleet_apps.sh (reuse ORS_OSM_EAI else FLEET_APP_OSM_EAI);
@@ -69,6 +78,14 @@ if ! grep -qF "fleet_admin_app:${IMAGE_TAG}" "$SERVICE_YAML"; then
 fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  pool=$COMPUTE_POOL  connection=$CONNECTION"
+
+# Resolve the image repo: an explicit env export (installer path) wins, else the
+# repo the live service already points at (so a redeploy never migrates repos),
+# else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
+# shellcheck source=lib/resolve_image_repo.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_image_repo.sh"
+IMAGE_REPO_SQL_NAME=$(resolve_image_repo "$CONNECTION" fleet_admin_app "$SERVICE_FQN") || exit 1
+echo "  image repo=$IMAGE_REPO_SQL_NAME"
 
 # ── 1. Build the Next.js standalone bundle (prebuilt-.next Docker path) ──
 if [ "${SKIP_IMAGE:-0}" != "1" ]; then
@@ -132,7 +149,11 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     grep -nE 'image:' "$STAGE_YAML" || true
     exit 1
   fi
-  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}'; CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';" >/dev/null 2>&1 || true
+  # ROUTING_ANALYTICS is ensured alongside the spec stage: the service spec sets
+  # SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS and every admin-app query runs on it, so a
+  # missing warehouse means the service deploys fine and then fails every query.
+  # The engine/seed/analytic scripts create it too, but any of them can be skipped.
+  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}'; CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"core\"}}'; CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';" >/dev/null 2>&1 || true
   snow stage copy "$STAGE_YAML" "$SPEC_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 
   echo "[5/7] CREATE SERVICE IF NOT EXISTS (first deploy) ..."
@@ -155,6 +176,22 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI, $OSM_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_admin_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_admin_alter.log; exit 1; }
+
+  # Endpoint (ingress) access - see the same block in deploy_fleet_sa_app.sh. USAGE
+  # on the SERVICE OBJECT is what lets a role open the app in a browser; it is
+  # separate from data grants and is silently dropped by a service recreate, so it is
+  # re-applied on every deploy. The admin console is deliberately narrower than the
+  # SA app: OPS and ADMIN only, no FLEET_APP_USER.
+  for grant_role in FLEET_APP_OPS FLEET_APP_ADMIN; do
+    snow sql -c "$CONNECTION" -q "
+      ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+      GRANT USAGE ON DATABASE ${SERVICE_FQN%%.*} TO ROLE $grant_role;
+      GRANT USAGE ON SCHEMA ${SERVICE_FQN%.*} TO ROLE $grant_role;
+      GRANT USAGE ON SERVICE $SERVICE_FQN TO ROLE $grant_role;
+    " >/tmp/fleet_admin_grant_${grant_role}.log 2>&1 \
+      && echo "  [grant] $grant_role: USAGE on service endpoint" \
+      || echo "  [grant] $grant_role: WARN (not granted; role may not exist yet - see /tmp/fleet_admin_grant_${grant_role}.log)"
+  done
 else
   echo "[4-6/7] SKIP_SERVICE=1, skipping service rotate."
 fi
@@ -162,6 +199,7 @@ fi
 # ── 3. Resolve endpoint URL ─────────────────────────────────────
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
+  $TAG_SQL
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))

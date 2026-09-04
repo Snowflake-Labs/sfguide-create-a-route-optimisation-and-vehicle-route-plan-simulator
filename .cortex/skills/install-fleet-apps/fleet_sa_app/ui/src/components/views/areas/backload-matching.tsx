@@ -17,19 +17,29 @@ import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
+import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
 import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import InfoTip from './backload-matching/InfoTip';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
-  fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLegGeoJSON,
+  fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
+  findUnroutablePoints, coordKey,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   type VehicleClass, type EmptyLegBaseline,
 } from './backload-matching/helpers';
+
+// Cached ORS empty-leg result (geometry + real road km) keyed by
+// `<trailer>|<offer>` for the outbound leg and `<trailer>|<offer>|ret` for the
+// return reposition.
+type EmptyLegCacheEntry = { geo: unknown; km: number | null };
 
 // Default payload caps (editable via sliders). clampPayload enforces the matrix
 // budget on Solve so the precomputed ORS matrix stays under the location cap.
@@ -41,10 +51,12 @@ const BM_INTERNAL_MIN = 0, BM_INTERNAL_MAX = 80;
 const BM_EXTERNAL_MIN = 0, BM_EXTERNAL_MAX = 60;
 const BM_MAX_MATRIX_LOCATIONS = 500;
 const BM_SOLVE_TIMEOUT_MS = 180_000;
-// A single VROOM code-3 unroutable location aborts the whole solve. We drop the
-// offending shipment/vehicle and re-solve; cap the retries so a pathological
-// dataset can never loop forever.
-const BM_MAX_UNROUTABLE_RETRIES = 8;
+// A single VROOM code-3 unroutable location aborts the whole solve. A bulk
+// bidirectional MATRIX pre-filter (findUnroutablePoints) removes the bulk of
+// unroutable points before the first solve; this loop is the thin safety net
+// for the rare point that snaps leniently in MATRIX yet still aborts the solve.
+// Cap the retries so a pathological dataset can never loop forever.
+const BM_MAX_UNROUTABLE_RETRIES = 16;
 
 // VROOM echoes the failing coordinate rounded to ~6dp, so match with a small
 // epsilon rather than exact equality.
@@ -64,6 +76,9 @@ function clampPayload(v: number, i: number, e: number, budget: number): { v: num
 
 export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
+  // Region bbox: frames the map on the active region immediately on a context
+  // change, before any trailers/offers for that region have loaded.
+  const regionCoords = useRegionCamera(region);
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
   const [vehicleClass, setVehicleClass] = useState<VehicleClass | null>(null);
@@ -90,9 +105,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [sharedDestUserEdited, setSharedDestUserEdited] = useState(false);
 
   // Economics levers (USD).
-  const [costPerHourUsd, setCostPerHourUsd] = useState(45);
-  const [costPerKmUsd, setCostPerKmUsd] = useState(0.85);
-  const [fixedDispatchUsd, setFixedDispatchUsd] = useState(120);
+  const [costPerHourUsd, setCostPerHourUsd] = useState(28);
+  const [costPerKmUsd, setCostPerKmUsd] = useState(0.80);
+  const [fixedDispatchUsd, setFixedDispatchUsd] = useState(140);
   const [costPerDeliveryUsd, setCostPerDeliveryUsd] = useState(15);
   const [internalRatePerKm, setInternalRatePerKm] = useState(USD_PER_LOADED_KM);
   const [hideUnprofitable, setHideUnprofitable] = useState(false);
@@ -111,7 +126,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [solving, setSolving] = useState(false);
   const solveAbortRef = useRef<AbortController | null>(null);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const emptyLegCacheRef = useRef<Map<string, unknown>>(new Map());
+  const emptyLegCacheRef = useRef<Map<string, EmptyLegCacheEntry>>(new Map());
+  // Cached ORS loaded-tour polyline keyed by `<trailer>|<offer>|tour`.
+  const tourCacheRef = useRef<Map<string, unknown>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
@@ -119,7 +136,12 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [solverLog, setSolverLog] = useState<string | null>(null);
+  // How many vehicles the last solve actually submitted to VROOM. This is the
+  // only honest denominator for "% dispatched assigned" - the idle pool is much
+  // larger than what clampPayload / the routable pre-filter let through.
+  const [solveStats, setSolveStats] = useState<{ vehiclesSent: number } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [auditRows, setAuditRows] = useState<Record<string, unknown>[]>([]);
 
   const recenterRef = useRef<(() => void) | null>(null);
@@ -168,6 +190,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       setTrailers(tDeduped);
       setInternal(iDeduped);
       setExternal(oDeduped);
+      // A data reload invalidates the previous solve: drop the results and the
+      // dispatch stats together so the KPI denominator can never be paired with
+      // assignments from a different preset / region.
+      setAssignments([]); setUnassigned([]); setSelectedAssignment(null);
+      setSolveStats(null); setSolverLog(null);
 
       let cls: VehicleClass | null = null;
       try { cls = await fetchVehicleClass(vehicleType); }
@@ -181,11 +208,14 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
 
       if (!tDeduped.length || !iDeduped.length || !oDeduped.length) {
-        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) \u2014 trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
+        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
       } else {
         setSeedHint(null);
       }
     } catch (e) {
+      // A suspended engine reaches here when one of the DATA reads (not the
+      // solve) is the first thing to touch live routing.
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       setSeedHint(e instanceof Error ? e.message : 'Failed to load backload data');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,6 +234,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     }
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({});
     setConfirmMsg(null); setSolverLog(null); setSolveError(null); setSelectedAssignment(null);
+    setSolveStats(null);
 
     const cls = vehicleClass;
     const profile = cls.ORS_PROFILE;
@@ -338,25 +369,107 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     const ac = new AbortController();
     solveAbortRef.current = ac;
+    setSuspended(null);
 
     // Solve, dropping any VROOM code-3 unroutable location and re-solving the
-    // remainder. A single point snapped onto a disconnected road component
-    // otherwise aborts the whole solve ("Unfound route(s) from location
-    // [lon,lat]"). VROOM names the offending coordinate, so we drop the matching
-    // shipment/vehicle (a shipment needs BOTH endpoints routable) and retry.
-    let workVehicles = vrpVehicles;
-    let workShipments = vrpShipments;
+    // remainder. A single point snapped onto a disconnected road component (or
+    // farther than the region snap radius) otherwise aborts the whole solve
+    // ("Unfound route(s) from location [lon,lat]" / "could not find routable
+    // point within a radius of Xm"). VROOM names only ONE offending coordinate
+    // per solve, so a dataset with many unroutable points would need one failed
+    // solve per point. To avoid exhausting the retry cap on large regions
+    // (Europe seeds freight across the whole bbox incl. islands / ocean-edge),
+    // we first bulk-remove unroutable points via a bidirectional MATRIX probe,
+    // then use the loop below only as a safety net.
     const excludedLabels: string[] = [];
     const droppedCoords: string[] = [];
+    let workVehicles = vrpVehicles;
+    let workShipments = vrpShipments;
+
+    // Anchor for the routability probe: the trailer start with the most
+    // neighbours within 300km (densest continental cluster centre) is on the
+    // main road graph, so probing every point to/from it flags island /
+    // off-road / disconnected points up front.
+    const vehStarts = vrpVehicles
+      .map((v) => (Array.isArray(v.start) ? (v.start as number[]) : null))
+      .filter((s): s is number[] => s != null && s.length >= 2);
+    let anchor: [number, number] | null = null;
+    if (vehStarts.length) {
+      let bestCount = -1;
+      for (const cand of vehStarts) {
+        let cnt = 0;
+        for (const other of vehStarts) if (haversineKm(cand[0], cand[1], other[0], other[1]) <= 300) cnt++;
+        if (cnt > bestCount) { bestCount = cnt; anchor = [cand[0], cand[1]]; }
+      }
+    }
+
+    if (anchor) {
+      setSolverLog('Checking stop routability...');
+      const uniq = new Map<string, [number, number]>();
+      const addPt = (loc: unknown) => {
+        if (Array.isArray(loc) && loc.length >= 2) {
+          const p: [number, number] = [Number(loc[0]), Number(loc[1])];
+          if (Number.isFinite(p[0]) && Number.isFinite(p[1])) uniq.set(coordKey(p[0], p[1]), p);
+        }
+      };
+      for (const v of vrpVehicles) { addPt(v.start); addPt(v.end); }
+      for (const s of vrpShipments) {
+        addPt((s.pickup as { location?: unknown }).location);
+        addPt((s.delivery as { location?: unknown }).location);
+      }
+      let badKeys = new Set<string>();
+      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal }); }
+      catch { badKeys = new Set(); }
+      if (badKeys.size) {
+        const locBad = (loc: unknown): boolean =>
+          Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
+        workVehicles = vrpVehicles.filter((veh) => {
+          const hit = locBad(veh.start) || locBad(veh.end);
+          if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
+          return !hit;
+        });
+        workShipments = vrpShipments.filter((s) => {
+          const pu = (s.pickup as { location?: unknown }).location;
+          const dl = (s.delivery as { location?: unknown }).location;
+          const hitPickup = locBad(pu);
+          const hitDelivery = locBad(dl);
+          if (hitPickup || hitDelivery) {
+            const sid = Number((s.pickup as { id?: unknown }).id);
+            const ent = offerById.get(sid);
+            const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
+            excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
+          }
+          return !(hitPickup || hitDelivery);
+        });
+        for (const k of badKeys) droppedCoords.push(k);
+      }
+    }
+
+    // Belt-and-suspenders: a pre-filter must never zero out the whole solve. If
+    // it did (untrustworthy probe that slipped past the helper's own backoff),
+    // discard it and solve the full set - the solve path detects a suspended
+    // engine and the retry loop shears any real code-3 point. Do NOT surface an
+    // "all unroutable" error here; that hides a live-but-degraded engine.
+    if (!workVehicles.length || !workShipments.length) {
+      workVehicles = vrpVehicles;
+      workShipments = vrpShipments;
+      excludedLabels.length = 0;
+      droppedCoords.length = 0;
+    }
+
     let respObj: Record<string, unknown> | null = null;
     let fatal: string | null = null;
 
     for (let attempt = 0; attempt <= BM_MAX_UNROUTABLE_RETRIES; attempt++) {
       const deadlineHandle = setTimeout(() => ac.abort(), BM_SOLVE_TIMEOUT_MS);
-      // Let the routing gateway pre-compute the matrix (options.g=true).
-      const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: true } };
+      // Solve for assignments and steps only. options.g=false tells the gateway
+      // to strip VROOM's per-route road geometry: decoded, it blows the 20MB
+      // _OPTIMIZATION_RAW external-function cap on large regions (Snowflake
+      // 100335). The map fetches each tour's road path lazily via ORS
+      // DIRECTIONS in the enrichment pass below.
+      const challenge = { vehicles: workVehicles, shipments: workShipments, options: { g: false } };
       setSolverLog(attempt === 0
-        ? 'Calling OPTIMIZATION...'
+        ? (excludedLabels.length ? `Excluded ${excludedLabels.length} unroutable stop(s); calling OPTIMIZATION...` : 'Calling OPTIMIZATION...')
         : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
       let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
       let ok = false;
@@ -367,6 +480,15 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         });
         body = await res.json();
         ok = res.ok;
+        // Suspended routing engine: server has triggered a resume. Show the
+        // shared notice with a Retry instead of a raw solver error.
+        if (res.status === 503 && isSuspendedBody(body)) {
+          clearTimeout(deadlineHandle);
+          solveAbortRef.current = null;
+          setSuspended(body);
+          setSolving(false);
+          return;
+        }
       } catch (e) {
         clearTimeout(deadlineHandle);
         solveAbortRef.current = null;
@@ -445,6 +567,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       const t = trailerById.get(vehId);
       if (!t) continue;
       const steps = Array.isArray(route?.steps) ? (route.steps as Record<string, unknown>[]) : [];
+      // Normally null: the solve requests no geometry (options.g=false) and the
+      // enrichment pass below fills ROUTE_GEOJSON from ORS DIRECTIONS. Kept as a
+      // defensive read so a geometry-bearing response is still honoured.
       const routeGeo = Array.isArray(route?.geometry) && (route.geometry as unknown[]).length > 1
         ? { type: 'LineString', coordinates: route.geometry } : null;
       const taskSteps = steps.filter((s) => s.type === 'pickup' || s.type === 'delivery' || s.type === 'job' || s.type === 'break');
@@ -494,17 +619,44 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       stops.push({ kind: 'end', label: endMode === 'open' ? 'Tour ends here (open-ended)' : (endMode === 'shared' ? 'Shared destination' : 'Home depot'), city: endMode === 'home' ? t.HOME_DEPOT : undefined, lon: endLon, lat: endLat });
 
       const offerIdFirst = ent.kind === 'INTERNAL' ? (row as unknown as Volume).ID : row.OFFER_ID;
-      const directHomeKm = haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), endLon, endLat);
-      const tourKm = haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), Number(row.PICKUP_LON), Number(row.PICKUP_LAT))
-        + haversineKm(Number(row.PICKUP_LON), Number(row.PICKUP_LAT), Number(row.DROPOFF_LON), Number(row.DROPOFF_LAT))
-        + haversineKm(Number(row.DROPOFF_LON), Number(row.DROPOFF_LAT), endLon, endLat);
-      const detourKm = Math.max(0, tourKm - directHomeKm);
-      const savedKm = Math.max(0, directHomeKm - detourKm);
 
       const tourSec = Number(route?.duration) || 0;
       const tourHrs = tourSec / 3600;
       const tourKmReal = (Number(route?.distance) || (tourSec * speedKmh / 3600 * 1000)) / 1000;
+
+      // Deadhead accounting. Two empty legs exist on every closed tour: the
+      // outbound reposition (idle location -> first pickup) and the return
+      // reposition (last task stop -> tour end). Both are real empty km; the
+      // return leg used to be omitted entirely, which understated EMPTY_KM and
+      // let the tour polyline paint the reposition home as if it were loaded.
+      // Haversine here is the seed value - the lazy ORS fetch below replaces
+      // both with real road distance when the routing seam answers.
+      const emptyOutKm = empty;
+      const emptyBackKm = endMode === 'open' || prevLon === null || prevLat === null
+        ? 0
+        : haversineKm(prevLon, prevLat, endLon, endLat);
+      const emptyKm = emptyOutKm + emptyBackKm;
+
+      // Baseline = what this vehicle would have driven EMPTY anyway to get from
+      // its idle location to its end point (real ORS distance from
+      // computeEmptyLegBaselines, haversine/fixed fallback). "Deadhead avoided"
+      // is that baseline minus the empty km actually driven on the tour, so it
+      // can never exceed the reposition the vehicle was going to make. The old
+      // formula (directHomeKm - detourKm) reported almost the entire straight-line
+      // distance to a far-away home depot as a saving, which is why it routinely
+      // came out larger than the loaded distance.
+      const baseline = baselines.get(t);
+      const baselineEmptyKm = baseline ? baseline.distMeters / 1000 : undefined;
+      const baselineSource = baseline ? baseline.source : undefined;
+      const savedKm = baselineEmptyKm !== undefined && baselineSource !== 'fixed-open'
+        ? Math.max(0, baselineEmptyKm - emptyKm)
+        : undefined;
+      // Marginal distance added versus that same baseline, in real road km so the
+      // card stops mixing haversine and ORS distances.
+      const detourKm = baselineEmptyKm !== undefined ? Math.max(0, tourKmReal - baselineEmptyKm) : undefined;
+
       const waitSec = taskSteps.reduce((s, ts) => s + (Number(ts.waiting_time) || 0), 0);
+
       const nDeliv = taskSteps.filter((s) => s.type === 'delivery' || s.type === 'job').length;
 
       let revenue = 0;
@@ -526,7 +678,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         DROPOFF_LON: Number(row.DROPOFF_LON), DROPOFF_LAT: Number(row.DROPOFF_LAT),
         TRAILER_DROPOFF_LON: Number(t.DROPOFF_LON), TRAILER_DROPOFF_LAT: Number(t.DROPOFF_LAT),
         HOME_LON: Number(t.HOME_LON), HOME_LAT: Number(t.HOME_LAT),
-        EMPTY_KM: empty, LOADED_KM: totalLoadedKm || loaded, DETOUR_KM: detourKm, SAVED_KM: savedKm,
+        EMPTY_KM: emptyKm, LOADED_KM: totalLoadedKm || loaded, DETOUR_KM: detourKm, SAVED_KM: savedKm,
+        EMPTY_OUT_KM: emptyOutKm, EMPTY_BACK_KM: emptyBackKm,
+        BASELINE_EMPTY_KM: baselineEmptyKm, BASELINE_SOURCE: baselineSource,
+        END_LON: endLon, END_LAT: endLat,
+        LAST_TASK_LON: prevLon ?? undefined, LAST_TASK_LAT: prevLat ?? undefined,
         SCORE: tourSec, PRODUCT: row.PRODUCT, PICKUP_CITY: row.PICKUP_CITY, PROPOSAL_DROPOFF_CITY: row.DROPOFF_CITY,
         ROUTE_GEOJSON: routeGeo, STOPS: stops, TOUR_KM: tourKmReal, TOUR_HRS: tourHrs, WAIT_SEC: waitSec,
         N_DELIVERIES: nDeliv, COST_USD: cost, REVENUE_USD: revenue, NET_BENEFIT_USD: revenue - cost,
@@ -535,6 +691,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     setAssignments(newAssignments);
     setUnassigned(newUnassigned);
+    // Record what was actually dispatched (post clamp + post routable pre-filter)
+    // so the "% dispatched assigned" KPI divides by the set the solver saw.
+    setSolveStats({ vehiclesSent: workVehicles.length });
     const avgDetour = newAssignments.length ? Math.round(newAssignments.reduce((s, a) => s + (a.DETOUR_KM || 0), 0) / newAssignments.length) : 0;
     const totalNet = Math.round(newAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0));
     const excludedNote = excludedLabels.length
@@ -552,13 +711,69 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       setSolveError('Solver returned no routes. Try raising Detour budget or Allowed deviation, and confirm the region routing service is running.');
     }
 
-    // Lazily fetch empty-leg polylines (idle location -> first pickup).
+    // Lazily fetch the three polylines a tour needs through the live routing
+    // seam: the loaded path (first pickup -> last task stop), and both empty legs
+    // - outbound (idle location -> first pickup) and return (last task stop ->
+    // tour end). The loaded path is fetched here rather than taken from the solve
+    // response because the solve runs with VROOM geometry disabled to stay under
+    // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
+    // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
+    // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
     Promise.all(newAssignments.map(async (a) => {
-      const key = `${a.TRAILER_ID}|${a.OFFER_ID}`;
-      const cached = emptyLegCacheRef.current.get(key);
-      if (cached) { a.EMPTY_GEOJSON = cached; return; }
-      const geo = await fetchEmptyLegGeoJSON(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], cfg.region);
-      if (geo) { emptyLegCacheRef.current.set(key, geo); a.EMPTY_GEOJSON = geo; }
+      const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
+      const retKey = `${outKey}|ret`;
+      const tourKey = `${outKey}|tour`;
+
+      const cachedTour = tourCacheRef.current.get(tourKey);
+      if (cachedTour) {
+        a.ROUTE_GEOJSON = cachedTour;
+      } else {
+        const geo = await fetchTourPath(profile, a.STOPS, cfg.region);
+        if (geo) {
+          tourCacheRef.current.set(tourKey, geo);
+          a.ROUTE_GEOJSON = geo;
+        }
+      }
+      const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
+      if (cachedOut) {
+        a.EMPTY_GEOJSON = cachedOut.geo;
+        if (cachedOut.km !== null) a.EMPTY_OUT_KM = cachedOut.km;
+      } else {
+        const leg = await fetchEmptyLeg(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], cfg.region);
+        if (leg) {
+          emptyLegCacheRef.current.set(outKey, leg);
+          a.EMPTY_GEOJSON = leg.geo;
+          if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
+        }
+      }
+
+      const hasReturn = a.END_LON !== undefined && a.END_LAT !== undefined
+        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined
+        && (a.EMPTY_BACK_KM ?? 0) > 0;
+      if (hasReturn) {
+        const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
+        if (cachedRet) {
+          a.EMPTY_RETURN_GEOJSON = cachedRet.geo;
+          if (cachedRet.km !== null) a.EMPTY_BACK_KM = cachedRet.km;
+        } else {
+          const leg = await fetchEmptyLeg(
+            profile,
+            [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+            [a.END_LON as number, a.END_LAT as number],
+            cfg.region,
+          );
+          if (leg) {
+            emptyLegCacheRef.current.set(retKey, leg);
+            a.EMPTY_RETURN_GEOJSON = leg.geo;
+            if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
+          }
+        }
+      }
+
+      a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
+      if (a.BASELINE_EMPTY_KM !== undefined && a.BASELINE_SOURCE !== 'fixed-open') {
+        a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
+      }
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
@@ -631,7 +846,13 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const totalNetBenefit = useMemo(() => Math.round(visibleAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0)), [visibleAssignments]);
   const internalCount = useMemo(() => visibleAssignments.filter((a) => a.SOURCE === 'INTERNAL').length, [visibleAssignments]);
   const internalPct = visibleAssignments.length ? Math.round((internalCount / visibleAssignments.length) * 100) : 0;
-  const trailersAssignedPct = trailers.length ? Math.round((visibleAssignments.length / Math.min(trailers.length, 30)) * 100) : 0;
+  // Denominator = vehicles actually submitted to the last solve; before the first
+  // solve fall back to the idle pool. Clamped at 100 defensively - if the clamp
+  // ever engages, the numerator/denominator pairing has regressed.
+  const trailersConsidered = solveStats?.vehiclesSent ?? trailers.length;
+  const trailersAssignedPct = trailersConsidered
+    ? Math.min(100, Math.round((visibleAssignments.length / trailersConsidered) * 100))
+    : 0;
 
   const selected = visibleAssignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment) || null;
   const stopsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -651,7 +872,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
             ? a.STOPS.filter((s) => s.kind === 'dropoff').map((s) => s.city || s.label).filter(Boolean)
             : [];
           const dropStr = drops.length ? drops.join(', ') : (a.PROPOSAL_DROPOFF_CITY || '?');
-          return `${a.TRAILER_ID} ${a.SOURCE} ${a.PICKUP_CITY || '?'}->${a.PROPOSAL_DROPOFF_CITY || '?'} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km loaded ${Math.round(a.LOADED_KM || 0)}km, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
+          return `${a.TRAILER_ID} ${a.SOURCE} ${a.PICKUP_CITY || '?'}->${a.PROPOSAL_DROPOFF_CITY || '?'} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
         }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
       : null;
     return {
@@ -664,12 +885,18 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       assignments_count: visibleAssignments.length || null,
       internal_matched: visibleAssignments.length ? internalCount : null,
       internal_pct: visibleAssignments.length ? internalPct : null,
+      vehicles_dispatched: solveStats?.vehiclesSent ?? null,
+      trailers_assigned_pct: visibleAssignments.length ? trailersAssignedPct : null,
       net_benefit_usd: visibleAssignments.length ? totalNetBenefit : null,
+      empty_km_total: visibleAssignments.length
+        ? Math.round(visibleAssignments.reduce((s, a) => s + (a.EMPTY_KM || 0), 0)) : null,
+      deadhead_avoided_km_total: visibleAssignments.length
+        ? Math.round(visibleAssignments.reduce((s, a) => s + (a.SAVED_KM || 0), 0)) : null,
       unassigned_count: unassigned.length || null,
       selected_trailer: selected?.TRAILER_ID ?? null,
       __memo_backload_matching: memo,
     };
-  }, [cfg, region, trailers.length, internal.length, external.length, visibleAssignments, internalCount, internalPct, totalNetBenefit, unassigned.length, selected]);
+  }, [cfg, region, trailers.length, internal.length, external.length, visibleAssignments, internalCount, internalPct, totalNetBenefit, unassigned.length, selected, solveStats, trailersAssignedPct]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -705,9 +932,20 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }) as unknown as Layer);
     }
     const hasSel = !!selectedAssignment;
+    // The lazily fetched tour path already ends at the last task stop, so this
+    // trim is normally a no-op. It stays because a geometry-bearing solve
+    // response would cover the return reposition too, and that tail must not be
+    // painted as if the vehicle were still carrying freight - the dashed
+    // empty-leg layer owns it.
     const loadedPaths = visibleAssignments.map((a, i) => ({ a, i }))
       .filter(({ a }) => !!a.ROUTE_GEOJSON)
-      .map(({ a, i }) => ({ idx: i, path: coordsFromGeoJSON(a.ROUTE_GEOJSON), isSel: a.ASSIGNMENT_ID === selectedAssignment }));
+      .map(({ a, i }) => {
+        const full = coordsFromGeoJSON(a.ROUTE_GEOJSON);
+        const path = a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined && (a.EMPTY_BACK_KM ?? 0) > 0
+          ? trimPathAt(full, [a.LAST_TASK_LON, a.LAST_TASK_LAT])
+          : full;
+        return { idx: i, path, isSel: a.ASSIGNMENT_ID === selectedAssignment };
+      });
     result.push(new PathLayer({
       id: 'loaded-routes', data: loadedPaths, getPath: (d: { path: LngLat[] }) => d.path,
       getColor: (d: { idx: number; isSel: boolean }) => { const c = ROUTE_COLORS[d.idx % ROUTE_COLORS.length]; const a = d.isSel ? 255 : (hasSel ? 80 : 110); return [c[0], c[1], c[2], a]; },
@@ -716,15 +954,16 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       updateTriggers: { getColor: [selectedAssignment, hasSel], getWidth: [selectedAssignment, hasSel] },
     }) as unknown as Layer);
     visibleAssignments.forEach((a, i) => {
-      if (!a.EMPTY_GEOJSON) return;
       const isSel = a.ASSIGNMENT_ID === selectedAssignment;
       const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
       const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
-      result.push(new GeoJsonLayer({
-        id: `empty-${i}`, data: a.EMPTY_GEOJSON as GeoJSON.GeoJSON,
+      const dashed = (id: string, data: unknown) => new GeoJsonLayer({
+        id, data: data as GeoJSON.GeoJSON,
         stroked: true, getLineColor: [110, 110, 110, emptyAlpha], getDashArray: [10, 6], lineWidthMinPixels: emptyW,
         extensions: [new PathStyleExtension({ dash: true })], parameters: { depthTest: false },
-      }) as unknown as Layer);
+      }) as unknown as Layer;
+      if (a.EMPTY_GEOJSON) result.push(dashed(`empty-${i}`, a.EMPTY_GEOJSON));
+      if (a.EMPTY_RETURN_GEOJSON) result.push(dashed(`empty-ret-${i}`, a.EMPTY_RETURN_GEOJSON));
     });
     if (selected && Array.isArray(selected.STOPS) && selected.STOPS.length) {
       const palette: Record<Stop['kind'], { ring: [number, number, number]; halo: [number, number, number, number] }> = {
@@ -767,6 +1006,22 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     return result;
   }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected]);
 
+  // Agent grounding, Channel B: this page builds deck.gl layers itself, so nothing
+  // publishes map state for it and the agent could not answer "what is on the map"
+  // or diagnose an empty one. Derived from the compiled layers so a future layer is
+  // described automatically. Gated on having loaded something, so a pre-solve page
+  // publishes null instead of an all-zero map the agent would report as a finding.
+  usePublishMapState(
+    useMemo(
+      () =>
+        describeDeckLayers(layers, {
+          selection: { selected_trailer: selected?.TRAILER_ID ?? null },
+          ready: trailers.length > 0 || internal.length > 0 || external.length > 0,
+        }),
+      [layers, selected, trailers.length, internal.length, external.length],
+    ),
+  );
+
   // Fit-to coords: selected route (+empty leg) when selected, else the estate.
   const fitCoords = useMemo<LngLat[]>(() => {
     if (selected) {
@@ -776,6 +1031,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         [selected.DROPOFF_LON, selected.DROPOFF_LAT],
         ...coordsFromGeoJSON(selected.ROUTE_GEOJSON),
         ...coordsFromGeoJSON(selected.EMPTY_GEOJSON),
+        ...coordsFromGeoJSON(selected.EMPTY_RETURN_GEOJSON),
       ];
       return out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
     }
@@ -863,7 +1119,13 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         <div style={kpiCard}><div style={kpiLabel}>Trailers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{trailers.length}</div></div>
         <div style={kpiCard}><div style={kpiLabel}>Internal volumes</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internal.length}</div></div>
         <div style={kpiCard}><div style={kpiLabel}>External offers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{external.length}</div></div>
-        <div style={kpiCard}><div style={kpiLabel}>% trailers assigned</div><div style={{ fontSize: 22, fontWeight: 700 }}>{trailersAssignedPct}%</div></div>
+        <div style={kpiCard}>
+          <div style={kpiLabel}>% dispatched assigned</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{trailersAssignedPct}%</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)' }}>
+            {visibleAssignments.length} of {trailersConsidered} {solveStats ? 'sent to solver' : 'idle'}
+          </div>
+        </div>
         <div style={kpiCard}><div style={kpiLabel}>% internal coverage</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internalPct}%</div></div>
         <div style={kpiCard}><div style={kpiLabel}>Net benefit ($)</div><div style={{ fontSize: 22, fontWeight: 700 }}>${totalNetBenefit.toLocaleString()}</div></div>
       </div>
@@ -984,12 +1246,13 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(200,200,200)', border: '1px solid rgb(120,120,120)', display: 'inline-block' }} />External offer</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />Internal volume</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(22,163,74)', border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.15)', display: 'inline-block' }} />Idle trailer</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />Empty leg</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />Empty leg (out + return)</span>
       </div>
 
       {confirmMsg && (<div style={{ marginBottom: 12, fontSize: 13, padding: '8px 12px', background: 'rgba(22,163,74,0.10)', border: '1px solid rgba(22,163,74,0.4)', borderRadius: 4, color: '#065f46' }}>{confirmMsg}</div>)}
       {solverLog && (<div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary, #6b7280)' }}>{solverLog}</div>)}
       {vehicleClassError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Vehicle class issue.</b> {vehicleClassError}</div>)}
+      {suspended && (<div style={{ marginBottom: 12 }}><RoutingSuspendedNotice info={suspended} onRetry={solve} compact /></div>)}
       {solveError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Solve returned no assignments.</b> {solveError}</div>)}
 
       {/* Map + assignments */}
@@ -1001,7 +1264,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
               <button type="button" onClick={() => solveAbortRef.current?.abort()} style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>Cancel</button>
             </div>
           )}
-          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
           <button type="button" onClick={() => recenterRef.current?.()} style={{ position: 'absolute', top: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Recenter</button>
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ position: 'absolute', top: 12, right: 108, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Stops &darr;</button>

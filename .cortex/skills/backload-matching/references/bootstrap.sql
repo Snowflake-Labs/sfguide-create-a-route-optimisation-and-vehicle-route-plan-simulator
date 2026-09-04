@@ -65,8 +65,8 @@ USING (
     ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0, FALSE,  80, 'motorcycle'),
     ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0, FALSE,  80, 'car'),
     ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, FALSE, 150, 'van'),
-    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'trailer'),
-    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'truck')
+    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 28.0, TRUE,  200, 'trailer'),
+    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 28.0, TRUE,  200, 'truck')
   AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
 ) src
 ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE

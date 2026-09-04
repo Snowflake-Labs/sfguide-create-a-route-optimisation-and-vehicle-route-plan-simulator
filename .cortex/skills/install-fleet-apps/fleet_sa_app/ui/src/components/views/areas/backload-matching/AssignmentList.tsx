@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from 'react';
 import { Assignment, ROUTE_COLORS } from './helpers';
+import InfoTip from './InfoTip';
 
 interface Props {
   assignments: Assignment[];
@@ -60,7 +61,10 @@ export default function AssignmentList({
               {a.PICKUP_CITY} -&gt; {a.PROPOSAL_DROPOFF_CITY}
             </div>
             <div style={{ fontSize: 11, marginTop: 2 }}>
-              empty {Math.round(a.EMPTY_KM)} km &middot; loaded {Math.round(a.LOADED_KM)} km &middot; {a.PRODUCT}
+              empty {Math.round(a.EMPTY_KM)} km
+              {a.EMPTY_OUT_KM !== undefined && (a.EMPTY_BACK_KM ?? 0) > 0
+                ? ` (${Math.round(a.EMPTY_OUT_KM)} out + ${Math.round(a.EMPTY_BACK_KM as number)} back)` : ''}
+              {' '}&middot; loaded {Math.round(a.LOADED_KM)} km &middot; {a.PRODUCT}
             </div>
             {(a.REVENUE_USD !== undefined || a.COST_USD !== undefined) && (
               <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
@@ -69,9 +73,15 @@ export default function AssignmentList({
                 {a.WAIT_SEC ? ` \u00b7 wait ${Math.round(a.WAIT_SEC / 60)} min` : ''}
               </div>
             )}
-            {a.DETOUR_KM !== undefined && (
+            {(a.DETOUR_KM !== undefined || a.SAVED_KM !== undefined) && (
               <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
-                detour +{Math.round(a.DETOUR_KM)} km vs direct{a.SAVED_KM ? ` \u00b7 empty saved ~${Math.round(a.SAVED_KM)} km` : ''}
+                {a.DETOUR_KM !== undefined ? `detour +${Math.round(a.DETOUR_KM)} km vs reposition baseline` : ''}
+                {a.SAVED_KM !== undefined
+                  ? `${a.DETOUR_KM !== undefined ? ' \u00b7 ' : ''}deadhead avoided ~${Math.round(a.SAVED_KM)} km`
+                  : ''}
+                {a.BASELINE_EMPTY_KM !== undefined && (
+                  <InfoTip text={`Baseline = the ${Math.round(a.BASELINE_EMPTY_KM)} km this vehicle would have driven empty anyway from its idle location to its end point (source: ${a.BASELINE_SOURCE ?? 'unknown'}). Deadhead avoided = baseline minus the ${Math.round(a.EMPTY_KM)} km actually driven empty on this tour, so it can never exceed the reposition it replaces.`} />
+                )}
               </div>
             )}
             {isSel && (

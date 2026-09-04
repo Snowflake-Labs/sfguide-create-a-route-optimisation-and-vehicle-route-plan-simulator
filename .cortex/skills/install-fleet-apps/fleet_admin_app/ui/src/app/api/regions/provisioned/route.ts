@@ -58,6 +58,11 @@ export const GET = withLogging(async () => {
               service_ready: data.service_ready ?? false,
               profiles_loaded: builtProfiles,
               expected_profiles: expectedProfiles,
+              // Live endpoint list + engine version, so callers can gate on
+              // capabilities that only exist on newer engines (e.g. /match,
+              // which landed in ORS v9.4.0) without a second ORS call.
+              services: Array.isArray(data.services) ? data.services : [],
+              engine_version: data.engine?.version ?? null,
               graphs: allProfiles.map((p: string) => ({ profile: p, ready: builtProfiles.includes(p), build_date: (data.bounds_info || {})[p]?.graph_build_date || null })),
             };
           }

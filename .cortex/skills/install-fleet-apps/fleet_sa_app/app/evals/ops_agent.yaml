@@ -1,0 +1,54 @@
+# Agent evaluation run config - FLEET_OPS_AGENT (operator).
+#
+# answer_correctness IS ABSENT - BY CHOICE, NOT BECAUSE MCP IS UNREACHABLE.
+# The docs say evaluations "don't currently support MCP servers as tools" and that
+# the agent "doesn't call any MCP server tool during the run". That is NOT true on
+# this account: baseline runs on 2026-09-01 invoked fleet_ops_mcp_service_inventory,
+# fleet_ops_mcp_cost_control and fleet_ops_mcp_describe_deployment, with matching
+# ACTOR = SYSTEM rows in SYNAPSE_OPS.VERB_ATTEMPT. See agent_evals.sql for the full
+# evidence. So answer_correctness COULD be enabled here.
+# It stays off for two practical reasons: an operational answer depends on live
+# service state and so drifts between runs, and adding a metric restarts the trend
+# charts (scores from different metric sets and versions are not comparable).
+# Revisit deliberately, not incidentally.
+#
+# tool_execution_accuracy is likewise off for now, to keep this agent's metric set
+# stable against the existing baseline.
+#
+# What IS measured here:
+#   tool_selection_accuracy - deterministic. Ground truth names query_deployment
+#                             for the history questions, and the read-only
+#                             inspection verb for the confirm-before-acting case
+#                             (expecting NO tools there scored a false 0).
+#   logical_consistency     - reference-free; catches an orchestrator that
+#                             contradicts its own instructions, answers a
+#                             live-state question from history, or claims a
+#                             destructive action succeeded.
+#
+# run_agent_evals.py remains complementary: it asserts the VERB_ATTEMPT audit
+# envelope, which an evaluation run does not inspect.
+#
+# See fleet_agent.yaml for why there is no dataset: block.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT"
+    agent_type: "CORTEX AGENT"
+    # DEFAULT, not LAST - see fleet_agent.yaml for why binding a run to the mutable
+    # live/draft spec silently destroys it.
+    agent_version: "DEFAULT"
+  run_params:
+    label: "Fleet ops agent baseline"
+    description: "Deployment-history tool selection and orchestration consistency. answer_correctness omitted because MCP verbs are not invoked during evaluations."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_OPS_AGENT"
+
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
+# fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).
+metrics:
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"

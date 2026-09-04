@@ -91,6 +91,8 @@ WHERE BOUNDARY IS NOT NULL
        OR UPPER(REGION_KEY) = UPPER($REGION_KEY))
 ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC
 LIMIT 1;
+-- CTAS does not accept an inline COMMENT, so the tracking tag is applied after creation.
+ALTER TABLE FLEET_INTELLIGENCE.CATCHMENT._RC_REGION_BOUNDARY SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-boundary-temp"}}';
 INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
 SELECT
     $REGION_KEY AS REGION,

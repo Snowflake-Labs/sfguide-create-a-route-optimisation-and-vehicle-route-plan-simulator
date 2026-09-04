@@ -408,11 +408,25 @@ Conventions:
 -- (how many stores, revenue/EBITDA, household base) which the agent CAN answer via SQL.
 -- Revenue/EBITDA/interaction-mix/rent are SYNTHETIC proxies (see analytic_layer.sql).
 
+-- MAP-READY DIMENSIONS (Cowork data_to_map): store lat/lon, a simplified ZIP GeoJSON
+-- string, and the household H3 cell. Cowork's data_to_map builds a deck.gl layer from a
+-- Cortex Analyst result, but it can only read lat/lon FLOATs, a GeoJSON STRING, or an H3
+-- STRING - a GEOGRAPHY column cannot live in a semantic view at all. So the geometry is
+-- projected here rather than excluded. ZIP polygons are ST_SIMPLIFY'd because the raw
+-- ones reach 100 KB each (7 KB at 100 m tolerance), and data_to_map inlines rows into
+-- the spec with a cap: an oversized payload renders as a blank map, not an error.
+
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
 
   TABLES (
     stores AS FLEET_APP.LOCATION.VW_STORE_FACTS
       PRIMARY KEY (REGION, STORE_ID)
+    , zips AS FLEET_APP.LOCATION.VW_ZIP_AREAS
+      PRIMARY KEY (REGION, ZIP)
+      COMMENT = 'ZIP area dimension with a map-ready simplified boundary. Standalone (no join to stores).'
+    , hh_cells AS FLEET_APP.LOCATION.VW_HH_CELLS
+      PRIMARY KEY (REGION, H3)
+      COMMENT = 'Household density by H3 cell. Standalone, cell-grained.'
   )
 
   FACTS (
@@ -422,6 +436,10 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.sqft AS SQFT COMMENT = 'Synthetic store floor area (sqft)'
     , stores.annual_rent AS ANNUAL_RENT COMMENT = 'Synthetic annual rent'
     , stores.value_per_cost AS VALUE_PER_COST COMMENT = 'Revenue per unit of rent cost'
+    , zips.zip_population AS POPULATION COMMENT = 'ZIP resident population'
+    , zips.zip_households AS HOUSEHOLDS COMMENT = 'ZIP household count'
+    , zips.zip_median_income AS MEDIAN_INCOME COMMENT = 'ZIP median household income'
+    , hh_cells.cell_households AS HH COMMENT = 'Households in this H3 cell'
   )
 
   DIMENSIONS (
@@ -430,6 +448,19 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.store_role AS STORE_ROLE WITH SYNONYMS ('role', 'owned or candidate') COMMENT = 'OWNED (existing estate) or CANDIDATE (proposed new site)'
     , stores.store_category AS CATEGORY WITH SYNONYMS ('category', 'format') COMMENT = 'Store category'
     , stores.store_region AS REGION COMMENT = 'Region'
+    , stores.store_lat AS LAT WITH SYNONYMS ('latitude') COMMENT = 'Store latitude. Map-ready: use with store_lon as a latlon layer.'
+    , stores.store_lon AS LON WITH SYNONYMS ('longitude') COMMENT = 'Store longitude. Map-ready: use with store_lat as a latlon layer.'
+    , zips.zip_code AS ZIP WITH SYNONYMS ('zip', 'postcode', 'zip code') COMMENT = 'ZIP / postal code'
+    , zips.zip_state AS STATE COMMENT = 'ZIP state'
+    , zips.zip_region AS REGION COMMENT = 'Region the ZIP belongs to'
+    , zips.zip_geojson AS ST_ASGEOJSON(ST_SIMPLIFY(GEOG, 100))::VARCHAR
+      WITH SYNONYMS ('zip boundary', 'zip polygon', 'postcode boundary')
+      COMMENT = 'Map-ready ZIP boundary as a GeoJSON string, simplified to 100 m. Use as the geo column of a geojson layer for a choropleth. NOT for area or distance maths - use zip_land_sqmi.'
+    , zips.zip_land_sqmi AS LAND_SQMI COMMENT = 'ZIP land area in square miles'
+    , hh_cells.cell_h3 AS H3
+      WITH SYNONYMS ('h3', 'hex', 'h3 cell', 'household cell')
+      COMMENT = 'Map-ready H3 cell id as a STRING. Use as the h3 column of an h3 layer for a household-density hexmap.'
+    , hh_cells.cell_region AS REGION COMMENT = 'Region the H3 cell belongs to'
   )
 
   METRICS (
@@ -438,15 +469,25 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , stores.total_ebitda AS SUM(annual_ebitda) WITH SYNONYMS ('total ebitda') COMMENT = 'Total synthetic annual EBITDA'
     , stores.total_households AS SUM(reference_hh) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total household base across the estate'
     , stores.avg_value_per_cost AS AVG(value_per_cost) WITH SYNONYMS ('value for money', 'revenue per rent') COMMENT = 'Average revenue per unit of rent'
+    , zips.zip_count AS COUNT(DISTINCT ZIP) WITH SYNONYMS ('number of zips') COMMENT = 'Distinct ZIP areas'
+    , zips.total_zip_population AS SUM(zip_population) WITH SYNONYMS ('population') COMMENT = 'Total resident population across ZIPs'
+    , zips.total_zip_households AS SUM(zip_households) COMMENT = 'Total households across ZIPs'
+    , zips.avg_zip_median_income AS AVG(zip_median_income) WITH SYNONYMS ('average income') COMMENT = 'Average ZIP median household income'
+    , hh_cells.total_cell_households AS SUM(cell_households) WITH SYNONYMS ('households by cell') COMMENT = 'Households summed across H3 cells'
+    , hh_cells.cell_count AS COUNT(DISTINCT H3) COMMENT = 'Distinct H3 cells'
   )
 
-  COMMENT = 'Location diagnostics estate: store estate (OWNED/CANDIDATE) with synthetic commercials and household base. Cannibalisation and closure are computed live in-app (ORS), not modeled here.'
+  COMMENT = 'Location diagnostics estate: store estate (OWNED/CANDIDATE) with synthetic commercials and household base, plus map-ready ZIP boundaries and household H3 cells. Cannibalisation and closure are computed live in-app (ORS), not modeled here.'
 
-  AI_SQL_GENERATION 'Location-diagnostics ESTATE semantic view (store-level facts only).
+  AI_SQL_GENERATION 'Location-diagnostics ESTATE semantic view (store-level facts, ZIP areas, household H3 cells).
 - stores (VW_STORE_FACTS): one row per store. store_role = OWNED (existing) or CANDIDATE (proposed). Use total_revenue/total_ebitda/total_households/store_count/avg_value_per_cost grouped by store_role or store_category. Commercials are synthetic proxies.
+- zips (VW_ZIP_AREAS): one row per ZIP, standalone (NOT joined to stores). Population, households, median income, land area, and a map-ready simplified boundary.
+- hh_cells (VW_HH_CELLS): one row per H3 cell, standalone. Household counts for a density hexmap.
 Conventions:
 - "how many stores" -> store_count; "total revenue/ebitda" -> total_revenue/total_ebitda grouped by store_role.
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
+- MAPPING: for a store map select store_lat + store_lon and use a latlon layer, coloring by store_role. For a ZIP choropleth select zip_geojson and use a geojson layer, coloring by a ZIP metric. For household density select cell_h3 and use an h3 layer, coloring by total_cell_households. Keep the row count modest when selecting zip_geojson - the boundary strings are large.
+- zips and hh_cells do NOT join to stores; answer each from its own table alone.
 IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
 ;
 
@@ -499,4 +540,183 @@ Conventions:
 - "how many customers" -> customer_count; "total freight spend" -> total_current_annual_freight grouped by current_plant or product.
 - "which plant supplies the most customers" -> customer_count grouped by current_plant.
 IMPORTANT: the "location swap" analysis ("where would swapping the source plant reduce freight cost", "how much can we save") is computed LIVE in the Freight Sourcing Optimizer app page (ORS road distance via MATRIX_TABULAR), not in this view. Direct such questions to that page / the routing tools; this view answers current-estate composition and spend only.'
+;
+
+-- ============ SV_DELIVERY_SYNC (bound onto FLEET_APP.DELIVERY_SYNC.*) ============
+-- SV_DELIVERY_SYNC - site arrival / departure ("was the load delivered yet?")
+-- Source: FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS (one row per detected visit).
+-- Deploy target: FLEET_INTELLIGENCE.SEMANTIC
+-- SITE_GEOG is deliberately excluded (GEOGRAPHY is not supported in a semantic
+-- view). Single fact table, so no join ambiguity.
+--
+-- Scope boundary worth stating: this view answers HISTORICAL questions ("when
+-- did it arrive", "how long was it on site", "which sites were served"). The
+-- forward-looking questions ("how far out is the vehicle now", "what is inside
+-- the 15-minute ring") are answered by LIVE ORS calls on the Delivery Sync page
+-- and cannot be modeled here - the AI_SQL_GENERATION text below redirects them
+-- rather than letting the model invent an ETA column.
+
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERY_SYNC
+
+  TABLES (
+    visits AS FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
+      PRIMARY KEY (VISIT_ID)
+  )
+
+  FACTS (
+    visits.dwell_minutes AS DWELL_MINUTES COMMENT = 'Minutes the vehicle was stationary on site (the unload window)'
+    , visits.dwell_seconds AS DWELL_SECONDS COMMENT = 'Seconds the vehicle was stationary on site'
+    , visits.stationary_pings AS STATIONARY_PINGS COMMENT = 'Position pings recorded while stationary inside the geofence'
+    , visits.fence_pings AS FENCE_PINGS COMMENT = 'Position pings recorded inside the geofence, moving or stationary'
+    , visits.chord_m AS CHORD_M COMMENT = 'Metres between the geofence entry and exit point; small for a genuine stop, large for a pass-by'
+    , visits.max_speed_in_fence AS MAX_SPEED_IN_FENCE COMMENT = 'Peak speed observed inside the geofence'
+    , visits.geofence_radius_m AS GEOFENCE_RADIUS_M COMMENT = 'Geofence radius applied for this site type and vehicle type'
+    , visits.visit_seq AS VISIT_SEQ COMMENT = 'Sequence number distinguishing repeat visits by the same vehicle to the same site'
+  )
+
+  DIMENSIONS (
+    visits.region AS REGION COMMENT = 'Region the visit occurred in'
+    , visits.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('truck', 'vehicle', 'asset') COMMENT = 'Vehicle that made the delivery'
+    , visits.vehicle_type AS VEHICLE_TYPE COMMENT = 'Vehicle class (hgv, car, ebike)'
+    , visits.site_id AS SITE_ID COMMENT = 'Delivery site identifier'
+    , visits.site_name AS SITE_NAME WITH SYNONYMS ('site', 'account', 'location', 'customer') COMMENT = 'Delivery site name'
+    , visits.site_type AS SITE_TYPE COMMENT = 'Site type (WAREHOUSE, STORE, DESTINATION)'
+    , visits.site_category AS SITE_CATEGORY COMMENT = 'Site category from the place catalogue'
+    , visits.journey_id AS JOURNEY_ID COMMENT = 'Journey the visit belonged to'
+    , visits.service_date AS SERVICE_DATE WITH SYNONYMS ('date', 'day') COMMENT = 'Date of the visit'
+    , visits.arrival_ts AS ARRIVAL_TS WITH SYNONYMS ('arrived', 'arrival time') COMMENT = 'When the vehicle became stationary inside the site geofence'
+    , visits.departure_ts AS DEPARTURE_TS WITH SYNONYMS ('departed', 'left', 'product ready') COMMENT = 'When the vehicle stopped being stationary inside the geofence; the load is on the floor from this moment'
+    , visits.source_status_hint AS SOURCE_STATUS_HINT WITH SYNONYMS ('visit kind') COMMENT = 'Descriptive visit classification from the source feed (DWELL_DESTINATION = delivery, DWELL_ORIGIN = pickup, IDLE, DWELL_REST). Descriptive only; detection is purely geometric'
+  )
+
+  METRICS (
+    visits.total_visits AS COUNT(*) WITH SYNONYMS ('visits', 'stops', 'deliveries') COMMENT = 'Total detected site visits'
+    , visits.avg_time_on_site AS AVG(dwell_minutes) WITH SYNONYMS ('average unload time', 'average time on site') COMMENT = 'Average minutes on site'
+    , visits.total_time_on_site AS SUM(dwell_minutes) COMMENT = 'Total minutes spent on site'
+    , visits.max_time_on_site AS MAX(dwell_minutes) WITH SYNONYMS ('longest stop') COMMENT = 'Longest time on site in minutes'
+    , visits.unique_sites AS COUNT(DISTINCT SITE_ID) WITH SYNONYMS ('sites served', 'accounts served') COMMENT = 'Distinct sites visited'
+    , visits.unique_vehicles AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('vehicles delivering') COMMENT = 'Distinct vehicles that made visits'
+  )
+
+  COMMENT = 'Delivery sync: geofence-detected site arrivals and departures, so a receiving crew knows when a load actually landed and how long the vehicle was on site.'
+
+  AI_SQL_GENERATION 'Site arrival/departure semantic view for the Route Optimisation & Fleet Intelligence solution.
+Entity:
+- visits (DT_SITE_VISITS): one row per detected vehicle visit to a site. arrival_ts is when the vehicle became stationary inside the site geofence; departure_ts is when it left, which is the moment the load is available for the receiving crew.
+Conventions:
+- "was the load delivered / has the vehicle left site X" -> filter site_name and inspect departure_ts.
+- "how long did it take to unload" / "time on site" -> avg_time_on_site or total_time_on_site.
+- "which sites were served" -> unique_sites, or group total_visits by site_name.
+- "deliveries" specifically (as opposed to pickups or idling) -> filter source_status_hint = DWELL_DESTINATION.
+- repeat visits to the same site on one day are distinct rows, separated by visit_seq.
+IMPORTANT scope limits:
+- There is NO ETA, no predicted arrival and no "minutes out" column here. Forward-looking questions ("how far out is the vehicle", "which vehicles arrive in the next 15 minutes", "what is within the approach ring") are answered by LIVE routing calls on the Delivery Sync page; direct the user there instead of inventing a column.
+- Readiness (EXPECTED / IN_PROGRESS / READY) is evaluated at a chosen instant by the Delivery Sync page, not stored here. This view only holds the completed arrival/departure pair.
+- A vehicle that merely drove past a site is NOT present: a visit requires a genuine stationary period inside the geofence.'
+;
+
+-- ============ SV_BACKLOAD_MATCHING (FLEET_APP.BACKLOAD_MATCHING.*) ============
+-- SV_BACKLOAD_MATCHING - backhaul candidates + recorded matching decisions.
+-- Source: FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS
+--         + VW_PROPOSAL_DECISIONS (the backload_matching pack, which
+--         packs/manifest.yaml installs unconditionally, so this is safe on every
+--         deployment).
+--
+-- Was authored under semantic/sv_backload_matching.sql but never added here, so
+-- it was never created and the two Backload views had no Cortex Analyst tool at
+-- all - every backload question had to be answered from client-side memo text.
+--
+-- SCOPE: this models the backload INPUTS (idle trailers, external offers) and
+-- the DECISIONS the Backload Matching page writes back. It does NOT model a live
+-- solve: the solved plan is computed per click and never persisted. The two
+-- views' agentKnowledge blocks therefore route "what is available to match" and
+-- "what did we accept historically" here, and "this plan" questions to the
+-- on-screen memo.
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+
+  TABLES (
+    offers AS FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+      PRIMARY KEY (OFFER_ID)
+    , trailers AS FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
+      PRIMARY KEY (TRAILER_ID)
+    , decisions AS FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+      PRIMARY KEY (DECISION_ID)
+  )
+
+  FACTS (
+    offers.weight_kg AS WEIGHT_KG COMMENT = 'Offer load weight kg'
+    , offers.price_usd AS PRICE_USD COMMENT = 'Offer price USD'
+    , trailers.eta_min AS ETA_MIN COMMENT = 'Minutes to trailer ETA'
+    , trailers.max_payload_kg AS MAX_PAYLOAD_KG COMMENT = 'Trailer max payload kg'
+    , trailers.ev_range_km AS EV_RANGE_KM COMMENT = 'Electric range km'
+    , decisions.score AS SCORE COMMENT = 'Match score'
+    , decisions.empty_km AS EMPTY_KM COMMENT = 'Deadhead/empty km for the match'
+    , decisions.net_benefit_usd AS NET_BENEFIT_USD COMMENT = 'Net benefit of the decision USD'
+  )
+
+  DIMENSIONS (
+    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
+    , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
+    , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
+    , offers.dropoff_city AS DROPOFF_CITY WITH SYNONYMS ('destination city') COMMENT = 'Dropoff city'
+    , offers.product AS PRODUCT COMMENT = 'Product / commodity'
+    , offers.hazmat AS HAZMAT COMMENT = 'Hazmat flag'
+    -- MAP-READY (Cowork data_to_map): coordinates as FLOATs and a straight-line lane as a
+    -- GeoJSON string. The lane is deliberately NOT a routed path - it is ST_MAKELINE
+    -- between pickup and dropoff, so it must never be quoted as drive distance or used
+    -- for deadhead maths. The routed tour comes from a live solve and is not modeled here.
+    , offers.pickup_lat AS PICKUP_LAT WITH SYNONYMS ('pickup latitude') COMMENT = 'Offer pickup latitude. Map-ready: use with pickup_lon as a latlon layer.'
+    , offers.pickup_lon AS PICKUP_LON WITH SYNONYMS ('pickup longitude') COMMENT = 'Offer pickup longitude. Map-ready: use with pickup_lat as a latlon layer.'
+    , offers.dropoff_lat AS DROPOFF_LAT WITH SYNONYMS ('dropoff latitude') COMMENT = 'Offer dropoff latitude'
+    , offers.dropoff_lon AS DROPOFF_LON WITH SYNONYMS ('dropoff longitude') COMMENT = 'Offer dropoff longitude'
+    , offers.lane_geojson AS ST_ASGEOJSON(ST_MAKELINE(ST_MAKEPOINT(PICKUP_LON, PICKUP_LAT), ST_MAKEPOINT(DROPOFF_LON, DROPOFF_LAT)))::VARCHAR
+      WITH SYNONYMS ('lane', 'lane line', 'offer lane')
+      COMMENT = 'Map-ready STRAIGHT-LINE lane from pickup to dropoff as a GeoJSON string, for a geojson layer. This is a straight line, NOT a routed path: never present it as road distance, drive time, or deadhead km.'
+    , trailers.operating_country AS OPERATING_COUNTRY COMMENT = 'Trailer operating country'
+    , trailers.home_depot AS HOME_DEPOT WITH SYNONYMS ('depot') COMMENT = 'Trailer home depot'
+    , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
+    , trailers.status AS STATUS COMMENT = 'Trailer status'
+    , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
+    -- MAP-READY: trailer home depot and current dropoff position as FLOATs.
+    , trailers.home_lat AS HOME_LAT WITH SYNONYMS ('home latitude', 'depot latitude') COMMENT = 'Trailer home depot latitude. Map-ready: use with home_lon as a latlon layer.'
+    , trailers.home_lon AS HOME_LON WITH SYNONYMS ('home longitude', 'depot longitude') COMMENT = 'Trailer home depot longitude. Map-ready: use with home_lat as a latlon layer.'
+    , trailers.current_lat AS DROPOFF_LAT WITH SYNONYMS ('current latitude', 'trailer latitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - latitude. Map-ready with current_lon.'
+    , trailers.current_lon AS DROPOFF_LON WITH SYNONYMS ('current longitude', 'trailer longitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - longitude. Map-ready with current_lat.'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
+    , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
+  )
+
+  METRICS (
+    offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
+    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
+    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
+    , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
+    , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
+    , trailers.avg_max_payload_kg AS AVG(max_payload_kg) COMMENT = 'Average max payload (kg)'
+    , decisions.total_decisions AS COUNT(DISTINCT DECISION_ID) WITH SYNONYMS ('number of decisions', 'matches') COMMENT = 'Distinct backload decisions'
+    , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
+    , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
+    , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
+    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
+  )
+
+  COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'
+
+  AI_SQL_GENERATION 'Backload matching semantic view.
+Entities (three independent facts, do NOT mix in one grouping):
+- offers (VW_EXTERNAL_OFFERS): external freight offers available to fill a backload.
+- trailers (VW_TRAILERS): trailers in transit / available, with ETA and capacity.
+- decisions (VW_PROPOSAL_DECISIONS): recorded accept decisions with match score, empty (deadhead) km, and net benefit USD. Use for "matches", "deadhead/empty km", "net benefit", and breakdowns by decision_source or decided_by.
+Conventions:
+- "matches" / "decisions" -> decisions.total_decisions.
+- "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
+- "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
+- internal vs external -> decisions.decision_source.
+- MAPPING: for an offer map select pickup_lat + pickup_lon and use a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
+IMPORTANT scope limit:
+- This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
 ;

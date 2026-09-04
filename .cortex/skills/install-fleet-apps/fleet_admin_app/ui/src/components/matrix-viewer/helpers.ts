@@ -1,33 +1,11 @@
 // Pure helpers for MatrixViewer: number/byte/legend formatters,
 // 12-stop Viridis palette, color lerp, raw-value extraction.
 
-import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer } from '@deck.gl/layers';
 import type { ReachabilityData } from '@/lib/types';
-
-export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
 export type GradientMetric = 'time' | 'distance';
 export type ScaleMode = 'auto' | 'fixed';
 export type TimeUnit = 'min' | 'hr';
-
-export function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap',
-    data: CARTO_LIGHT,
-    minZoom: 0,
-    maxZoom: 19,
-    tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, {
-        data: undefined,
-        image: props.data,
-        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
-      });
-    },
-  });
-}
 
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';

@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.6'
+GATEWAY_VERSION = 'v1.1.13'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -187,9 +187,23 @@ def _get_ors_status(ors_host=None):
         return {'error': str(e), 'service_ready': False, 'health_ready': False, 'ors_host': host}
 
 
+def _status_with_version(host=None):
+    # Always attach the gateway's baked build version to the status payload.
+    # GATEWAY_VERSION is compiled into the image, so this is the reliable
+    # stale-image detector: a cached old image reports the old version even when
+    # SYSTEM$GET_SERVICE_STATUS shows the new spec tag (SPCS serves images BY TAG
+    # and does not re-pull an unchanged tag). Surfaced to SQL via ORS_STATUS.
+    # Injected here (not inside _get_ors_status) so it is present regardless of
+    # ORS graph state - the probe tests the gateway process, not ORS readiness.
+    status = _get_ors_status(host)
+    if isinstance(status, dict):
+        status['gateway_version'] = GATEWAY_VERSION
+    return status
+
+
 @app.get("/ors_status")
 def get_ors_status():
-    return _get_ors_status()
+    return _status_with_version()
 
 
 @app.post("/ors_status")
@@ -201,12 +215,12 @@ def post_ors_status():
     logger.debug(f'Received status request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
-        return {"data": [[0, _get_ors_status()]]}
+        return {"data": [[0, _status_with_version()]]}
     output_rows = []
     for row in input_rows:
         region = _extract_region(row, 1)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], _get_ors_status(ors_host)])
+        output_rows.append([row[0], _status_with_version(ors_host)])
     return _make_response(output_rows)
 
 
@@ -314,7 +328,15 @@ def _remap_indices(jobs, vehicles, indices, shipments=None):
                     sub['location_index'] = indices[t]
 
 
-def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None):
+def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None, want_geometry=True):
+    # want_geometry: when False, the gateway does NOT reconstruct per-route road
+    # geometry after the VROOM solve. VROOM is always asked with options.g=False
+    # when a matrix is pre-computed, so without reconstruction the routes come
+    # back geometry-free (just steps). This keeps the _OPTIMIZATION_RAW response
+    # under the 20MB external-function cap for large regions with many/long
+    # routes. Callers that render the solve geometry directly (or omit options.g)
+    # get the default True and unchanged behavior; callers that fetch the drawn
+    # route lazily via DIRECTIONS (e.g. Backload Proposals) send options.g=False.
     _collected_locs = []
 
     def build_vroom_payload(row):
@@ -361,6 +383,14 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
                     logger.info(f'Injected pre-computed {len(locs)}x{len(locs)} matrix for {ors_host_override}')
                 else:
                     logger.warning(f'Matrix pre-computation returned empty for {ors_host_override}, VROOM will use default ORS')
+        # When the caller opts out of geometry (options.g=false), force g=False in
+        # the VROOM payload too so VROOM never emits geometry on ANY path
+        # (matrix-success, matrix-empty fallback, or no-matrix). Combined with the
+        # gated reconstruction below, this keeps the response geometry-free and
+        # under the _OPTIMIZATION_RAW 20MB cap. The client draws the route lazily
+        # via DIRECTIONS instead.
+        if not want_geometry:
+            payload['options'] = {'g': False}
         return payload
 
     results = []
@@ -375,15 +405,28 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             }])
             continue
         resp = get_vroom_response(payload, vroom_host=vroom_host_override)
-        if ors_host_override and 'routes' in resp:
-            needs_geo = any('geometry' not in r for r in resp['routes'])
-            if needs_geo:
-                profile = 'driving-car'
-                for v in (row[2] if len(row) > 2 else []):
-                    if isinstance(v, dict) and 'profile' in v:
-                        profile = v['profile']
-                        break
-                _reconstruct_geometry(resp['routes'], profile, ors_host_override, list(_collected_locs))
+        if 'routes' in resp and isinstance(resp.get('routes'), list):
+            if want_geometry:
+                if ors_host_override:
+                    needs_geo = any('geometry' not in r for r in resp['routes'])
+                    if needs_geo:
+                        profile = 'driving-car'
+                        for v in (row[2] if len(row) > 2 else []):
+                            if isinstance(v, dict) and 'profile' in v:
+                                profile = v['profile']
+                                break
+                        _reconstruct_geometry(resp['routes'], profile, ors_host_override, list(_collected_locs))
+            else:
+                # Client opted out of geometry (options.g=false). VROOM/vroom-express
+                # can still emit an encoded route geometry even when the payload sets
+                # options.g=false, and get_vroom_response DECODES it into a full
+                # [[lon,lat],...] array - which for a large region is exactly what
+                # blows the _OPTIMIZATION_RAW 20MB response cap. Strip it here so the
+                # response is compact; the client redraws the selected route lazily
+                # via ORS DIRECTIONS.
+                for r in resp['routes']:
+                    if isinstance(r, dict):
+                        r.pop('geometry', None)
         results.append([row[0], resp])
     return results
 
@@ -464,10 +507,20 @@ def post_optimization():
         vroom_host = resolve_vroom_host(region) if region else None
         if ors_host:
             shifted = [row[0], row[1]]
+            # Honor the client's VROOM geometry flag. The reshaping below drops
+            # `options` (the tabular row has no options slot), so read options.g
+            # here first. Default True preserves behavior for callers that omit
+            # it or set g:true (e.g. Backload Matching, route-optimization); a
+            # client that draws the route lazily via DIRECTIONS sends g:false to
+            # keep the _OPTIMIZATION_RAW response under the 20MB cap.
+            want_geometry = True
+            if isinstance(row[1], dict):
+                want_geometry = bool(row[1].get('options', {}).get('g', True))
             tabular_rows = _handle_optimization_tabular(
                 [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', []), row[1].get('shipments', [])]],
                 ors_host_override=ors_host,
-                vroom_host_override=vroom_host
+                vroom_host_override=vroom_host,
+                want_geometry=want_geometry,
             )
             output_rows.append(tabular_rows[0])
         else:
@@ -506,7 +559,13 @@ def post_directions_tabular_with_format(format="geojson"):
 
 def _handle_directions(input_rows, format, ors_host=None):
     host = ors_host or resolve_ors_host(None)
-    return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, host)])
+    return output_rows
 
 
 @app.post("/directions")
@@ -525,7 +584,10 @@ def post_directions_with_format(format="geojson"):
     for row in input_rows:
         region = _extract_region(row, 3)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], get_ors_response('directions', row[1], row[2], format, ors_host)])
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, ors_host)])
     return _make_response(output_rows)
 
 
@@ -793,6 +855,95 @@ def post_matrix(format="json"):
     return _make_response(output_rows)
 
 
+@app.post("/snap")
+@app.post("/snap/<format>")
+def post_snap(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS snap body (a VARIANT built by the SQL layer):
+      {"locations": [[lon,lat], ...], "radius": <meters>}.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        body = row[2]
+        # Accept a bare locations list too (defensive) - snap still needs a radius,
+        # so fall back to a sane default when only a list is supplied.
+        if isinstance(body, list):
+            body = {'locations': body, 'radius': 350}
+        output_rows.append([row[0], get_ors_response('snap', row[1], body, format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/match")
+@app.post("/match/<format>")
+def post_match(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS match body (a VARIANT built by the SQL layer):
+      {"features": {GeoJSON FeatureCollection}}. Point features snap to the
+      nearest edge; LineString features are matched with the HMM map-matcher;
+      Polygon features are intersected with the graph. Returns edge_ids per feature.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('match', row[1], row[2], format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/export")
+@app.post("/export/<format>")
+def post_export(format="topojson"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS export body (a VARIANT built by the SQL layer):
+      {"bbox": [[minLon,minLat],[maxLon,maxLat]], "geometry": true,
+       "additional_info": true}.
+    Default format is topojson so the response carries edge geometry plus the
+    internal graph edge id, which MATCH_PATH joins against /match edge_ids to
+    resolve them to road geometry. The id surfaces as `ors_ids` (plural, one
+    geometry per OSM way) when the profile has OsmId ext storage enabled, and
+    otherwise as `ors_id` (singular, one geometry per directed edge) - the latter
+    ONLY when the body sets additional_info, hence the SQL layer always sets it.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('export', row[1], row[2], format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
 def get_vroom_response(payload, vroom_host=None):
     logger.info(payload)
     default_vroom_host = resolve_vroom_host(None)
@@ -1011,11 +1162,29 @@ def _validate_request(endpoint, payload, host=None):
             )
     return True, None
 
-_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN'}
+_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN', cause: str|None}
+
+# Failure causes that must NOT count towards opening the breaker.
+#
+# The breaker exists to shield an OVERLOADED engine from further load. A
+# SUSPENDED one is not overloaded: the connection fails in milliseconds, so
+# fail-fast buys nothing. Counting it actively causes harm, because once the
+# breaker is OPEN every subsequent call returns the generic `circuit_open`
+# instead of `service_unreachable` - and `service_unreachable` is the token the
+# app matches on to detect a suspended region and trigger its resume. A view
+# that issues several ORS calls per render (Delivery Sync makes six) crosses the
+# 5-failure threshold inside a single render, so the outage would go undetected
+# from the second render onwards and the region would never be resumed.
+BREAKER_EXEMPT_CAUSES = frozenset({'service_unreachable', 'service_warming_up'})
 
 
 def _breaker_check(host):
-    """Returns (allow, reason). allow=False means fail fast without calling ORS."""
+    """Returns (allow, reason). allow=False means fail fast without calling ORS.
+
+    `reason` is the error code that OPENED the breaker rather than a generic
+    'circuit_open', so a fail-fast response keeps naming the underlying
+    condition and stays detectable by callers.
+    """
     st = _BREAKER_STATE.get(host)
     if not st:
         return True, None
@@ -1025,7 +1194,7 @@ def _breaker_check(host):
             st['state'] = 'HALF_OPEN'
             logger.warning(f'circuit-breaker HALF_OPEN for {host} after cooldown')
             return True, None
-        return False, 'circuit_open'
+        return False, st.get('cause') or 'circuit_open'
     return True, None
 
 
@@ -1038,11 +1207,21 @@ def _breaker_on_success(host):
     st['state'] = 'CLOSED'
     st['failures'] = []
     st['open_until'] = 0
+    st['cause'] = None
 
 
-def _breaker_on_failure(host):
+def _breaker_on_failure(host, cause=None):
+    """Record a failure for `host`. `cause` is the error code that caused it.
+
+    Causes in BREAKER_EXEMPT_CAUSES are recorded (so a later fail-fast can name
+    them) but never advance the failure counter.
+    """
     now = time.monotonic()
-    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED'})
+    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED', 'cause': None})
+    if cause:
+        st['cause'] = cause
+    if cause in BREAKER_EXEMPT_CAUSES:
+        return
     # Drop failures outside the rolling window.
     cutoff = now - ORS_BREAKER_ROLLING_WINDOW_S
     st['failures'] = [t for t in st['failures'] if t >= cutoff]
@@ -1050,7 +1229,7 @@ def _breaker_on_failure(host):
     if st['state'] == 'HALF_OPEN' or len(st['failures']) >= ORS_BREAKER_FAILURE_THRESHOLD:
         st['state'] = 'OPEN'
         st['open_until'] = now + ORS_BREAKER_COOLDOWN_S
-        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
+        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cause={st.get("cause")}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
 
 
 def _emit_metric(endpoint, profile, host, status, latency_ms, req_bytes, resp_bytes,
@@ -1123,12 +1302,18 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
     if not allow:
         req_id = uuid.uuid4().hex
         _emit_metric(function, profile, host, 503, 0, req_bytes, None,
-                     error_code='circuit_open', caller=caller, region=region_hint, request_id=req_id)
+                     error_code=breaker_reason, caller=caller, region=region_hint, request_id=req_id)
+        # Report the code that OPENED the breaker, not a generic 'circuit_open'.
+        # Callers key off this string to tell a suspended region (resume it) from
+        # an overloaded one (back off), and collapsing both into one opaque code
+        # is what made a suspended region undetectable for the cooldown window.
         return {
-            'error': 'circuit_open',
-            'message': f'Circuit breaker is OPEN for {host} after repeated failures. '
-                       f'Calls will resume after the {ORS_BREAKER_COOLDOWN_S}s cooldown. '
+            'error': breaker_reason,
+            'message': f'Circuit breaker is OPEN for {host} after repeated failures '
+                       f'({breaker_reason}). Calls will resume after the '
+                       f'{ORS_BREAKER_COOLDOWN_S}s cooldown. '
                        f'See the Observability page for the failing endpoint history.',
+            'circuit_open': True,
             'ors_host': host,
         }
 
@@ -1153,7 +1338,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             # 2xx/3xx are success-shaped, both end the loop here.
             if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS:
                 last_error_payload = annotated
-                _breaker_on_failure(host)
+                _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
                 backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
                 # +/-25% jitter (full random distribution) so simultaneous
                 # callers do not synchronize retries. Using random.uniform
@@ -1187,7 +1372,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'Cannot connect to ORS{region_label} (attempt {attempt}) - suspended or not provisioned')
             _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
                          error_code='service_unreachable', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'service_unreachable')
             last_error_payload = {
                 'error': 'service_unreachable',
                 'graph_loading': False,
@@ -1211,7 +1396,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'ORS request timed out on {host} after {timeout_s}s')
             _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
                          error_code='timeout', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'timeout')
             return {
                 'error': 'timeout',
                 'message': f'ORS request timed out on {host} after {timeout_s}s. '

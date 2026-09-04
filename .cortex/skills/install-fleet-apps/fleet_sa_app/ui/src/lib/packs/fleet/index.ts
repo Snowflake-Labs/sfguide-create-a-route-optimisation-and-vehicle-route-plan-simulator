@@ -1,5 +1,7 @@
 import { lazy } from 'react';
 import { viewRegistry } from '@/lib/view-registry';
+import type { AgentKnowledge, AppRole, UseCase } from '@/lib/types';
+import packViews from './pack-views.json';
 
 // Fleet domain pack: registers the Tier-3 showcase views (custom full-page
 // components, not YAML area-views). They call User routing verbs via /api/tool
@@ -14,12 +16,42 @@ import { viewRegistry } from '@/lib/view-registry';
 // This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
 // it generically via the configured `domainPacks` array - there is no fleet
 // import in the shell itself (Step 4C).
+//
+// WHY THE METADATA LIVES IN pack-views.json
+// -----------------------------------------
+// These views' useCase (Tenet 10, Channel D) and agentKnowledge (Channel C)
+// blocks used to be inline object literals here. That made them invisible to
+// scripts/build_view_catalog.py, which reads app-views.json, so all five were
+// absent from FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG and the agent could not
+// name a single optimization demo when asked "what can you show me" outside the
+// app. The metadata now lives in the sibling pack-views.json, which BOTH this
+// module and the catalog generator read, so there is one source of truth and a
+// code-registered view can no longer skip the catalog. Only the lazy component
+// binding stays in TypeScript, because a JSON file cannot hold an import.
+interface PackViewMeta {
+  label: string;
+  description: string;
+  category?: string;
+  tags?: string[];
+  roles?: AppRole[];
+  useCase?: UseCase;
+  agentKnowledge?: AgentKnowledge;
+}
+
+const meta = packViews as unknown as Record<string, PackViewMeta>;
+
+// Fails loudly at registration rather than silently dropping a view, so a typo
+// in either file surfaces on first load instead of as a missing nav entry.
+function metaFor(id: string): PackViewMeta {
+  const m = meta[id];
+  if (!m) throw new Error(`pack-views.json is missing metadata for view "${id}"`);
+  return m;
+}
+
 export function registerViews(_disabledSchemas?: Set<string>): void {
   viewRegistry.register({
     id: 'vrp_simulator',
-    label: 'Route Optimization Simulator',
-    description: 'Plan multi-stop vehicle routes from a depot and view them on the map.',
-    category: 'Optimization',
+    ...metaFor('vrp_simulator'),
     component: lazy(() =>
       import('@/components/views/areas/vrp-simulator').then((mod) => ({
         default: mod.VrpSimulatorView,
@@ -29,32 +61,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
 
   viewRegistry.register({
     id: 'emergency_response',
-    label: 'Emergency Response',
-    description: 'Plan a capacitated multi-depot evacuation for the active region: hazard-zone risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.',
-    category: 'Optimization',
-    agentKnowledge: {
-      keyMetrics: [
-        'evacuees and evacuated (assigned) counts',
-        'number of trips, completion time in minutes, and total/longest route distance in km (total_km, longest_trip_km)',
-        'per-risk-band participant counts for the active hazard (risk_bands) and the other hazard (other_hazard_bands), plus high_on_both_hazards',
-        'participant addresses grouped by risk band for the active hazard (addresses_by_band)',
-        'hazard zones (counties) with both wildfire and flood risk levels (hazard_zones) and per-county participant rollup (participants_by_county)',
-        'per-care-center workload (centers_workload) and van seat utilization (seat_utilization)',
-        'unassigned / overflow participants that could not be seated',
-      ],
-      exampleQuestions: [
-        'how many evacuation trips are there, and what is the total distance in km?',
-        'list the evacuation trips and their stops',
-        'give me all trips and stops for a specific care center',
-        'what are the addresses of the Very High risk participants?',
-        'which counties are Very High wildfire risk?',
-        'which county has the most at-risk participants?',
-        'how many participants are high risk for both flood and wildfire?',
-        'which care center is handling the most evacuees?',
-        'what is on the map right now, and is any layer blank?',
-      ],
-      gotchas: 'The evacuation plan is computed client-side in this view and lives in the panel context. Trip roster: trips_detail is GROUPED BY CARE CENTER, centers ordered busiest-first (matching centers_workload); each center block reads "Center (N evacuees, N trips, N vans): T<n> Vehicle <n> <mins>m [load/capacity]: <stop addresses> [bN]..." so per-center "all trips and stops for X" questions are answerable directly. Risk<->address join: addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop carries a "[bN]" risk-band marker matching the risk_bands legend (b5 = Very High). Area risk: hazard_zones lists each county with BOTH wildfire and flood band levels (WF bN/FL bN), and participants_by_county rolls up seeded vs at/above-threshold counts per county. Cross-hazard: risk_bands is the ACTIVE hazard, other_hazard_bands is the other one, and high_on_both_hazards counts people at/above threshold for both. Plan rollups: centers_workload (per depot), seat_utilization, total_km/longest_trip_km (null if the router did not return distance). If a center block or the trip list ends with "(+N more)", those trips/centers exceeded the display cap - the full breakdown is in the on-screen plan panel and the map routes layer; do not invent the remainder. There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, risk bands, or distances. Re-seeding or changing the risk threshold or hazard updates the numbers.',
-    },
+    ...metaFor('emergency_response'),
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({
         default: mod.EmergencyResponseView,
@@ -67,24 +74,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // builds a VROOM challenge, and solves via /api/backload/solve (contract seam).
   viewRegistry.register({
     id: 'backload_matching',
-    label: 'Backload Matching',
-    description: 'Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.',
-    category: 'Optimization',
-    agentKnowledge: {
-      keyMetrics: [
-        'assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count',
-        'trailers / internal_volumes / external_offers loaded for the active preset, and selected_trailer',
-        'the full per-trip list is published as __memo_backload_matching: trailer id, source (INTERNAL/external), pickup->dropoff city, the delivery points (dropoff cities), delivery count, empty/loaded km, and revenue/cost/net USD',
-      ],
-      exampleQuestions: [
-        'give me a list of assignments with delivery and revenue details for each',
-        'which trips deliver where?',
-        'how much net benefit does the plan reclaim?',
-        'how many internal vs external loads were matched?',
-        'which trailer has the most profitable backload?',
-      ],
-      gotchas: 'Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. There is no semantic view for a live solve, so answer ONLY from the injected __memo_backload_matching / summary panel context and never invent trailer ids, offers, cities, km, or dollars. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The list is capped at the top 12 net-desc trips with a "(+N more)" suffix. Requires the active region routing/VROOM service to be running.',
-    },
+    ...metaFor('backload_matching'),
     component: lazy(() =>
       import('@/components/views/areas/backload-matching').then((mod) => ({
         default: mod.BackloadMatchingView,
@@ -99,26 +89,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // VW_CANDIDATES_SCORED, and a Cortex rationale. Solves via /api/backload/solve.
   viewRegistry.register({
     id: 'backload_proposals',
-    label: 'Backload Proposals',
-    description: 'Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.',
-    category: 'Optimization',
-    agentKnowledge: {
-      keyMetrics: [
-        'vehicles_matched, internal_matched, total_empty_km, total_margin_usd (revenue minus empty-leg cost across the plan), avg_composite (0-100 ensemble score)',
-        'per-vehicle graded proposal (trailer -> load), its strategy family, and how many of the 4 strategies agree',
-        'eligible_pairs (trailer/load pairs passing distance/pickup-time/horizon/capacity/hazmat), and accepted/rejected counts (session-only)',
-        'the top ranked proposals are published as __memo_backload (trailer->load, grade, strategy, pickup->delivery cities, empty km, loaded km, margin USD, internal/external)',
-      ],
-      exampleQuestions: [
-        'which vehicles have the best backload proposals?',
-        'how many empty km does the plan reclaim?',
-        'how many internal loads were filled versus external offers?',
-        'why is a load ineligible for a vehicle?',
-        'give me a list of proposals with delivery and revenue details for each',
-        'what is on the map right now?',
-      ],
-      gotchas: 'Proposals are computed in this view (client-side) after Run: Quick scan is great-circle nearest-load (no solve); Per-load VRP / Fleet 1:1 / Profit-max each call the routing engine once via /api/backload/solve, and ensemble mode fuses all four. Numbers are null until Run and change with the strategy, max vehicles/loads, and (in ensemble mode) the ranking weights. Accept/Reject/Flag is session-only and not persisted. There is no semantic view for this cockpit, so answer from the injected __memo_backload / summary context and never invent trailer ids, loads, grades, or km. Requires the active region routing/VROOM service to be running for the VRP strategies.',
-    },
+    ...metaFor('backload_proposals'),
     component: lazy(() =>
       import('@/components/views/areas/backload-proposals').then((mod) => ({
         default: mod.BackloadProposalsView,
@@ -131,11 +102,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // app role (FLEET_APP_OPS) in production (Phase 3E).
   viewRegistry.register({
     id: 'ops_console',
-    label: 'Ops Console',
-    description: 'Operator controls: suspend/resume services, set the active region, and check platform health.',
-    category: 'Admin',
-    tags: ['ops', 'admin'],
-    roles: ['ops'],
+    ...metaFor('ops_console'),
     component: lazy(() =>
       import('@/components/views/areas/ops-console').then((mod) => ({
         default: mod.OpsConsoleView,

@@ -60,7 +60,7 @@ These are ALL object types created across all skills. The drop order reverses cr
 | 15 | Image Repositories | `SHOW IMAGE REPOSITORIES` + in tagged database | `DROP IMAGE REPOSITORY IF EXISTS <name>` |
 | 16 | File Formats | `SHOW FILE FORMATS` + in tagged database | `DROP FILE FORMAT IF EXISTS <name>` |
 | 17 | Schemas | `SHOW SCHEMAS` + comment match | `DROP SCHEMA IF EXISTS <name> CASCADE` |
-| 18 | Warehouses | `SHOW WAREHOUSES` + comment match | `ALTER WAREHOUSE <name> SUSPEND; DROP WAREHOUSE IF EXISTS <name>` |
+| 18 | Warehouses | `SHOW WAREHOUSES` + comment match | `DROP WAREHOUSE IF EXISTS <name>` (DROP does not need a prior SUSPEND) |
 | 19 | Marketplace Databases | `SHOW DATABASES` + name/origin match | `DROP DATABASE IF EXISTS <name>` |
 
 ## Step 1: Set Session Tag
@@ -177,13 +177,20 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CORE CASCADE;
 
--- 18. Suspend and drop warehouse
-ALTER WAREHOUSE IF EXISTS ROUTING_ANALYTICS SUSPEND;
+-- 18. Drop warehouse. Do NOT `ALTER WAREHOUSE ... SUSPEND` first: on an
+--     already-suspended warehouse that raises 090064 ("Invalid state") and,
+--     under `snow sql -f`, aborts the whole script -- stranding later drops.
+--     DROP WAREHOUSE suspends implicitly.
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 
--- 19. Drop marketplace databases (no tracking tag - match by name and origin)
+-- 19. Drop marketplace databases (no tracking tag - match by name and origin).
+--     install-fleet-apps acquires all six via CREATE DATABASE ... FROM LISTING.
 DROP DATABASE IF EXISTS OVERTURE_MAPS__PLACES;
 DROP DATABASE IF EXISTS OVERTURE_MAPS__ADDRESSES;
+DROP DATABASE IF EXISTS OVERTURE_MAPS__TRANSPORTATION;
+DROP DATABASE IF EXISTS OVERTURE_MAPS__BUILDINGS;
+DROP DATABASE IF EXISTS OVERTURE_MAPS__DIVISIONS;
+DROP DATABASE IF EXISTS SAFEGRAPH_OPEN_CENSUS_FREE;
 
 -- 20. Drop project databases (CASCADE handles all contained objects)
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE CASCADE;
@@ -283,7 +290,7 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 | Cannot drop compute pool - active nodes | `ALTER COMPUTE POOL <name> STOP ALL;` then wait 30s before DROP |
 | Cannot drop table - has dependents | Drop dynamic tables and views first (follow phase order) |
 | Schema not empty after drops | Some objects may lack COMMENT tags. Use `DROP SCHEMA ... CASCADE` |
-| Warehouse in use | `ALTER WAREHOUSE <name> SUSPEND;` first, then DROP |
+| Warehouse in use | `DROP WAREHOUSE IF EXISTS <name>` (suspends implicitly; do NOT `ALTER ... SUSPEND` first - it aborts `snow sql -f` on an already-suspended WH) |
 | DROP APPLICATION fails | Ensure all services are stopped: `SHOW SERVICES IN APPLICATION <name>` |
 | Integration still exists after app drop | EAIs are account-level; drop them explicitly in Phase 3 |
 | SHOW AGENTS syntax error | Account may not have Cortex Agents enabled - skip that type |

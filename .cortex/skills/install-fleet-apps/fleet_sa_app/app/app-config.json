@@ -19,13 +19,49 @@
     "Switch the active region and dataset (mode) across every dashboard and routing tool"
   ],
   "sampleQuestions": [
-    "How many trips and operators are active for the current fleet?",
-    "Which operators have the highest average speed?",
-    "What are the busiest origin locations this week?",
-    "Where are the worst dwell hotspots and congestion by hour?",
-    "How many coffee shops are in the active region, by city?",
-    "Show hospitals in the active region on the map",
-    "Which cities have the most gas stations?"
+    {
+      "group": "Explore the solution",
+      "questions": [
+        "What can this solution show a logistics customer?",
+        "I run a truck fleet - which dashboards are relevant to me?",
+        "What business problems does this solve, and what data does each one need?",
+        "Which of these analyses use live routing rather than precomputed data?"
+      ]
+    },
+    {
+      "group": "See the fleet right now",
+      "questions": [
+        "Where are my trucks right now and what state is each one in?",
+        "Which vehicles are moving, idle, or on site at this moment?",
+        "Show me what actually happened on one trip, stop by stop.",
+        "Will we finish today's committed work, or are jobs already late?"
+      ]
+    },
+    {
+      "group": "Cut empty miles and idle cost",
+      "questions": [
+        "I want to reduce empty miles - where do I start?",
+        "Which vehicles are sitting idle and what is that idleness costing us?",
+        "How much paid time are we losing to standing still at sites?",
+        "Where is margin leaking because execution drifted from the plan?"
+      ]
+    },
+    {
+      "group": "Sites, network and cost to serve",
+      "questions": [
+        "Which facilities cost us the most turnaround time?",
+        "If I open a site here, how many people can reach it in 15 minutes by road?",
+        "If I close this site, how much revenue do we keep and how much leaks away?",
+        "Are we shipping from the wrong plant, and what would re-sourcing save per year?"
+      ]
+    },
+    {
+      "group": "Bring your own data",
+      "questions": [
+        "How do I point these dashboards at my SAP and telematics data?",
+        "Which of my tables can be bound into this model?"
+      ]
+    }
   ],
   "snowflake": {
     "database": "FLEET_INTELLIGENCE",
@@ -114,7 +150,8 @@
       "id": "date_range_start",
       "type": "date_range",
       "label": "Date range",
-      "default": "last_365_days"
+      "default": "data_range",
+      "boundsSource": "SELECT TO_VARCHAR(MIN(d)::DATE, 'YYYY-MM-DD') AS min_date, TO_VARCHAR(MAX(d)::DATE, 'YYYY-MM-DD') AS max_date FROM (SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region UNION ALL SELECT SERVICE_DATE AS d FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region)"
     },
     {
       "id": "deviation_threshold",

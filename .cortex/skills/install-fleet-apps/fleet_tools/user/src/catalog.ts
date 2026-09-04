@@ -9,8 +9,20 @@
 // external engines via EXTERNAL ACCESS INTEGRATION in future) per the
 // region->provider default + optional per-call provider override. The verbs
 // therefore route engine-agnostically without naming any engine.
+//
+// Why this is a plain map and NOT `defineCatalog()` (the framework's FQ-catalog
+// helper): `defineCatalog` prefixes each logical name with the BUNDLE's own
+// database.schema, substituted at bundle time. Every entry below lives in a
+// DIFFERENT database.schema from this bundle (which installs into
+// OPENROUTESERVICE_APP.ROUTING), so `defineCatalog` would qualify them wrongly.
+// It is the right tool for objects a bundle owns; these are objects it wraps.
+// The one bundle-owned object, the VERB_ATTEMPT audit table, is qualified by the
+// bundler itself (see vendor/synapse/VENDOR.md, audit-FQN patch), so it needs no
+// entry here either.
 export const Procs = {
   directions: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS',
+  snap: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP',
+  match: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH',
   isochrone: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE',
   optimization: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION',
   poiInIsochrone: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE',

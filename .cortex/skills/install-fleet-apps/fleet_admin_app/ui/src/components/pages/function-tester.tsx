@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { samplePoints, COORD_FUNCTIONS, type BBox } from '@/components/function-tester/samplePoints';
+import { samplePoints, COORD_FUNCTIONS, TRAJECTORY_FUNCTIONS, buildNoisyTrajectory, type BBox } from '@/components/function-tester/samplePoints';
 
 import {
   RegionOption,
@@ -10,10 +10,19 @@ import {
   generateSql,
   expectedProfilesForRegion,
   loadedProfilesForRegion,
+  decodePolyline,
+  matchSupport,
+  optionalFunctionProbeSql,
+  OPTIONAL_FUNCTIONS,
+  parseMatchInvocation,
 } from '@/components/function-tester/helpers';
 import { ResultMap } from '@/components/function-tester/ResultMap';
 import { useActivePreset } from '@/hooks/useActivePreset';
 import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
+
+function sqlLiteral(s: string): string {
+  return String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
 
 interface RoadPointsResult {
   points: [number, number][] | null;
@@ -88,6 +97,63 @@ async function fetchSeedPoiPoints(region: string, opts?: { limit?: number }): Pr
   }
 }
 
+// Number of GPS fixes in a synthetic trajectory, and the noise applied to each.
+const TRAJECTORY_POINTS = 12;
+const TRAJECTORY_JITTER_M = 18;
+
+/**
+ * Build a road-following trajectory for MATCH / MATCH_PATH.
+ *
+ * The HMM matcher rejects an implausible track, so a straight line between two
+ * sampled points matches poorly or not at all. Run DIRECTIONS between the two
+ * seed points first, decimate the returned road geometry, then add GPS-like
+ * noise - which is exactly the input map matching exists to correct.
+ */
+async function fetchTrajectory(
+  db: string,
+  profile: string,
+  region: string,
+  seedPoints: [number, number][],
+  seed: number,
+): Promise<{ coords: [number, number][] | null; reason?: string }> {
+  if (seedPoints.length < 2) return { coords: null, reason: 'not enough sample points' };
+  const p = db ? `${db}.CORE` : 'CORE';
+  const [a, b] = seedPoints;
+  const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON FROM TABLE(${p}.DIRECTIONS('${sqlLiteral(profile)}', ARRAY_CONSTRUCT(${a[0]}, ${a[1]}), ARRAY_CONSTRUCT(${b[0]}, ${b[1]}), '${sqlLiteral(region)}'))`;
+  try {
+    const resp = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql }),
+    });
+    const data = await resp.json();
+    if (data.error) return { coords: null, reason: data.error };
+    const rows = Array.isArray(data.result) ? data.result : [];
+    let routeCoords: [number, number][] = [];
+    for (const row of rows) {
+      for (const val of Object.values(row)) {
+        const parsed = typeof val === 'string'
+          ? (() => { try { return JSON.parse(val as string); } catch { return null; } })()
+          : val;
+        const geom = (parsed as any)?.geometry ?? parsed;
+        if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
+          routeCoords = geom.coordinates as [number, number][];
+          break;
+        }
+        if (typeof (parsed as any)?.routes?.[0]?.geometry === 'string') {
+          routeCoords = decodePolyline((parsed as any).routes[0].geometry);
+          break;
+        }
+      }
+      if (routeCoords.length > 0) break;
+    }
+    if (routeCoords.length < 2) return { coords: null, reason: 'DIRECTIONS returned no route geometry' };
+    return { coords: buildNoisyTrajectory(routeCoords, TRAJECTORY_POINTS, TRAJECTORY_JITTER_M, seed) };
+  } catch (e: any) {
+    return { coords: null, reason: e?.message || 'network error' };
+  }
+}
+
 export function FunctionTesterPage() {
   const preset = useActivePreset();
   const [regions, setRegions] = useState<RegionOption[]>([]);
@@ -109,13 +175,21 @@ export function FunctionTesterPage() {
   const [poolSource, setPoolSource] = useState<'seed' | 'overture' | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
+  const [trajectory, setTrajectory] = useState<[number, number][] | null>(null);
+  // null until probed; then the subset of OPTIONAL_FUNCTIONS actually installed.
+  const [installedOptional, setInstalledOptional] = useState<string[] | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
+  const [matchedGeojson, setMatchedGeojson] = useState<any | null>(null);
+  const [matchedPending, setMatchedPending] = useState(false);
+  const [matchedNote, setMatchedNote] = useState<string | null>(null);
   const [roadNonce, setRoadNonce] = useState(0);
   const [sampleNonce, setSampleNonce] = useState(0);
   const userEditedRef = useRef(false);
   const lastPresetRegionRef = useRef<string | null>(null);
   const lastPresetProfileRef = useRef<string | null>(null);
   const roadSeqRef = useRef(0);
+  const trajectorySeqRef = useRef(0);
+  const matchSeqRef = useRef(0);
   const nocacheNextRef = useRef(false);
   const selectedRegionKeyRef = useRef<string | null>(null);
 
@@ -267,6 +341,7 @@ export function FunctionTesterPage() {
 
     if (!COORD_FUNCTIONS.includes(fnName)) {
       setSampleHint(null);
+      setTrajectory(null);
       setSqlInput(generateSql(fnName, region, profile, db, null));
       return;
     }
@@ -274,6 +349,7 @@ export function FunctionTesterPage() {
     const bbox = region?.bbox;
     if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
       setSampleHint(null);
+      setTrajectory(null);
       setSqlInput(generateSql(fnName, region, profile, db, null));
       return;
     }
@@ -287,7 +363,30 @@ export function FunctionTesterPage() {
       seed: sampleNonce,
     });
     setSampleHint(sampled?.hint || null);
+
+    if (!TRAJECTORY_FUNCTIONS.includes(fnName) || !region?.region) {
+      setTrajectory(null);
+      setSqlInput(generateSql(fnName, region, profile, db, sampled));
+      return;
+    }
+
+    // Straight-line SQL first so the editor is never empty, then upgrade it in
+    // place once the DIRECTIONS-derived trajectory arrives.
+    setTrajectory(null);
     setSqlInput(generateSql(fnName, region, profile, db, sampled));
+    const mySeq = ++trajectorySeqRef.current;
+    (async () => {
+      const traj = await fetchTrajectory(db, profile, region.region, sampled?.points || [], sampleNonce);
+      if (mySeq !== trajectorySeqRef.current) return;
+      if (userEditedRef.current) return;
+      if (traj.coords && traj.coords.length >= 2) {
+        setTrajectory(traj.coords);
+        setSampleHint(`Trajectory of ${traj.coords.length} noisy GPS fixes (~${TRAJECTORY_JITTER_M} m) sampled along a real DIRECTIONS route.`);
+        setSqlInput(generateSql(fnName, region, profile, db, sampled, traj.coords));
+      } else {
+        setSampleHint(`Could not build a road trajectory (${traj.reason || 'unknown'}) - using a straight line between sample points, which may not match.`);
+      }
+    })();
   }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, sampleNonce]);
 
   const onRegionChange = useCallback((regionKey: string) => {
@@ -338,6 +437,9 @@ export function FunctionTesterPage() {
     setRunning(true);
     setResult(null);
     setError(null);
+    setMatchedGeojson(null);
+    setMatchedPending(false);
+    setMatchedNote(null);
     setLastExecutedSql(sqlInput);
     const start = Date.now();
     try {
@@ -348,16 +450,102 @@ export function FunctionTesterPage() {
       });
       const data = await resp.json();
       setDuration(Date.now() - start);
-      if (data.error) setError(data.error);
-      else setResult(data.result);
+      if (data.error) { setError(data.error); }
+      else {
+        setResult(data.result);
+        // MATCH returns edge ids and no geometry. Automatically resolve road
+        // geometry via MATCH_PATH using the profile/region parsed from the SQL
+        // that actually ran (NOT the dropdowns - those could differ).
+        if (selectedFn === 'MATCH' && data.result
+            && (installedOptional === null || installedOptional.includes('MATCH_PATH'))) {
+          const inv = parseMatchInvocation(sqlInput);
+          if (inv) {
+            const mySeq = ++matchSeqRef.current;
+            setMatchedPending(true);
+            const p = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
+            const coords = inv.track.map((c) => `ARRAY_CONSTRUCT(${c[0]}, ${c[1]})`).join(', ');
+            const rg = inv.region ? `'${sqlLiteral(inv.region)}'` : 'NULL';
+            const mpSql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON, MATCHED_EDGES `
+              + `FROM TABLE(${p}.MATCH_PATH('${sqlLiteral(inv.profile)}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
+            try {
+              const r2 = await fetch('/api/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: mpSql }),
+              });
+              const mp = await r2.json();
+              if (mySeq === matchSeqRef.current) {
+                const raw = Array.isArray(mp.result) ? mp.result[0] : null;
+                const gj = raw ? (raw.GEOJSON ?? raw.geojson) : null;
+                if (mp.error) setMatchedNote(`Road geometry unavailable: ${mp.error}`);
+                else if (!gj) setMatchedNote('MATCH_PATH returned no geometry - the profile graph may lack the OsmId ext storage.');
+                else { try { setMatchedGeojson(JSON.parse(gj)); } catch { setMatchedNote('Could not parse returned geometry.'); } }
+              }
+            } catch (e2: any) {
+              if (mySeq === matchSeqRef.current) setMatchedNote(e2?.message || 'Road geometry request failed.');
+            } finally {
+              if (mySeq === matchSeqRef.current) setMatchedPending(false);
+            }
+          }
+        }
+      }
     } catch (err: any) {
       setDuration(Date.now() - start);
       setError(err.message);
     }
     setRunning(false);
-  }, [sqlInput]);
+  }, [sqlInput, selectedFn, sfDatabase, installedOptional]);
 
   const graphsLoading = selectedRegion?.graphReadiness?.service_ready === false;
+
+  // Probe once per database: which of the newer ORS wrappers are installed here.
+  useEffect(() => {
+    if (!sfDatabase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sql: optionalFunctionProbeSql(sfDatabase) }),
+        });
+        const data = await resp.json();
+        if (cancelled) return;
+        if (data.error || !Array.isArray(data.result)) {
+          // Unknown - do not gate on a failed probe.
+          setInstalledOptional(OPTIONAL_FUNCTIONS);
+          return;
+        }
+        const names = data.result
+          .map((r: any) => String(r.FUNCTION_NAME ?? r.function_name ?? '').toUpperCase())
+          .filter(Boolean);
+        setInstalledOptional(names);
+      } catch {
+        if (!cancelled) setInstalledOptional(OPTIONAL_FUNCTIONS);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sfDatabase]);
+
+  const match = useMemo(
+    () => matchSupport(selectedRegion?.graphReadiness ?? null),
+    [selectedRegion?.graphReadiness],
+  );
+
+  const gateFor = useCallback((fnName: string): string | null => {
+    if (!OPTIONAL_FUNCTIONS.includes(fnName)) return null;
+    if (installedOptional !== null && !installedOptional.includes(fnName)) {
+      return `${fnName} is not installed in this deployment - re-run the ORS app SQL modules to add it.`;
+    }
+    if (TRAJECTORY_FUNCTIONS.includes(fnName) && !match.supported) return match.reason || null;
+    return null;
+  }, [installedOptional, match]);
+
+  // If the selected function turns out to be unavailable here, fall back to one
+  // that always exists rather than leaving a dead card selected.
+  useEffect(() => {
+    if (gateFor(selectedFn)) onFnChange('DIRECTIONS');
+  }, [gateFor, selectedFn, onFnChange]);
 
   return (
     <div className="panel">
@@ -404,17 +592,30 @@ export function FunctionTesterPage() {
 
       <h3>Function</h3>
       <div className="fn-grid">
-        {FUNCTIONS.map((fn) => (
-          <button
-            key={fn.name}
-            className={`fn-card ${selectedFn === fn.name ? 'active' : ''}`}
-            onClick={() => onFnChange(fn.name)}
-          >
-            <div className="fn-name">{fn.name}</div>
-            <div className="fn-sig">{fn.sig}</div>
-          </button>
-        ))}
+        {FUNCTIONS.map((fn) => {
+          const gate = gateFor(fn.name);
+          return (
+            <button
+              key={fn.name}
+              className={`fn-card ${selectedFn === fn.name ? 'active' : ''}`}
+              onClick={() => onFnChange(fn.name)}
+              disabled={!!gate}
+              title={gate || undefined}
+              style={gate ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+            >
+              <div className="fn-name">{fn.name}</div>
+              <div className="fn-sig">{fn.sig}</div>
+            </button>
+          );
+        })}
       </div>
+      {OPTIONAL_FUNCTIONS.map((n) => gateFor(n)).filter(Boolean).length > 0 && (
+        <ul style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0', paddingLeft: 18 }}>
+          {OPTIONAL_FUNCTIONS.map((n) => ({ n, g: gateFor(n) }))
+            .filter((x) => x.g)
+            .map((x) => <li key={x.n}>{x.g}</li>)}
+        </ul>
+      )}
 
       <h3>SQL Query</h3>
       <textarea
@@ -479,6 +680,10 @@ export function FunctionTesterPage() {
         regionBbox={selectedRegion?.bbox ?? null}
         regionBoundary={selectedRegion?.boundaryGeoJson ?? null}
         executedSql={lastExecutedSql}
+        trajectory={trajectory}
+        matchedGeojson={matchedGeojson}
+        matchedPending={matchedPending}
+        matchedNote={matchedNote}
       />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {

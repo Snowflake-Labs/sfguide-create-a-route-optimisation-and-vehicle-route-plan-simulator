@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { useAgentMemo } from '@/lib/agent-memo';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface MetricMapping {
   column: string;
@@ -63,7 +65,7 @@ function formatValue(value: unknown, format?: string): string {
 }
 
 export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const display = useDisplayConfig();
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
@@ -97,17 +99,10 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
     return out;
   }, [data, metrics, display]);
 
-  // Signature-guarded publish so this never loops with the store write-back. Deps
-  // are the memo string + area name only (NOT viewState), so the emitKey-selection
-  // read below cannot retrigger it.
-  const memoKey = `__memo_${areaName ?? 'kpi'}`;
-  const lastMemoRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!kpiMemo) return;
-    if (lastMemoRef.current === kpiMemo) return;
-    lastMemoRef.current = kpiMemo;
-    updateViewState({ [memoKey]: kpiMemo });
-  }, [kpiMemo, memoKey, updateViewState]);
+  // Published through the shared gate rather than a local effect. The local one
+  // returned early on an empty memo and never cleared on unmount, so a stale KPI
+  // strip could follow the user into the next view and be quoted as current.
+  useAgentMemo(areaName, kpiMemo, 'kpi');
 
   if (loading) {
     return (
@@ -117,6 +112,10 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
         ))}
       </div>
     );
+  }
+
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />;
   }
 
   if (error) {

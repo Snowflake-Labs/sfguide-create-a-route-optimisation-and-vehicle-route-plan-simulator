@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
     HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0,
     FILTER_DURATION_SECONDS FLOAT DEFAULT 0
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}';
 
 -- Legacy backfill for accounts that created MATRIX_BUILD_JOBS before the
 -- four filter columns were folded into the canonical CREATE TABLE above.
@@ -71,7 +71,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ENSURE_MATRIX_TABLES(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -89,13 +89,13 @@ BEGIN
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
     matrix_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || list_table || ' (H3_INDEX VARCHAR, CENTER_POINT GEOGRAPHY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || list_table || ' (H3_INDEX VARCHAR, CENTER_POINT GEOGRAPHY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''';
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || wq_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_POINT GEOGRAPHY, DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || wq_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_POINT GEOGRAPHY, DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''';
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || raw_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || raw_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''';
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table || ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ DEFAULT SYSDATE()) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table || ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ DEFAULT SYSDATE()) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''';
     RETURN 'Tables ensured: ' || list_table || ', ' || wq_table || ', ' || raw_table || ', ' || matrix_table;
 END;
 $$;
@@ -122,12 +122,12 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBA
     BBOX_MAX_LON FLOAT,
     MESSAGE VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix","feature":"bbox-fallback-warning"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","feature":"bbox-fallback-warning"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -212,7 +212,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS_ROAD_AWARE(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix","feature":"road-aware"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","feature":"road-aware"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -320,7 +320,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR, P_JOB_ID VARCHAR DEFAULT NULL)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -391,7 +391,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_TRAVEL_TIME_RANGE(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -490,7 +490,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_TRAVEL_TIME_RANGE_REGION(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -656,7 +656,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -674,7 +674,7 @@ BEGIN
     EXECUTE IMMEDIATE '
     CREATE OR REPLACE TABLE ' || target_table || '
     CLUSTER BY (ORIGIN_H3)
-    COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''
+    COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''
     AS
     SELECT
         r.ORIGIN_H3,
@@ -700,7 +700,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_FOR_REGION(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -808,7 +808,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.MATRIX_PROGRESS(P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -845,7 +845,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESET_MATRIX_DATA(P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -877,7 +877,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_JOB_WRAPPER(P_JOB_ID VARCHAR, P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR, P_ROAD_FILTER BOOLEAN DEFAULT FALSE)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$

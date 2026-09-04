@@ -8,7 +8,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-f
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -79,7 +79,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_services()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 BEGIN
@@ -91,7 +91,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -169,7 +169,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.COST_SAFE_MODE()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-safe"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"cost-safe"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -234,7 +234,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_FLEET()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"resume-fleet"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"resume-fleet"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -287,23 +287,41 @@ $$;
 -- keeps running while hibernated and can wake the fleet on renewed activity.
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.COST_SETTINGS (
-    SETTING_KEY          VARCHAR NOT NULL PRIMARY KEY,
-    HIBERNATE_ENABLED    BOOLEAN,
-    HIBERNATE_IDLE_HOURS NUMBER,
-    UPDATED_AT           TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
-) COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"cost-settings"}}';
+    SETTING_KEY           VARCHAR NOT NULL PRIMARY KEY,
+    HIBERNATE_ENABLED     BOOLEAN,
+    HIBERNATE_IDLE_HOURS  NUMBER,
+    -- Keep-warm window (minutes). While a region has real routing activity in
+    -- ORS_REQUEST_LOG within this window, RECONCILE_AUTO_SUSPEND pins its
+    -- ORS/VROOM service + pool to AUTO_SUSPEND_SECS=0 so the blind SPCS native
+    -- idle timer (which does NOT count service-to-service gateway traffic)
+    -- cannot suspend a region that is actively in use. Once activity is older
+    -- than this window, reconcile restores the finite defaults (14400/3600) and
+    -- the region suspends on its native timer.
+    KEEPWARM_IDLE_MINUTES NUMBER,
+    UPDATED_AT            TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"cost-settings"}}';
+
+-- Add the keep-warm column on pre-existing installs (the CREATE above is
+-- IF NOT EXISTS, so an already-created table keeps its old shape). IF NOT
+-- EXISTS makes the ADD idempotent across re-runs.
+ALTER TABLE IF EXISTS FLEET_INTELLIGENCE.CORE.COST_SETTINGS
+    ADD COLUMN IF NOT EXISTS KEEPWARM_IDLE_MINUTES NUMBER;
 
 -- Seed the default row once (MERGE so re-running the module never clobbers a
--- user's saved toggle). Default: enabled, 4-hour idle threshold.
+-- user's saved toggle). Default: enabled, 4-hour idle threshold, 90-minute
+-- keep-warm window. Backfill KEEPWARM_IDLE_MINUTES on an existing GLOBAL row
+-- only when it is NULL (e.g. after the ALTER above added the column) so a
+-- user's saved value is never overwritten.
 MERGE INTO FLEET_INTELLIGENCE.CORE.COST_SETTINGS t
 USING (SELECT 'GLOBAL' AS SETTING_KEY) s ON t.SETTING_KEY = s.SETTING_KEY
-WHEN NOT MATCHED THEN INSERT (SETTING_KEY, HIBERNATE_ENABLED, HIBERNATE_IDLE_HOURS)
-    VALUES ('GLOBAL', TRUE, 4);
+WHEN MATCHED AND t.KEEPWARM_IDLE_MINUTES IS NULL THEN UPDATE SET t.KEEPWARM_IDLE_MINUTES = 90
+WHEN NOT MATCHED THEN INSERT (SETTING_KEY, HIBERNATE_ENABLED, HIBERNATE_IDLE_HOURS, KEEPWARM_IDLE_MINUTES)
+    VALUES ('GLOBAL', TRUE, 4, 90);
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"auto-hibernate"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -317,6 +335,21 @@ DECLARE
     action VARCHAR DEFAULT 'noop';
     tmp VARCHAR DEFAULT '';
 BEGIN
+    -- Drive the activity-aware keep-warm reconcile every cycle. This is the
+    -- scheduled caller of RECONCILE_AUTO_SUSPEND: it pins an actively-used
+    -- region's ORS/VROOM service + pool to AUTO_SUSPEND_SECS=0 (recent
+    -- ORS_REQUEST_LOG activity) and restores the finite defaults once a region
+    -- goes idle. Hosted here rather than in RESCUE_PENDING_PROVISIONS_TASK
+    -- because that task self-suspends when there is no provisioning work -
+    -- precisely when keep-warm is needed. This hourly cadence is well inside
+    -- the 14400s (4h) native service timer, so an active region is always
+    -- re-pinned before the blind timer could fire. Runs before the enabled
+    -- check below so keep-warm works even when hibernation is toggled off.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     -- Settings (best-effort; defaults enabled/4h if the table is missing).
     BEGIN
         SELECT COALESCE(HIBERNATE_ENABLED, TRUE), COALESCE(HIBERNATE_IDLE_HOURS, 4)
@@ -424,7 +457,7 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK
     SCHEDULE = '60 MINUTE'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle","action":"auto-hibernate-task"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"auto-hibernate-task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE();
 
@@ -439,7 +472,7 @@ ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK RESUME;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -475,7 +508,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_ORS_INSTANCES INTEGER, P_GATEWAY_INSTANCES INTEGER, P_POOL_NODES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -500,7 +533,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_STATUS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -600,7 +633,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(P_NAME VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -643,7 +676,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(P_NAME VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
@@ -706,14 +739,29 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE
     gateway_busy BOOLEAN DEFAULT FALSE;
     reconciled INTEGER DEFAULT 0;
     left_zero  INTEGER DEFAULT 0;
+    keepwarm_min INTEGER DEFAULT 90;
 BEGIN
+    -- Keep-warm window (minutes). A region with real routing activity in
+    -- ORS_REQUEST_LOG within this window is treated as "busy" below so its
+    -- ORS/VROOM service + pool stay pinned at AUTO_SUSPEND_SECS=0. This is the
+    -- counter-force to the SPCS native idle timer, which does NOT count the
+    -- gateway's service-to-service traffic and would otherwise suspend an
+    -- actively-used region on its blind ~4h timer. Best-effort read; a missing
+    -- table/column falls back to the 90-minute default.
+    BEGIN
+        SELECT COALESCE(KEEPWARM_IDLE_MINUTES, 90) INTO :keepwarm_min
+        FROM FLEET_INTELLIGENCE.CORE.COST_SETTINGS WHERE SETTING_KEY = 'GLOBAL' LIMIT 1;
+    EXCEPTION WHEN OTHER THEN keepwarm_min := 90;
+    END;
+    IF (:keepwarm_min IS NULL OR :keepwarm_min < 0) THEN keepwarm_min := 90; END IF;
+
     -- Any matrix job currently running means the gateway and at least one
     -- ORS_SERVICE_<REGION> must stay at AUTO_SUSPEND_SECS=0.
     LET active_matrix INTEGER := 0;
@@ -823,6 +871,23 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
+        -- Recent real routing activity for this region (keep-warm). The SPCS
+        -- native idle timer does NOT count the gateway's service-to-service
+        -- calls, so without this an actively-used region suspends on its blind
+        -- ~4h timer and its pool follows 1h later. ORS_HOST reliably identifies
+        -- the region (the REGION column in the log may be NULL).
+        IF (NOT busy) THEN
+            BEGIN
+                LET ac INTEGER := 0;
+                SELECT COUNT(*) INTO :ac
+                FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
+                WHERE UPPER(ORS_HOST) = 'ORS-SERVICE-' || :region_key
+                  AND REQUEST_TS >= DATEADD('minute', -:keepwarm_min, CURRENT_TIMESTAMP());
+                IF (ac > 0) THEN busy := TRUE; END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+
         -- DEPLOYED region whose graphs were never finalized (_BUILD_OK missing).
         -- Bootstrap and re-provision paths can leave REBUILD_GRAPHS=true with a
         -- partial stage; without pinning, auto-suspend interrupts the build before
@@ -891,6 +956,21 @@ BEGIN
             IF (vsc > 0) THEN vbusy := TRUE; END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Recent real routing activity keeps VROOM warm too. An optimization
+        -- request drives both VROOM and (internally) ORS, and the log may
+        -- record either host, so treat the region as VROOM-busy when either
+        -- the ORS or VROOM host for this region was hit within the window.
+        IF (NOT vbusy) THEN
+            BEGIN
+                LET vac INTEGER := 0;
+                SELECT COUNT(*) INTO :vac
+                FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
+                WHERE UPPER(ORS_HOST) IN ('ORS-SERVICE-' || :vregion_key, 'VROOM-SERVICE-' || :vregion_key)
+                  AND REQUEST_TS >= DATEADD('minute', -:keepwarm_min, CURRENT_TIMESTAMP());
+                IF (vac > 0) THEN vbusy := TRUE; END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         BEGIN
             IF (vbusy) THEN
                 EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 0';
@@ -973,6 +1053,20 @@ BEGIN
             IF (psc > 0) THEN pbusy := TRUE; END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Recent real routing activity keeps the pool warm so it does not
+        -- release its node 1h after a still-in-use region's services (the pool
+        -- is a follower: it idles only when no service runs on any node).
+        IF (NOT pbusy) THEN
+            BEGIN
+                LET pac INTEGER := 0;
+                SELECT COUNT(*) INTO :pac
+                FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
+                WHERE UPPER(ORS_HOST) IN ('ORS-SERVICE-' || :pregion_key, 'VROOM-SERVICE-' || :pregion_key)
+                  AND REQUEST_TS >= DATEADD('minute', -:keepwarm_min, CURRENT_TIMESTAMP());
+                IF (pac > 0) THEN pbusy := TRUE; END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         -- Mirror ORS_SERVICE pin: unfinalized DEPLOYED region (no _BUILD_OK).
         IF (NOT pbusy) THEN
             BEGIN
@@ -1027,7 +1121,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"lifecycle"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle"}}'
 AS
 $$
 DECLARE

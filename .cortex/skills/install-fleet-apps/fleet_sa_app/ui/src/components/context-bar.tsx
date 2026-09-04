@@ -9,18 +9,76 @@ const DATE_PRESETS = [
   { label: 'Last 90 days', days: 90 },
   { label: 'Last 6 months', days: 180 },
   { label: 'Last 12 months', days: 365 },
-  { label: 'All time', days: 0 },
 ];
 
-function getDateLabel(value: unknown, endValue?: unknown): string {
+// Bounds of the data actually present for the selected region, resolved at
+// runtime from the field's `boundsSource`, so the control offers the real
+// interval instead of a wall-clock window that may sit outside the data.
+interface DateBounds {
+  min: string;
+  max: string;
+}
+
+// Fallback bounds query for a stage-mounted app-config.json that predates the
+// `boundsSource` field (config-driven first, literal as fallback only). Spans
+// both facts the views filter on, so the offered range is never narrower than
+// what a view can render. Formatted as text on purpose: a bare DATE crosses the
+// SQL REST API as days-since-epoch, so TO_VARCHAR keeps it correct even against
+// an image whose /api/query lacks the `date` branch.
+const DEFAULT_BOUNDS_SOURCE =
+  "SELECT TO_VARCHAR(MIN(d)::DATE, 'YYYY-MM-DD') AS min_date, TO_VARCHAR(MAX(d)::DATE, 'YYYY-MM-DD') AS max_date FROM (" +
+  'SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region ' +
+  'UNION ALL ' +
+  'SELECT SERVICE_DATE AS d FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS WHERE REGION = :region)';
+
+// Coerce a bounds value to YYYY-MM-DD. Accepts an ISO/date-only string and also
+// a bare days-since-epoch number, which is how the SQL REST API serializes a
+// DATE column - so a stale stage config returning a raw DATE still renders as a
+// date rather than "20666".
+function normalizeDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  if (/^\d+$/.test(s)) {
+    const d = new Date(Number(s) * 86400000);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function addDays(dateStr: string, delta: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().split('T')[0];
+}
+
+function daysBetween(from: string, to: string): number {
+  const a = new Date(`${from}T00:00:00Z`).getTime();
+  const b = new Date(`${to}T00:00:00Z`).getTime();
+  return Math.round((b - a) / (1000 * 60 * 60 * 24));
+}
+
+function clampDate(value: string, bounds: DateBounds | null): string {
+  if (!bounds) return value;
+  if (value < bounds.min) return bounds.min;
+  if (value > bounds.max) return bounds.max;
+  return value;
+}
+
+function getDateLabel(value: unknown, endValue?: unknown, bounds?: DateBounds | null): string {
   if (!value) return 'All time';
   const dateStr = String(value);
   if (endValue) {
-    return `${dateStr} \u2192 ${String(endValue)}`;
+    const endStr = String(endValue);
+    if (bounds && dateStr === bounds.min && endStr === bounds.max) {
+      return `Full range: ${dateStr} \u2192 ${endStr}`;
+    }
+    return `${dateStr} \u2192 ${endStr}`;
   }
-  const today = new Date();
+  // Anchor a relative label on the newest data date when known, not on today.
+  const anchor = bounds ? new Date(`${bounds.max}T00:00:00Z`) : new Date();
   const target = new Date(dateStr);
-  const diffDays = Math.round((today.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.round((anchor.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
   const match = DATE_PRESETS.find((p) => Math.abs(p.days - diffDays) < 3);
   if (match) return match.label;
   return `Since ${dateStr}`;
@@ -38,6 +96,9 @@ export interface ContextBarField {
   // installed regions from DIM_DATASETS) and `options` is the static fallback
   // used while loading or if the query yields nothing.
   source?: string;
+  // Optional read-only SELECT for a `date_range` field returning ONE row
+  // (min_date, max_date) bound on :region - the interval for which data exists.
+  boundsSource?: string;
 }
 
 const selectStyle: React.CSSProperties = {
@@ -83,10 +144,12 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sql:
-              'SELECT DATASET_ID AS dataset_id, LABEL AS label, IS_ACTIVE AS is_active, ' +
-              'VEHICLE_TYPE AS vehicle_type, REGION AS region ' +
-              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS ' +
-              'ORDER BY IS_ACTIVE DESC, CREATED_AT DESC',
+              'SELECT d.DATASET_ID AS dataset_id, d.LABEL AS label, d.IS_ACTIVE AS is_active, ' +
+              'd.VEHICLE_TYPE AS vehicle_type, d.REGION AS region ' +
+              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d ' +
+              'LEFT JOIN FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j ON j.JOB_ID = d.DATASET_ID ' +
+              'WHERE COALESCE(j.STATUS, \'COMPLETED\') NOT IN (\'DELETED\', \'CANCELLED\') ' +
+              'ORDER BY d.IS_ACTIVE DESC, d.CREATED_AT DESC',
           }),
         });
         if (!res.ok) return;
@@ -141,18 +204,27 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
 }
 
 // Date-range picker. The contextBar declares a single `date_range` field whose
-// id holds the START date; the END is stored under context.date_range_end (both
-// seeded in app-shell). Renders two native date inputs writing per-session context,
-// so any view whose query references :date_range_start / :date_range_end refetches.
+// id holds the START date; the END is stored under context.date_range_end.
+// Rather than a wall-clock window, the range defaults to the interval for which
+// the SELECTED REGION actually has data: `field.boundsSource` is queried on every
+// region change and the min/max seed the two context values (so any view whose
+// query references :date_range_start / :date_range_end refetches). Presets are
+// anchored on the newest data date and custom picks are clamped to the bounds.
 function DateRangePicker({ field }: { field: ContextBarField }) {
   const start = useAppStore((s) => s.context[field.id]) as string | undefined;
   const end = useAppStore((s) => s.context['date_range_end']) as string | undefined;
+  const region = useAppStore((s) => s.context['region']) as string | undefined;
   const setContext = useAppStore((s) => s.setContext);
   const [open, setOpen] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [bounds, setBounds] = useState<DateBounds | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  // Region whose bounds have already been seeded into context, so an explicit
+  // user pick is never clobbered by a re-render - only a real region change
+  // re-seeds.
+  const seededRegion = useRef<string | null>(null);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -165,14 +237,69 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
+  // Resolve the available data interval for the active region and seed the range.
+  useEffect(() => {
+    if (!region) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sql: field.boundsSource ?? DEFAULT_BOUNDS_SOURCE,
+            params: { region },
+          }),
+        });
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          rows?: Array<{ min_date?: unknown; max_date?: unknown }>;
+        };
+        const row = body.rows?.[0];
+        const min = normalizeDate(row?.min_date);
+        const max = normalizeDate(row?.max_date);
+        if (cancelled) return;
+        if (!min || !max) {
+          // No data for this region: degrade to All time rather than an empty
+          // dashboard, and hide the bounds hint.
+          setBounds(null);
+          seededRegion.current = region;
+          setContext(field.id, null);
+          setContext('date_range_end', null);
+          return;
+        }
+        const next = { min, max };
+        setBounds(next);
+        const outOfBounds = !start || !end || String(start) < min || String(end) > max;
+        if (seededRegion.current !== region || outOfBounds) {
+          seededRegion.current = region;
+          setContext(field.id, min);
+          setContext('date_range_end', max);
+        }
+      } catch {
+        /* non-fatal: leave the range as-is (unfiltered) */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region]);
+
   const applyCustom = useCallback(() => {
     if (customStart) {
-      setContext(field.id, customStart);
-      setContext('date_range_end', customEnd || null);
+      const s = clampDate(customStart, bounds);
+      const e = customEnd ? clampDate(customEnd, bounds) : null;
+      setContext(field.id, s);
+      setContext('date_range_end', e && e >= s ? e : bounds ? bounds.max : null);
     }
     setOpen(false);
     setShowCustom(false);
-  }, [customStart, customEnd, setContext, field.id]);
+  }, [customStart, customEnd, bounds, setContext, field.id]);
+
+  // Only offer relative windows that fit inside the available span.
+  const spanDays = bounds ? daysBetween(bounds.min, bounds.max) : null;
+  const presets = spanDays == null ? DATE_PRESETS : DATE_PRESETS.filter((p) => p.days < spanDays);
 
   const menuBtn: React.CSSProperties = {
     display: 'block',
@@ -206,7 +333,7 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
           }}
         >
           <span style={{ color: 'var(--text-secondary, #6b7280)' }}>{'\uD83D\uDCC5'}</span>
-          {getDateLabel(start, end)}
+          {getDateLabel(start, end, bounds)}
           <span style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '10px' }}>{'\u25BC'}</span>
         </button>
         {open && (
@@ -221,17 +348,45 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
               borderRadius: '8px',
               boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
               zIndex: 100,
-              minWidth: '160px',
+              minWidth: '200px',
               overflow: 'hidden',
             }}
           >
-            {DATE_PRESETS.map((preset) => (
+            {bounds && (
+              <div
+                style={{
+                  padding: '8px 14px 4px',
+                  fontSize: '11px',
+                  color: 'var(--text-secondary, #6b7280)',
+                }}
+              >
+                {`Data available ${bounds.min} - ${bounds.max}`}
+              </div>
+            )}
+            {bounds && (
+              <button
+                onClick={() => {
+                  setContext(field.id, bounds.min);
+                  setContext('date_range_end', bounds.max);
+                  setOpen(false);
+                  setShowCustom(false);
+                }}
+                style={menuBtn}
+                onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--surface-secondary, #f3f4f6)')}
+                onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+              >
+                Full range
+              </button>
+            )}
+            {presets.map((preset) => (
               <button
                 key={preset.label}
                 onClick={() => {
-                  if (preset.days === 0) {
-                    setContext(field.id, null);
-                    setContext('date_range_end', null);
+                  // Relative windows are anchored on the newest DATA date, not
+                  // today, so they always land inside the available interval.
+                  if (bounds) {
+                    setContext(field.id, clampDate(addDays(bounds.max, -preset.days), bounds));
+                    setContext('date_range_end', bounds.max);
                   } else {
                     const d = new Date();
                     d.setDate(d.getDate() - preset.days);
@@ -248,6 +403,19 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
                 {preset.label}
               </button>
             ))}
+            <button
+              onClick={() => {
+                setContext(field.id, null);
+                setContext('date_range_end', null);
+                setOpen(false);
+                setShowCustom(false);
+              }}
+              style={menuBtn}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--surface-secondary, #f3f4f6)')}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              All time
+            </button>
             <div style={{ borderTop: '1px solid var(--border-default, #e5e7eb)', margin: '4px 0' }} />
             {!showCustom ? (
               <button
@@ -265,6 +433,8 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
                   <input
                     type="date"
                     value={customStart}
+                    min={bounds?.min}
+                    max={bounds?.max}
                     onChange={(e) => setCustomStart(e.target.value)}
                     style={{ flex: 1, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px' }}
                   />
@@ -274,6 +444,8 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
                   <input
                     type="date"
                     value={customEnd}
+                    min={customStart || bounds?.min}
+                    max={bounds?.max}
                     onChange={(e) => setCustomEnd(e.target.value)}
                     style={{ flex: 1, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px' }}
                   />

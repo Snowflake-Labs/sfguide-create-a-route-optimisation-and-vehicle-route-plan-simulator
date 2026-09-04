@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getSnowflakeAuth } from '@/lib/sf-auth';
+import { detectOrsSuspended } from '@/lib/routing-suspend';
+import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
 
 const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
@@ -199,11 +201,16 @@ async function pollForResults(handle: string, sqlPreview: string): Promise<State
 }
 
 async function handleQuery(request: NextRequest): Promise<Response> {
+  // Region hint (optional): lets the suspended-engine handler resume the right
+  // region even when the error string does not name the service host. Parsed
+  // before the try so it is available in the catch.
+  let regionHint: string | null = null;
   try {
     const body = await request.json();
     const rawSql = body.sql as string;
     const params = body.params as Record<string, string | null> | undefined;
     const dynamic = body.dynamic === true;
+    regionHint = typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
     if (!rawSql) {
       return NextResponse.json({ error: 'sql is required' }, { status: 400 });
@@ -277,6 +284,16 @@ async function handleQuery(request: NextRequest): Promise<Response> {
         } else if (col.type === 'timestamp_ntz' || col.type === 'timestamp_ltz' || col.type === 'timestamp_tz') {
           const ms = Math.round(parseFloat(raw) * 1000);
           obj[col.key] = new Date(ms).toISOString();
+        } else if (col.type === 'date') {
+          // The SQL REST API serializes DATE as DAYS SINCE EPOCH ("20666"), not
+          // as text, so without this branch a projected DATE renders as a raw
+          // number. Emit a date-only YYYY-MM-DD string (UTC, so no local-timezone
+          // off-by-one) which stays lexically comparable and is directly usable
+          // as an <input type="date"> value/min/max.
+          const days = Number(raw);
+          obj[col.key] = Number.isFinite(days)
+            ? new Date(days * 86400000).toISOString().slice(0, 10)
+            : raw;
         } else {
           obj[col.key] = raw;
         }
@@ -290,9 +307,19 @@ async function handleQuery(request: NextRequest): Promise<Response> {
       totalRows: result.resultSetMetaData?.numRows ?? rows.length,
     });
   } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Query execution failed';
+    // A live ISOCHRONES/MATRIX view over a suspended region surfaces the
+    // gateway's DNS/connection failure. Resume the region and return a typed,
+    // friendly notice so the panel shows "resume triggered" instead of a raw error.
+    const det = detectOrsSuspended(rawMsg);
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
     logger.error('sf-error', { warehouse: WAREHOUSE }, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Query execution failed' },
+      { error: rawMsg },
       { status: 500 },
     );
   }

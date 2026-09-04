@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
+import { buildRecordMemo, useAgentMemo } from '@/lib/agent-memo';
 import type { Operation } from '@/app/api/write/route';
 import {
   fmtValue,
@@ -65,14 +67,17 @@ interface EntityDetailAreaProps {
     data: { query: string; params?: Record<string, string> };
     config: EntityDetailConfig & { noPad?: boolean };
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this record's agent memo.
+  areaName?: string;
 }
 
-export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
+export function EntityDetailArea({ areaConfig, areaName }: EntityDetailAreaProps) {
   const { data: areaData, config } = areaConfig;
   const showView = useAppStore(s => s.showView);
   const bumpViewsVersion = useAppStore(s => s.bumpViewsVersion);
 
-  const { data, loading, error } = useViewData(
+  const { data, loading, error, suspended, refetch } = useViewData(
     areaData.query,
     areaData.params as Record<string, string> | undefined,
   );
@@ -90,6 +95,17 @@ export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
   const statusColors = config.status_colors ?? {};
   const statusStyle = statusColors[currentStatus] ?? { bg: '#f3f4f6', text: '#6b7280' };
   const transitions = config.status_transitions?.[currentStatus] ?? [];
+
+  // Agent grounding: the record on screen, so the agent can answer about the open
+  // entity (and its status) without re-querying and risking a different row.
+  useAgentMemo(
+    areaName,
+    useMemo(
+      () => buildRecordMemo(row, { label: entityId ? `open record ${entityId}` : 'open record' }),
+      [row, entityId],
+    ),
+    'record',
+  );
 
   const draftDeps = row
     ? (config.dependency_check ?? []).filter(dep => {
@@ -218,6 +234,7 @@ export function EntityDetailArea({ areaConfig }: EntityDetailAreaProps) {
     );
   }
 
+  if (suspended) return <RoutingSuspendedNotice info={suspended} onRetry={refetch} />;
   if (error) return <div style={{ padding: '24px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   if (!row)  return <div style={{ padding: '24px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>Record not found.</div>;
 

@@ -4,9 +4,12 @@
 // delivery stops, and a vehicle count, calls the User `optimize_routes` verb via
 // /api/tool, and renders the resulting routes on a deck.gl map (RouteMapInline).
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { RouteMapInline } from '@/components/inline/route-map-inline';
 import { useAppStore } from '@/lib/store';
+import { buildRecordMemo, joinBounded, useAgentMemo } from '@/lib/agent-memo';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 
 const PROFILES = ['driving-car', 'driving-hgv', 'cycling-regular', 'foot-walking'];
 
@@ -33,11 +36,13 @@ export function VrpSimulatorView() {
   const [profile, setProfile] = useState('driving-car');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
 
   const run = async () => {
     setLoading(true);
     setError(null);
+    setSuspended(null);
     setResult(null);
     try {
       const res = await fetch('/api/tool', {
@@ -46,9 +51,12 @@ export function VrpSimulatorView() {
         body: JSON.stringify({
           verb: 'optimize_routes',
           args: [stops, depot, vehicles, profile, null],
+          region,
         }),
       });
       const body = await res.json();
+      // Suspended routing engine: server has triggered a resume; show the notice.
+      if (res.status === 503 && isSuspendedBody(body)) { setSuspended(body); return; }
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setResult(body.result as Record<string, unknown>);
     } catch (err) {
@@ -57,6 +65,32 @@ export function VrpSimulatorView() {
       setLoading(false);
     }
   };
+
+  // Agent grounding: this page was entirely invisible to the agent - it takes no
+  // props and keeps the solve in local state, so "what did the simulator return"
+  // was unanswerable. Publish the inputs and whatever scalars the verb returned.
+  // Deliberately schema-agnostic: `optimize_routes` owns the result shape, so read
+  // it generically rather than asserting field names that could silently go stale.
+  useAgentMemo(
+    'vrp_simulator',
+    useMemo(() => {
+      const inputs = joinBounded(
+        [
+          `vrp simulator: depot ${depot ? `"${depot}"` : 'unset'}`,
+          `${stops.split('\n').filter((s) => s.trim()).length} stops entered`,
+          `${vehicles} vehicle${vehicles === 1 ? '' : 's'}`,
+          `profile ${profile}`,
+          loading ? 'solving now' : result ? 'solved' : 'not solved yet',
+        ],
+        220,
+      );
+      if (!result) return inputs;
+      const routes = (result as { routes?: unknown[] }).routes;
+      const routeCount = Array.isArray(routes) ? `${routes.length} routes returned` : null;
+      const scalars = buildRecordMemo(result, { label: 'result', maxKeys: 10 });
+      return joinBounded([inputs, routeCount, scalars].filter(Boolean) as string[]);
+    }, [depot, stops, vehicles, profile, loading, result]),
+  );
 
   const labelStyle = { fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', textTransform: 'uppercase' as const, marginBottom: '4px', display: 'block' };
   const inputStyle = { width: '100%', padding: '8px 10px', fontSize: '13px', borderRadius: '6px', border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-primary, #fff)', color: 'var(--text-primary, #111827)' };
@@ -100,6 +134,8 @@ export function VrpSimulatorView() {
           {loading ? 'Optimizing…' : 'Optimize routes'}
         </button>
       </div>
+
+      {suspended && <RoutingSuspendedNotice info={suspended} onRetry={run} compact />}
 
       {error && <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'var(--surface-error, #fef2f2)', border: '1px solid var(--border-error, #fecaca)', fontSize: '13px', color: 'var(--text-error, #dc2626)' }}>{error}</div>}
 

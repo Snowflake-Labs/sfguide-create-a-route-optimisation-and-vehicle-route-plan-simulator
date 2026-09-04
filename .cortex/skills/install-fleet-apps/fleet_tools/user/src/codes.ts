@@ -119,3 +119,28 @@ export const RENDER_COMPONENTS = [
   'Checkbox',
   'EntityDetail',
 ] as const;
+
+// Error codes for the data-access verbs (describe_data / run_sql).
+//
+// run_sql's codes are deliberately specific rather than one generic
+// INVALID_SQL: the agent's correct next move differs per failure. A
+// SQL_NOT_READ_ONLY means "stop, this is not something you may do"; a
+// SQL_MULTI_STATEMENT means "split it and retry"; an INVALID_MAX_ROWS means
+// "fix the argument". A single opaque code would have the agent retry the
+// forbidden statement.
+export const DataCodes = {
+  /** scope is not one of all / contract / semantic / listings. */
+  UNSUPPORTED_SCOPE: 'UNSUPPORTED_SCOPE',
+  /** object_name is not a plain three-part identifier. */
+  INVALID_OBJECT_NAME: 'INVALID_OBJECT_NAME',
+  /** sql contained only comments or whitespace. */
+  SQL_EMPTY: 'SQL_EMPTY',
+  /** sql contained more than one statement (semicolon-separated). */
+  SQL_MULTI_STATEMENT: 'SQL_MULTI_STATEMENT',
+  /** sql was not one of the allowed read-only leading keywords. */
+  SQL_NOT_READ_ONLY: 'SQL_NOT_READ_ONLY',
+  /** max_rows was not a positive integer. */
+  INVALID_MAX_ROWS: 'INVALID_MAX_ROWS',
+  /** deep_link was given a view id that is not in VIEW_CATALOG. */
+  UNKNOWN_VIEW_ID: 'UNKNOWN_VIEW_ID',
+} as const;

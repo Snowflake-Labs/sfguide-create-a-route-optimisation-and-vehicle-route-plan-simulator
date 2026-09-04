@@ -9,4 +9,7 @@ export const IS_SPCS = !!SNOWFLAKE_HOST;
 export const CONN = process.env.SNOWFLAKE_CONNECTION || '';
 
 export const DEFAULT_WAREHOUSE = 'ROUTING_ANALYTICS';
-export const QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":"1.0"}';
+// NOTE: the session query_tag lives in server/lib/sql.ts as QUERY_TAG_VALUE, which
+// is the single writer for every Snowflake call this app makes. A duplicate
+// QUERY_TAG was exported here, unreferenced, still carrying the pre-AGENTS.md
+// `"version":"1.0"` shape - a trap for the next caller. Do not reintroduce it.

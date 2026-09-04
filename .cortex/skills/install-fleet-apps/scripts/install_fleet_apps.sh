@@ -60,10 +60,34 @@ ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
 # truth per fleet_tools/user/src/catalog.ts; deployed in step 3 after the contract.
 ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-agent.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
+# DELIVERY_SYNC: site arrival/departure/approach detection. Reads the physical
+# dataset-scoped projections (a Dynamic Table cannot read FLEET_APP.CORE.VW_*,
+# which wrap table functions), so it must run AFTER the packs have built the
+# contract and the projections exist, and BEFORE the semantic views bind to it.
+DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
+# SV_OFFERS lives apart because its FLEET_INTELLIGENCE.MARKETPLACE sources are
+# built by the admin app's boot init / the freight-exchange skill, not by this
+# installer. Its own file means a missing marketplace layer costs one view rather
+# than aborting the whole semantic file at the first error.
+SEMANTIC_VIEWS_MARKETPLACE_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_marketplace.sql"
+# SV_EMERGENCY_RESPONSE: its own file because the emergency pack is not part of every
+# deployment (its data comes from the Data Studio emergency generator). Kept out of
+# semantic_views.sql so a missing pack cannot abort the whole semantic layer - `snow sql -f`
+# stops at the first error, so one absent source view would silently skip every view below.
+SEMANTIC_VIEWS_EMERGENCY_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql"
 # SAP-binding knowledge base (Cortex Search over the sap-fleet-connector docs).
 # Powers the consumer agent's search_sap_binding tool + the SAP Binding help view.
 SAP_KNOWLEDGE_SQL="$SKILL_DIR/fleet_sa_app/app/sap_knowledge.sql"
+VIEW_CATALOG_SQL="$SKILL_DIR/fleet_sa_app/app/view_catalog.sql"
+DEPLOYMENT_FACTS_SQL="$SKILL_DIR/fleet_sa_app/app/deployment_facts.sql"
+# Deployment-history semantic view (SEMANTIC_OPS.SV_FLEET_DEPLOYMENT) backing the
+# ops/admin agents' query_deployment Cortex Analyst tool. Its own schema, so the
+# FLEET_APP_USER FUTURE grant on FLEET_INTELLIGENCE.SEMANTIC cannot reach it.
+SEMANTIC_VIEWS_DEPLOY_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_deployment.sql"
+# Registers the four agents with the account's Snowflake CoWork object. Without it
+# an account that has a CoWork object hides the agents from the CoWork agent list.
+COWORK_BINDING_SQL="$SKILL_DIR/fleet_sa_app/app/cowork_binding.sql"
 # Agent Playground scenario config (region-neutral). The 3 demo tools
 # (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
 # NO static demo data is seeded; only this scenario config is uploaded so the
@@ -80,11 +104,18 @@ declare -a STEP_STATUS
 note() { echo "[install-fleet-apps] $*"; }
 step() { STEP_STATUS+=("$1|$2"); }
 
+# Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
+# query_tag must be prepended to each -q payload (it never carries over from a
+# previous invocation). TRACK is also the COMMENT payload for objects this
+# script creates directly.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
+
 # helper: does a SHOW return the named object? args: <show-sql> <name-regex>
 obj_exists() {
   # NOTE: snow CLI >=3.x has no 'plain' format (valid: TABLE/JSON/JSON_EXT/CSV).
   # CSV gives unbordered, greppable rows; object names appear as plain cells.
-  snow sql -c "$CONNECTION" --format=CSV -q "$1" 2>/dev/null | grep -qiE "$2"
+  snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL $1" 2>/dev/null | grep -qiE "$2"
 }
 
 # helper: resolve a public SPCS endpoint URL, retrying while it provisions.
@@ -92,13 +123,14 @@ obj_exists() {
 # a query right after deploy often returns "provisioning in progress" (no URL).
 # args: <fully-qualified-service> <endpoint-name>  -> echoes https://... or "".
 resolve_endpoint() {
-  local svc="$1" ep="$2" tries="${3:-10}" url=""
-  for _ in $(seq 1 "$tries"); do
+  local svc="$1" ep="$2" tries="${3:-10}" url="" i=0
+  local waits=(3 5 8 12 18 18 18 18 30 30)
+  for i in $(seq 0 $((tries-1))); do
     url=$(snow sql -c "$CONNECTION" --format=CSV \
-      -q "SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
+      -q "$TAG_SQL SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
       2>/dev/null | grep -E '^https://[a-z0-9-]+\.' | grep -viE 'provisioning|in progress' | head -1 || true)
     [ -n "$url" ] && { echo "$url"; return 0; }
-    sleep 18
+    sleep "${waits[$i]:-18}"
   done
   echo ""
 }
@@ -108,7 +140,7 @@ note "[0/8] preflight..."
 for t in snow docker node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
-snow sql -c "$CONNECTION" -q "SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
+snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
 step "0 preflight" OK
 
@@ -121,11 +153,11 @@ step "0 preflight" OK
 # downstream GRANT target exists regardless of step ordering.
 note "[0.5/8] pre-creating FLEET_APP_* role names..."
 snow sql -c "$CONNECTION" -q "
-  ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
-  CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
-  CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER;
+  $TAG_SQL
+  CREATE ROLE IF NOT EXISTS FLEET_APP_USER COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_OPS COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN COMMENT = '$TRACK';
+  CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER COMMENT = '$TRACK';
 " >/tmp/ifa_preroles.log 2>&1 || note "  WARN: role pre-create reported errors (see /tmp/ifa_preroles.log)"
 
 # ── 1. infra (reuse OPENROUTESERVICE_APP else self-provision FLEET-owned) ──
@@ -166,7 +198,7 @@ step "1 infra" OK
 if [ "${SKIP_DATA:-0}" != "1" ]; then
   note "[2/8] resolving data layer..."
   HAVE_DATA=$(snow sql -c "$CONNECTION" --format=CSV -q \
-    "SELECT IFF((SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)>0 AND (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)>0,'YES','NO');" \
+    "$TAG_SQL SELECT IFF((SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)>0 AND (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)>0,'YES','NO');" \
     2>/dev/null | grep -iE '^(YES|NO)$' | head -1 || echo "NO")
   if [ "$HAVE_DATA" = "YES" ]; then
     note "  reusing existing agnostic data"
@@ -177,15 +209,39 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     find "$REPO_ROOT/datasets" -name '.DS_Store' -delete 2>/dev/null || true
     # datasets/ has nested subdirs (intro/, metadata/, synthetic_ebikes/<table>/...) that the
     # loader COPY INTOs from by path, so the upload MUST preserve directory structure (--recursive).
-    # NOTE: ~85 MB uploaded file-by-file (per-file MD5/compress) - expect a few minutes with no
-    # per-file progress output; it is not stalled.
-    note "  uploading ~85 MB seed parquet (file-by-file; expect a few minutes)..."
-    snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite --recursive >/tmp/ifa_stage.log 2>&1 \
-      || { echo "ERROR: staging seed parquet failed"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1; }
+    # Upload each top-level directory in parallel (the loader COPY INTOs by directory path, so
+    # concurrency across directories is safe). The two root-level SQL files (load-seed-data.sql,
+    # export-preset.sql) are uploaded separately.
+    note "  uploading ~204 MB seed parquet (parallel per directory; expect ~2-3 min)..."
+    STAGE_PIDS=()
+    for d in "$REPO_ROOT"/datasets/*/; do
+      [ -d "$d" ] || continue
+      dname=$(basename "$d")
+      snow stage copy "$d" "@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/$dname/" \
+        -c "$CONNECTION" --overwrite --recursive --parallel 8 \
+        >/tmp/ifa_stage_${dname}.log 2>&1 &
+      STAGE_PIDS+=($!)
+    done
+    # Root-level SQL files (loader + export-preset) go to the stage root.
+    for f in "$REPO_ROOT"/datasets/*.sql; do
+      [ -f "$f" ] || continue
+      snow stage copy "$f" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ \
+        -c "$CONNECTION" --overwrite >/tmp/ifa_stage_rootsql.log 2>&1 &
+      STAGE_PIDS+=($!)
+    done
+    STAGE_FAIL=0
+    for pid in "${STAGE_PIDS[@]}"; do
+      wait "$pid" || STAGE_FAIL=$((STAGE_FAIL + 1))
+    done
+    if [ "$STAGE_FAIL" -gt 0 ]; then
+      echo "ERROR: $STAGE_FAIL seed upload process(es) failed"
+      for f in /tmp/ifa_stage_*.log; do tail -5 "$f" 2>/dev/null; done
+      step "2 data" FAILED; exit 1
+    fi
     # Sanity check: a silent 0-file upload (e.g. wrong path, glob mismatch) otherwise only
     # surfaces much later as empty tables. Fail fast here with a clear message.
     STAGED_FILES=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "LIST @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE; SELECT COUNT(*) AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));" \
+      "$TAG_SQL LIST @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE; SELECT COUNT(*) AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));" \
       2>/dev/null | grep -oE '^[0-9]+$' | tail -1 || echo 0)
     if [ "${STAGED_FILES:-0}" -lt 1 ]; then
       echo "ERROR: seed stage @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE has 0 files after copy (expected the datasets/ tree)"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1
@@ -193,11 +249,24 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     note "  staged $STAGED_FILES seed files"
     sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
       "$REPO_ROOT/datasets/load-seed-data.sql" > /tmp/ifa_loader.sql
-    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 \
-      || note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
+    # Continue on error (the comment below is right that some engine-only sections
+    # legitimately do not apply here), but do NOT then claim the step was OK.
+    # Reporting OK on a failed seed load is the worst combination available: every
+    # downstream page is empty and nothing in the run says why, which costs an hour
+    # to trace back from "the dashboards are blank". Same class as the
+    # analytic-layer gate at step 3.5 and the delivery-sync validator.
+    SEED_LOAD_RC=0
+    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 || SEED_LOAD_RC=$?
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
+    if [ "$SEED_LOAD_RC" != "0" ]; then
+      note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
+      note "        last errors from /tmp/ifa_load.log:"
+      grep -iE 'error|does not exist|not authorized' /tmp/ifa_load.log 2>/dev/null \
+        | tail -5 | sed 's/^/          /' || true
+      SEED_STEP_STATUS=WARN
+    fi
   fi
-  step "2 data" OK
+  step "2 data" "${SEED_STEP_STATUS:-OK}"
 else
   step "2 data" SKIPPED
 fi
@@ -215,11 +284,27 @@ fi
 # SKIP_PROJECTIONS=1 only when you know both are already current.
 if [ "${SKIP_PROJECTIONS:-0}" != "1" ]; then
   note "[2.5/8] vehicle-profile catalog + projection views (DIM_FLEET stamp; packs depend on these)..."
+  # Reported HONESTLY. This step used to print OK unconditionally even though both
+  # commands swallow failure with `|| note`, which hid a real regression: a bare
+  # `DROP VIEW IF EXISTS FLEET_APP...` at the top of the catalog script aborted the
+  # whole file on a fresh account (IF EXISTS does not cover a missing database), so
+  # DIM_VEHICLE_DWELL_SLA was never seeded, DELIVERY_SYNC had no monitored sites and
+  # rendered blank, and the packs failed on F_DIM_FLEET_SCOPED - while the summary
+  # table said OK. A step that cannot fail is not a check.
+  VPC_RC=0; PROJ_RC=0
   snow sql -c "$CONNECTION" -f "$SCRIPTS/vehicle_profile_catalog.sql" >/tmp/ifa_vpcatalog.log 2>&1 \
-    || note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"
+    || { VPC_RC=1; note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"; }
   snow sql -c "$CONNECTION" -f "$SCRIPTS/projection_views.sql" >/tmp/ifa_projviews.log 2>&1 \
-    || note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"
-  step "2.5 projections" OK
+    || { PROJ_RC=1; note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"; }
+  if [ "$VPC_RC" = "0" ] && [ "$PROJ_RC" = "0" ]; then
+    step "2.5 projections" OK
+  else
+    # The catalog is load-bearing for DELIVERY_SYNC and the packs, so surface it
+    # loudly rather than as a passing step with a warning line above it.
+    note "  NOTE: the catalog seeds DIM_VEHICLE_PROFILE / DIM_VEHICLE_DWELL_SLA and stamps DIM_FLEET."
+    note "        Downstream effects of a failure here: blank Delivery Sync, pack failures on F_DIM_FLEET_SCOPED."
+    step "2.5 projections" WARN
+  fi
 else
   step "2.5 projections" SKIPPED
 fi
@@ -238,7 +323,7 @@ if [ -f "$SAP_MOCK_SQL" ]; then
   note "[2.6/8] SAP mock landscape (MOCK_SAP + MOCK_TELEMATICS; demo example, raw-only)..."
   if snow sql -c "$CONNECTION" -f "$SAP_MOCK_SQL" >/tmp/ifa_sap_mock.log 2>&1; then
     SAP_MOCK_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "SELECT COUNT(*) FROM MOCK_SAP.FLEET.EQUI;" \
+      "$TAG_SQL SELECT COUNT(*) FROM MOCK_SAP.FLEET.EQUI;" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     SAP_MOCK="OK (${SAP_MOCK_N:-0} EQUI rows in MOCK_SAP.FLEET)"
     note "  SAP mock landed: $SAP_MOCK"
@@ -300,19 +385,19 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     else
       ROUTING_TOOLS_RC=$?
     fi
-    # Assert all 9 TOOL_* procs exist. Non-fatal by design (matches the
+    # Assert all 11 TOOL_* procs exist. Non-fatal by design (matches the
     # best-effort routing step), but a shortfall is recorded in ROUTING_SUBSTRATE
     # so the friction log AND the final summary highlight it loudly instead of it
     # surfacing as a silent "routing service issues" at agent runtime.
     TOOL_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-      "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
+      "$TAG_SQL SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
-    if [ "${TOOL_N:-0}" -lt 9 ]; then
+    if [ "${TOOL_N:-0}" -lt 11 ]; then
       [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
-      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
+      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/11 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
     else
-      ROUTING_SUBSTRATE="OK (9/9 ROUTING_TOOLS.TOOL_* procs)"
+      ROUTING_SUBSTRATE="OK (11/11 ROUTING_TOOLS.TOOL_* procs)"
       note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else
@@ -337,7 +422,7 @@ fi
 if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_CATALOG' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_CATALOG'; then
   note "[3.4] seeding REGION_CATALOG from baked parquet..."
   CAT_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
-    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE'); SELECT COUNT(*) AS N FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;" \
+    "$TAG_SQL CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE'); SELECT COUNT(*) AS N FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;" \
     >/tmp/ifa_seed_catalog.log 2>&1 && grep -Eo '^[0-9]+$' /tmp/ifa_seed_catalog.log | tail -1 || echo 0)
   if [ "${CAT_N:-0}" -lt 1 ]; then
     note "  WARN: REGION_CATALOG still empty after seed (see /tmp/ifa_seed_catalog.log)"
@@ -362,7 +447,7 @@ fi
 if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_MATRIX' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_MATRIX'; then
   note "[3.4b] seeding travel-time matrix from baked parquet..."
   if snow sql -c "$CONNECTION" -q \
-    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');" \
+    "$TAG_SQL CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');" \
     >/tmp/ifa_seed_matrix.log 2>&1; then
     note "  travel-time matrix seeded"
     step "3.4b seed-matrix" OK
@@ -382,11 +467,40 @@ fi
 # CONFIG safety-net, and the Overture-sourced CATCHMENT tables. Runs AFTER the
 # engine (so REGION_CATALOG boundaries exist) and BEFORE packs. Best-effort: a
 # catchment failure (no Overture coverage) must not abort the install.
+#
+# The status is now reported HONESTLY. It used to read `step "3.5 analytic" OK`
+# unconditionally, outside the conditional, so the summary table said OK even
+# when the file had failed - and because `snow sql -f` stops at the first error,
+# a failure in the Overture-dependent BUILD_CATCHMENT abandoned every later
+# section (LOCATION, SOURCING, the FLEET_APP.SOURCING views). Five to seven views
+# rendered empty while the installer claimed success, which is the worst possible
+# combination. The three builder CALLs in analytic_layer.sql are now individually
+# guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
-  snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1 \
-    || note "  WARN: analytic layer reported errors (catchment may need Overture coverage); see /tmp/ifa_analytic.log"
-  step "3.5 analytic" OK
+  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1; then
+    # The file completed, but the guarded builders report their own failures as
+    # WARN strings in the result set rather than a non-zero exit - surface those
+    # too, otherwise "OK" still overstates what happened.
+    #
+    # Match ONLY the rendered result row (a table line starting with '|'). The
+    # log also contains the echoed SQL, and each guarded builder's own source
+    # carries a `RETURN 'WARN: BUILD_... failed'` literal in its EXCEPTION arm -
+    # so an unanchored "WARN: BUILD_" search matches the script's own text and
+    # reported the analytic layer as degraded on EVERY run, including runs where
+    # all three builders returned success. A gate that always warns is worse than
+    # no gate: it trains the operator to ignore the one signal that matters.
+    if grep -qE '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log; then
+      note "  WARN: analytic layer completed with degraded sections; see /tmp/ifa_analytic.log"
+      grep -E '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log | head -6 | sed 's/^/    /'
+      step "3.5 analytic" WARN
+    else
+      step "3.5 analytic" OK
+    fi
+  else
+    note "  WARN: analytic layer FAILED (see /tmp/ifa_analytic.log); dependent views will be empty"
+    step "3.5 analytic" FAILED
+  fi
 else
   step "3.5 analytic" SKIPPED
 fi
@@ -405,6 +519,23 @@ else
   step "4 packs" SKIPPED
 fi
 
+# ── 4.2 DELIVERY_SYNC layer (site arrival / departure / approach events) ──
+# Builds FLEET_INTELLIGENCE.DELIVERY_SYNC (geofence-episode Dynamic Table + the
+# live ORS approach-ring and inbound-ETA UDTFs) and the neutral
+# FLEET_APP.DELIVERY_SYNC contract the app view and semantic view read. Runs
+# AFTER packs (needs the contract + the V_*_CURRENT projections) and BEFORE
+# semantic views (SV_DELIVERY_SYNC binds to FLEET_APP.DELIVERY_SYNC).
+# Best-effort: a failure here must not abort an otherwise good install, but it
+# does disable the delivery-notification view.
+if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
+  note "[4.2/8] delivery-sync layer (site arrival/departure detection)..."
+  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" >/tmp/ifa_delivery_sync.log 2>&1 \
+    && step "4.2 delivery-sync" OK \
+    || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
+else
+  step "4.2 delivery-sync" SKIPPED
+fi
+
 # ── 4.5 semantic views (Cortex Analyst SVs the consumer agent binds to) ──
 # Authors FLEET_INTELLIGENCE.SEMANTIC + the 5 agnostic SVs that FLEET_AGENT's
 # cortex_analyst_text_to_sql tools reference (agent-spec.json). Without this the
@@ -417,10 +548,29 @@ fi
 if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   note "[4.5/8] creating Cortex Analyst semantic views (FLEET_INTELLIGENCE.SEMANTIC)..."
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_SQL" >/tmp/ifa_semantic.log 2>&1 \
-    || note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"
-  step "4.5 semantic" OK
+    && step "4.5 semantic" OK \
+    || { note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"; step "4.5 semantic" WARN; }
+
+  # SV_OFFERS: separate file, separate outcome. On a fresh install the
+  # FLEET_INTELLIGENCE.MARKETPLACE views do not exist yet (admin app boot init /
+  # freight-exchange skill create them), so a skip here is EXPECTED and is not a
+  # defect. Re-run this one file once the marketplace layer is present.
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
+    && step "4.5 semantic (marketplace)" OK \
+    || { note "  NOTE: SV_OFFERS skipped - FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."; step "4.5 semantic (marketplace)" SKIPPED; }
+
+  # SV_EMERGENCY_RESPONSE: same treatment, same reason. The emergency pack's source
+  # views only exist once its dataset has been generated, so a skip here is EXPECTED
+  # rather than a defect. This view is also what lets CoWork draw a hazard choropleth
+  # (its GEOJSON column is map-ready as-is), so re-run this one file after generating.
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_EMERGENCY_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_emergency.log 2>&1 \
+    && step "4.5 semantic (emergency)" OK \
+    || { note "  NOTE: SV_EMERGENCY_RESPONSE skipped - FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."; step "4.5 semantic (emergency)" SKIPPED; }
 else
   step "4.5 semantic" SKIPPED
+  step "4.5 semantic (marketplace)" SKIPPED
+  step "4.5 semantic (emergency)" SKIPPED
 fi
 
 # ── 4.6 Agent Playground scenario config (no static demo data) ──────────
@@ -431,7 +581,7 @@ fi
 if [ "${SKIP_DEMO:-0}" != "1" ] && [ -f "$AGENT_DEMOS_JSON" ]; then
   if obj_exists "SHOW STAGES LIKE 'ORS_SPCS_STAGE' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'ORS_SPCS_STAGE'; then
     note "[4.6] uploading agent-demos.json to the ORS config stage..."
-    snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE;" >/tmp/ifa_demos.log 2>&1 || true
+    snow sql -c "$CONNECTION" -q "$TAG_SQL CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE COMMENT = '$TRACK';" >/tmp/ifa_demos.log 2>&1 || true
     snow stage copy "$AGENT_DEMOS_JSON" @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/ --overwrite -c "$CONNECTION" >>/tmp/ifa_demos.log 2>&1 \
       && step "4.6 playground-config" OK \
       || { note "  WARN: agent-demos.json upload failed; see /tmp/ifa_demos.log"; step "4.6 playground-config" FAILED; }
@@ -459,6 +609,50 @@ else
   step "4.7 sap-knowledge" SKIPPED
 fi
 
+# ── 4.8 SA solution catalog (Cortex Search + table) ─────────────────────
+# Projects every SA app view's useCase / agentKnowledge blocks into
+# FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG + SOLUTION_CATALOG_SEARCH, so the
+# solution catalog is answerable OUTSIDE the app. In-app, the chat route
+# prepends the catalog at request time; in Cowork / Snowflake Intelligence the
+# agent has no app client, so without this table it cannot say what the
+# deployment demonstrates. Regenerated from app-views.json first so the table
+# can never lag the config it describes.
+#
+# --enable-templating NONE is REQUIRED: the authored prose contains ampersands
+# ('P&L') which the snow CLI's default variable substitution treats as a
+# variable reference and aborts on.
+#
+# Runs AFTER semantic views (same schema) and BEFORE agents (step 6, whose specs
+# bind the search service) and roles (step 8). Best-effort - a failure leaves the
+# agent without the catalog but must not abort the install.
+if [ "${SKIP_VIEW_CATALOG:-0}" != "1" ] && [ -f "$VIEW_CATALOG_SQL" ]; then
+  note "[4.8/8] building SA solution catalog (VIEW_CATALOG + SOLUTION_CATALOG_SEARCH)..."
+  python3 "$SCRIPTS/build_view_catalog.py" >/tmp/ifa_view_catalog.log 2>&1 \
+    || note "  WARN: catalog regeneration failed; using the committed view_catalog.sql"
+  snow sql -c "$CONNECTION" -f "$VIEW_CATALOG_SQL" --enable-templating NONE \
+      >>/tmp/ifa_view_catalog.log 2>&1 \
+    && step "4.8 view-catalog" OK \
+    || { note "  WARN: view catalog build failed; see /tmp/ifa_view_catalog.log"; step "4.8 view-catalog" FAILED; }
+else
+  step "4.8 view-catalog" SKIPPED
+fi
+
+# ── 4.9 Shared deployment-facts proc (describe_deployment backing) ───────
+# One owner's-rights proc all three agents read for "what is installed and is it
+# up" (regions + per-region routing/optimization service state + active context +
+# substrate counts). Service run-state is a FACT, so the READ is shared while
+# suspend/resume stays an Ops action (Tenet 3). Runs after the catalog (it reports
+# the catalog size) and before agents (step 6). Best-effort.
+if [ "${SKIP_VIEW_CATALOG:-0}" != "1" ] && [ -f "$DEPLOYMENT_FACTS_SQL" ]; then
+  note "[4.9/8] creating shared deployment-facts proc..."
+  snow sql -c "$CONNECTION" -f "$DEPLOYMENT_FACTS_SQL" --enable-templating NONE \
+      >/tmp/ifa_deployment_facts.log 2>&1 \
+    && step "4.9 deployment-facts" OK \
+    || { note "  WARN: deployment-facts proc failed; see /tmp/ifa_deployment_facts.log"; step "4.9 deployment-facts" FAILED; }
+else
+  step "4.9 deployment-facts" SKIPPED
+fi
+
 # ── 5. synapse tool bundles ─────────────────────────────────────
 if [ "${SKIP_TOOLS:-0}" != "1" ]; then
   note "[5/8] installing synapse tool bundles..."
@@ -469,14 +663,86 @@ else
   step "5 tools" SKIPPED
 fi
 
+# ── 5.5 Deployment-history semantic view (ops/admin query_deployment) ──────
+# SEMANTIC_OPS.SV_FLEET_DEPLOYMENT: routing-call volume / error rate / latency per
+# region and endpoint, build outcomes and durations, and the audited verb attempts.
+# It is what makes the ops and admin agents answer AGGREGATE questions at all -
+# their verbs each report a single point in time - and it is the tool that clears
+# Snowsight's "Connect a semantic view" checklist item for those two agents.
+#
+# MUST run after step 5 (synapse bundles create OPENROUTESERVICE_APP.ROUTING and
+# its VERB_ATTEMPT table) and before step 6 (agents bind Cortex Analyst tools to
+# the semantic view at CREATE AGENT time). Best-effort.
+if [ -f "$SEMANTIC_VIEWS_DEPLOY_SQL" ]; then
+  note "[5.5/8] creating deployment-history semantic view (SV_FLEET_DEPLOYMENT)..."
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_DEPLOY_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_deploy.log 2>&1 \
+    && step "5.5 sv-deployment" OK \
+    || { note "  WARN: SV_FLEET_DEPLOYMENT failed; see /tmp/ifa_semantic_deploy.log"; step "5.5 sv-deployment" FAILED; }
+else
+  step "5.5 sv-deployment" SKIPPED
+fi
+
 # ── 6. agents ───────────────────────────────────────────────────
 if [ "${SKIP_AGENTS:-0}" != "1" ]; then
-  note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT..."
+  note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT..."
   bash "$SCRIPTS/create_agents.sh" "$CONNECTION" \
     || { echo "ERROR: agent creation failed"; step "6 agents" FAILED; exit 1; }
   step "6 agents" OK
 else
   step "6 agents" SKIPPED
+fi
+
+# ── 6.5 Snowflake CoWork registration ───────────────────────────
+# On an account that has a Snowflake CoWork object (created automatically the first
+# time anyone opens the CoWork settings page), an agent is INVISIBLE in the CoWork
+# agent list until it is added to that object - reachable only by direct link. This
+# step adds all four. Idempotent (each ADD AGENT has its own exception handler,
+# because a repeat raises "already present" and would otherwise abort the file).
+#
+# Best-effort: a role without CREATE SNOWFLAKE INTELLIGENCE must not fail the
+# install, it just leaves the agents reachable by direct link only. Skip with
+# SKIP_COWORK=1.
+if [ "${SKIP_COWORK:-0}" != "1" ] && [ -f "$COWORK_BINDING_SQL" ]; then
+  note "[6.5/8] registering agents with the Snowflake CoWork object..."
+  snow sql -c "$CONNECTION" -f "$COWORK_BINDING_SQL" --enable-templating NONE \
+      >/tmp/ifa_cowork.log 2>&1 \
+    && step "6.5 cowork" OK \
+    || { note "  WARN: CoWork registration failed; see /tmp/ifa_cowork.log"; step "6.5 cowork" WARN; }
+else
+  step "6.5 cowork" SKIPPED
+fi
+
+# ── 6.6 Agent evaluation sets ───────────────────────────────────
+# Creates the four Snowsight-visible evaluation datasets (one per agent). The
+# datasets satisfy the "Create the first eval set" readiness checklist item.
+#
+# BASELINE RUNS are OPT-IN: pass RUN_AGENT_EVALS=1 to also run a baseline
+# evaluation against each dataset. A run invokes each agent once per dataset row
+# (14+17+8+8 = 47) and then an LLM judge per metric per row - real spend (~15 min)
+# that is not needed for a functional install. Pass SKIP_AGENT_EVALS=1 to skip the
+# step entirely. NO_RUN_AGENT_EVALS=1 is accepted as a no-op (datasets-only is now
+# the default).
+#
+# Non-blocking: a slow or failed run must never fail the install.
+if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]; then
+  if [ "${RUN_AGENT_EVALS:-0}" = "1" ]; then
+    note "[6.6/8] creating agent eval sets AND running baseline evaluations (RUN_AGENT_EVALS=1)..."
+    EVAL_ARGS=""
+  else
+    note "[6.6/8] creating agent eval sets only (pass RUN_AGENT_EVALS=1 for a baseline run)..."
+    EVAL_ARGS="--no-run"
+  fi
+  bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
+      >/tmp/ifa_agent_evals.log 2>&1 \
+    && step "6.6 agent-evals" OK \
+    || { note "  WARN: agent eval setup failed; see /tmp/ifa_agent_evals.log"; step "6.6 agent-evals" WARN; }
+  if [ -n "$EVAL_ARGS" ]; then
+    note "  to run the baseline later (satisfies the 'Run an evaluation' checklist item):"
+    note "    bash $SCRIPTS/setup_agent_evals.sh $CONNECTION"
+  fi
+else
+  step "6.6 agent-evals" SKIPPED
 fi
 
 # ── 7. apps (resolved infra threaded via exported env) ──────────
@@ -489,21 +755,50 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   # ALLOW_DIRTY=1: the installer's own --regenerate step (layer 4) rewrites
   # pack setup.sql files, which always dirties the tree. The deploy scripts'
   # dirty-tree guard is for standalone human-driven deploys, not automated installs.
-  ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
-    || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
-  ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
-    || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
-  # Resolve public endpoints (retries while they provision, ~1-3 min post-RESUME).
-  SA_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app)
-  ADMIN_URL=$(resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app)
+  if [ "${SERIAL_APPS:-0}" = "1" ]; then
+    note "  SERIAL_APPS=1 - deploying sequentially"
+    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+      || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
+      || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
+  else
+    note "  deploying both apps in parallel (logs: /tmp/ifa_sa_deploy.log, /tmp/ifa_admin_deploy.log)"
+    note "  (pass SERIAL_APPS=1 to force sequential deploys)"
+    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+      >/tmp/ifa_sa_deploy.log 2>&1 & APP_SA_PID=$!
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
+      >/tmp/ifa_admin_deploy.log 2>&1 & APP_ADMIN_PID=$!
+    SA_RC=0; ADMIN_RC=0
+    wait "$APP_SA_PID" || SA_RC=$?
+    wait "$APP_ADMIN_PID" || ADMIN_RC=$?
+    if [ "$SA_RC" -ne 0 ]; then
+      echo "ERROR: SA app deploy failed (rc=$SA_RC); see /tmp/ifa_sa_deploy.log"
+      tail -30 /tmp/ifa_sa_deploy.log
+      step "7 apps" FAILED; exit 1
+    fi
+    if [ "$ADMIN_RC" -ne 0 ]; then
+      echo "ERROR: admin app deploy failed (rc=$ADMIN_RC); see /tmp/ifa_admin_deploy.log"
+      tail -30 /tmp/ifa_admin_deploy.log
+      step "7 apps" FAILED; exit 1
+    fi
+  fi
+  # Resolve public endpoints concurrently (retries while they provision, ~1-3 min post-RESUME).
+  resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP fleet-sa-app > /tmp/ifa_sa_url.txt &
+  EP_SA_PID=$!
+  resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app > /tmp/ifa_admin_url.txt &
+  EP_ADMIN_PID=$!
+  wait "$EP_SA_PID" || true
+  wait "$EP_ADMIN_PID" || true
+  SA_URL=$(cat /tmp/ifa_sa_url.txt 2>/dev/null || echo "")
+  ADMIN_URL=$(cat /tmp/ifa_admin_url.txt 2>/dev/null || echo "")
   step "7 apps" OK
 else
   step "7 apps" SKIPPED
 fi
 
 # ── roles + grants (LAST: depends on SYNAPSE_USER objects from steps 7-8) ──
-# role_binding.sql grants USAGE on the 3 agents (step 7) and the
-# FLEET_SA_APP!ALL_ENDPOINTS_USAGE service role (step 8), all in
+# role_binding.sql grants USAGE on the 4 agents (step 6) and the
+# FLEET_SA_APP!ALL_ENDPOINTS_USAGE service role (step 7), all in
 # FLEET_INTELLIGENCE.SYNAPSE_USER. Running it earlier failed those grants on a
 # fresh install ("Schema ... SYNAPSE_USER does not exist"). It is fully
 # idempotent (no DROP/REVOKE), so this single authoritative pass after apps is
@@ -512,10 +807,50 @@ fi
 if [ "${SKIP_ROLES:-0}" != "1" ]; then
   note "[8/8] applying roles + grants (all objects present)..."
   snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
-    || note "  WARN: some grants failed; see /tmp/ifa_roles.log"
-  step "8 roles" OK
+    && step "8 roles" OK \
+    || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
 else
   step "8 roles" SKIPPED
+fi
+
+# ── 9. post-install view verification (NON-BLOCKING) ────────────
+# Executes every SA app view's queries with the binds the runtime actually sends
+# and reports OK / EMPTY / ERROR per area. This is the only step that answers the
+# question a user actually cares about - "will the pages have data?" - because
+# every other step verifies that objects were CREATED, not that they RETURN
+# anything. An empty panel passes every other gate in this installer.
+#
+# Deliberately non-blocking and last: it must never fail an otherwise good
+# install, and it needs every layer present. Skip with SKIP_VERIFY=1.
+if [ "${SKIP_VERIFY:-0}" != "1" ]; then
+  note "[9/9] verifying app views return data (non-blocking)..."
+  if python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
+    # set -e safe: capture the rc without aborting the install. A bare
+    # `cmd; RC=$?` dies at `cmd` under `set -euo pipefail` before the rc is ever
+    # read - which made this "non-blocking" step the most blocking one in the
+    # script: any EMPTY or ERROR panel killed the run at the last step, so the
+    # final report (both app URLs, the step summary, the next-steps block) never
+    # printed and the install looked like it had crashed. Same idiom as the
+    # ROUTING_TOOLS capture above.
+    VERIFY_RC=0
+    python3 "$SCRIPTS/validate_app_views.py" -c "$CONNECTION" \
+      --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1 || VERIFY_RC=$?
+    VERIFY_TALLY=$(grep -E "^(OK|EMPTY|ERROR|BY_DESIGN)" /tmp/ifa_verify.log | tail -1)
+    if [ "$VERIFY_RC" = "0" ]; then
+      note "  all views returned data or are declared empty ($VERIFY_TALLY)"
+      step "9 verify-views" OK
+    else
+      note "  WARN: some views returned no data or errored - see /tmp/ifa_verify.log"
+      note "        summary: ${VERIFY_TALLY:-see log}"
+      note "        repair attempt: python3 $SCRIPTS/validate_app_views.py -c $CONNECTION --repair"
+      step "9 verify-views" WARN
+    fi
+  else
+    note "  SKIPPED: needs snowflake-connector-python + PyYAML"
+    step "9 verify-views" SKIPPED
+  fi
+else
+  step "9 verify-views" SKIPPED
 fi
 
 # ── friction log + summary ──────────────────────────────────────
@@ -525,10 +860,14 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 SA_URL_DISP="${SA_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP;\"}"
 ADMIN_URL_DISP="${ADMIN_URL:-still provisioning - run: snow sql -c $CONNECTION -q \"SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP;\"}"
 FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
+# WARN steps are counted separately and surfaced in the headline. A degraded step
+# used to be invisible there: the summary only counted FAILED, so "all steps OK"
+# printed while a load-bearing script had actually failed and only WARNed.
+WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
-  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
+  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
   echo "- SA app:    $SA_URL_DISP"
@@ -563,6 +902,10 @@ echo
 echo "================================================================"
 if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps FINISHED WITH ${FAILED_STEPS} FAILED STEP(S) (${ELAPSED}s)"
+  [ "${WARN_STEPS:-0}" -gt 0 ] && echo " plus ${WARN_STEPS} DEGRADED step(s) - see the status table"
+elif [ "${WARN_STEPS:-0}" -gt 0 ]; then
+  echo " install-fleet-apps finished with ${WARN_STEPS} DEGRADED step(s) (${ELAPSED}s)"
+  echo " nothing aborted, but at least one step did not do all of its work - see the status table"
 else
   echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
 fi
@@ -572,7 +915,7 @@ echo "   SA app (consumer/analytics): $SA_URL_DISP"
 echo "   Admin app (build console):   $ADMIN_URL_DISP"
 echo "----------------------------------------------------------------"
 echo " Summary"
-echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS ))/${#STEP_STATUS[@]} OK"
+echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS - WARN_STEPS ))/${#STEP_STATUS[@]} OK, ${WARN_STEPS} degraded, ${FAILED_STEPS} failed"
 echo "   routing substrate: $ROUTING_SUBSTRATE"
 echo "   SAP mock:          $SAP_MOCK"
 echo "   friction log:      $FRICTION_LOG"

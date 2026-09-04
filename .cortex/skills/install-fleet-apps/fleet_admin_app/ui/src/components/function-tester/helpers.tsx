@@ -1,8 +1,7 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
+import { GeoJsonLayer, ScatterplotLayer, PathLayer } from '@deck.gl/layers';
 import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './samplePoints';
 
 export interface GraphReadiness {
@@ -10,6 +9,10 @@ export interface GraphReadiness {
   profiles_loaded: string[];
   expected_profiles: string[];
   graphs?: { profile: string; ready: boolean; build_date?: string | null }[];
+  /** Live endpoint list from ORS_STATUS(region):services, when known. */
+  services?: string[];
+  /** ORS_STATUS(region):engine:version, when known. */
+  engine_version?: string | null;
 }
 
 export interface RegionOption {
@@ -38,31 +41,11 @@ export function loadedProfilesForRegion(region: RegionOption | null): string[] {
   return region?.graphReadiness?.profiles_loaded ?? [];
 }
 
-export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
-
 export const OPTIMIZATION_PALETTE: [number, number, number, number][] = [
   [59, 130, 246, 230],
   [16, 185, 129, 230],
   [244, 114, 182, 230],
 ];
-
-export function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap',
-    data: CARTO_LIGHT,
-    minZoom: 0,
-    maxZoom: 19,
-    tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, {
-        data: undefined,
-        image: props.data,
-        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
-      });
-    },
-  });
-}
 
 export const PROFILE_LABELS: Record<string, string> = {
   'driving-car': 'Car',
@@ -82,10 +65,68 @@ export const FUNCTIONS = [
   { name: 'OPTIMIZATION', sig: '(jobs, vehicles [, matrices, region]) → TABLE' },
   { name: 'MATRIX', sig: '(method, locations [, region])' },
   { name: 'MATRIX_TABULAR', sig: '(method, origin, destinations [, region])' },
+  { name: 'SNAP_POINTS', sig: '(method, locations, radius [, region]) → TABLE' },
+  { name: 'MATCH', sig: '(method, features [, region])' },
+  { name: 'MATCH_PATH', sig: '(method, linestring [, region]) → TABLE' },
   { name: 'ORS_STATUS', sig: '([region])' },
   { name: 'CHECK_HEALTH', sig: '() → BOOLEAN' },
   { name: 'LIST_REGIONS', sig: '() → VARCHAR' },
 ];
+
+// Nearest-edge search radius for SNAP_POINTS, in metres. Comfortably above the
+// sampler's 20-60 m jitter so every point resolves, while still small enough
+// that a genuinely off-graph point returns NULL rather than a far-away road.
+export const SNAP_RADIUS_M = 350;
+
+// SNAP_POINTS / MATCH / MATCH_PATH were added to the ORS app SQL modules after
+// the first releases, so a long-lived deployment can be missing them entirely.
+// The Function Tester probes for them rather than assuming, otherwise the card
+// fails with a bare "unknown function" that looks like a bug in the tester.
+export const OPTIONAL_FUNCTIONS = ['SNAP_POINTS', 'MATCH', 'MATCH_PATH'];
+
+export function optionalFunctionProbeSql(db: string): string {
+  const names = OPTIONAL_FUNCTIONS.map((n) => `'${n}'`).join(', ');
+  const catalog = db ? `${db}.INFORMATION_SCHEMA.FUNCTIONS` : 'INFORMATION_SCHEMA.FUNCTIONS';
+  return `SELECT DISTINCT FUNCTION_NAME FROM ${catalog} WHERE FUNCTION_SCHEMA = 'CORE' AND FUNCTION_NAME IN (${names})`;
+}
+
+// MATCH needs the HMM map-matcher, which landed in ORS v9.4.0 (PR #2125).
+// Older engines answer /match with a 404, which surfaces as an opaque gateway
+// error, so the cards are gated instead.
+export const MATCH_MIN_ENGINE_VERSION = '9.4.0';
+
+function parseSemver(v: string): [number, number, number] | null {
+  const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(v || '').trim());
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] || '0', 10)];
+}
+
+/**
+ * Is trajectory map matching available on this region's engine?
+ *
+ * Returns true when unknown (no ORS_STATUS yet, service suspended) so the UI
+ * never blocks on missing information - a real 404 then surfaces as an error.
+ */
+export function matchSupport(readiness: GraphReadiness | null | undefined): { supported: boolean; reason?: string } {
+  const services = readiness?.services;
+  if (Array.isArray(services) && services.length > 0) {
+    if (services.some((s) => /match/i.test(String(s)))) return { supported: true };
+  }
+  const version = readiness?.engine_version;
+  const have = version ? parseSemver(version) : null;
+  const want = parseSemver(MATCH_MIN_ENGINE_VERSION)!;
+  if (!have) return { supported: true };
+  for (let i = 0; i < 3; i++) {
+    if (have[i] > want[i]) return { supported: true };
+    if (have[i] < want[i]) {
+      return {
+        supported: false,
+        reason: `Map matching needs ORS ${MATCH_MIN_ENGINE_VERSION} or newer - this region runs ${version}.`,
+      };
+    }
+  }
+  return { supported: true };
+}
 
 export function bboxCenter(bbox: RegionOption['bbox']): [number, number] {
   if (!bbox) return [0, 30];
@@ -114,7 +155,7 @@ export function isProvisionedRegion(r: RegionOption | null): boolean {
   return !!(r && r.region);
 }
 
-export function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): string {
+export function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null, trajectory?: [number, number][] | null): string {
   const bbox = region?.bbox;
   const rg = region?.region ? `'${region.region}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
@@ -191,9 +232,44 @@ export function generateSql(fnName: string, region: RegionOption | null, profile
       ).join(',\n');
       return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n${vehicleEntries}\n  ),\n  [], ${rg}\n))`;
     }
+    case 'SNAP_POINTS': {
+      const pts = (sampledPoints?.points && sampledPoints.points.length > 0)
+        ? sampledPoints.points
+        : [start!, end!, dest2!];
+      // ARRAY_CONSTRUCT, not PARSE_JSON: the wrapper declares `locations ARRAY`
+      // and Snowflake does not coerce VARIANT to ARRAY when matching a UDF
+      // signature, so PARSE_JSON fails to compile before the call is ever made.
+      const locations = pts.map((p) => `ARRAY_CONSTRUCT(${p[0]}, ${p[1]})`).join(', ');
+      // ST_X/ST_Y are projected explicitly because the map reads plain lon/lat
+      // columns; SNAPPED_GEOG is NULL when nothing was within the radius.
+      return `SELECT IDX,\n       NAME,\n       ROUND(SNAPPED_DISTANCE, 1) AS SNAPPED_DISTANCE_M,\n       ST_X(INPUT_GEOG) AS IN_LON,\n       ST_Y(INPUT_GEOG) AS IN_LAT,\n       ST_X(SNAPPED_GEOG) AS SNAP_LON,\n       ST_Y(SNAPPED_GEOG) AS SNAP_LAT\nFROM TABLE(${p}.SNAP_POINTS('${profile}', ARRAY_CONSTRUCT(${locations}), ${SNAP_RADIUS_M}, ${rg}))\nORDER BY IDX`;
+    }
+    case 'MATCH': {
+      const track = trajectoryFor(trajectory, sampledPoints, [start!, end!]);
+      const coords = track.map((c) => `[${c[0]},${c[1]}]`).join(',');
+      return `SELECT ${p}.MATCH('${profile}', PARSE_JSON('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[${coords}]}}]}'), ${rg}) AS RESPONSE`;
+    }
+    case 'MATCH_PATH': {
+      const track = trajectoryFor(trajectory, sampledPoints, [start!, end!]);
+      const coords = track.map((c) => `ARRAY_CONSTRUCT(${c[0]}, ${c[1]})`).join(', ');
+      return `SELECT MATCHED_EDGES,\n       ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON,\n       RESPONSE\nFROM TABLE(${p}.MATCH_PATH('${profile}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
+    }
     default:
       return '';
   }
+}
+
+// Prefer a real road-following track (built by the page from a DIRECTIONS call);
+// fall back to the raw sampled points so the SQL is always valid and editable,
+// even though a straight-line track may not match.
+function trajectoryFor(
+  trajectory: [number, number][] | null | undefined,
+  sampledPoints: SampledPoints | null | undefined,
+  fallback: [number, number][],
+): [number, number][] {
+  if (trajectory && trajectory.length >= 2) return trajectory;
+  if (sampledPoints?.points && sampledPoints.points.length >= 2) return sampledPoints.points;
+  return fallback.filter(Boolean);
 }
 
 export function tryParseJson(val: any): any {
@@ -409,6 +485,43 @@ export function travelTimeColor(t: number, maxT: number): [number, number, numbe
   return [r, g, b, 230];
 }
 
+export interface SnapRow {
+  idx: number;
+  name: string | null;
+  distanceM: number | null;
+  input: [number, number];
+  snapped: [number, number] | null;
+}
+
+/**
+ * Parse SNAP_POINTS rows. The generated SQL projects plain lon/lat columns
+ * rather than GEOGRAPHY, because extractGeoData only recognizes a GEOJSON
+ * column and would silently drop bare geometry under any other key.
+ */
+export function parseSnapResult(result: any): SnapRow[] {
+  if (!Array.isArray(result)) return [];
+  const num = (v: any): number | null => {
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    return typeof n === 'number' && Number.isFinite(n) ? n : null;
+  };
+  const rows: SnapRow[] = [];
+  result.forEach((row: any, i: number) => {
+    const inLon = num(row.IN_LON ?? row.in_lon);
+    const inLat = num(row.IN_LAT ?? row.in_lat);
+    if (inLon === null || inLat === null) return;
+    const snapLon = num(row.SNAP_LON ?? row.snap_lon);
+    const snapLat = num(row.SNAP_LAT ?? row.snap_lat);
+    rows.push({
+      idx: num(row.IDX ?? row.idx) ?? i,
+      name: (row.NAME ?? row.name) ?? null,
+      distanceM: num(row.SNAPPED_DISTANCE_M ?? row.snapped_distance_m ?? row.SNAPPED_DISTANCE),
+      input: [inLon, inLat],
+      snapped: snapLon !== null && snapLat !== null ? [snapLon, snapLat] : null,
+    });
+  });
+  return rows;
+}
+
 export function parseIsochroneOrigin(sql: string): [number, number] | null {
   const m = sql.match(/ISOCHRONES\s*\(\s*'[^']+'\s*,\s*(-?\d+(?:\.\d+)?)\s*::\s*FLOAT\s*,\s*(-?\d+(?:\.\d+)?)\s*::\s*FLOAT/i);
   if (!m) return null;
@@ -416,4 +529,50 @@ export function parseIsochroneOrigin(sql: string): [number, number] | null {
   const lat = parseFloat(m[2]);
   if (!isFinite(lon) || !isFinite(lat)) return null;
   return [lon, lat];
+}
+
+export interface MatchInvocation {
+  profile: string;
+  region: string | null;
+  track: [number, number][];
+}
+
+/**
+ * Recover a MATCH / MATCH_PATH call's arguments from the SQL that was actually
+ * executed.  Needed for two reasons: the page drops `trajectory` as soon as
+ * the user edits the textarea, and the follow-up MATCH_PATH must use the
+ * profile/region that were really run - reading them from the dropdowns would
+ * silently resolve geometry against a different graph.
+ */
+export function parseMatchInvocation(sql: string): MatchInvocation | null {
+  if (!sql) return null;
+  const prof = sql.match(/\bMATCH(?:_PATH)?\s*\(\s*'([^']+)'/i);
+  if (!prof) return null;
+
+  let track: [number, number][] = [];
+  // MATCH embeds a GeoJSON FeatureCollection inside PARSE_JSON('...').
+  const fc = sql.match(/PARSE_JSON\s*\(\s*'(\{[\s\S]*?\})'\s*\)/i);
+  if (fc) {
+    try {
+      const parsed = JSON.parse(fc[1]);
+      const geom = parsed?.features?.[0]?.geometry ?? parsed?.geometry ?? parsed;
+      if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
+        track = geom.coordinates.filter(
+          (c: any) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]),
+        ) as [number, number][];
+      }
+    } catch { /* malformed inline JSON */ }
+  } else {
+    // MATCH_PATH passes ARRAY_CONSTRUCT(lon, lat) pairs.
+    for (const m of sql.matchAll(/ARRAY_CONSTRUCT\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/gi)) {
+      const lon = Number(m[1]); const lat = Number(m[2]);
+      if (Number.isFinite(lon) && Number.isFinite(lat)) track.push([lon, lat]);
+    }
+  }
+  if (track.length < 2) return null;
+
+  // Region is the trailing string literal before the closing paren.
+  const reg = sql.match(/,\s*'([^']+)'\s*\)\s*(?:AS\s+\w+\s*)?$/im)
+    ?? sql.match(/,\s*'([^']+)'\s*\)\)/i);
+  return { profile: prof[1], region: reg ? reg[1] : null, track };
 }

@@ -66,7 +66,33 @@ or empty answer, and a confident wrong number is worse than a flagged one.
 If a result is implausible or empty, investigate and explain, then retry with a
 corrected call.
 
-## 4. Authoring a map (render_view)
+## 4. Live routing geometry from SQL
+
+The routing contract (`ROUTING_PLATFORM.CONTRACT`) exposes table functions that
+return `GEOJSON GEOGRAPHY` columns. `run_sql` runs as `FLEET_APP_USER`, which
+holds `USAGE` on all contract functions, so the agent can query ORS from SQL:
+
+- `DIRECTIONS(method, locations, region, provider)` - returns TABLE with
+  `GEOJSON` (LineString), `DISTANCE` (metres), `DURATION` (seconds).
+- `ISOCHRONES(method, lon, lat, range, region, provider)` - returns TABLE with
+  `GEOJSON` (Polygon). `RANGE` is minutes on this overload.
+- `OPTIMIZATION(challenge, region, provider)` - returns TABLE with `GEOJSON`
+  (LineString per vehicle), `VEHICLE`, `DURATION`, `STEPS`. Challenge must be
+  a scalar subquery.
+
+Prefer `get_directions` (MCP) for a plain A-to-B answer. Use ORS SQL when the
+geometry must be joined, aggregated, or projected as columns.
+
+Four traps apply to all contract calls: METHOD is the profile alone
+(`'driving-car'`); numeric coords need `::FLOAT`; provider must be
+`NULL::VARCHAR`; a bad call returns NULL geometry silently.
+
+**Mapping constraint**: `data_to_map` only accepts SQL/analyst tool results.
+An MCP result (`run_sql`, `get_directions`) is not a valid source. Live routing
+geometry is therefore not mappable in CoWork today - report figures and use
+`deep_link` for the drawn route.
+
+## 5. Authoring a map (render_view)
 
 When emitting a `render_view` spec with a `Map` area, choose encodings that make
 the insight legible. Available layer types: scatterplot, path, h3, geojson, arc.

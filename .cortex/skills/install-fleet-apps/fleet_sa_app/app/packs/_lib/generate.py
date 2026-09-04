@@ -86,7 +86,7 @@ def materialization(entity: dict, binding: dict, model: dict) -> str:
 def create_stmt(schema: str, name: str, body: str, mat: str, entity: dict, model: dict) -> str:
     if mat == "dynamic_table":
         lag = entity.get("target_lag") or model.get("dynamic_target_lag", "1 hour")
-        wh = entity.get("warehouse") or model.get("warehouse", "MY_WH")
+        wh = entity.get("warehouse") or model.get("warehouse", "ROUTING_ANALYTICS")
         return (f"CREATE OR REPLACE DYNAMIC TABLE {schema}.{name}\n"
                 f"  TARGET_LAG = '{lag}' WAREHOUSE = {wh}\n"
                 f"  COMMENT='{TRACK_JSON}' AS\n{body};\n")
@@ -196,6 +196,10 @@ def gen_setup(model, mapping):
         f"-- pack={model.get('pack','?')} mapping_source_id={mapping.get('source_id','?')}",
         f"ALTER SESSION SET query_tag = '{QUERY_TAG_JSON}';",
         f"CREATE DATABASE IF NOT EXISTS {db} COMMENT='{TRACK_JSON}';",
+        # Accelerator data is synthetic/rebuildable - disable Time Travel (and the
+        # 7-day Fail-safe on non-zero retention) to avoid pure storage cost. Co-located
+        # after CREATE DATABASE (order-independent; no-op on an already-configured DB).
+        f"ALTER DATABASE {db} SET DATA_RETENTION_TIME_IN_DAYS = 0;",
         f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='{TRACK_JSON}';\n",
     ]
     for ent in topo_order(model["entities"]):

@@ -32,12 +32,12 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
     BOUNDARY_BAKED_AT  DATE,                     -- when the boundary snapshot was generated
     UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -49,7 +49,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     -- FINALIZE_PROVISION_ITER); beyond a cap the job is failed terminally.
     RESCUE_DOWNGRADES INTEGER DEFAULT 0
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}';
 
 -- Idempotent migration for pre-existing deployments (table created before the
 -- RESCUE_DOWNGRADES column existed). Wrapped in a swallow-on-exists block:
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_REPAIR_LOG (
     LAST_GRAPH_BYTES NUMBER DEFAULT 0,
     LAST_PROBED_AT TIMESTAMP_NTZ
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"repair-log"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"repair-log"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
     P_JOB_ID VARCHAR,
@@ -173,7 +173,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -762,7 +762,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_PROVISION_STATUS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -789,7 +789,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DISMISS_PROVISION_JOB(P_JOB_ID VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -822,7 +822,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}';
 
 -- Idempotent backfill of GRAPHS_DATA_ACCESS for installs created before this
 -- column existed. Per the ADD COLUMN IF NOT EXISTS gotcha (it can raise a
@@ -883,7 +883,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (
     FIRED_AT TIMESTAMP_LTZ DEFAULT SYSDATE(),
     REASON VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"cost-guard","action":"audit"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-guard","action":"audit"}}';
 
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
@@ -909,7 +909,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"resolver"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"resolver"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -969,10 +969,10 @@ CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.10.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
     CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
         WHEN 'HIGHMEM_X64_M'  THEN '16G'
         WHEN 'HIGHMEM_X64_L'  THEN '64G'
@@ -1010,7 +1010,7 @@ CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
     OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(P_REGION, P_COMPUTE_SIZE, P_REBUILD_GRAPHS, NULL)
@@ -1027,7 +1027,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(P_REGION VARCHAR, P_PROFILES VARCHAR)
 RETURNS BOOLEAN
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"artifact-complete"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"artifact-complete"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1095,7 +1095,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1290,14 +1290,14 @@ BEGIN
     EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
         ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
         ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
-        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","region":"' || :P_REGION || '"}}''';
 
     -- Pass the resolved instance_family so the spec's JVM heap matches the node
     -- RAM (coherent on downsized runtime families, not just the build tier).
     ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag, :instance_family);
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}''';
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
     -- If a family swap dropped the co-located VROOM service above, recreate it in
@@ -1332,7 +1332,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(P_REGION VARCHAR, P_REBUILD VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1368,7 +1368,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1392,11 +1392,55 @@ BEGIN
     LET wait_iters INTEGER := CASE UPPER(:compute_size)
         WHEN 'S' THEN 120 WHEN 'L' THEN 480 WHEN 'XXL' THEN 720 ELSE 480 END;  -- x 30s
 
+    -- Capture the CURRENT graph build date so the return value can prove the
+    -- graph was actually recomputed. Without this the proc reported success
+    -- purely on "profiles came up ready", which is also true of a reload of the
+    -- untouched old graph - exactly the failure the suspend-before-purge fix
+    -- below addresses. Best effort: NULL when the region is already down.
+    LET graph_date_before VARCHAR DEFAULT NULL;
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):engine:graph_date::STRING AS D');
+        LET c_gd CURSOR FOR rs;
+        FOR rg IN c_gd DO graph_date_before := rg.D; END FOR;
+    EXCEPTION WHEN OTHER THEN graph_date_before := NULL;
+    END;
+
     -- Forced rebuild WITHOUT REBUILD_GRAPHS=true: the spec is always
     -- REBUILD_GRAPHS=false, so we explicitly purge the persisted graph dir and
     -- cycle the service. On resume ORS sees an empty graph dir and rebuilds from
     -- the PBF. This keeps ORS's destructive in-container wipe semantics out of
     -- the codebase entirely (no path can wipe a dir out from under a reuse).
+    --
+    -- SUSPEND BEFORE PURGE - the order is load-bearing. The graph dir is a
+    -- stage-mounted volume (@ORS_GRAPHS_SPCS_STAGE/<region> in the service
+    -- spec), so a RUNNING container holds its own copy and re-flushes it to the
+    -- stage when it stops. Purging first therefore did nothing: the REMOVE
+    -- reported dozens of files removed, the container wrote every one of them
+    -- straight back on shutdown, ORS reloaded the identical graph, and the proc
+    -- still returned "Rebuild complete" because the profiles came up ready.
+    -- The only visible symptom was an unchanged graph_build_date, which nothing
+    -- checked. Suspend and WAIT for SUSPENDED first so no writer is left.
+    LET suspended VARCHAR DEFAULT 'UNKNOWN';
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    -- ALTER SERVICE ... SUSPEND is asynchronous (status passes through
+    -- SUSPENDING), so poll rather than assuming a fixed wait is enough.
+    FOR i IN 1 TO 20 DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            rs := (SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_susp CURSOR FOR rs;
+            FOR rsv IN c_susp DO suspended := rsv.S; END FOR;
+        EXCEPTION WHEN OTHER THEN suspended := 'UNKNOWN';
+        END;
+        IF (UPPER(COALESCE(:suspended, '')) IN ('SUSPENDED', 'UNKNOWN')) THEN
+            BREAK;
+        END IF;
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
+    END FOR;
+
     BEGIN
         EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
     EXCEPTION WHEN OTHER THEN NULL;
@@ -1459,7 +1503,24 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false';
+    -- Report whether the graph was genuinely recomputed. An unchanged
+    -- graph_date means the purge did not take effect and ORS reloaded the old
+    -- graph, which must not be reported as a successful rebuild.
+    LET graph_date_after VARCHAR DEFAULT NULL;
+    BEGIN
+        graph_date_after := (SELECT TRY_PARSE_JSON(:status_raw):engine:graph_date::STRING);
+    EXCEPTION WHEN OTHER THEN graph_date_after := NULL;
+    END;
+    IF (:graph_date_before IS NOT NULL AND :graph_date_after IS NOT NULL
+        AND :graph_date_before = :graph_date_after) THEN
+        RETURN 'Rebuild DID NOT recompute the graph for ' || :P_REGION
+               || ' - graph_date is unchanged (' || :graph_date_after || '), so the'
+               || ' persisted graph was reloaded rather than rebuilt. Check that the'
+               || ' service reached SUSPENDED before the graph stage was purged.';
+    END IF;
+
+    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false'
+           || ', graph_date ' || COALESCE(:graph_date_before, 'unknown') || ' -> ' || COALESCE(:graph_date_after, 'unknown');
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
@@ -1474,7 +1535,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_functions(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1496,7 +1557,7 @@ $$;
 -- ===========================================================================
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()
 RETURNS VARIANT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}'
 AS
 $$
     OBJECT_CONSTRUCT(
@@ -1513,7 +1574,9 @@ $$
         'isochrones_maximum_locations', 50,
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
-        'isochrones_maximum_range_time', 18000
+        'isochrones_maximum_range_time', 18000,
+        'snap_maximum_locations', 5000,
+        'match_maximum_search_radius', 2000
     )::VARIANT
 $$;
 
@@ -1522,7 +1585,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
     LIMITS     VARIANT,
     UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
@@ -1530,7 +1593,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 PACKAGES = ('snowflake-snowpark-python')
 HANDLER = 'run'
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1556,6 +1619,8 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'isochrones_maximum_intervals': 10,
         'isochrones_maximum_range_distance': 1500000,
         'isochrones_maximum_range_time': 18000,
+        'snap_maximum_locations': 5000,
+        'match_maximum_search_radius': 2000,
     }
     try:
         d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
@@ -1622,11 +1687,39 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'
     ]
 
+    # Per-profile default ext_storages (from ORS build config defaults) PLUS OsmId.
+    # OsmId is required so the /export TopoJSON exposes ors_ids, which MATCH_PATH uses
+    # to map matched edge ids back to road geometry. We re-declare each profile's
+    # defaults explicitly (rather than only adding OsmId) so that if ORS treats a
+    # config ext_storages block as a full replacement of the built-in defaults, we do
+    # not silently drop the storages that power avoid_features / HGV restrictions /
+    # trail difficulty. OsmId is compatible with any profile type.
+    default_ext_storages = {
+        'driving-car':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'driving-hgv':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'cycling-regular':  ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-road':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-mountain': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-electric': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-walking':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-hiking':      ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'wheelchair':       ['WayCategory', 'WaySurfaceType', 'Wheelchair'],
+    }
+
     profile_lines = []
     for p in all_profiles:
         enabled = 'true' if p in profiles_list else 'false'
         profile_lines.append('      ' + p + ':')
         profile_lines.append('        enabled: ' + enabled)
+        # Only enabled profiles are built, so only they need the ext_storages block.
+        if enabled == 'true':
+            storages = list(default_ext_storages.get(p, ['WayCategory', 'WaySurfaceType']))
+            if 'OsmId' not in storages:
+                storages.append('OsmId')
+            profile_lines.append('        build:')
+            profile_lines.append('          ext_storages:')
+            for s in storages:
+                profile_lines.append('            ' + s + ':')
 
     all_profiles_str = ', '.join(all_profiles)
     # maximum_snapping_radius is explicit so it survives ORS engine version
@@ -1675,6 +1768,12 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
         '          value: ' + str(limits['isochrones_maximum_range_time']),
+        '    snap:',
+        '      enabled: true',
+        '      maximum_locations: ' + str(limits['snap_maximum_locations']),
+        '    match:',
+        '      enabled: true',
+        '      maximum_search_radius: ' + str(limits['match_maximum_search_radius']),
         '',
     ])
 
@@ -1706,7 +1805,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.APPLY_ORS_LIMITS(P_REGION VARCHAR, P_LIMITS VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1735,7 +1834,8 @@ BEGIN
         REGION     VARCHAR NOT NULL,
         LIMITS     VARIANT,
         UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
-    );
+    )
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}';
 
     -- Upsert the per-region overrides (one row per region).
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS WHERE UPPER(REGION) = UPPER(:P_REGION);
@@ -1890,7 +1990,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"mmap-prewarm"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"mmap-prewarm"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2115,7 +2215,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2233,7 +2333,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2243,6 +2343,14 @@ BEGIN
     -- Region's VROOM service shares the same lifecycle as ORS - drop alongside.
     LET vroom_name VARCHAR := 'VROOM_SERVICE_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || vroom_name;
+    -- The schedule-less launch task created by START_REGION_PROVISION is
+    -- per-region, so it goes with the region. Best-effort: a missing task (the
+    -- region was provisioned by the admin app instead) is not an error.
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TASK IF EXISTS OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' ||
+                          REGEXP_REPLACE(UPPER(:P_REGION), '[^A-Z0-9_]', '');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
@@ -2260,7 +2368,7 @@ $$;
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_VROOM_SERVICE_SPEC(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
     '{"spec":{"containers":[{"name":"vroom","image":"/openrouteservice_app/core/image_repository/vroom-docker:v1.0.4","env":{"VROOM_ROUTER":"ors","ORS_HOST":"ors-service-' ||
@@ -2271,7 +2379,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_vroom_service(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2290,7 +2398,7 @@ BEGIN
                   ' IN COMPUTE POOL ' || :pool_name ||
                   ' FROM SPECIFICATION ''' || :vroom_spec ||
                   ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 14400' ||
-                  ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}''';
+                  ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
     RETURN 'VROOM service ' || :svc_name || ' created in pool ' || :pool_name;
 END;
@@ -2299,7 +2407,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_vroom(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2321,7 +2429,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SOFT_SUSPEND_REGION(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"cost-guard"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-guard"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2395,7 +2503,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LIST_REGIONS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2453,7 +2561,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUIL
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"cost-guardrail"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2721,7 +2829,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY (
     OUTPUT_GRAPH_GIB FLOAT,
     LOG_URI          VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"telemetry"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"telemetry"}}';
 
 -- =============================================================================
 -- RECOMMEND_RETRY_STRATEGY
@@ -2739,7 +2847,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECOMMEND_RETRY_STRATEGY(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"telemetry","action":"retry-strategy"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"telemetry","action":"retry-strategy"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2802,7 +2910,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DIAGNOSE_REGION(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"diagnostic","action":"agent"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"diagnostic","action":"agent"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3280,7 +3388,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_PROVISION_ITER(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"finalize-iter"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"finalize-iter"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3635,7 +3743,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_DEFAULT_REGION_IF_READY()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"bootstrap","action":"finalize-default"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"bootstrap","action":"finalize-default"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3779,7 +3887,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"rescue","action":"repair-stuck-build"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"repair-stuck-build"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4058,7 +4166,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"scan"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"scan"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4183,7 +4291,7 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
     SCHEDULE = 'USING CRON */2 * * * * UTC'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"task"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
 
@@ -4223,7 +4331,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"preflight"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"preflight"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4325,16 +4433,28 @@ ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RE
 -- Idempotent migration: re-stage ors-config.yml with init_threads for every
 -- DEPLOYED region so the next suspend/resume loads profiles in parallel.
 -- Does not ALTER SERVICE - config is picked up on the next container start.
+--
+-- SCOPE WARNING: this is deliberately CONFIG-ONLY and must stay that way. The
+-- generated config also declares each profile's ext_storages (incl. OsmId), and
+-- an ext_storages delta only takes effect on a graph REBUILD, never on a plain
+-- restart. Do NOT add a rebuild here: this proc runs on every module load, so
+-- that would turn a routine redeploy into a continental graph rebuild. A region
+-- whose graph predates an ext_storages change must be repaired explicitly with
+-- REBUILD_REGION_GRAPHS(region).
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"migration","init_threads":true}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"migration","init_threads":true}}'
 EXECUTE AS OWNER
 AS
 $$
 DECLARE
     rs RESULTSET;
+    -- Separate resultset for the per-region profile probe below: the outer
+    -- cursor c_reg iterates over `rs`, so reusing it inside the loop would
+    -- re-point the cursor's own source mid-iteration.
+    rs_prof RESULTSET;
     regions_processed INTEGER DEFAULT 0;
     msg VARCHAR DEFAULT '';
     profiles VARCHAR DEFAULT '';
@@ -4374,9 +4494,29 @@ BEGIN
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            -- No job ever recorded profiles for this region. Skip rather than
-            -- guess: writing an empty profile set would produce a config with
-            -- every profile disabled (a broken graph on next resume).
+            -- Fallback for the bootstrapped default region, which has no
+            -- provision-job row at all: ask the running engine which profiles
+            -- it actually loaded. Without this the default region is skipped
+            -- forever and stays pinned to the static staged ors-config.yml,
+            -- which is how a default region shipped with no OsmId ext storage
+            -- (MATCH_PATH then returns MATCHED_EDGES > 0 but a NULL GEOJSON).
+            -- Mirrors the same fallback in APPLY_ORS_LIMITS and
+            -- DOWNSIZE_REGION_AFTER_BUILD.
+            BEGIN
+                rs_prof := (EXECUTE IMMEDIATE
+                    'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                    || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :reg || ''')::VARCHAR):profiles), '','') AS P');
+                LET c_prof CURSOR FOR rs_prof;
+                FOR rp IN c_prof DO profiles := rp.P; END FOR;
+            EXCEPTION WHEN OTHER THEN profiles := NULL;
+            END;
+        END IF;
+        IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            -- Neither a job row nor a reachable engine (e.g. the region is
+            -- suspended). Skip rather than guess: writing an empty profile set
+            -- would produce a config with every profile disabled (a broken
+            -- graph on next resume), and defaulting to 'driving-car' would
+            -- silently drop the region's other profiles.
             CONTINUE;
         END IF;
         pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
@@ -4387,7 +4527,8 @@ BEGIN
         regions_processed := regions_processed + 1;
         msg := msg || :reg || '; ';
     END FOR;
-    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg;
+    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg
+           || '(config only - an ext_storages change needs REBUILD_REGION_GRAPHS)';
 END;
 $$;
 
@@ -4415,7 +4556,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"bootstrap"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"bootstrap"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4447,3 +4588,199 @@ $$;
 
 CALL OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS();
 CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();
+
+-- ===========================================================================
+-- START_REGION_PROVISION - launch a region build ASYNCHRONOUSLY from SQL
+-- ---------------------------------------------------------------------------
+-- WHY THIS EXISTS
+-- Until now the only way to start a region build was the admin app's
+-- POST /api/regions/provision, which inserts the job row and then fires an
+-- UN-AWAITED submitSqlAsync() from the Node process, relying on the container's
+-- event loop to keep the multi-hour CALL alive. Nothing equivalent existed in
+-- SQL, so a stored procedure (and therefore a synapse verb, and therefore the
+-- agent) could not provision a region: calling PROVISION_REGION_WRAPPER
+-- directly BLOCKS for tens of minutes to hours, which no agent tool call can
+-- survive.
+--
+-- Enqueuing alone does not work either: RESCUE_PENDING_PROVISIONS only
+-- FINALIZES stuck jobs, it never launches a PENDING one, so a job row with no
+-- statement handle sits there forever.
+--
+-- HOW
+-- A schedule-less TASK plus EXECUTE TASK. A task created without a SCHEDULE can
+-- only ever be run manually, so it never fires on its own; EXECUTE TASK submits
+-- one run and returns immediately, which is the async launch primitive this
+-- needs. Same spirit as STUDIO_START_JOB, which launches an async one-shot SPCS
+-- job service rather than doing the work inline.
+--
+-- The task is named per region and created with CREATE OR REPLACE, so its
+-- cardinality is bounded by the number of regions - there is nothing to garbage
+-- collect, and re-provisioning the same region reuses the one task.
+--
+-- ASYNC (CALL ...) inside a scripting block was considered and rejected: this
+-- codebase only ever uses it with a matching AWAIT ALL (05_matrix_pipeline.sql),
+-- and an async child without an AWAIT is not guaranteed to outlive the parent
+-- block, which is exactly the guarantee a multi-hour build needs.
+--
+-- Inputs
+--   P_REGION            -- region name; must exist in REGION_CATALOG
+--   P_DISPLAY_NAME      -- optional label; defaults to the region name
+--   P_PROFILES          -- optional comma-separated ORS profiles
+--   P_COMPUTE_SIZE      -- optional S/M/L/XL/XXL; defaults to XXL
+--   P_FORCE_REDOWNLOAD  -- re-download the PBF even if it is already staged
+--
+-- Returns JSON: {status, job_id, region, pbf_url, compute_size, profiles, note}
+-- Errors return {status:'error', error:'...'} rather than raising, so a caller
+-- gets a readable reason instead of a SQL exception.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION(
+    P_REGION           VARCHAR,
+    P_DISPLAY_NAME     VARCHAR DEFAULT NULL,
+    P_PROFILES         VARCHAR DEFAULT NULL,
+    P_COMPUTE_SIZE     VARCHAR DEFAULT NULL,
+    P_FORCE_REDOWNLOAD BOOLEAN DEFAULT FALSE
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"start-async"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    job_id        VARCHAR;
+    task_name     VARCHAR;
+    region_clean  VARCHAR;
+    display_name  VARCHAR;
+    profiles      VARCHAR;
+    compute_size  VARCHAR;
+    pbf_url       VARCHAR DEFAULT NULL;
+    min_lat       FLOAT DEFAULT NULL;
+    max_lat       FLOAT DEFAULT NULL;
+    min_lon       FLOAT DEFAULT NULL;
+    max_lon       FLOAT DEFAULT NULL;
+    found         INTEGER DEFAULT 0;
+    rs            RESULTSET;
+    call_sql      VARCHAR;
+BEGIN
+    -- Region name becomes part of a task identifier, so restrict it to
+    -- identifier-safe characters rather than quoting downstream.
+    region_clean := REGEXP_REPLACE(COALESCE(:P_REGION, ''), '[^A-Za-z0-9_]', '');
+    IF (region_clean = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region is required and must contain letters or digits')::STRING;
+    END IF;
+
+    -- Resolve the PBF URL and bounding box from the catalog so a caller never
+    -- has to supply them. A region with no PBF_URL (e.g. a natural-earth
+    -- supplemental row) cannot be built, and saying so is better than starting a
+    -- job that fails during download.
+    rs := (
+        SELECT PBF_URL AS U, MIN_LAT AS A, MAX_LAT AS B, MIN_LON AS C, MAX_LON AS D
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE (UPPER(REPLACE(LOOKUP_NAME, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_KEY, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_NAME, ' ', '')) = UPPER(:region_clean))
+          AND PBF_URL IS NOT NULL
+        ORDER BY PBF_SIZE_MB NULLS LAST
+        LIMIT 1
+    );
+    LET c1 CURSOR FOR rs;
+    FOR r IN c1 DO
+        pbf_url := r.U; min_lat := r.A; max_lat := r.B; min_lon := r.C; max_lon := r.D;
+        found := 1;
+    END FOR;
+
+    IF (found = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has no downloadable PBF in REGION_CATALOG. ' ||
+                     'Check the spelling, or refresh the catalog with REFRESH_REGION_CATALOG().')::STRING;
+    END IF;
+
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has an incomplete bounding box in REGION_CATALOG')::STRING;
+    END IF;
+
+    -- Refuse to start a second build for a region that already has one in
+    -- flight: two concurrent builds fight over the same service, pool and stage
+    -- path, and the loser corrupts the winner's graph.
+    SELECT COUNT(*) INTO :found
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE UPPER(REGION) = UPPER(:region_clean) AND STATUS IN ('PENDING', 'RUNNING');
+    IF (found > 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'a build for ' || :region_clean || ' is already PENDING or RUNNING. ' ||
+                     'Poll it with GET_PROVISION_STATUS() instead of starting another.')::STRING;
+    END IF;
+
+    display_name := COALESCE(NULLIF(TRIM(:P_DISPLAY_NAME), ''), :region_clean);
+    profiles     := COALESCE(NULLIF(TRIM(:P_PROFILES), ''), 'driving-car,driving-hgv,cycling-electric');
+    compute_size := UPPER(COALESCE(NULLIF(TRIM(:P_COMPUTE_SIZE), ''), 'XXL'));
+    IF (compute_size NOT IN ('S', 'M', 'L', 'XL', 'XXL')) THEN
+        compute_size := 'XXL';
+    END IF;
+
+    job_id    := 'PROVISION_' || UPPER(:region_clean) || '_' ||
+                 TO_VARCHAR(DATE_PART(EPOCH_MILLISECOND, SYSDATE()));
+    task_name := 'OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' || UPPER(:region_clean);
+
+    INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE, COMPUTE_SIZE, MESSAGE)
+    VALUES
+        (:job_id, :region_clean, :display_name, :pbf_url, :profiles, 'PENDING', 'NOT_STARTED',
+         :compute_size, 'Queued by START_REGION_PROVISION; launching build task.');
+
+    -- Arm the self-gating rescue task so this build gets finalized even if the
+    -- wrapper's own wait loop times out. It suspends itself again once idle.
+    BEGIN
+        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- Schedule-less task: never fires on its own, only via EXECUTE TASK below.
+    -- Numeric args are interpolated (they are FLOATs resolved from the catalog,
+    -- not caller input); the string args are single-quoted and were either
+    -- regex-sanitized or clamped to a fixed allowlist above.
+    call_sql :=
+        'CREATE OR REPLACE TASK ' || :task_name ||
+        ' USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = ''XSMALL''' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
+        ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
+        '''' || :job_id || ''', ' ||
+        '''' || :region_clean || ''', ' ||
+        '''' || REPLACE(:display_name, '''', '''''') || ''', ' ||
+        '''' || REPLACE(:pbf_url, '''', '''''') || ''', ' ||
+        :min_lat || ', ' || :max_lat || ', ' || :min_lon || ', ' || :max_lon || ', ' ||
+        '''' || :profiles || ''', ' ||
+        '''' || :compute_size || ''', ' ||
+        IFF(:P_FORCE_REDOWNLOAD, 'TRUE', 'FALSE') || ')';
+    EXECUTE IMMEDIATE :call_sql;
+
+    -- EXECUTE TASK submits one run and returns; it does NOT wait for the build.
+    EXECUTE IMMEDIATE 'EXECUTE TASK ' || :task_name;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'launched',
+        'job_id', :job_id,
+        'region', :region_clean,
+        'pbf_url', :pbf_url,
+        'profiles', :profiles,
+        'compute_size', :compute_size,
+        'note', 'Build started asynchronously. A region build takes tens of minutes to several ' ||
+                'hours depending on size; the region is NOT usable until it completes. Poll with ' ||
+                'GET_PROVISION_STATUS().'
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        -- Do not leave a PENDING row behind for a launch that never happened:
+        -- it would block the next attempt on the in-flight guard above.
+        BEGIN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET STATUS = 'ERROR', STAGE = 'ERROR', COMPLETED_AT = SYSDATE(),
+                ERROR_MSG = 'launch failed: ' || :SQLERRM
+            WHERE JOB_ID = :job_id;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', :SQLERRM)::STRING;
+END;
+$$;

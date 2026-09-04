@@ -1,0 +1,54 @@
+import type { Conn } from '../connector.js';
+import type { AuditSink } from '../audit.js';
+import type { ProcDef } from '../defineProc.js';
+import { runEnvelope } from './envelope.js';
+
+export type { Conn } from '../connector.js';
+export type { AuditSink, AuditEvent, Identity, Outcome, ReplayHit, DefaultAuditSinkOpts } from '../audit.js';
+export { defaultAuditSink } from '../audit.js';
+export type { ConnConfig } from '../connector.js';
+export { createConn, createConnFromCli } from '../connector.js';
+export { auditTableDDL } from '../ddl.js';
+export type { AuditTableDDLOpts } from '../ddl.js';
+export { runEnvelope } from './envelope.js';
+export { wireSprocClient } from './sproc-client.js';
+
+export interface CallOptions {
+  idempotency_key?: string | null;
+}
+
+export type ProcCall<TArgs, TReturns> =
+  (args: TArgs, opts?: CallOptions) => Promise<TReturns | { replayed: true; result_hash: string | null }>;
+
+export type Runtime<P extends Record<string, ProcDef<string, any, any>>> = {
+  [K in keyof P]: P[K] extends ProcDef<string, infer A, infer R> ? ProcCall<A, R> : never;
+};
+
+export interface RuntimeOptions<P extends Record<string, ProcDef<string, any, any>>> {
+  connector: Conn;
+  procs: P;
+  audit: AuditSink;
+}
+
+/**
+ * Local-target runtime. Wraps each registered proc with the shared envelope
+ * (validate -> identity -> checkReplay -> execute -> auditOk), running against
+ * the supplied async `Conn` and `AuditSink`.
+ *
+ * Sproc-target uses the same envelope via `@snowflake/synapse/runtime/sproc`.
+ */
+export function createSynapseRuntime<P extends Record<string, ProcDef<string, any, any>>>(
+  options: RuntimeOptions<P>,
+): Runtime<P> {
+  const { connector: conn, procs, audit } = options;
+
+  const result: Record<string, ProcCall<any, any>> = {};
+  for (const procName of Object.keys(procs)) {
+    const proc = procs[procName as keyof P]!;
+    result[procName] = async (rawArgs, callOpts) => {
+      const idemKey = callOpts?.idempotency_key ?? null;
+      return runEnvelope(proc, rawArgs, idemKey, conn, audit);
+    };
+  }
+  return result as Runtime<P>;
+}

@@ -1,0 +1,328 @@
+# Expectations contract for validate_app_views.py
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# A row count on its own is not a test. "This panel returned nothing" is only a
+# defect if the panel was supposed to show something, and the difference is
+# knowledge that lives in the view author's head. Writing it down here turns the
+# harness from a report into a contract: any area not declared below MUST return
+# rows, so a panel that silently goes empty fails the build instead of being
+# discovered by a user in a demo.
+#
+# Keep exemptions specific and reasoned. `may_be_empty` with a vague reason is how
+# a genuine regression gets grandfathered in - if you cannot say WHY it is empty,
+# it is a defect, not an exemption.
+#
+# STATUS VOCABULARY
+#   expect: rows                     (default when absent) must return >= 1 row
+#   expect: may_be_empty             legitimately empty; `reason` is mandatory
+#   expect: needs_generated_dataset  empty until the user runs Data Studio
+#   expect: skip                     do not execute at all; `reason` mandatory
+#   regions: [A, B]                  narrows an exemption to named regions only
+#
+# Keys are the area/layer `id` when the node has one, else its config path. Ids
+# are preferred because inserting a layer renumbers every path after it, which
+# would silently move an exemption onto a different query.
+
+views:
+  journey_inspector:
+    areas:
+      actual_on_plan:
+        expect: may_be_empty
+        reason: >-
+          Paired with actual_deviation and MUTUALLY EXCLUSIVE with it by
+          construction: the layers split the selected journey's path by whether it
+          deviated, so for any one journey exactly one of the two has rows.
+          Requiring both would be requiring a contradiction.
+      actual_deviation:
+        expect: may_be_empty
+        reason: Mirror of actual_on_plan - see that entry.
+      actual_overview_on:
+        expect: may_be_empty
+        reason: Overview twin of actual_on_plan, same mutual exclusion.
+      actual_overview_dev:
+        expect: may_be_empty
+        reason: Overview twin of actual_deviation, same mutual exclusion.
+      planned:
+        expect: may_be_empty
+        reason: >-
+          Draws PLANNED_PATH_GEOG, which is NULL for a journey the generator did
+          not produce a plan for. An unplanned journey is a valid selection.
+      areas.vsummary:
+        expect: may_be_empty
+        reason: >-
+          Guarded by `:selected_vehicle IS NOT NULL AND :selected_journey IS NULL`
+          - it is the VEHICLE-level roll-up shown after picking a vehicle but
+          before drilling into one of its journeys. The seeded pass sets both
+          binds, so this panel is correctly empty there. Mutually exclusive with
+          the journey-level panels by design, like actual_on_plan/actual_deviation.
+
+  plan_vs_actual_performance:
+    areas:
+      planned:
+        expect: may_be_empty
+        reason: >-
+          The planned-path map layer filters journeys whose deviation fraction
+          exceeds the threshold (default 0.10). The harness seeds a journey
+          with PLANNED_PATH_GEOG IS NOT NULL, but that journey may not meet
+          the deviation threshold or may be excluded by the LIMIT 1 non-
+          deterministic pick. The idle pass always returns rows (all journeys);
+          the selection pass narrows to one journey which may be filtered out.
+      actual:
+        expect: may_be_empty
+        reason: >-
+          Same as planned - the actual-path layer shares the same deviation
+          threshold filter and selection narrowing.
+      actual_on_plan:
+        expect: may_be_empty
+        reason: Mutually exclusive with actual_deviation - see journey_inspector.
+      actual_deviation:
+        expect: may_be_empty
+        reason: Mutually exclusive with actual_on_plan - see journey_inspector.
+
+  delivery_sync:
+    areas:
+      geofence-100:
+        expect: may_be_empty
+        reason: >-
+          One geofence layer per distinct BUFFER_RADIUS_M. The monitored site
+          types yield 200 m (WAREHOUSE) and 100 m (STORE/DESTINATION/RESTAURANT/
+          LOCATION); an all-warehouse dataset such as UsNewJersey has nothing to
+          draw in the 100 m layer. The layer is emitted regardless so the view
+          stays correct on a dataset that does have stores.
+      geofence-200:
+        expect: may_be_empty
+        reason: >-
+          The mirror of geofence-100: an all-restaurant dataset such as the
+          SanFrancisco seed (100 m sites only) has no 200 m WAREHOUSE sites.
+
+  space_time_density:
+    areas:
+      areas.places:
+        expect: may_be_empty
+        reason: >-
+          Ranks POIs by dwell at the selected hour. A quiet hour on a small
+          dataset legitimately has no qualifying POI.
+
+  site_impact:
+    areas:
+      candidate-isochrone:
+        expect: skip
+        reason: >-
+          Takes a `geometry` bind supplied by the client from the already-drawn
+          candidate isochrone, so there is no server-side value to resolve and
+          nothing here can execute it faithfully. Exercised by clicking the
+          candidate in the app, not by this harness.
+      areas.overlaps:
+        expect: may_be_empty
+        reason: >-
+          MEASURED, not assumed: overlap is a real property of the (candidate,
+          band) pair, and both filters default to their first option - candidate
+          ordered by POI_NAME (ST0013 "Bua Thai", 9.39 km from the nearest owned
+          store) and the smallest band (10 min). That candidate has no owned-store
+          overlap at 10 or 15 min and two at 20 min, while ST0011 (5.64 km) has
+          two at 10 min. So zero cannibalisation is the correct answer for the
+          opening selection, not a broken panel. The click-through path is covered
+          in the app rather than here.
+      overlap-intensity-hex:
+        expect: may_be_empty
+        reason: Hex intensity is derived from areas.overlaps - see that entry.
+      selected-overlap-outline:
+        expect: may_be_empty
+        reason: >-
+          Outlines the overlap chosen from the overlaps table - a SECOND-level
+          selection. The harness seeds one level (the store), so there is no
+          chosen overlap here, and with the default candidate there is no overlap
+          to choose either.
+      areas.overlapzips:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see selected-overlap-outline.
+      areas.overlap_drawer:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see selected-overlap-outline.
+
+  closure_impact:
+    areas:
+      closure-selected-overlap-outline:
+        expect: may_be_empty
+        reason: >-
+          Second-level selection: outlines the overlap chosen from the overlaps
+          table, which the harness's single level of seeding does not set. The
+          overlaps table itself returns rows, so the underlying analysis is
+          covered.
+      areas.closure_drawer:
+        expect: may_be_empty
+        reason: Needs a chosen overlap - see closure-selected-overlap-outline.
+
+  mix_sourcing:
+    areas:
+      transfer-legs:
+        expect: may_be_empty
+        reason: >-
+          A TRANSFER leg exists only when the optimizer recommends consolidating
+          through a hub. For a customer it recommends serving direct, there is no
+          transfer leg to draw - mutually exclusive with the direct/outbound legs
+          on the same map, like actual_on_plan/actual_deviation above. Both of
+          those return rows for the seeded customer.
+
+  dwell_sla:
+    areas:
+      areas.map:
+        expect: may_be_empty
+        reason: >-
+          Plots SLA breaches only. A dataset with no breach in the selected
+          window is a good outcome, not a broken panel.
+      areas.alerts:
+        expect: may_be_empty
+        reason: Same as areas.map - no breaches means no rows.
+
+  safety_risk_scorecard:
+    areas:
+      areas.map:
+        expect: may_be_empty
+        reason: >-
+          Plots safety events at the selected severity. A clean dataset has none,
+          and the seed courier dataset generates few.
+
+  live_asset_operations:
+    areas:
+      empty_legs:
+        expect: may_be_empty
+        reason: >-
+          Draws deadhead (TRIP_KIND = 'EMPTY') legs. The agnostic ebike seed
+          contains only laden trips - 13,721 rows, every one LADEN - so there is
+          nothing for this layer to draw. The layer is correct and stays in the
+          view for the line-haul/backload datasets that do carry empty running;
+          it is the DATASET that has no empty legs, not the query that is broken.
+
+# ---------------------------------------------------------------------------
+# Code-registered views hold their SQL in TypeScript, so the harness cannot
+# enumerate their queries without parsing TS. It asserts instead that every
+# object they read is present AND selectable. That is a narrower claim, stated
+# honestly, and it still catches the two failure modes that actually break these
+# views: an object no install step created, and a `SELECT *` view invalidated by
+# an ADD COLUMN on its base table.
+# ---------------------------------------------------------------------------
+code_views:
+  vrp_simulator:
+    objects:
+      - FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT
+  emergency_response:
+    objects:
+      - FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES
+      - FLEET_APP.EMERGENCY_RESPONSE.VW_CARE_CENTERS
+      - FLEET_APP.EMERGENCY_RESPONSE.VW_PARTICIPANTS
+  backload_matching:
+    objects:
+      - FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG
+      - FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
+      - FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
+      - FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
+      - FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+  backload_proposals:
+    objects:
+      # These four exist ONLY in the admin app's init.ts, created at container
+      # boot - no scripts/*.sql owns them. If the admin app has never booted the
+      # view is silently empty with no SQL-level creator, which is why they are
+      # asserted explicitly here.
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+  app_shell:
+    objects:
+      # Not a view, but every view inherits it: the context bar and the region
+      # camera break the whole app when these are missing.
+      - SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+      - FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+      - FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+      - FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+      - FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA
+
+# ---------------------------------------------------------------------------
+# Selection seeds - the second pass.
+#
+# Running only the first-render pass is what makes a harness look green while
+# every drill-down is broken: with nothing clicked, a selection-driven layer
+# returns nothing and that is correct. So each click-driven bind gets a seed
+# query that picks a REAL value out of the view's own data, and the seeded pass
+# then REQUIRES those layers to return rows. `:region` and the context binds are
+# available inside a seed query.
+#
+# A seed that returns nothing is itself reported (SEED warning), because it means
+# the view has no data to drill into - which is worth knowing.
+# ---------------------------------------------------------------------------
+selection_seeds:
+  live_asset_operations:
+    selected_entity: >-
+      SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(:region, NULL::VARCHAR))
+      WHERE ENTITY_ID IS NOT NULL LIMIT 1
+
+  dispatch_execution_board:
+    selected_entity: >-
+      SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+      WHERE ENTITY_ID IS NOT NULL LIMIT 1
+
+  journey_inspector:
+    # Order matters: the journey is chosen first and the vehicle is derived FROM
+    # it, because clicking a journey in the app also fixes its vehicle. Seeding
+    # the two independently yields a pair that never co-occurs, which empties
+    # every panel that joins them (areas.vsummary was the tell).
+    selected_journey: >-
+      SELECT JOURNEY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+      WHERE JOURNEY_ID IS NOT NULL AND ACTUAL_PATH_GEOG IS NOT NULL LIMIT 1
+    selected_vehicle: >-
+      SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+      WHERE JOURNEY_ID = :selected_journey LIMIT 1
+
+  plan_vs_actual_performance:
+    selected_journey: >-
+      SELECT JOURNEY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+      WHERE JOURNEY_ID IS NOT NULL AND PLANNED_PATH_GEOG IS NOT NULL LIMIT 1
+
+  responsible_party_performance:
+    selected_operator: >-
+      SELECT OPERATOR_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+      WHERE OPERATOR_ID IS NOT NULL LIMIT 1
+
+  asset_velocity:
+    selected_vehicle: >-
+      SELECT VEHICLE_ID FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+      LIMIT 1
+
+  delivery_sync:
+    selected_site: >-
+      SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
+      WHERE REGION = :region LIMIT 1
+
+  site_impact:
+    selected_store: >-
+      SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORES
+      WHERE REGION = :region AND STORE_ROLE = 'OWNED' LIMIT 1
+
+  closure_impact:
+    selected_store: >-
+      SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORES
+      WHERE REGION = :region AND STORE_ROLE = 'OWNED' LIMIT 1
+
+  sourcing_optimizer:
+    selected_customer: >-
+      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND LIMIT 1
+
+  mix_sourcing:
+    selected_customer: >-
+      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND LIMIT 1
+
+  catchment:
+    # LIVE_CATCHMENT resolves the anchor by POI *NAME*, not id, and the three
+    # binds must describe the SAME poi - seeding them independently anchors the
+    # isochrone somewhere no poi exists.
+    selected_poi: >-
+      SELECT POI_NAME FROM FLEET_APP.CATCHMENT.VW_POIS
+      WHERE REGION = :region AND POI_NAME IS NOT NULL LIMIT 1
+    anchor_lat: >-
+      SELECT LATITUDE FROM FLEET_APP.CATCHMENT.VW_POIS
+      WHERE REGION = :region AND POI_NAME = :selected_poi LIMIT 1
+    anchor_lng: >-
+      SELECT LONGITUDE FROM FLEET_APP.CATCHMENT.VW_POIS
+      WHERE REGION = :region AND POI_NAME = :selected_poi LIMIT 1
