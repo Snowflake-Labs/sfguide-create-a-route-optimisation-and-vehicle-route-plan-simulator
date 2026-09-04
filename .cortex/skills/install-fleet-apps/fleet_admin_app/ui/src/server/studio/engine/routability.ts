@@ -7,7 +7,6 @@ import { GenerationConfig, uuid } from '../profiles';
 import { log } from '../../diagnostics';
 import { regionCatalogMatch } from '../../lib/region-catalog-match';
 import { h3ResForArea, poiCapForArea } from './spatial';
-import { brandNeutralNameFilter } from './region-source';
 
 // Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
 // When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
@@ -290,13 +289,6 @@ export async function loadPOIs(
         AND ST_X(p.GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
         AND p.BASIC_CATEGORY IN (${catFilter})${countryFilter}
         AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
-        -- Keep brand-named places out of the POI pool. These names become trip
-        -- endpoints, offer pickup/dropoff labels, listing text, map tooltips and
-        -- agent answers, so one branded POI makes a neutral demo read as though
-        -- it were built for that company. Observed live: three generated offers
-        -- carried a carrier brand as their dropoff label, straight from the
-        -- third-party map data. Narrow by design - see brandNeutralNameFilter.
-        AND ${brandNeutralNameFilter('p.NAMES::VARIANT:primary::TEXT')}
     )
     SELECT LOCATION_ID, NAME, CATEGORY, LAT, LNG
     FROM candidates
