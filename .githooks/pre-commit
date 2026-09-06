@@ -94,7 +94,8 @@ if [ -f "$ORS_RAISE_CHECK" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
   "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
   "$SKILL_DIR/scripts/analytic_layer.sql" \
-  "$SKILL_DIR/scripts/delivery_sync_layer.sql"; then
+  "$SKILL_DIR/scripts/delivery_sync_layer.sql" \
+  "$SKILL_DIR/scripts/analytic_layer_live_routing.sql"; then
   echo "pre-commit: suspended-ORS raise coverage check..."
   python3 "$ORS_RAISE_CHECK" || {
     echo "pre-commit FAILED: a live-routing view would render blank on a suspended engine."
@@ -138,6 +139,30 @@ if [ -f "$INSTALL_ORDER_CHECK" ] && staged_any \
   echo "pre-commit: install-order (forward reference) check..."
   python3 "$INSTALL_ORDER_CHECK" || {
     echo "pre-commit FAILED: an install SQL file references an object a later step creates."
+    exit 1
+  }
+fi
+
+# ── 5b. Engine-free installer SQL must not create engine-dependent objects ────
+# A `LANGUAGE SQL` UDTF body resolves at CREATE time, so a statement calling
+# OPENROUTESERVICE_APP.CORE.ISOCHRONES / MATRIX_TABULAR / DIRECTIONS is a hard
+# error on an engine-less install - and `snow sql -f` stop-on-first-error then
+# abandons every later statement in that file. That cost analytic_layer.sql ~129
+# statements (it died at line 1072 of 2722) and delivery_sync_layer.sql 33 of 44,
+# in both cases silently discarding engine-FREE schemas (FLEET_INTELLIGENCE.SOURCING,
+# FLEET_APP.SOURCING, FLEET_APP.DELIVERY_SYNC) that have nothing to do with routing.
+# Those statements now live in scripts/analytic_layer_live_routing.sql; this keeps
+# them there. Note the usual EXECUTE IMMEDIATE / EXCEPTION wrapper is NOT an option
+# for them - they carry dollar-quoted bodies and dollar-quotes do not nest.
+ENGINE_GUARDS_CHECK="$SKILL_DIR/scripts/check_engine_guards.py"
+if [ -f "$ENGINE_GUARDS_CHECK" ] && staged_any \
+  "$SKILL_DIR/scripts" \
+  "$SKILL_DIR/fleet_sa_app/app" \
+  "$SKILL_DIR/openrouteservice_app/app/modules"; then
+  echo "pre-commit: engine-guards (engine-free installer SQL) check..."
+  python3 "$ENGINE_GUARDS_CHECK" || {
+    echo "pre-commit FAILED: engine-free installer SQL creates an object that needs the routing engine."
+    echo "  Move the statement to scripts/analytic_layer_live_routing.sql."
     exit 1
   }
 fi

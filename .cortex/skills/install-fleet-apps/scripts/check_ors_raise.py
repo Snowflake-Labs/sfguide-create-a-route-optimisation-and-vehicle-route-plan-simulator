@@ -38,6 +38,12 @@ CONFIG_FILES = [APP_DIR / "app-views.json", APP_DIR / "starter" / "app-views.jso
 SQL_FILES = [
     SKILL_DIR / "scripts" / "analytic_layer.sql",
     SKILL_DIR / "scripts" / "delivery_sync_layer.sql",
+    # The live-routing UDTFs were extracted out of the two files above so that an
+    # engine-less install could no longer abort them partway (see
+    # check_engine_guards.py). Every LIVE_* function this gate exists to police now
+    # lives here, so omitting it would leave the gate scanning two files that no
+    # longer contain a single ORS call - it would pass by finding nothing.
+    SKILL_DIR / "scripts" / "analytic_layer_live_routing.sql",
 ]
 
 # Direct ORS entrypoints. A query naming one of these calls the engine itself.

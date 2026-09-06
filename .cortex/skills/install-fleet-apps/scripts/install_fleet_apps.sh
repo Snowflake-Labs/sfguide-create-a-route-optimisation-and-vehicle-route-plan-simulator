@@ -28,6 +28,7 @@
 #                         inert instead. --with-engine is accepted as a no-op (default).
 #   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ANALYTIC=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
 #   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1 SKIP_SEMANTIC=1 SKIP_DEMO=1   (env vars)
+#   SKIP_VERIFY=1 SKIP_VERIFY_DEPLOYMENT=1 SKIP_DELIVERY_SYNC=1           (env vars)
 set -euo pipefail
 
 # ── arg parse ───────────────────────────────────────────────────
@@ -35,6 +36,13 @@ set -euo pipefail
 CONNECTION=""
 WITH_ENGINE="${PROVISION_ENGINE:-1}"
 [ "${NO_ENGINE:-0}" = "1" ] && WITH_ENGINE=0
+# Resolved in step 3 to 'engine' or 'analytics-only' and reported in the final
+# summary. This exists because "--no-engine finished with all steps OK" is a
+# actively misleading: the engine-facing surfaces (Service Manager, Region
+# Builder, every live-routing view) are non-functional, but the only signal was
+# two mid-run note lines that scrolled away. Three consecutive installs were
+# signed off as clean with no engine at all.
+DEPLOYMENT_MODE="unknown"
 while [ $# -gt 0 ]; do
   case "$1" in
     --connection) CONNECTION="${2:-}"; shift 2;;
@@ -65,6 +73,8 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # which wrap table functions), so it must run AFTER the packs have built the
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
+# The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
+LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 # SV_OFFERS lives apart because its FLEET_INTELLIGENCE.MARKETPLACE sources are
 # built by the admin app's boot init / the freight-exchange skill, not by this
@@ -352,14 +362,17 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   # second run). So provision/detect the engine first, then apply the contract.
   if obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
     note "  ORS engine detected -> routing verbs LIVE"
+    DEPLOYMENT_MODE="engine"
   elif [ "$WITH_ENGINE" = "1" ]; then
     note "  ORS engine ABSENT -> provisioning natively by default (heavy)..."
     bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
       || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
     note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
+    DEPLOYMENT_MODE="engine"
   else
     note "  ORS engine ABSENT + --no-engine -> routing verbs install inert."
     note "  To enable live routing, re-run without --no-engine. See references/routing-engine.md"
+    DEPLOYMENT_MODE="analytics-only"
   fi
   # Apply the engine-agnostic routing contract AFTER the engine so all referenced
   # objects (REGION_ORS_MAP + gateway functions) exist and every CONTRACT.* verb
@@ -408,6 +421,13 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
 else
   step "3 routing" SKIPPED
   ROUTING_SUBSTRATE="SKIPPED (SKIP_ROUTING=1)"
+  # SKIP_ROUTING bypasses the branch that resolves the mode, so probe directly
+  # rather than leaving it 'unknown' and reporting nothing in the summary.
+  if obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
+    DEPLOYMENT_MODE="engine"
+  else
+    DEPLOYMENT_MODE="analytics-only"
+  fi
 fi
 
 # ── 3.4 seed REGION_CATALOG from the baked parquet ──────────────────────
@@ -534,6 +554,35 @@ if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
     || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
 else
   step "4.2 delivery-sync" SKIPPED
+fi
+
+# ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────
+# Every statement in this file creates a SQL UDTF whose body calls an
+# OPENROUTESERVICE_APP.CORE routing function. A SQL function body resolves at
+# CREATE time, so without the engine these are hard errors - and because
+# `snow sql -f` is stop-on-first-error, keeping them inline aborted their parent
+# file partway: analytic_layer.sql died at line 1072 of 2722 and
+# delivery_sync_layer.sql lost 33 of its 44 statements, in both cases discarding
+# engine-FREE objects (FLEET_INTELLIGENCE.SOURCING, FLEET_APP.SOURCING,
+# FLEET_APP.DELIVERY_SYNC) that had nothing to do with routing. Splitting them out
+# means those parent files now always complete, and the engine-dependent half
+# fails as one clearly-labelled unit instead.
+#
+# Skipped outright in analytics-only mode: without an engine EVERY statement here
+# fails, and 24 identical errors in a log is noise, not information.
+# scripts/check_engine_guards.py keeps the split honest at commit time.
+if [ "${SKIP_ANALYTIC:-0}" = "1" ]; then
+  step "4.3 live-routing" SKIPPED
+elif [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
+  note "[4.3/8] live-routing UDTFs SKIPPED (analytics-only mode - they require the engine)"
+  step "4.3 live-routing" SKIPPED
+else
+  note "[4.3/8] live-routing UDTFs (LOCATION / CATCHMENT / SOURCING / DELIVERY_SYNC)..."
+  snow sql -c "$CONNECTION" -f "$LIVE_ROUTING_SQL" >/tmp/ifa_live_routing.log 2>&1 \
+    && step "4.3 live-routing" OK \
+    || { note "  WARN: live-routing UDTFs reported errors; see /tmp/ifa_live_routing.log"; \
+         note "        Live-routing views will be empty until this succeeds (engine graph still building?)"; \
+         step "4.3 live-routing" WARN; }
 fi
 
 # ── 4.5 semantic views (Cortex Analyst SVs the consumer agent binds to) ──
@@ -813,6 +862,45 @@ else
   step "8 roles" SKIPPED
 fi
 
+# ── 8.5 deployment coherence verification ───────────────────────
+# Asserts the deployment matches the mode it was installed in. Distinct from step 9
+# below: that one asks "do the views return rows", this one asks "are the objects
+# the app surfaces read actually there". Nothing used to ask the second question,
+# which is how three installs were reported clean while OPENROUTESERVICE_APP.CORE
+# held ZERO functions - the database exists as a stub either way, so every
+# does-it-exist probe passed while Service Manager and Region Builder were dead.
+#
+# BLOCKING when it returns 1, unlike step 9. Exit 1 means the deployment
+# contradicts its own declared mode, which is a real defect rather than a
+# thin-data warning. Exit 2 (degraded) is the expected analytics-only result and
+# is recorded as WARN. Skip with SKIP_VERIFY_DEPLOYMENT=1.
+if [ "${SKIP_VERIFY_DEPLOYMENT:-0}" != "1" ]; then
+  note "[8.5/9] verifying deployment coherence (mode=$DEPLOYMENT_MODE)..."
+  if [ "$DEPLOYMENT_MODE" = "engine" ]; then
+    VD_MODE_FLAG="--expect-engine"
+  else
+    VD_MODE_FLAG="--expect-analytics-only"
+  fi
+  # set -e safe: same `VAR=0; cmd || VAR=$?` idiom as step 9. A bare `cmd; RC=$?`
+  # aborts at `cmd` under `set -euo pipefail` before the rc can be read.
+  VD_RC=0
+  bash "$SCRIPTS/verify_deployment.sh" -c "$CONNECTION" "$VD_MODE_FLAG" \
+    >/tmp/ifa_verify_deployment.log 2>&1 || VD_RC=$?
+  case "$VD_RC" in
+    0) note "  deployment matches '$DEPLOYMENT_MODE' with no degraded surfaces"
+       step "8.5 verify-deployment" OK ;;
+    2) note "  deployment matches '$DEPLOYMENT_MODE' with degraded surfaces (expected without an engine)"
+       note "        detail: /tmp/ifa_verify_deployment.log"
+       step "8.5 verify-deployment" WARN ;;
+    *) note "  FAILED: the deployment contradicts its declared mode '$DEPLOYMENT_MODE'"
+       note "        see /tmp/ifa_verify_deployment.log for the BLOCKING lines"
+       grep '  BLOCKING' /tmp/ifa_verify_deployment.log 2>/dev/null | head -8 | sed 's/^/        /'
+       step "8.5 verify-deployment" FAILED ;;
+  esac
+else
+  step "8.5 verify-deployment" SKIPPED
+fi
+
 # ── 9. post-install view verification (NON-BLOCKING) ────────────
 # Executes every SA app view's queries with the binds the runtime actually sends
 # and reports OK / EMPTY / ERROR per area. This is the only step that answers the
@@ -884,6 +972,29 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
     *) echo "- ACTION: routing verbs (get_directions, optimize_routes, ...) depend on these procs; re-run \`routing-agent/references/deploy-agent.sql\` against \`$CONNECTION\` to restore them." ;;
   esac
   echo
+  echo "## Deployment mode"
+  echo "- Mode: **${DEPLOYMENT_MODE}**"
+  if [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
+    echo
+    echo "This deployment has NO routing engine. The analytics layer, dashboards,"
+    echo "semantic views and agents are functional; the following are NOT:"
+    echo
+    echo "- Admin app Service Manager (Compute Pool ERROR, ORS Health Unhealthy, Services 0/0)"
+    echo "- Admin app Region Builder (partial-deploy banner: build_spec / resolver / retry_strategy MISSING)"
+    echo "- Every live-routing view (isochrones, travel-time matrices, catchment rings, VRP)"
+    echo "- LOCATION / CATCHMENT / SOURCING / DELIVERY_SYNC \`LIVE_*\` UDTFs (step 4.3 skipped)"
+    echo "- Agent routing verbs (get_directions, compute_isochrone, optimize_routes, find_poi)"
+    echo
+    echo "Do NOT record this run as a clean full install. To complete it:"
+    echo
+    echo '```bash'
+    echo "bash .cortex/skills/install-fleet-apps/scripts/provision_engine.sh $CONNECTION"
+    echo "bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c $CONNECTION --expect-engine"
+    echo '```'
+  else
+    echo "- Verify with: \`bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c $CONNECTION --expect-engine\`"
+  fi
+  echo
   echo "## SAP mock landscape"
   echo "- MOCK_SAP + MOCK_TELEMATICS (sap-fleet-connector demo example, raw-only): **${SAP_MOCK}**"
   echo
@@ -906,6 +1017,12 @@ if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
 elif [ "${WARN_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps finished with ${WARN_STEPS} DEGRADED step(s) (${ELAPSED}s)"
   echo " nothing aborted, but at least one step did not do all of its work - see the status table"
+elif [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
+  # NEVER say "all steps OK" here. Every step genuinely succeeded, but the
+  # deployment is half a solution: the engine-facing surfaces do not work. Saying
+  # "all steps OK" for this state is what let three engine-less installs be signed
+  # off as clean.
+  echo " install-fleet-apps complete (${ELAPSED}s) - ANALYTICS-ONLY (no routing engine)"
 else
   echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
 fi
@@ -916,6 +1033,7 @@ echo "   Admin app (build console):   $ADMIN_URL_DISP"
 echo "----------------------------------------------------------------"
 echo " Summary"
 echo "   steps:             $(( ${#STEP_STATUS[@]} - FAILED_STEPS - WARN_STEPS ))/${#STEP_STATUS[@]} OK, ${WARN_STEPS} degraded, ${FAILED_STEPS} failed"
+echo "   deployment mode:   $DEPLOYMENT_MODE"
 echo "   routing substrate: $ROUTING_SUBSTRATE"
 echo "   SAP mock:          $SAP_MOCK"
 echo "   friction log:      $FRICTION_LOG"
@@ -923,6 +1041,19 @@ case "$ROUTING_SUBSTRATE" in
   OK*|SKIPPED*) : ;;
   *) echo "   !! ROUTING SUBSTRATE DEGRADED - see friction log for the restore command" ;;
 esac
+if [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
+  echo "----------------------------------------------------------------"
+  echo " !! ANALYTICS-ONLY DEPLOYMENT - the following are NON-FUNCTIONAL"
+  echo "   - Admin app Service Manager    (Compute Pool ERROR, ORS Health Unhealthy, Services 0/0)"
+  echo "   - Admin app Region Builder     (partial-deploy banner; build_spec/resolver/retry MISSING)"
+  echo "   - Every live-routing view      (isochrones, matrices, catchment rings, VRP)"
+  echo "   - LOCATION / CATCHMENT / SOURCING / DELIVERY_SYNC LIVE_* UDTFs (step 4.3 skipped)"
+  echo "   - Agent routing verbs          (directions, isochrone, optimize, find_poi)"
+  echo "   The analytics layer, dashboards, semantic views and agents ARE functional."
+  echo "   To make the above work, build the engine (heavy, tens of minutes):"
+  echo "     bash .cortex/skills/install-fleet-apps/scripts/provision_engine.sh $CONNECTION"
+  echo "     bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c $CONNECTION --expect-engine"
+fi
 echo "----------------------------------------------------------------"
 echo " Next steps"
 echo "   1. Open the SA app above and log in via Snowflake OAuth."

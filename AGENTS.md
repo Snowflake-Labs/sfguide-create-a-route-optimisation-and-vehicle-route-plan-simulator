@@ -86,6 +86,40 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.
 # fresh accounts only, which is why this needs a static gate rather than a test run.
 python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
 
+# Validate that no ENGINE-FREE installer SQL file creates an object requiring the
+# routing engine. A `LANGUAGE SQL` UDTF body resolves at CREATE time, so a statement
+# calling OPENROUTESERVICE_APP.CORE.ISOCHRONES / MATRIX_TABULAR / DIRECTIONS is a hard
+# error on a `--no-engine` install - and `snow sql -f` stop-on-first-error then abandons
+# every later statement in that file. That cost `analytic_layer.sql` ~129 statements (it
+# died at line 1072 of 2722) and `delivery_sync_layer.sql` 33 of 44, in both cases
+# silently discarding engine-FREE schemas (FLEET_INTELLIGENCE.SOURCING,
+# FLEET_APP.SOURCING, the whole FLEET_APP.DELIVERY_SYNC contract) that have nothing to
+# do with routing - while the installer reported only "dependent views will be empty".
+# Those statements now live in scripts/analytic_layer_live_routing.sql. Note the usual
+# `EXECUTE IMMEDIATE ... EXCEPTION` wrapper is NOT available for them: they carry
+# dollar-quoted function bodies and Snowflake dollar-quotes do not nest. The engine
+# function list is parsed from the engine modules, so the gate cannot drift.
+python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards.py
+
+# Assert a live deployment matches the mode it was installed in. Distinct from
+# validate_app_views.py: that asks "do the views return rows", this asks "are the
+# objects the app surfaces read actually there". Nothing asked the second question
+# before, which is how three installs were reported clean while OPENROUTESERVICE_APP.CORE
+# held ZERO functions - the database exists as a stub either way (seed_data.sql + the
+# synapse bundle install both create it), so every does-it-exist probe passed while the
+# admin app's Service Manager and Region Builder were dead. Probes the 5 healthcheck
+# keys with the app's own SQL (including the 3-arg BUILD_ORS_SERVICE_SPEC overload - two
+# exist, so a name-only check passes while the app's call fails), the 4 Service Manager
+# tiles, engine + ROUTING_PLATFORM.CONTRACT function counts, and the analytic tail.
+# MODE decides severity: engine objects missing is DEGRADED under
+# --expect-analytics-only but BLOCKING under --expect-engine. The analytic-tail probes
+# are BLOCKING in BOTH modes - they need no engine, so absence means the
+# engine/engine-free split regressed. Read-only. Installer step 8.5 runs it
+# automatically (blocking on exit 1); skip with SKIP_VERIFY_DEPLOYMENT=1.
+# Exit: 0 ready / 1 contradicts declared mode / 2 matches with degraded surfaces.
+bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connection> --expect-engine
+bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connection> --expect-analytics-only
+
 # Validate the two mandatory tracking mechanisms: a session `query_tag` on every
 # SQL session, and a JSON `COMMENT` tag on every created object. Both failures are
 # invisible at runtime (an untagged object works, an untagged session returns the
