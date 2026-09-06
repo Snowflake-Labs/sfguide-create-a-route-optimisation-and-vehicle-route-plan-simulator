@@ -129,7 +129,7 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
 | `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` / `SKIP_COWORK` / `SKIP_AGENT_EVALS` | `0` | shorten idempotent re-runs |
-| `NO_RUN_AGENT_EVALS` | `0` | create the four agent eval sets in step 6.6 but do NOT run a baseline evaluation. Runs are ON by default because both Snowsight agent-readiness checklist items ("Create the first eval set" and "Run an evaluation") are satisfied only once a RUN exists - a dataset alone clears neither, and a wipe/reinstall destroys runs while leaving datasets in place. Set to `1` to avoid the spend (47 agent invocations plus an LLM judge per metric per row). |
+| `RUN_AGENT_EVALS` | `0` | Step 6.6 always CREATES the four agent eval sets; a baseline evaluation RUN is opt-in. Set to `1` to also run one. Runs cost credits (47 agent invocations plus an LLM judge per metric per row), which is why they are off by default. Note both Snowsight agent-readiness checklist items ("Create the first eval set" and "Run an evaluation") are satisfied only once a RUN exists - a dataset alone clears neither - and a wipe/reinstall destroys runs while leaving datasets in place, so a rebuilt account shows the checklist gap until a baseline is re-run: `bash scripts/setup_agent_evals.sh <connection>`. `NO_RUN_AGENT_EVALS` is accepted as a no-op (datasets-only is already the default). |
 
 ## Required Privileges
 
