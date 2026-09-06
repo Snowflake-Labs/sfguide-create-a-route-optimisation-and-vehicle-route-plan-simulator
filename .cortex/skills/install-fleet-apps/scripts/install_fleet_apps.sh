@@ -757,14 +757,14 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   # dirty-tree guard is for standalone human-driven deploys, not automated installs.
   if [ "${SERIAL_APPS:-0}" = "1" ]; then
     note "  SERIAL_APPS=1 - deploying sequentially"
-    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
       || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
     ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
       || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
   else
     note "  deploying both apps in parallel (logs: /tmp/ifa_sa_deploy.log, /tmp/ifa_admin_deploy.log)"
     note "  (pass SERIAL_APPS=1 to force sequential deploys)"
-    ALLOW_DIRTY=1 bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
+    ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
       >/tmp/ifa_sa_deploy.log 2>&1 & APP_SA_PID=$!
     ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
       >/tmp/ifa_admin_deploy.log 2>&1 & APP_ADMIN_PID=$!

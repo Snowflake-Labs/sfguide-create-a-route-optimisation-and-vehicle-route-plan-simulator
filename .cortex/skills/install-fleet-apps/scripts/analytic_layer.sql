@@ -319,6 +319,72 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIO
   RATIONALE       VARCHAR
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Backload matching parameters - controls solver behaviour, display thresholds,
+-- and cascade logic. The admin app's init.ts also creates + MERGE-seeds this table
+-- at boot, but the pack's setup.sql runs BEFORE any app boot, so a fresh install
+-- needs the table here or the pack's VW_MATCH_PARAMS view fails to compile.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS (
+  PARAM_KEY    VARCHAR       NOT NULL,
+  PARAM_VALUE  VARCHAR,
+  PARAM_TYPE   VARCHAR(16)   DEFAULT 'string',
+  CATEGORY     VARCHAR(16)   DEFAULT 'core',
+  ENABLED      BOOLEAN       DEFAULT TRUE,
+  DESCRIPTION  VARCHAR,
+  UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE(),
+  CONSTRAINT PK_MATCH_PARAMS PRIMARY KEY (PARAM_KEY)
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS tgt USING (
+  SELECT * FROM VALUES
+    ('MAX_EMPTY_KM',              '100',   'number', 'core',   TRUE,  'Max distance from where a vehicle becomes free to a load pickup (km).'),
+    ('ENFORCE_PICKUP_DATE',       'true',  'bool',   'core',   TRUE,  'Vehicle must be free in time for the load pickup window.'),
+    ('PICKUP_DATE_SLACK_HRS',     '0',     'number', 'core',   TRUE,  'Hours of slack allowed past the requested pickup window.'),
+    ('MAX_PICKUP_HORIZON_DAYS',   '7',     'number', 'core',   TRUE,  'Only consider loads with a pickup within N days of the vehicle free time.'),
+    ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line.'),
+    ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
+    ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+    ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
+    ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
+    ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
+    ('IDLE_COST_PER_DAY',         '650',   'number', 'core',   TRUE,  'Standing-day cost, for the savings KPI.'),
+    ('REVENUE_PER_LOADED_KM',     '1.10',  'number', 'core',   TRUE,  'Benchmark revenue per loaded km.'),
+    ('ENFORCE_WEIGHT_FIT',        'true',  'bool',   'core',   TRUE,  'Reject pairs where vehicle MAX_PAYLOAD_KG < load WEIGHT_KG + WEIGHT_FIT_MARGIN_KG.'),
+    ('WEIGHT_FIT_MARGIN_KG',      '0',     'number', 'core',   TRUE,  'Safety margin (kg) added to load weight when checking ENFORCE_WEIGHT_FIT.'),
+    ('REQUIRE_HAZMAT_CERT',       'true',  'bool',   'core',   TRUE,  'Hazmat loads must go on a hazmat-certified vehicle.'),
+    ('MAX_CANDIDATE_TRUCKS',      '50',    'number', 'core',   TRUE,  'Per load, how many nearest free vehicles to hand the VROOM solver.'),
+    ('MAX_TRUCKS_PER_ORDER',      '3',     'number', 'core',   TRUE,  'How many ranked vehicle recommendations to keep per load in VRP mode.'),
+    ('VRP_CONCURRENCY',           '4',     'number', 'core',   TRUE,  'Per-load best fit: how many loads to solve in parallel per chunk.'),
+    ('PICKUP_WINDOW_HRS',         '12',    'number', 'core',   TRUE,  'Plus/minus tolerance (hours) around the requested pickup time.'),
+    ('CLUSTER_CAP',               '600',   'number', 'core',   TRUE,  'Max stops per VROOM cluster before a dense component is spatially sub-split.'),
+    ('BPMP_MAX_STOPS',            '4',     'number', 'core',   TRUE,  'Max loads consolidated onto one vehicle in the profit-max backhaul plan.'),
+    ('BPMP_MAX_DEADHEAD_KM',      '250',   'number', 'core',   TRUE,  'Hard cap on a vehicle total DEADHEAD (empty) km across the whole return tour.'),
+    ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (km).'),
+    ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor.'),
+    ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve; greedy = solver-free greedy builder.'),
+    ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days).'),
+    ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'Max own waiting loads exposed as internal demand.'),
+    ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching.'),
+    ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain.'),
+    ('TRIANGLE_MIN_PROGRESS_PCT', '5',     'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target.'),
+    ('TRIANGLE_MIN_PROGRESS_RATIO','1.0',   'number', 'core',   TRUE,  'Leg 1 must return at least this many km of progress per empty km.'),
+    ('TRIANGLE_MAX_LEG1_DETOUR_KM','400',  'number', 'core',   TRUE,  'Hard cap on how far leg 1 may leave the direct corridor (km).'),
+    ('TRIANGLE_MAX_TOTAL_EMPTY_KM','250',  'number', 'core',   TRUE,  'Cap on total empty km across the whole chain.'),
+    ('TRIANGLE_LEG1_OPTIONS',     '12',    'number', 'core',   TRUE,  'Top N leg-1 loads kept per vehicle before the self-join.'),
+    ('MAX_TRIANGLES_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked chains to keep per vehicle.'),
+    ('TARGET_MODE',               'home_depot','string','core', TRUE,  'home_depot = chain toward the vehicle home depot; dispatcher_choice = chain toward a supplied target.'),
+    ('TARGET_RADIUS_KM',          '250',   'number', 'core',   TRUE,  'Leg 2 must deliver within this distance of the target (km).'),
+    ('CASCADE_GRADE_THRESHOLD',   '70',    'number', 'core',   TRUE,  'Composite score at which the internal-first cascade stops widening.'),
+    ('ENFORCE_EQUIPMENT_FIT',     'false', 'bool',   'core',   TRUE,  'Reject pairs whose load requires equipment the vehicle does not carry.'),
+    ('EQUIPMENT_STRICT',          'false', 'bool',   'core',   TRUE,  'true = a load with no stated equipment requirement still needs an exact match.'),
+    ('TRADELANE_INCLUDE',         '',      'string', 'future', FALSE, 'Comma list of allowed pickup->delivery country lanes.'),
+    ('TRADELANE_EXCLUDE',         '',      'string', 'future', FALSE, 'Comma list of forbidden country lanes.'),
+    ('RETURN_TO_HOME_REGION',     'true',  'bool',   'core',   TRUE,  'Score loads by the progress they make toward the target region.')
+  AS v(PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
+) src
+ON tgt.PARAM_KEY = src.PARAM_KEY
+WHEN NOT MATCHED THEN INSERT (PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
+  VALUES (src.PARAM_KEY, src.PARAM_VALUE, src.PARAM_TYPE, src.CATEGORY, src.ENABLED, src.DESCRIPTION);
+
 -- =============================================================================
 -- 4. CATCHMENT  (Overture Marketplace; real ADDRESS/CITY/STATE/POSTCODE, no synth)
 --    Runs LAST: depends on the two Overture listings + (optionally) REGION_CATALOG.
