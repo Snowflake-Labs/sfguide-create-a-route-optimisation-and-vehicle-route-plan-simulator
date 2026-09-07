@@ -253,27 +253,125 @@ def _seg_len(seg):
     return seg['end'] - seg['start'] + 1
 
 
+def _published_md5(url):
+    '''Fetch `<url>.md5` and return (md5, snapshot_name) or None.
+
+    Geofabrik publishes this next to every PBF, and its body names the DATED
+    file, e.g. `b25eb2ab...  europe-260906.osm.pbf`. That makes it a cheap,
+    exact SNAPSHOT IDENTITY - which is what lets a mirror be adopted for a
+    resume without downloading a byte first. Mirrors of the Geofabrik tree
+    (e.g. GWDG) mirror this sidecar too.
+
+    Best-effort by design: a source without the sidecar is not an error, it
+    just cannot be proven identical.
+    '''
+    try:
+        r = _session.get(url + '.md5', timeout=(30, 60), allow_redirects=True)
+        if r.status_code != 200 or not r.text.strip():
+            return None
+        parts = r.text.strip().split()
+    except Exception as exc:
+        logger.info('md5 sidecar fetch failed for %s.md5: %s', url, exc)
+        return None
+    if not parts or len(parts[0]) != 32:
+        return None
+    return parts[0].lower(), (parts[1] if len(parts) > 1 else '')
+
+
+def _sidecar_adoptable(data, url, total):
+    '''May the resume state described by `data` be continued from `url`?
+
+    THIS IS THE SAFETY GATE FOR MIRROR FAILOVER. The sidecar is keyed to the
+    URL that created it, so continuing from a different host means splicing new
+    byte ranges onto segments fetched from the old one. That is only sound if
+    both hosts serve the SAME SNAPSHOT. OSM extracts are republished
+    frequently, and mirrors lag by hours to days, so "a mirror" and "the same
+    bytes" are very different claims.
+
+    Getting this wrong is expensive rather than silently corrupting:
+    _validate_pbf_md5 does catch a spliced file, but only after the whole
+    transfer completes, and _purge_download_state then deletes the file, the
+    sidecar and every segment - so hours of transfer become a total loss
+    detected at the very end. Hence: prove identity BEFORE fetching.
+
+    Returns True to adopt. Raises to REFUSE while keeping every staged byte
+    (the primary may come back). Never returns False - a caller that could not
+    adopt must not silently re-plan, because re-planning orphans the segments.
+    '''
+    if data.get('url') == url:
+        return True
+
+    recorded = data.get('md5')
+    published = _published_md5(url)
+    if recorded and published:
+        if published[0] == recorded:
+            logger.warning(
+                'adopting resume state across hosts: %s serves the same '
+                'snapshot (md5 %s, %s) as the staged segments',
+                url, recorded, data.get('snapshot') or 'unknown')
+            return True
+        raise RuntimeError(
+            'refusing to resume from %s: it serves snapshot %s (md5 %s) but the '
+            'staged resume state is snapshot %s (md5 %s). Splicing two '
+            'snapshots produces a corrupt PBF, so every downloaded byte is '
+            'being kept for the original host instead. To restart from this '
+            'host, delete the resume state for this region.'
+            % (url, published[1] or 'unknown', published[0],
+               data.get('snapshot') or 'unknown', recorded))
+
+    # No recorded md5: every sidecar written before snapshot identity was
+    # tracked, which on a live account includes any download already in flight.
+    # Fall back to exact total equality. Weaker, but two DIFFERENT OSM extracts
+    # sharing a byte length to the byte is not a realistic collision, and
+    # _validate_pbf_md5 still gates the finished file before ORS ever sees it.
+    if total and data.get('total') == total:
+        logger.warning(
+            'adopting resume state across hosts on TOTAL match only (%d bytes); '
+            'the staged sidecar predates snapshot tracking so md5 identity '
+            'could not be checked for %s', total, url)
+        return True
+
+    raise RuntimeError(
+        'refusing to resume from %s: cannot prove it serves the same snapshot '
+        'as the staged resume state (no recorded md5, and total %s does not '
+        'match the staged %s). Staged bytes are kept.'
+        % (url, total, data.get('total')))
+
+
 def _load_sidecar(sidecar, url, total):
     if not os.path.exists(sidecar):
         return None
     try:
         with open(sidecar) as f:
             data = json.load(f)
-        if (data.get('url') == url and data.get('total') == total
-                and isinstance(data.get('segments'), list)
-                and data['segments']):
+        if (isinstance(data.get('segments'), list) and data['segments']
+                and data.get('total') == total
+                and _sidecar_adoptable(data, url, total)):
             return data['segments']
+    except RuntimeError:
+        # A refusal from the adoption gate is deliberate and must propagate:
+        # returning None here would re-plan the segments and orphan every
+        # completed file, which is exactly the loss the gate exists to prevent.
+        raise
     except Exception as exc:
         logger.warning('Ignoring unreadable sidecar %s: %s', sidecar, exc)
     return None
 
 
-def _write_sidecar(sidecar, url, total, segments):
+def _write_sidecar(sidecar, url, total, segments, md5=None, snapshot=None):
     # Small file; write directly (a torn write is tolerable because resume also
     # validates each segment file's on-disk size). Avoids rename churn on the
     # object-store mount.
+    payload = {'url': url, 'total': total, 'segments': segments}
+    # Carried so a later resume from a MIRROR can prove snapshot identity
+    # without trusting the URL. Absent on sidecars written by older builds,
+    # which _sidecar_adoptable handles explicitly.
+    if md5:
+        payload['md5'] = md5
+    if snapshot:
+        payload['snapshot'] = snapshot
     with open(sidecar, 'w') as f:
-        json.dump({'url': url, 'total': total, 'segments': segments}, f)
+        json.dump(payload, f)
 
 
 def _download_segment(url, seg_file, seg, seg_lock):
@@ -396,20 +494,43 @@ def _download_ranged(url, file_path, total):
     sidecar = _sidecar_path(file_path)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
+    # Snapshot identity already recorded, if any. Read BEFORE _load_sidecar so
+    # it survives the resume: every later flush rewrites the sidecar, and
+    # dropping these keys would make the next mirror failover unverifiable.
+    prior = {}
+    if os.path.exists(sidecar):
+        try:
+            with open(sidecar) as f:
+                prior = json.load(f) or {}
+        except Exception:
+            prior = {}
+    ident_md5 = prior.get('md5')
+    ident_snapshot = prior.get('snapshot')
+
     segments = _load_sidecar(sidecar, url, total)
     if segments is None:
         segments = _plan_segments(total)
-        _write_sidecar(sidecar, url, total, segments)
-        logger.info('Starting ranged download %s (%d bytes, %d segments)',
-                    file_path, total, len(segments))
+        # Fresh plan: this host defines the snapshot, so record ITS identity.
+        # On a resume we deliberately keep the ORIGINAL recording instead - it
+        # is the thing a later mirror is checked against, and re-recording from
+        # whichever host is serving now would turn an unverified total-only
+        # adoption into a claim of verified identity.
+        if not ident_md5:
+            published = _published_md5(url)
+            if published:
+                ident_md5, ident_snapshot = published
+        _write_sidecar(sidecar, url, total, segments, ident_md5, ident_snapshot)
+        logger.info('Starting ranged download %s (%d bytes, %d segments, '
+                    'snapshot %s)', file_path, total, len(segments),
+                    ident_snapshot or 'unknown')
     else:
         # NOTE: an existing sidecar's plan is reused VERBATIM, even if it was
         # written by an older build with a different segment size. That is
         # deliberate: re-planning would orphan every completed segment file and
         # discard tens of GB of good bytes on a resume.
         done = sum(min(s['done'], _seg_len(s)) for s in segments)
-        logger.info('Resuming ranged download %s (~%d/%d bytes, %d segments)',
-                    file_path, done, total, len(segments))
+        logger.info('Resuming ranged download %s (~%d/%d bytes, %d segments) '
+                    'from %s', file_path, done, total, len(segments), url)
 
     seg_lock = threading.Lock()
     stop_flusher = threading.Event()
@@ -417,7 +538,7 @@ def _download_ranged(url, file_path, total):
     def _flush():
         with seg_lock:
             snapshot = [dict(s) for s in segments]
-        _write_sidecar(sidecar, url, total, snapshot)
+        _write_sidecar(sidecar, url, total, snapshot, ident_md5, ident_snapshot)
         done = sum(min(s['done'], _seg_len(s)) for s in snapshot)
         _set_progress(file_path, done, total)
         logger.info('Download progress %s: %d/%d bytes (%d%%)',
@@ -524,8 +645,10 @@ def _sidecar_total(file_path, url):
     times each) then become the arbiter of origin health, and a 91%-complete
     34 GB transfer is no longer abandoned because of a probe blip.
 
-    The url must match: a sidecar recorded against a different URL says nothing
-    about this one's length, and a wrong `total` would mis-plan every segment.
+    A mirror is allowed here too, but ONLY on recorded-md5 identity: with the
+    probe already inconclusive we have no Content-Range total to compare, so the
+    total-equality fallback in _sidecar_adoptable cannot apply and a
+    same-snapshot claim has to be proven by checksum.
     '''
     sidecar = _sidecar_path(file_path)
     if not os.path.exists(sidecar):
@@ -536,12 +659,14 @@ def _sidecar_total(file_path, url):
     except Exception as exc:
         logger.warning('Ignoring unreadable sidecar %s: %s', sidecar, exc)
         return None
-    if data.get('url') != url:
-        return None
     total = data.get('total')
-    if isinstance(total, int) and total > 0:
-        return total
-    return None
+    if not (isinstance(total, int) and total > 0):
+        return None
+    # Passing total=None deliberately disables the total-equality branch, so a
+    # cross-host adoption on this path needs a matching md5. Raises to refuse.
+    if not _sidecar_adoptable(data, url, None):
+        return None
+    return total
 
 
 def _download_file(url, file_path):
@@ -640,29 +765,23 @@ def _file_md5(file_path):
 
 
 def _validate_pbf_md5(url, file_path):
-    '''Best-effort checksum check against Geofabrik's `<url>.md5` sidecar.
+    '''Best-effort checksum check against the `<url>.md5` sidecar.
 
-    Geofabrik publishes `<pbf>.md5` next to every PBF. If it is reachable we
-    verify it (authoritative corruption detector). If the sidecar is missing
-    or unreachable, we skip -- magic-byte + size-band checks still apply.
+    If it is reachable we verify it (authoritative corruption detector). If the
+    sidecar is missing or unreachable, we skip -- magic-byte + size-band checks
+    still apply.
+
+    This is also the backstop for mirror failover: if a resume ever did splice
+    two snapshots, the assembled file matches neither host's checksum and is
+    rejected here before ORS is handed it. _sidecar_adoptable exists so that
+    outcome stays theoretical, because the rejection costs the whole transfer.
     '''
-    md5_url = url + '.md5'
-    try:
-        r = _session.get(md5_url, timeout=(30, 60), allow_redirects=True)
-        if r.status_code != 200 or not r.text.strip():
-            logger.info('No usable md5 sidecar at %s (HTTP %d); skipping '
-                        'checksum verification', md5_url, r.status_code)
-            return
-        expected = r.text.strip().split()[0].lower()
-    except Exception as exc:
-        logger.info('md5 sidecar fetch failed for %s: %s; skipping checksum',
-                    md5_url, exc)
+    published = _published_md5(url)
+    if not published:
+        logger.info('No usable md5 sidecar for %s; skipping checksum '
+                    'verification', url)
         return
-
-    if len(expected) != 32:
-        logger.info('md5 sidecar for %s not a valid hash (%r); skipping',
-                    md5_url, expected)
-        return
+    expected = published[0]
 
     actual = _file_md5(file_path)
     if actual != expected:
