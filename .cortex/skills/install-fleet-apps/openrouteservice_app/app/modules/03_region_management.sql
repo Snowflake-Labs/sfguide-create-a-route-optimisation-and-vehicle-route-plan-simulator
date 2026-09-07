@@ -307,10 +307,29 @@ BEGIN
 
                 IF (LOWER(TRIM(:pbf_dl_status)) = 'success') THEN
                     BREAK;
-                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')) THEN
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress')) THEN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...'
                     WHERE JOB_ID = :P_JOB_ID;
+                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) = 'not_started') THEN
+                    -- 'not_started' means NO worker thread owns this target.
+                    -- The downloader's job registry is in-memory, so any
+                    -- container restart (a spec redeploy, an OOM, a node move)
+                    -- erases it while the segment files and sidecar persist on
+                    -- the stage -- and _resolve_status then reports
+                    -- 'not_started' precisely so the next trigger resumes. This
+                    -- loop used to merely WAIT on that status, so a mid-flight
+                    -- restart left the job polling an idle downloader for the
+                    -- full 11h ceiling and then timing out with nothing running.
+                    -- Re-trigger instead: DOWNLOAD is idempotent (a live job is
+                    -- not restarted, a finished file returns 'success') and the
+                    -- resume skips completed segments.
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET MESSAGE = 'PBF download idle (no worker); (re)starting resume at poll ' ||
+                                  :poll_i || '/1320...'
+                    WHERE JOB_ID = :P_JOB_ID;
+                    EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
                     -- The downloader reported an error. This is RETRYABLE, not
