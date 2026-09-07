@@ -1030,6 +1030,11 @@ BEGIN
     SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
         'job_id', JOB_ID, 'region', REGION, 'display_name', COALESCE(DISPLAY_NAME, REGION),
         'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
+        -- COMPUTE_SIZE is emitted so a Retry can reuse the size the failed job
+        -- actually ran with. Without it the UI fell back to a recommendation
+        -- derived from the region's level, silently downgrading an operator's
+        -- deliberate choice (e.g. XXL) on every retry.
+        'compute_size', COALESCE(COMPUTE_SIZE, ''),
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
         'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',

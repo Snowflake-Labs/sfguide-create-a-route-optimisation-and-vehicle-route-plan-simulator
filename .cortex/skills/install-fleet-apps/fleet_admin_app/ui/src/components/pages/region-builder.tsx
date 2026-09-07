@@ -117,7 +117,14 @@ export function RegionBuilderPage() {
       setSelectedRegion(match);
       const profiles = job.profiles ? job.profiles.split(',').map((p) => p.trim()).filter(Boolean) : DEFAULT_PROFILES;
       setSelectedProfiles(profiles);
-      setComputeSize(recommendComputeSize(match.level));
+      // Reuse the size the failed job ran with, matching onRerunHistory below.
+      // Recomputing from the region level silently downgraded a deliberate XXL
+      // choice on every retry, so the retry did not reproduce the failed build.
+      if (job.compute_size === 'S' || job.compute_size === 'L' || job.compute_size === 'XXL') {
+        setComputeSize(job.compute_size);
+      } else {
+        setComputeSize(recommendComputeSize(match.level));
+      }
     }
   }, [cat.catalog]);
 

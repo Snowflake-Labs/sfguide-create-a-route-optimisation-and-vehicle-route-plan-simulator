@@ -43,6 +43,9 @@ export interface ProvisionJob {
   region: string;
   display_name: string;
   profiles: string;
+  // The size the job actually ran with. Optional because rows returned by an
+  // older GET_PROVISION_STATUS do not carry it.
+  compute_size?: string;
   status: string;
   stage: string;
   message: string;
