@@ -61,6 +61,15 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version"
 -- transfers, which are precisely the ones where failover is worth anything;
 -- a small extract downloads in minutes and simply retries its origin.
 --
+-- PATH_REWRITE_FROM / PATH_REWRITE_TO exist because a mirror need not preserve
+-- the origin's LAYOUT. GWDG stores its files FLAT while Geofabrik nests Germany:
+-- the origin path is /europe/germany-latest.osm.pbf but the mirror has
+-- /germany-latest.osm.pbf. A pure host-prefix swap therefore cannot reach it,
+-- which is how the first version of this table shipped a `germany` alternative
+-- in PATH_REGEX that matched 0 of 555 catalog regions - inert config that read
+-- as working coverage. When the pair is NULL the path passes through unchanged,
+-- so the primary row and any path-preserving mirror are unaffected.
+--
 -- Priority 1 is the PRIMARY itself (mapped to its own host) so the whole
 -- ordered candidate list lives in one place and the failover order is readable
 -- without also reading code.
@@ -74,35 +83,74 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS (
     SOURCE_HOST  VARCHAR NOT NULL,    -- upstream host this row applies to
     MIRROR_BASE  VARCHAR NOT NULL,    -- scheme+host+path prefix replacing the origin
     PATH_REGEX   VARCHAR,             -- NULL = every path; else only matching paths
+    PATH_REWRITE_FROM VARCHAR,        -- NULL = path passes through unchanged
+    PATH_REWRITE_TO   VARCHAR,        -- replacement applied to the origin path
     ENABLED      BOOLEAN DEFAULT TRUE,
     NOTE         VARCHAR,
     UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}';
 
+-- The table is CREATE ... IF NOT EXISTS, so a deployment that already has it
+-- would never gain the rewrite columns from the definition above. Add them
+-- explicitly; both are no-ops on a fresh install.
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_FROM VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_TO VARCHAR;
+
 -- Seeded with MERGE, not INSERT: this module is re-run by every install and a
 -- bare INSERT would duplicate the rows on each pass (and duplicates would
--- produce duplicate download candidates). MERGE also preserves an operator's
--- ENABLED / NOTE edits across re-installs, which is the point of the table.
+-- produce duplicate download candidates).
+--
+-- Ownership is SPLIT, and the WHEN MATCHED clause is where that is enforced:
+--   code-owned  - MIRROR_BASE, PATH_REGEX, PATH_REWRITE_*, NOTE. These describe
+--                 what a mirror factually carries, so a newer build must be able
+--                 to correct them. Insert-only was wrong: the first seed shipped
+--                 a PATH_REGEX matching 0 regions and a NOTE claiming three-file
+--                 coverage, and an already-seeded row would have kept both
+--                 forever while looking configured.
+--   operator-owned - ENABLED. Deliberately NOT in the UPDATE list, so a mirror an
+--                 operator switched off stays off across re-installs. Overwriting
+--                 it would silently re-enable a source they had rejected.
 MERGE INTO OPENROUTESERVICE_APP.CORE.PBF_MIRRORS t
 USING (
     SELECT 1 AS PRIORITY, 'download.geofabrik.de' AS SOURCE_HOST,
            'https://download.geofabrik.de' AS MIRROR_BASE,
            NULL AS PATH_REGEX,
+           NULL AS PATH_REWRITE_FROM,
+           NULL AS PATH_REWRITE_TO,
            'Primary origin. Serves the full tree.' AS NOTE
     UNION ALL
     SELECT 2, 'download.geofabrik.de',
            'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de',
-           '^/(europe|germany|north-america)-latest\\.osm\\.pbf$',
-           'PARTIAL Geofabrik mirror (GWDG): carries ONLY those three extracts, '
-           || 'verified 2026-09-07 (europe md5 matched the origin byte for byte; '
-           || 'africa-latest 404s). Widen PATH_REGEX if it grows. Note '
-           || 'ftp2.de.freebsd.org is NOT an independent alternative - it '
-           || 'redirects here and its TLS cert does not match its hostname.'
+           -- Exactly the three files the mirror carries. Germany is matched at
+           -- its ORIGIN path (nested under /europe/) and rewritten below;
+           -- matching it flat here is what made the branch dead.
+           '^/(europe|north-america)-latest\\.osm\\.pbf$|^/europe/germany-latest\\.osm\\.pbf$',
+           '^/europe/germany-latest\\.osm\\.pbf$',
+           '/germany-latest.osm.pbf',
+           'PARTIAL Geofabrik mirror (GWDG), FLAT layout. Carries exactly three '
+           || 'files: europe-latest, north-america-latest, germany-latest '
+           || '(verified 2026-09-07; africa-latest and europe/monaco 404). '
+           || 'Germany needs the path rewrite because the origin nests it under '
+           || '/europe/. Measured as fast as the origin, not faster, so this is '
+           || 'a FAILOVER not a preferred source. Note ftp2.de.freebsd.org is '
+           || 'NOT an independent alternative - it redirects here and its TLS '
+           || 'cert does not match its hostname.'
 ) s
 ON t.PRIORITY = s.PRIORITY AND t.SOURCE_HOST = s.SOURCE_HOST
-WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, PATH_REGEX, ENABLED, NOTE)
-    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, s.PATH_REGEX, TRUE, s.NOTE);
+WHEN MATCHED THEN UPDATE SET
+    MIRROR_BASE       = s.MIRROR_BASE,
+    PATH_REGEX        = s.PATH_REGEX,
+    PATH_REWRITE_FROM = s.PATH_REWRITE_FROM,
+    PATH_REWRITE_TO   = s.PATH_REWRITE_TO,
+    NOTE              = s.NOTE,
+    UPDATED_AT        = SYSDATE()
+WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, PATH_REGEX,
+                              PATH_REWRITE_FROM, PATH_REWRITE_TO, ENABLED, NOTE)
+    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, s.PATH_REGEX,
+            s.PATH_REWRITE_FROM, s.PATH_REWRITE_TO, TRUE, s.NOTE);
 
 -- Candidate download URLs for a PBF, in failover order.
 --
@@ -124,7 +172,15 @@ $$
         SELECT COALESCE(
             (
                 SELECT ARRAY_AGG(m.MIRROR_BASE
-                                 || REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1))
+                                 -- The path is REWRITTEN, not just re-hosted: a
+                                 -- mirror may flatten the origin's layout (GWDG
+                                 -- does). NULL rewrite = pass through.
+                                 || IFF(m.PATH_REWRITE_FROM IS NULL,
+                                        REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                        REGEXP_REPLACE(
+                                            REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                            m.PATH_REWRITE_FROM,
+                                            COALESCE(m.PATH_REWRITE_TO, ''))))
                          WITHIN GROUP (ORDER BY m.PRIORITY)
                 FROM OPENROUTESERVICE_APP.CORE.PBF_MIRRORS m
                 WHERE m.ENABLED
