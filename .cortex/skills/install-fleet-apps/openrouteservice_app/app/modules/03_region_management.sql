@@ -302,7 +302,15 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     -- safely relaunch a build whose procedure died mid-download. Read by
     -- V_DOWNLOAD_RELAUNCH_CANDIDATES. NULL means "this job predates the
     -- heartbeat" and is deliberately treated as NOT eligible for relaunch.
-    HEARTBEAT_AT TIMESTAMP_NTZ
+    HEARTBEAT_AT TIMESTAMP_NTZ,
+    -- The URL the download was ACTUALLY served from, which is not necessarily
+    -- PBF_URL: on an origin outage PROVISION_REGION_WRAPPER rotates to a mirror
+    -- from CORE.PBF_MIRRORS. PBF_URL keeps the canonical catalog value (what we
+    -- intended) and this keeps what delivered the bytes; overwriting PBF_URL
+    -- would destroy the former. Before this column the rotation lived only in a
+    -- procedure-local variable, so during the 2026-09-07 outage there was no way
+    -- to tell from the app which host was in use.
+    PBF_URL_USED VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}';
 
@@ -326,6 +334,15 @@ EXECUTE IMMEDIATE $$
 BEGIN
     ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         ADD COLUMN HEARTBEAT_AT TIMESTAMP_NTZ;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- And again for the effective download URL. Own block for the same reason.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN PBF_URL_USED VARCHAR;
 EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
 END;
 $$;
@@ -730,6 +747,11 @@ BEGIN
             dl_candidates := OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(:P_PBF_URL);
             dl_host_i := 0;
             dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+            -- Record the effective host up front, so an in-flight job shows a
+            -- source rather than a blank until the first rotation.
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET PBF_URL_USED = :dl_url
+            WHERE JOB_ID = :P_JOB_ID;
             EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
 
             -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
@@ -840,6 +862,9 @@ BEGIN
                                       || ' (retry ' || :dl_attempt ||
                                       ', poll ' || :poll_i || '/1320): ' ||
                                       LEFT(COALESCE(:pbf_dl_status, ''), 200),
+                            -- Kept in step with dl_url so the UI's source column
+                            -- reflects the host now serving, not the first one.
+                            PBF_URL_USED = :dl_url,
                             HEARTBEAT_AT = SYSDATE()
                         WHERE JOB_ID = :P_JOB_ID;
                         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(60)';
@@ -1317,6 +1342,11 @@ BEGIN
         -- derived from the region's level, silently downgrading an operator's
         -- deliberate choice (e.g. XXL) on every retry.
         'compute_size', COALESCE(COMPUTE_SIZE, ''),
+        -- Both, deliberately: PBF_URL is the canonical catalog source and
+        -- PBF_URL_USED is the host that actually served the bytes. The UI shows
+        -- the latter and flags it as a mirror when the two differ.
+        'pbf_url', COALESCE(PBF_URL, ''),
+        'pbf_url_used', COALESCE(PBF_URL_USED, ''),
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
         'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
