@@ -9,6 +9,11 @@ export const Codes = {
   WRONG_STATE_FOR_VERB: 'WRONG_STATE_FOR_VERB',
   INSUFFICIENT_ROLE:    'INSUFFICIENT_ROLE',
   NOT_FOUND:            'NOT_FOUND',
+  /**
+   * LOCAL PATCH (see VENDOR.md): another attempt with the same idempotency key
+   * is still in flight, so this call refused to execute rather than duplicate it.
+   */
+  CONCURRENT_ATTEMPT:   'CONCURRENT_ATTEMPT',
   UNKNOWN:              'UNKNOWN',
 } as const;
 

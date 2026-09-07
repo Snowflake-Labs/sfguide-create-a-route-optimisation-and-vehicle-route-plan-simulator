@@ -92,4 +92,77 @@ describe('envelope', () => {
     expect(sink.events).toHaveLength(1);
     expect(sink.events[0]?.outcome).toBe('error');
   });
+
+  // Idempotency claim (LOCAL PATCH, see VENDOR.md). The guard exists because
+  // checkReplay is a read-before-write with no lock, so two concurrent callers
+  // sharing a key would both miss and both execute.
+  describe('idempotency claim', () => {
+    let executed = 0;
+    const counter = defineProc({
+      name: 'counter',
+      args:    { x: t.string() },
+      returns: { ok: t.boolean() },
+      execute: async () => { executed++; return { ok: true }; },
+    });
+
+    it('winning the claim proceeds to execute', async () => {
+      executed = 0;
+      const sink = mockSink({ claim: true });
+      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
+
+      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).resolves.toEqual({ ok: true });
+      expect(sink.claims).toBe(1);
+      expect(executed).toBe(1);
+    });
+
+    it('losing the claim does NOT execute, and replays the winner result', async () => {
+      executed = 0;
+      const sink = mockSink({
+        claim: false,
+        replay: null,
+        replayOnRace: {
+          replayed: true, outcome: 'ok',
+          result_hash: 'winner-hash', error_code: null, error_message: null,
+        },
+      });
+      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
+
+      const out = await rt.counter({ x: 'a' }, { idempotency_key: 'k1' });
+      expect(out).toEqual({ replayed: true, result_hash: 'winner-hash' });
+      expect(executed).toBe(0);
+    });
+
+    it('losing the claim with the winner still in flight refuses rather than double-executing', async () => {
+      executed = 0;
+      const sink = mockSink({ claim: false, replay: null, replayOnRace: null });
+      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
+
+      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).rejects.toMatchObject({
+        code: 'CONCURRENT_ATTEMPT',
+      });
+      expect(executed).toBe(0);
+      // The refusal is itself audited as an error.
+      expect(sink.events).toHaveLength(1);
+      expect(sink.events[0]?.error_code).toBe('CONCURRENT_ATTEMPT');
+    });
+
+    it('no idempotency key means no claim statement at all (agent steady state)', async () => {
+      executed = 0;
+      const sink = mockSink({ claim: true });
+      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
+
+      await expect(rt.counter({ x: 'a' })).resolves.toEqual({ ok: true });
+      expect(sink.claims).toBe(0);
+      expect(executed).toBe(1);
+    });
+
+    it('a sink without claim support still executes (upstream compatibility)', async () => {
+      executed = 0;
+      const sink = mockSink();
+      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
+
+      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).resolves.toEqual({ ok: true });
+      expect(executed).toBe(1);
+    });
+  });
 });

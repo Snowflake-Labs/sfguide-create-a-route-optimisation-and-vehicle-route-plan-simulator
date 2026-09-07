@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { defineProc, t } from '../../src/index.js';
 import { procDDL, sqlType, quoteArg, argsCaptureSuffix } from '../../src/build/ddl.js';
+import { claimTableDDL } from '../../src/ddl.js';
 
 const sample = defineProc({
   name: 'sample',
@@ -103,6 +104,31 @@ describe('DDL emitter', () => {
       expect(suffix).toContain('"group": GROUP');
       expect(suffix).toContain('"comment": COMMENT');
       expect(suffix).toContain('return __synapseEntry(__args, IDEMPOTENCY_KEY);');
+    });
+  });
+
+  // LOCAL PATCH (see VENDOR.md): idempotency claim table.
+  describe('claimTableDDL', () => {
+    it('emits a HYBRID TABLE by default - a standard table cannot enforce the PK', () => {
+      expect(claimTableDDL()).toContain('CREATE HYBRID TABLE IF NOT EXISTS verb_claim');
+    });
+
+    it('makes the idempotency triple the PRIMARY KEY', () => {
+      expect(claimTableDDL()).toContain('PRIMARY KEY (actor, verb, idempotency_key)');
+    });
+
+    it('uses TIMESTAMP_NTZ, since a hybrid index rejects TIMESTAMP_TZ', () => {
+      const ddl = claimTableDDL();
+      expect(ddl).toContain('claimed_at      TIMESTAMP_NTZ NOT NULL');
+      expect(ddl).not.toContain('TIMESTAMP_TZ');
+    });
+
+    it('carries the tracking COMMENT tag required by AGENTS.md', () => {
+      expect(claimTableDDL()).toContain('"origin":"sf_sit-is-fleet"');
+    });
+
+    it('can be downgraded to a standard table', () => {
+      expect(claimTableDDL({ hybrid: false })).toContain('CREATE TABLE IF NOT EXISTS verb_claim');
     });
   });
 });

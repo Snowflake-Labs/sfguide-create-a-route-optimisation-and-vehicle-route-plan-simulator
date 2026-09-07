@@ -86,6 +86,30 @@ export async function runEnvelope<TArgs, TReturns>(
     }
 
     if (proc.validate) await proc.validate(parsedArgs, ctx);
+
+    // LOCAL PATCH (see VENDOR.md): stake an exclusive claim before executing.
+    // `checkReplay` above is a read-before-write with no lock, so without this
+    // two concurrent calls sharing an idempotency key both miss and both
+    // execute. Losing the claim means someone else owns this key: re-check for a
+    // terminal row (the winner may have finished in between) and replay it,
+    // otherwise refuse rather than double-execute a mutating verb.
+    if (audit.claim && idempotencyKey) {
+      const won = await audit.claim(conn, ident, proc.name, idempotencyKey);
+      if (!won) {
+        const raced = await audit.checkReplay(conn, ident, proc.name, idempotencyKey, parsedArgs);
+        if (raced) {
+          if (raced.outcome === 'error') {
+            throw new SynapseError(raced.error_code ?? 'UNKNOWN', raced.error_message ?? '');
+          }
+          return { replayed: true, result_hash: raced.result_hash };
+        }
+        fail(
+          'CONCURRENT_ATTEMPT',
+          `another attempt with idempotency_key '${idempotencyKey}' for verb '${proc.name}' is still in flight`,
+        );
+      }
+    }
+
     const rawResult = await proc.execute(parsedArgs, ctx);
     const parsedResult = parseRecord(
       proc.returns as { [K in keyof TReturns]: Schema<TReturns[K]> } as Record<string, Schema<unknown>>,

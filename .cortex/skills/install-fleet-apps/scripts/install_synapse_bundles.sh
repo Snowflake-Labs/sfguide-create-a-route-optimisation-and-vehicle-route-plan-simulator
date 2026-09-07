@@ -111,6 +111,15 @@ grep -q "roles.deploy" "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the 'deploy' deploy-role precedence (see vendor/synapse/VENDOR.md). Without it install.sql runs USE ROLE <consumer app role> and fails on CREATE OR REPLACE HYBRID TABLE verb_attempt, deploying nothing."; exit 1; }
 grep -q "CREATE SCHEMA IF NOT EXISTS \${cfg.schema} COMMENT = " "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the COMMENT tracking tag on the bundle CREATE DATABASE/SCHEMA (see vendor/synapse/VENDOR.md). On a fresh account that leaves the bundle schema untagged, and the schema is the tracking proxy for the untaggable CREATE MCP SERVER."; exit 1; }
+# Idempotency claim guard (patch 06). Two separate things to prove, because each
+# fails SILENTLY on its own: the claim table must be emitted as a HYBRID table
+# (a standard table does not enforce PRIMARY KEY, so the claim would always
+# succeed and the double-execution guard would quietly do nothing), and the
+# envelope must actually call it before execute().
+grep -q "PRIMARY KEY (actor, verb, idempotency_key)" "$VENDOR_DIR/dist/ddl.js" \
+  || { echo "ERROR: built synapse codegen is missing the verb_claim idempotency table (see vendor/synapse/VENDOR.md patch 06). Without it two concurrent calls sharing an idempotency_key both execute a mutating verb."; exit 1; }
+grep -q "CONCURRENT_ATTEMPT" "$VENDOR_DIR/dist/runtime/envelope.js" \
+  || { echo "ERROR: built synapse envelope is missing the pre-execute idempotency claim (see vendor/synapse/VENDOR.md patch 06). The claim table would be created but never consulted."; exit 1; }
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(

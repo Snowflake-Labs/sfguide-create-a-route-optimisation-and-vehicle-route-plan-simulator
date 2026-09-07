@@ -36,10 +36,16 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Five deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Six deviations from upstream, plus two new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
-replayable record and are already applied to this tree. Patches are scoped by FILE, not
-by concern, so `git apply` never has two patches editing the same file.
+replayable record and are already applied to this tree. Patches 01-05 are scoped by FILE,
+not by concern, so `git apply` never has two of them editing the same file.
+
+**Patch 06 is the documented exception.** It is scoped by CONCERN (one behavioral change
+spanning nine files, several already touched by 01-05), because the change is not
+separable by file without splitting one guard across five patches. It is a diff of the
+post-01-05 tree, so it MUST be applied last - `git apply patches/*.patch` does that
+naturally, since shell glob order is lexicographic. Do not reorder it.
 
 ### patches/01-tracking-tags.patch
 
@@ -196,6 +202,48 @@ Note this does NOT cover verbs invoked through the Snowflake-managed MCP server:
 that session is not code-controlled, so no change here can tag it. The deployed
 procedures carry their own COMMENT tag instead.
 
+### patches/06-idempotency-claim.patch
+
+Files: `src/ddl.ts`, `src/audit.ts`, `src/errors.ts`, `src/runtime/envelope.ts`,
+`src/runtime/sproc.ts`, `src/build/install-sql.ts`, `src/build/bundle.ts`,
+`src/cli/materialize.ts`, `src/testing/index.ts`, plus tests.
+
+Closes a double-execution race in the idempotency path. `checkReplay` in `audit.ts` is a
+read-before-write with no transaction, no lock, and no unique constraint, so two concurrent
+calls carrying the same `(actor, verb, idempotency_key)` both miss the replay check and both
+run `execute()`. For the mutating verbs (`service_control`, `drop_region`, `activate_dataset`)
+that is exactly the duplicate idempotency is supposed to prevent. Nothing upstream
+acknowledges it.
+
+This cannot be fixed with a `UNIQUE` constraint on `verb_attempt`, because that table
+intentionally holds MULTIPLE rows per key (the original `ok`/`error` plus one
+`idempotent_replay` per repeat). So the claim gets its own table, `verb_claim`, whose
+PRIMARY KEY *is* the idempotency triple, and the insert happens BEFORE `execute()`: first
+caller wins, the loser re-checks for a terminal row and replays it, or fails
+`CONCURRENT_ATTEMPT` rather than re-executing.
+
+The guard only works on a HYBRID table - a standard Snowflake table does not enforce
+PRIMARY KEY, so the insert would always succeed and the claim would silently do nothing.
+Measured on wgb26798: the hybrid table rejects the duplicate with `A primary key already
+exists.`, while the same DDL as a standard table accepts both rows. `claimTableDDL()`
+therefore follows the audit table's `hybrid` flag, and the degradation is documented rather
+than hidden.
+
+Two incidental properties worth preserving on a re-vendor:
+
+- `AuditSink.claim` is OPTIONAL, so a sink written against the upstream interface still
+  satisfies the type and keeps the old behavior. The envelope calls it only when present
+  AND an idempotency key was supplied.
+- Zero added cost on the agent path. The Cortex Agent MCP server omits `idempotency_key`
+  (see `../../references/synapse-bundles.md`), so `claim` returns early without a statement.
+  Independently, this patch also folds the separate `SELECT SHA2(?)` round trip into the
+  audit `INSERT`, taking the success path from 3 statements to 2.
+
+`verb_claim` needs no extra grant: every generated proc is `EXECUTE AS OWNER`, so the owner
+writes it, exactly as for `verb_attempt`. Rows outlive the 24h replay window and are NOT
+pruned on the request path (that would add a statement per verb); prune out of band with
+`DELETE FROM <schema>.verb_claim WHERE claimed_at < DATEADD(day, -7, CURRENT_TIMESTAMP());`.
+
 ## Re-vendoring procedure
 
 1. Check whether upstream `packages/synapse` actually changed since the pinned SHA. If not, stop.
@@ -205,7 +253,11 @@ procedures carry their own COMMENT tag instead.
    git apply patches/*.patch
    ```
    If a patch does not apply, reseat it by hand - upstream may have moved the code - then regenerate the patch file by diffing this tree against the fresh upstream copy.
-4. `npm install && npm run build && npm test` (expect 72 passing).
+4. `npm install && npm run build && npm test` (expect 82 passing).
 5. Re-materialize and re-deploy the three bundles, then **recreate the agents** (`synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so agents bound to the old server go stale).
-6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL.
+6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL. Also assert BOTH hybrid tables are emitted and fully qualified (`verb_attempt` and `verb_claim`) and that no `__SYNAPSE_` placeholder survived - an unsubstituted `__SYNAPSE_CLAIM_TABLE__` would ship as a literal table NAME:
+   ```bash
+   grep -c '__SYNAPSE' install.sql          # must be 0
+   grep -n 'verb_claim (' install.sql       # must be db.schema-qualified
+   ```
 7. Update the pinned commit and date in this file.
