@@ -58,6 +58,14 @@ export const region_status = defineProc({
         `SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
              'job_id', JOB_ID, 'region', REGION, 'status', STATUS, 'stage', STAGE,
              'message', MESSAGE, 'error', ERROR_MSG, 'compute_size', COMPUTE_SIZE,
+             -- Which host served the PBF. pbf_url is the canonical catalog
+             -- source; pbf_url_used is what actually delivered the bytes, and
+             -- they differ when the wrapper failed over to a mirror. Without
+             -- these the admin UI could answer "which mirror served this build"
+             -- and the ops agent could not, which is the UI/agent split the
+             -- agent-aware tenet exists to prevent - and the agent is exactly
+             -- what someone asks during an outage.
+             'pbf_url', PBF_URL, 'pbf_url_used', PBF_URL_USED,
              'created_at', TO_VARCHAR(CREATED_AT), 'started_at', TO_VARCHAR(STARTED_AT),
              'completed_at', TO_VARCHAR(COMPLETED_AT)
            )) WITHIN GROUP (ORDER BY CREATED_AT DESC), ARRAY_CONSTRUCT())::STRING
