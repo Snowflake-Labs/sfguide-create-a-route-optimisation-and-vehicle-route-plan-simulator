@@ -216,24 +216,140 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEE
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
-GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.CORE TO ROLE FLEET_APP_OPS;
-GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.OBSERVABILITY TO ROLE FLEET_APP_OPS;
-GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.TRAVEL_MATRIX TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_CATALOG TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS TO ROLE FLEET_APP_OPS;
+-- ---------------------------------------------------------------------------
+-- Engine (OPENROUTESERVICE_APP) reads for the ops role - INDIVIDUALLY GUARDED.
+-- ---------------------------------------------------------------------------
+-- A `--no-engine` install never runs scripts/provision_engine.sh, so most of the
+-- objects below do not exist when this file runs at install step 8. What DOES
+-- exist on such an account: the database + CORE schema + CORE.REGION_CATALOG
+-- (scripts/seed_data.sql), the OBSERVABILITY schema + ORS_REQUEST_LOG (admin app
+-- boot, step 7), and the ROUTING schema + VERB_ATTEMPT (synapse bundles install
+-- inert). Absent: the whole TRAVEL_MATRIX schema (provision_engine.sh) plus
+-- REGION_ORS_MAP / REGION_PROVISION_JOBS / PBF_MIRRORS /
+-- V_DOWNLOAD_RELAUNCH_PENDING / _CANDIDATES / MATRIX_BUILD_JOBS (engine modules
+-- 03/05/06, loaded only by provision_engine.sh).
+--
+-- `snow sql -f` ABORTS on the first failing statement (measured: exit 1, later
+-- statements never execute). Left bare, the TRAVEL_MATRIX grant below therefore
+-- truncated the rest of this file on every `--no-engine` install, silently
+-- dropping ~25 grants including FLEET_SA_APP!ALL_ENDPOINTS_USAGE (app users
+-- could not open the app URL at all) and the FLEET_SUPER_AGENT grant that IS the
+-- Tenet 3 isolation boundary. Step 8 reported only a soft WARN.
+--
+-- ONE grant per block, deliberately: a shared block would raise on the first
+-- missing object, the handler would swallow it, and every later grant in that
+-- block would be skipped - the same bug, just relocated (see the same warning
+-- on the idempotent ALTERs in openrouteservice_app/app/modules/
+-- 03_region_management.sql). The handler RETURNs the reason rather than NULL so a
+-- `--no-engine` install leaves evidence in /tmp/ifa_roles.log of exactly which
+-- grants were skipped; a bare `WHEN OTHER THEN NULL` has hidden two real defects
+-- in this repo before.
+--
+-- Guarding is scoped to THIS block. The FLEET_INTELLIGENCE, agent, MCP-server and
+-- service-role grants below stay bare on purpose: their objects exist in every
+-- install mode, so a failure there is a real defect and must abort loudly.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.CORE TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA CORE -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.OBSERVABILITY TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA OBSERVABILITY -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.TRAVEL_MATRIX TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA TRAVEL_MATRIX -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_ORS_MAP -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_CATALOG TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_CATALOG -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_PROVISION_JOBS -> ' || SQLERRM;
+END;
+$$;
 -- PBF download failover config + the reconciler's relaunch queue. Needed for the
 -- ops agent's run_sql verb: without them "which mirror is configured" or "is a
 -- build waiting to be relaunched" fails with `does not exist or not authorized`,
 -- which reads to a user as a MISSING FEATURE rather than a missing grant. Kept
 -- per-object like the lines above rather than a blanket ALL/FUTURE on
 -- OPENROUTESERVICE_APP.CORE, which would hand the ops role every engine table.
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.PBF_MIRRORS TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS TO ROLE FLEET_APP_OPS;
-GRANT SELECT ON TABLE OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT TO ROLE FLEET_APP_OPS;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.PBF_MIRRORS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.PBF_MIRRORS -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.V_DOWNLOAD_RELAUNCH_PENDING -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): OBSERVABILITY.ORS_REQUEST_LOG -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): TRAVEL_MATRIX.MATRIX_BUILD_JOBS -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): ROUTING.VERB_ATTEMPT -> ' || SQLERRM;
+END;
+$$;
 
 -- Admin bundle. FLEET_ADMIN_AGENT (created in SYNAPSE_USER) attaches the admin
 -- MCP, making the previously-dormant FLEET_ADMIN_MCP reachable by an agent.
