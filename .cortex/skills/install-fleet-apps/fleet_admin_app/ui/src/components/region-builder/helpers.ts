@@ -54,6 +54,34 @@ export interface ProvisionJob {
   created_at: string;
   started_at: string;
   completed_at: string;
+  // Canonical catalog URL vs the host that actually served the bytes. They
+  // differ when PROVISION_REGION_WRAPPER failed over to a mirror. Optional
+  // because jobs created before PBF_URL_USED existed carry neither.
+  pbf_url?: string;
+  pbf_url_used?: string;
+}
+
+// Which host served this job's PBF, and whether that was a failover mirror.
+// Returns null when the job predates PBF_URL_USED, so callers render nothing
+// rather than an empty or misleading label.
+//
+// Compared by HOST, not by full URL: a mirror may rewrite the path (GWDG
+// flattens Geofabrik's nested layout), so comparing URLs would report a mirror
+// for a path-rewritten primary or miss one entirely.
+export function describeJobSource(job: ProvisionJob): { host: string; isMirror: boolean } | null {
+  const used = (job.pbf_url_used || '').trim();
+  if (!used) return null;
+  const host = (u: string) => {
+    try {
+      return new URL(u).host;
+    } catch {
+      return '';
+    }
+  };
+  const usedHost = host(used);
+  if (!usedHost) return null;
+  const canonicalHost = host((job.pbf_url || '').trim());
+  return { host: usedHost, isMirror: canonicalHost !== '' && usedHost !== canonicalHost };
 }
 
 export const PROVISION_PHASES = [

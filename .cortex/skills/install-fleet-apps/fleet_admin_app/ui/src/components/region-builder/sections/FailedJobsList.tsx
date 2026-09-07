@@ -2,7 +2,7 @@
 // Failed jobs cards. Each card shows the error and offers Ask-for-status,
 // Retry and Dismiss actions. Diag drawer is shared with ActiveJobsTable.
 
-import { ProvisionJob } from '../helpers';
+import { ProvisionJob, describeJobSource } from '../helpers';
 import type { DiagState } from '../types';
 import { DiagDrawer, getTimeSince } from './shared';
 
@@ -60,6 +60,7 @@ export default function FailedJobsList({
       {jobs.map((job) => {
         const headline = headlineFor(job);
         const detail = (job.message || '').trim();
+        const source = describeJobSource(job);
         return (
         <div
           key={job.job_id}
@@ -93,6 +94,15 @@ export default function FailedJobsList({
           )}
           {job.profiles && (
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Profiles: {job.profiles}</div>
+          )}
+          {/* The host that served the bytes. Load-bearing for diagnosis: an
+              origin-outage failure reads very differently depending on whether
+              it came from the primary or from a mirror. */}
+          {source && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+              Source: {source.host}
+              {source.isMirror && <span className="badge warn" style={{ marginLeft: 6 }}>mirror</span>}
+            </div>
           )}
           {diagState[job.region]?.expanded && (
             <div style={{ marginTop: 8 }}>
