@@ -4,6 +4,19 @@ import type { StatusResponse, ServiceInfo, OrsRegionReadiness, ComputePoolInfo, 
 import PhasePips from '@/components/shared/phase-pips';
 import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
+// One row of CORE.PBF_MIRRORS as exposed by /api/pbf-mirrors.
+interface PbfMirror {
+  priority: number;
+  host: string;
+  mirrorBase: string;
+  sourceHost: string;
+  enabled: boolean;
+  note: string;
+  isPrimary: boolean;
+  covers: string;
+  freshness: string;
+}
+
 export function ServiceManagerPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -18,6 +31,10 @@ export function ServiceManagerPage() {
   const [hibernateEnabled, setHibernateEnabled] = useState(true);
   const [hibernateIdleHours, setHibernateIdleHours] = useState(4);
   const [hibernateSaving, setHibernateSaving] = useState(false);
+  // PBF download mirrors (CORE.PBF_MIRRORS). Failover order used when the
+  // primary origin is unreachable; the panel can only enable/disable a row.
+  const [mirrors, setMirrors] = useState<PbfMirror[]>([]);
+  const [mirrorSaving, setMirrorSaving] = useState(false);
 
   const fetchHibernate = useCallback(async () => {
     try {
@@ -40,6 +57,30 @@ export function ServiceManagerPage() {
     } catch {}
     setHibernateSaving(false);
   }, []);
+
+  const fetchMirrors = useCallback(async () => {
+    try {
+      const r = await fetch('/api/pbf-mirrors');
+      if (!r.ok) return;
+      const data = await r.json();
+      if (Array.isArray(data.mirrors)) setMirrors(data.mirrors as PbfMirror[]);
+    } catch {}
+  }, []);
+
+  const saveMirror = useCallback(async (priority: number, enabled: boolean) => {
+    setMirrorSaving(true);
+    try {
+      await fetch('/api/pbf-mirrors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority, enabled }),
+      });
+      // Re-read rather than trusting the optimistic value: the route refuses
+      // some changes (disabling the primary), so the server is authoritative.
+      await fetchMirrors();
+    } catch {}
+    setMirrorSaving(false);
+  }, [fetchMirrors]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -75,7 +116,8 @@ export function ServiceManagerPage() {
     checkHealth();
     fetchOrsReadiness();
     fetchHibernate();
-  }, [fetchStatus, checkHealth, fetchOrsReadiness, fetchHibernate]);
+    fetchMirrors();
+  }, [fetchStatus, checkHealth, fetchOrsReadiness, fetchHibernate, fetchMirrors]);
 
   // Poll only while the tab is visible (Tier E cost hygiene).
   useVisiblePolling(fetchStatus, 15000);
@@ -479,6 +521,66 @@ export function ServiceManagerPage() {
         </label>
         {hibernateSaving && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Saving...</span>}
       </div>
+
+      {/* PBF download mirrors. Only rendered when a mirror exists beyond the
+          primary, so a deployment with no mirrors configured shows nothing
+          rather than a panel with a single un-actionable row. */}
+      {mirrors.length > 1 && (
+        <>
+          <h3>PBF download mirrors</h3>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+            Failover order used when building a region and the primary OSM origin is
+            unreachable. A mirror is only ever tried for the files it actually carries,
+            and a resume is adopted only after its published checksum proves it serves
+            the same snapshot - so a lagging mirror is refused rather than mixed in.
+            Disable one here if you do not want it used at all.
+          </div>
+          <table className="services-table">
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Host</th>
+                <th>Covers</th>
+                <th>Freshness</th>
+                <th>Use</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mirrors.map((m) => (
+                <tr key={m.priority}>
+                  <td>{m.priority}</td>
+                  <td>
+                    {m.host}
+                    {m.isPrimary && <span className="badge" style={{ marginLeft: 6 }}>primary</span>}
+                  </td>
+                  <td style={{ fontSize: 12 }}>{m.covers}</td>
+                  <td style={{ fontSize: 12 }}>
+                    {m.isPrimary ? '-' : (
+                      <span className={m.freshness === 'BEHIND origin' ? 'badge warn' : undefined}>
+                        {m.freshness || 'unknown'}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input
+                        type="checkbox"
+                        checked={m.enabled}
+                        /* The primary cannot be disabled: a region would have no
+                           download source at all. The route enforces this too. */
+                        disabled={mirrorSaving || m.isPrimary}
+                        onChange={(e) => saveMirror(m.priority, e.target.checked)}
+                      />
+                      {m.enabled ? 'enabled' : 'disabled'}
+                    </label>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {mirrorSaving && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Saving...</span>}
+        </>
+      )}
 
       <h3>Scale</h3>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
