@@ -18,9 +18,14 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
 
    USE SCHEMA OPENROUTESERVICE_APP.CORE;   
    
+   -- PBF download egress. The two 0.0.0.0 wildcard entries already permit any
+   -- host on 80/443, so the named hosts are DOCUMENTATION of what this rule is
+   -- actually for - and they are what keeps the rule correct if the wildcards
+   -- are ever tightened. ftp5.gwdg.de is the Geofabrik mirror registered in
+   -- CORE.PBF_MIRRORS; add any new mirror here as well as to that table.
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
-     VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
+     VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443','ftp5.gwdg.de:443')
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    -- Basemap egress. The apps render CARTO VECTOR basemaps (MapLibre GL JS
