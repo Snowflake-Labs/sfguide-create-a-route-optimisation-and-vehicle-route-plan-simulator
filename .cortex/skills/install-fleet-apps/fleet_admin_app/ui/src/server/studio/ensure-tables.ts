@@ -8,7 +8,12 @@ import { UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers';
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
 export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
-  const ddls: { sql: string; db: string; schema: string }[] = [
+  // `optional: true` means "best effort": a failure is logged and skipped
+  // instead of aborting ensureTables. Used for the HYBRID TABLE create, which is
+  // legitimately unavailable on Google Cloud, in trial accounts, and in US
+  // SnowGov regions, and which always has a standard-table fallback immediately
+  // after it.
+  const ddls: { sql: string; db: string; schema: string; optional?: boolean }[] = [
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY (
       TELEMETRY_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       VEHICLE_ID VARCHAR, TRIP_ID VARCHAR,
@@ -224,6 +229,51 @@ $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
       EVENT_TYPE VARCHAR(30),
       PAYLOAD VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-events","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    // Durable Studio job state (Tenet 5b). The authoritative live state used to
+    // be the in-memory `activeJobs` Map in jobs.ts, which a container restart
+    // loses - hence the 'orphan' cancel mode and the boot-time stale-job
+    // reconcile. This table is the write-through durable copy: frequent
+    // single-row UPDATE by JOB_ID, which is the one workload shape that earns a
+    // HYBRID TABLE here (an enforced PK plus row-store writes), unlike the
+    // 1-43 row config tables that stay standard.
+    //
+    // Two statements on purpose. Hybrid tables are unavailable on Google Cloud,
+    // in trial accounts, and in US SnowGov regions, so the HYBRID create is
+    // allowed to fail and the following standard CREATE IF NOT EXISTS becomes
+    // the fallback (it no-ops when the hybrid one succeeded). Same shape either
+    // way; only PK enforcement is lost. Do NOT collapse these into one.
+    { sql: `CREATE HYBRID TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.JOB_STATE (
+      JOB_ID           VARCHAR(64) NOT NULL PRIMARY KEY,
+      REGION           VARCHAR(100),
+      VEHICLE_TYPE     VARCHAR(20),
+      PRESET_NAME      VARCHAR,
+      ORS_PROFILE      VARCHAR(30),
+      STATUS           VARCHAR(20) NOT NULL,
+      POINTS_GENERATED NUMBER DEFAULT 0,
+      TRIPS_GENERATED  NUMBER DEFAULT 0,
+      ABORT_REQUESTED  BOOLEAN DEFAULT FALSE,
+      STALLED          BOOLEAN DEFAULT FALSE,
+      ERROR_MESSAGE    VARCHAR,
+      STARTED_AT       TIMESTAMP_NTZ,
+      LAST_PROGRESS_AT TIMESTAMP_NTZ,
+      COMPLETED_AT     TIMESTAMP_NTZ
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-state","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE', optional: true },
+    { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.JOB_STATE (
+      JOB_ID           VARCHAR(64) NOT NULL PRIMARY KEY,
+      REGION           VARCHAR(100),
+      VEHICLE_TYPE     VARCHAR(20),
+      PRESET_NAME      VARCHAR,
+      ORS_PROFILE      VARCHAR(30),
+      STATUS           VARCHAR(20) NOT NULL,
+      POINTS_GENERATED NUMBER DEFAULT 0,
+      TRIPS_GENERATED  NUMBER DEFAULT 0,
+      ABORT_REQUESTED  BOOLEAN DEFAULT FALSE,
+      STALLED          BOOLEAN DEFAULT FALSE,
+      ERROR_MESSAGE    VARCHAR,
+      STARTED_AT       TIMESTAMP_NTZ,
+      LAST_PROGRESS_AT TIMESTAMP_NTZ,
+      COMPLETED_AT     TIMESTAMP_NTZ
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-state","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     { sql: `EXECUTE IMMEDIATE $$
 BEGIN
   ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE();
@@ -291,11 +341,19 @@ $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
         WHERE d.DATASET_ID = r.JOB_ID
       )`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
-  for (const { sql, db, schema } of ddls) {
+  for (const { sql, db, schema, optional } of ddls) {
     try {
       await snowSql(sql, db, schema);
     } catch (e: any) {
       const raw = e.message || '';
+      // Best-effort DDL: never abort the boot path, and never escalate to the
+      // privilege hint below (a missing CREATE HYBRID TABLE grant, or a region
+      // where hybrid tables do not exist at all, must both fall through to the
+      // standard-table fallback rather than failing the whole app).
+      if (optional) {
+        log('WARN', 'Studio', `Optional DDL skipped on ${db}.${schema}: ${raw.slice(0, 200)}`);
+        continue;
+      }
       if (raw.includes('Insufficient privileges') || raw.includes('42501') || raw.includes('access control')) {
         const hint = `Missing privileges on ${db}.${schema}. ` +
           `Run the Data Studio setup SQL from SKILL.md Step 6.3 as ACCOUNTADMIN, ` +

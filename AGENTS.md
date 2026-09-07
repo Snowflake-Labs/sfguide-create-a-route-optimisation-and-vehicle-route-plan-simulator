@@ -366,6 +366,7 @@ If no friction was encountered, the log should still be created with "No frictio
   ```
 - **Assume ORS is running** - always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;` (all 5 services must be RUNNING)
 - **Precompute / materialize ORS output for demos** - do NOT cache isochrone polygons, travel-time matrices, or optimization results into tables and read them back in a view. Call `ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION` live at interaction time (see Architecture Tenet 9). Precomputing non-ORS reference data (POI subsets, address/household density, synthetic facts) is fine.
+- **Convert an analytic, contract, or config table to a `HYBRID TABLE`** - hybrid tables support no dynamic tables, streams, data sharing, clustering keys, or result cache, and every candidate state table here is 1-43 rows, so there is no scan to remove and the warehouse round trip remains. `DIM_DATASETS` is the specific trap: it is joined by every `V_*_CURRENT` view, so making it hybrid disables the result cache on nearly every dashboard query. Hybrid is reserved for durable OLTP state and enforced constraints - today `verb_attempt` + `verb_claim` and `FLEET_INTELLIGENCE.CORE.JOB_STATE`. See Architecture Tenet 5b.
 - **Hardcode city/region** - skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** - all docs go in SKILL.md or `references/`
 - **Duplicate conventions** - point to `skill-optimiser` references instead of repeating rules
