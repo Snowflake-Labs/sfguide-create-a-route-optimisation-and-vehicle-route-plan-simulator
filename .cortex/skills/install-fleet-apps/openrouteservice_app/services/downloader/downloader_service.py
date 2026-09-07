@@ -167,8 +167,8 @@ def _resolve_status(folder, filename):
     return 'not_started'
 
 
-def _probe(url):
-    '''Return (total_size:int|None, supports_ranges:bool) for a URL.
+def _probe_once(url):
+    '''One probe round: (total_size:int|None, supports_ranges:bool).
 
     Tries a HEAD first; if the server is unhelpful, falls back to a 1-byte
     Range GET and derives the size from the Content-Range header.
@@ -203,6 +203,31 @@ def _probe(url):
         except Exception as exc:
             logger.warning('Range probe failed for %s: %s', url, exc)
 
+    return total, supports_ranges
+
+
+def _probe(url):
+    '''Probe with retries.
+
+    The probe's outcome SELECTS THE DOWNLOAD STRATEGY, so a transient upstream
+    failure must not be mistaken for "this server has no range support". A
+    Geofabrik 502 burst made a single-shot probe report no ranges, which sent a
+    34 GB resumable transfer into the single-stream fallback -- restarting from
+    zero and discarding every completed segment. Retry before concluding.
+    '''
+    attempts = max(1, int(os.getenv('DOWNLOAD_PROBE_ATTEMPTS', '4')))
+    total, supports_ranges = None, False
+    for attempt in range(1, attempts + 1):
+        total, supports_ranges = _probe_once(url)
+        if supports_ranges and total:
+            return total, supports_ranges
+        if attempt < attempts:
+            backoff = min(15 * attempt, 60)
+            logger.warning('probe %d/%d inconclusive for %s '
+                           '(total=%s, ranges=%s); retrying in %ss',
+                           attempt, attempts, url, total, supports_ranges,
+                           backoff)
+            time.sleep(backoff)
     return total, supports_ranges
 
 
@@ -472,10 +497,39 @@ def _download_file_streaming(url, file_path):
     return downloaded
 
 
+def _resume_state_bytes(file_path):
+    '''Bytes of completed segment files on disk for this target, or 0.'''
+    if not os.path.exists(_sidecar_path(file_path)):
+        return 0
+    total = 0
+    idx = 0
+    while True:
+        seg = _seg_path(file_path, idx)
+        if not os.path.exists(seg):
+            break
+        total += os.path.getsize(seg)
+        idx += 1
+    return total
+
+
 def _download_file(url, file_path):
     total, supports_ranges = _probe(url)
     if supports_ranges and total:
         return _download_ranged(url, file_path, total)
+
+    # REFUSE to fall back when resume state exists. The streaming fallback
+    # starts at byte 0 and ignores segment files entirely, so taking it here
+    # silently discards everything already downloaded. An inconclusive probe
+    # after retries means the origin is unhealthy, which is retryable -- the
+    # SQL provisioning loop re-triggers and the segments survive.
+    staged = _resume_state_bytes(file_path)
+    if staged:
+        raise RuntimeError(
+            'probe inconclusive (total=%s, ranges=%s) but %d bytes of resume '
+            'state are on disk; refusing the single-stream fallback, which '
+            'would restart from zero. Retry once the origin is healthy.'
+            % (total, supports_ranges, staged))
+
     logger.info('Range not supported or size unknown for %s; '
                 'using single-stream fallback', url)
     return _download_file_streaming(url, file_path)
