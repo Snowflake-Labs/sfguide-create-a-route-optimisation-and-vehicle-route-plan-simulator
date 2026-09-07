@@ -2,6 +2,8 @@ from flask import Flask
 from flask import request
 from flask import make_response
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import logging
 import os
 import sys
@@ -22,10 +24,21 @@ CHUNK_SIZE = 8_192_000
 # parallel segments multiply effective throughput and keep multi-GB continental
 # PBFs (e.g. europe-latest ~34 GB) under the SQL provisioning poll ceiling.
 CONCURRENCY = max(1, min(int(os.getenv('DOWNLOAD_CONCURRENCY', '6')), 8))
-# Per-segment retry budget. A transient connection reset re-downloads only that
-# one segment (1/N of the file), not the whole transfer, so status stays
-# 'in_progress' and the SQL poll loop keeps waiting.
-MAX_RETRIES = max(1, int(os.getenv('DOWNLOAD_MAX_RETRIES', '6')))
+# Per-segment retry budget. A retry RESUMES the segment from the byte count
+# already on disk (see _download_segment), so a retry costs seconds rather than
+# re-fetching the whole segment. That makes a generous budget nearly free.
+MAX_RETRIES = max(1, int(os.getenv('DOWNLOAD_MAX_RETRIES', '10')))
+# Read timeout for a segment body read. Geofabrik stalls for minutes at a time
+# under load; a short timeout turns an ordinary stall into a failed attempt.
+READ_TIMEOUT = max(60, int(os.getenv('DOWNLOAD_READ_TIMEOUT', '600')))
+# Target size of one byte-range segment. Fixed-size segments (rather than
+# exactly CONCURRENCY giant ones) bound the worst case: the sidecar records
+# progress per segment, and a segment is the unit a stale/half-written retry
+# has to re-validate. 34 GB / 512 MB = 68 segments fed through a pool of
+# CONCURRENCY workers.
+SEGMENT_BYTES = max(32 * 1024 * 1024,
+                    int(os.getenv('DOWNLOAD_SEGMENT_BYTES',
+                                  str(512 * 1024 * 1024))))
 
 BASE_FOLDER = '/downloads'
 
@@ -57,6 +70,34 @@ def get_logger(logger_name):
 logger = get_logger('routing-service')
 
 app = Flask(__name__)
+
+
+def _make_session():
+    '''Session with socket-level retries beneath the segment retry loop.
+
+    Absorbs transient connect/read resets without burning a segment attempt,
+    and honours Retry-After when the origin throttles.
+    '''
+    session = requests.Session()
+    retry = Retry(
+        total=None,
+        connect=5,
+        read=5,
+        status=3,
+        status_forcelist=(429, 500, 502, 503, 504),
+        backoff_factor=2,
+        respect_retry_after_header=True,
+        allowed_methods=frozenset(['GET', 'HEAD']),
+    )
+    adapter = HTTPAdapter(max_retries=retry,
+                          pool_maxsize=CONCURRENCY * 2,
+                          pool_connections=CONCURRENCY * 2)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
+
+
+_session = _make_session()
 
 
 def _target_path(folder, filename):
@@ -135,7 +176,7 @@ def _probe(url):
     total = None
     supports_ranges = False
     try:
-        r = requests.head(url, timeout=(30, 60), allow_redirects=True)
+        r = _session.head(url, timeout=(30, 60), allow_redirects=True)
         if r.ok:
             cl = r.headers.get('Content-Length')
             if cl and cl.isdigit():
@@ -147,7 +188,7 @@ def _probe(url):
 
     if not supports_ranges or total is None:
         try:
-            r = requests.get(url, headers={'Range': 'bytes=0-0'},
+            r = _session.get(url, headers={'Range': 'bytes=0-0'},
                              stream=True, timeout=(30, 60), allow_redirects=True)
             try:
                 if r.status_code == 206:
@@ -165,12 +206,19 @@ def _probe(url):
     return total, supports_ranges
 
 
-def _plan_segments(total, n):
-    seg_size = total // n
+def _plan_segments(total):
+    '''Cut the file into fixed-size segments (last one absorbs the remainder).
+
+    Fixed-size rather than exactly CONCURRENCY pieces: with 6 giant segments a
+    34 GB file gives 5.8 GB units, so any half-finished segment is a large,
+    coarse chunk of state. Smaller units keep sidecar progress fine-grained and
+    keep a single bad segment cheap to re-validate.
+    '''
+    n = max(1, -(-total // SEGMENT_BYTES))  # ceil division
     segments = []
     start = 0
     for i in range(n):
-        end = total - 1 if i == n - 1 else (start + seg_size - 1)
+        end = total - 1 if i == n - 1 else (start + SEGMENT_BYTES - 1)
         segments.append({'start': start, 'end': end, 'done': 0})
         start = end + 1
     return segments
@@ -204,30 +252,58 @@ def _write_sidecar(sidecar, url, total, segments):
 
 
 def _download_segment(url, seg_file, seg, seg_lock):
-    '''Fetch one byte-range segment sequentially into its own file.
+    '''Fetch one byte-range segment into its own file, resuming on retry.
 
-    Each retry re-fetches the whole segment from offset 0 into a fresh file
-    (sequential write only -- safe on object-store mounts). A failure costs at
-    most one segment (1/N of the file), never the whole transfer.
+    A retry RESUMES from the byte count already on disk: the Range start is
+    shifted by that count and the file is opened for APPEND, so no completed
+    bytes are ever discarded. Writes stay strictly sequential (append only),
+    which is the constraint the object-store mount imposes -- no seek into an
+    existing object.
+
+    The file is truncated back to zero ONLY when the server ignores the Range
+    header (answers 200 instead of 206), because then the body starts at offset
+    0 of the whole segment rather than at the resume point.
     '''
     expected = _seg_len(seg)
 
+    def _on_disk():
+        return os.path.getsize(seg_file) if os.path.exists(seg_file) else 0
+
     # Skip if a previous run already completed this segment (cross-restart resume).
-    if os.path.exists(seg_file) and os.path.getsize(seg_file) == expected:
+    written = _on_disk()
+    if written == expected:
         with seg_lock:
             seg['done'] = expected
         return
+    if written > expected:
+        # Over-long: a prior bug or a 200-instead-of-206 body. Start clean.
+        logger.warning('segment %d-%d has %d bytes on disk, expected %d; '
+                       'discarding and restarting the segment',
+                       seg['start'], seg['end'], written, expected)
+        written = 0
 
     attempt = 0
     while True:
-        headers = {'Range': 'bytes=%d-%d' % (seg['start'], seg['end'])}
+        resume_at = seg['start'] + written
+        headers = {'Range': 'bytes=%d-%d' % (resume_at, seg['end'])}
+        mode = 'ab' if written else 'wb'
         try:
-            r = requests.get(url, headers=headers, stream=True,
-                             timeout=(30, 300))
+            r = _session.get(url, headers=headers, stream=True,
+                             timeout=(30, READ_TIMEOUT))
             if r.status_code not in (200, 206):
                 raise RuntimeError('HTTP %d' % r.status_code)
-            written = 0
-            with open(seg_file, 'wb') as out:
+            if r.status_code == 200 and written:
+                # Range ignored: the body is the full segment, so anything on
+                # disk is a prefix duplicate. Rewind.
+                logger.warning('segment %d-%d: server ignored Range (HTTP 200); '
+                               'restarting segment from 0',
+                               seg['start'], seg['end'])
+                written = 0
+                mode = 'wb'
+            if written:
+                logger.info('segment %d-%d resuming at +%d bytes (attempt %d)',
+                            seg['start'], seg['end'], written, attempt + 1)
+            with open(seg_file, mode) as out:
                 for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                     if not chunk:
                         continue
@@ -241,16 +317,21 @@ def _download_segment(url, seg_file, seg, seg_lock):
             return
         except Exception as exc:
             attempt += 1
+            # Trust the filesystem over the in-flight counter: a torn write may
+            # have landed fewer bytes than the loop counted.
+            written = min(_on_disk(), expected)
             with seg_lock:
-                seg['done'] = 0
+                seg['done'] = written
             if attempt > MAX_RETRIES:
                 raise RuntimeError(
-                    'segment %d-%d failed after %d retries: %s'
-                    % (seg['start'], seg['end'], MAX_RETRIES, exc))
+                    'segment %d-%d failed after %d retries at +%d/%d bytes: %s'
+                    % (seg['start'], seg['end'], MAX_RETRIES, written,
+                       expected, exc))
             backoff = min(2 ** attempt, 60)
-            logger.warning('segment %d-%d retry %d/%d after %ss: %s',
+            logger.warning('segment %d-%d retry %d/%d after %ss '
+                           '(resuming at +%d/%d): %s',
                            seg['start'], seg['end'], attempt, MAX_RETRIES,
-                           backoff, exc)
+                           backoff, written, expected, exc)
             time.sleep(backoff)
 
 
@@ -292,11 +373,15 @@ def _download_ranged(url, file_path, total):
 
     segments = _load_sidecar(sidecar, url, total)
     if segments is None:
-        segments = _plan_segments(total, CONCURRENCY)
+        segments = _plan_segments(total)
         _write_sidecar(sidecar, url, total, segments)
         logger.info('Starting ranged download %s (%d bytes, %d segments)',
                     file_path, total, len(segments))
     else:
+        # NOTE: an existing sidecar's plan is reused VERBATIM, even if it was
+        # written by an older build with a different segment size. That is
+        # deliberate: re-planning would orphan every completed segment file and
+        # discard tens of GB of good bytes on a resume.
         done = sum(min(s['done'], _seg_len(s)) for s in segments)
         logger.info('Resuming ranged download %s (~%d/%d bytes, %d segments)',
                     file_path, done, total, len(segments))
@@ -325,7 +410,8 @@ def _download_ranged(url, file_path, total):
 
     errors = []
     try:
-        with ThreadPoolExecutor(max_workers=len(segments)) as ex:
+        with ThreadPoolExecutor(max_workers=min(CONCURRENCY,
+                                                len(segments))) as ex:
             futures = []
             for idx, seg in enumerate(segments):
                 seg_file = _seg_path(file_path, idx)
@@ -364,7 +450,7 @@ def _download_file_streaming(url, file_path):
     if os.path.exists(part_path):
         os.remove(part_path)
 
-    response = requests.get(url, stream=True, timeout=(30, 300))
+    response = _session.get(url, stream=True, timeout=(30, READ_TIMEOUT))
     if response.status_code != 200:
         if os.path.exists(part_path):
             os.remove(part_path)
@@ -458,7 +544,7 @@ def _validate_pbf_md5(url, file_path):
     '''
     md5_url = url + '.md5'
     try:
-        r = requests.get(md5_url, timeout=(30, 60), allow_redirects=True)
+        r = _session.get(md5_url, timeout=(30, 60), allow_redirects=True)
         if r.status_code != 200 or not r.text.strip():
             logger.info('No usable md5 sidecar at %s (HTTP %d); skipping '
                         'checksum verification', md5_url, r.status_code)
