@@ -43,16 +43,45 @@ export function getIngressUser(req: Request): string | null {
 // of FLEET_APP_USER/OPS/ADMIN, so a direct-grant check is sufficient (the role
 // hierarchy ADMIN > OPS > USER is honored by accepting any higher role in the
 // allowed set for a given gate).
+//
+// Cached for ROLE_CACHE_TTL_MS. Without a cache every requireOps/requireAdmin
+// call pays a full warehouse round trip BEFORE doing any work, and the ops
+// console issues several privileged calls per interaction, so the gate was a
+// per-request latency floor on exactly the paths users notice.
+//
+// TRADEOFF, deliberately bounded: this is an authorization decision, so a cache
+// means a REVOKED grant stays honored until the entry expires. The TTL is
+// therefore short (30s) rather than the 5-10 minutes used for data caches
+// elsewhere in these apps - long enough to collapse a burst of calls from one
+// interaction, short enough that a revocation takes effect promptly. Do not
+// raise it without accounting for that window.
+const ROLE_CACHE_TTL_MS = 30_000;
+const ROLE_CACHE_MAX = 256;
+// globalThis-pinned: Next compiles each route handler as a separate bundle, so a
+// module-local Map would otherwise be per-route and mostly cold.
+const roleCache: Map<string, { roles: string[]; expires: number }> =
+  ((globalThis as unknown as { __fleetSaRoleCache?: Map<string, { roles: string[]; expires: number }> })
+    .__fleetSaRoleCache ??= new Map());
+
 async function getUserRoles(user: string): Promise<string[]> {
   const safe = user.replace(/[^A-Za-z0-9_.@-]/g, '');
   if (!safe) return [];
+  const now = Date.now();
+  const hit = roleCache.get(safe);
+  if (hit && hit.expires > now) return hit.roles;
   try {
     const rows = await query<Record<string, unknown>>(`SHOW GRANTS TO USER "${safe}"`);
-    return rows
+    const roles = rows
       .map((r) => String((r.role ?? r.ROLE ?? '') as string).toUpperCase())
       .filter((r) => r.length > 0);
+    // Bound the map so a wide user population cannot grow it without limit.
+    if (roleCache.size >= ROLE_CACHE_MAX) roleCache.clear();
+    roleCache.set(safe, { roles, expires: now + ROLE_CACHE_TTL_MS });
+    return roles;
   } catch (err) {
     logger.error('ingress-roles', { user: safe }, err);
+    // Deliberately NOT cached: a transient lookup failure must not pin an empty
+    // role set (i.e. a denial) for the whole TTL.
     return [];
   }
 }
