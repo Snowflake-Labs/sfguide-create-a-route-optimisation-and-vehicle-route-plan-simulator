@@ -512,16 +512,66 @@ def _resume_state_bytes(file_path):
     return total
 
 
+def _sidecar_total(file_path, url):
+    '''The total size recorded by an EARLIER successful probe, or None.
+
+    The probe is a convenience, not a requirement, for continuing a transfer
+    that is already under way: the segment plan is derived from `total`, and a
+    sidecar written by a previous run already carries the `total` that probe
+    established (see _write_sidecar). So when the origin is too unhealthy to
+    answer a HEAD or a 1-byte Range GET, but a sidecar for THIS url exists, the
+    ranged download can still resume -- the per-segment fetches (which retry 6
+    times each) then become the arbiter of origin health, and a 91%-complete
+    34 GB transfer is no longer abandoned because of a probe blip.
+
+    The url must match: a sidecar recorded against a different URL says nothing
+    about this one's length, and a wrong `total` would mis-plan every segment.
+    '''
+    sidecar = _sidecar_path(file_path)
+    if not os.path.exists(sidecar):
+        return None
+    try:
+        with open(sidecar) as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.warning('Ignoring unreadable sidecar %s: %s', sidecar, exc)
+        return None
+    if data.get('url') != url:
+        return None
+    total = data.get('total')
+    if isinstance(total, int) and total > 0:
+        return total
+    return None
+
+
 def _download_file(url, file_path):
     total, supports_ranges = _probe(url)
     if supports_ranges and total:
         return _download_ranged(url, file_path, total)
+
+    # The probe could not conclude. Before giving up, check whether a PREVIOUS
+    # probe already told us the size: if so this is a resume, and the segment
+    # layer can carry it without the origin having to answer a probe right now.
+    recorded = _sidecar_total(file_path, url)
+    if recorded:
+        logger.warning(
+            'probe inconclusive for %s (total=%s, ranges=%s), but a sidecar '
+            'records total=%d from an earlier probe; resuming the RANGED '
+            'download from staged segments rather than abandoning it',
+            url, total, supports_ranges, recorded)
+        return _download_ranged(url, file_path, recorded)
 
     # REFUSE to fall back when resume state exists. The streaming fallback
     # starts at byte 0 and ignores segment files entirely, so taking it here
     # silently discards everything already downloaded. An inconclusive probe
     # after retries means the origin is unhealthy, which is retryable -- the
     # SQL provisioning loop re-triggers and the segments survive.
+    #
+    # Narrow but NOT dead since the sidecar-resume above: _resume_state_bytes
+    # returns 0 when there is no sidecar at all, so what reaches here is a
+    # sidecar that exists yet cannot be trusted for a total (recorded against a
+    # different URL, or a torn/invalid `total`) while segment files are staged.
+    # Discarding those bytes on a probe failure is still the wrong trade.
     staged = _resume_state_bytes(file_path)
     if staged:
         raise RuntimeError(
