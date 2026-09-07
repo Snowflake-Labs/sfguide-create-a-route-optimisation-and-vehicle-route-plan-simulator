@@ -169,6 +169,43 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- IS_ORIGIN_OUTAGE_MSG
+-- ---------------------------------------------------------------------------
+-- Was this download failure the UPSTREAM PBF HOST's fault rather than ours or
+-- the region's? The answer selects which relaunch bound applies, and it must be
+-- computed from the job's own MESSAGE rather than from the ERROR_MSG token the
+-- reconciler stamps, for two reasons:
+--   1. Rows stamped before this classification existed carry the generic
+--      'download_relaunched' token, so a token-driven rule would count a
+--      historical origin outage against the build budget forever - permanently
+--      stranding the very build it is meant to rescue. The relaunch UPDATE
+--      preserves the dead job's text ("... Previous message: <original>"), so
+--      the signature survives and those rows reclassify themselves with no
+--      migration.
+--   2. One function, two call sites (the counted rows and the candidate row)
+--      means the bound is always evaluated against the same rule that stamped
+--      it. Two inline copies of this predicate would drift, which is the same
+--      hazard the candidate view's own header warns about.
+--
+-- Network-shaped failures are deliberately read as ORIGIN. The classes differ
+-- only in how many bounded, byte-free retries a region gets, so over-classifying
+-- costs a few cheap attempts while UNDER-classifying strands tens of GB of valid
+-- resume state - the exact defect observed on 2026-09-07.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MSG VARCHAR)
+RETURNS BOOLEAN
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+$$
+    COALESCE(MSG ILIKE '%probe inconclusive%'
+          OR MSG ILIKE '%refusing the single-stream%'
+          OR MSG ILIKE '%502%'
+          OR MSG ILIKE '%Read timed out%'
+          OR MSG ILIKE '%Max retries exceeded%'
+          OR MSG ILIKE '%Connection reset%'
+          OR MSG ILIKE '%Temporary failure in name resolution%', FALSE)
+$$;
+
+-- ---------------------------------------------------------------------------
 -- V_DOWNLOAD_RELAUNCH_CANDIDATES
 -- ---------------------------------------------------------------------------
 -- Region builds whose PROVISIONING PROCEDURE is gone while the PBF download is
@@ -205,11 +242,41 @@ $$;
 --                                corrupts the winner's graph". Pre-upgrade
 --                                jobs are therefore never eligible; they age
 --                                out instead.
---   deaths < 3 in 24h          - bound. History IS the counter: each relaunch
+--   deaths < bound             - bound, and the bound DEPENDS ON THE FAILURE
+--                                CLASS. History IS the counter: each relaunch
 --                                stamps the dead row ERROR_MSG =
---                                'download_relaunched'. A counter COLUMN could
---                                not work, because a relaunch creates a NEW
---                                job row that would start from zero.
+--                                'download_relaunched' (build death) or
+--                                'download_relaunched_origin' (upstream PBF
+--                                host unreachable), and the row is COUNTED by
+--                                re-reading its MESSAGE through
+--                                IS_ORIGIN_OUTAGE_MSG, so rows written before
+--                                the split still land in the right bucket. A
+--                                counter COLUMN could not work at all, because
+--                                a relaunch creates a NEW job row that would
+--                                start from zero.
+--                                A build death gets 3, unchanged: repeated
+--                                deaths on a healthy origin mean the region
+--                                itself is the problem and a human should look.
+--                                An ORIGIN OUTAGE is not that, and counting it
+--                                the same way was a real defect: on 2026-09-07
+--                                a Geofabrik 502 burst consumed the entire
+--                                3-per-24h budget in under two hours across
+--                                three attempts that each probed, transferred
+--                                ZERO bytes, and died in ~17 minutes - leaving
+--                                29.9 GiB of valid resume state stranded with
+--                                auto-heal disabled for another 22 hours, for a
+--                                fault that was neither ours nor the region's
+--                                and might clear in minutes. An origin outage
+--                                therefore gets its own, wider bound; each
+--                                attempt is cheap precisely because it moves no
+--                                bytes, and the cooldown below is what keeps it
+--                                from thrashing.
+--   cooldown elapsed           - escalating backoff, keyed on how many
+--                                relaunches this region has already had. With
+--                                no wait at all the reconciler retried every
+--                                ~18 minutes and spent the whole budget inside
+--                                one outage; an unhealthy origin needs to be
+--                                given time to recover between attempts.
 --   live count matches         - a RUNNING candidate counts itself (expect
 --                                exactly 1); a terminal candidate must see 0.
 --                                Either way there is no OTHER in-flight job
@@ -218,10 +285,18 @@ CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
 AS
 WITH deaths AS (
-    SELECT UPPER(REGION) AS R, COUNT(*) AS N
+    SELECT UPPER(REGION) AS R,
+           -- Classified from MESSAGE, not from the ERROR_MSG token, so a row
+           -- stamped before this split existed still lands in the right
+           -- bucket. See IS_ORIGIN_OUTAGE_MSG for why that matters.
+           COUNT_IF(NOT OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_BUILD,
+           COUNT_IF(OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_ORIGIN,
+           -- Last relaunch of EITHER class: the cooldown is about giving the
+           -- system (and the origin) a rest, so both classes reset it.
+           MAX(COALESCE(COMPLETED_AT, HEARTBEAT_AT)) AS LAST_AT
     FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    WHERE ERROR_MSG = 'download_relaunched'
-      AND COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE())
+    WHERE ERROR_MSG IN ('download_relaunched', 'download_relaunched_origin')
+      AND COALESCE(COMPLETED_AT, HEARTBEAT_AT) > DATEADD(HOUR, -24, SYSDATE())
     GROUP BY UPPER(REGION)
 ), live AS (
     SELECT UPPER(REGION) AS R, COUNT(*) AS N
@@ -238,14 +313,31 @@ SELECT
     j.PBF_URL,
     j.STATUS,
     j.HEARTBEAT_AT,
-    COALESCE(d.N, 0) AS PRIOR_RELAUNCHES,
+    COALESCE(d.N_BUILD, 0) + COALESCE(d.N_ORIGIN, 0) AS PRIOR_RELAUNCHES,
+    -- Classified HERE so the reconciler stamps the same verdict the bound was
+    -- evaluated against; the same function drives the counts in `deaths`.
+    OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(j.MESSAGE) AS IS_ORIGIN_OUTAGE,
     IFF(j.STATUS = 'RUNNING', 'provisioner_died', 'download_terminal') AS REASON
 FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
 LEFT JOIN deaths d ON d.R = UPPER(j.REGION)
 LEFT JOIN live   l ON l.R = UPPER(j.REGION)
 WHERE j.STAGE = 'DOWNLOADING'
   AND j.HEARTBEAT_AT IS NOT NULL
-  AND COALESCE(d.N, 0) < 3
+  -- Class-specific bound. An origin outage moves no bytes, so 12 attempts
+  -- spread by the cooldown below is still a cheap way to ride out a multi-hour
+  -- upstream outage without human intervention.
+  AND COALESCE(d.N_BUILD, 0) < 3
+  AND COALESCE(d.N_ORIGIN, 0) < 12
+  -- Escalating backoff: 10 min after the first relaunch, doubling, capped at
+  -- 4 hours. POWER returns a FLOAT and DATEADD needs an integer, hence ::INT.
+  AND (
+        d.LAST_AT IS NULL
+     OR SYSDATE() > DATEADD(
+            MINUTE,
+            LEAST(10 * POWER(2, COALESCE(d.N_BUILD, 0)
+                                + COALESCE(d.N_ORIGIN, 0)), 240)::INT,
+            d.LAST_AT)
+      )
   AND (
         -- the procedure stopped writing its heartbeat: it is gone. The loop
         -- writes every 30-90s, so 15 minutes of silence is unambiguous.
@@ -4392,7 +4484,7 @@ BEGIN
     BEGIN
         LET rl_rs RESULTSET := (
             SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE,
-                   STATUS, REASON, PRIOR_RELAUNCHES
+                   STATUS, REASON, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE
             FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
         );
         LET rl_cur CURSOR FOR rl_rs;
@@ -4411,6 +4503,13 @@ BEGIN
                 LET rl_compute VARCHAR := rl.COMPUTE_SIZE;
                 LET rl_prior INTEGER := rl.PRIOR_RELAUNCHES;
                 LET rl_resumable INTEGER DEFAULT 0;
+                -- Taken from the view, NOT re-derived: the bound was evaluated
+                -- against the view's verdict, so stamping a different one here
+                -- would corrupt the budget on every later cycle.
+                LET rl_origin BOOLEAN := rl.IS_ORIGIN_OUTAGE;
+                LET rl_token VARCHAR := IFF(:rl_origin,
+                                            'download_relaunched_origin',
+                                            'download_relaunched');
 
                 -- Only relaunch when there is something to resume. A full
                 -- re-download of a continental PBF is hours of transfer, which
@@ -4439,14 +4538,25 @@ BEGIN
                     -- Mark the dead job terminal FIRST: START_REGION_PROVISION
                     -- refuses while a PENDING/RUNNING row exists for the region.
                     -- ERROR_MSG is the relaunch counter (history is the bound;
-                    -- a counter column cannot survive into the new job row).
+                    -- a counter column cannot survive into the new job row) and
+                    -- its VALUE selects which bound - see the candidate view.
                     -- STAGE moves off DOWNLOADING so the row cannot reappear as
                     -- its own candidate.
+                    --
+                    -- DISMISSED = TRUE because this row is not a failure a human
+                    -- can act on: it was deliberately superseded by its own
+                    -- successor, which carries the live state. Left visible, an
+                    -- outage that relaunched three times filled the admin app's
+                    -- "Failed Jobs" panel with three red 'download_relaunched'
+                    -- cards and pushed the one actionable row out of view. The
+                    -- audit trail is preserved in COST_GUARD_LOG below and the
+                    -- row itself is untouched apart from this flag.
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS = 'ERROR',
                         STAGE = 'ERROR',
                         COMPLETED_AT = SYSDATE(),
-                        ERROR_MSG = 'download_relaunched',
+                        ERROR_MSG = :rl_token,
+                        DISMISSED = TRUE,
                         MESSAGE = 'Superseded by an automatic download resume ('
                                   || :rl_reason || '). Previous message: '
                                   || LEFT(COALESCE(MESSAGE, ''), 300)
@@ -4471,7 +4581,8 @@ BEGIN
                         INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG
                             (REGION, ACTION, FIRED_AT, REASON)
                         VALUES (:rl_region, 'download_relaunch', SYSDATE(),
-                                :rl_reason || '; prior_relaunches='
+                                :rl_reason || '; class=' || :rl_token
+                                || '; prior_relaunches='
                                 || :rl_prior || '; dead_job=' || :rl_job
                                 || '; result=' || LEFT(COALESCE(:rl_out, ''), 300));
                     EXCEPTION WHEN OTHER THEN NULL;
