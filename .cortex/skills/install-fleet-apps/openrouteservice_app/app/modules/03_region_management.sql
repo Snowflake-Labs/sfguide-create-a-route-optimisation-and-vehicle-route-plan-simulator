@@ -539,6 +539,15 @@ DECLARE
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
     dl_attempt INTEGER DEFAULT 0;
+    -- PBF host failover. dl_candidates is the ordered list from PBF_MIRROR_URLS
+    -- (candidate 0 is always the region's own PBF_URL); dl_host_i indexes it and
+    -- dl_url is the host currently being downloaded from. All three DOWNLOAD
+    -- trigger sites below use dl_url, never P_PBF_URL, so a rotation actually
+    -- takes effect - P_PBF_URL stays the canonical value for telemetry.
+    dl_candidates ARRAY DEFAULT ARRAY_CONSTRUCT();
+    dl_host_i INTEGER DEFAULT 0;
+    dl_url VARCHAR DEFAULT '';
+    dl_rotated BOOLEAN DEFAULT FALSE;
 BEGIN
     -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
     -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
@@ -634,7 +643,13 @@ BEGIN
         BEGIN
             pbf_dl_status := '';
             dl_attempt := 0;
-            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+            -- Resolve the host failover order once per build. Candidate 0 is the
+            -- region's own PBF_URL, so a region with no configured mirror gets a
+            -- single-element list and behaves exactly as before.
+            dl_candidates := OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(:P_PBF_URL);
+            dl_host_i := 0;
+            dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
 
             -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
             -- europe-latest ~34 GB) download at Geofabrik's per-client-IP
@@ -669,12 +684,16 @@ BEGIN
                     -- Re-trigger instead: DOWNLOAD is idempotent (a live job is
                     -- not restarted, a finished file returns 'success') and the
                     -- resume skips completed segments.
+                    --
+                    -- Reuses the CURRENT dl_url rather than rotating: an idle
+                    -- worker is not a host failure, and rotating here would
+                    -- churn hosts on every container restart.
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET MESSAGE = 'PBF download idle (no worker); (re)starting resume at poll ' ||
                                   :poll_i || '/1320...',
                         HEARTBEAT_AT = SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
-                    EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+                    EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
                     -- The downloader reported an error. This is RETRYABLE, not
@@ -684,18 +703,53 @@ BEGIN
                     -- resumes -- completed segments are skipped and a partial
                     -- segment continues from its on-disk offset. Failing on the
                     -- first error abandoned tens of GB of good bytes with most
-                    -- of the poll budget still unspent. A terminal HTTP 4xx
-                    -- (e.g. a bad PBF URL) is not retried.
-                    IF (:dl_attempt < 3 AND POSITION('HTTP 4', :pbf_dl_status) = 0) THEN
+                    -- of the poll budget still unspent.
+                    --
+                    -- HOST FAILOVER. A 4xx is terminal on the PRIMARY (a bad
+                    -- PBF_URL is a config error - trying mirrors would only
+                    -- hide a stale catalog entry behind a slower failure) but
+                    -- merely retires a MIRROR, because a 404 there means that
+                    -- mirror lacks the path, not that the region is wrong.
+                    -- Rotation is otherwise driven by IS_ORIGIN_OUTAGE_MSG,
+                    -- deliberately the SAME classifier the relaunch bound uses,
+                    -- so "the origin is unwell" has one definition in this
+                    -- codebase rather than two that drift.
+                    --
+                    -- Rotating does NOT discard the transfer: the downloader
+                    -- refuses to adopt resume state from a host serving a
+                    -- different snapshot and keeps every staged byte, so the
+                    -- worst case is that a mirror is rejected and the primary
+                    -- is retried later.
+                    dl_rotated := FALSE;
+                    IF (:dl_host_i + 1 < ARRAY_SIZE(:dl_candidates)
+                        AND (OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(:pbf_dl_status)
+                             OR (POSITION('HTTP 4', :pbf_dl_status) > 0
+                                 AND :dl_host_i > 0))) THEN
+                        dl_host_i := :dl_host_i + 1;
+                        dl_url := GET(:dl_candidates, :dl_host_i)::VARCHAR;
+                        dl_rotated := TRUE;
+                        -- A fresh host gets a fresh error budget. Without this
+                        -- the retries already spent on a dead origin would be
+                        -- charged to the mirror, so a late rotation could get
+                        -- one attempt or none.
+                        dl_attempt := 0;
+                    END IF;
+
+                    IF (:dl_rotated
+                        OR (:dl_attempt < 3 AND POSITION('HTTP 4', :pbf_dl_status) = 0)) THEN
                         dl_attempt := :dl_attempt + 1;
                         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-                        SET MESSAGE = 'PBF download error; resuming (retry ' || :dl_attempt ||
-                                      '/3, poll ' || :poll_i || '/1320): ' ||
+                        SET MESSAGE = 'PBF download error; '
+                                      || IFF(:dl_rotated,
+                                             'switching to mirror ' || SPLIT_PART(:dl_url, '/', 3),
+                                             'resuming')
+                                      || ' (retry ' || :dl_attempt ||
+                                      ', poll ' || :poll_i || '/1320): ' ||
                                       LEFT(COALESCE(:pbf_dl_status, ''), 200),
                             HEARTBEAT_AT = SYSDATE()
                         WHERE JOB_ID = :P_JOB_ID;
                         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(60)';
-                        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+                        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
                         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                         CONTINUE;
                     END IF;
