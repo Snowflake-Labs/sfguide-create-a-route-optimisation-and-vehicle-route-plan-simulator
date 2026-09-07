@@ -196,6 +196,7 @@ DECLARE
     pbf_gib FLOAT DEFAULT NULL;
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
+    dl_attempt INTEGER DEFAULT 0;
 BEGIN
     -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
     -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
@@ -289,6 +290,7 @@ BEGIN
         dl_failed := FALSE;
         BEGIN
             pbf_dl_status := '';
+            dl_attempt := 0;
             EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
 
             -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
@@ -311,6 +313,27 @@ BEGIN
                     WHERE JOB_ID = :P_JOB_ID;
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
+                    -- The downloader reported an error. This is RETRYABLE, not
+                    -- terminal: for a transfer error the segment files and the
+                    -- .part.progress sidecar are left on the stage on purpose
+                    -- (they are the resume state), so re-triggering DOWNLOAD
+                    -- resumes -- completed segments are skipped and a partial
+                    -- segment continues from its on-disk offset. Failing on the
+                    -- first error abandoned tens of GB of good bytes with most
+                    -- of the poll budget still unspent. A terminal HTTP 4xx
+                    -- (e.g. a bad PBF URL) is not retried.
+                    IF (:dl_attempt < 3 AND POSITION('HTTP 4', :pbf_dl_status) = 0) THEN
+                        dl_attempt := :dl_attempt + 1;
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = 'PBF download error; resuming (retry ' || :dl_attempt ||
+                                      '/3, poll ' || :poll_i || '/1320): ' ||
+                                      LEFT(COALESCE(:pbf_dl_status, ''), 200)
+                        WHERE JOB_ID = :P_JOB_ID;
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(60)';
+                        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                        CONTINUE;
+                    END IF;
                     BREAK;
                 END IF;
             END FOR;
@@ -327,7 +350,7 @@ BEGIN
             LET dl_err STRING := CASE
                 WHEN LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')
                     THEN 'PBF download timed out after 1320 polls (~11h) (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
-                ELSE 'PBF download failed: ' || COALESCE(:pbf_dl_status, 'unknown status')
+                ELSE 'PBF download failed after ' || :dl_attempt || ' resume attempt(s): ' || COALESCE(:pbf_dl_status, 'unknown status')
             END;
             SYSTEM$LOG_INFO(dl_err);
             BEGIN
