@@ -153,6 +153,28 @@ case "$TOOL_PROCS" in
      else pass "ROUTING_TOOLS.TOOL_* procedures present ($TOOL_PROCS)"; fi ;;
 esac
 
+# PBF download failover. Engine-scoped (module 03 creates these), so engine_miss
+# gives the right severity in both modes. Worth its own probe because the failure
+# is SILENT and delayed: if the seed MERGE did not run, PBF_MIRROR_URLS returns a
+# single candidate for every region, failover is simply gone, and nobody finds
+# out until the next origin outage strands a multi-hour continental download.
+MIRROR_ROWS=$(scalar "SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.PBF_MIRRORS;")
+case "$MIRROR_ROWS" in
+  ''|*[!0-9]*) engine_miss "CORE.PBF_MIRRORS not queryable - the seed block in 03_region_management.sql did not run; PBF host failover is disabled" ;;
+  0|1)         engine_miss "CORE.PBF_MIRRORS has $MIRROR_ROWS row(s) - expected >= 2 (primary + at least one mirror); PBF host failover is effectively disabled" ;;
+  *)           pass "CORE.PBF_MIRRORS seeded ($MIRROR_ROWS rows)" ;;
+esac
+
+# The reconciler's relaunch queue. Two views, and BOTH must exist: the actor reads
+# _CANDIDATES while the self-suspend guard counts _PENDING, so losing either one
+# either strands every rescue or wedges the task permanently awake.
+RELAUNCH_VIEWS=$(scalar "SELECT COUNT(*) FROM OPENROUTESERVICE_APP.INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA='CORE' AND TABLE_NAME IN ('V_DOWNLOAD_RELAUNCH_PENDING','V_DOWNLOAD_RELAUNCH_CANDIDATES');")
+case "$RELAUNCH_VIEWS" in
+  ''|*[!0-9]*) engine_miss "cannot count CORE.V_DOWNLOAD_RELAUNCH_* views" ;;
+  2)           pass "CORE.V_DOWNLOAD_RELAUNCH_* views present (2)" ;;
+  *)           engine_miss "only $RELAUNCH_VIEWS/2 CORE.V_DOWNLOAD_RELAUNCH_* views - a dead provisioner cannot be relaunched, or the reconciler task will never sleep" ;;
+esac
+
 # --- 2. Region Builder banner ------------------------------------------------
 # The five keys from fleet_admin_app/ui/src/app/api/regions/healthcheck/route.ts,
 # using that route's exact SQL. `build_spec` deliberately calls the 3-arg overload:
