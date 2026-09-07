@@ -34,6 +34,92 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
 
+-- ---------------------------------------------------------------------------
+-- PBF_MIRRORS + PBF_MIRROR_URLS
+-- ---------------------------------------------------------------------------
+-- Alternate hosts to fall back to when the primary PBF origin is unreachable.
+-- On 2026-09-07 a Geofabrik outage stalled a 91.8%-complete continental build
+-- with no second host to try; ftp5.gwdg.de mirrors the same tree and was, at
+-- that moment, byte-identical (same published md5, same 34,940,824,103 total).
+--
+-- A table rather than a container env var so an operator can add or disable a
+-- mirror with one UPDATE - no image rebuild, no ALTER SERVICE, and the current
+-- list is visible to SQL and to the admin UI.
+--
+-- SOURCE_HOST is load-bearing, not descriptive: it scopes a mirror to the
+-- upstream it actually mirrors. Region PBF URLs in this catalog come from TWO
+-- independent sources (Geofabrik and BBBike), and gwdg mirrors only the former.
+-- Without this column a bbbike URL would be rewritten onto a gwdg path that
+-- does not exist, converting a working region into a 404.
+--
+-- Priority 1 is the PRIMARY itself (mapped to its own host) so the whole
+-- ordered candidate list lives in one place and the failover order is readable
+-- without also reading code.
+--
+-- NOTE the deliberate asymmetry with the region catalog: mirrors are a
+-- DOWNLOAD-time concern only. The catalog scraper stays Geofabrik-authoritative,
+-- so PBF_URL keeps its canonical value and a mirror never leaks into stored
+-- metadata, build history, or the UI's notion of where a region comes from.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS (
+    PRIORITY     INT NOT NULL,        -- 1 = primary, ascending = failover order
+    SOURCE_HOST  VARCHAR NOT NULL,    -- upstream host this row applies to
+    MIRROR_BASE  VARCHAR NOT NULL,    -- scheme+host+path prefix replacing the origin
+    ENABLED      BOOLEAN DEFAULT TRUE,
+    NOTE         VARCHAR,
+    UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}';
+
+-- Seeded with MERGE, not INSERT: this module is re-run by every install and a
+-- bare INSERT would duplicate the rows on each pass (and duplicates would
+-- produce duplicate download candidates). MERGE also preserves an operator's
+-- ENABLED / NOTE edits across re-installs, which is the point of the table.
+MERGE INTO OPENROUTESERVICE_APP.CORE.PBF_MIRRORS t
+USING (
+    SELECT 1 AS PRIORITY, 'download.geofabrik.de' AS SOURCE_HOST,
+           'https://download.geofabrik.de' AS MIRROR_BASE,
+           'Primary origin.' AS NOTE
+    UNION ALL
+    SELECT 2, 'download.geofabrik.de',
+           'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de',
+           'Full Geofabrik mirror (GWDG). Verified byte-identical 2026-09-07. '
+           || 'Note ftp2.de.freebsd.org is NOT an independent alternative - it '
+           || 'redirects here and its TLS cert does not match its hostname.'
+) s
+ON t.PRIORITY = s.PRIORITY AND t.SOURCE_HOST = s.SOURCE_HOST
+WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, ENABLED, NOTE)
+    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, TRUE, s.NOTE);
+
+-- Candidate download URLs for a PBF, in failover order.
+--
+-- Returns [P_PBF_URL] UNCHANGED when no enabled mirror matches the URL's host,
+-- so BBBike regions, manually entered URLs, and any future source behave
+-- exactly as they do today. That default is what keeps this change additive.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(P_PBF_URL VARCHAR)
+RETURNS ARRAY
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}'
+AS
+$$
+    -- Guarded with ARRAY_SIZE, NOT COALESCE: ARRAY_AGG over zero matching rows
+    -- returns an EMPTY ARRAY rather than NULL, so a COALESCE default never
+    -- fires and every non-mirrored source (BBBike, manual URLs) silently gets
+    -- ZERO download candidates instead of its own URL back - measured, not
+    -- theoretical.
+    SELECT IFF(ARRAY_SIZE(cand) = 0, ARRAY_CONSTRUCT(P_PBF_URL), cand)
+    FROM (
+        SELECT COALESCE(
+            (
+                SELECT ARRAY_AGG(m.MIRROR_BASE
+                                 || REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1))
+                         WITHIN GROUP (ORDER BY m.PRIORITY)
+                FROM OPENROUTESERVICE_APP.CORE.PBF_MIRRORS m
+                WHERE m.ENABLED
+                  AND LOWER(m.SOURCE_HOST)
+                      = LOWER(REGEXP_SUBSTR(P_PBF_URL, '^https?://([^/]+)', 1, 1, 'e', 1))
+            ), ARRAY_CONSTRUCT()) AS cand
+    )
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
 LANGUAGE SQL
