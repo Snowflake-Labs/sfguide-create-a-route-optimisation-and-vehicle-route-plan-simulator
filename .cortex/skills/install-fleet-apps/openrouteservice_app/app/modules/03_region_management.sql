@@ -206,7 +206,7 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- V_DOWNLOAD_RELAUNCH_CANDIDATES
+-- V_DOWNLOAD_RELAUNCH_PENDING
 -- ---------------------------------------------------------------------------
 -- Region builds whose PROVISIONING PROCEDURE is gone while the PBF download is
 -- still unfinished. Everything below the procedure already self-heals: the
@@ -225,6 +225,12 @@ $$;
 -- keep-awake conditions, so the task would sleep before ever seeing it). Two
 -- hand-maintained copies would drift, and the two failure modes are opposite
 -- and both bad: strand every candidate, or wedge the task permanently awake.
+--
+-- This view is the ELIGIBILITY half, shared by both consumers. The one thing
+-- the two consumers disagree about - a row still serving its backoff - is
+-- emitted as the COOLDOWN_ELAPSED flag and filtered by
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES alone, so there is still exactly one copy of
+-- the predicate.
 --
 -- Eligibility, and why each clause is load-bearing:
 --   STAGE = 'DOWNLOADING'      - the download failure/timeout handler updates
@@ -277,11 +283,15 @@ $$;
 --                                ~18 minutes and spent the whole budget inside
 --                                one outage; an unhealthy origin needs to be
 --                                given time to recover between attempts.
+--                                Emitted as the COOLDOWN_ELAPSED flag, NOT
+--                                filtered here: the two consumers need
+--                                different answers about a row in backoff. See
+--                                V_DOWNLOAD_RELAUNCH_CANDIDATES below.
 --   live count matches         - a RUNNING candidate counts itself (expect
 --                                exactly 1); a terminal candidate must see 0.
 --                                Either way there is no OTHER in-flight job
 --                                for the region.
-CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
 AS
 WITH deaths AS (
@@ -317,6 +327,18 @@ SELECT
     -- Classified HERE so the reconciler stamps the same verdict the bound was
     -- evaluated against; the same function drives the counts in `deaths`.
     OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(j.MESSAGE) AS IS_ORIGIN_OUTAGE,
+    -- Escalating backoff: 10 min after the first relaunch, doubling, capped at
+    -- 4 hours. POWER returns a FLOAT and DATEADD needs an integer, hence ::INT.
+    -- Exposed as a FLAG here and filtered on by only ONE of the two consumers
+    -- below; see V_DOWNLOAD_RELAUNCH_CANDIDATES for why that split is
+    -- load-bearing rather than cosmetic.
+    COALESCE(
+        d.LAST_AT IS NULL
+     OR SYSDATE() > DATEADD(
+            MINUTE,
+            LEAST(10 * POWER(2, COALESCE(d.N_BUILD, 0)
+                                + COALESCE(d.N_ORIGIN, 0)), 240)::INT,
+            d.LAST_AT), TRUE) AS COOLDOWN_ELAPSED,
     IFF(j.STATUS = 'RUNNING', 'provisioner_died', 'download_terminal') AS REASON
 FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
 LEFT JOIN deaths d ON d.R = UPPER(j.REGION)
@@ -328,16 +350,6 @@ WHERE j.STAGE = 'DOWNLOADING'
   -- upstream outage without human intervention.
   AND COALESCE(d.N_BUILD, 0) < 3
   AND COALESCE(d.N_ORIGIN, 0) < 12
-  -- Escalating backoff: 10 min after the first relaunch, doubling, capped at
-  -- 4 hours. POWER returns a FLOAT and DATEADD needs an integer, hence ::INT.
-  AND (
-        d.LAST_AT IS NULL
-     OR SYSDATE() > DATEADD(
-            MINUTE,
-            LEAST(10 * POWER(2, COALESCE(d.N_BUILD, 0)
-                                + COALESCE(d.N_ORIGIN, 0)), 240)::INT,
-            d.LAST_AT)
-      )
   AND (
         -- the procedure stopped writing its heartbeat: it is gone. The loop
         -- writes every 30-90s, so 15 minutes of silence is unambiguous.
@@ -356,6 +368,42 @@ WHERE j.STAGE = 'DOWNLOADING'
            OR j.MESSAGE ILIKE '%PBF download failed%'))
       )
   AND COALESCE(l.N, 0) = IFF(j.STATUS = 'RUNNING', 1, 0);
+
+-- ---------------------------------------------------------------------------
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES
+-- ---------------------------------------------------------------------------
+-- Rows the reconciler should act on RIGHT NOW: everything eligible, minus
+-- those still serving their backoff.
+--
+-- WHY THIS IS A SEPARATE VIEW FROM ..._PENDING, and why the cooldown is not
+-- just an extra clause in it: RESCUE_PENDING_PROVISIONS reads the eligibility
+-- predicate TWICE - once to act, and once in its self-suspend guard, because
+-- the task runs on a 2-minute serverless schedule and sleeps when there is no
+-- work. Those two consumers need DIFFERENT answers about a row in cooldown.
+-- The actor must skip it (that is the whole point of the backoff); the
+-- keep-awake guard must still SEE it, because nothing else re-arms the task -
+-- the re-arm paths are the provision enqueue endpoint and the prewarm procs,
+-- neither of which fires here. Filtering the cooldown in a single shared view
+-- would therefore have made the task suspend itself while a candidate sat
+-- waiting, and the backoff would never elapse from anyone's point of view:
+-- a 24h stall converted into a permanent one.
+--
+-- Columns are listed explicitly rather than SELECT *: a view freezes its
+-- column list at creation, so a `SELECT *` wrapper over a base view that later
+-- gains a column fails every read with "declared N column(s), but view query
+-- produces M". Both views live in this file and are recreated together, but an
+-- out-of-band recreate of the base alone would break the wrapper silently.
+--
+-- The bound still guarantees the task can sleep: once a region exhausts its
+-- class bound it drops out of ..._PENDING too, both counts return to 0, and
+-- there is no permanent wake-loop.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE, PBF_URL, STATUS,
+       HEARTBEAT_AT, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE, COOLDOWN_ELAPSED, REASON
+FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
+WHERE COOLDOWN_ELAPSED;
 
 -- Durable repair telemetry (survives REBUILD_REGION_GRAPHS stage purge).
 -- Used by REPAIR_STUCK_REGION_BUILDS for byte-growth stall detection and
@@ -4684,12 +4732,18 @@ BEGIN
         -- A download-relaunch candidate that is already FAILED/ERROR matches
         -- NONE of the conditions above (its ERROR_MSG is not one of the two
         -- graph values), so without this count the task would suspend itself
-        -- before ever acting on it. Reading the view rather than re-stating the
-        -- predicate also keeps the cap authoritative in one place: once a region
-        -- is at 3 relaunches it drops out of the view, this count returns to 0,
-        -- and the task can still go to sleep - no permanent wake-loop.
+        -- before ever acting on it.
+        --
+        -- Reads ..._PENDING, NOT ..._CANDIDATES: a row serving its backoff is
+        -- deliberately absent from CANDIDATES, so counting that view here would
+        -- put the task to sleep exactly while a rescue was waiting to become
+        -- due - and nothing would wake it, because the only re-arm paths are the
+        -- provision enqueue endpoint and the prewarm procs. The result would be
+        -- a permanent stall rather than a delayed retry. PENDING still respects
+        -- the per-class bound, so once a region is exhausted this returns to 0
+        -- and the task can sleep - no permanent wake-loop.
         SELECT COUNT(*) INTO :relaunch_left
-          FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES;
+          FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING;
         IF ((:jobs_left + :prewarm_left + :relaunch_left) = 0) THEN
             ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
         END IF;
