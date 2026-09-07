@@ -571,10 +571,17 @@ export async function activateDataset(
     err.vehicleType = vehicleType;
     throw err;
   }
-  // Atomic-ish: deactivate other siblings, then activate this one.
-  const deact = await snowSql(
-    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = FALSE
+  // Establish the "exactly one IS_ACTIVE per (REGION, VEHICLE_TYPE)" invariant in
+  // ONE statement. This used to be two UPDATEs (deactivate siblings, then
+  // activate this one), commented "atomic-ish" - two concurrent activations for
+  // the same scope could interleave and leave two active rows or none, which
+  // silently doubles or blanks every V_*_CURRENT consumer. A single UPDATE whose
+  // SET expression is the predicate cannot interleave.
+  //
+  // The deactivated count is read separately and is therefore advisory only; the
+  // invariant does not depend on it, and nothing but the response message uses it.
+  const priorActive = await snowSql(
+    `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
      WHERE REGION = ${escVal(region)}
        AND VEHICLE_TYPE = ${escVal(vehicleType)}
        AND DATASET_ID <> ${escVal(datasetId)}
@@ -583,13 +590,14 @@ export async function activateDataset(
   );
   await snowSql(
     `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = TRUE
-     WHERE DATASET_ID = ${escVal(datasetId)}`,
+     SET IS_ACTIVE = (DATASET_ID = ${escVal(datasetId)})
+     WHERE REGION = ${escVal(region)}
+       AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
     'FLEET_INTELLIGENCE', 'CORE',
   );
   return {
     activated: datasetId,
-    deactivated: (deact[0] as any)?.['number of rows updated'] ?? 0,
+    deactivated: Number((priorActive[0] as any)?.N ?? 0),
     region,
     vehicleType,
   };
@@ -676,31 +684,34 @@ async function archivePriorDatasets(
   newJobId: string,
   label: string,
 ): Promise<void> {
-  try {
-    await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = FALSE
-       WHERE REGION = ${escVal(region)}
-         AND VEHICLE_TYPE = ${escVal(vehicleType)}
-         AND IS_ACTIVE = TRUE`,
-      'FLEET_INTELLIGENCE', 'CORE',
-    );
-  } catch (e: any) {
-    log('WARN', 'Studio',
-        `archivePriorDatasets UPDATE failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
-        { jobId: newJobId });
-  }
+  // INSERT the new dataset as INACTIVE first, then flip the invariant in ONE
+  // statement. The previous order (deactivate-all, then INSERT already-TRUE) left
+  // a window where two concurrent runs for the same scope both deactivated and
+  // then both inserted an active row.
   try {
     await snowSql(
       `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
          (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
        SELECT ${escVal(newJobId)}, ${escVal(region)}, ${escVal(vehicleType)},
-              ${escVal(label)}, TRUE`,
+              ${escVal(label)}, FALSE`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
     log('WARN', 'Studio',
         `archivePriorDatasets INSERT failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = (DATASET_ID = ${escVal(newJobId)})
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets activate failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
         { jobId: newJobId });
   }
 }
@@ -737,23 +748,19 @@ async function deactivateDataset(
   vehicleType: string,
 ): Promise<void> {
   try {
+    // One statement: demote this dataset and promote the newest healthy peer in
+    // the same breath, so the scope is never left with zero or two active rows.
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = FALSE
-       WHERE DATASET_ID = ${escVal(datasetId)}`,
-      'FLEET_INTELLIGENCE', 'CORE',
-    );
-    await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = TRUE
-       WHERE DATASET_ID = (
-         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-         WHERE REGION = ${escVal(region)}
-           AND VEHICLE_TYPE = ${escVal(vehicleType)}
-           AND DATASET_ID <> ${escVal(datasetId)}
-         ORDER BY CREATED_AT DESC
-         LIMIT 1
-       )`,
+       SET IS_ACTIVE = (DATASET_ID = (
+             SELECT MAX_BY(DATASET_ID, CREATED_AT)
+             FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             WHERE REGION = ${escVal(region)}
+               AND VEHICLE_TYPE = ${escVal(vehicleType)}
+               AND DATASET_ID <> ${escVal(datasetId)}
+           ))
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
@@ -784,18 +791,18 @@ async function revertArchivePriorDatasets(
         { jobId: newJobId });
   }
   try {
-    // Re-activate the most recent remaining dataset for this scope.
+    // Re-activate the most recent remaining dataset for this scope, and demote
+    // everything else, in one statement.
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = TRUE
-       WHERE DATASET_ID = (
-         SELECT DATASET_ID
-         FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-         WHERE REGION = ${escVal(region)}
-           AND VEHICLE_TYPE = ${escVal(vehicleType)}
-         ORDER BY CREATED_AT DESC
-         LIMIT 1
-       )`,
+       SET IS_ACTIVE = (DATASET_ID = (
+             SELECT MAX_BY(DATASET_ID, CREATED_AT)
+             FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             WHERE REGION = ${escVal(region)}
+               AND VEHICLE_TYPE = ${escVal(vehicleType)}
+           ))
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
