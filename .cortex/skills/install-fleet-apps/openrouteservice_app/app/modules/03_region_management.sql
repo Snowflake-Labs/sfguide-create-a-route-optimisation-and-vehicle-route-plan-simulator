@@ -52,6 +52,15 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version"
 -- Without this column a bbbike URL would be rewritten onto a gwdg path that
 -- does not exist, converting a working region into a 404.
 --
+-- PATH_REGEX is load-bearing for the same reason at file granularity: a
+-- "Geofabrik mirror" is usually a PARTIAL mirror. GWDG carries exactly three
+-- files (europe, germany, north-america), not the whole tree - measured, and
+-- the reason this column exists. Offering a mirror for a file it does not have
+-- is worse than having no mirror at all: the rotation would spend its failover
+-- on a guaranteed 404. Happily the covered files are the multi-hour continental
+-- transfers, which are precisely the ones where failover is worth anything;
+-- a small extract downloads in minutes and simply retries its origin.
+--
 -- Priority 1 is the PRIMARY itself (mapped to its own host) so the whole
 -- ordered candidate list lives in one place and the failover order is readable
 -- without also reading code.
@@ -64,6 +73,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS (
     PRIORITY     INT NOT NULL,        -- 1 = primary, ascending = failover order
     SOURCE_HOST  VARCHAR NOT NULL,    -- upstream host this row applies to
     MIRROR_BASE  VARCHAR NOT NULL,    -- scheme+host+path prefix replacing the origin
+    PATH_REGEX   VARCHAR,             -- NULL = every path; else only matching paths
     ENABLED      BOOLEAN DEFAULT TRUE,
     NOTE         VARCHAR,
     UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE()
@@ -78,17 +88,21 @@ MERGE INTO OPENROUTESERVICE_APP.CORE.PBF_MIRRORS t
 USING (
     SELECT 1 AS PRIORITY, 'download.geofabrik.de' AS SOURCE_HOST,
            'https://download.geofabrik.de' AS MIRROR_BASE,
-           'Primary origin.' AS NOTE
+           NULL AS PATH_REGEX,
+           'Primary origin. Serves the full tree.' AS NOTE
     UNION ALL
     SELECT 2, 'download.geofabrik.de',
            'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de',
-           'Full Geofabrik mirror (GWDG). Verified byte-identical 2026-09-07. '
-           || 'Note ftp2.de.freebsd.org is NOT an independent alternative - it '
+           '^/(europe|germany|north-america)-latest\\.osm\\.pbf$',
+           'PARTIAL Geofabrik mirror (GWDG): carries ONLY those three extracts, '
+           || 'verified 2026-09-07 (europe md5 matched the origin byte for byte; '
+           || 'africa-latest 404s). Widen PATH_REGEX if it grows. Note '
+           || 'ftp2.de.freebsd.org is NOT an independent alternative - it '
            || 'redirects here and its TLS cert does not match its hostname.'
 ) s
 ON t.PRIORITY = s.PRIORITY AND t.SOURCE_HOST = s.SOURCE_HOST
-WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, ENABLED, NOTE)
-    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, TRUE, s.NOTE);
+WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, PATH_REGEX, ENABLED, NOTE)
+    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, s.PATH_REGEX, TRUE, s.NOTE);
 
 -- Candidate download URLs for a PBF, in failover order.
 --
@@ -116,6 +130,12 @@ $$
                 WHERE m.ENABLED
                   AND LOWER(m.SOURCE_HOST)
                       = LOWER(REGEXP_SUBSTR(P_PBF_URL, '^https?://([^/]+)', 1, 1, 'e', 1))
+                  -- A partial mirror must not be offered for a file it does not
+                  -- carry, or the rotation spends its one failover on a certain
+                  -- 404. NULL means the source serves everything.
+                  AND (m.PATH_REGEX IS NULL
+                       OR RLIKE(REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                m.PATH_REGEX))
             ), ARRAY_CONSTRUCT()) AS cand
     )
 $$;
@@ -548,6 +568,11 @@ DECLARE
     dl_host_i INTEGER DEFAULT 0;
     dl_url VARCHAR DEFAULT '';
     dl_rotated BOOLEAN DEFAULT FALSE;
+    -- Completed passes over the candidate list. Bounds the wrap-back-to-primary
+    -- below so a total outage of every host cannot ping-pong for the entire 11h
+    -- poll ceiling: failing sooner hands the build to RESCUE_PENDING_PROVISIONS,
+    -- whose escalating backoff is the right tool for a multi-hour outage.
+    dl_cycles INTEGER DEFAULT 0;
 BEGIN
     -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
     -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
@@ -732,6 +757,19 @@ BEGIN
                         -- the retries already spent on a dead origin would be
                         -- charged to the mirror, so a late rotation could get
                         -- one attempt or none.
+                        dl_attempt := 0;
+                    ELSEIF (:dl_host_i > 0 AND :dl_cycles < 2) THEN
+                        -- Mirrors exhausted. Fall back to the PRIMARY rather
+                        -- than giving up on it: the primary is the authoritative
+                        -- source and its outage may already be over, whereas a
+                        -- mirror is partial by nature. Without this a mirror
+                        -- 404 ends the build outright, which is WORSE than
+                        -- having no mirror configured - the pre-mirror code
+                        -- would have kept retrying the origin.
+                        dl_cycles := :dl_cycles + 1;
+                        dl_host_i := 0;
+                        dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+                        dl_rotated := TRUE;
                         dl_attempt := 0;
                     END IF;
 
