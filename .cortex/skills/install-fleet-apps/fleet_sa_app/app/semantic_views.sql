@@ -59,8 +59,11 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
 
   DIMENSIONS (
     trips.region AS REGION
-      WITH SYNONYMS ('city', 'area', 'geography')
-      COMMENT = 'Operating region (e.g. SanFrancisco, Germany, Europe)'
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Operating region KEY - the exact filter value (e.g. SanFrancisco, Germany, Europe). Use for equality filters; use region_label for the phrase a person types.'
+    , trips.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'sf', 'bay area', 'region name')
+      COMMENT = 'Human-readable region label (e.g. "San Francisco", not "SanFrancisco"). Prefer this when the user names a place in words.'
     , trips.vehicle_type AS VEHICLE_TYPE
       WITH SYNONYMS ('vehicle class', 'fleet type', 'mode', 'asset mode')
       COMMENT = 'Asset mode dimension (car, hgv, ebike, and future modes). A data value, not a fixed set.'
@@ -124,7 +127,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
       COMMENT = 'Total trips departing from origins'
   )
 
-  COMMENT = 'Universal, mode-agnostic fleet analytics. Reflects the currently active dataset (region + asset mode). Covers trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins (trip volume by origin POI), broken down by region, asset mode (vehicle_type), operator, shift, and origin type. Mode is a data dimension - the same view answers for car, hgv, ebike, and future modes.'
+  COMMENT = 'Universal, mode-agnostic fleet analytics. Covers EVERY loaded region and asset mode at once - filter by region (key) or region_label (readable). Trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins (trip volume by origin POI). Mode is a data dimension - the same view answers for car, hgv, ebike, and future modes.'
 
   AI_SQL_GENERATION 'Universal fleet analytics semantic view for the Route Optimisation & Fleet Intelligence solution. It replaces the per-vehicle taxi / food-delivery / fleet-operations views with ONE mode-agnostic model.
 
@@ -174,9 +177,18 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.route_variation AS ROUTE_VARIATION COMMENT = 'Route variation classification'
     , trip_dev.trip_type AS TRIP_TYPE COMMENT = 'Trip type'
     , trip_dev.origin_name AS ORIGIN_NAME WITH SYNONYMS ('origin') COMMENT = 'Trip origin name'
-    , trip_dev.origin_city AS ORIGIN_CITY COMMENT = 'Trip origin city'
+    , trip_dev.origin_city AS ORIGIN_CITY WITH SYNONYMS ('origin city', 'from city') COMMENT = 'Trip origin city / region label (readable, e.g. "San Francisco")'
     , trip_dev.dest_name AS DEST_NAME WITH SYNONYMS ('destination') COMMENT = 'Trip destination name'
-    , trip_dev.dest_city AS DEST_CITY COMMENT = 'Trip destination city'
+    , trip_dev.dest_city AS DEST_CITY WITH SYNONYMS ('destination city', 'to city') COMMENT = 'Trip destination city / region label (readable, e.g. "San Francisco")'
+    , trip_dev.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Region KEY - the exact filter value (e.g. SanFrancisco, Europe). Use for equality filters.'
+    , trip_dev.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'sf', 'bay area', 'region name')
+      COMMENT = 'Human-readable region label (e.g. "San Francisco"). Prefer this when the user names a place in words.'
+    , trip_dev.vehicle_type AS VEHICLE_TYPE
+      WITH SYNONYMS ('asset mode', 'vehicle class', 'fleet type', 'mode')
+      COMMENT = 'Asset mode (car, hgv, ebike)'
     , trip_dev.is_route_deviation AS IS_ROUTE_DEVIATION WITH SYNONYMS ('deviated') COMMENT = 'Whether the trip deviated from the planned route'
   )
 
@@ -191,10 +203,17 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.avg_route_deviation_factor AS AVG(route_deviation_factor) COMMENT = 'Average actual/expected route factor'
   )
 
-  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination.'
+  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable).'
 
   AI_SQL_GENERATION 'Route deviation semantic view for the Route Optimisation & Fleet Intelligence solution.
 One fact: trip_dev (TRIP_DEVIATION_ANALYSIS), one row per analyzed trip.
+
+REGION IS A DIMENSION, NOT A GLOBAL SETTING:
+- This view holds EVERY loaded region and asset mode at once, so an unfiltered aggregate MIXES regions. Filter when the user names a place.
+- `region` is the KEY (SanFrancisco, Europe); `region_label` is the readable form ("San Francisco"). Filtering region = ''San Francisco'' matches NOTHING - use region_label for a spoken place name.
+- Deviation thresholds are per asset mode, so comparing a deviation RATE across vehicle_type values is meaningful; comparing raw excess km across regions of different size is not.
+- If a region returns no rows, say that region has no deviation data - do NOT conclude the dataset is missing.
+
 Conventions:
 - "deviation rate" -> deviation_rate_pct; raw counts -> deviation_trips.
 - "excess km" -> total_excess_km; "time lost" -> total_time_lost_min.
@@ -290,7 +309,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
     sessions.dwell_status AS STATUS WITH SYNONYMS ('dwell type', 'session status') COMMENT = 'Dwell status (DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST, etc.)'
     , sessions.facility_type AS FACILITY_TYPE WITH SYNONYMS ('facility') COMMENT = 'Facility type at the dwell location'
     , sessions.loc_type AS LOC_TYPE COMMENT = 'Location type'
-    , sessions.city AS CITY WITH SYNONYMS ('dwell city') COMMENT = 'City of the dwell location'
+    , sessions.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Region KEY - the exact filter value (e.g. SanFrancisco, Europe). Use this for equality filters; use city for the phrase a person types.'
+    , sessions.city AS CITY
+      WITH SYNONYMS ('dwell city', 'city', 'san francisco', 'sf', 'bay area', 'area', 'geography', 'location city')
+      COMMENT = 'Human-readable city / region label of the dwell location (e.g. "San Francisco", not "SanFrancisco"). Prefer this when the user names a place in words.'
+    , sessions.vehicle_type AS VEHICLE_TYPE
+      WITH SYNONYMS ('asset mode', 'vehicle class', 'fleet type', 'mode')
+      COMMENT = 'Asset mode (car, hgv, ebike). A data value, not a fixed set.'
     , sessions.location_name AS LOCATION_NAME WITH SYNONYMS ('facility name', 'place') COMMENT = 'Dwell location name'
     , sessions.h3_cell AS H3_CELL_R7 WITH SYNONYMS ('hex cell', 'h3') COMMENT = 'H3 resolution-7 cell for congestion heatmaps'
     , sessions.driver_profile AS DRIVER_PROFILE COMMENT = 'Driver profile'
@@ -316,13 +343,19 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
     , driver_dwell.avg_driver_session_min AS AVG(d_avg_session_min) COMMENT = 'Average per-driver session minutes'
   )
 
-  COMMENT = 'Dwell analysis: vehicle dwell sessions (where/how long vehicles stop), facility utilization, H3 congestion, and per-driver SLA breaches.'
+  COMMENT = 'Dwell analysis: vehicle dwell sessions (where/how long vehicles stop), facility utilization, H3 congestion, and per-driver SLA breaches. Covers EVERY loaded region and asset mode - filter by region (key) or city (label).'
 
   AI_SQL_GENERATION 'Dwell analysis semantic view for the Route Optimisation & Fleet Intelligence solution.
 
 Entities (two independent facts):
 - sessions (DT_DWELL_ENRICHED): one row per dwell session (a vehicle stopped at a location). Use for dwell time, facility utilization (group by facility_type/city/location_name), and congestion (group by h3_cell).
 - driver_dwell (DT_DRIVER_DWELL_SUMMARY): per-driver aggregates including SLA breach counts. Use for SLA / per-driver dwell questions.
+
+REGION IS A DIMENSION, NOT A GLOBAL SETTING:
+- This view holds EVERY loaded region and asset mode at once. It is never pre-filtered to one region, so an unfiltered aggregate MIXES regions. When the user names a place, filter on it.
+- Two columns, deliberately: `region` is the KEY (SanFrancisco, Europe) for exact equality; `city` is the readable LABEL ("San Francisco") for the phrase a person types. Prefer `city ILIKE` or `city =` when the user says "San Francisco", because region = ''San Francisco'' matches NOTHING (the key has no space).
+- If a question has no region and the answer would differ per region, either group by region or say which regions are present. Never report a single number as if one region were the whole fleet.
+- If a region genuinely returns no rows, say that region has no dwell data - do NOT conclude the dataset is missing.
 
 Conventions:
 - "congestion" / "heatmap" -> group sessions by h3_cell.
@@ -360,7 +393,12 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
   )
 
   DIMENSIONS (
-    idle.region AS REGION COMMENT = 'Operating region'
+    idle.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Operating region KEY - the exact filter value (e.g. SanFrancisco, Europe)'
+    , idle.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'sf', 'bay area', 'region name')
+      COMMENT = 'Human-readable region label (e.g. "San Francisco"). Prefer this when the user names a place in words.'
     , idle.last_location_name AS LAST_LOCATION_NAME WITH SYNONYMS ('parked at', 'location') COMMENT = 'Where the vehicle is parked'
     , idle.last_location_type AS LAST_LOCATION_TYPE COMMENT = 'Type of parking location'
     , idle.assigned_dispatcher AS ASSIGNED_DISPATCHER WITH SYNONYMS ('dispatcher') COMMENT = 'Assigned dispatcher'
@@ -660,6 +698,12 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
     , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
     , offers.dropoff_city AS DROPOFF_CITY WITH SYNONYMS ('destination city') COMMENT = 'Dropoff city'
+    , offers.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Region KEY of the offer - the exact filter value (e.g. SanFrancisco, Europe)'
+    , offers.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'sf', 'bay area', 'region name')
+      COMMENT = 'Human-readable region label of the offer (e.g. "San Francisco"). Prefer this when the user names a place in words.'
     , offers.product AS PRODUCT COMMENT = 'Product / commodity'
     , offers.hazmat AS HAZMAT COMMENT = 'Hazmat flag'
     -- MAP-READY (Cowork data_to_map): coordinates as FLOATs and a straight-line lane as a
@@ -704,9 +748,16 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
   )
 
-  COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'
+  COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page. Covers EVERY loaded region - filter by region (key) or region_label (readable).'
 
   AI_SQL_GENERATION 'Backload matching semantic view.
+
+REGION IS A DIMENSION, NOT A GLOBAL SETTING:
+- offers and trailers hold EVERY loaded region at once, so an unfiltered aggregate MIXES regions. Filter when the user names a place.
+- `region` is the KEY (SanFrancisco, Europe); `region_label` is the readable form ("San Francisco"). region = ''San Francisco'' matches NOTHING - use region_label for a spoken place name.
+- A backload MATCH is only meaningful within one region: never present a cross-region offer/trailer pairing as a candidate match.
+- If a region returns no rows, say that region has no backload data - do NOT conclude the dataset is missing.
+
 Entities (three independent facts, do NOT mix in one grouping):
 - offers (VW_EXTERNAL_OFFERS): external freight offers available to fill a backload.
 - trailers (VW_TRAILERS): trailers in transit / available, with ETA and capacity.
