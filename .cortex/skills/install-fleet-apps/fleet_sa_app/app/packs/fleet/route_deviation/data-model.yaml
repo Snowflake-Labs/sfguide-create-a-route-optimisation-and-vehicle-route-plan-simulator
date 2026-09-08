@@ -53,6 +53,9 @@ entities:
       - { name: IS_ROUTE_DEVIATION,       type: BOOLEAN,    description: "Whether the trip deviated from the planned route" }
       - { name: ACTUAL_PATH,              type: GEOGRAPHY,  description: "Driven route geometry" }
       - { name: EXPECTED_PATH,            type: GEOGRAPHY,  description: "Planned route geometry" }
+      - { name: REGION,                   type: VARCHAR,    description: "Region KEY (filter value, e.g. SanFrancisco)" }
+      - { name: REGION_LABEL,             type: VARCHAR,    description: "Human-readable region label (e.g. San Francisco)" }
+      - { name: VEHICLE_TYPE,             type: VARCHAR,    description: "Asset mode (car / hgv / ebike)" }
 
   # ---- Derived: per-driver rollup (computed from TRIP_DEVIATION) ------------
   - name: DRIVER_DEVIATION_SUMMARY
@@ -61,9 +64,10 @@ entities:
     grain: "One row per driver"
     primary_key: DRIVER_ID
     derived_from: TRIP_DEVIATION
-    group_by: [DRIVER_ID]
+    group_by: [DRIVER_ID, REGION]
     columns:
       - { name: DRIVER_ID,                  type: VARCHAR,  nullable: false }
+      - { name: REGION,                     type: VARCHAR,  nullable: false }
       - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
       - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
       - { name: DEVIATION_RATE_PCT,         type: NUMBER,   expr: "ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2)" }
@@ -83,9 +87,10 @@ entities:
     grain: "One row per trip date"
     primary_key: TRIP_DATE
     derived_from: TRIP_DEVIATION
-    group_by: [TRIP_DATE]
+    group_by: [TRIP_DATE, REGION]
     columns:
       - { name: TRIP_DATE,                  type: DATE,     nullable: false }
+      - { name: REGION,                     type: VARCHAR,  nullable: false }
       - { name: DAY_OF_WEEK,                type: VARCHAR,  expr: "ANY_VALUE(DAYNAME(TRIP_DATE))" }
       - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
       - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
@@ -97,32 +102,35 @@ entities:
 
   # ---- Derived: per-point GPS trace for the trip inspector ------------------
   - name: TRIP_GPS_POINTS
-    description: "Per-GPS-point trace (speed, accuracy, detour, derived teleport) for the route inspector. Scoped by the route_deviation CONFIG region/vehicle."
+    description: "Per-GPS-point trace (speed, accuracy, detour, derived teleport) for the route inspector. Multi-region: REGION is a dimension, and the teleport threshold is resolved per vehicle type."
     access_pattern: derived
     grain: "One row per GPS ping"
     materialization: view
     sql: |
+      -- MULTI-REGION. The teleport threshold is joined from the ping's OWN
+      -- vehicle type rather than read from a single CONFIG value: an e-bike and
+      -- an HGV have very different plausible jump distances, so one scalar
+      -- threshold mislabels every other asset mode's pings.
       SELECT
         t.TRIP_ID, t.VEHICLE_ID, t.POINT_INDEX, t.TS,
         t.SPEED_KMH, t.GPS_ACCURACY_M, t.IS_DETOUR,
         t.POINT_GEOM,
         ST_X(t.POINT_GEOM) AS LNG,
         ST_Y(t.POINT_GEOM) AS LAT,
+        t.REGION,
+        FLEET_APP.CORE.REGION_LABEL(t.REGION) AS REGION_LABEL,
+        t.VEHICLE_TYPE,
         CASE WHEN ST_DISTANCE(
                    t.POINT_GEOM,
                    ST_MAKEPOINT(
                      LAG(ST_X(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX),
                      LAG(ST_Y(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX)
                    )
-                 ) > (
-                   SELECT TELEPORT_DISTANCE_M FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
-                   WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-                   LIMIT 1
-                 ) THEN TRUE ELSE FALSE END AS IS_TELEPORT
+                 ) > vp.TELEPORT_DISTANCE_M THEN TRUE ELSE FALSE END AS IS_TELEPORT
       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
-      WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-        AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-        AND t.POINT_GEOM IS NOT NULL
+      LEFT JOIN FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE vp
+        ON vp.VEHICLE_TYPE = t.VEHICLE_TYPE
+      WHERE t.POINT_GEOM IS NOT NULL
 
   # ---- Context: region/vehicle control row ----------------------------------
   - name: CONFIG

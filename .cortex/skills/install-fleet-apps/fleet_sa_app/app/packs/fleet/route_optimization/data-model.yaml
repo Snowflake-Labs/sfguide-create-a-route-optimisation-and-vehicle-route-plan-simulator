@@ -44,6 +44,7 @@ entities:
       - { name: TRIP_START, type: TIMESTAMP_NTZ }
       - { name: ORIGIN_POI_ID, type: VARCHAR }
       - { name: DESTINATION_POI_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
   - name: POIS_CURRENT
     description: "Current POIs for terminal naming/geo."
     access_pattern: mapped
@@ -82,6 +83,7 @@ entities:
       )
       SELECT
         ls.VEHICLE_ID, f.REGION,
+        FLEET_APP.CORE.REGION_LABEL(f.REGION) AS REGION_LABEL,
         ls.LOCATION_ID    AS LAST_LOCATION_ID,
         ls.LOCATION_NAME  AS LAST_LOCATION_NAME,
         ls.LOC_TYPE       AS LAST_LOCATION_TYPE,
@@ -182,11 +184,16 @@ entities:
       - { name: NET_OUTBOUND_TRIPS, type: NUMBER }
       - { name: DEMAND_SCORE, type: NUMBER }
     sql: |
+      -- Recency window is computed PER REGION. A single global MAX(TRIP_START)
+      -- would let the region with the freshest trips silently prune every other
+      -- region out of the 30-day window - the exact class of cross-region
+      -- contamination that de-scoping this layer could otherwise introduce.
       WITH window_bounds AS (
-        SELECT MAX(TRIP_START) AS MAX_TS FROM {src}
+        SELECT REGION, MAX(TRIP_START) AS MAX_TS FROM {src} GROUP BY REGION
       ),
       recent_trips AS (
-        SELECT t.* FROM {src} t, window_bounds w
+        SELECT t.* FROM {src} t
+        JOIN window_bounds w ON w.REGION = t.REGION
         WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
       ),
       flows AS (
@@ -199,7 +206,9 @@ entities:
         FROM flows WHERE POI_ID IS NOT NULL GROUP BY POI_ID
       )
       SELECT
-        p.LOCATION_ID AS TERMINAL_ID, p.REGION, p.NAME AS TERMINAL_NAME,
+        p.LOCATION_ID AS TERMINAL_ID, p.REGION,
+        FLEET_APP.CORE.REGION_LABEL(p.REGION) AS REGION_LABEL,
+        p.NAME AS TERMINAL_NAME,
         p.LOCATION_TYPE, p.POINT_GEOM AS TERMINAL_GEOM,
         p.LAT AS TERMINAL_LAT, p.LNG AS TERMINAL_LNG,
         a.OUTBOUND, a.INBOUND, (a.OUTBOUND - a.INBOUND) AS NET_OUTBOUND_TRIPS,

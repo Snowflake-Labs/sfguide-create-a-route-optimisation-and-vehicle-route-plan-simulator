@@ -23,6 +23,20 @@ SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS;
 
 CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- MULTI-REGION. No CONFIG filter: REGION is carried as a dimension and the
+-- per-region computations below are PARTITIONED rather than pre-filtered.
+-- Three things had to become per-region for that to stay correct:
+--   1. home_anchor averaged POI coordinates. Across two regions that
+--      average lands in the ocean between them, so it is grouped BY REGION
+--      and joined on the vehicle's own region.
+--   2. `cls` resolved the vehicle class from the single CONFIG vehicle_type.
+--      It now JOINs on each vehicle's own VEHICLE_TYPE, so a mixed fleet
+--      gets the right payload band per vehicle. An unknown vehicle_type
+--      still yields no row for that vehicle (the inner join replaces the
+--      old `EXISTS (SELECT 1 FROM cls)` guard, per vehicle instead of
+--      globally).
+--   3. last_drop needs no filter at all - it groups by VEHICLE_ID, which is
+--      globally unique (measured: 0 colliding ids across datasets).
 WITH last_drop AS (
   SELECT VEHICLE_ID,
          MAX_BY(DESTINATION_LON, TRIP_END)    AS DROPOFF_LON,
@@ -30,18 +44,12 @@ WITH last_drop AS (
          MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
          MAX(TRIP_END)                        AS LAST_TRIP_END
   FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-  WHERE REGION       = (SELECT REGION       FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-    AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
   GROUP BY VEHICLE_ID
 ),
 home_anchor AS (
-  SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
+  SELECT REGION, AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
   FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-  WHERE REGION = (SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-),
-cls AS (
-  SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
-  WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
+  GROUP BY REGION
 ),
 p AS (
   SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
@@ -50,9 +58,11 @@ p AS (
 SELECT
   f.VEHICLE_ID                                        AS TRAILER_ID,
   f.REGION                                            AS OPERATING_COUNTRY,
+  f.REGION                                            AS REGION,
+  FLEET_APP.CORE.REGION_LABEL(f.REGION)               AS REGION_LABEL,
   COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
-  COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
-  COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+  COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
+  COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
   COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
   ld.DROPOFF_LON                                      AS DROPOFF_LON,
@@ -74,13 +84,13 @@ SELECT
   IFF(ld.LAST_TRIP_END > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
   -- Chain target under TARGET_MODE=home_depot. A per-request target
   -- (dispatcher_choice) is supplied at query time and falls back to this.
-  COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS TARGET_LON,
-  COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS TARGET_LAT,
+  COALESCE(h.LNG, ha.HOME_LON)                        AS TARGET_LON,
+  COALESCE(h.LAT, ha.HOME_LAT)                        AS TARGET_LAT,
   COALESCE(h.NAME, 'Home Depot')                      AS TARGET_LABEL,
   ST_DISTANCE(
     ST_MAKEPOINT(ld.DROPOFF_LON, ld.DROPOFF_LAT),
-    ST_MAKEPOINT(COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)),
-                 COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)))
+    ST_MAKEPOINT(COALESCE(h.LNG, ha.HOME_LON),
+                 COALESCE(h.LAT, ha.HOME_LAT))
   ) / 1000.0                                          AS TARGET_GAP_KM,
   'IN_TRANSIT'                                        AS STATUS,
   FALSE                                               AS HAZMAT_CERT,
@@ -90,27 +100,22 @@ SELECT
   -- its own asset master.
   ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
     MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
-  (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+  c.PAYLOAD_KG_TYP::NUMBER                            AS MAX_PAYLOAD_KG,
   NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
 FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
 JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+JOIN FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = f.VEHICLE_TYPE
+LEFT JOIN home_anchor ha ON ha.REGION = f.REGION
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
-WHERE f.REGION       = (SELECT REGION       FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-  AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-  AND EXISTS (SELECT 1 FROM cls);
+LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = ld.DROPOFF_POI_ID;
 
 CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
-WITH cls AS (
-  SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
-  WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-),
--- Pickup windows are spread across the PLANNING_LEAD_DAYS horizon, not the
--- next ~10 hours. Vehicle availability is forward-looking (see TRAILERS),
--- so a pool bunched into today is reachable only by vehicles free today
--- and silently starves every later vehicle of candidates.
-p AS (
+-- MULTI-REGION. `cls` now JOINs each trip's own VEHICLE_TYPE instead of
+-- resolving one CONFIG value, and the POOL_CAP is applied PER REGION -
+-- a single global QUALIFY would let the region with the most recent trips
+-- consume the whole cap and starve every other region of internal volumes.
+WITH p AS (
   SELECT
     COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
     COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
@@ -118,6 +123,8 @@ p AS (
 )
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
+  t.REGION                                                                    AS REGION,
+  FLEET_APP.CORE.REGION_LABEL(t.REGION)                                       AS REGION_LABEL,
   COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
   t.ORIGIN_LON                                                                AS PICKUP_LON,
   t.ORIGIN_LAT                                                                AS PICKUP_LAT,
@@ -139,24 +146,28 @@ SELECT
     )
   )                                                                           AS PICKUP_TO_TS,
   (
-    (SELECT SHIPMENT_KG_MIN FROM cls)
-    + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
+    c.SHIPMENT_KG_MIN
+    + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
   )::NUMBER                                                                   AS WEIGHT_KG,
   'B2B pallets'                                                               AS PRODUCT,
   FALSE                                                                       AS HAZMAT
 FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+JOIN FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-WHERE t.REGION       = (SELECT REGION       FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-  AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
-  AND EXISTS (SELECT 1 FROM cls)
-QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p);
+QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p);
 
 CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
-WITH cls AS (
-  SELECT * FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS
-  WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
+-- MULTI-REGION. An offer row carries a REGION but no VEHICLE_TYPE, so the
+-- class band is resolved through each region's OWN active dataset
+-- (DIM_DATASETS) rather than the single CONFIG vehicle_type. That keeps the
+-- weight rescaling correct when two regions run different asset modes.
+WITH reg_vt AS (
+  SELECT REGION, VEHICLE_TYPE
+  FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+  WHERE IS_ACTIVE
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY CREATED_AT DESC) = 1
 ),
 p AS (
   SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
@@ -179,11 +190,12 @@ shifted AS (
     ) AS PICKUP_FROM_TS_ADJ,
     GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
   FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
-  WHERE f.REGION = (SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1)
 )
 SELECT
   f.OFFER_ID,
   f.SOURCE,
+  f.REGION                                 AS REGION,
+  FLEET_APP.CORE.REGION_LABEL(f.REGION)    AS REGION_LABEL,
   -- SOURCE is a CHANNEL label whose values mix internal and external
   -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer
   -- "did this come from outside". SOURCE_SYSTEM is the system identity: a
@@ -202,10 +214,10 @@ SELECT
   f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
   DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(
-    (SELECT SHIPMENT_KG_MAX FROM cls),
+    c.SHIPMENT_KG_MAX,
     GREATEST(
-      (SELECT SHIPMENT_KG_MIN FROM cls),
-      ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+      c.SHIPMENT_KG_MIN,
+      (c.SHIPMENT_KG_MIN + ABS(HASH(f.OFFER_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))::NUMBER
     )
   )                                        AS WEIGHT_KG,
   COALESCE(f.PRODUCT, 'General freight')   AS PRODUCT,
@@ -213,9 +225,10 @@ SELECT
   COALESCE(f.HAZMAT, FALSE)                AS HAZMAT,
   f.SOURCE || ' load: ' || COALESCE(p2.NAME, 'Pickup') || ' -> ' || COALESCE(d.NAME, 'Dropoff') AS LISTING_TEXT
 FROM shifted f
+JOIN reg_vt rv ON rv.REGION = f.REGION
+JOIN FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = rv.VEHICLE_TYPE
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
-LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
-WHERE EXISTS (SELECT 1 FROM cls);
+LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID;
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql)
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_USER;

@@ -6,7 +6,6 @@
 // so a fresh install of install-fleet-apps makes both demos work without
 // requiring a manual `snow sql -f` step.
 
-import { currentRegionScalar } from './region';
 import { log } from '../diagnostics';
 import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables';
 import { ensureVehicleProfileCatalog } from '../studio/vehicle-profile-catalog';
@@ -50,10 +49,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        last_session AS (
+        WITH last_session AS (
           SELECT
             e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID, e.LOCATION_NAME,
             e.CITY, e.FACILITY_TYPE, e.LOC_TYPE, e.SESSION_START, e.SESSION_END,
@@ -67,12 +63,11 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
         ),
         fleet AS (
           SELECT f.VEHICLE_ID, f.REGION, f.HOME_LOCATION_ID, f.DRIVER_PROFILE
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
-          WHERE f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND f.REGION       = cfg.REGION
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
         )
         SELECT
           ls.VEHICLE_ID, f.REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)                                     AS REGION_LABEL,
           ls.LOCATION_ID                                                            AS LAST_LOCATION_ID,
           ls.LOCATION_NAME                                                          AS LAST_LOCATION_NAME,
           ls.LOC_TYPE                                                               AS LAST_LOCATION_TYPE,
@@ -95,21 +90,16 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        window_bounds AS (
-          SELECT MAX(t.TRIP_START) AS MAX_TS
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, cfg
-          WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND t.REGION       = cfg.REGION
+        WITH window_bounds AS (
+          SELECT t.REGION, MAX(t.TRIP_START) AS MAX_TS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+          GROUP BY t.REGION
         ),
         recent_trips AS (
           SELECT t.*
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, window_bounds w, cfg
-          WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND t.REGION       = cfg.REGION
-            AND t.TRIP_START   >= DATEADD('day', -30, w.MAX_TS)
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+          JOIN window_bounds w ON w.REGION = t.REGION
+          WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
         ),
         flows AS (
           SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
@@ -125,6 +115,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
         SELECT
           p.LOCATION_ID                                       AS TERMINAL_ID,
           p.REGION,
+          FLEET_APP.CORE.REGION_LABEL(p.REGION)               AS REGION_LABEL,
           p.NAME                                              AS TERMINAL_NAME,
           p.LOCATION_TYPE,
           p.POINT_GEOM                                        AS TERMINAL_GEOM,
@@ -145,13 +136,9 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        filtered AS (
+        WITH filtered AS (
           SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
-          WHERE f.REGION = cfg.REGION AND f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
           QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
         )
         SELECT
@@ -457,14 +444,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
                  MAX(TRIP_END) AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
         ),
+        -- Home anchor is grouped BY REGION. Averaging POI coordinates across two
+        -- regions puts the fallback depot in the ocean between them.
         home_anchor AS (
-          SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
+          SELECT REGION, AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          GROUP BY REGION
         ),
         -- Collapse DIM_POIS to one row per LOCATION_ID. The base table can have
         -- multiple rows per LOCATION_ID (POI name variants, regen overlap),
@@ -476,7 +463,6 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  ANY_VALUE(LAT)  AS LAT,
                  ANY_VALUE(LNG)  AS LNG
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         -- Collapse DIM_FLEET to one row per VEHICLE_ID for the same reason
@@ -488,25 +474,16 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  ANY_VALUE(HOME_LOCATION_ID)   AS HOME_LOCATION_ID,
                  ANY_VALUE(BATTERY_RANGE_KM)   AS BATTERY_RANGE_KM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
-        ),
-        -- Resolve the active vehicle_type to its class profile. If the
-        -- vehicle_type isn't in VEHICLE_CLASS_PROFILE the JOIN returns 0 rows
-        -- so the view is empty - the React page surfaces this as a precise
-        -- "Unknown vehicle_type - add a row to VEHICLE_CLASS_PROFILE" error.
-        cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
           f.REGION                                            AS OPERATING_COUNTRY,
+          f.REGION                                            AS REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)               AS REGION_LABEL,
           COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
-          COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
-          COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+          COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
+          COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
           COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
@@ -522,13 +499,17 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- real loads for no reason.
           ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
             MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
-          (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+          c.PAYLOAD_KG_TYP::NUMBER                            AS MAX_PAYLOAD_KG,
           NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
         FROM fleet f
         JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+        -- Class profile resolved per VEHICLE, not from one CONFIG value, so a
+        -- mixed-mode fleet gets the right payload band. An unknown vehicle_type
+        -- drops that vehicle (what the old EXISTS-on-cls guard did globally).
+        JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = f.VEHICLE_TYPE
+        LEFT JOIN home_anchor ha ON ha.REGION = f.REGION
         LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)`,
+        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -542,7 +523,6 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         trips AS (
@@ -552,18 +532,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- VROOM shipments under different INT-NNNNN ids.
           SELECT t.TRIP_ID,
                  t.TRIP_START,
+                 t.REGION, t.VEHICLE_TYPE,
                  t.ORIGIN_LON, t.ORIGIN_LAT,
                  t.DESTINATION_LON, t.DESTINATION_LAT,
                  t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
-          WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
-        ),
-        cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         ),
         p AS (
           SELECT
@@ -600,16 +574,19 @@ export async function ensureBackloadAndAssetVelocityObjects(
           )                                                                           AS PICKUP_TO_TS,
           -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
           (
-            (SELECT SHIPMENT_KG_MIN FROM cls)
-            + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
+            c.SHIPMENT_KG_MIN
+            + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
           )::NUMBER                                                                   AS WEIGHT_KG,
           'B2B pallets'                                                               AS PRODUCT,
           FALSE                                                                       AS HAZMAT
         FROM trips t
+        -- Class band resolved from the TRIP's own vehicle type. An unknown
+        -- vehicle_type drops those trips, which is what the old global
+        -- EXISTS-on-cls guard did for the single active type.
+        JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
         LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)
-        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)`,
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -639,7 +616,6 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         offers AS (
@@ -648,16 +624,24 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- newest by POSTED_AT (and PICKUP_FROM_TS as tiebreaker).
           SELECT *
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           QUALIFY ROW_NUMBER() OVER (
             PARTITION BY OFFER_ID
             ORDER BY POSTED_AT DESC NULLS LAST, PICKUP_FROM_TS DESC NULLS LAST
           ) = 1
         ),
+        -- Each region's class band is resolved through that region's OWN active
+        -- dataset, since an offer carries a REGION but no VEHICLE_TYPE.
+        reg_vt AS (
+          SELECT REGION, VEHICLE_TYPE
+          FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+          WHERE IS_ACTIVE
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY CREATED_AT DESC) = 1
+        ),
         cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          SELECT rv.REGION, vcp.*
+          FROM reg_vt rv
+          JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+            ON vcp.VEHICLE_TYPE = rv.VEHICLE_TYPE
         ),
         p AS (
           SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
@@ -702,14 +686,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
           DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
-          -- (which is HGV-shaped at the table level) into the active class's
-          -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
-          -- never gets 25t shipments.
+          -- (which is HGV-shaped at the table level) into the offer region's
+          -- own class [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so an ebike
+          -- region never gets 25t shipments.
           LEAST(
-            (SELECT SHIPMENT_KG_MAX FROM cls),
+            c.SHIPMENT_KG_MAX,
             GREATEST(
-              (SELECT SHIPMENT_KG_MIN FROM cls),
-              ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+              c.SHIPMENT_KG_MIN,
+              (c.SHIPMENT_KG_MIN + ABS(HASH(f.OFFER_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))::NUMBER
             )
           )                                       AS WEIGHT_KG,
           f.PRODUCT,
@@ -717,9 +701,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.HAZMAT,
           f.LISTING_TEXT
         FROM shifted f
+        JOIN cls c ON c.REGION = f.REGION
         LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)`,
+        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------
@@ -1126,10 +1110,17 @@ export async function ensureBackloadAndAssetVelocityObjects(
             COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         ),
+        -- Average speed per REGION, resolved through that region's own active
+        -- dataset vehicle type. A single scalar would apply one asset mode's
+        -- speed to every region's chain timings.
         spd AS (
-          SELECT GREATEST(1, COALESCE(MAX(AVG_SPEED_KMH), 60)) AS AVG_SPEED_KMH
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
-          WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          SELECT d.REGION,
+                 GREATEST(1, COALESCE(MAX(vcp.AVG_SPEED_KMH), 60)) AS AVG_SPEED_KMH
+          FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          LEFT JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+            ON vcp.VEHICLE_TYPE = d.VEHICLE_TYPE
+          WHERE d.IS_ACTIVE
+          GROUP BY d.REGION
         ),
         base AS (
           SELECT
@@ -1146,11 +1137,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
             -- Deliberately an ESTIMATE: it only has to order the two hops correctly.
             -- Road time comes from the live matrix call before anything is proposed.
             DATEADD('minute',
-              ROUND(l.APPROX_DISTANCE_KM / (SELECT AVG_SPEED_KMH FROM spd) * 60) + 40,
+              ROUND(l.APPROX_DISTANCE_KM / COALESCE(sp.AVG_SPEED_KMH, 60) * 60) + 40,
               l.REQUESTED_PICKUP_TS)                                 AS LEG1_DELIVERY_ETA_TS,
             p.MIN_PROGRESS_PCT, p.MIN_PROGRESS_RATIO, p.LEG1_OPTIONS, p.TARGET_RADIUS_KM, p.MAX_EMPTY_KM, p.ENF_EQUIP
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO t
           JOIN p ON TRUE
+          -- Cruise speed for the trailer's OWN region (spd is per-region now).
+          LEFT JOIN spd sp ON sp.REGION = t.OPERATING_COUNTRY
           JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l
             ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
            AND (NOT p.ENFORCE_DATE
@@ -1827,16 +1820,14 @@ $$`,
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT
         COMMENT = ${TRACK_RO}
         AS
-        WITH cfg AS (
-          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        )
+        -- Multi-region: bound to the ACTIVE dataset per region (which is what
+        -- makes this a _CURRENT view) but no longer pinned to the single CONFIG
+        -- region, so places for every loaded region are visible.
         SELECT p.*
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES p
-        JOIN cfg ON p.REGION = cfg.REGION
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = p.JOB_ID
-         AND d.REGION = cfg.REGION
-         AND d.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+         AND d.REGION = p.REGION
          AND d.IS_ACTIVE = TRUE`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
@@ -1869,12 +1860,13 @@ $$`,
           f.VEHICLE_EQUIPMENT,
           f.DISTANCE_KM, f.PRICE_PER_KM_USD,
           COALESCE(f.STATUS, 'OPEN')              AS STATUS,
+          f.REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)   AS REGION_LABEL,
+          f.VEHICLE_TYPE,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-        WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1882,6 +1874,9 @@ $$`,
         COMMENT = ${TRACK_FX}
         AS
         SELECT PARTNER_ID, NAME, COUNTRY,
+               REGION,
+               FLEET_APP.CORE.REGION_LABEL(REGION) AS REGION_LABEL,
+               VEHICLE_TYPE,
                CREDIT_SCORE, PAYMENT_DAYS_AVG, KYC_STATUS,
                BLACKLIST_FLAG, FOUNDED_YEAR,
                CASE
@@ -1890,9 +1885,7 @@ $$`,
                  WHEN CREDIT_SCORE < 70 OR KYC_STATUS = 'PENDING' THEN 'YELLOW'
                  ELSE 'GREEN'
                END AS TRUST_BADGE
-        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
-        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1900,10 +1893,11 @@ $$`,
         COMMENT = ${TRACK_FX}
         AS
         SELECT PARTNER_ID, ORIGIN_COUNTRY, DEST_COUNTRY,
+               REGION,
+               FLEET_APP.CORE.REGION_LABEL(REGION) AS REGION_LABEL,
+               VEHICLE_TYPE,
                VEHICLE_EQUIPMENT, SHIPPED_AT, COST_PER_KM, OUTCOME
-        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
-        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {

@@ -115,8 +115,6 @@ SELECT
     t.POINT_INDEX, t.ODOMETER_KM, t.POSTED_SPEED_KMH,
     t.VEHICLE_TYPE, t.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT t
-WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION
@@ -134,20 +132,18 @@ SELECT
     t.PLANNED_DISTANCE_KM AS EXPECTED_DISTANCE_KM,
     t.IS_DETOUR, t.DETOUR_DISTANCE_KM,
     t.TRIP_START, t.TRIP_END, t.STATUS, t.ORS_PROFILE,
-    t.VEHICLE_TYPE, t.REGION
-FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
-WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1);
+    t.VEHICLE_TYPE, t.REGION,
+    FLEET_APP.CORE.REGION_LABEL(t.REGION) AS REGION_LABEL
+FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_FLEET
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
     f.VEHICLE_ID, f.DRIVER_PROFILE, f.OPERATING_MODE,
-    f.REGION AS HOME_CITY, f.VEHICLE_TYPE, f.REGION
+    f.REGION AS HOME_CITY, f.VEHICLE_TYPE, f.REGION,
+    FLEET_APP.CORE.REGION_LABEL(f.REGION) AS REGION_LABEL
 FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
-WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-  AND f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_SCHEDULE
@@ -166,8 +162,7 @@ SELECT
     s.PLANNED_START AS SCHEDULED_START,
     s.ORS_PROFILE,
     s.REGION
-FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT s
-WHERE s.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1);
+FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT s;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_POIS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -176,7 +171,6 @@ SELECT
     p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
     p.CATEGORY, p.LAT, p.LNG, p.POINT_GEOM, p.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
-WHERE p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
 -- TRIP_DEVIATION_ANALYSIS: was a DYNAMIC TABLE in the demo skill; here a plain VIEW.
@@ -213,9 +207,13 @@ SELECT
                ELSE t.ACTUAL_DURATION_MIN END, 2) AS EXPECTED_DURATION_MIN,
     ROUND(ST_DISTANCE(t.ORIGIN, t.DESTINATION) / 1000, 2) AS STRAIGHT_LINE_DISTANCE_KM,
     COALESCE(po.NAME, 'Unknown') AS ORIGIN_NAME,
-    COALESCE(po.REGION, 'N/A') AS ORIGIN_CITY,
+    -- ORIGIN_CITY / DEST_CITY are the POI's region rendered as a readable label
+    -- (they used to emit the raw region KEY, unmatchable against a typed phrase),
+    -- falling back to the trip's own region rather than 'N/A' when the POI join
+    -- misses.
+    FLEET_APP.CORE.REGION_LABEL(COALESCE(po.REGION, t.REGION)) AS ORIGIN_CITY,
     COALESCE(pd.NAME, 'Unknown') AS DEST_NAME,
-    COALESCE(pd.REGION, 'N/A') AS DEST_CITY,
+    FLEET_APP.CORE.REGION_LABEL(COALESCE(pd.REGION, t.REGION)) AS DEST_CITY,
     ROUND(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM, 2) AS DISTANCE_DEVIATION_KM,
     ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
                THEN (t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / t.EXPECTED_DISTANCE_KM * 100
@@ -226,15 +224,24 @@ SELECT
     ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
                THEN ((t.ACTUAL_DISTANCE_KM / NULLIF(t.EXPECTED_DISTANCE_KM, 0)) - 1) * 100
                ELSE 0 END, 2) AS DURATION_DEVIATION_PCT,
-    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1)
+    -- Deviation thresholds are resolved from the TRIP's OWN vehicle type, not
+    -- from a single CONFIG value. On a multi-region fact a scalar lookup would
+    -- apply one asset mode's tolerance to every other mode's trips.
+    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > vp.DEVIATION_DISTANCE_RATIO
          THEN TRUE ELSE FALSE END AS IS_DISTANCE_DEVIATION,
     CASE WHEN t.IS_DETOUR THEN TRUE ELSE FALSE END AS IS_DURATION_DEVIATION,
     CASE WHEN t.IS_DETOUR
-           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1)
+           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > vp.DEVIATION_DISTANCE_RATIO
          THEN TRUE ELSE FALSE END AS IS_ROUTE_DEVIATION,
     t.ACTUAL_PATH,
-    t.EXPECTED_PATH
+    t.EXPECTED_PATH,
+    -- Carried so the pack layer and the semantic view can filter by region /
+    -- asset mode without re-joining the fleet.
+    t.REGION,
+    FLEET_APP.CORE.REGION_LABEL(t.REGION) AS REGION_LABEL,
+    t.VEHICLE_TYPE
 FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION t
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp ON vp.VEHICLE_TYPE = t.VEHICLE_TYPE
 LEFT JOIN FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_SCHEDULE s ON t.TRIP_ID = s.SCHEDULE_ID
 LEFT JOIN trip_points tp ON t.TRIP_ID = tp.TRIP_ID
 LEFT JOIN dedup_pois po ON t.ORIGIN_POI_ID = po.ID AND po.RN = 1
@@ -994,6 +1001,36 @@ $$
     ELSE TO_BOOLEAN('ORS ' || COALESCE(P_RESPONSE:error::STRING, 'service_unreachable')
                     || ' host=' || COALESCE(P_RESPONSE:ors_host::STRING, '?'))
   END
+$$;
+
+-- Region key -> human-readable label. The region keys this repo uses are
+-- CamelCase identifiers ('SanFrancisco', 'NewYork', 'Europe'), so a consumer
+-- filtering on the literal phrase a person types ('San Francisco') matched
+-- NOTHING - which is how a dwell question about San Francisco was answered
+-- "there is no San Francisco data" while 15,091 San Francisco sessions were
+-- sitting in the view. Every contract view that exposes a region now also
+-- exposes REGION_LABEL, and the semantic views carry it as a `city` dimension
+-- with synonyms, so Cortex Analyst can resolve the spoken form.
+--
+-- Deliberately derived from the key rather than read from
+-- OPENROUTESERVICE_APP.CORE.REGION_CATALOG.REGION_NAME, for two reasons:
+--   1. This file is engine-FREE (check_engine_guards.py). A VIEW or UDF body
+--      resolves its references at CREATE time, so touching the engine database
+--      here would hard-fail every `--no-engine` install and, because
+--      `snow sql -f` stops at the first error, would abandon every statement
+--      below it in this file.
+--   2. REGION_NAME is not reliably a display name anyway - measured on
+--      tib85385 it holds 'us/new-jersey' for UsNewJersey (a Geofabrik slug,
+--      worse than the derived 'Us New Jersey'), against 5 of 7 sampled keys
+--      where the derivation matches the catalog exactly.
+-- Idempotent and dependency-free: safe on any install mode.
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.REGION_LABEL(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  TRIM(REGEXP_REPLACE(COALESCE(P_REGION, ''), '([a-z0-9])([A-Z])', '\\1 \\2'))
 $$;
 
 -- Region -> ORS profile. Every live-routing view below used to hardcode

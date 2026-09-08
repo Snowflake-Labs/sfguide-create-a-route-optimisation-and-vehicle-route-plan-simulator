@@ -89,6 +89,7 @@ entities:
       SELECT
           TELEMETRY_ID, VEHICLE_ID, TRIP_ID, TS, POINT_GEOM,
           SPEED_KMH, STATUS, LOCATION_ID, LOCATION_TYPE,
+          REGION, VEHICLE_TYPE,
           LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS PREV_STATUS,
           CASE WHEN STATUS != LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS)
                THEN 1 ELSE 0 END AS IS_STATE_CHANGE
@@ -109,6 +110,7 @@ entities:
       )
       SELECT
         VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID,
+        REGION,
         MIN(TS) AS SESSION_START, MAX(TS) AS SESSION_END,
         DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SECONDS,
         ROUND(DATEDIFF('second', MIN(TS), MAX(TS)) / 60.0, 1) AS DWELL_MINUTES,
@@ -117,7 +119,7 @@ entities:
         H3_POINT_TO_CELL_STRING(ST_CENTROID(ST_COLLECT(POINT_GEOM)), 7) AS H3_CELL_R7
       FROM sessions
       WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
-      GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID
+      GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION
 
   # ---- Consumer-facing: enriched sessions (was DT_DWELL_ENRICHED) -----------
   - name: DWELL_SESSIONS
@@ -135,13 +137,22 @@ entities:
       - { name: FACILITY_TYPE, type: VARCHAR }
       - { name: H3_CELL_R7, type: VARCHAR }
       - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION, type: VARCHAR, description: "Region KEY (join/filter value, e.g. SanFrancisco)" }
+      - { name: CITY, type: VARCHAR, description: "Human-readable location/region label (e.g. San Francisco)" }
     sql: |
       SELECT
         s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
         s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
         s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
         COALESCE(d.NAME, rs.NAME, 'Unknown') AS LOCATION_NAME,
-        COALESCE(d.CITY, 'N/A') AS CITY,
+        -- Region is carried as a first-class dimension so a consumer can filter
+        -- it. Nothing here is scoped to one region any more.
+        s.REGION,
+        -- Fall back to the region LABEL rather than 'N/A' when the POI join
+        -- misses: 97% of sessions reference a LOCATION_ID that is absent from
+        -- DIM_POIS, which used to blank the only geographic column on the row
+        -- and made the whole fact look regionless.
+        COALESCE(d.CITY, FLEET_APP.CORE.REGION_LABEL(s.REGION)) AS CITY,
         COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, s.STATUS) AS FACILITY_TYPE,
         COALESCE(d.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
         tf.VEHICLE_TYPE, tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
@@ -162,17 +173,20 @@ entities:
       - { name: HOUR_BUCKET,  type: TIMESTAMP_NTZ }
       - { name: SESSION_COUNT, type: NUMBER }
       - { name: AVG_DWELL_MIN, type: FLOAT }
+      - { name: REGION,       type: VARCHAR }
     sql: |
       SELECT
         H3_CELL_R7,
         DATE_TRUNC('hour', SESSION_START) AS HOUR_BUCKET,
+        REGION,
+        CITY,
         COUNT(DISTINCT VEHICLE_ID) AS VEHICLE_COUNT,
         COUNT(*) AS SESSION_COUNT,
         ROUND(AVG(DWELL_MINUTES), 1) AS AVG_DWELL_MIN,
         ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN
       FROM {src}
       WHERE STATUS LIKE 'DWELL%'
-      GROUP BY H3_CELL_R7, HOUR_BUCKET
+      GROUP BY H3_CELL_R7, HOUR_BUCKET, REGION, CITY
 
   - name: SLA_ALERTS
     description: "SLA breach alerts (WARNING/CRITICAL). Thresholds are vehicle-type-aware, read from the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA (keyed by VEHICLE_TYPE x LOCATION_TYPE)."
@@ -191,7 +205,7 @@ entities:
         e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID,
         e.SESSION_START, e.SESSION_END, e.DWELL_SECONDS, e.DWELL_MINUTES,
         e.PING_COUNT, e.AVG_POINT, e.H3_CELL_R7,
-        e.LOCATION_NAME, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
+        e.LOCATION_NAME, e.REGION, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
         e.HOME_BASE_NAME, e.OPERATING_MODE, e.DRIVER_PROFILE,
         t.WARNING_MIN AS WARNING_MINUTES, t.CRITICAL_MIN AS CRITICAL_MINUTES,
         CASE
@@ -219,9 +233,10 @@ entities:
       - { name: TOTAL_DWELL_MIN, type: FLOAT }
       - { name: AVG_DWELL_MIN,  type: FLOAT }
       - { name: MAX_DWELL_MIN,  type: FLOAT }
+      - { name: REGION,         type: VARCHAR }
     sql: |
       SELECT
-        LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE,
+        LOCATION_ID, LOCATION_NAME, REGION, CITY, FACILITY_TYPE, LOC_TYPE,
         DATE_TRUNC('day', SESSION_START)::DATE AS VISIT_DATE,
         COUNT(DISTINCT VEHICLE_ID) AS UNIQUE_VEHICLES,
         COUNT(*) AS TOTAL_SESSIONS,
@@ -231,7 +246,7 @@ entities:
         ROUND(SUM(DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS
       FROM {src}
       WHERE STATUS LIKE 'DWELL%'
-      GROUP BY LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE
+      GROUP BY LOCATION_ID, LOCATION_NAME, REGION, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE
 
   - name: DRIVER_DWELL_SUMMARY
     description: "Per-driver dwell + SLA breach rollup."
@@ -248,9 +263,11 @@ entities:
       - { name: CRITICAL_BREACH_COUNT, type: NUMBER }
       - { name: AVG_SESSION_MIN, type: FLOAT }
       - { name: TOTAL_DWELL_HOURS, type: FLOAT }
+      - { name: REGION,         type: VARCHAR }
     sql: |
       SELECT
         e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME,
+        e.REGION,
         COUNT(*) AS TOTAL_DWELL_SESSIONS,
         ROUND(SUM(e.DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
         ROUND(SUM(e.DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS,
@@ -262,7 +279,7 @@ entities:
       LEFT JOIN {schema}.VW_SLA_ALERTS a
         ON e.VEHICLE_ID = a.VEHICLE_ID AND e.SESSION_ID = a.SESSION_ID AND e.STATUS = a.STATUS
       WHERE e.STATUS LIKE 'DWELL%'
-      GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME
+      GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME, e.REGION
 
   - name: DAILY_TRENDS
     description: "Fleet-wide daily dwell trend."
@@ -274,9 +291,12 @@ entities:
       - { name: TREND_DATE,     type: DATE }
       - { name: TOTAL_SESSIONS, type: NUMBER }
       - { name: ACTIVE_VEHICLES, type: NUMBER }
+      - { name: REGION,         type: VARCHAR }
     sql: |
       SELECT
         DATE_TRUNC('day', SESSION_START)::DATE AS TREND_DATE,
+        REGION,
+        CITY,
         COUNT(*) AS TOTAL_SESSIONS,
         COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES,
         ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
@@ -289,7 +309,7 @@ entities:
         COUNT(DISTINCT H3_CELL_R7) AS UNIQUE_H3_CELLS
       FROM {src}
       WHERE STATUS LIKE 'DWELL%'
-      GROUP BY TREND_DATE
+      GROUP BY TREND_DATE, REGION, CITY
 
   # ---- Context: region/vehicle control row -----------------------------------
   - name: CONFIG
