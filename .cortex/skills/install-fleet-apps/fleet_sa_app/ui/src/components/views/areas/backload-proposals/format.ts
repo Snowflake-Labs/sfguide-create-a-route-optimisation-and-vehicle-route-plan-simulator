@@ -9,8 +9,15 @@ export const fmtSlack = (v: number | null | undefined): string =>
 
 // Neutral place label: "City" or "City (CC)" when a country/region code is
 // present and meaningful. Never renders a bare "(?)".
+//
+// Upstream POI names arrive wrapped in literal double quotes (every row of
+// DIM_POIS.NAME carries them), so strip one enclosing pair here rather than in
+// each caller - otherwise stop tooltips and load rows read '"SARIZ PETROL"'.
+const unquote = (s: string): string =>
+  s.length >= 2 && s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1).trim() : s;
+
 export const place = (city: string | null | undefined, country?: string | null | undefined): string => {
-  const c = (city ?? '').trim();
+  const c = unquote((city ?? '').trim());
   const cc = (country ?? '').trim();
   if (!c) return cc || '-';
   return cc && cc !== '?' ? `${c} (${cc})` : c;

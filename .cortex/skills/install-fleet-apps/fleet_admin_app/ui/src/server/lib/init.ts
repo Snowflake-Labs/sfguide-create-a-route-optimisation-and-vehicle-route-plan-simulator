@@ -1293,14 +1293,26 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT
             q.*,
             q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM                     AS TOTAL_EMPTY_KM,
+            -- Every empty kilometre the chain actually incurs, INCLUDING the
+            -- residual run from the hop-2 delivery to the target (FINAL_GAP_KM,
+            -- allowed up to TARGET_RADIUS_KM). TOTAL_EMPTY_KM above stays the
+            -- two-leg subtotal because TOTAL_EMPTY_CHECK / MAX_TOTAL_EMPTY_KM
+            -- are calibrated against it, and redefining it would silently
+            -- re-prune the candidate set. Use THIS column for anything compared
+            -- against the direct-return baseline: that baseline is the FULL run
+            -- home, so leaving the residual out compares a partial chain cost
+            -- against a complete one and overstates the saving.
+            q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM    AS TOTAL_EMPTY_WITH_RESIDUAL_KM,
             q.LEG1_LOADED_KM + q.LEG2_LOADED_KM                   AS TOTAL_LOADED_KM,
             q.LEG1_EMPTY_KM + q.LEG1_LOADED_KM
-              + q.LEG2_EMPTY_KM + q.LEG2_LOADED_KM                AS TOTAL_KM,
+              + q.LEG2_EMPTY_KM + q.LEG2_LOADED_KM
+              + q.FINAL_GAP_KM                                    AS TOTAL_KM,
             -- The chain's own economics. NET_BENEFIT is the figure a dispatcher weighs
             -- against doing nothing; the direct-return baseline it is compared with is
-            -- computed alongside the proposal, not here.
+            -- computed alongside the proposal, not here. Costed on the residual-
+            -- inclusive empty distance for the reason given above.
             (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
-              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
             (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
             q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
             q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,
