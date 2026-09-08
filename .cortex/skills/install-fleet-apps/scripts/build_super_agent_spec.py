@@ -20,6 +20,38 @@ invisible until an agent answered differently depending on which one a user
 picked. So the super spec is derived from the consumer spec at build time and the
 consumer spec stays the single source for everything they share.
 
+THE OPS/ADMIN ROUTING IS DERIVED TOO
+------------------------------------
+The operator and installer routing used to be a hand-written THIRD copy inside
+this generator's ORCHESTRATION_SUFFIX, restating what the role specs already
+said. That is the same drift trap the consumer half was built to avoid, and worse
+here because `--check` only compares the generated file against this generator:
+it can prove the output is current while the text itself has silently diverged
+from ops-agent-spec.json. An edit to a role spec simply did not reach the super
+agent, which is how `recent_verb_attempts` came to be documented in the SUPER
+agent and not in the OPS agent that owns the verb.
+
+So the per-verb routing sections are now lifted VERBATIM from the role specs by
+section header (DERIVED_SECTIONS). What stays literal here is only what is
+specific to being a superuser and exists in no role spec.
+
+WHOLESALE CONCATENATION WOULD BE WRONG
+--------------------------------------
+A role spec is written for an agent with a NARROWER tool set, so some of its
+sections are actively FALSE for the superuser and must not be inherited:
+
+* ops and admin both end with "MAPS: you have no geospatial tool ... point them
+  at the Fleet Intelligence assistant". The super agent HAS all 21 routing verbs
+  and is that assistant, so inheriting this would make it refuse work it can do.
+* admin's "HANDOFF (you cannot do these)" lists building regions, suspending
+  services and changing cost settings as somebody else's job. The super agent
+  holds every one of those verbs.
+
+EXCLUDED_SECTIONS records each of those with its reason, and `derive_sections`
+asserts that EVERY section in a role spec is either derived or excluded. A new
+section added to a role spec therefore FAILS this build until someone decides
+which it is - which is the property the old hand-written copy could never have.
+
 Tenet 3 is preserved where it matters: this only produces a SPEC. The isolation
 boundary is the GRANT, and role_binding.sql grants FLEET_SUPER_AGENT to
 FLEET_APP_ADMIN only - never to FLEET_APP_USER - so an app user still cannot
@@ -36,16 +68,70 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app"
 SOURCE = APP_DIR / "agent-spec.json"
 OUT = APP_DIR / "super-agent-spec.json"
 
+OPS_SPEC = "ops-agent-spec.json"
+ADMIN_SPEC = "admin-agent-spec.json"
+
 # Role-scoped specs whose NATIVE tools are folded in on top of the consumer spec.
-# Their instructions are NOT merged - those live in the suffixes below, so the
-# consumer spec stays the single source for everything the agents share.
-EXTRA_TOOL_SOURCES = ("ops-agent-spec.json", "admin-agent-spec.json")
+EXTRA_TOOL_SOURCES = (OPS_SPEC, ADMIN_SPEC)
+
+# A section header: a line beginning with a fully capitalised word and carrying a
+# colon. Deliberately narrow so a continuation paragraph ("Known services live in
+# ...") is treated as part of the section above it rather than starting a new one.
+SECTION_RE = re.compile(r"^[A-Z]{2,}")
+
+# Ops/admin orchestration sections lifted VERBATIM into the super spec, in this
+# order. Keyed by the header text before its first colon.
+DERIVED_SECTIONS: list[tuple[str, str]] = [
+    (OPS_SPEC, "TOOL ROUTING (Ops verbs via FLEET_OPS_MCP)"),
+    (ADMIN_SPEC, "ADMIN verbs (via FLEET_ADMIN_MCP)"),
+    (OPS_SPEC, "REGION LIFECYCLE"),
+    (OPS_SPEC, "DATASETS"),
+    (OPS_SPEC, "COST AND SCALE"),
+    (OPS_SPEC, "AUDIT TRAIL"),
+    (OPS_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"),
+]
+
+# Sections deliberately NOT inherited, each with the reason. Every section in a
+# role spec must appear here or in DERIVED_SECTIONS, so adding a new one to a role
+# spec fails the build until it is classified.
+EXCLUDED_SECTIONS: dict[tuple[str, str], str] = {
+    (OPS_SPEC, "MAPS"):
+        "FALSE for the superuser: it says 'you have no geospatial tool' and hands "
+        "off to the Fleet Intelligence assistant, but the super agent attaches "
+        "ROUTING_MCP and IS that assistant. The VISUAL HANDOVER section below "
+        "gives the correct rule.",
+    (ADMIN_SPEC, "MAPS"):
+        "Identical to the ops MAPS section and false for the same reason.",
+    (ADMIN_SPEC, "HANDOFF (you cannot do these)"):
+        "FALSE for the superuser: it routes region builds, service suspension, "
+        "cost changes and dataset activation to another assistant, all of which "
+        "the super agent can do itself. The response instructions tell it never "
+        "to hand off.",
+    (ADMIN_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"):
+        "Byte-identical to the ops copy, which is derived above; inheriting both "
+        "would duplicate it in the prompt.",
+    (ADMIN_SPEC, "TOOL ROUTING"):
+        "A bare label with no body - it only introduces the ADMIN verbs section, "
+        "which is derived above under its own header.",
+    (ADMIN_SPEC, "SHARED READ-ONLY FACTS"):
+        "describe_deployment routing that the derived ops TOOL ROUTING section "
+        "already covers, and its closing 'resuming it is a Fleet Operations "
+        "action' is a handoff the super agent must not make.",
+    (ADMIN_SPEC, "CATALOG"):
+        "search_solution_catalog is already routed by the consumer spec's own "
+        "CATALOG section, which the super spec inherits wholesale.",
+    (ADMIN_SPEC, "DATA INVENTORY"):
+        "describe_data is routed by the DATA ACCESS ROUTING section below, which "
+        "can state it unconditionally - the admin wording hedges with 'if it is "
+        "available to you' because the admin bundle may lack the verb.",
+}
 
 MCP_SERVERS = [
     "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP",
@@ -94,40 +180,14 @@ RESPONSE_SUFFIX = (
     "activate_dataset for the datasets that already exist."
 )
 
+ORCHESTRATION_PREAMBLE = (
+    "\n\nOPERATOR AND INSTALLER TOOL ROUTING (superuser only). You hold the ops "
+    "and installer verbs in addition to everything above, so the rules below "
+    "apply to you directly - never hand any of them to another assistant:\n"
+)
+
+# Super-specific routing that exists in no role spec, so it stays literal here.
 ORCHESTRATION_SUFFIX = (
-    "\n\nOPERATOR AND INSTALLER TOOL ROUTING (superuser only):\n"
-    "- 'suspend/resume <service>', 'stop spend', 'wake the routing service' -> service_control "
-    "(exact service name + SUSPEND|RESUME). Confirm first.\n"
-    "- 'what is running', 'service status', 'list services and pools' -> service_inventory, or "
-    "service_status for one named service.\n"
-    "- 'is the platform healthy' -> healthcheck; 'what is installed / which regions / what is the "
-    "active region' -> describe_deployment; 'is the substrate complete' -> check_substrate (report "
-    "incomplete ONLY when it returns ok=false, and quote its notes).\n"
-    "- 'switch the active region' -> set_active_region; 'switch the dashboard region or asset "
-    "mode' -> set_active_context. BOTH mutate SHARED GLOBAL state for every user of this "
-    "deployment, so confirm the exact target and call them ONLY after explicit agreement "
-    "(same rule as drop_region). A question ABOUT a region is not a request to switch to it - "
-    "region is a filterable dimension on the analytics tools, so answer by filtering rather "
-    "than by repointing everyone's default view.\n"
-    "- 'is region X ready', 'how is the build going', 'which regions do we have' -> region_status "
-    "(read-only, never wakes a service).\n"
-    "- 'add/build region X' -> provision_region. Confirm the region and compute size first, then "
-    "report a STARTED job with its id and duration, never a ready region.\n"
-    "- 'delete/remove region X' -> drop_region with confirm=true, only after explicit agreement. "
-    "It refuses the active region; switch with set_active_region first.\n"
-    "- 'what datasets exist', 'which dataset is active' -> list_datasets; 'make dataset X active' "
-    "-> activate_dataset. There is NO generation tool.\n"
-    "- 'what is this costing', 'hibernate settings' -> cost_control action=status (read-only). "
-    "'stop all spend now' -> action=cost_safe_mode; 'bring it back' -> action=resume_fleet; "
-    "'turn auto-hibernate on/off' -> action=set_hibernate; 'scale up/down' -> action=scale (all "
-    "three counts required). Everything except status needs confirmation.\n"
-    "- 'which verbs failed', 'show the audit trail' -> recent_verb_attempts for the last few "
-    "attempts; query_deployment when the question is aggregate ('how often', 'which verb fails "
-    "most', 'error rate over the last month').\n"
-    "- 'routing call volume', 'error rate or latency by region/endpoint/profile', 'how long did "
-    "provisioning take', 'which builds failed' -> query_deployment (Cortex Analyst over "
-    "SV_FLEET_DEPLOYMENT). It is HISTORY: never answer a live-state question from it, and never "
-    "answer a trend question by calling a verb repeatedly.\n"
     "\nDATA ACCESS ROUTING:\n"
     "- 'what tables/data/listings/semantic views does this use', 'what columns are in X' -> "
     "describe_data (metadata only, always safe).\n"
@@ -184,6 +244,79 @@ def union_tools(spec: dict, extra_paths: list[pathlib.Path]) -> tuple[list, dict
     return tools, resources
 
 
+def split_sections(text: str) -> dict[str, str]:
+    """Split an orchestration string into {header-before-colon: full section}.
+
+    Order is preserved (dicts are insertion-ordered) so a caller can report the
+    sections it found in the order an author wrote them.
+    """
+    sections: dict[str, list[str]] = {}
+    key: str | None = None
+    for line in text.split("\n"):
+        if SECTION_RE.match(line) and ":" in line:
+            key = line.split(":", 1)[0]
+            sections[key] = [line]
+        elif key is not None:
+            sections[key].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def derive_sections(app_dir: pathlib.Path) -> str:
+    """Lift the ops/admin routing sections verbatim, asserting full coverage."""
+    parsed = {
+        name: split_sections(
+            json.loads((app_dir / name).read_text())
+            .get("instructions", {})
+            .get("orchestration", "")
+        )
+        for name in (OPS_SPEC, ADMIN_SPEC)
+    }
+
+    problems: list[str] = []
+
+    # Every section in a role spec must be classified. This is the check that
+    # makes the derivation trustworthy: without it, a new section added to a role
+    # spec would be silently dropped from the super agent - the exact failure the
+    # hand-written copy had.
+    for name, sections in parsed.items():
+        for key in sections:
+            derived = (name, key) in DERIVED_SECTIONS
+            excluded = (name, key) in EXCLUDED_SECTIONS
+            if derived and excluded:
+                problems.append(
+                    f"{name}: section {key!r} is both derived and excluded")
+            elif not derived and not excluded:
+                problems.append(
+                    f"{name}: section {key!r} is neither derived into the super "
+                    f"spec nor excluded from it. Add it to DERIVED_SECTIONS (so "
+                    f"the superuser inherits the guidance) or to "
+                    f"EXCLUDED_SECTIONS with a reason (if it is false or "
+                    f"redundant for an agent that holds every tool).")
+
+    # And every classified section must still exist, so a renamed or deleted
+    # header cannot leave the super spec quietly missing a block.
+    for name, key in DERIVED_SECTIONS:
+        if key not in parsed[name]:
+            problems.append(
+                f"{name}: DERIVED_SECTIONS names section {key!r}, which no "
+                f"longer exists - it was renamed or removed, and the super "
+                f"agent has lost that routing guidance.")
+    for (name, key), reason in EXCLUDED_SECTIONS.items():
+        if not str(reason).strip():
+            problems.append(f"{name}: exclusion of {key!r} has no reason")
+        if key not in parsed[name]:
+            problems.append(
+                f"{name}: EXCLUDED_SECTIONS names section {key!r}, which no "
+                f"longer exists - drop the stale exclusion.")
+
+    if problems:
+        raise SystemExit(
+            "FAIL: build_super_agent_spec cannot classify the role-spec "
+            "orchestration:\n  - " + "\n  - ".join(problems))
+
+    return "\n".join(parsed[name][key] for name, key in DERIVED_SECTIONS)
+
+
 def build(source: pathlib.Path) -> dict:
     spec = json.loads(source.read_text())
     tools, resources = union_tools(
@@ -195,7 +328,12 @@ def build(source: pathlib.Path) -> dict:
     orchestration = str(instructions.get("orchestration") or "").rstrip()
 
     instructions["response"] = response + " " + RESPONSE_SUFFIX.strip()
-    instructions["orchestration"] = orchestration + ORCHESTRATION_SUFFIX
+    instructions["orchestration"] = (
+        orchestration
+        + ORCHESTRATION_PREAMBLE
+        + derive_sections(source.parent)
+        + ORCHESTRATION_SUFFIX
+    )
     instructions["sample_questions"] = SAMPLE_QUESTIONS
 
     out = {
@@ -246,7 +384,8 @@ def main() -> int:
             return 1
         if out_path.read_text() != text:
             print(
-                f"FAIL: {out_path} is stale vs agent-spec.json - run "
+                f"FAIL: {out_path} is stale vs agent-spec.json, "
+                f"{OPS_SPEC} or {ADMIN_SPEC} - run "
                 "python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py",
                 file=sys.stderr,
             )
