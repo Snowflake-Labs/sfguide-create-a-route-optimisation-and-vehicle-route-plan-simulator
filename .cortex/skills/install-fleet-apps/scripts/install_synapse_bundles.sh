@@ -221,7 +221,19 @@ snow sql -c "$CONNECTION" -q "$TAG_SQL SHOW MCP SERVERS;" --format=CSV 2>/dev/nu
 if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
   echo "[synapse] post-deploy smoke (audited-envelope verify)..."
   # bundle label | smoke CALL (read-only, no routing-engine dependency) | audit table
+  #
+  # The USER bundle is smoked with list_use_cases specifically because it is the
+  # only sizeable read-only verb with NO engine dependency: it reads
+  # FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG, which install step 4.8 creates
+  # before this step runs. Nearly every other routing verb calls
+  # OPENROUTESERVICE_APP.CORE, so it would fail on a --no-engine install and on
+  # any account whose region is suspended - turning a bundle check into an engine
+  # check. This matters because user is the LARGEST bundle (21 of the 38 verbs)
+  # and was previously the only one never smoked, so a routing envelope that had
+  # stopped writing its audit rows would have gone unnoticed while ops and admin
+  # both reported OK.
   SMOKE=(
+    "user|CALL OPENROUTESERVICE_APP.ROUTING.LIST_USE_CASES(NULL, NULL, 3)|OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT"
     "ops|CALL FLEET_INTELLIGENCE.SYNAPSE_OPS.HEALTHCHECK(NULL)|FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT"
     "admin|CALL FLEET_INTELLIGENCE.SYNAPSE_ADMIN.CHECK_SUBSTRATE(NULL)|FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT"
   )
