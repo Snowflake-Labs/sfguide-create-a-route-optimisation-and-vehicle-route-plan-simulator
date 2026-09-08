@@ -315,9 +315,15 @@ selection_seeds:
       WHERE OPERATOR_ID IS NOT NULL LIMIT 1
 
   asset_velocity:
+    # MUST filter by region. The idle-vehicle view is multi-region now, so an
+    # unfiltered LIMIT 1 can seed a vehicle from a DIFFERENT region than the
+    # pass being validated, and every dependent query (which does filter by
+    # region) then returns 0 rows - reported as an undeclared EMPTY that looks
+    # like a broken panel rather than a bad seed. Same shape as delivery_sync /
+    # site_impact below.
     selected_vehicle: >-
       SELECT VEHICLE_ID FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
-      LIMIT 1
+      WHERE REGION = :region LIMIT 1
 
   delivery_sync:
     selected_site: >-
