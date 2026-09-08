@@ -595,6 +595,21 @@ export async function activateDataset(
        AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
     'FLEET_INTELLIGENCE', 'CORE',
   );
+  // Keep the per-domain CONFIG default-selection tables in step with the newly
+  // activated dataset. Previously ONLY a successful Data Studio generation ran
+  // this sync, so activating an existing dataset (or loading the SQL seed
+  // dataset, which never generates) left every CONFIG row pointing at whatever
+  // region was last GENERATED. That is how this account ended up with three
+  // domains on SanFrancisco and three on Europe.
+  //
+  // Non-fatal: the contract views no longer FILTER on CONFIG, so a failure here
+  // degrades the default selection, it does not hide data.
+  try {
+    await syncRegionRegistryAndConfig(region, vehicleType, datasetId, snowSql);
+  } catch (e: any) {
+    log('WARN', 'Studio',
+      `activateDataset: CONFIG sync failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`);
+  }
   return {
     activated: datasetId,
     deactivated: Number((priorActive[0] as any)?.N ?? 0),
