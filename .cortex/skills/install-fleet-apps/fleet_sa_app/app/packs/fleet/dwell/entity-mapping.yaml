@@ -67,7 +67,14 @@ entities:
     materialization: view
     sql: |
       SELECT
-          p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
+          p.LOCATION_ID AS ID,
+          -- Strip the wrapping double quotes the loader leaves on every POI name
+          -- (measured: ALL 16,847 rows in DIM_POIS, both regions, e.g. '"BP"').
+          -- Without this the agent answers with a quoted token and the UI shows
+          -- '"$6 Bowl Shop"'. The real fix belongs in the writer - see NOTE in
+          -- data-model.yaml - this keeps the contract clean meanwhile.
+          REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
+          p.LOCATION_TYPE,
           p.CATEGORY AS BASIC_CATEGORY,
           -- CITY is the human-readable form of the region key, NOT the key
           -- itself. It used to be `p.REGION AS CITY`, so the column advertised
@@ -84,7 +91,8 @@ entities:
     materialization: view
     sql: |
       SELECT
-          p.LOCATION_ID AS REST_STOP_ID, p.NAME,
+          p.LOCATION_ID AS REST_STOP_ID,
+          REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
           p.CATEGORY AS REST_TYPE, p.POINT_GEOM AS CENTER_POINT, p.REGION
       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
       WHERE p.LOCATION_TYPE = 'REST_STOP'

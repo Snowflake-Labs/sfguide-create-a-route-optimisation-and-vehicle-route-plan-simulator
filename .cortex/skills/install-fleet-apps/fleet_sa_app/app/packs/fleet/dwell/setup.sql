@@ -39,7 +39,14 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DESTINATIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
-    p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
+    p.LOCATION_ID AS ID,
+    -- Strip the wrapping double quotes the loader leaves on every POI name
+    -- (measured: ALL 16,847 rows in DIM_POIS, both regions, e.g. '"BP"').
+    -- Without this the agent answers with a quoted token and the UI shows
+    -- '"$6 Bowl Shop"'. The real fix belongs in the writer - see NOTE in
+    -- data-model.yaml - this keeps the contract clean meanwhile.
+    REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
+    p.LOCATION_TYPE,
     p.CATEGORY AS BASIC_CATEGORY,
     -- CITY is the human-readable form of the region key, NOT the key
     -- itself. It used to be `p.REGION AS CITY`, so the column advertised
@@ -54,7 +61,8 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_REST_STOPS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
-    p.LOCATION_ID AS REST_STOP_ID, p.NAME,
+    p.LOCATION_ID AS REST_STOP_ID,
+    REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
     p.CATEGORY AS REST_TYPE, p.POINT_GEOM AS CENTER_POINT, p.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
 WHERE p.LOCATION_TYPE = 'REST_STOP'
@@ -99,25 +107,78 @@ GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DWELL_SESSIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- Location enrichment resolves in three steps, in descending trust:
+--   1. the recorded LOCATION_ID (exact),
+--   2. a co-located POI within SNAP_M metres of the session centroid,
+--   3. an explicit "unmapped" label naming the STOP KIND we do know.
+--
+-- Step 2 is deliberately capped very tight. On this account 2,693 of 2,802
+-- Europe sessions reference a LOCATION_ID that is absent from DIM_POIS
+-- entirely (not a dataset mismatch - the ids exist nowhere, so the Europe
+-- generator emitted telemetry against POIs it never persisted). Measured
+-- over a 400-session sample, the distance to the NEAREST POI in that
+-- region has a MEDIAN of 11.1 km and a max of 72.4 km, with only 1% inside
+-- 150 m: these are motorway rest stops, which legitimately have no POI
+-- record. A loose nearest-POI fallback would therefore have labelled a
+-- lay-by after a warehouse 11 km away - fabricated data that reads as
+-- authoritative. San Francisco resolves 100% by id and never reaches
+-- step 2.
+--
+-- Step 3 is honest rather than blank: 'Unmapped rest stop' /
+-- 'Unmapped warehouse' says what the telemetry actually asserts, where
+-- the old 'Unknown' + 'N/A' pair implied the whole fact was regionless
+-- and led an agent to report the dataset as missing.
+-- NOTE (upstream defect, not fixed here): every DIM_POIS.NAME is wrapped
+-- in double quotes by the writer - all 16,847 rows across both regions,
+-- e.g. '"BP"'. The leaf projections in entity-mapping.yaml strip them so
+-- this contract stays clean, and the snap CTE below does the same, but the
+-- writer should stop emitting them; every OTHER consumer of DIM_POIS still
+-- sees the quoted form.
+WITH snap AS (
+  SELECT s.VEHICLE_ID, s.SESSION_ID, s.STATUS,
+         REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
+         p.CATEGORY AS BASIC_CATEGORY, p.LOCATION_TYPE, p.REGION
+  FROM FLEET_APP.DWELL.VW_SESSIONS_RAW s
+  -- H3 res-8 (~460 m edge) prefilter so this stays a hash join instead of
+  -- a cross product; ST_DWITHIN below remains the authoritative test.
+  JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+    ON p.REGION = s.REGION
+   AND H3_POINT_TO_CELL_STRING(p.POINT_GEOM, 8) = H3_POINT_TO_CELL_STRING(s.AVG_POINT, 8)
+  WHERE s.AVG_POINT IS NOT NULL
+    AND ST_DWITHIN(s.AVG_POINT, p.POINT_GEOM, 150)
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY s.VEHICLE_ID, s.SESSION_ID
+    ORDER BY ST_DISTANCE(s.AVG_POINT, p.POINT_GEOM)
+  ) = 1
+)
 SELECT
   s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
   s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
   s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
-  COALESCE(d.NAME, rs.NAME, 'Unknown') AS LOCATION_NAME,
+  COALESCE(
+    d.NAME, rs.NAME, sn.NAME,
+    'Unmapped ' || LOWER(REPLACE(REPLACE(s.STATUS, 'DWELL_', ''), '_', ' '))
+  ) AS LOCATION_NAME,
+  -- How LOCATION_NAME was resolved, so a consumer never has to guess
+  -- whether a name is authoritative.
+  CASE
+    WHEN d.NAME IS NOT NULL OR rs.NAME IS NOT NULL THEN 'location_id'
+    WHEN sn.NAME IS NOT NULL                       THEN 'nearest_poi_150m'
+    ELSE 'unmapped'
+  END AS LOCATION_MATCH,
   -- Region is carried as a first-class dimension so a consumer can filter
   -- it. Nothing here is scoped to one region any more.
   s.REGION,
-  -- Fall back to the region LABEL rather than 'N/A' when the POI join
-  -- misses: 97% of sessions reference a LOCATION_ID that is absent from
-  -- DIM_POIS, which used to blank the only geographic column on the row
-  -- and made the whole fact look regionless.
+  -- Region LABEL, never 'N/A': the geographic column stays populated even
+  -- when the specific location cannot be named.
   COALESCE(d.CITY, FLEET_APP.CORE.REGION_LABEL(s.REGION)) AS CITY,
-  COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, s.STATUS) AS FACILITY_TYPE,
-  COALESCE(d.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
+  COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, sn.BASIC_CATEGORY, s.STATUS) AS FACILITY_TYPE,
+  COALESCE(d.LOCATION_TYPE, sn.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
   tf.VEHICLE_TYPE, tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
 FROM FLEET_APP.DWELL.VW_SESSIONS_RAW s
 LEFT JOIN FLEET_APP.DWELL.VW_DESTINATIONS d ON s.LOCATION_ID = d.ID
 LEFT JOIN FLEET_APP.DWELL.VW_REST_STOPS rs ON s.LOCATION_ID = rs.REST_STOP_ID
+LEFT JOIN snap sn ON sn.VEHICLE_ID = s.VEHICLE_ID AND sn.SESSION_ID = s.SESSION_ID
 LEFT JOIN FLEET_APP.DWELL.VW_VEHICLE_FLEET tf ON s.VEHICLE_ID = tf.VEHICLE_ID;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_H3_CONGESTION
