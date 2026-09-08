@@ -53,11 +53,15 @@ async function discoverConfigSchemas(exec: ExecFn): Promise<string[]> {
 export const set_active_context = defineProc({
   name: 'set_active_context',
   description:
-    'Promote the global active dashboard context by setting the region and/or ' +
-    'vehicle/asset mode in the per-schema CONFIG tables that dashboards and the ' +
-    'routing tool layer read. Provide region, vehicle_type, or both (at least ' +
-    'one). Fails NO_CONTEXT_VALUE when neither is given and REGION_NOT_PROVISIONED ' +
-    'for an unknown region. Distinct from set_active_region (substrate default). Ops-only.',
+    'MUTATES SHARED GLOBAL STATE for every user of this deployment: promotes the ' +
+    'default dashboard context by setting region and/or vehicle/asset mode in the ' +
+    'per-domain CONFIG tables. Confirm the exact target with the user and call ONLY ' +
+    'after explicit agreement. NOT needed to ANSWER a question about a region - the ' +
+    'dashboards and semantic views carry every loaded region as a filterable ' +
+    'dimension, so reading about another region requires no switch. Provide region, ' +
+    'vehicle_type, or both (at least one). Fails NO_CONTEXT_VALUE when neither is ' +
+    'given and REGION_NOT_PROVISIONED for an unknown region. Distinct from ' +
+    'set_active_region (substrate default). Ops-only.',
   roles: ['ops'],
   args: {
     region: t
