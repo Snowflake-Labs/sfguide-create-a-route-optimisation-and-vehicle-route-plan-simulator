@@ -57,6 +57,24 @@ python3 .cortex/skills/evals/run_evals.py
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
+# Validate that no contract view is pinned to ONE region by a singleton CONFIG row,
+# and that every semantic view over a multi-region fact models region PLUS a readable
+# label. This entire class of failure is SILENT: a view filtered to one region returns
+# rows, compiles, and renders a populated panel, so nothing distinguishes "this region
+# has no data" from "this region was excluded before the first aggregate". It cost a
+# CoWork answer of "there is no San Francisco data" while 15,091 San Francisco dwell
+# sessions sat in the view - and because the CONFIG row is writable at runtime
+# (including by an agent calling `set_active_context`), the same question returned
+# different data at different times. Three writers with three different schema lists
+# also let the six CONFIG tables drift apart, so a cross-domain question silently mixed
+# San Francisco e-bikes with European trucks. The label rule is the one that closes the
+# bug: region keys are CamelCase identifiers, so a filter on the phrase a person types
+# (`region = 'San Francisco'`) matches NOTHING against `'SanFrancisco'` - hence
+# `FLEET_APP.CORE.REGION_LABEL()` and the `city` / `region_label` dimensions. Reading
+# CONFIG to EXPOSE the active context is still legal (an explicit in-file allowlist);
+# what is banned is FILTERING analytic data by it.
+python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping.py
+
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
 bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 
@@ -366,6 +384,7 @@ If no friction was encountered, the log should still be created with "No frictio
   ```
 - **Assume ORS is running** - always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;` (all 5 services must be RUNNING)
 - **Precompute / materialize ORS output for demos** - do NOT cache isochrone polygons, travel-time matrices, or optimization results into tables and read them back in a view. Call `ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION` live at interaction time (see Architecture Tenet 9). Precomputing non-ORS reference data (POI subsets, address/household density, synthetic facts) is fine.
+- **Scope a contract view to one region with a singleton `CONFIG` row.** A per-schema `CONFIG` table holds exactly ONE row, so `WHERE REGION = (SELECT REGION FROM ...CONFIG LIMIT 1)` does not filter a region - it makes every OTHER loaded region structurally invisible, while the view still returns rows and renders a populated panel. It is also writable at runtime (the `/api/region` promote path and the ops verb `set_active_context`, which an **agent** can call), so the same question returns different data at different times. Carry `REGION` and `VEHICLE_TYPE` through as ordinary dimensions and let the consumer choose the slice: a scope arg (`F_*_SCOPED`) for the app, a `WHERE` clause for Cortex Analyst. `CONFIG` is now a **default-selection hint only**. Two corollaries: (1) when you de-scope a layer, any per-region COMPUTATION inside it must be PARTITIONED rather than pre-filtered - a global `MAX(TRIP_START)` recency window lets the freshest region prune the others out entirely, an `AVG(LAT)`/`AVG(LNG)` home anchor across two regions lands in the ocean between them, a global `QUALIFY ... <= POOL_CAP` lets one region eat the whole cap, and any rollup missing `REGION` in its `GROUP BY` merges regions into one number; (2) a semantic view must expose BOTH the region key and a readable label, because region keys are CamelCase (`SanFrancisco`) and a filter on the phrase a person types (`'San Francisco'`) matches nothing. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_region_scoping.py` via `.githooks/pre-commit`.
 - **Convert an analytic, contract, or config table to a `HYBRID TABLE`** - hybrid tables support no dynamic tables, streams, data sharing, clustering keys, or result cache, and every candidate state table here is 1-43 rows, so there is no scan to remove and the warehouse round trip remains. `DIM_DATASETS` is the specific trap: it is joined by every `V_*_CURRENT` view, so making it hybrid disables the result cache on nearly every dashboard query. Hybrid is reserved for durable OLTP state and enforced constraints - today `verb_attempt` + `verb_claim` and `FLEET_INTELLIGENCE.CORE.JOB_STATE`. See Architecture Tenet 5b.
 - **Hardcode city/region** - skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** - all docs go in SKILL.md or `references/`

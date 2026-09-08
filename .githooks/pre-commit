@@ -210,3 +210,31 @@ if [ -f "$BRAND_CHECK" ]; then
     exit 1
   }
 fi
+
+# 8. Region scoping: no contract view pinned to ONE region by a singleton CONFIG
+# row, and every semantic view over a multi-region fact models region PLUS a
+# readable label.
+#
+# This whole class of failure is SILENT. A view filtered to one region returns
+# rows, compiles, and renders a populated panel - nothing distinguishes "this
+# region has no data" from "this region was excluded before the first aggregate".
+# It cost a CoWork answer of "there is no San Francisco data" while 15,091 San
+# Francisco dwell sessions sat in the view, and because the CONFIG row is
+# writable at runtime (including by an agent calling set_active_context) the same
+# question returned different data at different times.
+#
+# The label rule is what actually closes the bug: region keys are CamelCase
+# identifiers, so a filter on the phrase a person types - region = 'San Francisco'
+# - matches NOTHING against 'SanFrancisco'.
+#
+# Runs on EVERY commit with no staged-path filter: the filter can come back in a
+# pack YAML, an installer SQL file, or a server-side view definition. Fast (a
+# scoped glob, well under a second).
+REGION_SCOPE_CHECK="$SKILL_DIR/scripts/check_region_scoping.py"
+if [ -f "$REGION_SCOPE_CHECK" ]; then
+  echo "pre-commit: region scoping check..."
+  python3 "$REGION_SCOPE_CHECK" || {
+    echo "pre-commit FAILED: a view is pinned to one region, or a semantic view cannot be filtered by region."
+    exit 1
+  }
+fi
