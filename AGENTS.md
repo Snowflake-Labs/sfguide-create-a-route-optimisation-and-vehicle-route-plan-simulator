@@ -90,9 +90,35 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
 # Regenerate / verify the generated agent-facing artifacts. Both are derived, so a
 # stale committed copy is a real defect: the catalog is what an agent reads to
 # answer "what can you show me" outside the app, and the super agent spec is a
-# derived copy of the consumer instructions.
+# derived copy of the consumer instructions PLUS the per-verb routing sections
+# lifted verbatim from the ops and admin specs. That last part is why the ops and
+# admin specs are inputs to the super build: they used to be restated by hand
+# inside the generator, so `--check` could prove the output current while the text
+# had silently diverged from the role spec - which is how `recent_verb_attempts`
+# ended up documented in the SUPER agent and not in the OPS agent that owns it.
+# Sections that are FALSE for a superuser are excluded with a recorded reason
+# (both role specs end with "you have no geospatial tool", and admin has a
+# "HANDOFF (you cannot do these)" block, none of which is true for an agent
+# holding all three MCP servers), and the build fails on any role-spec section
+# that is neither derived nor excluded.
 python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog.py --check
 python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py --check
+
+# Validate every synapse verb is named in the orchestration instructions of each
+# agent that can see it. Verbs are AUTO-DISCOVERED - `npx synapse deploy` walks
+# src/procs/ and publishes each one with its description and a generated JSON
+# input schema, and the specs attach whole MCP servers with no tool allowlist - so
+# a new verb is instantly VISIBLE to every agent on that bundle. Visible is not
+# used well: with no routing line the model either ignores the verb, or prefers it
+# over a better tool, the documented case being `run_sql` winning over a `query_*`
+# Cortex Analyst tool and silently bypassing the governed semantic-view path.
+# Nothing fails either way, which is why this is a gate and not a review note - it
+# found four verbs already shipped unguided (`evac_seed`, `evac_solve`,
+# `vrp_solve`, and `recent_verb_attempts`, the last of which the SUPER agent
+# described while the OPS agent that owns the verb did not). The bundle-to-spec map
+# is asserted against each spec's own `mcp_servers` block in both directions, so
+# moving a server between agents cannot silently narrow what is checked.
+python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage.py
 
 # Regression test for the run_sql verb's read-only guards (27 cases: comment
 # masking, piggybacked statements, every writing keyword, max_rows).
@@ -195,7 +221,7 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, and when a session or created object is missing its tracking tag):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when a synapse verb has no routing guidance in an agent that can see it, and when a session or created object is missing its tracking tag):
 
 ```bash
 chmod +x .githooks/pre-commit

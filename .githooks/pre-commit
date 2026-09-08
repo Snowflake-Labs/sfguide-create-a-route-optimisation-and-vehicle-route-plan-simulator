@@ -54,17 +54,50 @@ if [ -f "$CATALOG_BUILD" ] && staged_any \
 fi
 
 # ── 1b. Super agent spec freshness ──────────────────────────────
-# super-agent-spec.json is generated from agent-spec.json. Two hand-maintained
+# super-agent-spec.json is generated from agent-spec.json PLUS the ops/admin
+# specs, whose per-verb routing sections are lifted verbatim. Two hand-maintained
 # copies of a 12,000-character instruction block drift within a release, and the
 # drift is invisible until the two agents answer the same question differently.
+# The ops/admin specs MUST be in this trigger list: they are now inputs, so a
+# commit touching only ops-agent-spec.json would otherwise skip the check and
+# leave the super agent describing the old routing.
 SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
 if [ -f "$SUPER_BUILD" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
   "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
   "$SKILL_DIR/scripts/build_super_agent_spec.py"; then
   echo "pre-commit: super agent spec freshness check..."
   python3 "$SUPER_BUILD" --check || {
     echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
+    exit 1
+  }
+fi
+
+# ── 1c. Every synapse verb must be routed by the agents that can see it ────────
+# Verbs are AUTO-DISCOVERED: `npx synapse deploy` walks src/procs/ and publishes
+# each one, and the specs attach whole MCP servers with no tool allowlist, so a new
+# verb is instantly visible to every agent on that bundle. Visible is not used
+# well - with no routing line the model either ignores the verb or prefers it over
+# a better tool (the documented hazard being run_sql winning over a query_* Cortex
+# Analyst tool, silently bypassing the governed semantic-view path). Nothing fails
+# either way, which is why this needs a gate: four verbs had already shipped
+# unguided, including an ops audit verb the SUPER agent documented and the OPS
+# agent that owns it did not.
+VERB_COVERAGE="$SKILL_DIR/scripts/check_agent_verb_coverage.py"
+if [ -f "$VERB_COVERAGE" ] && staged_any \
+  "$SKILL_DIR/fleet_tools/user/src/procs" \
+  "$SKILL_DIR/fleet_tools/ops/src/procs" \
+  "$SKILL_DIR/fleet_tools/admin/src/procs" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/check_agent_verb_coverage.py"; then
+  echo "pre-commit: agent verb coverage check..."
+  python3 "$VERB_COVERAGE" || {
+    echo "pre-commit FAILED: a synapse verb has no routing guidance - see above"
     exit 1
   }
 fi
