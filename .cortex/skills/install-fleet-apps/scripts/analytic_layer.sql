@@ -1574,6 +1574,79 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_ADMIN;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.SOURCING TO ROLE FLEET_APP_ADMIN;
 -- [live-routing UDTFs moved -> analytic_layer_live_routing.sql]
 
+-- =============================================================================
+-- CONFIG realignment (runs on EVERY install, not just a fresh one)
+-- =============================================================================
+-- The per-domain CONFIG seeds above are all `WHERE NOT EXISTS`, so they cannot
+-- correct a row that already exists. That was fine while a single writer owned
+-- them, but three writers with three different schema lists left real accounts
+-- split: measured on tib85385, DWELL_ANALYSIS / ROUTE_DEVIATION /
+-- ROUTE_OPTIMIZATION pointed at ebike/SanFrancisco while CATCHMENT / MARKETPLACE
+-- / BACKLOAD_MATCHING pointed at hgv/Europe. A reinstall did NOT repair it.
+--
+-- Since the contract views no longer FILTER on CONFIG, a split no longer hides
+-- data - but it still gives the app's context bar, and any agent asking "what is
+-- the active context", a different answer per domain. This aligns every
+-- discovered CONFIG table to ONE dataset: the newest active row in DIM_DATASETS.
+--
+-- Discovery matches the app writers exactly (a CONFIG table carrying both REGION
+-- and VEHICLE_TYPE), so a seventh domain is realigned with no edit here, and a
+-- table that does not exist on this install (MARKETPLACE.CONFIG is created by
+-- the freight-exchange bootstrap, which is optional) is simply not found.
+--
+-- Idempotent and safe to re-run. Per-statement exception handling so a locked or
+-- oddly-shaped table degrades to a skip rather than aborting the file - which
+-- matters because `snow sql -f` stops at the first error and would abandon the
+-- validation summary below.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CORE.REALIGN_DASHBOARD_CONFIG()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  c_schemas CURSOR FOR
+    SELECT TABLE_SCHEMA AS S
+      FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_NAME = 'CONFIG'
+       AND COLUMN_NAME IN ('REGION', 'VEHICLE_TYPE')
+     GROUP BY TABLE_SCHEMA
+    HAVING COUNT(DISTINCT COLUMN_NAME) = 2
+     ORDER BY TABLE_SCHEMA;
+  v_region  VARCHAR;
+  v_vt      VARCHAR;
+  v_done    INT DEFAULT 0;
+  v_skipped INT DEFAULT 0;
+BEGIN
+  -- Newest ACTIVE dataset wins. Deterministic, unlike the seeds' original
+  -- ORDER BY PRI which tied whenever two datasets were active at once.
+  SELECT REGION, VEHICLE_TYPE INTO v_region, v_vt
+    FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+   WHERE IS_ACTIVE = TRUE
+   ORDER BY CREATED_AT DESC NULLS LAST
+   LIMIT 1;
+  IF (v_region IS NULL) THEN
+    RETURN 'SKIPPED: no active dataset in DIM_DATASETS';
+  END IF;
+  FOR r IN c_schemas DO
+    LET sch VARCHAR := r.S;
+    BEGIN
+      EXECUTE IMMEDIATE 'UPDATE FLEET_INTELLIGENCE.' || sch
+        || '.CONFIG SET REGION = ''' || REPLACE(v_region, '''', '''''')
+        || ''', VEHICLE_TYPE = ''' || REPLACE(v_vt, '''', '''''') || '''';
+      v_done := v_done + 1;
+    EXCEPTION
+      WHEN OTHER THEN v_skipped := v_skipped + 1;
+    END;
+  END FOR;
+  RETURN 'aligned ' || v_done || ' CONFIG table(s) to ' || v_region || '/' || v_vt
+      || IFF(v_skipped > 0, ' (' || v_skipped || ' skipped)', '');
+END;
+$$;
+
+CALL FLEET_INTELLIGENCE.CORE.REALIGN_DASHBOARD_CONFIG();
+
 -- Validation summary (last statement; non-fatal).
 SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
 UNION ALL SELECT 'ROUTE_DEVIATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
