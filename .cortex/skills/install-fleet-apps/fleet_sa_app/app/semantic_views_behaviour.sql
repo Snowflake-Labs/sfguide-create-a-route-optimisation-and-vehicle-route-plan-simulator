@@ -124,29 +124,60 @@ SELECT 'admin', ID, AT, AT::DATE
      , (OUTCOME = 'error'), ARGS_JSON
 FROM FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT;
 
--- ============ VW_AGENT_VERB_INVENTORY ============
--- The declared verb surface, read LIVE from INFORMATION_SCHEMA rather than from a
--- generated file. Each synapse verb is exactly one stored procedure in its
--- bundle's schema, so the procedure list IS the inventory and cannot drift from
--- src/procs the way a committed copy would. Measured 21 / 14 / 3 = 38, matching
--- the source tree exactly.
+-- ============ VERB_INVENTORY ============
+-- The declared verb surface. Each synapse verb is exactly one stored procedure in
+-- its bundle's schema, so the procedure list IS the inventory - measured 21/14/3 =
+-- 38, matching the source tree exactly, which is why this is derived rather than
+-- hand-maintained or generated into a committed file.
 --
--- DISTINCT is required: a verb whose optional trailing args produce more than one
--- signature would otherwise be counted twice and its call stats duplicated.
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.VW_AGENT_VERB_INVENTORY
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-behaviour"}}'
-AS
-SELECT DISTINCT 'user' AS BUNDLE, LOWER(PROCEDURE_NAME) AS VERB
+-- WHY IT IS A TABLE AND NOT A VIEW OVER INFORMATION_SCHEMA
+-- INFORMATION_SCHEMA is filtered by the CURRENT ROLE's privileges, and that
+-- filtering is NOT bypassed by an owner's-rights view - unlike ACCOUNT_USAGE,
+-- which is. Measured: as ACCOUNTADMIN the view returned all 38 verbs; as
+-- FLEET_APP_OPS it returned 35, silently dropping the ENTIRE admin bundle, because
+-- the ops role has no privilege on the SYNAPSE_ADMIN procedures (correctly - that
+-- is Tenet 3). The coverage report then read "35 declared verbs" as though it were
+-- authoritative, which is precisely the class of silent under-reporting this whole
+-- file exists to expose.
+--
+-- Widening the grant to fix it would breach role isolation, so the inventory is
+-- captured ONCE by the installer role instead, and read by everyone from here.
+-- The trade-off is that this is a SNAPSHOT: it refreshes when this file runs
+-- (install step 5.6), so a bundle deployed standalone without a reinstall leaves
+-- it stale. REFRESHED_AT is exposed for exactly that reason - a stale inventory
+-- should be visible rather than silently wrong.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.SEMANTIC_OPS.VERB_INVENTORY (
+    BUNDLE       STRING NOT NULL
+  , VERB         STRING NOT NULL
+  , REFRESHED_AT TIMESTAMP_TZ NOT NULL
+)
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-behaviour"}}';
+
+-- INSERT OVERWRITE, so a re-run replaces the snapshot rather than duplicating it
+-- and rather than dropping the table (which would lose the grants below).
+INSERT OVERWRITE INTO FLEET_INTELLIGENCE.SEMANTIC_OPS.VERB_INVENTORY (BUNDLE, VERB, REFRESHED_AT)
+SELECT DISTINCT 'user', LOWER(PROCEDURE_NAME), CURRENT_TIMESTAMP()
 FROM OPENROUTESERVICE_APP.INFORMATION_SCHEMA.PROCEDURES
 WHERE PROCEDURE_SCHEMA = 'ROUTING'
 UNION
-SELECT DISTINCT 'ops', LOWER(PROCEDURE_NAME)
+SELECT DISTINCT 'ops', LOWER(PROCEDURE_NAME), CURRENT_TIMESTAMP()
 FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES
 WHERE PROCEDURE_SCHEMA = 'SYNAPSE_OPS'
 UNION
-SELECT DISTINCT 'admin', LOWER(PROCEDURE_NAME)
+SELECT DISTINCT 'admin', LOWER(PROCEDURE_NAME), CURRENT_TIMESTAMP()
 FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES
 WHERE PROCEDURE_SCHEMA = 'SYNAPSE_ADMIN';
+
+-- ============ VW_AGENT_VERB_INVENTORY ============
+-- Stable name for consumers, reading the snapshot above.
+--
+-- DISTINCT is still applied: a verb whose optional trailing args produce more than
+-- one signature would otherwise be counted twice and its call stats duplicated.
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.VW_AGENT_VERB_INVENTORY
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-behaviour"}}'
+AS
+SELECT DISTINCT BUNDLE, VERB, REFRESHED_AT
+FROM FLEET_INTELLIGENCE.SEMANTIC_OPS.VERB_INVENTORY;
 
 -- ============ VW_AGENT_VERB_COVERAGE ============
 -- Inventory LEFT JOIN calls, so a never-called verb is a row with CALLS = 0
@@ -233,9 +264,15 @@ WHERE LOWER(c.VERB) = 'run_sql'
 -- CoWork turn is still counted (with a null QUESTION) rather than dropped by an
 -- inner join to app-only rows.
 --
--- METADATA.interaction_interface is what separates the surfaces: 'external' is
--- the SA app / REST callers, 'agent_admin_ui' is Snowsight. Never report a single
--- latency or cost number across both without splitting on it.
+-- METADATA.interaction_interface is what separates the surfaces. MEASURED values on
+-- a live account, not assumed: 'eval' (evaluation runs), 'agent_admin_ui'
+-- (Snowsight), 'external' (SA app and REST callers), 'sql_function'
+-- (AI_COMPLETE-style calls). Never report a single latency or cost number across
+-- them.
+--
+-- Evaluation traffic DOMINATES: 404 of 451 turns on tib85385 were 'eval'. So an
+-- unsplit "average agent latency" is really the average of an eval harness, and a
+-- credit total is mostly the cost of testing rather than of use.
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.VW_AGENT_TURNS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"agent-behaviour"}}'
 AS
@@ -356,7 +393,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_AGENT_BEHAVIO
       COMMENT = 'User that asked the question'
     , turns.interaction_interface AS INTERACTION_INTERFACE
       WITH SYNONYMS ('surface', 'channel', 'where')
-      COMMENT = 'Where the turn came from: external (SA app / REST) or agent_admin_ui (Snowsight). Always split cost and latency by this.'
+      COMMENT = 'Where the turn came from. Measured values: eval (evaluation runs), agent_admin_ui (Snowsight), external (SA app / REST), sql_function. Always split cost and latency by this - evaluation traffic dominates the row count.'
     , turns.question AS QUESTION
       COMMENT = 'The user question. Populated for SA app turns only; NULL for Snowsight and CoWork.'
     , turns.active_view AS ACTIVE_VIEW
@@ -445,7 +482,7 @@ Entities:
 
 Conventions:
 - turns and verb_calls have NO reliable join key: a verb attempt cannot be tied to the turn that caused it, because the stored procedure cannot see the agent request. NEVER join these two entities. Answer questions about each separately.
-- ALWAYS split cost and latency by interaction_interface. "external" is the SA app and REST callers; "agent_admin_ui" is Snowsight. They have very different shapes and a blended average is misleading.
+- ALWAYS split cost and latency by interaction_interface. Measured values are "eval" (evaluation runs), "agent_admin_ui" (Snowsight), "external" (the SA app and REST callers) and "sql_function". Evaluation traffic DOMINATES the row count - 404 of 451 turns on the reference account - so a blended average is mostly the cost and latency of the test harness, not of real use. When a user asks about "our agent usage" they almost never mean eval runs; exclude that interface unless they say otherwise, and say that you did.
 - question and answer are NULL for turns that did not come through the SA app (Snowsight, CoWork). Filter on has_app_detail = TRUE before analysing question text, or the counts will silently under-report.
 - Durations are MILLISECONDS. Credits are Snowflake credits.
 - was_called = FALSE means a verb is declared and documented but has never been exercised - that is a testing gap, not necessarily a bug. only_ever_failed = TRUE is the stronger signal: the verb was called and never once succeeded.
@@ -457,6 +494,8 @@ Conventions:
 -- so needs its own. SELECT for reading, INSERT for the SA app writer.
 GRANT SELECT ON TABLE FLEET_INTELLIGENCE.SEMANTIC_OPS.AGENT_TURN TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON TABLE FLEET_INTELLIGENCE.SEMANTIC_OPS.AGENT_TURN TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON TABLE FLEET_INTELLIGENCE.SEMANTIC_OPS.VERB_INVENTORY TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON TABLE FLEET_INTELLIGENCE.SEMANTIC_OPS.VERB_INVENTORY TO ROLE FLEET_APP_ADMIN;
 GRANT INSERT ON TABLE FLEET_INTELLIGENCE.SEMANTIC_OPS.AGENT_TURN TO ROLE FLEET_APP_USER;
 -- USAGE on the schema is what lets the consumer role reach the table to INSERT.
 -- It does NOT expose the behaviour views: those need SELECT, which FLEET_APP_USER
