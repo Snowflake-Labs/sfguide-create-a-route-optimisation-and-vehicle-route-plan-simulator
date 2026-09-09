@@ -6,7 +6,7 @@
 // (empty-leg polyline) at interaction time - never precomputed into tables.
 
 import type { LngLat } from '@/lib/map/map-fit';
-import { throwIfSuspended } from '@/lib/routing-suspend';
+import { throwIfSuspended, isSuspendedBody, RoutingSuspendedError, SUSPEND_REASON } from '@/lib/routing-suspend';
 
 export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
@@ -144,6 +144,44 @@ export async function sfRead(
     for (const k of Object.keys(r)) o[k.toUpperCase()] = r[k];
     return o;
   });
+}
+
+/**
+ * Call a synapse verb through the app's verb dispatcher.
+ *
+ * The SAME stored procedure backs the agent's MCP tool, so a plan drawn on screen
+ * and a plan the agent describes come from one implementation instead of two that
+ * drift. Solve strategy, challenge construction, engine invocation and scoring live
+ * behind the verb; what stays client-side is only what must be instant (applying
+ * weights, re-grading against a slider) or visual (map, drawer).
+ *
+ * Two failure shapes have to be handled, and conflating them is what makes a
+ * suspended region read as "there is nothing to dispatch":
+ *  - a typed 503 from the dispatcher, whose payload carries NO `error` key;
+ *  - a 200 whose payload is the verb's own { status: 'FAILED', reason }.
+ */
+export async function callVerb(verb: string, args: unknown[]): Promise<Record<string, unknown>> {
+  const res = await fetch('/api/tool', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ verb, args }),
+  });
+  const body = await res.json();
+  if (res.status === 503 && isSuspendedBody(body)) throw new RoutingSuspendedError(body);
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  const result = (body.result ?? {}) as Record<string, unknown>;
+  if (String(result.status ?? '') === 'FAILED') {
+    const err = String(result.error ?? 'Verb call failed');
+    if (String(result.reason ?? '') === 'OPTIMIZATION_UNAVAILABLE') {
+      // Land in the same catch as a 503 so the shared resume notice is shown.
+      // tier/waitMinutes are unknown from here; the notice tolerates that.
+      throw new RoutingSuspendedError({
+        reason: SUSPEND_REASON, region: String(result.region ?? ''),
+        tier: null, waitMinutes: '', message: err,
+      });
+    }
+    throw new Error(err);
+  }
+  return result;
 }
 
 export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {

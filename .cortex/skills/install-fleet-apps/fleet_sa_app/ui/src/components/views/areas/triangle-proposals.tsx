@@ -38,7 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { usePublishMapState } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
-import { sfRead, sqlLiteral } from './backload-matching/helpers';
+import { sfRead, sqlLiteral, callVerb } from './backload-matching/helpers';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import { isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import ProposalMap, { type MapVehicle, type MapLoad, type MapStop, type MapLegKind, type MapRouteLeg } from './backload-proposals/ProposalMap';
@@ -56,7 +56,9 @@ const PHYS = 'FLEET_INTELLIGENCE.BACKLOAD_MATCHING';
 // route count (matrix_maximum_routes 2,000,000, i.e. ~1414 locations square).
 // This ceiling is far below both: it bounds the page's own render cost, and a
 // chain contributes at most 6 points, so it admits ~25 chains per costing run.
-const MAX_MATRIX_POINTS = 150;
+// How many chain skeletons to fetch. The verb enforces its own matrix ceiling when
+// costing, so this only bounds the page's render cost.
+const CHAIN_FETCH_LIMIT = 200;
 
 /** One chain skeleton straight out of VW_TRIANGLES (great-circle costed). */
 interface Chain {
@@ -309,7 +311,13 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
         + ` UNION ALL SELECT OFFER_ID AS LOAD_ID FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`;
       const [cls, tri, prm, veh, lds] = await Promise.all([
         sfRead(`SELECT ORS_PROFILE FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vt)}' LIMIT 1`),
-        sfRead(`SELECT * FROM ${PHYS}.VW_TRIANGLES WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        // Chains come from the verb, not a direct view read, so the app and the
+        // agent enumerate them through ONE implementation. 'raw' granularity returns
+        // each source row plus (once costed) its per-leg road distances, which is
+        // what keeps the constraint sliders and rate boxes re-grading locally with
+        // no further routing call. 'great_circle' on first load: the skeletons are
+        // free to fetch, and the user explicitly asks for road costing.
+        callVerb('backload_chain_solve', [scopeRegion, 'great_circle', null, null, CHAIN_FETCH_LIMIT, 'raw']),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
         sfRead(`SELECT TRAILER_ID, EMPTY_LON, EMPTY_LAT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         // A CTE join, not IN (... UNION ALL ...): Snowflake rejects the latter as
@@ -325,25 +333,31 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
       }
       const t = params.get('CASCADE_GRADE_THRESHOLD');
       if (t != null) setThreshold(t);
-      const rows = tri as unknown as Chain[];
+      const rawRows = ((tri as unknown as { raw?: { chain: Chain }[] }).raw) ?? [];
+      const rows = rawRows.map((r) => r.chain);
+      // Prefer the envelope the verb reports: it is the envelope the chains were
+      // actually pruned at, so a slider can never be offered a range the data
+      // cannot honour. MATCH_PARAMS remains the fallback.
+      const ve = (tri as unknown as { envelope?: Record<string, number> }).envelope ?? {};
       const env: Constraints = {
-        targetRadiusKm: params.get('TARGET_RADIUS_KM') ?? 250,
-        maxTotalEmptyKm: params.get('TRIANGLE_MAX_TOTAL_EMPTY_KM') ?? 250,
-        maxLeg1DetourKm: params.get('TRIANGLE_MAX_LEG1_DETOUR_KM') ?? 400,
-        maxPerVehicle: params.get('MAX_TRIANGLES_PER_TRAILER') ?? 5,
+        targetRadiusKm: ve.target_radius_km ?? params.get('TARGET_RADIUS_KM') ?? 250,
+        maxTotalEmptyKm: ve.max_total_empty_km ?? params.get('TRIANGLE_MAX_TOTAL_EMPTY_KM') ?? 250,
+        maxLeg1DetourKm: ve.max_leg1_detour_km ?? params.get('TRIANGLE_MAX_LEG1_DETOUR_KM') ?? 400,
+        maxPerVehicle: ve.max_per_vehicle ?? params.get('MAX_TRIANGLES_PER_TRAILER') ?? 5,
       };
       setEnvelope(env);
       setConstraints(env);
       // A rate of 0 would silently zero the economics, so fall back through
       // MATCH_PARAMS, then the rate the view itself costed with, then the
       // documented default - taking the first STRICTLY POSITIVE value.
-      const rate = (...candidates: (number | undefined)[]): number => {
+      const rate = (...candidates: (number | undefined | null)[]): number => {
         for (const v of candidates) if (v != null && Number.isFinite(v) && v > 0) return v;
         return 1;
       };
+      const vecon = (tri as unknown as { economics?: Record<string, number> }).economics ?? {};
       setEcon({
-        costPerEmptyKm: rate(params.get('COST_PER_EMPTY_KM'), num(rows[0]?.COST_PER_EMPTY_KM), 1.2),
-        revPerLoadedKm: rate(params.get('REVENUE_PER_LOADED_KM'), num(rows[0]?.REV_PER_LOADED_KM), 1.1),
+        costPerEmptyKm: rate(vecon.cost_per_empty_km, params.get('COST_PER_EMPTY_KM'), num(rows[0]?.COST_PER_EMPTY_KM), 1.2),
+        revPerLoadedKm: rate(vecon.revenue_per_loaded_km, params.get('REVENUE_PER_LOADED_KM'), num(rows[0]?.REV_PER_LOADED_KM), 1.1),
       });
 
       setChains(rows);
@@ -389,86 +403,40 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
   // so a full square matrix means passing the same coordinate list twice. It
   // requests metrics ['distance','duration'], hence distances in metres.
   // ---------------------------------------------------------------------
+  // Live road costing, delegated to the verb. It makes ONE matrix call over every
+  // distinct point in the candidate set and returns each chain's per-leg road
+  // distances, including the residual run to the target AND the run-home-empty
+  // baseline - so the comparison is road-against-road rather than one road figure
+  // against one straight line. Grading stays local: it is a pure function of
+  // (chain, road legs, constraints, rates), so a slider drag must not re-cost.
   const runCosting = useCallback(async () => {
     if (!chains.length) return;
     setCosting(true); setErr(null); setSuspended(null);
     try {
-      // Distinct points, de-duplicated to a 5dp key so the matrix stays small.
-      // Chains are consumed in rank order (internal-first, then best net) and
-      // cut off at the gateway's location guardrail rather than silently
-      // truncating the matrix, which would return a short row and mis-cost the
-      // legs that fell off the end.
-      const idx = new Map<string, number>();
-      const pts: [number, number][] = [];
-      const add = (lon: number, lat: number): number => {
-        const k = `${lon.toFixed(5)},${lat.toFixed(5)}`;
-        const hit = idx.get(k);
-        if (hit != null) return hit;
-        const i = pts.length;
-        pts.push([lon, lat]); idx.set(k, i);
-        return i;
-      };
-      const rows: { c: Chain; iEmpty: number; iP1: number; iD1: number; iP2: number; iD2: number; iTgt: number }[] = [];
-      let dropped = 0;
-      for (const c of chains) {
-        // A chain contributes at most 6 points; stop before overshooting.
-        if (pts.length + 6 > MAX_MATRIX_POINTS) { dropped += 1; continue; }
-        rows.push({
-          c,
-          iEmpty: add(num(c.EMPTY_LON), num(c.EMPTY_LAT)),
-          iP1: add(num(c.LEG1_PICKUP_LON), num(c.LEG1_PICKUP_LAT)),
-          iD1: add(num(c.LEG1_DELIVERY_LON), num(c.LEG1_DELIVERY_LAT)),
-          iP2: add(num(c.LEG2_PICKUP_LON), num(c.LEG2_PICKUP_LAT)),
-          iD2: add(num(c.LEG2_DELIVERY_LON), num(c.LEG2_DELIVERY_LAT)),
-          iTgt: add(num(c.TARGET_LON), num(c.TARGET_LAT)),
-        });
-      }
-
-      const coords = `ARRAY_CONSTRUCT(${pts.map(([lo, la]) => `ARRAY_CONSTRUCT(${lo}, ${la})`).join(', ')})`;
-      const sql =
-        `SELECT TO_VARCHAR(M:distances) AS D, TO_VARCHAR(M:durations) AS T FROM (SELECT ` +
-        `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('${sqlLiteral(profile)}', ` +
-        `${coords}, ${coords}, ${region ? `'${sqlLiteral(region)}'` : 'NULL'}) AS M)`;
-      const res = await sfRead(sql);
-      const parse = (v: unknown): number[][] | null => {
-        if (v == null) return null;
-        try { return typeof v === 'string' ? JSON.parse(v) : (v as number[][]); } catch { return null; }
-      };
-      const dist = parse(res[0]?.D);
-      if (!Array.isArray(dist) || !Array.isArray(dist[0])) {
-        throw new Error('The routing engine returned no distance matrix, so legs cannot be costed on the road network. Check that the region services are running.');
-      }
-      const km = (a: number, b: number): number | null => {
-        const v = dist?.[a]?.[b];
-        return typeof v === 'number' && Number.isFinite(v) ? v / 1000 : null;
-      };
-
+      const res = await callVerb('backload_chain_solve', [
+        region ?? null, 'road', null, null, CHAIN_FETCH_LIMIT, 'raw',
+      ]);
+      const raw = ((res as { raw?: { key: string; road_legs: RoadLegs | null }[] }).raw) ?? [];
+      const counts = (res.counts ?? {}) as Record<string, number>;
       const next: Record<string, RoadLegs> = {};
-      for (const { c, iEmpty, iP1, iD1, iP2, iD2, iTgt } of rows) {
-        next[chainKey(c)] = {
-          e1: km(iEmpty, iP1),
-          loaded1: km(iP1, iD1),
-          e2: km(iD1, iP2),
-          loaded2: km(iP2, iD2),
-          // The residual empty run the vehicle still has to make. The target is
-          // already a matrix point, so this costs nothing extra to obtain - and
-          // leaving it out is what made every saving on this page look larger
-          // than it is.
-          residual: km(iD2, iTgt),
-          baseline: km(iEmpty, iTgt),
-        };
+      for (const r of raw) if (r.road_legs) next[r.key] = r.road_legs;
+      if (!Object.keys(next).length) {
+        throw new Error('The routing engine returned no distance matrix, so legs cannot be costed '
+          + 'on the road network. Check that the region services are running.');
       }
+      const deferred = Number(counts.deferred_over_matrix_limit ?? 0);
       setRoadByKey(next);
-      setDroppedFromMatrix(dropped);
+      setDroppedFromMatrix(deferred);
       setCostBasis('road');
-      setStatus(`Costed ${rows.length} chains on the road network${dropped ? `, ${dropped} deferred to stay inside the matrix location limit` : ''}.`);
+      setStatus(`Costed ${Object.keys(next).length} chains on the road network`
+        + `${deferred ? `, ${deferred} deferred to stay inside the matrix location limit` : ''}.`);
     } catch (e: unknown) {
       if (isRoutingSuspendedError(e)) setSuspended((e as { info: SuspendedInfo }).info);
       else setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setCosting(false);
     }
-  }, [chains, chainKey, profile, region]);
+  }, [chains.length, region]);
 
   // ---------------------------------------------------------------------
   // Grade every chain against the CURRENT constraints and economics. Pure

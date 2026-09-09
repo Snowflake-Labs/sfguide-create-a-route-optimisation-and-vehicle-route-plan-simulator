@@ -2572,12 +2572,20 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VA
 --   NO_FEED                   no vehicles or no loads for this region.
 --   DATA_NOT_PROVISIONED      the cockpit views do not exist for this dataset.
 ----------------------------------------------------------------------
+-- Drop the previous 5-argument signature before recreating. All arguments are
+-- defaulted, so CREATE OR REPLACE with a 6th defaulted argument does NOT replace
+-- it: Snowflake keeps both and rejects the new one with "Cannot overload
+-- PROCEDURE ... as it would cause ambiguous PROCEDURE overloading". Without this
+-- drop the file fails on every account that already has the earlier version,
+-- which is every account that installed before granularity was added.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(
     P_STRATEGY     VARCHAR DEFAULT NULL,
     P_MAX_VEHICLES FLOAT   DEFAULT NULL,
     P_MAX_LOADS    FLOAT   DEFAULT NULL,
     P_REGION       VARCHAR DEFAULT NULL,
-    P_LIMIT        FLOAT   DEFAULT NULL
+    P_LIMIT        FLOAT   DEFAULT NULL,
+    P_GRANULARITY  VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -2688,6 +2696,17 @@ try {
     // otherwise reach the feed SQL. Both caps are concatenated into that SQL
     // (LIMIT cannot be a bind), so integer-and-bounded is also the injection
     // guarantee.
+    // 'vehicle' (default) returns the dispatcher's answer: the single best pair per
+    // vehicle. 'pair' returns EVERY graded pair with its per-dimension scores, which
+    // is what the cockpit needs - it shows several candidate loads per vehicle, and
+    // it re-ranks locally when a weight slider moves. Emitting only the per-vehicle
+    // best would make the app's Loads and Ensemble perspectives impossible and
+    // would force a server round trip per slider drag.
+    var granularity = String(P_GRANULARITY || 'vehicle').toLowerCase();
+    if (granularity !== 'vehicle' && granularity !== 'pair') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'vehicle' or 'pair' (got " + granularity + ")" };
+    }
     var maxVehicles = finite(P_MAX_VEHICLES) && Number(P_MAX_VEHICLES) > 0 ? Math.min(200,  Math.floor(Number(P_MAX_VEHICLES))) : 20;
     var maxLoads    = finite(P_MAX_LOADS)    && Number(P_MAX_LOADS)    > 0 ? Math.min(1000, Math.floor(Number(P_MAX_LOADS)))    : 120;
     var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.min(200,  Math.floor(Number(P_LIMIT)))        : 25;
@@ -3199,6 +3218,46 @@ try {
         compositeSum += pv.composite;
     }
 
+    // Pair granularity: every graded pair, in the shape the cockpit's ranker
+    // consumes. The per-dimension scores travel with each row so weights stay a
+    // CLIENT concern - that is what keeps a slider drag instant.
+    if (granularity === 'pair') {
+        var pairRows = [];
+        for (var yi = 0; yi < Math.min(outLimit, pairs.length); yi++) {
+            var y = pairs[yi];
+            pairRows.push({
+                key: y.key, trailerId: y.trailerId, loadId: y.loadId,
+                bestProposalId: y.bestSource + ':' + y.trailerId + ':' + y.loadId,
+                bestSource: y.bestSource, agreement: y.agreement, families: y.families,
+                trailerConsensus: y.trailerConsensus, trailerConsensusOf: y.trailerConsensusOf,
+                loadConsensus: y.loadConsensus, loadConsensusOf: y.loadConsensusOf,
+                emptyKm: y.emptyKm, loadedKm: y.loadedKm, loadedKmEst: y.loadedKmEst,
+                detourKm: y.detourKm, totalKm: y.totalKm, marginUsd: econMargin(y),
+                pickupSlackHrs: y.pickupSlackHrs, maxStopSeq: y.maxStopSeq, idleHours: y.idleHours,
+                feasible: y.feasible, isInternal: y.isInternal, source: y.source,
+                pickupCity: y.pickupCity, pickupCountry: y.pickupCountry,
+                deliveryCity: y.deliveryCity, emptyCity: y.emptyCity,
+                pickupLon: y.pickupLon, pickupLat: y.pickupLat,
+                deliveryLon: y.deliveryLon, deliveryLat: y.deliveryLat,
+                scores: y.scores, grades: y.grades,
+                constraints: chipsByPair[y.trailerId + '::' + y.loadId] || null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+            granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
+            strategies_run: familiesRun,
+            counts: {
+                vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+                graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
+                pairs_returned: pairRows.length, excluded_unroutable: excludedTotal
+            },
+            weights: WEIGHTS,
+            pairs: pairRows,
+            degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
+        };
+    }
+
     var outRows = [];
     for (var oi = 0; oi < Math.min(outLimit, perVehicle.length); oi++) {
         var o = perVehicle[oi];
@@ -3223,7 +3282,7 @@ try {
 
     return {
         status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
-        label_noun: cls.LABEL_NOUN || 'vehicle',
+        granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
         strategies_run: familiesRun,
         counts: {
             vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
@@ -3252,7 +3311,7 @@ try {
     return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
 }
 $$;
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_BACKLOAD_CHAIN_SOLVE: two-hop (chained) return planning.
@@ -3299,12 +3358,17 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FL
 -- Returns { status, region, cost_basis, cascade, acceptance_score, counts,
 --           totals, chains[] } or { status:'FAILED', reason, error }.
 ----------------------------------------------------------------------
+-- Drop the previous 5-argument signature first: every argument is defaulted, so
+-- adding a 6th defaulted one does not replace it, and Snowflake rejects the new
+-- procedure with "Cannot overload PROCEDURE ... ambiguous PROCEDURE overloading".
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(
     P_REGION           VARCHAR DEFAULT NULL,
     P_COST_BASIS       VARCHAR DEFAULT NULL,
     P_ACCEPTANCE_SCORE FLOAT   DEFAULT NULL,
     P_MAX_PER_VEHICLE  FLOAT   DEFAULT NULL,
-    P_LIMIT            FLOAT   DEFAULT NULL
+    P_LIMIT            FLOAT   DEFAULT NULL,
+    P_GRANULARITY      VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -3373,6 +3437,16 @@ try {
     if (costBasis !== 'road' && costBasis !== 'great_circle') {
         return { status: 'FAILED', reason: 'BAD_COST_BASIS', region: region,
                  error: "cost_basis must be 'road' or 'great_circle' (got " + costBasis + ")" };
+    }
+    // 'chain' (default) returns the reported, human-readable chain. 'raw' additionally
+    // returns each chain's source row and its per-leg ROAD distances, which is what
+    // lets a caller re-grade locally when a constraint slider or a rate box moves -
+    // grading is a pure function of (chain, road legs, constraints, rates), so
+    // re-running the matrix for a slider drag would be pure waste.
+    var granularity = String(P_GRANULARITY || 'chain').toLowerCase();
+    if (granularity !== 'chain' && granularity !== 'raw') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'chain' or 'raw' (got " + granularity + ")" };
     }
     var maxPerVehicle = finite(P_MAX_PER_VEHICLE) && Number(P_MAX_PER_VEHICLE) > 0
         ? Math.min(20, Math.floor(Number(P_MAX_PER_VEHICLE))) : null;
@@ -3609,6 +3683,34 @@ try {
         if (n <= maxPerVehicle) capped.push(shown[ki]);
     }
 
+    // Raw granularity: the caller grades. Chains are returned UNFILTERED by the
+    // cascade and the per-vehicle cap, because those are policy the caller applies
+    // itself once it has re-graded against its own sliders - applying them here
+    // would silently discard rows the caller may then be unable to show.
+    if (granularity === 'raw') {
+        var rawRows = [];
+        for (var wi = 0; wi < Math.min(outLimit, graded.length); wi++) {
+            var w = graded[wi];
+            var wr = roadByKey[w.key] || null;
+            rawRows.push({
+                key: w.key, chain: w.c,
+                road_legs: wr ? { e1: wr.e1, loaded1: wr.loaded1, e2: wr.e2,
+                                  loaded2: wr.loaded2, residual: wr.residual, baseline: wr.baseline }
+                              : null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
+            cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
+            counts: { skeletons: chains.length, graded: graded.length, returned: rawRows.length,
+                      costed_on_road: costed, deferred_over_matrix_limit: deferred },
+            economics: { cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: revPerLoadedKm },
+            envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
+                        max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
+            raw: rawRows
+        };
+    }
+
     var out = [], beats = 0, savingEmpty = 0, sumSaved = 0, sumNet = 0;
     for (var oi = 0; oi < capped.length; oi++) {
         var g = capped[oi], gc = g.c;
@@ -3669,7 +3771,7 @@ try {
 
     return {
         status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
-        cost_basis: costBasis, acceptance_score: threshold,
+        cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
         cascade: { rung_reached: rungReached, label: rungReached ? RUNG_LABEL[rungReached] : null,
                    note: cascadeNote },
         counts: { skeletons: chains.length, graded: graded.length, after_cascade: shown.length,
@@ -3687,7 +3789,7 @@ try {
     return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
 }
 $$;
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'

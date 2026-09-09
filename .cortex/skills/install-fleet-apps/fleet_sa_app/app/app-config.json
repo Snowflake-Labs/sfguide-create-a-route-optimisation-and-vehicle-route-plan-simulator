@@ -83,7 +83,9 @@
       "network_optimization": 1,
       "evac_seed": 4,
       "evac_solve": 2,
-      "vrp_solve": 2
+      "vrp_solve": 2,
+      "backload_solve": 6,
+      "backload_chain_solve": 5
     },
     "mapTools": [
       "get_directions",
