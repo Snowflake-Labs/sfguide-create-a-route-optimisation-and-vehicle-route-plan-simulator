@@ -98,7 +98,8 @@ MERGE INTO MATCH_PARAMS tgt USING (
     ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy multi-stop builder.'),
     -- ---- planning horizon / fleet sizing ----
     ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival. Also the spread of the synthetic free-time and pickup windows.'),
-    ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'Max own waiting loads exposed as internal demand. Sized to a full-day national load pool, not a demo slice.'),
+    ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.'),
+    ('INTERNAL_LOADS_PER_TRAILER','4',     'number', 'core',   TRUE,  'Waiting internal loads per idle trailer. Sizes the internal pool relative to the fleet so it means the same thing in every region.'),
     -- ---- multi-leg (triangle) matching ----
     ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching: hop 1 carries the vehicle part-way, hop 2 carries it toward the target region. Off = single-hop matching only.'),
     ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain. 2 = the classic triangle (empty -> load A -> load B -> target).'),
