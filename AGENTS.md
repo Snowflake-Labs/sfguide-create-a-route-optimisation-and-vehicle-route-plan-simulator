@@ -139,6 +139,22 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage.py
 # masking, piggybacked statements, every writing keyword, max_rows).
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.mts
 
+# Regression test for routing-suspend.ts's ENGINE-STATE vs PAYLOAD-DEFECT split
+# (19 cases). It lives in fleet_tools/user, NOT under fleet_sa_app/ui, purely
+# because this package already carries tsx - running it from the SA app UI makes
+# npx block on an interactive install prompt and then re-download tsx on every
+# invocation (minutes instead of under a second). routing-suspend.ts is
+# dependency-free pure TypeScript, so a relative import works.
+#
+# What it protects: whether an unusable routing call is an engine state the app
+# can fix by resuming, or a payload the app must correct. Backwards, that becomes
+# a dead end - an off-graph coordinate refused by the engine in 5 ms (ORS 6010)
+# was reported as "the routing engine is starting", with a Retry that could never
+# clear because nothing was warming up. Both directions are asserted: the
+# suspended/warming cases are there because over-broadening the off-graph
+# patterns would silently disable auto-resume, which is the opposite defect.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_suspend.mts
+
 # Validate that no bundled verb source uses a JavaScript global the Snowflake
 # LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
 # catches this: `tsc` accepts it (the repo pulls in DOM and @types/node for the
