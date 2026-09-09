@@ -293,12 +293,28 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
     try {
       const cfg = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const vt = String(cfg[0]?.VEHICLE_TYPE ?? '');
+      // The APP's selected region wins over CONFIG's single row, which is only a
+      // default-selection hint.
+      const scopeRegion = String(region ?? cfg[0]?.REGION ?? 'SanFrancisco');
+      const scope = { region: scopeRegion };
+      // VW_TRIANGLES, VW_TRAILERS_GEO and VW_LOADS do not project REGION, so bare
+      // reads pool every loaded region. Measured on this account: all 9 chains
+      // belong to Europe, so an unscoped San Francisco planner was shown chains
+      // for vehicles on another continent - and they render perfectly plausibly,
+      // because each chain is internally consistent. Scope through the FLEET_APP
+      // contract views, which do carry REGION.
+      const scopedTrailerIds = `SELECT TRAILER_ID FROM ${BM}.VW_TRAILERS WHERE REGION = :region`;
+      const scopedLoadIds =
+        `SELECT ID AS LOAD_ID FROM ${BM}.VW_INTERNAL_VOLUMES WHERE REGION = :region`
+        + ` UNION ALL SELECT OFFER_ID AS LOAD_ID FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`;
       const [cls, tri, prm, veh, lds] = await Promise.all([
         sfRead(`SELECT ORS_PROFILE FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vt)}' LIMIT 1`),
-        sfRead(`SELECT * FROM ${PHYS}.VW_TRIANGLES`),
+        sfRead(`SELECT * FROM ${PHYS}.VW_TRIANGLES WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
-        sfRead(`SELECT TRAILER_ID, EMPTY_LON, EMPTY_LAT FROM ${PHYS}.VW_TRAILERS_GEO`),
-        sfRead(`SELECT LOAD_ID, IS_INTERNAL, SOURCE, PICKUP_CITY, PICKUP_LON, PICKUP_LAT FROM ${PHYS}.VW_LOADS`),
+        sfRead(`SELECT TRAILER_ID, EMPTY_LON, EMPTY_LAT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        // A CTE join, not IN (... UNION ALL ...): Snowflake rejects the latter as
+        // "Unsupported subquery type cannot be evaluated".
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT FROM ${PHYS}.VW_LOADS l JOIN scoped s ON s.LOAD_ID = l.LOAD_ID`, { params: scope }),
       ]);
       setProfile(String(cls[0]?.ORS_PROFILE ?? 'driving-car'));
 
@@ -350,7 +366,11 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
     } finally {
       setLoading(false);
     }
-  }, []);
+    // `region` is a real dependency now that the feed reads are scoped by it. With
+    // an empty list the callback would keep the region captured at mount, so
+    // switching region re-ran the SAME query and the page looked correctly scoped
+    // while showing the previous region's chains.
+  }, [region]);
 
   useEffect(() => { void load(); }, [load, region]);
 

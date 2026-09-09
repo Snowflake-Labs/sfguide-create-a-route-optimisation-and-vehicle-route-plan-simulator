@@ -23,7 +23,7 @@ import {
   type ProposalRow, type ParamRow, type TrailerLoc, type EnsembleWeights,
   type StrategyFamily,
 } from './backload-ensemble';
-import { sqlLiteral, findUnroutablePoints, coordKey } from './backload-matching/helpers';
+import { sfRead, sqlLiteral, findUnroutablePoints, coordKey } from './backload-matching/helpers';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import { isSuspendedBody, isRoutingSuspendedError, RoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
@@ -88,23 +88,6 @@ function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): nu
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
-  const res = await fetch('/api/query', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql }),
-  });
-  const body = await res.json();
-  // Typed 503 first: a suspended payload carries no `error` key, so the fallback
-  // below would otherwise report a bare "HTTP 503" for an outage.
-  if (res.status === 503 && isSuspendedBody(body)) throw new RoutingSuspendedError(body);
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  const rows = (body.rows as Record<string, unknown>[]) || [];
-  return rows.map((r) => {
-    const o: Record<string, unknown> = {};
-    for (const k of Object.keys(r)) o[k.toUpperCase()] = r[k];
-    return o;
-  });
-}
 
 // Thrown by apiSolve and sfRead when the routing engine is suspended so the
 // caller can show the shared resume notice (server has already triggered the
@@ -247,14 +230,37 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       const cfgRows = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const c = cfgRows[0] as { VEHICLE_TYPE?: string; REGION?: string } | undefined;
       const vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
-      const cfgRegion = String(c?.REGION ?? region ?? 'SanFrancisco');
+      // The APP's selected region wins over CONFIG's single row. CONFIG is a
+      // default-selection hint, not the scope.
+      const cfgRegion = String(region ?? c?.REGION ?? 'SanFrancisco');
       setCfg({ vehicleType, region: cfgRegion });
 
+      // Region scoping is mandatory and NOT optional tidying. VW_TRAILERS_GEO,
+      // VW_LOADS and VW_CANDIDATES_SCORED do not project REGION (their sources
+      // do), so reading them bare pools every loaded region into one cockpit -
+      // measured 191 vehicles and 5,632 loads account-wide against 100 and 5,300
+      // for San Francisco. The result is not merely noisy: it proposes a backload
+      // the vehicle physically cannot reach, and it scores WELL, because the empty
+      // leg is computed from coordinates that are perfectly valid in isolation.
+      // The FLEET_APP contract views do carry REGION, so scope through them.
+      const scope = { region: cfgRegion };
+      const scopedTrailerIds = `SELECT TRAILER_ID FROM ${BM}.VW_TRAILERS WHERE REGION = :region`;
+      const scopedLoadIds =
+        `SELECT ID AS LOAD_ID FROM ${BM}.VW_INTERNAL_VOLUMES WHERE REGION = :region`
+        + ` UNION ALL SELECT OFFER_ID AS LOAD_ID FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`;
       const [clsRows, tRows, lRows, scRows, pRows] = await Promise.all([
         sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vehicleType)}' LIMIT 1`),
-        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO`),
-        sfRead(`SELECT LOAD_ID, IS_INTERNAL, SOURCE, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DELIVERY_CITY, DELIVERY_LON, DELIVERY_LAT, REQUESTED_PICKUP_TS, WEIGHT_KG, PRODUCT, HAZMAT, PRICE_USD, APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS`),
-        sfRead(`SELECT TRAILER_ID, LOAD_ID, DIST_CHECK, TIME_CHECK, HORIZON_CHECK, CAP_CHECK, HAZMAT_CHECK, ELIGIBLE FROM ${PHYS}.VW_CANDIDATES_SCORED WHERE ELIGIBLE = TRUE`),
+        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        // The id set MUST be a CTE joined in: Snowflake rejects an IN (...) with a
+        // UNION ALL inside it as "Unsupported subquery type cannot be evaluated".
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS l JOIN scoped s ON s.LOAD_ID = l.LOAD_ID`, { params: scope }),
+        // Scoped on BOTH sides, not just the vehicle: this set feeds the visible
+        // "Eligible pairs" KPI, so leaving loads unscoped would count in-region
+        // vehicles paired with out-of-region loads and inflate the number the
+        // dispatcher reads. (It remains a large result - the eligibility view is
+        // a cross join of the two pools - so this is a scoping fix, not a
+        // sufficient answer to its size.)
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT c.TRAILER_ID, c.LOAD_ID, c.DIST_CHECK, c.TIME_CHECK, c.HORIZON_CHECK, c.CAP_CHECK, c.HAZMAT_CHECK, c.ELIGIBLE FROM ${PHYS}.VW_CANDIDATES_SCORED c JOIN scoped s ON s.LOAD_ID = c.LOAD_ID WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
       ]);
       setCls((clsRows[0] as unknown as VehicleClass) ?? null);
