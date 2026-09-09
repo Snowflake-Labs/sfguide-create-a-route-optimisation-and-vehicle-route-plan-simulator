@@ -149,13 +149,28 @@ Conventions:
 -- SV_ROUTE_DEVIATION - route deviation analysis semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS (per trip)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
--- ACTUAL_PATH / EXPECTED_PATH GEOGRAPHY columns excluded.
+--
+-- The ACTUAL_PATH / EXPECTED_PATH GEOGRAPHY columns are still excluded from the
+-- trip_dev table (a semantic view cannot hold a GEOGRAPHY column), but they are
+-- no longer unreachable: the trip_paths table binds
+-- FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS, which projects both as simplified
+-- GeoJSON strings, unpivoted to one row per (trip, path type). That was the
+-- missing link that made "show the actual and expected path" unanswerable
+-- outside the app - data_to_map accepts only a SQL / analyst result as its source
+-- and rejects an MCP verb result (cortex#156984), so geometry the agent fetched
+-- through run_sql could never be drawn.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
 
   TABLES (
     trip_dev AS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
       PRIMARY KEY (TRIP_ID)
+    , trip_paths AS FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS
+      PRIMARY KEY (TRIP_ID, PATH_TYPE)
+  )
+
+  RELATIONSHIPS (
+    paths_to_trip AS trip_paths(TRIP_ID) REFERENCES trip_dev(TRIP_ID)
   )
 
   FACTS (
@@ -190,6 +205,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
       WITH SYNONYMS ('asset mode', 'vehicle class', 'fleet type', 'mode')
       COMMENT = 'Asset mode (car, hgv, ebike)'
     , trip_dev.is_route_deviation AS IS_ROUTE_DEVIATION WITH SYNONYMS ('deviated') COMMENT = 'Whether the trip deviated from the planned route'
+    , trip_dev.has_expected_path AS (EXPECTED_PATH IS NOT NULL)
+      WITH SYNONYMS ('has planned route', 'has both paths', 'mappable')
+      COMMENT = 'Whether a planned route geometry is stored for this trip. Only deviated trips have one, so this is the filter to use before drawing an actual-vs-expected map: on a trip without it the driven track reproduces the plan exactly and the two lines coincide.'
+    , trip_paths.path_type AS PATH_TYPE
+      WITH SYNONYMS ('path kind', 'actual or expected', 'route type')
+      COMMENT = 'Which route this row is: ACTUAL (driven GPS track) or EXPECTED (planned route). Use as the color column of a geojson map layer to show both at once.'
+    , trip_paths.path_geojson AS PATH_GEOJSON
+      WITH SYNONYMS ('route geometry', 'path geometry', 'route shape', 'driven path', 'planned path')
+      COMMENT = 'Map-ready route geometry as a GeoJSON LineString string, simplified to 250 m. Use as the geo column of a geojson layer. Filter to ONE trip or a handful: rows reach 31 KB and an oversized payload renders a blank map.'
   )
 
   METRICS (
@@ -203,10 +227,10 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.avg_route_deviation_factor AS AVG(route_deviation_factor) COMMENT = 'Average actual/expected route factor'
   )
 
-  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable).'
+  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable). MAPPING: to draw a trip route select path_geojson with a geojson layer and color by path_type (categorical) - that puts the driven and the planned line on one layer. Filter to a single trip_id or a handful: rows reach 31 KB and an oversized payload renders a blank map rather than an error. A planned route is stored only for deviated trips, so filter has_expected_path (or is_route_deviation) before promising a comparison; on any other trip the driven track reproduces the plan exactly and the two lines coincide.'
 
   AI_SQL_GENERATION 'Route deviation semantic view for the Route Optimisation & Fleet Intelligence solution.
-One fact: trip_dev (TRIP_DEVIATION_ANALYSIS), one row per analyzed trip.
+Two tables: trip_dev (TRIP_DEVIATION_ANALYSIS), one row per analyzed trip, and trip_paths (VW_TRIP_PATHS), one row per (trip, path type) carrying map-ready geometry. They join on trip_id.
 
 REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 - This view holds EVERY loaded region and asset mode at once, so an unfiltered aggregate MIXES regions. Filter when the user names a place.
@@ -217,7 +241,14 @@ REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 Conventions:
 - "deviation rate" -> deviation_rate_pct; raw counts -> deviation_trips.
 - "excess km" -> total_excess_km; "time lost" -> total_time_lost_min.
-- Group by driver_id for per-driver deviation; by trip_date for daily trends; by route_variation for classification.'
+- Group by driver_id for per-driver deviation; by trip_date for daily trends; by route_variation for classification.
+
+DRAWING A ROUTE (actual vs expected):
+- Select path_geojson plus path_type, one trip at a time, and map it as a geojson layer colored by path_type. Both lines then land on ONE layer, which is all a map spec supports.
+- Selecting path_geojson multiplies rows by path type, so never combine it with a trip-level aggregate. Pick the trip first (ORDER BY distance_deviation_pct DESC LIMIT 1), then select its geometry.
+- Do NOT mix trip_paths dimensions with trip_dev FACTS in one query: Snowflake rejects it with "All expressions referenced in the query must come from the same entity when both FACTS and DIMENSIONS are specified". Use dimensions only for the map query (is_route_deviation and has_expected_path are dimensions, so filtering still works), and run a second query if you also need the deviation figures.
+- A planned route exists ONLY for deviated trips. Filter has_expected_path or is_route_deviation before offering a comparison; asking for a specific non-deviated trip returns one ACTUAL row, and the honest answer is that the driven track matches the plan, not that data is missing.
+- Keep it to one trip or a few: rows reach 31 KB and an oversized payload renders a blank map with no error.'
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============
