@@ -85,7 +85,7 @@
       "evac_solve": 2,
       "vrp_solve": 2,
       "backload_solve": 6,
-      "backload_chain_solve": 5
+      "backload_chain_solve": 6
     },
     "mapTools": [
       "get_directions",

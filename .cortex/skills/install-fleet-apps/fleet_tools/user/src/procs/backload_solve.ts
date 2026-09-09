@@ -54,7 +54,17 @@ export const backload_solve = defineProc({
     limit: t
       .number()
       .nullable()
-      .describe('How many graded proposals to return (one per vehicle, best first). Default 25, clamped to 200.'),
+      .describe('How many rows to return. Default 25, clamped to 200.'),
+    granularity: t
+      .string({ max: 12 })
+      .nullable()
+      .describe(
+        'Shape of the answer. "vehicle" (default) returns ONE best proposal per vehicle - the ' +
+        'dispatcher answer, and what you almost always want. "pair" returns every graded ' +
+        '(vehicle, load) pair with its per-dimension scores; it exists for a caller that ranks ' +
+        'the pairs itself, so prefer "vehicle" unless the user explicitly asks to compare ' +
+        'several candidate loads for the same vehicle.',
+      ),
   },
   returns: {
     result: t.object({}).describe(
@@ -71,6 +81,7 @@ export const backload_solve = defineProc({
       args.max_loads,
       args.region,
       args.limit,
+      args.granularity,
     ]);
     return { result };
   },

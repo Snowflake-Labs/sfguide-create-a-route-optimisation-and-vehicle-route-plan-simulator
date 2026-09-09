@@ -54,6 +54,15 @@ export const backload_chain_solve = defineProc({
       .number()
       .nullable()
       .describe('How many chains to return. Default 25, clamped to 200.'),
+    granularity: t
+      .string({ max: 12 })
+      .nullable()
+      .describe(
+        'Shape of the answer. "chain" (default) returns graded, human-readable chains with the ' +
+        'cascade already applied - what you want for any question. "raw" returns each chain\'s ' +
+        'source row plus its per-leg road distances for a caller that grades and filters itself; ' +
+        'it is NOT cascade-filtered, so do not present raw output as the recommended set.',
+      ),
   },
   returns: {
     result: t.object({}).describe(
@@ -74,6 +83,7 @@ export const backload_chain_solve = defineProc({
       args.acceptance_score,
       args.max_per_vehicle,
       args.limit,
+      args.granularity,
     ]);
     return { result };
   },

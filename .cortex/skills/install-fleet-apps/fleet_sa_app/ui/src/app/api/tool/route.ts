@@ -35,7 +35,7 @@ const DEFAULT_VERBS: Record<string, number> = {
   // screen and a plan the agent describes cannot diverge.
   // Arity excludes the trailing IDEMPOTENCY_KEY, as above.
   backload_solve: 6,
-  backload_chain_solve: 5,
+  backload_chain_solve: 6,
 };
 
 function resolveTools(): { schema: string; verbs: Record<string, number> } {
