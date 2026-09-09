@@ -124,6 +124,24 @@ grep -q "WHERE NOT EXISTS" "$VENDOR_DIR/dist/audit.js" \
 grep -q "CONCURRENT_ATTEMPT" "$VENDOR_DIR/dist/runtime/envelope.js" \
   || { echo "ERROR: built synapse envelope is missing the pre-execute idempotency claim (see vendor/synapse/VENDOR.md patch 06). The claim table would be created but never consulted."; exit 1; }
 
+# Audit-history preservation (patch 07). This script runs the emitted DDL on every
+# deploy, and a deploy is required after any verb change, so a CREATE OR REPLACE
+# here truncates the entire agent behaviour history on a routine cadence - the one
+# record that SV_AGENT_BEHAVIOUR and analyse_agent_behaviour.py are built on.
+# Measured: a 35-row trail of real agent use went to 4 rows after one redeploy,
+# with no error and a table that still looked healthy.
+#
+# This is a NEGATIVE assertion on purpose. The obvious positive form
+# (grep -q 'CREATE ${kind} IF NOT EXISTS ${table}') matches claimTableDDL, which
+# has always been IF NOT EXISTS - so it passes even with patch 07 reverted, which
+# is precisely the false-pass class this file's other checks exist to avoid. The
+# string below appears ONLY in the reverted code; the surrounding comments discuss
+# "CREATE OR REPLACE" in prose but never in this interpolated form.
+if grep -q 'CREATE OR REPLACE ${kind} ${table}' "$VENDOR_DIR/dist/ddl.js"; then
+  echo "ERROR: built synapse codegen emits CREATE OR REPLACE for verb_attempt (see vendor/synapse/VENDOR.md patch 07). Every bundle deploy would silently destroy the agent behaviour history."
+  exit 1
+fi
+
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
   "user|fleet-user-tools|OPENROUTESERVICE_APP|ROUTING|ROUTING_MCP|user|FLEET_APP_USER"

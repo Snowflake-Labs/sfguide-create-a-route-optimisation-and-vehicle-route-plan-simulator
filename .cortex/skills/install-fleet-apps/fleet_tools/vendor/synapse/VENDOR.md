@@ -36,16 +36,17 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Six deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Seven deviations from upstream, plus two new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
-replayable record and are already applied to this tree. Patches 01-05 are scoped by FILE,
-not by concern, so `git apply` never has two of them editing the same file.
+replayable record and are already applied to this tree. Patches 01-05 and 07 are scoped by
+FILE, not by concern, so `git apply` never has two of them editing the same file.
 
 **Patch 06 is the documented exception.** It is scoped by CONCERN (one behavioral change
 spanning nine files, several already touched by 01-05), because the change is not
 separable by file without splitting one guard across five patches. It is a diff of the
-post-01-05 tree, so it MUST be applied last - `git apply patches/*.patch` does that
-naturally, since shell glob order is lexicographic. Do not reorder it.
+post-01-05 tree, so it MUST be applied last of 01-06 - `git apply patches/*.patch` does that
+naturally, since shell glob order is lexicographic. Do not reorder it. Patch 07 also touches
+`src/ddl.ts` and is a diff of the post-06 tree, so it sorts after 06 and must stay there.
 
 ### patches/01-tracking-tags.patch
 
@@ -250,6 +251,33 @@ Two incidental properties worth preserving on a re-vendor:
 writes it, exactly as for `verb_attempt`. Rows outlive the 24h replay window and are NOT
 pruned on the request path (that would add a statement per verb); prune out of band with
 `DELETE FROM <schema>.verb_claim WHERE claimed_at < DATEADD(day, -7, CURRENT_TIMESTAMP());`.
+
+### patches/07-audit-table-preserve.patch
+
+File: `src/ddl.ts`.
+
+Stops every bundle deploy from destroying the agent behaviour history. `auditTableDDL`
+emitted `CREATE OR REPLACE HYBRID TABLE verb_attempt`, and `npx synapse deploy` runs that
+DDL on each deploy - which AGENTS.md requires after any verb change - so the audit trail was
+truncated on a routine cadence. Now `CREATE ... IF NOT EXISTS`, matching `claimTableDDL`
+directly below it, which already did the right thing (so this was an inconsistency, not a
+deliberate choice).
+
+Why it matters: `verb_attempt` is the ONLY durable record of which verbs an agent chose,
+with what arguments, and what failed. `FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_AGENT_BEHAVIOUR`
+and `scripts/analyse_agent_behaviour.py` are both built on it, and every question they exist
+to answer is longitudinal - is the governed-path bypass rate falling, which verbs has nobody
+exercised, which verb has never once succeeded.
+
+Measured on tib85385, 2026-09-09: a 35-row trail covering two days of real agent use -
+including the `run_sql` calls that evidenced the semantic-view bypass, and the four
+`deep_link` failures that exposed the `URLSearchParams` fault - was reduced to the 4 rows
+logged after a redeploy. No error, no warning, and the table still looked healthy.
+
+Trade-off: a future column addition now needs an explicit `ALTER TABLE`. That is the right
+way round for an append-only audit log - a migration statement is cheap, lost history is not.
+A re-vendor that silently drops this patch is caught by the `IF NOT EXISTS` assertion in
+`scripts/install_synapse_bundles.sh`.
 
 ## Re-vendoring procedure
 
