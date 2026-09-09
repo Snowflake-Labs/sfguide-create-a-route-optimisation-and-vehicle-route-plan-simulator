@@ -744,8 +744,10 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
           {region ? ` \u00B7 ${region}` : ''}
         </span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button type="button" className="btn secondary" disabled={busy} onClick={() => void load()}>
-            Reload chains
+          <button type="button" className="btn secondary" disabled={busy}
+            title="Re-query the chain data. This also clears the road costing and resets the sliders and rates to their defaults."
+            onClick={() => void load()}>
+            Refresh
           </button>
           <button type="button" className="btn secondary" onClick={() => setLegendOpen(true)}>
             Legend
@@ -756,10 +758,12 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
       {/* Controls */}
       <div className="control-bar">
         <button type="button" className="btn primary" disabled={busy || !chains.length}
+          title="Price every leg of every chain on the real road network with one live matrix call, replacing the straight-line estimates. Grades and the internal-first cascade are only applied once this has run."
           onClick={() => void runCosting()}>
           {costing ? 'Costing\u2026' : 'Cost legs on road network'}
         </button>
-        <div className="control-bar-group">
+        <div className="control-bar-group"
+          title="The pass mark for the internal-first cascade, which stops at the lowest rung with an eligible chain scoring at or above it. Score = 45% revenue-bearing share, 35% how completely the return is closed, 20% empty km saved. If no rung clears the mark, every rung is shown as a near miss - so a higher score can show more chains, not fewer.">
           <span className="control-bar-label">Acceptance score</span>
           <input type="number" className="sf-input" style={{ width: 72 }} min={0} max={100}
             value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} />
@@ -882,17 +886,12 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
         </div>
 
         {/* Map */}
-        <div style={{ display: 'grid', gridTemplateRows: 'minmax(0,1fr) auto', gap: 8, flex: 1, minHeight: 380 }}>
+        <div style={{ flex: 1, minHeight: 380 }}>
           <ProposalMap
             vehicles={vehicles} loads={loads} links={[]} stops={stops}
             legKinds={CHAIN_LEG_KINDS} endLabel="Return target"
             routeLegs={routeLegs} routePath={null} focusKey={selectedKey}
           />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <button type="button" className="btn small secondary" onClick={() => setLegendOpen(true)}>
-              Legend
-            </button>
-          </div>
           <LegendOverlay open={legendOpen} onClose={() => setLegendOpen(false)} title="Legend">
             <LegendSection title="Estate">
               <Swatch color={COLOR_VEHICLE} label="Vehicles waiting for a return" />
