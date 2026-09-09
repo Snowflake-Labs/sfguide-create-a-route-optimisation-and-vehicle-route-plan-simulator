@@ -34,6 +34,168 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
 
+-- ---------------------------------------------------------------------------
+-- PBF_MIRRORS + PBF_MIRROR_URLS
+-- ---------------------------------------------------------------------------
+-- Alternate hosts to fall back to when the primary PBF origin is unreachable.
+-- On 2026-09-07 a Geofabrik outage stalled a 91.8%-complete continental build
+-- with no second host to try; ftp5.gwdg.de mirrors the same tree and was, at
+-- that moment, byte-identical (same published md5, same 34,940,824,103 total).
+--
+-- A table rather than a container env var so an operator can add or disable a
+-- mirror with one UPDATE - no image rebuild, no ALTER SERVICE, and the current
+-- list is visible to SQL and to the admin UI.
+--
+-- SOURCE_HOST is load-bearing, not descriptive: it scopes a mirror to the
+-- upstream it actually mirrors. Region PBF URLs in this catalog come from TWO
+-- independent sources (Geofabrik and BBBike), and gwdg mirrors only the former.
+-- Without this column a bbbike URL would be rewritten onto a gwdg path that
+-- does not exist, converting a working region into a 404.
+--
+-- PATH_REGEX is load-bearing for the same reason at file granularity: a
+-- "Geofabrik mirror" is usually a PARTIAL mirror. GWDG carries exactly three
+-- files (europe, germany, north-america), not the whole tree - measured, and
+-- the reason this column exists. Offering a mirror for a file it does not have
+-- is worse than having no mirror at all: the rotation would spend its failover
+-- on a guaranteed 404. Happily the covered files are the multi-hour continental
+-- transfers, which are precisely the ones where failover is worth anything;
+-- a small extract downloads in minutes and simply retries its origin.
+--
+-- PATH_REWRITE_FROM / PATH_REWRITE_TO exist because a mirror need not preserve
+-- the origin's LAYOUT. GWDG stores its files FLAT while Geofabrik nests Germany:
+-- the origin path is /europe/germany-latest.osm.pbf but the mirror has
+-- /germany-latest.osm.pbf. A pure host-prefix swap therefore cannot reach it,
+-- which is how the first version of this table shipped a `germany` alternative
+-- in PATH_REGEX that matched 0 of 555 catalog regions - inert config that read
+-- as working coverage. When the pair is NULL the path passes through unchanged,
+-- so the primary row and any path-preserving mirror are unaffected.
+--
+-- Priority 1 is the PRIMARY itself (mapped to its own host) so the whole
+-- ordered candidate list lives in one place and the failover order is readable
+-- without also reading code.
+--
+-- NOTE the deliberate asymmetry with the region catalog: mirrors are a
+-- DOWNLOAD-time concern only. The catalog scraper stays Geofabrik-authoritative,
+-- so PBF_URL keeps its canonical value and a mirror never leaks into stored
+-- metadata, build history, or the UI's notion of where a region comes from.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS (
+    PRIORITY     INT NOT NULL,        -- 1 = primary, ascending = failover order
+    SOURCE_HOST  VARCHAR NOT NULL,    -- upstream host this row applies to
+    MIRROR_BASE  VARCHAR NOT NULL,    -- scheme+host+path prefix replacing the origin
+    PATH_REGEX   VARCHAR,             -- NULL = every path; else only matching paths
+    PATH_REWRITE_FROM VARCHAR,        -- NULL = path passes through unchanged
+    PATH_REWRITE_TO   VARCHAR,        -- replacement applied to the origin path
+    ENABLED      BOOLEAN DEFAULT TRUE,
+    NOTE         VARCHAR,
+    UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}';
+
+-- The table is CREATE ... IF NOT EXISTS, so a deployment that already has it
+-- would never gain the rewrite columns from the definition above. Add them
+-- explicitly; both are no-ops on a fresh install.
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_FROM VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_TO VARCHAR;
+
+-- Seeded with MERGE, not INSERT: this module is re-run by every install and a
+-- bare INSERT would duplicate the rows on each pass (and duplicates would
+-- produce duplicate download candidates).
+--
+-- Ownership is SPLIT, and the WHEN MATCHED clause is where that is enforced:
+--   code-owned  - MIRROR_BASE, PATH_REGEX, PATH_REWRITE_*, NOTE. These describe
+--                 what a mirror factually carries, so a newer build must be able
+--                 to correct them. Insert-only was wrong: the first seed shipped
+--                 a PATH_REGEX matching 0 regions and a NOTE claiming three-file
+--                 coverage, and an already-seeded row would have kept both
+--                 forever while looking configured.
+--   operator-owned - ENABLED. Deliberately NOT in the UPDATE list, so a mirror an
+--                 operator switched off stays off across re-installs. Overwriting
+--                 it would silently re-enable a source they had rejected.
+MERGE INTO OPENROUTESERVICE_APP.CORE.PBF_MIRRORS t
+USING (
+    SELECT 1 AS PRIORITY, 'download.geofabrik.de' AS SOURCE_HOST,
+           'https://download.geofabrik.de' AS MIRROR_BASE,
+           NULL AS PATH_REGEX,
+           NULL AS PATH_REWRITE_FROM,
+           NULL AS PATH_REWRITE_TO,
+           'Primary origin. Serves the full tree.' AS NOTE
+    UNION ALL
+    SELECT 2, 'download.geofabrik.de',
+           'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de',
+           -- Exactly the three files the mirror carries. Germany is matched at
+           -- its ORIGIN path (nested under /europe/) and rewritten below;
+           -- matching it flat here is what made the branch dead.
+           '^/(europe|north-america)-latest\\.osm\\.pbf$|^/europe/germany-latest\\.osm\\.pbf$',
+           '^/europe/germany-latest\\.osm\\.pbf$',
+           '/germany-latest.osm.pbf',
+           'PARTIAL Geofabrik mirror (GWDG), FLAT layout. Carries exactly three '
+           || 'files: europe-latest, north-america-latest, germany-latest '
+           || '(verified 2026-09-07; africa-latest and europe/monaco 404). '
+           || 'Germany needs the path rewrite because the origin nests it under '
+           || '/europe/. Measured as fast as the origin, not faster, so this is '
+           || 'a FAILOVER not a preferred source. Note ftp2.de.freebsd.org is '
+           || 'NOT an independent alternative - it redirects here and its TLS '
+           || 'cert does not match its hostname.'
+) s
+ON t.PRIORITY = s.PRIORITY AND t.SOURCE_HOST = s.SOURCE_HOST
+WHEN MATCHED THEN UPDATE SET
+    MIRROR_BASE       = s.MIRROR_BASE,
+    PATH_REGEX        = s.PATH_REGEX,
+    PATH_REWRITE_FROM = s.PATH_REWRITE_FROM,
+    PATH_REWRITE_TO   = s.PATH_REWRITE_TO,
+    NOTE              = s.NOTE,
+    UPDATED_AT        = SYSDATE()
+WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, PATH_REGEX,
+                              PATH_REWRITE_FROM, PATH_REWRITE_TO, ENABLED, NOTE)
+    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, s.PATH_REGEX,
+            s.PATH_REWRITE_FROM, s.PATH_REWRITE_TO, TRUE, s.NOTE);
+
+-- Candidate download URLs for a PBF, in failover order.
+--
+-- Returns [P_PBF_URL] UNCHANGED when no enabled mirror matches the URL's host,
+-- so BBBike regions, manually entered URLs, and any future source behave
+-- exactly as they do today. That default is what keeps this change additive.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(P_PBF_URL VARCHAR)
+RETURNS ARRAY
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}'
+AS
+$$
+    -- Guarded with ARRAY_SIZE, NOT COALESCE: ARRAY_AGG over zero matching rows
+    -- returns an EMPTY ARRAY rather than NULL, so a COALESCE default never
+    -- fires and every non-mirrored source (BBBike, manual URLs) silently gets
+    -- ZERO download candidates instead of its own URL back - measured, not
+    -- theoretical.
+    SELECT IFF(ARRAY_SIZE(cand) = 0, ARRAY_CONSTRUCT(P_PBF_URL), cand)
+    FROM (
+        SELECT COALESCE(
+            (
+                SELECT ARRAY_AGG(m.MIRROR_BASE
+                                 -- The path is REWRITTEN, not just re-hosted: a
+                                 -- mirror may flatten the origin's layout (GWDG
+                                 -- does). NULL rewrite = pass through.
+                                 || IFF(m.PATH_REWRITE_FROM IS NULL,
+                                        REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                        REGEXP_REPLACE(
+                                            REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                            m.PATH_REWRITE_FROM,
+                                            COALESCE(m.PATH_REWRITE_TO, ''))))
+                         WITHIN GROUP (ORDER BY m.PRIORITY)
+                FROM OPENROUTESERVICE_APP.CORE.PBF_MIRRORS m
+                WHERE m.ENABLED
+                  AND LOWER(m.SOURCE_HOST)
+                      = LOWER(REGEXP_SUBSTR(P_PBF_URL, '^https?://([^/]+)', 1, 1, 'e', 1))
+                  -- A partial mirror must not be offered for a file it does not
+                  -- carry, or the rotation spends its one failover on a certain
+                  -- 404. NULL means the source serves everything.
+                  AND (m.PATH_REGEX IS NULL
+                       OR RLIKE(REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                m.PATH_REGEX))
+            ), ARRAY_CONSTRUCT()) AS cand
+    )
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -133,7 +295,22 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     -- Number of times the rescue task has downgraded this job ERROR->RUNNING.
     -- Bounds the "container alive but ORS dead" resurrection loop (see
     -- FINALIZE_PROVISION_ITER); beyond a cap the job is failed terminally.
-    RESCUE_DOWNGRADES INTEGER DEFAULT 0
+    RESCUE_DOWNGRADES INTEGER DEFAULT 0,
+    -- Liveness signal written by PROVISION_REGION_WRAPPER's download poll loop
+    -- every cycle. Without it a DEAD provisioner is indistinguishable from a
+    -- slow one (STARTED_AT alone cannot tell them apart), so nothing could
+    -- safely relaunch a build whose procedure died mid-download. Read by
+    -- V_DOWNLOAD_RELAUNCH_CANDIDATES. NULL means "this job predates the
+    -- heartbeat" and is deliberately treated as NOT eligible for relaunch.
+    HEARTBEAT_AT TIMESTAMP_NTZ,
+    -- The URL the download was ACTUALLY served from, which is not necessarily
+    -- PBF_URL: on an origin outage PROVISION_REGION_WRAPPER rotates to a mirror
+    -- from CORE.PBF_MIRRORS. PBF_URL keeps the canonical catalog value (what we
+    -- intended) and this keeps what delivered the bytes; overwriting PBF_URL
+    -- would destroy the former. Before this column the rotation lived only in a
+    -- procedure-local variable, so during the 2026-09-07 outage there was no way
+    -- to tell from the app which host was in use.
+    PBF_URL_USED VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}';
 
@@ -148,6 +325,264 @@ BEGIN
 EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
 END;
 $$;
+
+-- Same idempotent migration for the download-liveness heartbeat. Separate block
+-- on purpose: sharing one block with the line above would skip this column on
+-- every deployment that already has RESCUE_DOWNGRADES (the first statement
+-- raises, the handler swallows it, and the second never runs).
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN HEARTBEAT_AT TIMESTAMP_NTZ;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- And again for the effective download URL. Own block for the same reason.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN PBF_URL_USED VARCHAR;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- IS_ORIGIN_OUTAGE_MSG
+-- ---------------------------------------------------------------------------
+-- Was this download failure the UPSTREAM PBF HOST's fault rather than ours or
+-- the region's? The answer selects which relaunch bound applies, and it must be
+-- computed from the job's own MESSAGE rather than from the ERROR_MSG token the
+-- reconciler stamps, for two reasons:
+--   1. Rows stamped before this classification existed carry the generic
+--      'download_relaunched' token, so a token-driven rule would count a
+--      historical origin outage against the build budget forever - permanently
+--      stranding the very build it is meant to rescue. The relaunch UPDATE
+--      preserves the dead job's text ("... Previous message: <original>"), so
+--      the signature survives and those rows reclassify themselves with no
+--      migration.
+--   2. One function, two call sites (the counted rows and the candidate row)
+--      means the bound is always evaluated against the same rule that stamped
+--      it. Two inline copies of this predicate would drift, which is the same
+--      hazard the candidate view's own header warns about.
+--
+-- Network-shaped failures are deliberately read as ORIGIN. The classes differ
+-- only in how many bounded, byte-free retries a region gets, so over-classifying
+-- costs a few cheap attempts while UNDER-classifying strands tens of GB of valid
+-- resume state - the exact defect observed on 2026-09-07.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MSG VARCHAR)
+RETURNS BOOLEAN
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+$$
+    COALESCE(MSG ILIKE '%probe inconclusive%'
+          OR MSG ILIKE '%refusing the single-stream%'
+          OR MSG ILIKE '%502%'
+          OR MSG ILIKE '%Read timed out%'
+          OR MSG ILIKE '%Max retries exceeded%'
+          OR MSG ILIKE '%Connection reset%'
+          OR MSG ILIKE '%Temporary failure in name resolution%', FALSE)
+$$;
+
+-- ---------------------------------------------------------------------------
+-- V_DOWNLOAD_RELAUNCH_PENDING
+-- ---------------------------------------------------------------------------
+-- Region builds whose PROVISIONING PROCEDURE is gone while the PBF download is
+-- still unfinished. Everything below the procedure already self-heals: the
+-- container retries a broken segment and resumes it from its on-disk offset,
+-- and the procedure's own poll loop re-triggers DOWNLOAD both on an error and
+-- on 'not_started' (no worker). What nothing covered is the procedure ITSELF
+-- dying - a killed task run, a lost session, the 11h poll ceiling, or an
+-- exhausted error budget - because RESCUE_PENDING_PROVISIONS only ever
+-- FINALIZED jobs and its cursor is scoped to BUILDING_GRAPH plus two specific
+-- graph ERROR_MSG values. The job then sits FAILED (or RUNNING with nobody
+-- home) on top of tens of GB of perfectly resumable segment files.
+--
+-- The predicate lives in a view, not inlined in the reconciler, because
+-- RESCUE_PENDING_PROVISIONS needs it TWICE: once to act on candidates and once
+-- in its self-suspend guard (a FAILED candidate matches none of the existing
+-- keep-awake conditions, so the task would sleep before ever seeing it). Two
+-- hand-maintained copies would drift, and the two failure modes are opposite
+-- and both bad: strand every candidate, or wedge the task permanently awake.
+--
+-- This view is the ELIGIBILITY half, shared by both consumers. The one thing
+-- the two consumers disagree about - a row still serving its backoff - is
+-- emitted as the COOLDOWN_ELAPSED flag and filtered by
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES alone, so there is still exactly one copy of
+-- the predicate.
+--
+-- Eligibility, and why each clause is load-bearing:
+--   STAGE = 'DOWNLOADING'      - the download failure/timeout handler updates
+--                                STATUS and MESSAGE but NOT STAGE, so this
+--                                selects the terminal cases too. Rows already
+--                                relaunched are moved to STAGE='ERROR' and so
+--                                cannot be reselected.
+--   HEARTBEAT_AT IS NOT NULL   - SAFETY GATE, do not relax. A job launched
+--                                before the heartbeat existed can never look
+--                                alive, and relaunching one that IS alive
+--                                starts a second build for the same region;
+--                                per the in-flight guard in
+--                                START_REGION_PROVISION, the two fight over
+--                                one service/pool/stage path and "the loser
+--                                corrupts the winner's graph". Pre-upgrade
+--                                jobs are therefore never eligible; they age
+--                                out instead.
+--   deaths < bound             - bound, and the bound DEPENDS ON THE FAILURE
+--                                CLASS. History IS the counter: each relaunch
+--                                stamps the dead row ERROR_MSG =
+--                                'download_relaunched' (build death) or
+--                                'download_relaunched_origin' (upstream PBF
+--                                host unreachable), and the row is COUNTED by
+--                                re-reading its MESSAGE through
+--                                IS_ORIGIN_OUTAGE_MSG, so rows written before
+--                                the split still land in the right bucket. A
+--                                counter COLUMN could not work at all, because
+--                                a relaunch creates a NEW job row that would
+--                                start from zero.
+--                                A build death gets 3, unchanged: repeated
+--                                deaths on a healthy origin mean the region
+--                                itself is the problem and a human should look.
+--                                An ORIGIN OUTAGE is not that, and counting it
+--                                the same way was a real defect: on 2026-09-07
+--                                a Geofabrik 502 burst consumed the entire
+--                                3-per-24h budget in under two hours across
+--                                three attempts that each probed, transferred
+--                                ZERO bytes, and died in ~17 minutes - leaving
+--                                29.9 GiB of valid resume state stranded with
+--                                auto-heal disabled for another 22 hours, for a
+--                                fault that was neither ours nor the region's
+--                                and might clear in minutes. An origin outage
+--                                therefore gets its own, wider bound; each
+--                                attempt is cheap precisely because it moves no
+--                                bytes, and the cooldown below is what keeps it
+--                                from thrashing.
+--   cooldown elapsed           - escalating backoff, keyed on how many
+--                                relaunches this region has already had. With
+--                                no wait at all the reconciler retried every
+--                                ~18 minutes and spent the whole budget inside
+--                                one outage; an unhealthy origin needs to be
+--                                given time to recover between attempts.
+--                                Emitted as the COOLDOWN_ELAPSED flag, NOT
+--                                filtered here: the two consumers need
+--                                different answers about a row in backoff. See
+--                                V_DOWNLOAD_RELAUNCH_CANDIDATES below.
+--   live count matches         - a RUNNING candidate counts itself (expect
+--                                exactly 1); a terminal candidate must see 0.
+--                                Either way there is no OTHER in-flight job
+--                                for the region.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+WITH deaths AS (
+    SELECT UPPER(REGION) AS R,
+           -- Classified from MESSAGE, not from the ERROR_MSG token, so a row
+           -- stamped before this split existed still lands in the right
+           -- bucket. See IS_ORIGIN_OUTAGE_MSG for why that matters.
+           COUNT_IF(NOT OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_BUILD,
+           COUNT_IF(OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_ORIGIN,
+           -- Last relaunch of EITHER class: the cooldown is about giving the
+           -- system (and the origin) a rest, so both classes reset it.
+           MAX(COALESCE(COMPLETED_AT, HEARTBEAT_AT)) AS LAST_AT
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE ERROR_MSG IN ('download_relaunched', 'download_relaunched_origin')
+      AND COALESCE(COMPLETED_AT, HEARTBEAT_AT) > DATEADD(HOUR, -24, SYSDATE())
+    GROUP BY UPPER(REGION)
+), live AS (
+    SELECT UPPER(REGION) AS R, COUNT(*) AS N
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE STATUS IN ('PENDING', 'RUNNING')
+    GROUP BY UPPER(REGION)
+)
+SELECT
+    j.JOB_ID,
+    j.REGION,
+    j.DISPLAY_NAME,
+    j.PROFILES,
+    j.COMPUTE_SIZE,
+    j.PBF_URL,
+    j.STATUS,
+    j.HEARTBEAT_AT,
+    COALESCE(d.N_BUILD, 0) + COALESCE(d.N_ORIGIN, 0) AS PRIOR_RELAUNCHES,
+    -- Classified HERE so the reconciler stamps the same verdict the bound was
+    -- evaluated against; the same function drives the counts in `deaths`.
+    OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(j.MESSAGE) AS IS_ORIGIN_OUTAGE,
+    -- Escalating backoff: 10 min after the first relaunch, doubling, capped at
+    -- 4 hours. POWER returns a FLOAT and DATEADD needs an integer, hence ::INT.
+    -- Exposed as a FLAG here and filtered on by only ONE of the two consumers
+    -- below; see V_DOWNLOAD_RELAUNCH_CANDIDATES for why that split is
+    -- load-bearing rather than cosmetic.
+    COALESCE(
+        d.LAST_AT IS NULL
+     OR SYSDATE() > DATEADD(
+            MINUTE,
+            LEAST(10 * POWER(2, COALESCE(d.N_BUILD, 0)
+                                + COALESCE(d.N_ORIGIN, 0)), 240)::INT,
+            d.LAST_AT), TRUE) AS COOLDOWN_ELAPSED,
+    IFF(j.STATUS = 'RUNNING', 'provisioner_died', 'download_terminal') AS REASON
+FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
+LEFT JOIN deaths d ON d.R = UPPER(j.REGION)
+LEFT JOIN live   l ON l.R = UPPER(j.REGION)
+WHERE j.STAGE = 'DOWNLOADING'
+  AND j.HEARTBEAT_AT IS NOT NULL
+  -- Class-specific bound. An origin outage moves no bytes, so 12 attempts
+  -- spread by the cooldown below is still a cheap way to ride out a multi-hour
+  -- upstream outage without human intervention.
+  AND COALESCE(d.N_BUILD, 0) < 3
+  AND COALESCE(d.N_ORIGIN, 0) < 12
+  AND (
+        -- the procedure stopped writing its heartbeat: it is gone. The loop
+        -- writes every 30-90s, so 15 minutes of silence is unambiguous.
+        (j.STATUS = 'RUNNING'
+         AND j.HEARTBEAT_AT < DATEADD(MINUTE, -15, SYSDATE()))
+        -- or it gave up: 11h poll ceiling, or the 3-retry error budget spent.
+     OR (j.STATUS IN ('FAILED', 'ERROR')
+         -- COALESCE, not COMPLETED_AT alone: the download failure handler
+         -- historically set only STATUS and MESSAGE, so rows written by an
+         -- older build have a NULL completion time and a bare comparison
+         -- would silently select NONE of them - disabling this entire half of
+         -- the feature with no error anywhere. HEARTBEAT_AT is non-NULL by the
+         -- clause above and is the last known sign of life.
+         AND COALESCE(j.COMPLETED_AT, j.HEARTBEAT_AT) > DATEADD(HOUR, -24, SYSDATE())
+         AND (j.MESSAGE ILIKE '%PBF download timed out%'
+           OR j.MESSAGE ILIKE '%PBF download failed%'))
+      )
+  AND COALESCE(l.N, 0) = IFF(j.STATUS = 'RUNNING', 1, 0);
+
+-- ---------------------------------------------------------------------------
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES
+-- ---------------------------------------------------------------------------
+-- Rows the reconciler should act on RIGHT NOW: everything eligible, minus
+-- those still serving their backoff.
+--
+-- WHY THIS IS A SEPARATE VIEW FROM ..._PENDING, and why the cooldown is not
+-- just an extra clause in it: RESCUE_PENDING_PROVISIONS reads the eligibility
+-- predicate TWICE - once to act, and once in its self-suspend guard, because
+-- the task runs on a 2-minute serverless schedule and sleeps when there is no
+-- work. Those two consumers need DIFFERENT answers about a row in cooldown.
+-- The actor must skip it (that is the whole point of the backoff); the
+-- keep-awake guard must still SEE it, because nothing else re-arms the task -
+-- the re-arm paths are the provision enqueue endpoint and the prewarm procs,
+-- neither of which fires here. Filtering the cooldown in a single shared view
+-- would therefore have made the task suspend itself while a candidate sat
+-- waiting, and the backoff would never elapse from anyone's point of view:
+-- a 24h stall converted into a permanent one.
+--
+-- Columns are listed explicitly rather than SELECT *: a view freezes its
+-- column list at creation, so a `SELECT *` wrapper over a base view that later
+-- gains a column fails every read with "declared N column(s), but view query
+-- produces M". Both views live in this file and are recreated together, but an
+-- out-of-band recreate of the base alone would break the wrapper silently.
+--
+-- The bound still guarantees the task can sleep: once a region exhausts its
+-- class bound it drops out of ..._PENDING too, both counts return to 0, and
+-- there is no permanent wake-loop.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE, PBF_URL, STATUS,
+       HEARTBEAT_AT, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE, COOLDOWN_ELAPSED, REASON
+FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
+WHERE COOLDOWN_ELAPSED;
 
 -- Durable repair telemetry (survives REBUILD_REGION_GRAPHS stage purge).
 -- Used by REPAIR_STUCK_REGION_BUILDS for byte-growth stall detection and
@@ -196,6 +631,21 @@ DECLARE
     pbf_gib FLOAT DEFAULT NULL;
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
+    dl_attempt INTEGER DEFAULT 0;
+    -- PBF host failover. dl_candidates is the ordered list from PBF_MIRROR_URLS
+    -- (candidate 0 is always the region's own PBF_URL); dl_host_i indexes it and
+    -- dl_url is the host currently being downloaded from. All three DOWNLOAD
+    -- trigger sites below use dl_url, never P_PBF_URL, so a rotation actually
+    -- takes effect - P_PBF_URL stays the canonical value for telemetry.
+    dl_candidates ARRAY DEFAULT ARRAY_CONSTRUCT();
+    dl_host_i INTEGER DEFAULT 0;
+    dl_url VARCHAR DEFAULT '';
+    dl_rotated BOOLEAN DEFAULT FALSE;
+    -- Completed passes over the candidate list. Bounds the wrap-back-to-primary
+    -- below so a total outage of every host cannot ping-pong for the entire 11h
+    -- poll ceiling: failing sooner hands the build to RESCUE_PENDING_PROVISIONS,
+    -- whose escalating backoff is the right tool for a multi-hour outage.
+    dl_cycles INTEGER DEFAULT 0;
 BEGIN
     -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
     -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
@@ -220,6 +670,7 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=SYSDATE(),
+        HEARTBEAT_AT=SYSDATE(),
         MESSAGE='Inserting region metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
@@ -289,7 +740,19 @@ BEGIN
         dl_failed := FALSE;
         BEGIN
             pbf_dl_status := '';
-            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+            dl_attempt := 0;
+            -- Resolve the host failover order once per build. Candidate 0 is the
+            -- region's own PBF_URL, so a region with no configured mirror gets a
+            -- single-element list and behaves exactly as before.
+            dl_candidates := OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(:P_PBF_URL);
+            dl_host_i := 0;
+            dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+            -- Record the effective host up front, so an in-flight job shows a
+            -- source rather than a blank until the first rotation.
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET PBF_URL_USED = :dl_url
+            WHERE JOB_ID = :P_JOB_ID;
+            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
 
             -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
             -- europe-latest ~34 GB) download at Geofabrik's per-client-IP
@@ -305,12 +768,110 @@ BEGIN
 
                 IF (LOWER(TRIM(:pbf_dl_status)) = 'success') THEN
                     BREAK;
-                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')) THEN
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress')) THEN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...'
+                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...',
+                        HEARTBEAT_AT = SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) = 'not_started') THEN
+                    -- 'not_started' means NO worker thread owns this target.
+                    -- The downloader's job registry is in-memory, so any
+                    -- container restart (a spec redeploy, an OOM, a node move)
+                    -- erases it while the segment files and sidecar persist on
+                    -- the stage -- and _resolve_status then reports
+                    -- 'not_started' precisely so the next trigger resumes. This
+                    -- loop used to merely WAIT on that status, so a mid-flight
+                    -- restart left the job polling an idle downloader for the
+                    -- full 11h ceiling and then timing out with nothing running.
+                    -- Re-trigger instead: DOWNLOAD is idempotent (a live job is
+                    -- not restarted, a finished file returns 'success') and the
+                    -- resume skips completed segments.
+                    --
+                    -- Reuses the CURRENT dl_url rather than rotating: an idle
+                    -- worker is not a host failure, and rotating here would
+                    -- churn hosts on every container restart.
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET MESSAGE = 'PBF download idle (no worker); (re)starting resume at poll ' ||
+                                  :poll_i || '/1320...',
+                        HEARTBEAT_AT = SYSDATE()
+                    WHERE JOB_ID = :P_JOB_ID;
+                    EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
+                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
+                    -- The downloader reported an error. This is RETRYABLE, not
+                    -- terminal: for a transfer error the segment files and the
+                    -- .part.progress sidecar are left on the stage on purpose
+                    -- (they are the resume state), so re-triggering DOWNLOAD
+                    -- resumes -- completed segments are skipped and a partial
+                    -- segment continues from its on-disk offset. Failing on the
+                    -- first error abandoned tens of GB of good bytes with most
+                    -- of the poll budget still unspent.
+                    --
+                    -- HOST FAILOVER. A 4xx is terminal on the PRIMARY (a bad
+                    -- PBF_URL is a config error - trying mirrors would only
+                    -- hide a stale catalog entry behind a slower failure) but
+                    -- merely retires a MIRROR, because a 404 there means that
+                    -- mirror lacks the path, not that the region is wrong.
+                    -- Rotation is otherwise driven by IS_ORIGIN_OUTAGE_MSG,
+                    -- deliberately the SAME classifier the relaunch bound uses,
+                    -- so "the origin is unwell" has one definition in this
+                    -- codebase rather than two that drift.
+                    --
+                    -- Rotating does NOT discard the transfer: the downloader
+                    -- refuses to adopt resume state from a host serving a
+                    -- different snapshot and keeps every staged byte, so the
+                    -- worst case is that a mirror is rejected and the primary
+                    -- is retried later.
+                    dl_rotated := FALSE;
+                    IF (:dl_host_i + 1 < ARRAY_SIZE(:dl_candidates)
+                        AND (OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(:pbf_dl_status)
+                             OR (POSITION('HTTP 4', :pbf_dl_status) > 0
+                                 AND :dl_host_i > 0))) THEN
+                        dl_host_i := :dl_host_i + 1;
+                        dl_url := GET(:dl_candidates, :dl_host_i)::VARCHAR;
+                        dl_rotated := TRUE;
+                        -- A fresh host gets a fresh error budget. Without this
+                        -- the retries already spent on a dead origin would be
+                        -- charged to the mirror, so a late rotation could get
+                        -- one attempt or none.
+                        dl_attempt := 0;
+                    ELSEIF (:dl_host_i > 0 AND :dl_cycles < 2) THEN
+                        -- Mirrors exhausted. Fall back to the PRIMARY rather
+                        -- than giving up on it: the primary is the authoritative
+                        -- source and its outage may already be over, whereas a
+                        -- mirror is partial by nature. Without this a mirror
+                        -- 404 ends the build outright, which is WORSE than
+                        -- having no mirror configured - the pre-mirror code
+                        -- would have kept retrying the origin.
+                        dl_cycles := :dl_cycles + 1;
+                        dl_host_i := 0;
+                        dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+                        dl_rotated := TRUE;
+                        dl_attempt := 0;
+                    END IF;
+
+                    IF (:dl_rotated
+                        OR (:dl_attempt < 3 AND POSITION('HTTP 4', :pbf_dl_status) = 0)) THEN
+                        dl_attempt := :dl_attempt + 1;
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = 'PBF download error; '
+                                      || IFF(:dl_rotated,
+                                             'switching to mirror ' || SPLIT_PART(:dl_url, '/', 3),
+                                             'resuming')
+                                      || ' (retry ' || :dl_attempt ||
+                                      ', poll ' || :poll_i || '/1320): ' ||
+                                      LEFT(COALESCE(:pbf_dl_status, ''), 200),
+                            -- Kept in step with dl_url so the UI's source column
+                            -- reflects the host now serving, not the first one.
+                            PBF_URL_USED = :dl_url,
+                            HEARTBEAT_AT = SYSDATE()
+                        WHERE JOB_ID = :P_JOB_ID;
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(60)';
+                        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                        CONTINUE;
+                    END IF;
                     BREAK;
                 END IF;
             END FOR;
@@ -327,7 +888,7 @@ BEGIN
             LET dl_err STRING := CASE
                 WHEN LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')
                     THEN 'PBF download timed out after 1320 polls (~11h) (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
-                ELSE 'PBF download failed: ' || COALESCE(:pbf_dl_status, 'unknown status')
+                ELSE 'PBF download failed after ' || :dl_attempt || ' resume attempt(s): ' || COALESCE(:pbf_dl_status, 'unknown status')
             END;
             SYSTEM$LOG_INFO(dl_err);
             BEGIN
@@ -361,7 +922,11 @@ BEGIN
                 EXCEPTION WHEN OTHER THEN NULL;
                 END;
             END IF;
-            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+            -- COMPLETED_AT is set here deliberately: this is a terminal state,
+            -- and leaving it NULL made every download failure invisible to any
+            -- recency-scoped consumer (V_DOWNLOAD_RELAUNCH_CANDIDATES bounds
+            -- eligibility to the last 24h).
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err, COMPLETED_AT=COALESCE(COMPLETED_AT, SYSDATE()) WHERE JOB_ID = :P_JOB_ID;
             -- Parity with timeout handler: reset REGION_ORS_MAP so the region is
             -- not stuck in PROVISIONING after a download failure (the per-region
             -- service was never created, so 'FAILED' marks it as a clean retry candidate).
@@ -772,6 +1337,16 @@ BEGIN
     SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
         'job_id', JOB_ID, 'region', REGION, 'display_name', COALESCE(DISPLAY_NAME, REGION),
         'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
+        -- COMPUTE_SIZE is emitted so a Retry can reuse the size the failed job
+        -- actually ran with. Without it the UI fell back to a recommendation
+        -- derived from the region's level, silently downgrading an operator's
+        -- deliberate choice (e.g. XXL) on every retry.
+        'compute_size', COALESCE(COMPUTE_SIZE, ''),
+        -- Both, deliberately: PBF_URL is the canonical catalog source and
+        -- PBF_URL_USED is the host that actually served the bytes. The UI shows
+        -- the latter and flags it as a mirror when the two differ.
+        'pbf_url', COALESCE(PBF_URL, ''),
+        'pbf_url_used', COALESCE(PBF_URL_USED, ''),
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
         'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
@@ -4212,6 +4787,145 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Relaunch region builds whose PROVISIONING PROCEDURE died (or gave up)
+    -- during PBF download. This is the ONE place this reconciler launches work
+    -- rather than only finalizing it: the layers below the procedure already
+    -- self-heal (the container resumes a broken segment from its on-disk
+    -- offset; the poll loop re-triggers DOWNLOAD on both an error and a
+    -- 'not_started' no-worker status), but nothing covered the procedure itself
+    -- disappearing on top of tens of GB of resumable segment files.
+    --
+    -- Eligibility (including the NULL-heartbeat safety gate and the 3-per-24h
+    -- bound) lives entirely in V_DOWNLOAD_RELAUNCH_CANDIDATES, which the
+    -- self-suspend guard below reads too - see that view's header.
+    BEGIN
+        LET rl_rs RESULTSET := (
+            SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE,
+                   STATUS, REASON, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE
+            FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+        );
+        LET rl_cur CURSOR FOR rl_rs;
+        FOR rl IN rl_cur DO
+            -- Per-candidate handler: one unresolvable region must not abort the
+            -- cycle for the others (matches FINALIZE_PROVISION_ITER above).
+            BEGIN
+                LET rl_job VARCHAR := rl.JOB_ID;
+                LET rl_region VARCHAR := rl.REGION;
+                LET rl_reason VARCHAR := rl.REASON;
+                -- Every cursor field used later MUST be copied into a local
+                -- variable: a cursor field reference is not a valid argument in
+                -- a CALL list ("invalid identifier 'RL.DISPLAY_NAME'").
+                LET rl_display VARCHAR := rl.DISPLAY_NAME;
+                LET rl_profiles VARCHAR := rl.PROFILES;
+                LET rl_compute VARCHAR := rl.COMPUTE_SIZE;
+                LET rl_prior INTEGER := rl.PRIOR_RELAUNCHES;
+                LET rl_resumable INTEGER DEFAULT 0;
+                -- Taken from the view, NOT re-derived: the bound was evaluated
+                -- against the view's verdict, so stamping a different one here
+                -- would corrupt the budget on every later cycle.
+                LET rl_origin BOOLEAN := rl.IS_ORIGIN_OUTAGE;
+                LET rl_token VARCHAR := IFF(:rl_origin,
+                                            'download_relaunched_origin',
+                                            'download_relaunched');
+
+                -- Only relaunch when there is something to resume. A full
+                -- re-download of a continental PBF is hours of transfer, which
+                -- is a cost decision for a human, not for a reconciler.
+                --
+                -- The probe reads the stage's DIRECTORY table, NOT LIST. LIST
+                -- is documented as usable inside an owner's rights procedure,
+                -- but in practice it raises "Unsupported statement type
+                -- 'LIST_FILES'" even via EXECUTE IMMEDIATE. The REFRESH is
+                -- required because the directory table is not updated by writes
+                -- that arrive through a mounted SPCS stage volume, which is
+                -- exactly how the downloader creates these files. Same pattern
+                -- as REPAIR_STUCK_REGION_BUILDS' graph-byte probe.
+                BEGIN
+                    ALTER STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE REFRESH;
+                    SELECT COUNT(*) INTO :rl_resumable
+                      FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE)
+                     WHERE RELATIVE_PATH ILIKE :rl_region || '/%'
+                       AND COALESCE(SIZE, 0) > 0
+                       AND (RELATIVE_PATH ILIKE '%.osm.pbf'
+                         OR RELATIVE_PATH ILIKE '%.seg%');
+                EXCEPTION WHEN OTHER THEN rl_resumable := 0;
+                END;
+
+                IF (:rl_resumable > 0) THEN
+                    -- Mark the dead job terminal FIRST: START_REGION_PROVISION
+                    -- refuses while a PENDING/RUNNING row exists for the region.
+                    -- ERROR_MSG is the relaunch counter (history is the bound;
+                    -- a counter column cannot survive into the new job row) and
+                    -- its VALUE selects which bound - see the candidate view.
+                    -- STAGE moves off DOWNLOADING so the row cannot reappear as
+                    -- its own candidate.
+                    --
+                    -- DISMISSED = TRUE because this row is not a failure a human
+                    -- can act on: it was deliberately superseded by its own
+                    -- successor, which carries the live state. Left visible, an
+                    -- outage that relaunched three times filled the admin app's
+                    -- "Failed Jobs" panel with three red 'download_relaunched'
+                    -- cards and pushed the one actionable row out of view. The
+                    -- audit trail is preserved in COST_GUARD_LOG below and the
+                    -- row itself is untouched apart from this flag.
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET STATUS = 'ERROR',
+                        STAGE = 'ERROR',
+                        COMPLETED_AT = SYSDATE(),
+                        ERROR_MSG = :rl_token,
+                        DISMISSED = TRUE,
+                        MESSAGE = 'Superseded by an automatic download resume ('
+                                  || :rl_reason || '). Previous message: '
+                                  || LEFT(COALESCE(MESSAGE, ''), 300)
+                    WHERE JOB_ID = :rl_job;
+
+                    -- PROFILES and COMPUTE_SIZE MUST be passed through:
+                    -- START_REGION_PROVISION defaults them to
+                    -- 'driving-car,driving-hgv,cycling-electric' and 'XXL', so
+                    -- omitting them would silently turn a single-profile build
+                    -- into a three-profile one. FALSE keeps the staged PBF and
+                    -- segment files, which is what makes this a resume.
+                    LET rl_out VARCHAR := '';
+                    CALL OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION(
+                        :rl_region,
+                        :rl_display,
+                        :rl_profiles,
+                        :rl_compute,
+                        FALSE
+                    ) INTO :rl_out;
+
+                    BEGIN
+                        INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG
+                            (REGION, ACTION, FIRED_AT, REASON)
+                        VALUES (:rl_region, 'download_relaunch', SYSDATE(),
+                                :rl_reason || '; class=' || :rl_token
+                                || '; prior_relaunches='
+                                || :rl_prior || '; dead_job=' || :rl_job
+                                || '; result=' || LEFT(COALESCE(:rl_out, ''), 300));
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+
+                    rescued := :rescued + 1;
+                END IF;
+            EXCEPTION WHEN OTHER THEN
+                -- Do NOT discard this. A bare `NULL` handler here hid two real
+                -- defects during development (an unsupported LIST statement and
+                -- a cursor field used as a CALL argument) and presented as the
+                -- reconciler simply doing nothing, with no error anywhere. The
+                -- handler still absorbs the failure so one bad region cannot
+                -- abort the cycle, but it leaves evidence.
+                BEGIN
+                    INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG
+                        (REGION, ACTION, FIRED_AT, REASON)
+                    VALUES (COALESCE(rl.REGION, '?'), 'download_relaunch_error',
+                            SYSDATE(), LEFT(SQLERRM, 400));
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+            END;
+        END FOR;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     -- MMAP prewarm drain. Setters (resume_region_ors, APPLY_ORS_LIMITS,
     -- RESUME_ALL_SERVICES, DOWNSIZE) only flip NEEDS_PREWARM=TRUE and return
     -- promptly; the actual page-cache warm happens here, off the interactive
@@ -4266,6 +4980,7 @@ BEGIN
     BEGIN
         LET jobs_left INTEGER := 0;
         LET prewarm_left INTEGER := 0;
+        LET relaunch_left INTEGER := 0;
         -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
         -- count each source separately (idiomatic pattern used elsewhere here)
         -- and sum, rather than a FROM-less SELECT of scalar subqueries.
@@ -4278,7 +4993,22 @@ BEGIN
         SELECT COUNT(*) INTO :prewarm_left
           FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
           WHERE NEEDS_PREWARM = TRUE;
-        IF ((:jobs_left + :prewarm_left) = 0) THEN
+        -- A download-relaunch candidate that is already FAILED/ERROR matches
+        -- NONE of the conditions above (its ERROR_MSG is not one of the two
+        -- graph values), so without this count the task would suspend itself
+        -- before ever acting on it.
+        --
+        -- Reads ..._PENDING, NOT ..._CANDIDATES: a row serving its backoff is
+        -- deliberately absent from CANDIDATES, so counting that view here would
+        -- put the task to sleep exactly while a rescue was waiting to become
+        -- due - and nothing would wake it, because the only re-arm paths are the
+        -- provision enqueue endpoint and the prewarm procs. The result would be
+        -- a permanent stall rather than a delayed retry. PENDING still respects
+        -- the per-class bound, so once a region is exhausted this returns to 0
+        -- and the task can sleep - no permanent wake-loop.
+        SELECT COUNT(*) INTO :relaunch_left
+          FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING;
+        IF ((:jobs_left + :prewarm_left + :relaunch_left) = 0) THEN
             ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
@@ -4744,6 +5474,15 @@ BEGIN
     call_sql :=
         'CREATE OR REPLACE TASK ' || :task_name ||
         ' USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = ''XSMALL''' ||
+        -- USER_TASK_TIMEOUT_MS defaults to 3600000 (1 HOUR), which silently
+        -- capped every build at 60 minutes: PROVISION_REGION_WRAPPER's own
+        -- ceiling is 1320 polls x 30s (~11h), but the task run was cancelled
+        -- long before that with "Statement reached its statement or warehouse
+        -- timeout of 3,600 second(s)". Measured on a continental build: the
+        -- wrapper died at poll 113 while the download was at 91%, leaving the
+        -- job row RUNNING forever with nobody driving it. 12h gives the
+        -- documented ceiling room to actually apply (max allowed is 24h).
+        ' USER_TASK_TIMEOUT_MS = 43200000' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
         ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
         '''' || :job_id || ''', ' ||

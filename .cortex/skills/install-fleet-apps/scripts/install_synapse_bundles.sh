@@ -111,6 +111,36 @@ grep -q "roles.deploy" "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the 'deploy' deploy-role precedence (see vendor/synapse/VENDOR.md). Without it install.sql runs USE ROLE <consumer app role> and fails on CREATE OR REPLACE HYBRID TABLE verb_attempt, deploying nothing."; exit 1; }
 grep -q "CREATE SCHEMA IF NOT EXISTS \${cfg.schema} COMMENT = " "$VENDOR_DIR/dist/cli/materialize.js" \
   || { echo "ERROR: built synapse codegen is missing the COMMENT tracking tag on the bundle CREATE DATABASE/SCHEMA (see vendor/synapse/VENDOR.md). On a fresh account that leaves the bundle schema untagged, and the schema is the tracking proxy for the untaggable CREATE MCP SERVER."; exit 1; }
+# Idempotency claim guard (patch 06). Two separate things to prove, because each
+# fails SILENTLY on its own: the claim table should be emitted as a HYBRID table
+# (only a hybrid table ENFORCES the primary key, which is what rejects two
+# callers claiming the same key at the same instant), the claim insert must be
+# conditional so the guard still rejects a REPEAT claim on the accounts that have
+# no hybrid tables, and the envelope must actually call it before execute().
+grep -q "PRIMARY KEY (actor, verb, idempotency_key)" "$VENDOR_DIR/dist/ddl.js" \
+  || { echo "ERROR: built synapse codegen is missing the verb_claim idempotency table (see vendor/synapse/VENDOR.md patch 06). Without it two concurrent calls sharing an idempotency_key both execute a mutating verb."; exit 1; }
+grep -q "WHERE NOT EXISTS" "$VENDOR_DIR/dist/audit.js" \
+  || { echo "ERROR: built synapse audit sink claims an idempotency key with an unconditional INSERT (see vendor/synapse/VENDOR.md patch 06). On a non-hybrid claim table the PRIMARY KEY is not enforced, so that insert always succeeds and the double-execution guard silently permits the replay it exists to block."; exit 1; }
+grep -q "CONCURRENT_ATTEMPT" "$VENDOR_DIR/dist/runtime/envelope.js" \
+  || { echo "ERROR: built synapse envelope is missing the pre-execute idempotency claim (see vendor/synapse/VENDOR.md patch 06). The claim table would be created but never consulted."; exit 1; }
+
+# Audit-history preservation (patch 07). This script runs the emitted DDL on every
+# deploy, and a deploy is required after any verb change, so a CREATE OR REPLACE
+# here truncates the entire agent behaviour history on a routine cadence - the one
+# record that SV_AGENT_BEHAVIOUR and analyse_agent_behaviour.py are built on.
+# Measured: a 35-row trail of real agent use went to 4 rows after one redeploy,
+# with no error and a table that still looked healthy.
+#
+# This is a NEGATIVE assertion on purpose. The obvious positive form
+# (grep -q 'CREATE ${kind} IF NOT EXISTS ${table}') matches claimTableDDL, which
+# has always been IF NOT EXISTS - so it passes even with patch 07 reverted, which
+# is precisely the false-pass class this file's other checks exist to avoid. The
+# string below appears ONLY in the reverted code; the surrounding comments discuss
+# "CREATE OR REPLACE" in prose but never in this interpolated form.
+if grep -q 'CREATE OR REPLACE ${kind} ${table}' "$VENDOR_DIR/dist/ddl.js"; then
+  echo "ERROR: built synapse codegen emits CREATE OR REPLACE for verb_attempt (see vendor/synapse/VENDOR.md patch 07). Every bundle deploy would silently destroy the agent behaviour history."
+  exit 1
+fi
 
 # bundle | installed-dir | database | schema | mcpServer | roleKey | roleName
 BUNDLES=(
@@ -212,7 +242,19 @@ snow sql -c "$CONNECTION" -q "$TAG_SQL SHOW MCP SERVERS;" --format=CSV 2>/dev/nu
 if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
   echo "[synapse] post-deploy smoke (audited-envelope verify)..."
   # bundle label | smoke CALL (read-only, no routing-engine dependency) | audit table
+  #
+  # The USER bundle is smoked with list_use_cases specifically because it is the
+  # only sizeable read-only verb with NO engine dependency: it reads
+  # FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG, which install step 4.8 creates
+  # before this step runs. Nearly every other routing verb calls
+  # OPENROUTESERVICE_APP.CORE, so it would fail on a --no-engine install and on
+  # any account whose region is suspended - turning a bundle check into an engine
+  # check. This matters because user is the LARGEST bundle (21 of the 38 verbs)
+  # and was previously the only one never smoked, so a routing envelope that had
+  # stopped writing its audit rows would have gone unnoticed while ops and admin
+  # both reported OK.
   SMOKE=(
+    "user|CALL OPENROUTESERVICE_APP.ROUTING.LIST_USE_CASES(NULL, NULL, 3)|OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT"
     "ops|CALL FLEET_INTELLIGENCE.SYNAPSE_OPS.HEALTHCHECK(NULL)|FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT"
     "admin|CALL FLEET_INTELLIGENCE.SYNAPSE_ADMIN.CHECK_SUBSTRATE(NULL)|FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT"
   )

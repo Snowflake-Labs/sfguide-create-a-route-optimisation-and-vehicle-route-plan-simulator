@@ -124,6 +124,90 @@ function stripNoise(sql: string): string {
   return out;
 }
 
+/**
+ * Detect that the submitted SQL targets an object a Cortex Analyst tool already
+ * models, and return a directive naming it. Null when nothing matches.
+ *
+ * WHY THIS IS IN THE RESULT AND NOT IN AN INSTRUCTION
+ * "Prefer a query_* tool when one models the data" is already stated in the agent
+ * spec's orchestration section AND in this verb's own tool description. Measured
+ * on tib85385, the agent still used run_sql to query
+ * FLEET_APP.DWELL.VW_DWELL_SESSIONS and
+ * FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS, both modelled by
+ * query_dwell and query_route_deviation. Two copies of the same guidance lost, so
+ * a third would not have helped; this puts the fact in a result the model has to
+ * read, at the moment it is relevant.
+ *
+ * It does NOT block the call. run_sql exists for the genuinely unmodelled
+ * questions - safety events, region provisioning state, INFORMATION_SCHEMA
+ * lookups - which are most of its legitimate use. Refusing the query would break
+ * that; naming the better tool does not.
+ *
+ * The mapping comes from INFORMATION_SCHEMA.SEMANTIC_TABLES, the semantic views'
+ * own declared base tables, so it cannot drift from the semantic layer. Note
+ * ACCOUNT_USAGE.OBJECT_DEPENDENCIES is NOT usable for this: it records
+ * dependencies for VIEW objects but emits no rows at all for a SEMANTIC VIEW.
+ *
+ * The semantic VIEW is named rather than the tool, because the view-to-tool
+ * binding lives in each agent's own spec (tool_resources) and not in Snowflake
+ * metadata. The agent knows its own binding; guessing a tool name here would be
+ * inventing one.
+ *
+ * Never throws. A failure here must not fail an otherwise good query, so the
+ * catch returns null: the caller loses a hint, not their answer.
+ */
+// Exported for verify_run_sql.mts. A silent no-match here would make the whole
+// nudge inert while everything still looked healthy, which is the same failure
+// shape as the guidance it replaces - so it is tested directly with a stub conn.
+export async function governedNote(
+  ctx: { conn: { exec: <T>(sql: string) => T[] | Promise<T[]> } },
+  sql: string,
+): Promise<string | null> {
+  try {
+    const upper = sql.toUpperCase();
+    const governed =
+      (await ctx.conn.exec<{
+        SEMANTIC_VIEW_NAME: string;
+        BASE_TABLE_CATALOG: string;
+        BASE_TABLE_SCHEMA: string;
+        BASE_TABLE_NAME: string;
+      }>(
+        `SELECT DISTINCT SEMANTIC_VIEW_NAME, BASE_TABLE_CATALOG, BASE_TABLE_SCHEMA, BASE_TABLE_NAME
+           FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.SEMANTIC_TABLES
+          WHERE SEMANTIC_VIEW_SCHEMA = 'SEMANTIC'`,
+      )) ?? [];
+
+    const hits = new Map<string, string[]>();
+    for (const g of governed) {
+      const fqn =
+        `${g.BASE_TABLE_CATALOG}.${g.BASE_TABLE_SCHEMA}.${g.BASE_TABLE_NAME}`.toUpperCase();
+      const shortName = `${g.BASE_TABLE_SCHEMA}.${g.BASE_TABLE_NAME}`.toUpperCase();
+      // Both forms, because the agent writes both: fully qualified, and the
+      // schema-qualified short form after a USE.
+      if (!upper.includes(fqn) && !upper.includes(shortName)) continue;
+      const list = hits.get(g.SEMANTIC_VIEW_NAME) ?? [];
+      list.push(fqn);
+      hits.set(g.SEMANTIC_VIEW_NAME, list);
+    }
+
+    if (hits.size === 0) return null;
+
+    const parts = [...hits.entries()].map(
+      ([sv, objs]) => `${sv} (models ${[...new Set(objs)].join(', ')})`,
+    );
+    return (
+      `This query read data that a Cortex Analyst semantic view already models: ${parts.join('; ')}. ` +
+      'That is the governed path - it carries the agreed metric definitions, so a hand-written ' +
+      'aggregate here can silently disagree with the rest of the app. Tell the user the result ' +
+      'came from raw SQL, name the query_* tool bound to that semantic view, and offer to ' +
+      're-answer through it. If you had a specific reason raw SQL was necessary (a column or ' +
+      'join the view does not expose), say what it was.'
+    );
+  } catch {
+    return null;
+  }
+}
+
 export const run_sql = defineProc({
   name: 'run_sql',
   description:
@@ -158,6 +242,14 @@ export const run_sql = defineProc({
       .describe('True when the query had more rows than the cap. Tell the user when true.'),
     row_limit: t.number().describe('The cap that was applied.'),
     rows: t.array(t.object({})).describe('The result rows.'),
+    governed_note: t
+      .string()
+      .nullable()
+      .describe(
+        'Set when the query targeted an object that a Cortex Analyst semantic view ' +
+          'already models. When present you MUST relay it: say which governed tool ' +
+          'covers this data and offer to re-answer through it.',
+      ),
   },
   validate: async (args, ctx) => {
     const raw = String(args.sql ?? '');
@@ -237,6 +329,7 @@ export const run_sql = defineProc({
       truncated,
       row_limit: limit,
       rows,
+      governed_note: await governedNote(ctx, sql),
     };
   },
 });

@@ -12,6 +12,8 @@ import {
   type SuspendDetection,
 } from '@/lib/routing-suspend';
 import { resolveResumeRegion, triggerRegionResume } from '@/lib/routing-resume';
+import { recordAgentTurn, extractRequestId, type AgentTurnRecord } from '@/lib/agent-turn';
+import { getIngressUser } from '@/lib/ingress-identity';
 
 export async function POST(request: NextRequest) {
   const reqId = crypto.randomUUID().slice(0, 8);
@@ -238,6 +240,54 @@ export async function POST(request: NextRequest) {
   // reports a suspended service without naming the host explicitly.
   const activeRegion = activeCtx.region ? String(activeCtx.region) : null;
 
+  // ---- behaviour capture (see lib/agent-turn.ts) -------------------------
+  // Accumulated across the stream and written ONCE at the end. This is the only
+  // place the question, the chosen tools and the platform request id coexist:
+  // VERB_ATTEMPT sees verb calls but not the question, and a turn answered
+  // entirely by a Cortex Analyst tool makes no verb call at all, so without this
+  // it leaves no trace anywhere.
+  const turnId = crypto.randomUUID();
+  const turnStartedAt = Date.now();
+  const toolsUsed: string[] = [];
+  const toolErrors: string[] = [];
+  const answerChunks: string[] = [];
+  let firstPartMs: number | null = null;
+  let platformRequestId: string | null = null;
+  let turnRecorded = false;
+
+  const activeViewId = panelContext?.activeView
+    ? String((panelContext.activeView as { id?: string }).id ?? '')
+    : null;
+
+  // Guarded so the row is written exactly once regardless of which path ends the
+  // stream (normal done, stream error, transport throw). Fire-and-forget: never
+  // awaited on the response path.
+  const finishTurn = (outcome: string, errorMessage: string | null) => {
+    if (turnRecorded) return;
+    turnRecorded = true;
+    const rec: AgentTurnRecord = {
+      turnId,
+      requestId: platformRequestId,
+      startedAt: turnStartedAt,
+      endedAt: Date.now(),
+      agentName: config.agentName ?? null,
+      actor: getIngressUser(request) ?? null,
+      interface: 'sa_app',
+      question: userMessage ?? null,
+      answer: answerChunks.join('') || null,
+      toolsUsed,
+      toolErrors,
+      activeView: activeViewId,
+      region: activeRegion,
+      vehicleType: activeCtx.vehicle_type ? String(activeCtx.vehicle_type) : null,
+      datasetId: activeCtx.dataset_id ? String(activeCtx.dataset_id) : null,
+      firstPartMs,
+      outcome,
+      errorMessage,
+    };
+    void recordAgentTurn(rec);
+  };
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -284,9 +334,16 @@ export async function POST(request: NextRequest) {
             Accept: 'text/event-stream',
             Authorization: `Bearer ${config.token}`,
             'X-Snowflake-Authorization-Token-Type': config.tokenType,
+            // Offered so the platform can echo it back and the turn joins
+            // CORTEX_AGENT_USAGE_HISTORY exactly. If it is ignored we fall back to
+            // whatever id the response carries, and failing that to a null - the
+            // turn is still recorded, it just cannot be joined to cost figures.
+            'X-Snowflake-Request-Id': turnId,
           },
           body: JSON.stringify(cortexBody),
         });
+
+        platformRequestId = extractRequestId(cortexResponse.headers);
 
         if (!cortexResponse.ok) {
           const errorText = await cortexResponse.text();
@@ -297,6 +354,7 @@ export async function POST(request: NextRequest) {
           };
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPart)}\n\n`));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          finishTurn('error', `Cortex API error ${cortexResponse.status}`);
           controller.close();
           return;
         }
@@ -304,6 +362,18 @@ export async function POST(request: NextRequest) {
         await parseCortexStream(cortexResponse, {
           onPart: (part: MessagePart) => {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(part)}\n\n`));
+            // Behaviour capture. Records WHICH tools the agent chose, which is the
+            // question the governed-path work turns on: a tool name here is the
+            // only evidence that a query_* Cortex Analyst tool was used at all,
+            // since those make no VERB_ATTEMPT row.
+            if (firstPartMs === null) firstPartMs = Date.now() - turnStartedAt;
+            if (part.type === 'text') answerChunks.push(part.content);
+            else if (part.type === 'tool_pending') toolsUsed.push(part.toolName);
+            else if (part.type === 'tool_result') toolsUsed.push(part.toolName);
+            else if (part.type === 'tool_error') {
+              toolsUsed.push(part.toolName);
+              toolErrors.push(`${part.toolName}: ${part.error}`);
+            }
             // Additive: if the tool result/error signals a suspended engine,
             // resume it and append a friendly notice (original part still shown).
             if (part.type === 'tool_result') handleSuspend(detectSuspendedInResult(part.output));
@@ -326,6 +396,7 @@ export async function POST(request: NextRequest) {
           },
           onDone: () => {
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            finishTurn(toolErrors.length > 0 ? 'partial' : 'ok', null);
             controller.close();
           },
         });
@@ -338,6 +409,7 @@ export async function POST(request: NextRequest) {
         };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPart)}\n\n`));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        finishTurn('error', err instanceof Error ? err.message : 'Connection failed');
         controller.close();
       }
     },

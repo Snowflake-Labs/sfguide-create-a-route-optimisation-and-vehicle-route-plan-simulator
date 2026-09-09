@@ -135,15 +135,28 @@ export const deep_link = defineProc({
       };
     }
 
-    const qs = new URLSearchParams();
-    qs.set('view', viewId);
-    if (args.region) qs.set('region', args.region.trim());
-    if (args.vehicle_type) qs.set('vehicle', args.vehicle_type.trim());
-    if (args.dataset_id) qs.set('dataset', args.dataset_id.trim());
-    if (args.selection) qs.set('select', args.selection.trim());
+    // Built by hand rather than with URLSearchParams: synapse emits every verb
+    // as a LANGUAGE JAVASCRIPT procedure, and that runtime has no WHATWG URL
+    // APIs - so `new URLSearchParams()` threw "URLSearchParams is not defined"
+    // at the very last line, AFTER the catalog lookup and the endpoint probe had
+    // already succeeded. Nothing caught it at build or deploy time: the bundle
+    // compiles, `synapse deploy` succeeds, and the procedure is created, so the
+    // first sign of trouble was an agent failing to hand a user a link. Only
+    // `encodeURIComponent` is safe here (it is an ECMAScript built-in, not a
+    // host API). scripts/check_verb_js_globals.py now fails the commit on this
+    // whole class of global.
+    const parts: string[] = [`view=${encodeURIComponent(viewId)}`];
+    const add = (key: string, value: string | null): void => {
+      const v = (value ?? '').trim();
+      if (v !== '') parts.push(`${key}=${encodeURIComponent(v)}`);
+    };
+    add('region', args.region);
+    add('vehicle', args.vehicle_type);
+    add('dataset', args.dataset_id);
+    add('select', args.selection);
 
     return {
-      url: `https://${host}/?${qs.toString()}`,
+      url: `https://${host}/?${parts.join('&')}`,
       view_id: viewId,
       label,
       note:

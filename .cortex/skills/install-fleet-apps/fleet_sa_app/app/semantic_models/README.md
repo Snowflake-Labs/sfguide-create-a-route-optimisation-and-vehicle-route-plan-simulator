@@ -17,7 +17,7 @@ data dependencies; the views themselves are managed Snowflake objects.
 | query_catchment | `FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT` | `CATCHMENT` |
 | query_offers | `FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS` | `MARKETPLACE` |
 | query_backload_matching | `FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING` | `BACKLOAD_MATCHING` |
-| query_dhl_backload | `FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD` | `DHL_NTBO` |
+| (retired vertical tool) | (retired vertical semantic view) | (retired vertical pack) |
 
 The agent also has `data_to_chart` and the `ROUTING_MCP` routing tools (in `OPENROUTESERVICE_APP.ROUTING`) attached.
 

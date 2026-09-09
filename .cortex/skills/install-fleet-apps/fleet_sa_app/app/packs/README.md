@@ -40,7 +40,7 @@ The reference non-fleet pack. Same data-contract pattern, but:
   wrapped in `EXECUTE IMMEDIATE $$...$$` so it applies as a SINGLE statement via `snow sql -f`
   (a bare `DECLARE/BEGIN/END;` block is split on its internal `;` and fails). The committed
   `<pack>/sv_repoint.sql` is the durable, idempotent reproducibility artifact for self-building
-  packs whose SV absorbs physical DTs via `replaces:` (route_optimization, backload, dhl_ntbo).
+  packs whose SV absorbs physical DTs via `replaces:` (route_optimization, backload).
   It rebinds an already-existing SV; it does NOT author the SV (SV CREATE DDL is not yet a repo
   source-of-truth - see caveat below).
 - Verify variant: `--app-schema FLEET_APP_VERIFY.<pack> --materialization view` builds the
@@ -79,7 +79,7 @@ a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
 | unified_fleet | FLEET_APP.UNIFIED_FLEET | fleet_operations, fleet_map; SV_FLEET_OPERATIONS (cross-DB) |
 | marketplace | FLEET_APP.MARKETPLACE | freight_exchange (TSX); SV_OFFERS |
 | backload | FLEET_APP.BACKLOAD_MATCHING | backload_matching (TSX); SV_BACKLOAD_MATCHING |
-| dhl_ntbo | FLEET_APP.DHL_NTBO | (agent-only) SV_DHL_BACKLOAD |
+| (retired vertical pack) | - | - |
 
 ## Not data-contract migrated (by design)
 - `vrp_simulator`, `emergency_wizard`, `ops_console` - call routing/ops verbs only

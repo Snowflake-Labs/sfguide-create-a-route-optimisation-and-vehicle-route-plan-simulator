@@ -149,8 +149,16 @@ CREATE FILE FORMAT IF NOT EXISTS FLEET_INTELLIGENCE.CORE.PARQUET_FF
 --    MARKETPLACE projection views) are now VEHICLE-AGNOSTIC -- Data Studio
 --    generates vehicle-appropriate offers for every fleet type -- so they
 --    are RETAINED. Backload Matching is also vehicle-agnostic (neutral,
---    DHL-free) and its control tables are seeded by scripts/analytic_layer.sql,
---    so it is RETAINED. Only the still-vertical DHL NTBO showcase is dropped.
+--    vendor-free) and its control tables are seeded by
+--    scripts/analytic_layer.sql, so it is RETAINED. Only the retired
+--    vendor-specific showcase schema is dropped.
+--
+--    DELIBERATE EXCEPTION to the repo-wide no-brand-names rule, and the ONE
+--    entry in the check_no_brands.py allowlist: this statement is the only
+--    thing that REMOVES the vendor-named schema from an account that still
+--    carries one. Renaming or deleting the line would strand that schema in
+--    place forever, so naming the brand here is what gets rid of the brand.
+--    Do not "clean up" this identifier. It is load-bearing.
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DHL_NTBO;
 
 -- Verify agnostic core data is present (reuse signal for the orchestrator).

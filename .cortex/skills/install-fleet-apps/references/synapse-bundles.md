@@ -59,8 +59,14 @@ Notes on the data-access and lifecycle verbs:
 - **`provision_region` cannot be synchronous.** A build runs for tens of minutes
   to hours, so the async launch lives in SQL
   (`OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION`, a schedule-less TASK plus
-  `EXECUTE TASK`). Enqueuing alone does not work: `RESCUE_PENDING_PROVISIONS`
-  only FINALIZES stuck jobs, it never launches a PENDING one.
+  `EXECUTE TASK`). Enqueuing alone does not work: nothing drains a `PENDING` job
+  row. The launch task sets `USER_TASK_TIMEOUT_MS = 43200000`, because the
+  default is 1 hour and silently killed every build at the 60-minute mark.
+  `RESCUE_PENDING_PROVISIONS` finalizes stuck jobs and, in one bounded case,
+  relaunches: a build whose procedure died or gave up during `DOWNLOADING` is
+  restarted from `CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES` (stale heartbeat or
+  terminal download failure, resumable state on the stage, max 3 per region per
+  24h). It relaunches nothing else.
 - **There is no `generate_dataset` verb.** Generation runs inside the admin app's
   Node process (`startGeneration`, in-memory job map + SSE + thousands of live
   routing calls), which a stored procedure cannot host.

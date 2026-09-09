@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getSnowflakeAuth } from '@/lib/sf-auth';
-import { detectOrsSuspended } from '@/lib/routing-suspend';
+import {
+  detectOrsSuspended,
+  outOfGraphMessage,
+  parseOutOfGraphPoints,
+  OUT_OF_GRAPH_REASON,
+} from '@/lib/routing-suspend';
 import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
 
 const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
@@ -312,6 +317,17 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     // gateway's DNS/connection failure. Resume the region and return a typed,
     // friendly notice so the panel shows "resume triggered" instead of a raw error.
     const det = detectOrsSuspended(rawMsg);
+    // Off-graph coordinates: a healthy engine refused a bad payload. Reporting a
+    // resume here would be false, and the panel would advertise a wait that
+    // changes nothing.
+    if (det.outOfGraph) {
+      const pts = parseOutOfGraphPoints(rawMsg);
+      logger.warn('sf-out-of-graph', { region: regionHint, points: pts.length });
+      return NextResponse.json(
+        { error: outOfGraphMessage(regionHint, pts.length, pts), reason: OUT_OF_GRAPH_REASON },
+        { status: 422 },
+      );
+    }
     const resumeRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
     if (resumeRegion) {
       const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);

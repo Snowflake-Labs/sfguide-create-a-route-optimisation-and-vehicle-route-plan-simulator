@@ -115,6 +115,11 @@ export const noop = defineProc({
     );
     expect(body).not.toContain('__SYNAPSE_AUDIT_TABLE__');
     expect(body).not.toContain('__SYNAPSE_APP_ID_FIELD__');
+    // An unsubstituted placeholder would ship as a literal table NAME in the
+    // emitted INSERT, so assert the claim table is substituted and qualified for
+    // the same session-schema reason as the audit table.
+    expect(body).not.toContain('__SYNAPSE_CLAIM_TABLE__');
+    expect(body).toContain('"TEST_DB.TEST_SCHEMA.verb_claim"');
     // esbuild normalizes string literals to double-quoted form; astring
     // round-trips them as such. LOCAL PATCH: the audit table is qualified with
     // the install target so the envelope's INSERT does not depend on the

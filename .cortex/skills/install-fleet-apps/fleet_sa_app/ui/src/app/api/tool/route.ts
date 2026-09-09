@@ -30,6 +30,12 @@ const DEFAULT_VERBS: Record<string, number> = {
   network_optimization: 1,
   evac_seed: 4,
   evac_solve: 2,
+  // Backload matching. These are the seam that keeps the cockpits and the agent on
+  // ONE implementation: the same procedures back the MCP tools, so a plan drawn on
+  // screen and a plan the agent describes cannot diverge.
+  // Arity excludes the trailing IDEMPOTENCY_KEY, as above.
+  backload_solve: 6,
+  backload_chain_solve: 6,
 };
 
 function resolveTools(): { schema: string; verbs: Record<string, number> } {

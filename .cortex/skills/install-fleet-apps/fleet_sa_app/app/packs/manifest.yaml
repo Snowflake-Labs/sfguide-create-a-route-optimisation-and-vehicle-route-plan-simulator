@@ -95,5 +95,6 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING]
     self_building: true
 
-  # NOTE: the remaining industry-vertical packs (marketplace / dhl_ntbo) are
+  # NOTE: the remaining industry-vertical packs (marketplace, plus a retired
+  # vertical pack) are
   # intentionally EXCLUDED from this vehicle/industry-agnostic installer.

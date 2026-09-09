@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ProcDef } from '../defineProc.js';
-import { auditTableDDL } from '../ddl.js';
+import { auditTableDDL, claimTableDDL } from '../ddl.js';
 import { procDDL } from './ddl.js';
 import { bundleProc, type ProcBuildInput, type AuditBundleConfig, type CatalogBundleConfig } from './bundle.js';
 
@@ -36,6 +36,21 @@ export async function buildSprocs(opts: BuildSprocsOpts): Promise<void> {
     auditTableDDL({
       table: opts.audit.table,
       ...(opts.audit.appIdField ? { appIdColumn: opts.audit.appIdField } : {}),
+      hybrid: opts.schema?.hybrid ?? true,
+    }),
+    '',
+    // Idempotency claim table (LOCAL PATCH, see VENDOR.md). Follows the audit
+    // table's hybrid setting. The PK is enforced only on a hybrid table, so on a
+    // standard table `claim()` relies on its conditional insert rather than on a
+    // violation being raised - a repeat claim is still rejected, only exact
+    // simultaneity is not.
+    // Qualified with the install target for the same reason the audit table is
+    // (materialize.ts pre-qualifies that one): the emitted DDL must not depend on
+    // the session's current schema.
+    claimTableDDL({
+      table: opts.catalog?.database && opts.catalog?.schema
+        ? `${opts.catalog.database}.${opts.catalog.schema}.verb_claim`
+        : 'verb_claim',
       hybrid: opts.schema?.hybrid ?? true,
     }),
     '',

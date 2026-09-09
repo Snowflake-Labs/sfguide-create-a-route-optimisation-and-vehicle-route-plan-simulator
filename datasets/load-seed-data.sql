@@ -166,9 +166,16 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS (
   TRIP_END TIMESTAMP_NTZ,
   STATUS VARCHAR(20),
   ORS_PROFILE VARCHAR(30),
+  TRIP_KIND VARCHAR(16) DEFAULT 'LADEN',
   JOB_ID VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- No DEFAULT here on purpose: with a DEFAULT clause this raises "ambiguous
+-- column name 'TRIP_KIND'" once the column exists, which would abort the load.
+-- The CREATE TABLE above still carries the DEFAULT for fresh installs, and the
+-- contract COALESCEs the value anyway.
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_KIND VARCHAR(16);
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;
 
@@ -220,9 +227,49 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET (
   OPERATING_MODE VARCHAR(30),
   BASE_SPEED_KMH FLOAT,
   BATTERY_RANGE_KM FLOAT,
-  JOB_ID VARCHAR
+  JOB_ID VARCHAR,
+  -- Asset attributes and dispatch state. These MUST be declared here, not left
+  -- to the app's boot migration: the seed COPY runs at install step 4 and the
+  -- apps boot at step 7, and COPY ... MATCH_BY_COLUMN_NAME can only populate a
+  -- column the table already has. Omit them and the seeded fleet silently
+  -- arrives with NULL vehicle dimensions and NULL dispatch state, which is
+  -- exactly the state that made a parked asset indistinguishable from a busy one.
+  WEIGHT_TONS NUMBER(6,2),
+  HEIGHT_M NUMBER(4,2),
+  LENGTH_M NUMBER(4,2),
+  WIDTH_M NUMBER(4,2),
+  AXLELOAD_T NUMBER(4,2),
+  HAZMAT BOOLEAN,
+  VEHICLE_SUBTYPE VARCHAR(16),
+  IS_GHOST BOOLEAN,
+  GHOST_START_DAY INT,
+  GHOST_END_DAY INT
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- CREATE TABLE IF NOT EXISTS is a no-op on an account that already holds the
+-- older 13-column shape, so the columns are also added explicitly.
+--
+-- ONE STATEMENT PER COLUMN, AND NO DEFAULT CLAUSE - this is not stylistic.
+-- MEASURED on Snowflake: `ADD COLUMN IF NOT EXISTS` is idempotent ONLY for a
+-- single column with no DEFAULT. Add several at once and an already-present one
+-- raises "column 'X' already exists"; add one WITH a DEFAULT and it raises
+-- "ambiguous column name 'X'". Since `snow sql -f` aborts on the first failure,
+-- either form would kill every statement below it and silently leave the seed
+-- half-loaded on any re-install.
+--
+-- ADD COLUMN also leaves the `SELECT f.*` V_DIM_FLEET_CURRENT view stale, which
+-- the app's boot init drops and recreates at step 7; the loader never reads it.
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS NUMBER(6,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS LENGTH_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WIDTH_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS IS_GHOST BOOLEAN;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_START_DAY INT;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_END_DAY INT;
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET;
 

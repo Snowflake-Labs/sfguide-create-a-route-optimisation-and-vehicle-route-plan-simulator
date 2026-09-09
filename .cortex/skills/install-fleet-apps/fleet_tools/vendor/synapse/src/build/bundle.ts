@@ -386,6 +386,17 @@ function injectAuditConfig(
       : audit.table;
   let out = src.replace(/__SYNAPSE_AUDIT_TABLE__/g, qualified);
   out = out.replace(/__SYNAPSE_APP_ID_FIELD__/g, audit.appIdField ?? '');
+  // LOCAL PATCH (see ../../VENDOR.md): the idempotency claim table needs the same
+  // database.schema qualification as the audit table above, and for the same
+  // reason - the emitted proc body resolves a bare name against the CALLER's
+  // session schema, not the deploy-time schema. Name matches claimTableDDL()'s
+  // default.
+  const claimBare = 'verb_claim';
+  const claimQualified =
+    catalog?.database && catalog?.schema
+      ? `${catalog.database}.${catalog.schema}.${claimBare}`
+      : claimBare;
+  out = out.replace(/__SYNAPSE_CLAIM_TABLE__/g, claimQualified);
   return out;
 }
 

@@ -33,7 +33,7 @@ import {
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
-  type VehicleClass, type EmptyLegBaseline,
+  type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
 } from './backload-matching/helpers';
 
 // Cached ORS empty-leg result (geometry + real road km) keyed by
@@ -160,35 +160,66 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     try {
       const cfgRows = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const c = cfgRows[0] as { VEHICLE_TYPE?: string; REGION?: string } | undefined;
-      const vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
-      const cfgRegion = String(c?.REGION ?? region ?? 'SanFrancisco');
-      setCfg({ vehicleType, region: cfgRegion });
+      // The APP SELECTION is authoritative; VW_CONFIG is a default hint only.
+      // CONFIG holds one row and is writable at runtime (the /api/region promote
+      // path, and the ops verb set_active_context which an agent can call), so
+      // trusting it over the selection makes the same page answer differently at
+      // different times - and, worse, mixes regions when the two disagree.
+      const cfgRegion = String(region ?? c?.REGION ?? 'SanFrancisco');
 
+      // MULTI-REGION contract views: region MUST be bound here. Without it the
+      // pool spans every loaded region and the unsorted `.slice(0, maxVehicles)`
+      // below feeds off-graph coordinates to the region's routing engine, which
+      // fails the matrix pre-compute with ORS 6010 ("out of bounds").
+      const scope = { region: cfgRegion };
       const [tRows, iRows, oRows] = await Promise.all([
-        sfRead(`SELECT * FROM ${BM}.VW_TRAILERS`),
-        sfRead(`SELECT * FROM ${BM}.VW_INTERNAL_VOLUMES`),
-        sfRead(`SELECT * FROM ${BM}.VW_EXTERNAL_OFFERS`),
+        sfRead(`SELECT * FROM ${BM}.VW_TRAILERS WHERE REGION = :region`, { params: scope }),
+        sfRead(`SELECT * FROM ${BM}.VW_INTERNAL_VOLUMES WHERE REGION = :region`, { params: scope }),
+        sfRead(`SELECT * FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`, { params: scope }),
       ]);
+
+      // Vehicle type for the region we actually loaded. DIM_DATASETS allows one
+      // ACTIVE dataset per (REGION, VEHICLE_TYPE), so CONFIG's vehicle type is
+      // only meaningful when CONFIG's region is the region on screen; otherwise
+      // take it from the fleet itself (VW_TRAILERS.CURRENT_LOAD is VEHICLE_TYPE).
+      // Filtering trailers by it keeps a future mixed-vehicle region honest -
+      // one class profile cannot describe two vehicle types.
+      let vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
+      if (String(c?.REGION ?? '') !== cfgRegion) {
+        const counts = new Map<string, number>();
+        for (const r of tRows as unknown as Trailer[]) {
+          const vt = String(r.CURRENT_LOAD ?? '').trim();
+          if (vt) counts.set(vt, (counts.get(vt) ?? 0) + 1);
+        }
+        const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        if (dominant) vehicleType = dominant;
+      }
+      setCfg({ vehicleType, region: cfgRegion });
 
       // Defensive dedupe (guards against upstream view regressions feeding VROOM
       // duplicate vehicles / shipments -> visually-identical duplicate cards).
+      // Trailers are additionally narrowed to the resolved vehicle type: the
+      // single VehicleClass profile below (payload, speed, ORS profile) describes
+      // exactly one type, so mixing types would cost and route the pool wrongly.
       const seenT = new Set<string>();
       const tDeduped = (tRows as unknown as Trailer[]).filter((r) => {
+        const vt = String(r.CURRENT_LOAD ?? '').trim();
+        if (vt && vt !== vehicleType) return false;
         const id = String(r.TRAILER_ID);
         if (seenT.has(id)) return false; seenT.add(id); return true;
       });
-      const seenI = new Set<string>();
-      const iDeduped = (iRows as unknown as Volume[]).filter((v) => {
-        const k = `${Number(v.PICKUP_LON).toFixed(6)},${Number(v.PICKUP_LAT).toFixed(6)}|${Number(v.DROPOFF_LON).toFixed(6)},${Number(v.DROPOFF_LAT).toFixed(6)}|${v.WEIGHT_KG}`;
-        if (seenI.has(k)) return false; seenI.add(k); return true;
-      });
+      // Internal volumes are deduped in SQL now (same lane, same weight), before
+      // the pool bound is applied, so there is nothing left to drop here. Doing
+      // it in the browser meant the "Internal volumes" tile reported a smaller
+      // number than the pool the solver actually received - measured 4,979 on
+      // screen against 5,000 rows - and no SQL consumer got the benefit.
       const seenO = new Set<string>();
       const oDeduped = (oRows as unknown as Offer[]).filter((o) => {
         const k = String(o.OFFER_ID);
         if (seenO.has(k)) return false; seenO.add(k); return true;
       });
       setTrailers(tDeduped);
-      setInternal(iDeduped);
+      setInternal(iRows as unknown as Volume[]);
       setExternal(oDeduped);
       // A data reload invalidates the previous solve: drop the results and the
       // dispatch stats together so the KPI denominator can never be paired with
@@ -207,8 +238,8 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         if (Number.isFinite(cls.COST_PER_HR)) setCostPerHourUsd(cls.COST_PER_HR);
       }
 
-      if (!tDeduped.length || !iDeduped.length || !oDeduped.length) {
-        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
+      if (!tDeduped.length || !iRows.length || !oDeduped.length) {
+        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iRows.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
       } else {
         setSeedHint(null);
       }
@@ -308,7 +339,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
           ? [capacityKg, Number(t.MAX_PALLETS) || synthPallets(capacityKg), Number(t.MAX_VOLUME_M3) || synthVolumeM3(capacityKg)]
           : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-        max_tasks: maxStops,
+        // maxStops counts LOADS; a shipment is two VROOM tasks (pickup +
+        // delivery), so the task cap is doubled. Passing the load count
+        // straight through made the slider's own "1 = pure backload" setting
+        // unsatisfiable (one task cannot hold a pickup and its delivery).
+        max_tasks: maxStops * 2,
         max_travel_time: Math.max(1800, base.durSec + Math.round(detourSlackHrs * 3600)),
         max_distance: Math.max(10_000, Math.round(base.distMeters * (1 + deviationPct / 100))),
         costs: { fixed: Math.round(fixedDispatchUsd * COST_SCALE), per_km: Math.round(effPerKmUsd * COST_SCALE) },
@@ -403,6 +438,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
     }
 
+    // Whether the routability probe produced EVIDENCE we can act on. False when
+    // it never ran, threw, or backed off - see the zero-pool branch below.
+    let probeTrustworthy = false;
+
     if (anchor) {
       setSolverLog('Checking stop routability...');
       const uniq = new Map<string, [number, number]>();
@@ -418,8 +457,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         addPt((s.delivery as { location?: unknown }).location);
       }
       let badKeys = new Set<string>();
-      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal }); }
-      catch { badKeys = new Set(); }
+      const probe: UnroutableProbeStats = { probed: 0, clean: 0, rejected: 0, backedOff: false };
+      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal, stats: probe }); }
+      catch { badKeys = new Set(); probe.backedOff = true; }
+      probeTrustworthy = probe.clean > 0 && !probe.backedOff;
       if (badKeys.size) {
         const locBad = (loc: unknown): boolean =>
           Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
@@ -445,12 +486,29 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
     }
 
-    // Belt-and-suspenders: a pre-filter must never zero out the whole solve. If
-    // it did (untrustworthy probe that slipped past the helper's own backoff),
-    // discard it and solve the full set - the solve path detects a suspended
-    // engine and the retry loop shears any real code-3 point. Do NOT surface an
-    // "all unroutable" error here; that hides a live-but-degraded engine.
+    // A pre-filter that zeroes out the solve is either a bad probe or a genuinely
+    // unusable pool, and the two need OPPOSITE handling.
+    //
+    // Untrustworthy probe (nothing routed cleanly, or it threw): discard the
+    // shear and solve the full set - the solve path detects a suspended engine
+    // and the retry loop shears any real code-3 point one at a time.
+    //
+    // Trustworthy probe (some points routed cleanly, so the engine is provably
+    // answering): the rejections are real. Restoring them here is what used to
+    // hand the engine coordinates it had just refused, turning a shear-and-solve
+    // into a hard matrix pre-compute failure. Report it instead.
     if (!workVehicles.length || !workShipments.length) {
+      if (probeTrustworthy) {
+        const what = !workVehicles.length ? 'vehicle start/end locations' : 'load pickup/dropoff locations';
+        setSolveError(
+          `Every one of the ${what} in this selection is outside the ${cfg.region} road graph, ` +
+          `so there is nothing to solve. The routing engine is healthy - check that the ` +
+          `selected region matches the data, or regenerate the preset for this region.`,
+        );
+        setSolving(false);
+        solveAbortRef.current = null;
+        return;
+      }
       workVehicles = vrpVehicles;
       workShipments = vrpShipments;
       excludedLabels.length = 0;
@@ -1117,7 +1175,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* KPI grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 12 }}>
         <div style={kpiCard}><div style={kpiLabel}>Trailers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{trailers.length}</div></div>
-        <div style={kpiCard}><div style={kpiLabel}>Internal volumes</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internal.length}</div></div>
+        <div style={kpiCard}><div style={kpiLabel}>Internal load pool</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internal.length}</div></div>
         <div style={kpiCard}><div style={kpiLabel}>External offers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{external.length}</div></div>
         <div style={kpiCard}>
           <div style={kpiLabel}>% dispatched assigned</div>
@@ -1133,9 +1191,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* PAYLOAD SIZE */}
       <div style={sectionHdr}>PAYLOAD SIZE (matrix budget)</div>
       <div style={sectionBox}>
-        {slider('Max trailers', `How many idle trailers (closest to shipments) get sent to the solver. Auto-clamped on Solve so the precomputed ORS matrix stays under ${BM_MAX_MATRIX_LOCATIONS} unique locations.`, maxVehicles, setMaxVehicles, BM_VEHICLES_MIN, BM_VEHICLES_MAX)}
-        {slider('Max internal volumes', 'How many internal (own-fleet) shipments enter the solver, sorted by proximity to the nearest idle trailer.', maxInternal, setMaxInternal, BM_INTERNAL_MIN, BM_INTERNAL_MAX)}
-        {slider('Max external offers', 'How many external freight-exchange offers enter the solver, sorted by proximity to the nearest idle trailer.', maxExternal, setMaxExternal, BM_EXTERNAL_MIN, BM_EXTERNAL_MAX)}
+        {slider('Max trailers', `How many idle trailers get sent to the solver, taken in id order. Auto-clamped on Solve so the precomputed ORS matrix stays under ${BM_MAX_MATRIX_LOCATIONS} unique locations.`, maxVehicles, setMaxVehicles, BM_VEHICLES_MIN, BM_VEHICLES_MAX)}
+        {slider('Max internal loads', 'How many loads from the internal pool enter the solver, ranked by straight-line proximity to the nearest idle trailer. Proximity only - the ranking does not consider the pickup window, weight fit or revenue.', maxInternal, setMaxInternal, BM_INTERNAL_MIN, BM_INTERNAL_MAX)}
+        {slider('Max external offers', 'How many external freight-exchange offers enter the solver, ranked by straight-line proximity to the nearest idle trailer.', maxExternal, setMaxExternal, BM_EXTERNAL_MIN, BM_EXTERNAL_MAX)}
         <div style={{ minWidth: 220, fontSize: 12, color: budget.counterColor }}>
           <div style={{ fontWeight: 600 }}>Locations used: {budget.used} / {BM_MAX_MATRIX_LOCATIONS}</div>
           {budget.overBudget && budget.preview && (<div style={{ fontSize: 11 }}>Will clamp on Solve to {budget.preview.v}/{budget.preview.i}/{budget.preview.e}</div>)}
@@ -1146,7 +1204,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* SOLVER */}
       <div style={sectionHdr}>SOLVER (VROOM-native)</div>
       <div style={sectionBox}>
-        {slider('Max stops per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks', maxStops, setMaxStops, 1, 6)}
+        {slider('Max loads per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks (set to 2x this value, since each shipment is a pickup task plus a delivery task)', maxStops, setMaxStops, 1, 6)}
         {slider('Detour budget', "Extra hours allowed on top of each trailer's empty drive home. Adds linearly per vehicle.\n\nVROOM field: vehicle.max_travel_time", detourSlackHrs, setDetourSlackHrs, 0, 12, 1, ' h', '+')}
         {slider('Allowed deviation', "Distance cap as a percentage above each trailer's empty drive home. 200% = tour may be up to 3x the empty distance.\n\nVROOM field: vehicle.max_distance", deviationPct, setDeviationPct, 0, 500, 10, '%', '+')}
         {slider('Internal-first', 'Bias toward internal volumes vs external offers. 100 = always internal first, 50 = equal, 0 = always external first.\n\nVROOM field: job.priority', internalFirstWeight, setInternalFirstWeight, 0, 100)}

@@ -43,11 +43,6 @@ views:
       actual_overview_dev:
         expect: may_be_empty
         reason: Overview twin of actual_deviation, same mutual exclusion.
-      planned:
-        expect: may_be_empty
-        reason: >-
-          Draws PLANNED_PATH_GEOG, which is NULL for a journey the generator did
-          not produce a plan for. An unplanned journey is a valid selection.
       areas.vsummary:
         expect: may_be_empty
         reason: >-
@@ -229,6 +224,28 @@ code_views:
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+  triangle_proposals:
+    objects:
+      # Same ownership caveat as backload_proposals: created only by the admin
+      # app's init.ts at container boot, so assert them explicitly.
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+      - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
+      - FLEET_APP.BACKLOAD_MATCHING.VW_MATCH_PARAMS
+    # A chain is a LONG-HAUL construct: it only exists when a vehicle empties
+    # further from its target than the target radius. On a single-metro preset
+    # every load already delivers inside that radius, so a direct return always
+    # exists and zero chains is the CORRECT answer, not a broken page. Measured:
+    # the widest home-gap on a metro preset is ~17 km against a 250 km radius.
+    # Declared here so the harness does not read a correct empty result as a
+    # regression - on a continental preset the same views return chains.
+    allow_empty:
+      - reason: >
+          No two-hop chain is needed unless a vehicle empties beyond the target
+          radius. Metro presets never do, so the chain views are legitimately
+          empty there and populate on a wide-area preset.
+        objects:
+          - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+          - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
   app_shell:
     objects:
       # Not a view, but every view inherits it: the context bar and the region
@@ -268,9 +285,21 @@ selection_seeds:
     # it, because clicking a journey in the app also fixes its vehicle. Seeding
     # the two independently yields a pair that never co-occurs, which empties
     # every panel that joins them (areas.vsummary was the tell).
+    #
+    # PLANNED_PATH_GEOG IS NOT NULL is load-bearing, not decoration. Only ~5% of
+    # seeded journeys carry a plan, and about HALF of all journeys have no stops
+    # at all - but every journey that has a plan also has stops (measured: 635
+    # with a plan, 635 of those with stops, 0 planned-but-stopless). So without
+    # this predicate the LIMIT 1 pick lands on an unplanned journey roughly 19
+    # times out of 20, and BOTH the `planned` path layer and the `dwell` stop
+    # layer come back empty - which previously had to be excused as "an
+    # unplanned journey is a valid selection". It is a valid selection, but it is
+    # a USELESS one to verify a drill-down with: it proves nothing about the two
+    # layers it silences. Requiring a plan makes both layers assert real rows.
     selected_journey: >-
       SELECT JOURNEY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
-      WHERE JOURNEY_ID IS NOT NULL AND ACTUAL_PATH_GEOG IS NOT NULL LIMIT 1
+      WHERE JOURNEY_ID IS NOT NULL AND ACTUAL_PATH_GEOG IS NOT NULL
+        AND PLANNED_PATH_GEOG IS NOT NULL LIMIT 1
     selected_vehicle: >-
       SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
       WHERE JOURNEY_ID = :selected_journey LIMIT 1
@@ -286,9 +315,15 @@ selection_seeds:
       WHERE OPERATOR_ID IS NOT NULL LIMIT 1
 
   asset_velocity:
+    # MUST filter by region. The idle-vehicle view is multi-region now, so an
+    # unfiltered LIMIT 1 can seed a vehicle from a DIFFERENT region than the
+    # pass being validated, and every dependent query (which does filter by
+    # region) then returns 0 rows - reported as an undeclared EMPTY that looks
+    # like a broken panel rather than a bad seed. Same shape as delivery_sync /
+    # site_impact below.
     selected_vehicle: >-
       SELECT VEHICLE_ID FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
-      LIMIT 1
+      WHERE REGION = :region LIMIT 1
 
   delivery_sync:
     selected_site: >-

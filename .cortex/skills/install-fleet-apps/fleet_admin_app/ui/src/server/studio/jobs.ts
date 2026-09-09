@@ -22,6 +22,9 @@ export interface BufferedEvent {
 
 const EVENT_BUFFER_CAP = 500;
 
+/** Durable job-state table (Tenet 5b). See the helpers further down. */
+const JOB_STATE_TABLE = 'FLEET_INTELLIGENCE.CORE.JOB_STATE';
+
 export interface Job {
   jobId: string;
   presetName: string;
@@ -149,6 +152,19 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
         }
       }
     } catch (_) { /* best-effort */ }
+    // Durable cancel intent + terminal state. If the worker is in fact still
+    // alive in another process, its watchdog tick reads ABORT_REQUESTED and
+    // unwinds; if it is genuinely gone, this is simply the final state.
+    await markAbortRequested(jobId, snowSql);
+    try {
+      await snowSql(
+        `UPDATE ${JOB_STATE_TABLE}
+         SET STATUS = 'CANCELLED', COMPLETED_AT = SYSDATE(),
+             ERROR_MESSAGE = 'Cancelled by user (orphaned worker - no in-process state)'
+         WHERE JOB_ID = ${escVal(jobId)}`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+    } catch (_) { /* best-effort */ }
     log('INFO', 'Studio', `Force-cancelled orphaned job ${jobId}`);
     return { ok: true, mode: 'orphan' };
   } catch (e: any) {
@@ -181,6 +197,26 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
     const n = result?.[0]?.['number of rows updated'] ?? 0;
     if (n > 0) {
       log('INFO', 'Studio', `Reconciled ${n} stale RUNNING job(s) at boot`);
+    }
+    // Mirror the reconcile into the durable state table, so JOB_STATE never
+    // reports RUNNING for a worker that provably no longer exists. JOB_STATE's
+    // liveness column is LAST_PROGRESS_AT, not GENERATION_JOBS.HEARTBEAT_AT.
+    const stateAgeFilter = staleMinutes !== null
+      ? `AND COALESCE(LAST_PROGRESS_AT, STARTED_AT) < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())`
+      : '';
+    try {
+      await snowSql(
+        `UPDATE ${JOB_STATE_TABLE}
+         SET STATUS = 'FAILED',
+             COMPLETED_AT = SYSDATE(),
+             ERROR_MESSAGE = 'Worker lost - container restarted mid-run (auto-reconciled at boot)'
+         WHERE STATUS = 'RUNNING'
+           ${stateAgeFilter}
+           ${inMemFilter}`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+    } catch (e: any) {
+      log('WARN', 'Studio', `JOB_STATE reconcile at boot failed (non-fatal): ${e.message?.slice(0, 200)}`);
     }
     // Prune DIM_DATASETS rows whose job is DELETED, CANCELLED, or FAILED with
     // no data. Seed datasets (no matching GENERATION_JOBS row) are left alone.
@@ -535,10 +571,17 @@ export async function activateDataset(
     err.vehicleType = vehicleType;
     throw err;
   }
-  // Atomic-ish: deactivate other siblings, then activate this one.
-  const deact = await snowSql(
-    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = FALSE
+  // Establish the "exactly one IS_ACTIVE per (REGION, VEHICLE_TYPE)" invariant in
+  // ONE statement. This used to be two UPDATEs (deactivate siblings, then
+  // activate this one), commented "atomic-ish" - two concurrent activations for
+  // the same scope could interleave and leave two active rows or none, which
+  // silently doubles or blanks every V_*_CURRENT consumer. A single UPDATE whose
+  // SET expression is the predicate cannot interleave.
+  //
+  // The deactivated count is read separately and is therefore advisory only; the
+  // invariant does not depend on it, and nothing but the response message uses it.
+  const priorActive = await snowSql(
+    `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
      WHERE REGION = ${escVal(region)}
        AND VEHICLE_TYPE = ${escVal(vehicleType)}
        AND DATASET_ID <> ${escVal(datasetId)}
@@ -547,13 +590,29 @@ export async function activateDataset(
   );
   await snowSql(
     `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = TRUE
-     WHERE DATASET_ID = ${escVal(datasetId)}`,
+     SET IS_ACTIVE = (DATASET_ID = ${escVal(datasetId)})
+     WHERE REGION = ${escVal(region)}
+       AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
     'FLEET_INTELLIGENCE', 'CORE',
   );
+  // Keep the per-domain CONFIG default-selection tables in step with the newly
+  // activated dataset. Previously ONLY a successful Data Studio generation ran
+  // this sync, so activating an existing dataset (or loading the SQL seed
+  // dataset, which never generates) left every CONFIG row pointing at whatever
+  // region was last GENERATED. That is how this account ended up with three
+  // domains on SanFrancisco and three on Europe.
+  //
+  // Non-fatal: the contract views no longer FILTER on CONFIG, so a failure here
+  // degrades the default selection, it does not hide data.
+  try {
+    await syncRegionRegistryAndConfig(region, vehicleType, datasetId, snowSql);
+  } catch (e: any) {
+    log('WARN', 'Studio',
+      `activateDataset: CONFIG sync failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`);
+  }
   return {
     activated: datasetId,
-    deactivated: (deact[0] as any)?.['number of rows updated'] ?? 0,
+    deactivated: Number((priorActive[0] as any)?.N ?? 0),
     region,
     vehicleType,
   };
@@ -640,31 +699,34 @@ async function archivePriorDatasets(
   newJobId: string,
   label: string,
 ): Promise<void> {
-  try {
-    await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = FALSE
-       WHERE REGION = ${escVal(region)}
-         AND VEHICLE_TYPE = ${escVal(vehicleType)}
-         AND IS_ACTIVE = TRUE`,
-      'FLEET_INTELLIGENCE', 'CORE',
-    );
-  } catch (e: any) {
-    log('WARN', 'Studio',
-        `archivePriorDatasets UPDATE failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
-        { jobId: newJobId });
-  }
+  // INSERT the new dataset as INACTIVE first, then flip the invariant in ONE
+  // statement. The previous order (deactivate-all, then INSERT already-TRUE) left
+  // a window where two concurrent runs for the same scope both deactivated and
+  // then both inserted an active row.
   try {
     await snowSql(
       `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
          (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
        SELECT ${escVal(newJobId)}, ${escVal(region)}, ${escVal(vehicleType)},
-              ${escVal(label)}, TRUE`,
+              ${escVal(label)}, FALSE`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
     log('WARN', 'Studio',
         `archivePriorDatasets INSERT failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = (DATASET_ID = ${escVal(newJobId)})
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets activate failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
         { jobId: newJobId });
   }
 }
@@ -701,23 +763,19 @@ async function deactivateDataset(
   vehicleType: string,
 ): Promise<void> {
   try {
+    // One statement: demote this dataset and promote the newest healthy peer in
+    // the same breath, so the scope is never left with zero or two active rows.
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = FALSE
-       WHERE DATASET_ID = ${escVal(datasetId)}`,
-      'FLEET_INTELLIGENCE', 'CORE',
-    );
-    await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = TRUE
-       WHERE DATASET_ID = (
-         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-         WHERE REGION = ${escVal(region)}
-           AND VEHICLE_TYPE = ${escVal(vehicleType)}
-           AND DATASET_ID <> ${escVal(datasetId)}
-         ORDER BY CREATED_AT DESC
-         LIMIT 1
-       )`,
+       SET IS_ACTIVE = (DATASET_ID = (
+             SELECT MAX_BY(DATASET_ID, CREATED_AT)
+             FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             WHERE REGION = ${escVal(region)}
+               AND VEHICLE_TYPE = ${escVal(vehicleType)}
+               AND DATASET_ID <> ${escVal(datasetId)}
+           ))
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
@@ -748,18 +806,18 @@ async function revertArchivePriorDatasets(
         { jobId: newJobId });
   }
   try {
-    // Re-activate the most recent remaining dataset for this scope.
+    // Re-activate the most recent remaining dataset for this scope, and demote
+    // everything else, in one statement.
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-       SET IS_ACTIVE = TRUE
-       WHERE DATASET_ID = (
-         SELECT DATASET_ID
-         FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-         WHERE REGION = ${escVal(region)}
-           AND VEHICLE_TYPE = ${escVal(vehicleType)}
-         ORDER BY CREATED_AT DESC
-         LIMIT 1
-       )`,
+       SET IS_ACTIVE = (DATASET_ID = (
+             SELECT MAX_BY(DATASET_ID, CREATED_AT)
+             FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             WHERE REGION = ${escVal(region)}
+               AND VEHICLE_TYPE = ${escVal(vehicleType)}
+           ))
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
   } catch (e: any) {
@@ -893,8 +951,155 @@ async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
        WHERE JOB_ID = ${escVal(job.jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE',
     );
+    // Keep the durable JOB_STATE row in step with the same flush. Every caller
+    // of persistJobLog (the 60s timer, cancelJob, and the completion `finally`)
+    // therefore also lands the authoritative status/progress durably.
+    await syncJobState(job, snowSql);
   } catch (e: any) {
     log('WARN', 'Studio', `persistJobLog failed for ${job.jobId}: ${e.message?.slice(0, 200)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Durable job state (FLEET_INTELLIGENCE.CORE.JOB_STATE, Tenet 5b)
+//
+// `activeJobs` above is an in-process Map, so a container restart loses the
+// authoritative status/progress of a live run - that is what the 'orphan' cancel
+// mode and the boot-time reconcile exist to paper over. JOB_STATE is the durable
+// write-through copy, keyed by JOB_ID: one INSERT at job start, then single-row
+// UPDATEs on the existing 60s cadence and on every status transition. INSERT +
+// UPDATE by PK is deliberate rather than MERGE (Snowflake's own guidance for
+// small row counts on hybrid tables, and we always know whether the row exists).
+//
+// Every write here is best-effort: JOB_STATE is observability and recovery
+// state, so a failure must degrade to today's behavior rather than break a run
+// (it is also how a deployment whose JOB_STATE create was skipped keeps working).
+// ---------------------------------------------------------------------------
+
+/** Shape of a JOB_STATE row, for callers that survive the worker. */
+export interface DurableJobState {
+  jobId: string;
+  region: string | null;
+  vehicleType: string | null;
+  presetName: string | null;
+  orsProfile: string | null;
+  status: string;
+  pointsGenerated: number;
+  tripsGenerated: number;
+  abortRequested: boolean;
+  stalled: boolean;
+  error: string | null;
+  startedAt: string | null;
+  lastProgressAt: string | null;
+  completedAt: string | null;
+}
+
+function tsLit(d: Date | null | undefined): string {
+  return d ? `TO_TIMESTAMP_NTZ(${escVal(d.toISOString())})` : 'NULL';
+}
+
+async function insertJobState(job: Job, snowSql: SnowSqlFn): Promise<void> {
+  try {
+    await snowSql(
+      `INSERT INTO ${JOB_STATE_TABLE}
+         (JOB_ID, REGION, VEHICLE_TYPE, PRESET_NAME, ORS_PROFILE, STATUS,
+          POINTS_GENERATED, TRIPS_GENERATED, ABORT_REQUESTED, STALLED,
+          ERROR_MESSAGE, STARTED_AT, LAST_PROGRESS_AT, COMPLETED_AT)
+       SELECT ${escVal(job.jobId)}, ${escVal(job.region)}, ${escVal(job.vehicleType)},
+              ${escVal(job.presetName)}, ${escVal(job.orsProfile)}, ${escVal(job.status)},
+              0, 0, FALSE, FALSE, NULL, ${tsLit(job.startedAt)}, SYSDATE(), NULL`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `insertJobState failed for ${job.jobId}: ${e.message?.slice(0, 200)}`);
+  }
+}
+
+/** Single-row UPDATE by PK. Safe to call as often as the caller likes. */
+async function syncJobState(job: Job, snowSql: SnowSqlFn): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE ${JOB_STATE_TABLE}
+       SET STATUS = ${escVal(job.status)},
+           POINTS_GENERATED = ${Number(job.pointsGenerated) || 0},
+           TRIPS_GENERATED = ${Number(job.tripsGenerated) || 0},
+           ABORT_REQUESTED = ${job.abort.aborted ? 'TRUE' : 'FALSE'},
+           STALLED = ${job.stalled ? 'TRUE' : 'FALSE'},
+           ERROR_MESSAGE = ${job.error ? escVal(String(job.error).slice(0, 500)) : 'NULL'},
+           LAST_PROGRESS_AT = ${job.lastProgressAt ? tsLit(new Date(job.lastProgressAt)) : 'SYSDATE()'},
+           COMPLETED_AT = ${tsLit(job.completedAt)}
+       WHERE JOB_ID = ${escVal(job.jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `syncJobState failed for ${job.jobId}: ${e.message?.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Read durable state for a job the current process may know nothing about.
+ * Returns null when the row is absent (pre-JOB_STATE job, or the table was
+ * never created on this deployment).
+ */
+export async function loadJobState(jobId: string, snowSql: SnowSqlFn): Promise<DurableJobState | null> {
+  try {
+    const rows = await snowSql(
+      `SELECT JOB_ID, REGION, VEHICLE_TYPE, PRESET_NAME, ORS_PROFILE, STATUS,
+              POINTS_GENERATED, TRIPS_GENERATED, ABORT_REQUESTED, STALLED,
+              ERROR_MESSAGE, STARTED_AT, LAST_PROGRESS_AT, COMPLETED_AT
+       FROM ${JOB_STATE_TABLE} WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const r = rows?.[0];
+    if (!r) return null;
+    return {
+      jobId: r.JOB_ID,
+      region: r.REGION ?? null,
+      vehicleType: r.VEHICLE_TYPE ?? null,
+      presetName: r.PRESET_NAME ?? null,
+      orsProfile: r.ORS_PROFILE ?? null,
+      status: r.STATUS,
+      pointsGenerated: Number(r.POINTS_GENERATED) || 0,
+      tripsGenerated: Number(r.TRIPS_GENERATED) || 0,
+      abortRequested: r.ABORT_REQUESTED === true || r.ABORT_REQUESTED === 'true',
+      stalled: r.STALLED === true || r.STALLED === 'true',
+      error: r.ERROR_MESSAGE ?? null,
+      startedAt: r.STARTED_AT ? String(r.STARTED_AT) : null,
+      lastProgressAt: r.LAST_PROGRESS_AT ? String(r.LAST_PROGRESS_AT) : null,
+      completedAt: r.COMPLETED_AT ? String(r.COMPLETED_AT) : null,
+    };
+  } catch (e: any) {
+    log('WARN', 'Studio', `loadJobState failed for ${jobId}: ${e.message?.slice(0, 200)}`);
+    return null;
+  }
+}
+
+/**
+ * Record cancellation INTENT durably, so a cancel survives the request that
+ * issued it. The running worker picks this up on its next watchdog tick, which
+ * is what makes cancelling an orphaned-but-still-alive worker actually work.
+ */
+async function markAbortRequested(jobId: string, snowSql: SnowSqlFn): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE ${JOB_STATE_TABLE} SET ABORT_REQUESTED = TRUE WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `markAbortRequested failed for ${jobId}: ${e.message?.slice(0, 200)}`);
+  }
+}
+
+async function isAbortRequested(jobId: string, snowSql: SnowSqlFn): Promise<boolean> {
+  try {
+    const rows = await snowSql(
+      `SELECT ABORT_REQUESTED FROM ${JOB_STATE_TABLE} WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const v = rows?.[0]?.ABORT_REQUESTED;
+    return v === true || v === 'true';
+  } catch (_) {
+    return false;
   }
 }
 
@@ -1000,6 +1205,9 @@ export async function startGeneration(
     stalled: false,
   };
   activeJobs.set(jobId, job);
+  // Durable copy written before the first broadcast, so a restart during the
+  // very first phase still leaves a recoverable row rather than a ghost job.
+  await insertJobState(job, snowSql);
   broadcast(job, 'started', {
     jobId,
     presetName,
@@ -1046,8 +1254,30 @@ export async function startGeneration(
     const WATCHDOG_STALL_MS = 15 * 60_000;
     const WATCHDOG_TICK_MS = 60_000;
     let lastSeenRouteCompletions = -1;
+    let watchdogDbInFlight = false;
     const watchdogTimer: NodeJS.Timeout = setInterval(() => {
       if (job.status !== 'RUNNING' || job.abort.aborted) return;
+      // Durable heartbeat + cancellation pickup, on the tick that runs
+      // unconditionally (the log flush above skips when no new events arrived,
+      // so it cannot be relied on for liveness). Fire-and-forget with an
+      // in-flight guard: this callback is sync and must never block a tick.
+      if (!watchdogDbInFlight) {
+        watchdogDbInFlight = true;
+        void (async () => {
+          try {
+            await syncJobState(job, snowSql);
+            // A cancel issued against a worker this process does not own (or
+            // after a restart) lands as ABORT_REQUESTED in JOB_STATE only.
+            if (job.status === 'RUNNING' && !job.abort.aborted && await isAbortRequested(jobId, snowSql)) {
+              job.abort.aborted = true;
+              log('INFO', 'Studio', `Durable abort request picked up for job ${jobId}`, { jobId });
+              broadcast(job, 'warning', { message: 'Cancellation requested - unwinding' });
+            }
+          } finally {
+            watchdogDbInFlight = false;
+          }
+        })();
+      }
       const act = getRouteActivity();
       const lastAliveMs = Math.max(
         job.lastProgressAt ?? job.startedAt.getTime(),
@@ -1298,7 +1528,7 @@ export async function startGeneration(
       const pendingTrips: TripRecord[] = [];
       let stoppedEvent: any = null;
 
-      const gen = generateTelemetry(config, snowSql,
+      const gen = generateTelemetry(config, snowSql, fleet,
         (p: GenerationProgress) => {
           job.pointsGenerated = p.totalPoints;
           job.tripsGenerated = p.totalTrips;

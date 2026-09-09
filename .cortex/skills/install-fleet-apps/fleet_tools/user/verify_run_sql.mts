@@ -1,6 +1,6 @@
 // Throwaway harness: exercise run_sql's validate guards without Snowflake.
 // Run with: npx tsx ../../verify_run_sql.mts   (from fleet_tools/user)
-import { run_sql } from './src/procs/run_sql.js';
+import { run_sql, governedNote } from './src/procs/run_sql.js';
 
 type Case = { sql: string; expect: string | null; why: string };
 
@@ -67,6 +67,53 @@ for (const [v, expect] of [[0, 'INVALID_MAX_ROWS'], [-5, 'INVALID_MAX_ROWS'], [1
   const ok = code === expect;
   if (!ok) failures += 1;
   console.log(`${ok ? 'ok  ' : 'FAIL'}  max_rows=${v} expected=${String(expect)} got=${String(code)}`);
+}
+
+// governed-path nudge. Tested directly because a silent no-match would leave the
+// nudge inert while looking healthy - the same failure shape as the two copies of
+// prose guidance it exists to replace. The stub conn returns a fixed
+// SEMANTIC_TABLES shape so the matcher is exercised without Snowflake.
+const stubGoverned = [
+  {
+    SEMANTIC_VIEW_NAME: 'SV_DWELL_ANALYTICS',
+    BASE_TABLE_CATALOG: 'FLEET_APP',
+    BASE_TABLE_SCHEMA: 'DWELL',
+    BASE_TABLE_NAME: 'VW_DWELL_SESSIONS',
+  },
+  {
+    SEMANTIC_VIEW_NAME: 'SV_ROUTE_DEVIATION',
+    BASE_TABLE_CATALOG: 'FLEET_INTELLIGENCE',
+    BASE_TABLE_SCHEMA: 'ROUTE_DEVIATION',
+    BASE_TABLE_NAME: 'TRIP_DEVIATION_ANALYSIS',
+  },
+];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const stubCtx = { conn: { exec: (() => stubGoverned) as any } };
+
+const nudgeCases: Array<{ sql: string; expect: boolean; why: string }> = [
+  // The two real bypasses observed in the audit trail on tib85385.
+  { sql: 'SELECT VEHICLE_TYPE, COUNT(*) FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS GROUP BY 1',
+    expect: true, why: 'fully qualified governed object' },
+  { sql: 'SELECT * FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS',
+    expect: true, why: 'second governed object' },
+  { sql: 'select * from fleet_app.dwell.vw_dwell_sessions',
+    expect: true, why: 'lower case must still match' },
+  { sql: 'SELECT * FROM DWELL.VW_DWELL_SESSIONS',
+    expect: true, why: 'schema-qualified short form (after a USE)' },
+  // Legitimate run_sql use must NOT be nagged, or the hint becomes noise.
+  { sql: "SHOW FUNCTIONS IN SCHEMA FLEET_APP.CORE",
+    expect: false, why: 'metadata lookup, nothing modelled' },
+  { sql: 'SELECT * FROM FLEET_APP.CORE.SOMETHING_UNMODELLED',
+    expect: false, why: 'unmodelled object' },
+];
+
+for (const c of nudgeCases) {
+  const note = await governedNote(stubCtx, c.sql);
+  const got = note !== null;
+  const ok = got === c.expect;
+  if (!ok) failures += 1;
+  const shown = c.sql.length > 48 ? c.sql.slice(0, 45) + '...' : c.sql;
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${shown.padEnd(48)} nudge expected=${c.expect} got=${got}  (${c.why})`);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

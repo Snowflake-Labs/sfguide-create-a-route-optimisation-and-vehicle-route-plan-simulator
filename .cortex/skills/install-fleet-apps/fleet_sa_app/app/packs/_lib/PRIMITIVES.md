@@ -28,7 +28,7 @@ Until then, keep the logic inline in each pack's `data-model.yaml`. Three simila
 | daily-trend rollup (`DATE_TRUNC('day',...)` + counts/sums) | dwell (DAILY_TRENDS), route_deviation (DAILY_DEVIATION_TRENDS) | No - 2 callers, divergent columns. |
 | per-entity summary rollup (group by id + counts/sums) | dwell (DRIVER_DWELL_SUMMARY), route_deviation (DRIVER_DEVIATION_SUMMARY) | No - 2 callers, divergent columns. |
 | H3 spatial rollup | dwell (H3_CONGESTION) | No - 1 caller. |
-| active-snapshot filter (join to `IS_ACTIVE` snapshot) | dhl_ntbo (x3) | No - single pack; already trivially expressed. |
+| active-snapshot filter (join to `IS_ACTIVE` snapshot) | a retired vertical pack (x3) | No - single pack; already trivially expressed. |
 | ANY_VALUE de-dup of a source key | backload, taxi (dedup_pois/fleet) | No - inline CTE, caller-specific keys. |
 
 ## Conclusion

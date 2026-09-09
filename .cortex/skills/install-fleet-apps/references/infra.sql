@@ -52,9 +52,13 @@ CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_CARTO_EAI
 --     REGION_CATALOG. Without this EAI attached, every scrape fetch is blocked
 --     and the catalog silently stays empty. Mirrors the legacy control app,
 --     which ran with BOTH the carto EAI and the geofabrik/bbbike EAI attached.
+--     ftp5.gwdg.de is here for the PBF mirror freshness check in
+--     /api/pbf-mirrors, which compares the mirror's published md5 against the
+--     origin's. Unlike ORS_OSM_NETWORK_RULE this list has NO wildcard entry, so
+--     an omission here is a real block - the check degrades to "unknown".
 CREATE OR REPLACE NETWORK RULE FLEET_INTELLIGENCE.CORE.FLEET_APP_OSM_NETWORK_RULE
   TYPE = HOST_PORT  MODE = EGRESS
-  VALUE_LIST = ('download.geofabrik.de:443','download.bbbike.org:443')
+  VALUE_LIST = ('download.geofabrik.de:443','download.bbbike.org:443','ftp5.gwdg.de:443')
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_OSM_EAI

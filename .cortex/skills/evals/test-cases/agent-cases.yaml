@@ -141,3 +141,73 @@ cases:
           The assistant returned a dashboard / view specification (a layout with
           at least one area that has a component and a data query), rather than
           only a plain-text answer or only a link to an existing view.
+
+  # --- deep_link regression -------------------------------------------------
+  # deep_link failed 4 calls out of 4 on tib85385 with "URLSearchParams is not
+  # defined": synapse compiles every verb into a LANGUAGE JAVASCRIPT procedure
+  # and that runtime has no WHATWG URL APIs. tsc accepted it, esbuild bundled
+  # it, the procedure created cleanly, and every static gate stayed green - so
+  # only a live call could have caught it. check_verb_js_globals.py now blocks
+  # the whole class; this case proves the verb still actually RUNS, which a
+  # static scan cannot tell you.
+  - id: deep-link-view
+    prompt: >-
+      Give me a link I can open to the Dwell Overview page for San Francisco.
+    assertions:
+      - type: verb
+        verbs: [deep_link]
+        description: deep_link verb was audited with outcome ok
+      - type: sql
+        description: deep_link did not error (regression guard for the JS-runtime fault)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'deep_link' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant supplied an actual https URL containing a query string
+          (a "?" followed by at least one parameter), or clearly explained that
+          the app endpoint is not provisioned. It did NOT report an internal
+          error, and did NOT tell the user to contact an administrator or raise
+          a bug.
+
+  # --- unknown view id must be recoverable ---------------------------------
+  # The agent guessed view_id "route_deviation", which does not exist. The error
+  # is correct and names the tools to try, but the turn still dead-ends unless
+  # the agent acts on it. This asserts recovery, not merely a clean failure.
+  - id: deep-link-unknown-view
+    prompt: >-
+      Open the "route_deviation" view for me.
+    assertions:
+      - type: judge
+        text: >-
+          The assistant either opened a real view whose name is close to the one
+          requested (for example a route deviation or detour page), or listed the
+          view ids that do exist so the user can pick one. Simply reporting that
+          "route_deviation" is not a valid view, with no alternatives and no
+          lookup attempt, is a FAILURE.
+
+  # --- governed path beats run_sql ----------------------------------------
+  # The acceptance test for the in-band governed_note nudge. Prose guidance for
+  # this exists in BOTH the agent spec and run_sql's tool description, and the
+  # agent still answered dwell questions by hand-writing SQL against
+  # FLEET_APP.DWELL.VW_DWELL_SESSIONS - which SV_DWELL_ANALYTICS models. Note a
+  # query_* Cortex Analyst tool writes NO VERB_ATTEMPT row, so the evidence here
+  # is the ABSENCE of a run_sql row plus a judged answer, not a verb assertion.
+  - id: governed-path-dwell
+    prompt: >-
+      Which vehicle type has the most dwell time?
+    assertions:
+      - type: sql
+        description: answered without hand-written SQL against a modelled object
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'run_sql' AND ACTOR = CURRENT_USER()
+          AND AT >= '{{start_ts}}'
+          AND UPPER(ARGS_JSON:sql::STRING) LIKE '%VW_DWELL_SESSIONS%'
+      - type: judge
+        text: >-
+          The assistant answered with a specific vehicle type and a dwell figure.
+          If it did use raw SQL against the dwell tables, it also said so and
+          named the governed query_* tool that models this data - staying silent
+          about it is a FAILURE.

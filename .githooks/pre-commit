@@ -54,17 +54,50 @@ if [ -f "$CATALOG_BUILD" ] && staged_any \
 fi
 
 # ── 1b. Super agent spec freshness ──────────────────────────────
-# super-agent-spec.json is generated from agent-spec.json. Two hand-maintained
+# super-agent-spec.json is generated from agent-spec.json PLUS the ops/admin
+# specs, whose per-verb routing sections are lifted verbatim. Two hand-maintained
 # copies of a 12,000-character instruction block drift within a release, and the
 # drift is invisible until the two agents answer the same question differently.
+# The ops/admin specs MUST be in this trigger list: they are now inputs, so a
+# commit touching only ops-agent-spec.json would otherwise skip the check and
+# leave the super agent describing the old routing.
 SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
 if [ -f "$SUPER_BUILD" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
   "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
   "$SKILL_DIR/scripts/build_super_agent_spec.py"; then
   echo "pre-commit: super agent spec freshness check..."
   python3 "$SUPER_BUILD" --check || {
     echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
+    exit 1
+  }
+fi
+
+# ── 1c. Every synapse verb must be routed by the agents that can see it ────────
+# Verbs are AUTO-DISCOVERED: `npx synapse deploy` walks src/procs/ and publishes
+# each one, and the specs attach whole MCP servers with no tool allowlist, so a new
+# verb is instantly visible to every agent on that bundle. Visible is not used
+# well - with no routing line the model either ignores the verb or prefers it over
+# a better tool (the documented hazard being run_sql winning over a query_* Cortex
+# Analyst tool, silently bypassing the governed semantic-view path). Nothing fails
+# either way, which is why this needs a gate: four verbs had already shipped
+# unguided, including an ops audit verb the SUPER agent documented and the OPS
+# agent that owns it did not.
+VERB_COVERAGE="$SKILL_DIR/scripts/check_agent_verb_coverage.py"
+if [ -f "$VERB_COVERAGE" ] && staged_any \
+  "$SKILL_DIR/fleet_tools/user/src/procs" \
+  "$SKILL_DIR/fleet_tools/ops/src/procs" \
+  "$SKILL_DIR/fleet_tools/admin/src/procs" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/check_agent_verb_coverage.py"; then
+  echo "pre-commit: agent verb coverage check..."
+  python3 "$VERB_COVERAGE" || {
+    echo "pre-commit FAILED: a synapse verb has no routing guidance - see above"
     exit 1
   }
 fi
@@ -94,7 +127,8 @@ if [ -f "$ORS_RAISE_CHECK" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
   "$SKILL_DIR/fleet_sa_app/app/starter/app-views.json" \
   "$SKILL_DIR/scripts/analytic_layer.sql" \
-  "$SKILL_DIR/scripts/delivery_sync_layer.sql"; then
+  "$SKILL_DIR/scripts/delivery_sync_layer.sql" \
+  "$SKILL_DIR/scripts/analytic_layer_live_routing.sql"; then
   echo "pre-commit: suspended-ORS raise coverage check..."
   python3 "$ORS_RAISE_CHECK" || {
     echo "pre-commit FAILED: a live-routing view would render blank on a suspended engine."
@@ -142,6 +176,30 @@ if [ -f "$INSTALL_ORDER_CHECK" ] && staged_any \
   }
 fi
 
+# ── 5b. Engine-free installer SQL must not create engine-dependent objects ────
+# A `LANGUAGE SQL` UDTF body resolves at CREATE time, so a statement calling
+# OPENROUTESERVICE_APP.CORE.ISOCHRONES / MATRIX_TABULAR / DIRECTIONS is a hard
+# error on an engine-less install - and `snow sql -f` stop-on-first-error then
+# abandons every later statement in that file. That cost analytic_layer.sql ~129
+# statements (it died at line 1072 of 2722) and delivery_sync_layer.sql 33 of 44,
+# in both cases silently discarding engine-FREE schemas (FLEET_INTELLIGENCE.SOURCING,
+# FLEET_APP.SOURCING, FLEET_APP.DELIVERY_SYNC) that have nothing to do with routing.
+# Those statements now live in scripts/analytic_layer_live_routing.sql; this keeps
+# them there. Note the usual EXECUTE IMMEDIATE / EXCEPTION wrapper is NOT an option
+# for them - they carry dollar-quoted bodies and dollar-quotes do not nest.
+ENGINE_GUARDS_CHECK="$SKILL_DIR/scripts/check_engine_guards.py"
+if [ -f "$ENGINE_GUARDS_CHECK" ] && staged_any \
+  "$SKILL_DIR/scripts" \
+  "$SKILL_DIR/fleet_sa_app/app" \
+  "$SKILL_DIR/openrouteservice_app/app/modules"; then
+  echo "pre-commit: engine-guards (engine-free installer SQL) check..."
+  python3 "$ENGINE_GUARDS_CHECK" || {
+    echo "pre-commit FAILED: engine-free installer SQL creates an object that needs the routing engine."
+    echo "  Move the statement to scripts/analytic_layer_live_routing.sql."
+    exit 1
+  }
+fi
+
 # ── 6. Tracking tags (session query_tag + object COMMENT) ─────────────────────
 # Both mechanisms are invisible at runtime: an untagged object works perfectly and
 # an untagged session returns the right rows. What breaks is downstream - credit
@@ -163,6 +221,94 @@ if [ -f "$TRACKING_CHECK" ] && staged_any \
   echo "pre-commit: tracking tag coverage check..."
   python3 "$TRACKING_CHECK" || {
     echo "pre-commit FAILED: a session or created object is missing its tracking tag, or a tag has the wrong schema (see AGENTS.md 'Do NOT')."
+    exit 1
+  }
+fi
+
+# ── 7. Brand neutrality (customer / vendor / competitor / individual names) ────
+# Every view, demo, dataset and agent answer must be brand-neutral. This is not a
+# style rule: three real leaks existed before the check was added, and none of
+# them failed anything. A seed script wrote freight-exchange brand names straight
+# into the offer SOURCE column, the shipped notebook seeded 30 rows with brands in
+# the human-readable listing text, and an agent tool advertised eight vendor names
+# as filter values the data never held.
+# Runs on EVERY commit, with no staged-path filter: a brand can be reintroduced in
+# prose, in SQL, in a notebook or in an agent spec, so scoping the trigger would
+# just leave a gap. It prunes its own walk and takes about a second.
+BRAND_CHECK="$SKILL_DIR/scripts/check_no_brands.py"
+if [ -f "$BRAND_CHECK" ]; then
+  echo "pre-commit: brand neutrality check..."
+  python3 "$BRAND_CHECK" || {
+    echo "pre-commit FAILED: a customer, vendor, competitor or individual name was found."
+    exit 1
+  }
+fi
+
+# 8. Region scoping: no contract view pinned to ONE region by a singleton CONFIG
+# row, and every semantic view over a multi-region fact models region PLUS a
+# readable label.
+#
+# This whole class of failure is SILENT. A view filtered to one region returns
+# rows, compiles, and renders a populated panel - nothing distinguishes "this
+# region has no data" from "this region was excluded before the first aggregate".
+# It cost a CoWork answer of "there is no San Francisco data" while 15,091 San
+# Francisco dwell sessions sat in the view, and because the CONFIG row is
+# writable at runtime (including by an agent calling set_active_context) the same
+# question returned different data at different times.
+#
+# The label rule is what actually closes the bug: region keys are CamelCase
+# identifiers, so a filter on the phrase a person types - region = 'San Francisco'
+# - matches NOTHING against 'SanFrancisco'.
+#
+# Runs on EVERY commit with no staged-path filter: the filter can come back in a
+# pack YAML, an installer SQL file, or a server-side view definition. Fast (a
+# scoped glob, well under a second).
+#
+# Two later additions, both from the same defect class reappearing one layer out:
+#   RULE 1b - a PHYSICAL view must not keep a CONFIG pin when a contract view of
+#     the same name has been de-scoped. FLEET_INTELLIGENCE.BACKLOAD_MATCHING and
+#     FLEET_APP.BACKLOAD_MATCHING both define VW_TRAILERS /
+#     VW_INTERNAL_VOLUMES / VW_EXTERNAL_OFFERS, and after the de-scope the two
+#     names meant opposite things depending on which schema you read.
+#   RULE 4 - de-scoping moves the filtering duty to the CONSUMER, and nothing
+#     checked the consumer took it. `SELECT * FROM ...VW_TRAILERS` compiles and
+#     renders a full page while returning every loaded region; the Backload
+#     Matching page then posted 29 San Francisco coordinates to the Europe road
+#     graph, which refused the matrix in 5 ms with ORS 6010 "out of bounds".
+REGION_SCOPE_CHECK="$SKILL_DIR/scripts/check_region_scoping.py"
+if [ -f "$REGION_SCOPE_CHECK" ]; then
+  echo "pre-commit: region scoping check..."
+  python3 "$REGION_SCOPE_CHECK" || {
+    echo "pre-commit FAILED: a view is pinned to one region, or a semantic view cannot be filtered by region."
+    exit 1
+  }
+fi
+
+# 9. Verb JavaScript globals: a bundled verb source must not use a host API the
+# Snowflake LANGUAGE JAVASCRIPT proc runtime does not have.
+#
+# Nothing else in the toolchain notices. tsc accepts it (the repo pulls in DOM and
+# @types/node for the build-time half of the framework), esbuild bundles it, and
+# `npx synapse deploy` creates the procedure cleanly - so the first symptom is an
+# agent hitting a bare "<name> is not defined" mid-conversation, with no line
+# number and nothing useful in VERB_ATTEMPT.
+#
+# That is how deep_link shipped broken: its LAST statement built the query string
+# with `new URLSearchParams()`, so the verb looked up the view label, probed
+# SHOW ENDPOINTS for the ingress host, and then threw. deep_link is the sanctioned
+# fallback for every visual question the agent cannot draw, so its failure removed
+# the only honest visual path - and the agent, handed an opaque internal error,
+# told the user to escalate a repo bug to their Fleet Ops administrator.
+#
+# Runs on EVERY commit with no staged-path filter: the scan is 47 files and
+# finishes instantly, and a bad global can arrive in a verb, a shared helper, or
+# the vendored envelope. Comments and string literals are stripped first, which
+# matters because these files legitimately discuss the APIs they must not call.
+VERB_GLOBALS_CHECK="$SKILL_DIR/scripts/check_verb_js_globals.py"
+if [ -f "$VERB_GLOBALS_CHECK" ]; then
+  echo "pre-commit: verb JavaScript globals check..."
+  python3 "$VERB_GLOBALS_CHECK" || {
+    echo "pre-commit FAILED: a verb uses a JavaScript global the Snowflake proc runtime lacks."
     exit 1
   }
 fi

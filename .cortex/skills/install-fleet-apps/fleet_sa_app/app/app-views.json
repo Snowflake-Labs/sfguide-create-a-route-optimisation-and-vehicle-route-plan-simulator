@@ -700,7 +700,7 @@
         "How many stops and how much dwell time?",
         "Were there any safety events on this journey?"
       ],
-      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
+      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). A vehicle that was never dispatched has no journey here at all and no path to draw - say it never moved rather than reporting missing data, and check query_dwell's is_dispatched before promising a route for a vehicle that a dwell ranking selected. Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
     },
     "layout": {
       "default": {
@@ -2661,7 +2661,7 @@
         "Free capacity without buying more {{labels.entity_plural}}"
       ],
       "method": "Dwell sessions are sessionized from position pings: consecutive stationary pings inside a site radius are grouped into one session. SLA compliance is the fraction of sessions at or under the configured threshold, 30 minutes by default.",
-      "caveats": "Synthetic telemetry. A stop shorter than the detection threshold is not a session at all, so very brief stops are invisible by design. This view has no map; use SLA Alerts for dwell geography."
+      "caveats": "Synthetic telemetry. A stop shorter than the detection threshold is not a session at all, so very brief stops are invisible by design. The four headline numbers count REAL dwell only: IDLE spans are excluded so the KPIs match the trend and facility charts beside them, and vehicles that were never dispatched over the horizon are excluded because their whole stay is one unbroken multi-day idle span that would otherwise dominate every average. This view has no map; use SLA Alerts for dwell geography."
     },
     "agentKnowledge": {
       "preferredTool": "query_dwell",
@@ -2677,7 +2677,7 @@
         "Which facility has the most visits?",
         "Are dwells trending up or down?"
       ],
-      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
+      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. The KPIs count STATUS LIKE 'DWELL%' on dispatched vehicles only - the same basis as the trend and facility charts. Two traps this closes: the KPI used to include IDLE while its sibling charts did not, and it counted DISTINCT SESSION_ID, which is a PER-VEHICLE counter, so the headline read 628 where the true session count was 2,802. A vehicle with IS_DISPATCHED = FALSE never left its base, so it has no trip and no route; if asked for its path, say it never moved rather than reporting missing data. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
     },
     "layout": {
       "default": {
@@ -2695,7 +2695,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(*) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE STATUS LIKE 'DWELL%' AND IS_DISPATCHED AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -2706,7 +2706,7 @@
             "metrics": [
               {
                 "column": "total_trips",
-                "label": "Total Trips",
+                "label": "Dwell Sessions",
                 "format": "number"
               },
               {
@@ -2731,7 +2731,7 @@
       "trends": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_APP.DWELL.VW_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
+          "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_APP.DWELL.VW_DAILY_TRENDS WHERE (:region IS NULL OR REGION = :region) ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type"
@@ -2762,7 +2762,7 @@
       "facilities": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION WHERE (:region IS NULL OR REGION = :region) GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type"
@@ -2856,7 +2856,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT LOCATION_ID) AS facilities, SUM(TOTAL_SESSIONS) AS total_visits, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell, ROUND(MAX(MAX_DWELL_MIN),0) AS max_dwell FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION",
+          "query": "SELECT COUNT(DISTINCT LOCATION_ID) AS facilities, SUM(TOTAL_SESSIONS) AS total_visits, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell, ROUND(MAX(MAX_DWELL_MIN),0) AS max_dwell FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION WHERE (:region IS NULL OR REGION = :region) ",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type"
@@ -2890,7 +2890,7 @@
       "byfac": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(LOCATION_NAME,1,22) AS facility_name, SUM(TOTAL_DWELL_MIN) AS dwell_min FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY dwell_min DESC LIMIT 12",
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,22) AS facility_name, SUM(TOTAL_DWELL_MIN) AS dwell_min FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION WHERE (:region IS NULL OR REGION = :region) GROUP BY LOCATION_NAME ORDER BY dwell_min DESC LIMIT 12",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type"
@@ -2914,7 +2914,7 @@
       "bytype": {
         "component": "Chart",
         "data": {
-          "query": "SELECT COALESCE(FACILITY_TYPE,'unknown') AS facility_type, SUM(TOTAL_SESSIONS) AS visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY FACILITY_TYPE ORDER BY visits DESC",
+          "query": "SELECT COALESCE(FACILITY_TYPE,'unknown') AS facility_type, SUM(TOTAL_SESSIONS) AS visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION WHERE (:region IS NULL OR REGION = :region) GROUP BY FACILITY_TYPE ORDER BY visits DESC",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type"
@@ -3008,7 +3008,10 @@
             "name": "severity",
             "label": "Severity",
             "data": {
-              "query": "SELECT DISTINCT SLA_STATUS AS value, SLA_STATUS AS label FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE SLA_STATUS IS NOT NULL ORDER BY 1"
+              "query": "SELECT DISTINCT SLA_STATUS AS value, SLA_STATUS AS label FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE SLA_STATUS IS NOT NULL AND (:region IS NULL OR REGION = :region) ORDER BY 1",
+              "params": {
+                "region": "context.region"
+              }
             },
             "emits": {
               "selected_severity": "selection"
@@ -3019,7 +3022,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS alerts, SUM(IFF(SLA_STATUS='CRITICAL',1,0)) AS critical, SUM(IFF(SLA_STATUS='WARNING',1,0)) AS warning, ROUND(AVG(MINUTES_OVER_WARNING),1) AS avg_over FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(*) AS alerts, SUM(IFF(SLA_STATUS='CRITICAL',1,0)) AS critical, SUM(IFF(SLA_STATUS='WARNING',1,0)) AS warning, ROUND(AVG(MINUTES_OVER_WARNING),1) AS avg_over FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3055,7 +3058,7 @@
       "bystatus": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SLA_STATUS AS status, COUNT(*) AS alerts FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY SLA_STATUS ORDER BY alerts DESC",
+          "query": "SELECT SLA_STATUS AS status, COUNT(*) AS alerts FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) GROUP BY SLA_STATUS ORDER BY alerts DESC",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -3081,7 +3084,7 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 50",
+          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 50",
           "params": {
             "selected_severity": "viewState.selected_severity",
             "region": "context.region",
@@ -3183,7 +3186,7 @@
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
               "data": {
-                "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE AVG_POINT IS NOT NULL AND (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 5000",
+                "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE AVG_POINT IS NOT NULL AND (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 5000",
                 "params": {
                   "selected_severity": "viewState.selected_severity",
                   "region": "context.region",
@@ -3241,7 +3244,7 @@
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
               "data": {
-                "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE :selected_driver IS NOT NULL AND VEHICLE_ID = :selected_driver AND AVG_POINT IS NOT NULL AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY SESSION_START LIMIT 5000",
+                "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE :selected_driver IS NOT NULL AND VEHICLE_ID = :selected_driver AND AVG_POINT IS NOT NULL AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ORDER BY SESSION_START LIMIT 5000",
                 "params": {
                   "selected_driver": "viewState.selected_driver",
                   "region": "context.region",
@@ -6028,7 +6031,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_vehicles, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_vehicles, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ",
           "params": {
             "idle_min": "viewState.idle_min",
             "region": "context.region",
@@ -6065,7 +6068,7 @@
       "byseverity": {
         "component": "Chart",
         "data": {
-          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS vehicles FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY IDLE_SEVERITY ORDER BY vehicles DESC",
+          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS vehicles FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) GROUP BY IDLE_SEVERITY ORDER BY vehicles DESC",
           "params": {
             "idle_min": "viewState.idle_min",
             "region": "context.region",
@@ -6167,7 +6170,7 @@
               "pickable": true,
               "tooltip": "<b>{terminal_name}</b><br/>Demand: {demand_score}",
               "data": {
-                "query": "SELECT TERMINAL_NAME AS terminal_name, DEMAND_SCORE AS demand_score, TERMINAL_LNG AS lng, TERMINAL_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_LANE_DEMAND WHERE TERMINAL_LAT IS NOT NULL ORDER BY DEMAND_SCORE DESC LIMIT 500",
+                "query": "SELECT TERMINAL_NAME AS terminal_name, DEMAND_SCORE AS demand_score, TERMINAL_LNG AS lng, TERMINAL_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_LANE_DEMAND WHERE TERMINAL_LAT IS NOT NULL AND (:region IS NULL OR REGION = :region) ORDER BY DEMAND_SCORE DESC LIMIT 500",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type"
@@ -6228,7 +6231,7 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{severity}<br/>Idle {idle_days} days",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL AND (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) LIMIT 2000",
+                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL AND (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) LIMIT 2000 ",
                 "params": {
                   "idle_min": "viewState.idle_min",
                   "region": "context.region",
@@ -6244,7 +6247,7 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 50",
+          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 50",
           "params": {
             "idle_min": "viewState.idle_min",
             "region": "context.region",
@@ -6274,7 +6277,7 @@
       "rationale": {
         "component": "Table",
         "data": {
-          "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle vehicle ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'vehicle') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_vehicle",
+          "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle vehicle ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'vehicle') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_vehicle AND (:region IS NULL OR REGION = :region) ",
           "params": {
             "selected_vehicle": "viewState.selected_vehicle",
             "region": "context.region",

@@ -23,6 +23,20 @@ declarative: the freight-exchange skill can add SV_OFFERS later, and re-running
 create_agents.sh then picks the tool back up. That also covers the general class -
 any optional semantic view or search service - instead of this one instance.
 
+MCP SERVERS ARE THE SAME FAILURE CLASS
+--------------------------------------
+An `mcp_servers[].server_spec.name` pointing at a server that does not exist fails
+the whole request for exactly the same reason, so it is probed here too. This is not
+hypothetical: `npx synapse deploy` does CREATE OR REPLACE MCP SERVER, and
+create_agents.sh must be re-run after every bundle deploy, so a renamed, relocated,
+or not-yet-installed bundle leaves a dangling reference in an otherwise valid spec.
+
+Dropping an MCP server is more consequential than dropping one analytics tool - the
+agent keeps its Cortex Analyst tools and can still answer analytics questions, but
+it silently loses every verb on that server (all 21 routing verbs, in the case of
+ROUTING_MCP). That is still strictly better than failing 100% of requests, but it is
+reported as a WARN rather than an informational line so it cannot pass unnoticed.
+
 Usage:
     python3 prune_agent_specs.py --connection <conn> --out-dir <dir> spec.json ...
 
@@ -68,12 +82,19 @@ def fqns(rows, *, db="database_name", schema="schema_name", name="name") -> set:
 
 
 def available(connection: str):
-    """Existing semantic views + cortex search services, or None if unknown."""
+    """What this account can back an agent spec with, or None if unknown.
+
+    Returns (tool_targets, mcp_targets): semantic views + cortex search services
+    for the `tools` / `tool_resources` path, and MCP servers for the
+    `mcp_servers` path. Kept as two sets because the two spec sections are pruned
+    independently and a miss in each has a different consequence.
+    """
     sv = snow_json(connection, "SHOW SEMANTIC VIEWS IN ACCOUNT;")
     css = snow_json(connection, "SHOW CORTEX SEARCH SERVICES IN ACCOUNT;")
-    if sv is None or css is None:
+    mcp = snow_json(connection, "SHOW MCP SERVERS IN ACCOUNT;")
+    if sv is None or css is None or mcp is None:
         return None
-    return fqns(sv) | fqns(css)
+    return fqns(sv) | fqns(css), fqns(mcp)
 
 
 def target_of(resource) -> str | None:
@@ -87,10 +108,10 @@ def target_of(resource) -> str | None:
     return None
 
 
-def prune(spec: dict, have: set) -> tuple[dict, list]:
+def prune_tools(spec: dict, have: set) -> list:
     resources = spec.get("tool_resources")
     if not isinstance(resources, dict):
-        return spec, []
+        return []
 
     removed = []
     for tool_name, resource in list(resources.items()):
@@ -105,7 +126,40 @@ def prune(spec: dict, have: set) -> tuple[dict, list]:
             tool for tool in spec.get("tools", [])
             if (tool.get("tool_spec", tool) or {}).get("name") not in gone
         ]
-    return spec, removed
+    return removed
+
+
+def prune_mcp_servers(spec: dict, have_mcp: set) -> list:
+    """Drop mcp_servers entries whose server does not exist. Returns the FQNs."""
+    servers = spec.get("mcp_servers")
+    if not isinstance(servers, list):
+        return []
+
+    removed, kept = [], []
+    for entry in servers:
+        target = None
+        if isinstance(entry, dict):
+            spec_block = entry.get("server_spec")
+            if isinstance(spec_block, dict):
+                value = spec_block.get("name")
+                if isinstance(value, str) and value.count(".") == 2:
+                    target = value
+        # An entry with no resolvable FQN is left alone rather than guessed at:
+        # this script only ever removes things it can positively prove missing.
+        if target and target.upper() not in have_mcp:
+            removed.append(target)
+        else:
+            kept.append(entry)
+
+    if removed:
+        spec["mcp_servers"] = kept
+    return removed
+
+
+def prune(spec: dict, have: set, have_mcp: set) -> tuple[dict, list, list]:
+    removed_tools = prune_tools(spec, have)
+    removed_mcp = prune_mcp_servers(spec, have_mcp)
+    return spec, removed_tools, removed_mcp
 
 
 def main() -> int:
@@ -115,31 +169,42 @@ def main() -> int:
     ap.add_argument("specs", nargs="+")
     args = ap.parse_args()
 
-    have = available(args.connection)
-    if have is None:
+    probed = available(args.connection)
+    if probed is None:
         print("[prune_agent_specs] WARN: could not inspect the account; "
               "using specs unchanged", file=sys.stderr)
         return 2
+    have, have_mcp = probed
 
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     total = 0
+    total_mcp = 0
     for path_str in args.specs:
         path = pathlib.Path(path_str)
         spec = json.loads(path.read_text())
-        spec, removed = prune(spec, have)
+        spec, removed, removed_mcp = prune(spec, have, have_mcp)
         (out_dir / path.name).write_text(json.dumps(spec, indent=2))
         for tool_name, target in removed:
             total += 1
             print(f"[prune_agent_specs] {path.name}: dropped tool {tool_name!r} "
                   f"- {target} does not exist in this account")
+        for target in removed_mcp:
+            total_mcp += 1
+            print(f"[prune_agent_specs] WARN: {path.name}: dropped MCP server "
+                  f"{target} - it does not exist in this account, so EVERY verb it "
+                  f"publishes is unavailable to this agent. Install the owning "
+                  f"synapse bundle and re-run create_agents.sh to restore them.",
+                  file=sys.stderr)
 
-    if total == 0:
-        print("[prune_agent_specs] all agent tool targets exist; nothing pruned")
+    if total == 0 and total_mcp == 0:
+        print("[prune_agent_specs] all agent tool and MCP server targets exist; "
+              "nothing pruned")
     else:
-        print(f"[prune_agent_specs] dropped {total} tool(s) with a missing target. "
-              "Re-run this script after installing the owning pack to restore them.")
+        print(f"[prune_agent_specs] dropped {total} tool(s) and {total_mcp} MCP "
+              "server(s) with a missing target. Re-run this script after "
+              "installing the owning pack or bundle to restore them.")
     return 0
 
 

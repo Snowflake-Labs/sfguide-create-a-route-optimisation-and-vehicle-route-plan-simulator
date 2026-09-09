@@ -22,6 +22,13 @@ export interface MapLoad { id: string; lon: number; lat: number; internal: boole
 export interface MapLink { from: [number, number]; to: [number, number]; key: string; }
 export type StopKind = 'start' | 'pickup' | 'delivery' | 'end';
 export interface MapStop { idx: number; kind: StopKind; pos: [number, number]; city: string | null; }
+// Whether a leg between two consecutive stops earns revenue. A two-hop chain is
+// empty / loaded / empty / loaded / empty, so a caller with more than three
+// stops MUST declare this - otherwise every middle leg is painted as a paying
+// leg and the map claims revenue on repositioning distance.
+export type MapLegKind = 'empty' | 'loaded';
+/** Road geometry for one leg, so a fetched route can still be coloured by kind. */
+export interface MapRouteLeg { path: [number, number][]; kind: MapLegKind; }
 
 interface Props {
   vehicles: MapVehicle[];
@@ -33,6 +40,25 @@ interface Props {
   // between consecutive stops.
   routePath: [number, number][] | null;
   focusKey: string;
+  // Optional: one entry per consecutive stop pair (length stops.length - 1).
+  // When omitted the legacy 3-stop behaviour applies - first leg dashed empty,
+  // every later leg solid loaded.
+  legKinds?: MapLegKind[];
+  // Optional: per-leg road geometry. Preferred over routePath when present,
+  // because a single polyline through every waypoint cannot be coloured by kind.
+  routeLegs?: MapRouteLeg[];
+  // Label for the final stop. Defaults to the single-hop meaning ("Next start").
+  endLabel?: string;
+  // Active region key. Load-bearing for the camera, not cosmetic: MapView resets
+  // hasFitted/userMoved and arms a forced data fit ONLY when fitTo.regionKey
+  // changes, so a constant key meant a region switch never re-framed the map -
+  // once the user had panned, the camera stayed on the previous region for good.
+  regionKey?: string;
+  // Bounding-box corners of the active region, from useRegionCamera. Frames the
+  // region before its rows arrive, and keeps it framed when the region has NO
+  // rows at all - which is the normal San Francisco case for chained returns,
+  // since chains are a long-haul pattern a metro region correctly yields none of.
+  regionCoords?: [number, number][] | null;
 }
 
 // Selected route stop palette, matched to the Backload Matching map:
@@ -44,7 +70,10 @@ const STOP_LABEL: Record<StopKind, string> = { start: 'Start', pickup: 'Pickup',
 // Loaded (revenue) route colour - accent blue, mirroring the Matching route.
 const ROUTE_COLOR: [number, number, number] = [29, 78, 216];
 
-export default function ProposalMap({ vehicles, loads, links, stops, routePath, focusKey }: Props) {
+export default function ProposalMap({
+  vehicles, loads, links, stops, routePath, focusKey, legKinds, routeLegs, endLabel,
+  regionKey, regionCoords,
+}: Props) {
   const layers = useMemo(() => {
     const arr: any[] = [];
 
@@ -85,29 +114,62 @@ export default function ProposalMap({ vehicles, loads, links, stops, routePath, 
       }));
     }
 
-    // Empty leg (start -> pickup): dashed grey repositioning cue, mirroring the
-    // Backload Matching empty-leg style.
-    if (stops.length >= 2) {
-      arr.push(new PathLayer({
-        id: 'bp-leg-empty', data: [{ path: [stops[0].pos, stops[1].pos] }], getPath: (d: any) => d.path,
-        getColor: [...COLOR_LEG_EMPTY, 220] as any, getWidth: 4, widthMinPixels: 3,
-        getDashArray: [10, 6] as any, dashJustified: true,
-        extensions: [new PathStyleExtension({ dash: true })], parameters: { depthTest: false },
-      }));
-    }
-    // Loaded (revenue) route: the fetched road polyline when available, else the
-    // straight pickup -> delivery leg(s). Drawn solid in the accent colour.
-    if (routePath && routePath.length > 1) {
-      arr.push(new GeoJsonLayer({
-        id: 'bp-route', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: routePath }, properties: {} } as any,
-        getLineColor: ROUTE_COLOR as any, getLineWidth: 5, lineWidthMinPixels: 3, getFillColor: [0, 0, 0, 0],
-      }));
-    } else if (stops.length >= 2) {
-      for (let i = 1; i < stops.length - 1; i++) {
+    // Route legs. Three cases, in order of fidelity:
+    //  1. routeLegs - per-leg road geometry, coloured by kind. The only option
+    //     that is both road-accurate AND honest about which legs earn revenue.
+    //  2. routePath - one polyline through every waypoint. Road-accurate but
+    //     unsplittable, so it is drawn in the loaded colour (legacy 3-stop
+    //     behaviour, where only the middle leg is loaded anyway).
+    //  3. straight legs between consecutive stops, coloured by legKinds when
+    //     the caller supplied them.
+    const kindOf = (legIdx: number): MapLegKind =>
+      legKinds ? (legKinds[legIdx] ?? 'loaded') : (legIdx === 0 ? 'empty' : 'loaded');
+    const emptyStyle = {
+      getColor: [...COLOR_LEG_EMPTY, 220] as any, getWidth: 4, widthMinPixels: 3,
+      getDashArray: [10, 6] as any, dashJustified: true,
+      extensions: [new PathStyleExtension({ dash: true })],
+      parameters: { depthTest: false },
+    };
+    const loadedStyle = {
+      getColor: ROUTE_COLOR as any, getWidth: 5, widthMinPixels: 3,
+      parameters: { depthTest: false },
+    };
+
+    if (routeLegs && routeLegs.length) {
+      routeLegs.forEach((leg, i) => {
+        if (leg.path.length < 2) return;
         arr.push(new PathLayer({
-          id: `bp-leg-loaded-${i}`, data: [{ path: [stops[i].pos, stops[i + 1].pos] }], getPath: (d: any) => d.path,
-          getColor: ROUTE_COLOR as any, getWidth: 5, widthMinPixels: 3, parameters: { depthTest: false },
+          id: `bp-route-leg-${i}`, data: [{ path: leg.path }], getPath: (d: any) => d.path,
+          ...(leg.kind === 'empty' ? emptyStyle : loadedStyle),
         }));
+      });
+    } else if (stops.length >= 2) {
+      // Empty legs always come from the straight geometry: a single polyline
+      // through every waypoint cannot be split, so it can only stand in for the
+      // loaded legs. Legacy callers have exactly one empty leg (start->pickup),
+      // which is why this reproduces their dashed repositioning cue unchanged.
+      for (let i = 0; i < stops.length - 1; i++) {
+        if (kindOf(i) !== 'empty') continue;
+        arr.push(new PathLayer({
+          id: `bp-leg-empty-${i}`,
+          data: [{ path: [stops[i].pos, stops[i + 1].pos] }], getPath: (d: any) => d.path,
+          ...emptyStyle,
+        }));
+      }
+      if (routePath && routePath.length > 1) {
+        arr.push(new GeoJsonLayer({
+          id: 'bp-route', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: routePath }, properties: {} } as any,
+          getLineColor: ROUTE_COLOR as any, getLineWidth: 5, lineWidthMinPixels: 3, getFillColor: [0, 0, 0, 0],
+        }));
+      } else {
+        for (let i = 0; i < stops.length - 1; i++) {
+          if (kindOf(i) !== 'loaded') continue;
+          arr.push(new PathLayer({
+            id: `bp-leg-loaded-${i}`,
+            data: [{ path: [stops[i].pos, stops[i + 1].pos] }], getPath: (d: any) => d.path,
+            ...loadedStyle,
+          }));
+        }
       }
     }
 
@@ -135,12 +197,17 @@ export default function ProposalMap({ vehicles, loads, links, stops, routePath, 
     }
 
     return arr;
-  }, [vehicles, loads, links, stops, routePath]);
+  }, [vehicles, loads, links, stops, routePath, routeLegs, legKinds]);
 
   const routeFitCoords = useMemo(() => {
+    if (routeLegs && routeLegs.length) {
+      const c: [number, number][] = [];
+      for (const leg of routeLegs) for (const p of leg.path) c.push(p);
+      if (c.length >= 2) return c;
+    }
     if (routePath && routePath.length > 1) return routePath;
     return stops.map((s) => s.pos);
-  }, [routePath, stops]);
+  }, [routeLegs, routePath, stops]);
 
   const allFitCoords = useMemo(() => {
     const c: [number, number][] = [];
@@ -160,7 +227,8 @@ export default function ProposalMap({ vehicles, loads, links, stops, routePath, 
     const o: any = info?.object;
     if (!o) return null;
     if (o.kind && STOP_LABEL[o.kind as StopKind]) {
-      return { html: `<div style="font-size:12px"><b>#${escapeHtml(o.idx)} ${escapeHtml(STOP_LABEL[o.kind as StopKind])}</b>${o.city ? `<br/>${escapeHtml(o.city)}` : ''}</div>` };
+      const label = o.kind === 'end' ? (endLabel ?? STOP_LABEL.end) : STOP_LABEL[o.kind as StopKind];
+      return { html: `<div style="font-size:12px"><b>#${escapeHtml(o.idx)} ${escapeHtml(label)}</b>${o.city ? `<br/>${escapeHtml(place(o.city))}` : ''}</div>` };
     }
     if (o.internal !== undefined && o.id) {
       return { html: `<div style="font-size:12px"><b>Load ${escapeHtml(o.id)}</b> (${o.internal ? 'internal' : 'external'})${o.city ? `<br/>${escapeHtml(place(o.city))}` : ''}${o.source ? `<br/>${escapeHtml(o.source)}` : ''}</div>` };
@@ -173,7 +241,21 @@ export default function ProposalMap({ vehicles, loads, links, stops, routePath, 
 
   return (
     <div style={{ position: 'relative', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', minHeight: 0, height: '100%' }}>
-      <MapView layers={layers} fitTo={{ coords: fitCoords, regionKey: focused ? `route:${focusKey}` : 'all', maxZoom: 12, focusKey }} getTooltip={getTooltip} onRecenterReady={onRecenterReady} />
+      {/* The region is part of the key in BOTH branches: with it only in the
+          unfocused branch, switching region while a proposal is selected would
+          again leave the key unchanged and the camera stranded. */}
+      <MapView
+        layers={layers}
+        fitTo={{
+          coords: fitCoords,
+          regionKey: focused ? `route:${regionKey ?? ''}:${focusKey}` : `region:${regionKey ?? ''}`,
+          regionCoords,
+          maxZoom: 12,
+          focusKey,
+        }}
+        getTooltip={getTooltip}
+        onRecenterReady={onRecenterReady}
+      />
     </div>
   );
 }

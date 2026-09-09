@@ -9,7 +9,7 @@ import { buildLocalGrants } from '../build/local-grants.js';
 import { bundleRuntime } from '../build/runtime-js.js';
 import { bundlePlugin } from '../build/plugin.js';
 import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
-import { auditTableDDL } from '../ddl.js';
+import { auditTableDDL, claimTableDDL } from '../ddl.js';
 import { TRACKING_COMMENT, TRACKING_QUERY_TAG } from '../tracking.js';
 import { readInstallConfig, installRuntime } from '../build/install.js';
 import { resolveTargetDir, parseTargetFlags } from './target.js';
@@ -115,7 +115,7 @@ export async function runMaterialize(app: ResolvedSynapseAppConfig, argv: string
       table: app.audit.table,
       ...(app.audit.appIdField ? { appIdColumn: app.audit.appIdField } : {}),
       hybrid: true,
-    }) + '\n', 'utf8');
+    }) + '\n' + claimTableDDL({ hybrid: true }) + '\n', 'utf8');
     await buildLocalGrants({ procs: procInputs.map(p => p.proc), out: grantsSql });
   }
 

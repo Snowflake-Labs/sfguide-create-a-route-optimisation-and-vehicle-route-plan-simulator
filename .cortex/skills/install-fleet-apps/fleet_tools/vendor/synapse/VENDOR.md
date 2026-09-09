@@ -36,10 +36,17 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Five deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Seven deviations from upstream, plus two new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
-replayable record and are already applied to this tree. Patches are scoped by FILE, not
-by concern, so `git apply` never has two patches editing the same file.
+replayable record and are already applied to this tree. Patches 01-05 and 07 are scoped by
+FILE, not by concern, so `git apply` never has two of them editing the same file.
+
+**Patch 06 is the documented exception.** It is scoped by CONCERN (one behavioral change
+spanning nine files, several already touched by 01-05), because the change is not
+separable by file without splitting one guard across five patches. It is a diff of the
+post-01-05 tree, so it MUST be applied last of 01-06 - `git apply patches/*.patch` does that
+naturally, since shell glob order is lexicographic. Do not reorder it. Patch 07 also touches
+`src/ddl.ts` and is a diff of the post-06 tree, so it sorts after 06 and must stay there.
 
 ### patches/01-tracking-tags.patch
 
@@ -196,6 +203,82 @@ Note this does NOT cover verbs invoked through the Snowflake-managed MCP server:
 that session is not code-controlled, so no change here can tag it. The deployed
 procedures carry their own COMMENT tag instead.
 
+### patches/06-idempotency-claim.patch
+
+Files: `src/ddl.ts`, `src/audit.ts`, `src/errors.ts`, `src/runtime/envelope.ts`,
+`src/runtime/sproc.ts`, `src/build/install-sql.ts`, `src/build/bundle.ts`,
+`src/cli/materialize.ts`, `src/testing/index.ts`, plus tests.
+
+Closes a double-execution race in the idempotency path. `checkReplay` in `audit.ts` is a
+read-before-write with no transaction, no lock, and no unique constraint, so two concurrent
+calls carrying the same `(actor, verb, idempotency_key)` both miss the replay check and both
+run `execute()`. For the mutating verbs (`service_control`, `drop_region`, `activate_dataset`)
+that is exactly the duplicate idempotency is supposed to prevent. Nothing upstream
+acknowledges it.
+
+This cannot be fixed with a `UNIQUE` constraint on `verb_attempt`, because that table
+intentionally holds MULTIPLE rows per key (the original `ok`/`error` plus one
+`idempotent_replay` per repeat). So the claim gets its own table, `verb_claim`, whose
+PRIMARY KEY *is* the idempotency triple, and the insert happens BEFORE `execute()`: first
+caller wins, the loser re-checks for a terminal row and replays it, or fails
+`CONCURRENT_ATTEMPT` rather than re-executing.
+
+Only a HYBRID table ENFORCES that primary key. Measured on wgb26798: the hybrid table
+rejects the duplicate with `A primary key already exists.`, while the same DDL as a
+standard table accepts both rows - so an unconditional insert would always succeed on
+the accounts that have no hybrid tables (GCP, trial, SnowGov), and the guard would
+silently permit the double execution it exists to block. `claim()` therefore does NOT
+rely on a violation being raised: it issues a `WHERE NOT EXISTS` conditional insert and
+reads the inserted-row count, which was measured to return 1 then 0 on BOTH table kinds
+(and no PK error on the hybrid repeat), so the guard holds against a repeat claim
+everywhere in a single statement. The PK-violation catch stays because it covers the one
+case the predicate cannot - two callers passing `NOT EXISTS` simultaneously - which is
+also the exact residual gap on a standard table. `claimTableDDL()` still follows the
+audit table's `hybrid` flag; the difference is that the non-hybrid path is now degraded
+rather than inert.
+
+Two incidental properties worth preserving on a re-vendor:
+
+- `AuditSink.claim` is OPTIONAL, so a sink written against the upstream interface still
+  satisfies the type and keeps the old behavior. The envelope calls it only when present
+  AND an idempotency key was supplied.
+- Zero added cost on the agent path. The Cortex Agent MCP server omits `idempotency_key`
+  (see `../../references/synapse-bundles.md`), so `claim` returns early without a statement.
+  Independently, this patch also folds the separate `SELECT SHA2(?)` round trip into the
+  audit `INSERT`, taking the success path from 3 statements to 2.
+
+`verb_claim` needs no extra grant: every generated proc is `EXECUTE AS OWNER`, so the owner
+writes it, exactly as for `verb_attempt`. Rows outlive the 24h replay window and are NOT
+pruned on the request path (that would add a statement per verb); prune out of band with
+`DELETE FROM <schema>.verb_claim WHERE claimed_at < DATEADD(day, -7, CURRENT_TIMESTAMP());`.
+
+### patches/07-audit-table-preserve.patch
+
+File: `src/ddl.ts`.
+
+Stops every bundle deploy from destroying the agent behaviour history. `auditTableDDL`
+emitted `CREATE OR REPLACE HYBRID TABLE verb_attempt`, and `npx synapse deploy` runs that
+DDL on each deploy - which AGENTS.md requires after any verb change - so the audit trail was
+truncated on a routine cadence. Now `CREATE ... IF NOT EXISTS`, matching `claimTableDDL`
+directly below it, which already did the right thing (so this was an inconsistency, not a
+deliberate choice).
+
+Why it matters: `verb_attempt` is the ONLY durable record of which verbs an agent chose,
+with what arguments, and what failed. `FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_AGENT_BEHAVIOUR`
+and `scripts/analyse_agent_behaviour.py` are both built on it, and every question they exist
+to answer is longitudinal - is the governed-path bypass rate falling, which verbs has nobody
+exercised, which verb has never once succeeded.
+
+Measured on tib85385, 2026-09-09: a 35-row trail covering two days of real agent use -
+including the `run_sql` calls that evidenced the semantic-view bypass, and the four
+`deep_link` failures that exposed the `URLSearchParams` fault - was reduced to the 4 rows
+logged after a redeploy. No error, no warning, and the table still looked healthy.
+
+Trade-off: a future column addition now needs an explicit `ALTER TABLE`. That is the right
+way round for an append-only audit log - a migration statement is cheap, lost history is not.
+A re-vendor that silently drops this patch is caught by the `IF NOT EXISTS` assertion in
+`scripts/install_synapse_bundles.sh`.
+
 ## Re-vendoring procedure
 
 1. Check whether upstream `packages/synapse` actually changed since the pinned SHA. If not, stop.
@@ -205,7 +288,11 @@ procedures carry their own COMMENT tag instead.
    git apply patches/*.patch
    ```
    If a patch does not apply, reseat it by hand - upstream may have moved the code - then regenerate the patch file by diffing this tree against the fresh upstream copy.
-4. `npm install && npm run build && npm test` (expect 72 passing).
+4. `npm install && npm run build && npm test` (expect 87 passing).
 5. Re-materialize and re-deploy the three bundles, then **recreate the agents** (`synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so agents bound to the old server go stale).
-6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL.
+6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL. Also assert BOTH hybrid tables are emitted and fully qualified (`verb_attempt` and `verb_claim`) and that no `__SYNAPSE_` placeholder survived - an unsubstituted `__SYNAPSE_CLAIM_TABLE__` would ship as a literal table NAME:
+   ```bash
+   grep -c '__SYNAPSE' install.sql          # must be 0
+   grep -n 'verb_claim (' install.sql       # must be db.schema-qualified
+   ```
 7. Update the pinned commit and date in this file.

@@ -2529,6 +2529,1268 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-sap-fleet-connector","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
+-- TOOL_BACKLOAD_SOLVE: internal-first backload matching, end to end.
+--
+-- The single implementation of what the Backload Matching / Backload Proposals
+-- cockpit does: read the region's idle vehicles and open loads, build a VROOM
+-- challenge per optimizer strategy, solve it live on the region's road graph,
+-- parse the routes into (vehicle, load) proposals, score every pair on seven
+-- dimensions, and rank them. Both the app (via /api/tool) and the agent (via the
+-- backload_solve verb) call THIS proc, so there is one copy of the maths rather
+-- than two that drift.
+--
+-- Strategies (P_STRATEGY):
+--   baseline  quick scan, nearest eligible load by great-circle. No solve.
+--   vrp       per-load VRP - one load per vehicle, road distances.
+--   fleet     fleet-wide 1:1 assignment, road distances.
+--   bpmp      profit-max backhaul - consolidates up to BPMP_MAX_STOPS loads,
+--             priority derived from revenue rather than internal-first.
+--   ensemble  all four, fused: one row per (vehicle, load) pair, keeping the
+--             cheapest variant and recording how many strategies agreed.
+--
+-- Region scoping is NOT optional here. VW_TRAILERS_GEO and VW_LOADS do not
+-- project REGION (their region-bearing sources do), so reading them directly
+-- mixes every loaded region into one pool - measured on tib85385 as 191 vehicles
+-- and 5,632 loads across all regions against 100 and 5,300 for San Francisco.
+-- A cross-region pair is not merely noise: it proposes a backload the vehicle
+-- physically cannot reach, and it scores well because the empty leg is computed
+-- from coordinates that are perfectly valid in isolation. Both feeds are
+-- therefore filtered through the FLEET_APP contract views, which do carry REGION.
+--
+-- Live routing per Tenet 9: the solve calls ROUTING_PLATFORM.CONTRACT.
+-- _DISPATCH_OPTIMIZATION (the neutral seam, RAW scalar form) at request time.
+-- Nothing is precomputed, and the engine is never named. The RAW form is used
+-- rather than the OPTIMIZATION table function because the TVF's LATERAL FLATTEN
+-- over resp:routes yields ZERO ROWS when a solve returns no routes or a
+-- structured error, which is indistinguishable from "no backload exists".
+--
+-- Returns { status, region, vehicle_type, strategy, counts, proposals[], totals }
+-- on success, or { status:'FAILED', reason, ... } with a typed reason:
+--   OPTIMIZATION_UNAVAILABLE  the region's routing services are suspended or
+--                             still cold-starting. Resume and retry.
+--   NO_FEED                   no vehicles or no loads for this region.
+--   DATA_NOT_PROVISIONED      the cockpit views do not exist for this dataset.
+----------------------------------------------------------------------
+-- Drop the previous 5-argument signature before recreating. All arguments are
+-- defaulted, so CREATE OR REPLACE with a 6th defaulted argument does NOT replace
+-- it: Snowflake keeps both and rejects the new one with "Cannot overload
+-- PROCEDURE ... as it would cause ambiguous PROCEDURE overloading". Without this
+-- drop the file fails on every account that already has the earlier version,
+-- which is every account that installed before granularity was added.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT);
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(
+    P_STRATEGY     VARCHAR DEFAULT NULL,
+    P_MAX_VEHICLES FLOAT   DEFAULT NULL,
+    P_MAX_LOADS    FLOAT   DEFAULT NULL,
+    P_REGION       VARCHAR DEFAULT NULL,
+    P_LIMIT        FLOAT   DEFAULT NULL,
+    P_GRANULARITY  VARCHAR DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+var region = P_REGION;
+var vroomSvc = null;
+
+function q(sql, binds) {
+    return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute();
+}
+function rowsOf(sql, binds, cols) {
+    var rs = q(sql, binds);
+    var out = [];
+    while (rs.next()) {
+        var o = {};
+        for (var i = 0; i < cols.length; i++) o[cols[i]] = rs.getColumnValue(i + 1);
+        out.push(o);
+    }
+    return out;
+}
+var num = function (v) { var n = Number(v); return isFinite(n) ? n : 0; };
+var finite = function (v) { return v !== null && v !== undefined && isFinite(Number(v)); };
+var okPt = function (lon, lat) { return isFinite(lon) && isFinite(lat) && !(lon === 0 && lat === 0); };
+function clamp(v, lo, hi) {
+    if (lo === undefined) lo = 0;
+    if (hi === undefined) hi = 100;
+    return Math.max(lo, Math.min(hi, v));
+}
+function haversineKm(lon1, lat1, lon2, lat2) {
+    var R = 6371, toRad = function (x) { return (x * Math.PI) / 180; };
+    var dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+    var a = Math.pow(Math.sin(dLat / 2), 2)
+          + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.pow(Math.sin(dLon / 2), 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function greatCircleKm(lon1, lat1, lon2, lat2) {
+    if (!finite(lon1) || !finite(lat1) || !finite(lon2) || !finite(lat2)) return null;
+    return Math.round(haversineKm(Number(lon1), Number(lat1), Number(lon2), Number(lat2)) * 10) / 10;
+}
+function percentile(vals, p) {
+    if (!vals.length) return 0;
+    var arr = vals.slice().sort(function (a, b) { return a - b; });
+    var idx = clamp(p, 0, 1) * (arr.length - 1);
+    var lo = Math.floor(idx), hi = Math.ceil(idx);
+    if (lo === hi) return arr[lo];
+    return arr[lo] + (arr[hi] - arr[lo]) * (idx - lo);
+}
+// Coordinate identity at ~11 m, matching the epsilon VROOM echoes its failing
+// location with. Used to shear an unroutable point out of a retry.
+function coordKey(lon, lat) { return Number(lon).toFixed(4) + ',' + Number(lat).toFixed(4); }
+function locMatches(loc, lon, lat) {
+    return loc && loc.length === 2
+        && Math.abs(Number(loc[0]) - lon) < 1e-4 && Math.abs(Number(loc[1]) - lat) < 1e-4;
+}
+function toGrade(s) {
+    if (s === null || !isFinite(s)) return null;
+    if (s >= 90) return 'A';
+    if (s >= 80) return 'B+';
+    if (s >= 70) return 'B';
+    if (s >= 60) return 'C+';
+    if (s >= 50) return 'C';
+    if (s >= 40) return 'D';
+    return 'F';
+}
+function familyOf(basis) {
+    var b = String(basis || '').toLowerCase();
+    if (b.indexOf('vrp') === 0) return 'vrp';
+    if (b.indexOf('fleet') === 0) return 'fleet';
+    if (b.indexOf('bpmp') === 0) return 'bpmp';
+    return 'baseline';
+}
+
+var DIMENSIONS = ['costEff', 'revenue', 'margin', 'feasibility', 'utilization', 'consolidation', 'urgency'];
+// Balanced preset - the same default the cockpit's weight sliders start from.
+var WEIGHTS = { costEff: 0.12, revenue: 0.13, margin: 0.20, feasibility: 0.18,
+                utilization: 0.15, consolidation: 0.10, urgency: 0.12 };
+var COST_SCALE = 100;
+var MAX_UNROUTABLE_RETRIES = 16;
+
+try {
+    // ---------------------------------------------------------------- region
+    if (!region) {
+        try {
+            var cr = q("SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (cr.next()) region = cr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) {
+        try {
+            var dr = q("SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1");
+            if (dr.next()) region = dr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) region = 'SanFrancisco';
+    vroomSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_'
+             + String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+
+    var strategy = String(P_STRATEGY || 'ensemble').toLowerCase();
+    var VALID = ['ensemble', 'baseline', 'vrp', 'fleet', 'bpmp'];
+    if (VALID.indexOf(strategy) < 0) {
+        return { status: 'FAILED', reason: 'BAD_STRATEGY', region: region,
+                 error: 'strategy must be one of ' + VALID.join(', ') + ' (got ' + strategy + ')' };
+    }
+    // Upper clamps live HERE, not in the verb's arg schema: the framework's
+    // t.number() carries no bounds, so an agent asking for 100000 vehicles would
+    // otherwise reach the feed SQL. Both caps are concatenated into that SQL
+    // (LIMIT cannot be a bind), so integer-and-bounded is also the injection
+    // guarantee.
+    // 'vehicle' (default) returns the dispatcher's answer: the single best pair per
+    // vehicle. 'pair' returns EVERY graded pair with its per-dimension scores, which
+    // is what the cockpit needs - it shows several candidate loads per vehicle, and
+    // it re-ranks locally when a weight slider moves. Emitting only the per-vehicle
+    // best would make the app's Loads and Ensemble perspectives impossible and
+    // would force a server round trip per slider drag.
+    var granularity = String(P_GRANULARITY || 'vehicle').toLowerCase();
+    if (granularity !== 'vehicle' && granularity !== 'pair') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'vehicle' or 'pair' (got " + granularity + ")" };
+    }
+    var maxVehicles = finite(P_MAX_VEHICLES) && Number(P_MAX_VEHICLES) > 0 ? Math.min(200,  Math.floor(Number(P_MAX_VEHICLES))) : 20;
+    var maxLoads    = finite(P_MAX_LOADS)    && Number(P_MAX_LOADS)    > 0 ? Math.min(1000, Math.floor(Number(P_MAX_LOADS)))    : 120;
+    var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.min(200,  Math.floor(Number(P_LIMIT)))        : 25;
+    // Math.floor'd above because LIMIT cannot be a bind in Snowflake, so these two
+    // are string-concatenated into the feed SQL. Integer-only, hence injection-safe.
+
+    // ------------------------------------------------------------ feed reads
+    var vehicleType = 'hgv';
+    try {
+        var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+        if (vr.next()) vehicleType = String(vr.getColumnValue(1) || 'hgv');
+    } catch (e) { /* default */ }
+
+    // COST_PER_KM, not COST_EUR_PER_KM. The cockpit's VehicleClass interface
+    // declares the latter and reads the view with SELECT *, so its per-km cost is
+    // ALWAYS undefined and falls back to 0.85 - which happens to equal the hgv
+    // rate, hiding the bug, while a van (0.55) or ebike (0.08) run is costed as a
+    // truck. Deliberately NOT wrapped in try/catch: a renamed column must fail
+    // loudly here rather than degrade to "class profile missing".
+    var clsRows = rowsOf(
+        "SELECT ORS_PROFILE, PAYLOAD_KG_TYP, COST_PER_KM, LABEL_NOUN "
+      + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
+        [vehicleType], ['ORS_PROFILE', 'PAYLOAD_KG_TYP', 'COST_PER_KM', 'LABEL_NOUN']);
+    var cls = clsRows.length ? clsRows[0] : null;
+    if (!cls) {
+        return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                 error: 'No vehicle class profile for vehicle type ' + vehicleType
+                      + '. The backload layer is provisioned by the admin app boot from an active dataset.' };
+    }
+    var profile = String(cls.ORS_PROFILE || 'driving-hgv');
+    var classCapacityKg = num(cls.PAYLOAD_KG_TYP) || 1000;
+    var effPerKm = num(cls.COST_PER_KM) || 0.85;
+
+    var params = {};
+    try {
+        var pr = rowsOf("SELECT PARAM_KEY, PARAM_VALUE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS",
+                        [], ['PARAM_KEY', 'PARAM_VALUE']);
+        for (var pi = 0; pi < pr.length; pi++) params[String(pr[pi].PARAM_KEY)] = pr[pi].PARAM_VALUE;
+    } catch (e) { /* defaults below */ }
+    function param(key, dflt) {
+        var v = Number(params[key]);
+        return isFinite(v) ? v : dflt;
+    }
+    var costEmpty  = param('COST_PER_EMPTY_KM', 1.2);
+    var revLoaded  = param('REVENUE_PER_LOADED_KM', 1.10);
+    var maxEmptyKm = Math.max(1, param('MAX_EMPTY_KM', 100));
+    var maxStops   = Math.max(2, param('BPMP_MAX_STOPS', 4));
+    var IDEAL_SLACK_HRS = 24;
+
+    // Region-scoped feeds. Deterministic ORDER BY so the same request returns the
+    // same subset when the caps bite - the cockpit relied on the view's natural
+    // order, which makes a capped run irreproducible.
+    var trailers, loads, eligible;
+    try {
+        trailers = rowsOf(
+            "SELECT g.TRAILER_ID, g.OPERATING_COUNTRY, g.EMPTY_CITY, g.EMPTY_LON, g.EMPTY_LAT, "
+          + "       g.EMPTY_FROM_TS, g.NEXT_START_LON, g.NEXT_START_LAT, g.MAX_PAYLOAD_KG, g.HAZMAT_CERT "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO g "
+          + "WHERE g.TRAILER_ID IN ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + "ORDER BY g.EMPTY_FROM_TS NULLS LAST, g.TRAILER_ID "
+          + "LIMIT " + maxVehicles,
+            [region],
+            ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',
+             'EMPTY_FROM_TS', 'NEXT_START_LON', 'NEXT_START_LAT', 'MAX_PAYLOAD_KG', 'HAZMAT_CERT']);
+        // The region-scoped id set MUST be a CTE joined in, not an IN (...) with a
+        // UNION ALL inside it: Snowflake rejects that with "Unsupported subquery
+        // type cannot be evaluated".
+        loads = rowsOf(
+            "WITH scoped AS ("
+          + "  SELECT ID AS LOAD_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES WHERE REGION = ? "
+          + "  UNION ALL "
+          + "  SELECT OFFER_ID AS LOAD_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS WHERE REGION = ?) "
+          + "SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, "
+          + "       l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.REQUESTED_PICKUP_TS, "
+          + "       l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l "
+          + "JOIN scoped s ON s.LOAD_ID = l.LOAD_ID "
+          + "ORDER BY l.IS_INTERNAL DESC, l.REQUESTED_PICKUP_TS NULLS LAST, l.LOAD_ID "
+          + "LIMIT " + maxLoads,
+            [region, region],
+            ['LOAD_ID', 'IS_INTERNAL', 'SOURCE', 'PICKUP_CITY', 'PICKUP_LON', 'PICKUP_LAT',
+             'DELIVERY_CITY', 'DELIVERY_LON', 'DELIVERY_LAT', 'REQUESTED_PICKUP_TS',
+             'WEIGHT_KG', 'PRODUCT', 'HAZMAT', 'PRICE_USD', 'APPROX_DISTANCE_KM']);
+        eligible = rowsOf(
+            "SELECT TRAILER_ID, LOAD_ID, DIST_CHECK, TIME_CHECK, HORIZON_CHECK, CAP_CHECK, HAZMAT_CHECK "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED WHERE ELIGIBLE = TRUE",
+            [], ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK']);
+    } catch (e) {
+        var m = e && e.message ? String(e.message) : 'unknown error';
+        if (/does not exist or not authorized/i.test(m)) {
+            return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                     error: 'The backload cockpit views are not provisioned for the active dataset. '
+                          + 'The admin app recreates them at boot from a generated dataset.' };
+        }
+        throw e;
+    }
+    if (!trailers.length || !loads.length) {
+        return { status: 'FAILED', reason: 'NO_FEED', region: region, vehicle_type: vehicleType,
+                 vehicles: trailers.length, loads: loads.length,
+                 error: 'No idle vehicles or no open loads for region ' + region + '.' };
+    }
+
+    var eligibleSet = {}, chipsByPair = {};
+    for (var ei = 0; ei < eligible.length; ei++) {
+        var ec = eligible[ei];
+        var ekey = String(ec.TRAILER_ID) + '::' + String(ec.LOAD_ID);
+        eligibleSet[ekey] = true;
+        chipsByPair[ekey] = { distance: ec.DIST_CHECK === true, pickup_time: ec.TIME_CHECK === true,
+                              horizon: ec.HORIZON_CHECK === true, capacity: ec.CAP_CHECK === true,
+                              hazmat: ec.HAZMAT_CHECK === true };
+    }
+    var eligibleCount = Object.keys(eligibleSet).length;
+
+    // ------------------------------------------------ challenge construction
+    // A shipment is TWO VROOM tasks (pickup + delivery), so max_tasks is the
+    // per-vehicle LOAD count doubled. Passing the load count straight through
+    // makes the 'vrp' family (1 load) unable to admit any shipment at all, and
+    // silently caps 'bpmp' at 2 loads instead of BPMP_MAX_STOPS - both return
+    // plausible-looking results, so the loss never surfaces.
+    function buildChallenge(fam, badKeys) {
+        var maxLoadsPerVehicle = (fam === 'bpmp') ? maxStops : 1;
+        var isBad = function (lon, lat) { return badKeys ? badKeys[coordKey(lon, lat)] === true : false; };
+        var idToTrailer = {}, vehicles = [];
+        for (var i = 0; i < trailers.length; i++) {
+            var t = trailers[i];
+            if (isBad(num(t.EMPTY_LON), num(t.EMPTY_LAT))) continue;
+            if (isBad(num(t.NEXT_START_LON), num(t.NEXT_START_LAT))) continue;
+            var vid = vehicles.length + 1;
+            idToTrailer[vid] = t;
+            vehicles.push({
+                id: vid, profile: profile,
+                start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
+                end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
+                capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
+                skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
+                max_tasks: maxLoadsPerVehicle * 2,
+                costs: { fixed: 140 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) }
+            });
+        }
+        var idToLoad = {}, shipments = [], nextId = 1000;
+        for (var j = 0; j < loads.length; j++) {
+            var l = loads[j];
+            if (isBad(num(l.PICKUP_LON), num(l.PICKUP_LAT))) continue;
+            if (isBad(num(l.DELIVERY_LON), num(l.DELIVERY_LAT))) continue;
+            var lid = nextId++;
+            idToLoad[lid] = l;
+            var kg = Math.min(num(l.WEIGHT_KG), classCapacityKg);
+            var priority = l.IS_INTERNAL ? 90 : 10;
+            if (fam === 'bpmp') {
+                var rev = (l.PRICE_USD !== null && l.PRICE_USD !== undefined)
+                        ? num(l.PRICE_USD) : num(l.APPROX_DISTANCE_KM) * 1.1;
+                priority = Math.max(1, Math.min(100, Math.round(rev / 25)));
+            }
+            var skills = l.HAZMAT ? (l.IS_INTERNAL ? [1, 3] : [2, 3]) : (l.IS_INTERNAL ? [1] : [2]);
+            shipments.push({
+                pickup:   { id: lid, location: [num(l.PICKUP_LON),   num(l.PICKUP_LAT)],   service: 1800 },
+                delivery: { id: lid, location: [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)], service: 600 },
+                amount: [kg], skills: skills, priority: priority
+            });
+        }
+        // g:false - do NOT request per-route road geometry. On a continental
+        // region the geometry for many long routes pushes the response past the
+        // external-function 20MB cap (Snowflake 100335) and the whole solve is
+        // lost. The solve is unaffected (VROOM sources its matrix from the
+        // routing engine internally); a caller that needs a drawn line fetches
+        // DIRECTIONS for the one selected pair.
+        return { vehicles: vehicles, shipments: shipments, idToTrailer: idToTrailer, idToLoad: idToLoad };
+    }
+
+    // -------------------------------------------------------------- the solve
+    // VROOM code 3 aborts the ENTIRE solve when a single location cannot be
+    // routed (a point snapped onto a disconnected road component), and it names
+    // only ONE offending coordinate per attempt. Shear that point and re-solve;
+    // the cap stops a pathological dataset looping forever. On cap-exhaust this
+    // yields nothing for the family rather than failing the whole request, so
+    // one bad family cannot take its siblings down.
+    var suspendedSeen = null;
+    function solveOnce(vehicles, shipments) {
+        var challenge = JSON.stringify({ vehicles: vehicles, shipments: shipments, options: { g: false } });
+        var rs = q("SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP",
+                   [challenge, region]);
+        var raw = rs.next() ? rs.getColumnValue(1) : null;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { /* leave */ } }
+        return raw;
+    }
+    function solveWithShear(vehicles, shipments) {
+        var workV = vehicles, workS = shipments, dropped = {}, excluded = 0;
+        for (var attempt = 0; attempt <= MAX_UNROUTABLE_RETRIES; attempt++) {
+            if (!workV.length || !workS.length) return { result: null, excluded: excluded };
+            var res = solveOnce(workV, workS);
+            if (!res) return { result: null, excluded: excluded };
+            if (!res.error) return { result: res, excluded: excluded };
+            var msg = (typeof res.message === 'string') ? res.message : String(res.error);
+            // A suspended engine reaches us as a DNS/connection failure inside the
+            // gateway. Record it so the caller gets a resume-able reason instead
+            // of an empty plan that reads as "no backload exists".
+            if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(msg)) {
+                suspendedSeen = msg;
+                return { result: null, excluded: excluded };
+            }
+            var mm = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(msg);
+            if (!mm) return { result: null, excluded: excluded };
+            var bad = { lon: Number(mm[1]), lat: Number(mm[2]) };
+            var bk = coordKey(bad.lon, bad.lat);
+            if (dropped[bk]) return { result: null, excluded: excluded };
+            dropped[bk] = true;
+            var nv = [], ns = [];
+            for (var vi = 0; vi < workV.length; vi++) {
+                var v = workV[vi];
+                if (!locMatches(v.start, bad.lon, bad.lat) && !locMatches(v.end, bad.lon, bad.lat)) nv.push(v);
+            }
+            for (var si = 0; si < workS.length; si++) {
+                var s = workS[si];
+                if (!locMatches(s.pickup.location, bad.lon, bad.lat)
+                 && !locMatches(s.delivery.location, bad.lon, bad.lat)) ns.push(s);
+            }
+            excluded += (workV.length - nv.length) + (workS.length - ns.length);
+            workV = nv; workS = ns;
+        }
+        return { result: null, excluded: excluded };
+    }
+
+    // ------------------------------------------------------- parse into rows
+    function parseSolve(resp, fam, idToTrailer, idToLoad) {
+        var basis = fam === 'vrp' ? 'vrp_road' : fam === 'fleet' ? 'fleet_vrp' : fam === 'bpmp' ? 'bpmp' : 'great_circle';
+        var routes = (resp && resp.routes && resp.routes.length) ? resp.routes : [];
+        var out = [];
+        for (var ri = 0; ri < routes.length; ri++) {
+            var route = routes[ri];
+            var t = idToTrailer[Number(route.vehicle)];
+            if (!t) continue;
+            var steps = route.steps && route.steps.length ? route.steps : [];
+            var seq = 0;
+            for (var si2 = 0; si2 < steps.length; si2++) {
+                if (steps[si2].type !== 'pickup') continue;
+                var l = idToLoad[Number(steps[si2].id)];
+                if (!l) continue;
+                seq += 1;
+                var emptyKm  = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
+                var loadedKm = haversineKm(num(l.PICKUP_LON), num(l.PICKUP_LAT), num(l.DELIVERY_LON), num(l.DELIVERY_LAT));
+                var nextKm   = haversineKm(num(l.DELIVERY_LON), num(l.DELIVERY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+                var baseKm   = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+                var totalKm  = emptyKm + loadedKm + nextKm;
+                out.push({
+                    PROPOSAL_ID: fam + ':' + t.TRAILER_ID + ':' + l.LOAD_ID,
+                    TRAILER_ID: t.TRAILER_ID, LOAD_ID: l.LOAD_ID, DISTANCE_BASIS: basis,
+                    EMPTY_KM: emptyKm, LOADED_KM: loadedKm,
+                    DETOUR_KM: Math.max(0, totalKm - loadedKm - baseKm), TOTAL_KM: totalKm,
+                    PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: (fam === 'bpmp' ? seq : null),
+                    PICKUP_LON: num(l.PICKUP_LON), PICKUP_LAT: num(l.PICKUP_LAT),
+                    DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
+                    PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
+                    DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
+                    IS_INTERNAL: l.IS_INTERNAL === true, SOURCE: l.SOURCE
+                });
+            }
+        }
+        return out;
+    }
+    // Quick scan: nearest ELIGIBLE load per vehicle by great-circle. No solve, so
+    // it is the one family that still answers when the engine is down.
+    function baselineProposals() {
+        var out = [];
+        for (var i = 0; i < trailers.length; i++) {
+            var t = trailers[i], best = null;
+            for (var j = 0; j < loads.length; j++) {
+                var l = loads[j];
+                if (eligibleCount && !eligibleSet[String(t.TRAILER_ID) + '::' + String(l.LOAD_ID)]) continue;
+                var km = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
+                if (!best || km < best.km) best = { l: l, km: km };
+            }
+            if (!best) continue;
+            var bl = best.l;
+            var loadedKm = haversineKm(num(bl.PICKUP_LON), num(bl.PICKUP_LAT), num(bl.DELIVERY_LON), num(bl.DELIVERY_LAT));
+            out.push({
+                PROPOSAL_ID: 'baseline:' + t.TRAILER_ID + ':' + bl.LOAD_ID,
+                TRAILER_ID: t.TRAILER_ID, LOAD_ID: bl.LOAD_ID, DISTANCE_BASIS: 'great_circle',
+                EMPTY_KM: best.km, LOADED_KM: loadedKm, DETOUR_KM: null, TOTAL_KM: best.km + loadedKm,
+                PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: null,
+                PICKUP_LON: num(bl.PICKUP_LON), PICKUP_LAT: num(bl.PICKUP_LAT),
+                DELIVERY_LON: num(bl.DELIVERY_LON), DELIVERY_LAT: num(bl.DELIVERY_LAT),
+                PICKUP_CITY: bl.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
+                DELIVERY_CITY: bl.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
+                IS_INTERNAL: bl.IS_INTERNAL === true, SOURCE: bl.SOURCE
+            });
+        }
+        return out;
+    }
+
+    // -------------------------------------------------------------- run them
+    var families = (strategy === 'ensemble') ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
+    var all = [], excludedTotal = 0, familiesRun = [];
+    for (var fi = 0; fi < families.length; fi++) {
+        var fam = families[fi];
+        if (fam === 'baseline') {
+            var bp = baselineProposals();
+            if (bp.length) { familiesRun.push(fam); all = all.concat(bp); }
+            continue;
+        }
+        var built = buildChallenge(fam, null);
+        if (!built.vehicles.length || !built.shipments.length) continue;
+        var solved = solveWithShear(built.vehicles, built.shipments);
+        excludedTotal = Math.max(excludedTotal, solved.excluded);
+        var parsed = parseSolve(solved.result, fam, built.idToTrailer, built.idToLoad);
+        if (parsed.length) { familiesRun.push(fam); all = all.concat(parsed); }
+    }
+    if (!all.length) {
+        if (suspendedSeen) {
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     vroom_service: vroomSvc,
+                     error: 'Route optimization for ' + region + ' is not responding (it may be suspended '
+                          + 'or starting). Resume it and retry. Detail: ' + suspendedSeen };
+        }
+        return { status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+                 counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+                           proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
+                 proposals: [], totals: {},
+                 note: 'No proposals were produced. Every candidate pair was either ineligible or unroutable.' };
+    }
+
+    // ------------------------------------------------------------- scoring
+    // De-duplicate to one pair per (vehicle, load), keeping the cheapest variant,
+    // and record how many strategies independently picked it. Identical maths to
+    // the cockpit's ensemble so a graded answer from the agent matches the screen.
+    var rowCost = function (r) {
+        if (finite(r.DETOUR_KM)) return Number(r.DETOUR_KM);
+        if (finite(r.EMPTY_KM)) return Number(r.EMPTY_KM);
+        return Infinity;
+    };
+    var nowMs = Date.now();
+    var idleHrsByTrailer = {}, idleValues = [];
+    for (var ti = 0; ti < trailers.length; ti++) {
+        var tt = trailers[ti];
+        if (!tt.EMPTY_FROM_TS) continue;
+        var ms = Date.parse(String(tt.EMPTY_FROM_TS));
+        if (!isFinite(ms)) continue;
+        var hrs = Math.max(0, (nowMs - ms) / 3600000);
+        idleHrsByTrailer[tt.TRAILER_ID] = hrs;
+        idleValues.push(hrs);
+    }
+    idleValues.sort(function (a, b) { return a - b; });
+    function idlePercentile(hrs) {
+        if (!idleValues.length) return 50;
+        var countLe = 0;
+        for (var k = 0; k < idleValues.length; k++) { if (idleValues[k] <= hrs) countLe++; else break; }
+        return clamp((countLe / idleValues.length) * 100);
+    }
+    // Consolidation is a VEHICLE property (how many stops its tour reached), so it
+    // is keyed by vehicle and only the bpmp family produces it.
+    var trailerStops = {};
+    for (var ai = 0; ai < all.length; ai++) {
+        var ar = all[ai];
+        if (familyOf(ar.DISTANCE_BASIS) === 'bpmp' && finite(ar.STOP_SEQ)) {
+            trailerStops[ar.TRAILER_ID] = Math.max(trailerStops[ar.TRAILER_ID] || 0, Number(ar.STOP_SEQ));
+        }
+    }
+    var bestLoadForTrailer = {}, bestTrailerForLoad = {};
+    var bestCostFamTrailer = {}, bestCostFamLoad = {};
+    var famsPerTrailer = {}, famsPerLoad = {};
+    for (var bi = 0; bi < all.length; bi++) {
+        var br = all[bi], bfam = familyOf(br.DISTANCE_BASIS), bc = rowCost(br);
+        if (!famsPerTrailer[br.TRAILER_ID]) famsPerTrailer[br.TRAILER_ID] = {};
+        famsPerTrailer[br.TRAILER_ID][bfam] = true;
+        if (!famsPerLoad[br.LOAD_ID]) famsPerLoad[br.LOAD_ID] = {};
+        famsPerLoad[br.LOAD_ID][bfam] = true;
+        var tkey = bfam + '::' + br.TRAILER_ID;
+        if (!(tkey in bestCostFamTrailer) || bc < bestCostFamTrailer[tkey]) {
+            bestCostFamTrailer[tkey] = bc;
+            bestLoadForTrailer[tkey] = br.LOAD_ID;
+        }
+        var lkey = bfam + '::' + br.LOAD_ID;
+        if (!(lkey in bestCostFamLoad) || bc < bestCostFamLoad[lkey]) {
+            bestCostFamLoad[lkey] = bc;
+            bestTrailerForLoad[lkey] = br.TRAILER_ID;
+        }
+    }
+    var groups = {};
+    for (var gi = 0; gi < all.length; gi++) {
+        var gr = all[gi], gkey = gr.TRAILER_ID + '::' + gr.LOAD_ID;
+        if (!groups[gkey]) groups[gkey] = [];
+        groups[gkey].push(gr);
+    }
+    var pairs = [];
+    var gkeys = Object.keys(groups);
+    for (var ki = 0; ki < gkeys.length; ki++) {
+        var rows = groups[gkeys[ki]];
+        var best = rows[0];
+        for (var ri2 = 1; ri2 < rows.length; ri2++) if (rowCost(rows[ri2]) < rowCost(best)) best = rows[ri2];
+        var famSet = {};
+        for (var ri3 = 0; ri3 < rows.length; ri3++) famSet[familyOf(rows[ri3].DISTANCE_BASIS)] = true;
+        var famList = Object.keys(famSet);
+        var pick = function (sel, mode) {
+            var vals = [];
+            for (var x = 0; x < rows.length; x++) { var v = sel(rows[x]); if (finite(v)) vals.push(Number(v)); }
+            if (!vals.length) return null;
+            return mode === 'max' ? Math.max.apply(null, vals) : Math.min.apply(null, vals);
+        };
+        var emptyKm  = pick(function (r) { return r.EMPTY_KM; }, 'min');
+        var loadedKm = pick(function (r) { return r.LOADED_KM; }, 'max');
+        var detourKm = pick(function (r) { return r.DETOUR_KM; }, 'min');
+        var totalKm  = pick(function (r) { return r.TOTAL_KM; }, 'min');
+        var slack    = pick(function (r) { return r.PICKUP_SLACK_HRS; }, 'max');
+        var anyTrue = false, anyFalse = false;
+        for (var ri4 = 0; ri4 < rows.length; ri4++) {
+            if (rows[ri4].FEASIBLE === true) anyTrue = true;
+            if (rows[ri4].FEASIBLE === false) anyFalse = true;
+        }
+        var feasible = anyTrue ? true : (anyFalse ? false : null);
+        var tCons = 0, tConsOf = 0, lCons = 0, lConsOf = 0;
+        var tf = famsPerTrailer[best.TRAILER_ID] || {};
+        var tfk = Object.keys(tf); tConsOf = tfk.length;
+        for (var c1 = 0; c1 < tfk.length; c1++) if (bestLoadForTrailer[tfk[c1] + '::' + best.TRAILER_ID] === best.LOAD_ID) tCons++;
+        var lf = famsPerLoad[best.LOAD_ID] || {};
+        var lfk = Object.keys(lf); lConsOf = lfk.length;
+        for (var c2 = 0; c2 < lfk.length; c2++) if (bestTrailerForLoad[lfk[c2] + '::' + best.LOAD_ID] === best.TRAILER_ID) lCons++;
+        var loadedKmEst = greatCircleKm(best.PICKUP_LON, best.PICKUP_LAT, best.DELIVERY_LON, best.DELIVERY_LAT);
+        pairs.push({
+            key: gkeys[ki], trailerId: best.TRAILER_ID, loadId: best.LOAD_ID,
+            bestSource: familyOf(best.DISTANCE_BASIS), agreement: famList.length, families: famList,
+            trailerConsensus: tCons, trailerConsensusOf: tConsOf,
+            loadConsensus: lCons, loadConsensusOf: lConsOf,
+            emptyKm: emptyKm, loadedKm: loadedKm, loadedKmEst: loadedKmEst,
+            detourKm: detourKm, totalKm: totalKm, pickupSlackHrs: slack,
+            maxStopSeq: (best.TRAILER_ID in trailerStops) ? trailerStops[best.TRAILER_ID] : null,
+            idleHours: (best.TRAILER_ID in idleHrsByTrailer) ? idleHrsByTrailer[best.TRAILER_ID] : null,
+            feasible: feasible, isInternal: best.IS_INTERNAL === true, source: best.SOURCE,
+            pickupCity: best.PICKUP_CITY, pickupCountry: best.PICKUP_COUNTRY,
+            deliveryCity: best.DELIVERY_CITY, emptyCity: best.EMPTY_CITY,
+            pickupLon: best.PICKUP_LON, pickupLat: best.PICKUP_LAT,
+            deliveryLon: best.DELIVERY_LON, deliveryLat: best.DELIVERY_LAT,
+            scores: {}, grades: {}
+        });
+    }
+    var econLoaded = function (p) {
+        return finite(p.loadedKm) ? Number(p.loadedKm) : (finite(p.loadedKmEst) ? Number(p.loadedKmEst) : null);
+    };
+    var econMargin = function (p) {
+        var L = econLoaded(p);
+        if (L === null) return null;
+        return finite(p.emptyKm) ? L * revLoaded - Number(p.emptyKm) * costEmpty : L * revLoaded;
+    };
+    var revenues = [], margins = [];
+    for (var pi2 = 0; pi2 < pairs.length; pi2++) {
+        var L2 = econLoaded(pairs[pi2]);
+        if (L2 !== null) revenues.push(L2 * revLoaded);
+        var m2 = econMargin(pairs[pi2]);
+        if (m2 !== null) margins.push(m2);
+    }
+    var revP90 = percentile(revenues, 0.90);
+    var marginMin = margins.length ? Math.min.apply(null, margins) : 0;
+    var marginMax = margins.length ? Math.max.apply(null, margins) : 0;
+    for (var pi3 = 0; pi3 < pairs.length; pi3++) {
+        var p = pairs[pi3];
+        p.scores.costEff = finite(p.emptyKm) ? clamp(100 - (Number(p.emptyKm) / maxEmptyKm) * 100) : null;
+        var eL = econLoaded(p);
+        var rev2 = (eL !== null) ? eL * revLoaded : null;
+        p.scores.revenue = (rev2 !== null && revP90 > 0) ? clamp((rev2 / revP90) * 100) : null;
+        var mg = econMargin(p);
+        p.scores.margin = (mg !== null && marginMax > marginMin)
+            ? clamp(((mg - marginMin) / (marginMax - marginMin)) * 100)
+            : (mg !== null ? 60 : null);
+        if (p.feasible === false) p.scores.feasibility = 0;
+        else if (finite(p.pickupSlackHrs)) p.scores.feasibility = clamp((Number(p.pickupSlackHrs) / IDEAL_SLACK_HRS) * 100);
+        else p.scores.feasibility = (p.feasible === true) ? 70 : null;
+        p.scores.utilization = (eL !== null && finite(p.emptyKm) && (eL + Number(p.emptyKm)) > 0)
+            ? clamp((eL / (eL + Number(p.emptyKm))) * 100) : null;
+        if (finite(p.maxStopSeq)) {
+            var st = Number(p.maxStopSeq);
+            p.scores.consolidation = (st <= 1) ? 50 : clamp((st / maxStops) * 100);
+        } else p.scores.consolidation = null;
+        p.scores.urgency = finite(p.idleHours) ? idlePercentile(Number(p.idleHours)) : null;
+        for (var di = 0; di < DIMENSIONS.length; di++) p.grades[DIMENSIONS[di]] = toGrade(p.scores[DIMENSIONS[di]]);
+        // Composite. Weights are relative and renormalized per pair, so a pair
+        // missing a dimension is not penalised for the absence.
+        var wSum = 0, acc = 0;
+        for (var dj = 0; dj < DIMENSIONS.length; dj++) {
+            var d = DIMENSIONS[dj], sc = p.scores[d], w = Math.max(0, Number(WEIGHTS[d]) || 0);
+            if (sc === null || w === 0) continue;
+            acc += sc * w; wSum += w;
+        }
+        p.composite = wSum > 0 ? acc / wSum : 0;
+        p.grade = toGrade(p.composite) || 'F';
+    }
+    pairs.sort(function (a, b) {
+        return (b.composite - a.composite)
+            || (b.agreement - a.agreement)
+            || ((a.emptyKm === null ? Infinity : a.emptyKm) - (b.emptyKm === null ? Infinity : b.emptyKm));
+    });
+
+    // One entry per vehicle: its best-scoring pair. This is the dispatcher's
+    // answer ("what should this vehicle do"), and the per-vehicle totals below
+    // must be computed from it - summing every graded pair would count the same
+    // vehicle many times.
+    var bestByTrailer = {}, perVehicle = [];
+    for (var qi = 0; qi < pairs.length; qi++) {
+        var pp = pairs[qi];
+        if (bestByTrailer[pp.trailerId]) continue;
+        bestByTrailer[pp.trailerId] = pp;
+        perVehicle.push(pp);
+    }
+    var totalEmpty = 0, totalMargin = 0, internalMatched = 0, compositeSum = 0;
+    for (var vi2 = 0; vi2 < perVehicle.length; vi2++) {
+        var pv = perVehicle[vi2];
+        totalEmpty += finite(pv.emptyKm) ? Number(pv.emptyKm) : 0;
+        var mv = econMargin(pv);
+        totalMargin += (mv === null) ? 0 : mv;
+        if (pv.isInternal) internalMatched++;
+        compositeSum += pv.composite;
+    }
+
+    // Pair granularity: every graded pair, in the shape the cockpit's ranker
+    // consumes. The per-dimension scores travel with each row so weights stay a
+    // CLIENT concern - that is what keeps a slider drag instant.
+    if (granularity === 'pair') {
+        var pairRows = [];
+        for (var yi = 0; yi < Math.min(outLimit, pairs.length); yi++) {
+            var y = pairs[yi];
+            pairRows.push({
+                key: y.key, trailerId: y.trailerId, loadId: y.loadId,
+                bestProposalId: y.bestSource + ':' + y.trailerId + ':' + y.loadId,
+                bestSource: y.bestSource, agreement: y.agreement, families: y.families,
+                trailerConsensus: y.trailerConsensus, trailerConsensusOf: y.trailerConsensusOf,
+                loadConsensus: y.loadConsensus, loadConsensusOf: y.loadConsensusOf,
+                emptyKm: y.emptyKm, loadedKm: y.loadedKm, loadedKmEst: y.loadedKmEst,
+                detourKm: y.detourKm, totalKm: y.totalKm, marginUsd: econMargin(y),
+                pickupSlackHrs: y.pickupSlackHrs, maxStopSeq: y.maxStopSeq, idleHours: y.idleHours,
+                feasible: y.feasible, isInternal: y.isInternal, source: y.source,
+                pickupCity: y.pickupCity, pickupCountry: y.pickupCountry,
+                deliveryCity: y.deliveryCity, emptyCity: y.emptyCity,
+                pickupLon: y.pickupLon, pickupLat: y.pickupLat,
+                deliveryLon: y.deliveryLon, deliveryLat: y.deliveryLat,
+                scores: y.scores, grades: y.grades,
+                constraints: chipsByPair[y.trailerId + '::' + y.loadId] || null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+            granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
+            strategies_run: familiesRun,
+            counts: {
+                vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+                graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
+                pairs_returned: pairRows.length, excluded_unroutable: excludedTotal
+            },
+            weights: WEIGHTS,
+            pairs: pairRows,
+            degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
+        };
+    }
+
+    var outRows = [];
+    for (var oi = 0; oi < Math.min(outLimit, perVehicle.length); oi++) {
+        var o = perVehicle[oi];
+        outRows.push({
+            vehicle_id: o.trailerId, load_id: o.loadId,
+            grade: o.grade, composite: Math.round(o.composite * 10) / 10,
+            best_strategy: o.bestSource, strategies_agreeing: o.agreement, strategies: o.families,
+            is_internal: o.isInternal, source: o.source,
+            empty_km: (o.emptyKm === null) ? null : Math.round(o.emptyKm * 10) / 10,
+            loaded_km: (econLoaded(o) === null) ? null : Math.round(econLoaded(o) * 10) / 10,
+            detour_km: (o.detourKm === null) ? null : Math.round(o.detourKm * 10) / 10,
+            margin_usd: (econMargin(o) === null) ? null : Math.round(econMargin(o)),
+            idle_hours: (o.idleHours === null) ? null : Math.round(o.idleHours * 10) / 10,
+            stops: o.maxStopSeq,
+            empty_city: o.emptyCity, pickup_city: o.pickupCity, delivery_city: o.deliveryCity,
+            pickup_lon: o.pickupLon, pickup_lat: o.pickupLat,
+            delivery_lon: o.deliveryLon, delivery_lat: o.deliveryLat,
+            scores: o.scores,
+            constraints: chipsByPair[o.trailerId + '::' + o.loadId] || null
+        });
+    }
+
+    return {
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+        granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
+        strategies_run: familiesRun,
+        counts: {
+            vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+            graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
+            proposals_returned: outRows.length, excluded_unroutable: excludedTotal
+        },
+        totals: {
+            internal_matched: internalMatched,
+            total_empty_km: Math.round(totalEmpty),
+            total_margin_usd: Math.round(totalMargin),
+            avg_composite: perVehicle.length ? Math.round(compositeSum / perVehicle.length) : null
+        },
+        weights: WEIGHTS,
+        proposals: outRows,
+        // A partially-degraded run is still a SUCCESS, but the caller must be able
+        // to say so rather than presenting a thinner plan as complete.
+        degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
+    };
+} catch (err) {
+    var em = (err && err.message) ? String(err.message) : 'unknown error';
+    if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(em)) {
+        return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                 vroom_service: vroomSvc,
+                 error: 'Route optimization for ' + region + ' is not responding (' + em + '). Resume it and retry.' };
+    }
+    return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+----------------------------------------------------------------------
+-- TOOL_BACKLOAD_CHAIN_SOLVE: two-hop (chained) return planning.
+--
+-- The case single-hop matching structurally cannot answer: a vehicle empties a
+-- long way from where it must get back to, and NO single load makes the return.
+-- A chain does it in two hops - carry load A part of the way, then load B the
+-- rest. This is the same computation the Triangle Proposals cockpit performs, so
+-- app and agent share one implementation.
+--
+-- Three things make a chain actionable rather than merely clever, and all three
+-- are load-bearing here:
+--
+--  1. INTERNAL-FIRST CASCADE. Own loads are exhausted before an outside exchange
+--     is consulted. The ladder is explicit (rung 1 own/own .. rung 4
+--     external/external) and stops at the LOWEST rung producing an eligible
+--     chain at or above the acceptance score, so the answer can say "no
+--     internal-only chain existed" instead of quietly returning an external one.
+--     Note the counter-intuitive consequence, which must be reported rather than
+--     hidden: if NO rung clears the mark the cascade cut is not applied at all,
+--     so RAISING the acceptance score can return MORE chains, not fewer.
+--
+--  2. LIVE ROAD COST. VW_TRIANGLES enumerates and prunes chain skeletons in SQL
+--     on great-circle distance; every leg of every surviving chain is then priced
+--     by ONE live MATRIX_TABULAR call (Tenet 9 - routing output is never cached
+--     into a table). Grading and the cascade are applied ONLY on road figures,
+--     because stopping the cascade on a straight-line estimate would commit to a
+--     rung on data the road network may contradict. cost_basis='great_circle'
+--     skips the call and deliberately returns ungraded skeletons.
+--
+--  3. A STATUS-QUO BASELINE. Every chain is reported against what the planner
+--     would otherwise do: run empty to the target. The chain's empty distance
+--     MUST therefore include the residual run from the hop-2 delivery to the
+--     target (TOTAL_EMPTY_WITH_RESIDUAL_KM), because the baseline is a COMPLETE
+--     run home. Comparing a complete baseline against the two-leg subtotal
+--     overstated every saving on this page - one chain read as 173 km better
+--     while actually running 44 km further. TOTAL_EMPTY_KM stays the two-leg
+--     subtotal because the constraint checks are calibrated against it.
+--
+-- Region scoping: VW_TRIANGLES does not project REGION, so chains are filtered
+-- by the region's own vehicles via the FLEET_APP contract. Without this a chain
+-- can be proposed for a vehicle on another continent.
+--
+-- Returns { status, region, cost_basis, cascade, acceptance_score, counts,
+--           totals, chains[] } or { status:'FAILED', reason, error }.
+----------------------------------------------------------------------
+-- Drop the previous 5-argument signature first: every argument is defaulted, so
+-- adding a 6th defaulted one does not replace it, and Snowflake rejects the new
+-- procedure with "Cannot overload PROCEDURE ... ambiguous PROCEDURE overloading".
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT);
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(
+    P_REGION           VARCHAR DEFAULT NULL,
+    P_COST_BASIS       VARCHAR DEFAULT NULL,
+    P_ACCEPTANCE_SCORE FLOAT   DEFAULT NULL,
+    P_MAX_PER_VEHICLE  FLOAT   DEFAULT NULL,
+    P_LIMIT            FLOAT   DEFAULT NULL,
+    P_GRANULARITY      VARCHAR DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+var region = P_REGION;
+
+function q(sql, binds) {
+    return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute();
+}
+var num = function (v) { var n = Number(v); return isFinite(n) ? n : 0; };
+var finite = function (v) { return v !== null && v !== undefined && isFinite(Number(v)); };
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function toGrade(s) {
+    if (s >= 90) return 'A';
+    if (s >= 80) return 'B+';
+    if (s >= 70) return 'B';
+    if (s >= 60) return 'C+';
+    if (s >= 50) return 'C';
+    if (s >= 40) return 'D';
+    return 'F';
+}
+// Upstream POI names arrive wrapped in literal double quotes (every row of
+// DIM_POIS.NAME), and the load pool falls back to the bare words Origin /
+// Destination whenever a trip endpoint was never a POI - the majority of rows.
+// Reported verbatim a chain reads "Origin -> Destination", so unwrap the quotes
+// and fall back to the coordinate, which at least locates the stop.
+var PLACEHOLDERS = { 'origin': 1, 'destination': 1, 'drop-off': 1, 'dropoff': 1, 'unknown': 1, 'depot': 1 };
+function place(s, lon, lat) {
+    var t = s ? String(s).trim() : '';
+    if (t.length >= 2 && t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') t = t.slice(1, -1).trim();
+    if (t && !PLACEHOLDERS[t.toLowerCase()]) return t;
+    if (isFinite(lon) && isFinite(lat) && !(lon === 0 && lat === 0)) {
+        return 'near ' + Number(lat).toFixed(2) + ', ' + Number(lon).toFixed(2);
+    }
+    return t || 'unknown';
+}
+var RUNG_LABEL = { 1: 'Own loads only', 2: 'Own load, then external',
+                   3: 'External, then own load', 4: 'External on both hops' };
+var RUNG_NOTE = { 1: 'Both hops came from our own waiting loads.',
+                  2: 'No own load completed the return, so the second hop is external.',
+                  3: 'No own load started the return, so the first hop is external.',
+                  4: 'No own load fitted either hop; both come from outside.' };
+// The gateway guards locations per matrix call and the engine caps the resulting
+// route count. This ceiling sits far below both; a chain contributes at most 6
+// points, so it admits ~25 chains per costing run.
+var MAX_MATRIX_POINTS = 150;
+
+try {
+    if (!region) {
+        try {
+            var cr = q("SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (cr.next()) region = cr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) {
+        try {
+            var dr = q("SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1");
+            if (dr.next()) region = dr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) region = 'SanFrancisco';
+
+    var costBasis = String(P_COST_BASIS || 'road').toLowerCase();
+    if (costBasis !== 'road' && costBasis !== 'great_circle') {
+        return { status: 'FAILED', reason: 'BAD_COST_BASIS', region: region,
+                 error: "cost_basis must be 'road' or 'great_circle' (got " + costBasis + ")" };
+    }
+    // 'chain' (default) returns the reported, human-readable chain. 'raw' additionally
+    // returns each chain's source row and its per-leg ROAD distances, which is what
+    // lets a caller re-grade locally when a constraint slider or a rate box moves -
+    // grading is a pure function of (chain, road legs, constraints, rates), so
+    // re-running the matrix for a slider drag would be pure waste.
+    var granularity = String(P_GRANULARITY || 'chain').toLowerCase();
+    if (granularity !== 'chain' && granularity !== 'raw') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'chain' or 'raw' (got " + granularity + ")" };
+    }
+    var maxPerVehicle = finite(P_MAX_PER_VEHICLE) && Number(P_MAX_PER_VEHICLE) > 0
+        ? Math.min(20, Math.floor(Number(P_MAX_PER_VEHICLE))) : null;
+    var outLimit = finite(P_LIMIT) && Number(P_LIMIT) > 0 ? Math.min(200, Math.floor(Number(P_LIMIT))) : 25;
+
+    // --------------------------------------------------------- class + params
+    var vehicleType = 'hgv', profile = 'driving-car';
+    try {
+        var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+        if (vr.next()) vehicleType = String(vr.getColumnValue(1) || 'hgv');
+    } catch (e) { /* default */ }
+    var pr = q("SELECT ORS_PROFILE FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
+               [vehicleType]);
+    if (pr.next()) profile = String(pr.getColumnValue(1) || 'driving-car');
+
+    var params = {};
+    try {
+        var prm = q("SELECT PARAM_KEY, PARAM_VALUE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS");
+        while (prm.next()) params[String(prm.getColumnValue(1))] = prm.getColumnValue(2);
+    } catch (e) { /* defaults below */ }
+    function param(key, dflt) {
+        var v = Number(params[key]);
+        return isFinite(v) ? v : dflt;
+    }
+    var targetRadiusKm  = param('TARGET_RADIUS_KM', 250);
+    var maxTotalEmptyKm = param('TRIANGLE_MAX_TOTAL_EMPTY_KM', 250);
+    var maxLeg1DetourKm = param('TRIANGLE_MAX_LEG1_DETOUR_KM', 400);
+    if (maxPerVehicle === null) maxPerVehicle = Math.max(1, param('MAX_TRIANGLES_PER_TRAILER', 5));
+    var threshold = finite(P_ACCEPTANCE_SCORE) ? Math.max(0, Math.min(100, Number(P_ACCEPTANCE_SCORE)))
+                                               : param('CASCADE_GRADE_THRESHOLD', 70);
+
+    // ----------------------------------------------------------- chain feed
+    var chains = [];
+    try {
+        var cs = q(
+            "SELECT t.* FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES t "
+          + "WHERE t.TRAILER_ID IN ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + "ORDER BY t.TRAILER_ID, t.CASCADE_RUNG, t.NET_BENEFIT_USD DESC", [region]);
+        var cols = cs.getColumnCount();
+        var names = [];
+        for (var ci = 1; ci <= cols; ci++) names.push(cs.getColumnName(ci));
+        while (cs.next()) {
+            var row = {};
+            for (var cj = 0; cj < names.length; cj++) row[names[cj]] = cs.getColumnValue(cj + 1);
+            chains.push(row);
+        }
+    } catch (e) {
+        var em0 = e && e.message ? String(e.message) : 'unknown error';
+        if (/does not exist or not authorized/i.test(em0)) {
+            return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                     error: 'The chain layer (VW_TRIANGLES) is not provisioned for the active dataset.' };
+        }
+        throw e;
+    }
+    if (!chains.length) {
+        // Not an error, and specifically not "no data". Chains are a LONG-HAUL
+        // pattern: in a metro region every load already delivers inside the
+        // target radius, so a direct return exists and no chain is needed.
+        return { status: 'SUCCESS', region: region, cost_basis: costBasis, chains: [],
+                 counts: { skeletons: 0, graded: 0, returned: 0 },
+                 note: 'No chain is needed for ' + region + ': every load already delivers within the '
+                     + 'target radius, so a direct single-hop return exists. Chains are a long-haul '
+                     + 'pattern - a wide-area region shows them.' };
+    }
+
+    // Rates. A rate of 0 would silently zero the economics, so take the first
+    // STRICTLY POSITIVE of: match params, the rate the view itself costed with,
+    // the documented default.
+    function rate(a, b, dflt) {
+        if (isFinite(a) && a > 0) return a;
+        if (isFinite(b) && b > 0) return b;
+        return dflt;
+    }
+    var costPerEmptyKm = rate(Number(params['COST_PER_EMPTY_KM']), num(chains[0].COST_PER_EMPTY_KM), 1.2);
+    var revPerLoadedKm = rate(Number(params['REVENUE_PER_LOADED_KM']), num(chains[0].REV_PER_LOADED_KM), 1.1);
+
+    function chainKey(c) { return c.TRAILER_ID + '::' + c.LEG1_LOAD_ID + '::' + c.LEG2_LOAD_ID; }
+
+    // ------------------------------------------------------- live road costing
+    // ONE matrix call over every distinct point in the candidate set; each leg is
+    // then a lookup. The same matrix yields the baseline (empty straight to
+    // target) AND the residual run, so the comparison is road-against-road rather
+    // than one road figure against one straight line.
+    // MATRIX_TABULAR takes (profile, ORIGIN coords, DESTINATION coords, region)
+    // and derives sources/destinations from the two arrays' LENGTHS, so a square
+    // matrix means passing the same list twice. Distances come back in metres.
+    var roadByKey = {}, deferred = 0, costed = 0;
+    if (costBasis === 'road') {
+        var idx = {}, pts = [], mapped = [];
+        var add = function (lon, lat) {
+            var k = Number(lon).toFixed(5) + ',' + Number(lat).toFixed(5);
+            if (k in idx) return idx[k];
+            var i = pts.length;
+            pts.push([Number(lon), Number(lat)]);
+            idx[k] = i;
+            return i;
+        };
+        for (var mi = 0; mi < chains.length; mi++) {
+            var mc = chains[mi];
+            // A chain contributes at most 6 points; stop BEFORE overshooting.
+            // Truncating the matrix instead would return short rows and silently
+            // mis-cost the legs that fell off the end.
+            if (pts.length + 6 > MAX_MATRIX_POINTS) { deferred += 1; continue; }
+            mapped.push({
+                c: mc,
+                iEmpty: add(num(mc.EMPTY_LON), num(mc.EMPTY_LAT)),
+                iP1: add(num(mc.LEG1_PICKUP_LON), num(mc.LEG1_PICKUP_LAT)),
+                iD1: add(num(mc.LEG1_DELIVERY_LON), num(mc.LEG1_DELIVERY_LAT)),
+                iP2: add(num(mc.LEG2_PICKUP_LON), num(mc.LEG2_PICKUP_LAT)),
+                iD2: add(num(mc.LEG2_DELIVERY_LON), num(mc.LEG2_DELIVERY_LAT)),
+                iTgt: add(num(mc.TARGET_LON), num(mc.TARGET_LAT))
+            });
+        }
+        var parts = [];
+        for (var pi = 0; pi < pts.length; pi++) parts.push('ARRAY_CONSTRUCT(' + pts[pi][0] + ', ' + pts[pi][1] + ')');
+        var coords = 'ARRAY_CONSTRUCT(' + parts.join(', ') + ')';
+        var dist = null;
+        try {
+            var ms = q("SELECT TO_VARCHAR(M:distances) AS D FROM (SELECT "
+                     + "OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, " + coords + ", " + coords + ", ?) AS M)",
+                       [profile, region]);
+            var draw = ms.next() ? ms.getColumnValue(1) : null;
+            if (draw) { try { dist = JSON.parse(draw); } catch (e) { dist = null; } }
+        } catch (e) {
+            var em1 = e && e.message ? String(e.message) : 'unknown error';
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     error: 'The routing engine could not price the chain legs for ' + region
+                          + ' (' + em1 + '). It may be suspended or starting - resume it and retry, '
+                          + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+        }
+        if (!dist || !dist.length || !dist[0] || !dist[0].length) {
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     error: 'The routing engine returned no distance matrix, so chain legs cannot be '
+                          + 'priced on the road network. Check that the region services are running, '
+                          + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+        }
+        var km = function (a, b) {
+            var v = (dist[a] && dist[a][b] !== undefined) ? dist[a][b] : null;
+            return (typeof v === 'number' && isFinite(v)) ? v / 1000 : null;
+        };
+        for (var xi = 0; xi < mapped.length; xi++) {
+            var mp = mapped[xi];
+            roadByKey[chainKey(mp.c)] = {
+                e1: km(mp.iEmpty, mp.iP1), loaded1: km(mp.iP1, mp.iD1),
+                e2: km(mp.iD1, mp.iP2), loaded2: km(mp.iP2, mp.iD2),
+                residual: km(mp.iD2, mp.iTgt), baseline: km(mp.iEmpty, mp.iTgt)
+            };
+        }
+        costed = mapped.length;
+    }
+
+    // ------------------------------------------------------------- grade them
+    var graded = [];
+    for (var gi = 0; gi < chains.length; gi++) {
+        var c = chains[gi];
+        var r = roadByKey[chainKey(c)] || null;
+        var roadE1 = r ? r.e1 : null, roadL1 = r ? r.loaded1 : null;
+        var roadE2 = r ? r.e2 : null, roadL2 = r ? r.loaded2 : null;
+        var roadRes = r ? r.residual : null;
+        var roadEmpty = (roadE1 !== null && roadE2 !== null && roadRes !== null) ? roadE1 + roadE2 + roadRes : null;
+        var roadLoaded = (roadL1 !== null && roadL2 !== null) ? roadL1 + roadL2 : null;
+
+        // Residual-INCLUSIVE, because the baseline is a complete run home.
+        var emptyKm = (roadEmpty !== null) ? roadEmpty : num(c.TOTAL_EMPTY_WITH_RESIDUAL_KM);
+        var loadedKm = (roadLoaded !== null) ? roadLoaded : num(c.TOTAL_LOADED_KM);
+        var residualKm = (roadRes !== null) ? roadRes : num(c.FINAL_GAP_KM);
+        var baselineEmptyKm = (r && r.baseline !== null) ? r.baseline : num(c.TARGET_GAP_KM);
+
+        var netUsd = loadedKm * revPerLoadedKm - emptyKm * costPerEmptyKm;
+        // The status quo earns nothing and still burns the empty run home.
+        var baselineNetUsd = -baselineEmptyKm * costPerEmptyKm;
+
+        // TOTAL_EMPTY_CHECK is defined on the TWO-LEG subtotal, which is what
+        // MAX_TOTAL_EMPTY_KM was calibrated against. Keep it that way, or the
+        // chips re-prune against a figure they were never set for.
+        var twoLegEmpty = (roadE1 !== null && roadE2 !== null) ? roadE1 + roadE2 : num(c.TOTAL_EMPTY_KM);
+        var totalEmptyOk = twoLegEmpty <= maxTotalEmptyKm;
+        var leg1DetourOk = ((roadE1 !== null) ? roadE1 : num(c.LEG1_EMPTY_KM)) <= maxLeg1DetourKm;
+        var targetOk = residualKm <= targetRadiusKm;
+        // Hop ordering is structural (enforced by the join), so it cannot be
+        // relaxed here - carry the view's verdict through unchanged.
+        var sequenceOk = c.SEQUENCE_CHECK === true;
+        var eligible = totalEmptyOk && leg1DetourOk && targetOk && sequenceOk;
+
+        var util = loadedKm / Math.max(1, loadedKm + emptyKm);
+        var saved = baselineEmptyKm > 0 ? clamp01((baselineEmptyKm - emptyKm) / baselineEmptyKm) : 0;
+        var closed = clamp01((num(c.TARGET_GAP_KM) - residualKm) / Math.max(1, num(c.TARGET_GAP_KM)));
+        var score = Math.max(0, Math.min(100, 100 * (0.45 * util + 0.35 * closed + 0.20 * saved)));
+
+        graded.push({
+            c: c, key: chainKey(c), rung: num(c.CASCADE_RUNG),
+            emptyKm: emptyKm, loadedKm: loadedKm, residualKm: residualKm,
+            twoLegEmptyKm: twoLegEmpty,
+            baselineEmptyKm: baselineEmptyKm, emptySavedKm: baselineEmptyKm - emptyKm,
+            netUsd: netUsd, baselineNetUsd: baselineNetUsd, beatsBaseline: netUsd > baselineNetUsd,
+            totalEmptyOk: totalEmptyOk, leg1DetourOk: leg1DetourOk,
+            targetOk: targetOk, sequenceOk: sequenceOk, eligible: eligible,
+            score: score, grade: (costBasis === 'road') ? toGrade(score) : null,
+            costedOnRoad: r !== null
+        });
+    }
+
+    // ----------------------------------------------------------- the cascade
+    // Applied ONLY on road figures: stopping the ladder on a straight-line
+    // estimate would commit to a rung the road network may contradict.
+    var rungReached = null;
+    if (costBasis === 'road') {
+        for (var rr = 1; rr <= 4; rr++) {
+            for (var ri2 = 0; ri2 < graded.length; ri2++) {
+                if (graded[ri2].eligible && graded[ri2].rung === rr && graded[ri2].score >= threshold) {
+                    rungReached = rr; break;
+                }
+            }
+            if (rungReached !== null) break;
+        }
+    }
+    var shown = [];
+    for (var si = 0; si < graded.length; si++) {
+        if (rungReached !== null && graded[si].rung > rungReached) continue;
+        shown.push(graded[si]);
+    }
+    shown.sort(function (a, b) {
+        return String(a.c.TRAILER_ID).localeCompare(String(b.c.TRAILER_ID))
+            || (a.rung - b.rung) || (b.score - a.score) || (b.netUsd - a.netUsd);
+    });
+    // Per-vehicle cap applies to the RANKED chains, so lowering it keeps each
+    // vehicle's best rather than an arbitrary slice.
+    var seen = {}, capped = [];
+    for (var ki = 0; ki < shown.length; ki++) {
+        var vid = String(shown[ki].c.TRAILER_ID);
+        var n = (seen[vid] || 0) + 1;
+        seen[vid] = n;
+        if (n <= maxPerVehicle) capped.push(shown[ki]);
+    }
+
+    // Raw granularity: the caller grades. Chains are returned UNFILTERED by the
+    // cascade and the per-vehicle cap, because those are policy the caller applies
+    // itself once it has re-graded against its own sliders - applying them here
+    // would silently discard rows the caller may then be unable to show.
+    if (granularity === 'raw') {
+        var rawRows = [];
+        for (var wi = 0; wi < Math.min(outLimit, graded.length); wi++) {
+            var w = graded[wi];
+            var wr = roadByKey[w.key] || null;
+            rawRows.push({
+                key: w.key, chain: w.c,
+                road_legs: wr ? { e1: wr.e1, loaded1: wr.loaded1, e2: wr.e2,
+                                  loaded2: wr.loaded2, residual: wr.residual, baseline: wr.baseline }
+                              : null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
+            cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
+            counts: { skeletons: chains.length, graded: graded.length, returned: rawRows.length,
+                      costed_on_road: costed, deferred_over_matrix_limit: deferred },
+            economics: { cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: revPerLoadedKm },
+            envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
+                        max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
+            raw: rawRows
+        };
+    }
+
+    var out = [], beats = 0, savingEmpty = 0, sumSaved = 0, sumNet = 0;
+    for (var oi = 0; oi < capped.length; oi++) {
+        var g = capped[oi], gc = g.c;
+        if (g.beatsBaseline) beats++;
+        if (g.emptySavedKm > 0) savingEmpty++;
+        sumSaved += g.emptySavedKm;
+        sumNet += g.netUsd;
+        if (out.length >= outLimit) continue;
+        out.push({
+            vehicle_id: gc.TRAILER_ID,
+            cascade_rung: g.rung, cascade_rung_label: RUNG_LABEL[g.rung] || null,
+            grade: g.grade, score: Math.round(g.score * 10) / 10,
+            eligible: g.eligible, costed_on_road: g.costedOnRoad,
+            availability_basis: gc.AVAILABILITY_BASIS,
+            from: place(gc.EMPTY_CITY, num(gc.EMPTY_LON), num(gc.EMPTY_LAT)),
+            target: place(gc.TARGET_LABEL, num(gc.TARGET_LON), num(gc.TARGET_LAT)),
+            target_gap_km: Math.round(num(gc.TARGET_GAP_KM)),
+            hop1: {
+                load_id: gc.LEG1_LOAD_ID, is_internal: gc.LEG1_IS_INTERNAL === true,
+                source: gc.LEG1_SOURCE_SYSTEM,
+                pickup: place(gc.LEG1_PICKUP_CITY, num(gc.LEG1_PICKUP_LON), num(gc.LEG1_PICKUP_LAT)),
+                delivery: place(gc.LEG1_DELIVERY_CITY, num(gc.LEG1_DELIVERY_LON), num(gc.LEG1_DELIVERY_LAT)),
+                empty_km: Math.round(num(gc.LEG1_EMPTY_KM)), loaded_km: Math.round(num(gc.LEG1_LOADED_KM))
+            },
+            hop2: {
+                load_id: gc.LEG2_LOAD_ID, is_internal: gc.LEG2_IS_INTERNAL === true,
+                source: gc.LEG2_SOURCE_SYSTEM,
+                pickup: place(gc.LEG2_PICKUP_CITY, num(gc.LEG2_PICKUP_LON), num(gc.LEG2_PICKUP_LAT)),
+                delivery: place(gc.LEG2_DELIVERY_CITY, num(gc.LEG2_DELIVERY_LON), num(gc.LEG2_DELIVERY_LAT)),
+                empty_km: Math.round(num(gc.LEG2_EMPTY_KM)), loaded_km: Math.round(num(gc.LEG2_LOADED_KM))
+            },
+            // empty_km is residual-inclusive and is the figure comparable with
+            // baseline_empty_km. two_leg_empty_km is the subtotal the constraint
+            // checks use; never compare THAT with the baseline.
+            empty_km: Math.round(g.emptyKm), two_leg_empty_km: Math.round(g.twoLegEmptyKm),
+            loaded_km: Math.round(g.loadedKm), residual_km: Math.round(g.residualKm),
+            baseline_empty_km: Math.round(g.baselineEmptyKm),
+            empty_saved_km: Math.round(g.emptySavedKm),
+            net_usd: Math.round(g.netUsd), baseline_net_usd: Math.round(g.baselineNetUsd),
+            beats_baseline: g.beatsBaseline,
+            constraints: { total_empty: g.totalEmptyOk, leg1_detour: g.leg1DetourOk,
+                           target: g.targetOk, sequence: g.sequenceOk }
+        });
+    }
+
+    var cascadeNote;
+    if (costBasis !== 'road') {
+        cascadeNote = 'Not applied: chains are still on straight-line estimates. Re-run with '
+                    + "cost_basis='road' to grade them and apply the internal-first cascade.";
+    } else if (rungReached === null) {
+        cascadeNote = 'No rung reached the acceptance score of ' + threshold + ', so the cascade cut was '
+                    + 'NOT applied and every rung is returned as a near miss. Raising the score can '
+                    + 'therefore return MORE chains, not fewer.';
+    } else {
+        cascadeNote = 'Stopped at rung ' + rungReached + ' (' + RUNG_LABEL[rungReached] + '). '
+                    + RUNG_NOTE[rungReached];
+    }
+
+    return {
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
+        cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
+        cascade: { rung_reached: rungReached, label: rungReached ? RUNG_LABEL[rungReached] : null,
+                   note: cascadeNote },
+        counts: { skeletons: chains.length, graded: graded.length, after_cascade: shown.length,
+                  after_per_vehicle_cap: capped.length, returned: out.length,
+                  costed_on_road: costed, deferred_over_matrix_limit: deferred },
+        totals: { chains_beating_baseline: beats, chains_saving_empty_km: savingEmpty,
+                  total_empty_saved_km: Math.round(sumSaved), total_net_usd: Math.round(sumNet) },
+        economics: { cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: revPerLoadedKm },
+        envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
+                    max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
+        chains: out
+    };
+} catch (err) {
+    var em = (err && err.message) ? String(err.message) : 'unknown error';
+    return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
@@ -2537,4 +3799,6 @@ UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.
 UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_CATCHMENT'
-UNION ALL SELECT 'TOOL_SAP_INTROSPECT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_SAP_INTROSPECT';
+UNION ALL SELECT 'TOOL_SAP_INTROSPECT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_SAP_INTROSPECT'
+UNION ALL SELECT 'TOOL_BACKLOAD_SOLVE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_BACKLOAD_SOLVE'
+UNION ALL SELECT 'TOOL_BACKLOAD_CHAIN_SOLVE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_BACKLOAD_CHAIN_SOLVE';

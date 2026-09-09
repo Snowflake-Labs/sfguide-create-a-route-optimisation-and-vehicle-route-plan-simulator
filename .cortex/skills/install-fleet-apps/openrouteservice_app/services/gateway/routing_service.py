@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.13'
+GATEWAY_VERSION = 'v1.1.14'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -261,7 +261,23 @@ def _compute_matrices_from_ors(locations, profile, ors_host):
             return {'durations': durations, 'costs': costs}
         if 'error' in data:
             logger.error(f'ORS matrix error: {data}')
-            return {'__error__': data.get('error') or data}
+            err = data.get('error') or data
+            # Keep the ORS code and message INTACT. The client distinguishes an
+            # unusable engine from an unroutable payload by looking for code 6010
+            # / "out of bounds" in this text; flattening it to a bare string used
+            # to erase that distinction, so an off-graph coordinate on a healthy
+            # engine was reported to the user as "the routing engine is starting"
+            # with a Retry that could never clear.
+            if isinstance(err, dict):
+                code = err.get('code')
+                message = err.get('message') or ''
+                return {
+                    '__error__': f'matrix pre-compute rejected by {ors_host}: '
+                                 f'ORS code {code}: {message}',
+                    '__ors_code__': code,
+                    '__ors_message__': message,
+                }
+            return {'__error__': f'matrix pre-compute rejected by {ors_host}: {err}'}
         return None
     except requests.exceptions.Timeout:
         logger.error(f'ORS matrix pre-compute timed out on {ors_host} after {timeout_s}s')
@@ -375,6 +391,10 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
                     # VROOM fall back to per-leg ORS routing (= multi-minute
                     # hang). The wrapper UI can render this directly.
                     payload['__matrix_error__'] = computed['__error__']
+                    if computed.get('__ors_code__') is not None:
+                        payload['__matrix_ors_code__'] = computed['__ors_code__']
+                    if computed.get('__ors_message__'):
+                        payload['__matrix_ors_message__'] = computed['__ors_message__']
                 elif computed:
                     _remap_indices(jobs, vehs, loc_indices, shps)
                     payload['matrices'] = {profile: computed}
@@ -397,12 +417,28 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
     for row in input_rows:
         payload = build_vroom_payload(row)
         if payload.get('__matrix_error__'):
-            results.append([row[0], {
+            ors_code = payload.get('__matrix_ors_code__')
+            # 6010 (matrix) / 2010 (directions) mean the POINTS are off-graph, not
+            # that the engine is unwell, so the hint must not send the caller off
+            # to wait for a graph load that is already finished.
+            off_graph = ors_code in (6010, 2010, '6010', '2010')
+            failure = {
                 'code': 99,
                 'error': 'matrix_precompute_failed',
                 'message': payload['__matrix_error__'],
-                'hint': 'Try again after the ORS graph is fully loaded, or reduce the number of unique locations (lower vehicle/shipment caps).',
-            }])
+                'hint': (
+                    'One or more locations are outside this region\'s road graph. '
+                    'Check that the selected region matches the data being solved; '
+                    'waiting or retrying will not help.'
+                    if off_graph else
+                    'Try again after the ORS graph is fully loaded, or reduce the number of unique locations (lower vehicle/shipment caps).'
+                ),
+            }
+            if ors_code is not None:
+                failure['ors_code'] = ors_code
+            if payload.get('__matrix_ors_message__'):
+                failure['ors_message'] = payload['__matrix_ors_message__']
+            results.append([row[0], failure])
             continue
         resp = get_vroom_response(payload, vroom_host=vroom_host_override)
         if 'routes' in resp and isinstance(resp.get('routes'), list):

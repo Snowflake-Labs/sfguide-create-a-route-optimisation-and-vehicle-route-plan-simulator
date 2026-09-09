@@ -513,6 +513,18 @@ def run_code_views(sess, exp, results):
     print("\n################ code-registered views (object reachability)")
     for view_id, spec in code.items():
         print("\n=== %s" % view_id)
+        # Per-object empty allowances. The view-level `expect: may_be_empty`
+        # excuses EVERY object, which is too blunt when only some of them are
+        # legitimately empty, so the expectations file declares them per object
+        # under `allow_empty: [{reason, objects:[...]}]`. That block existed in
+        # the YAML but was never read here, so a correctly-empty object was
+        # reported as an undeclared EMPTY failure and the install ended on a WARN
+        # (the two chain views of triangle_proposals, which are empty on every
+        # metro preset by construction).
+        per_object = {}
+        for entry in spec.get("allow_empty") or []:
+            for obj in entry.get("objects") or []:
+                per_object[obj.upper()] = entry.get("reason", "declared")
         for obj in spec.get("objects") or []:
             rows, err = sess.rows("SELECT * FROM %s LIMIT 1" % obj)
             if err:
@@ -524,11 +536,20 @@ def run_code_views(sess, exp, results):
                 results.append({"region": "*", "view": view_id, "area": obj,
                                 "status": "OK", "detail": ""})
             else:
-                allowed = spec.get("expect") in ("may_be_empty", "needs_generated_dataset")
+                reason = per_object.get(obj.upper())
+                allowed = (reason is not None
+                           or spec.get("expect") in ("may_be_empty",
+                                                     "needs_generated_dataset"))
                 status = "BY_DESIGN" if allowed else "EMPTY"
-                print("   %-9s %-52s rows=0" % (status, obj))
+                detail = reason or spec.get("reason", "")
+                if status == "BY_DESIGN":
+                    print("   BY-DESIGN %-48s rows=0  (%s)"
+                          % (obj, (detail or "declared").strip()[:120]))
+                else:
+                    print("   EMPTY %-52s rows=0" % obj)
+                    detail = "undeclared empty result"
                 results.append({"region": "*", "view": view_id, "area": obj,
-                                "status": status, "detail": spec.get("reason", "")})
+                                "status": status, "detail": detail})
 
 
 def repair(sess, connection, results, datasets):

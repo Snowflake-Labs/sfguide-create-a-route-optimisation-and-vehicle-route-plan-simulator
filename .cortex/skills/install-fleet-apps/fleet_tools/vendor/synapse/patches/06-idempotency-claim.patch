@@ -1,0 +1,600 @@
+diff --git a/src/audit.ts b/src/audit.ts
+index 153f1b6..3980a4c 100644
+--- a/src/audit.ts
++++ b/src/audit.ts
+@@ -49,6 +49,20 @@ export interface AuditSink {
+     idemKey: string | null,
+     args: unknown,
+   ): Promise<ReplayHit | null>;
++  /**
++   * LOCAL PATCH (see VENDOR.md). Stake an exclusive claim on
++   * (actor, verb, idemKey) BEFORE execute() runs. Returns true when this caller
++   * won the claim and may proceed, false when another caller already holds it.
++   *
++   * Optional so that sinks written against the upstream interface still satisfy
++   * the type. When absent the envelope keeps the old read-before-write behavior.
++   */
++  claim?(
++    conn: Conn,
++    ident: Identity,
++    verb: string,
++    idemKey: string | null,
++  ): Promise<boolean>;
+   recordOk(conn: Conn, event: AuditEvent): Promise<void>;
+   recordError(conn: Conn, event: AuditEvent): Promise<void>;
+ }
+@@ -56,6 +70,14 @@ export interface AuditSink {
+ export interface DefaultAuditSinkOpts {
+   /** Audit table name. Must match auditTableDDL({table}). */
+   table: string;
++  /**
++   * Idempotency claim table. Must match claimTableDDL({table}). A HYBRID table
++   * additionally enforces the PRIMARY KEY, which is what covers two callers
++   * claiming the same key at the same instant; on a standard table the guard
++   * still rejects a repeat claim, just not a simultaneous one. Default
++   * 'verb_claim'.
++   */
++  claimTable?: string;
+   /** Optional column for an app-specific row key (e.g. 'rollout_id'). */
+   appIdField?: string;
+   /** Extracts app_id from args. Required if appIdField is set. */
+@@ -70,6 +92,7 @@ export interface DefaultAuditSinkOpts {
+  */
+ export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
+   const table = opts.table;
++  const claimTable = opts.claimTable ?? 'verb_claim';
+   const appIdCol = opts.appIdField;
+   const appIdFrom = opts.appIdFromArgs ?? (() => null);
+   const windowH = opts.idempotencyWindowHours ?? 24;
+@@ -131,24 +154,64 @@ export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
+       };
+     },
+ 
++    async claim(conn, ident, verb, idemKey) {
++      // No key means no idempotency contract to enforce, and therefore no added
++      // statement. This is the steady state on the agent path: the Cortex Agent
++      // MCP server omits idempotency_key, so this costs nothing there.
++      if (!idemKey) return true;
++      try {
++        // Conditional insert rather than a bare insert, because the claim table
++        // is a HYBRID table only where hybrid tables exist - `claimTableDDL`
++        // emits a STANDARD table on GCP / trial / SnowGov accounts, and a
++        // standard Snowflake table does NOT enforce PRIMARY KEY. A bare insert
++        // there always succeeds, so the catch below never fires and the guard
++        // silently permits the double execution it exists to prevent.
++        //
++        // `WHERE NOT EXISTS` restores the guard on both table kinds in ONE
++        // statement (measured: returns 1 then 0 on standard AND on hybrid, with
++        // no PK error on the hybrid repeat), so the request path does not grow a
++        // round trip. On a hybrid table the enforced PK still covers the case
++        // this predicate cannot - two callers passing the NOT EXISTS check
++        // simultaneously - which is why the violation catch stays.
++        const inserted = await conn.execScalar<number>(
++          `INSERT INTO ${claimTable}(actor, verb, idempotency_key, claimed_at)
++           SELECT ?, ?, ?, CURRENT_TIMESTAMP()
++           WHERE NOT EXISTS (
++             SELECT 1 FROM ${claimTable}
++             WHERE actor = ? AND verb = ? AND idempotency_key = ?
++           )`,
++          [ident.user, verb, idemKey, ident.user, verb, idemKey],
++        );
++        return Number(inserted ?? 0) > 0;
++      } catch (e) {
++        // A primary-key violation is the intended signal that a concurrent
++        // caller won the claim first (hybrid table only). Anything else is a
++        // real failure and must not silently disable the guard - rethrow so it
++        // surfaces.
++        const msg = e instanceof Error ? e.message : String(e);
++        if (/unique|primary key|duplicate/i.test(msg)) return false;
++        throw e;
++      }
++    },
++
+     async recordOk(conn, event) {
+-      const hash = await conn.execScalar<string>("SELECT SHA2(?)", [
+-        JSON.stringify(event.result),
+-      ]);
+       const appId = appIdCol ? appIdFrom(event.args) : null;
+       const cols = appIdCol
+         ? `(id, at, verb, actor, actor_role, args_json, outcome, idempotency_key, result_hash, ${appIdCol})`
+         : `(id, at, verb, actor, actor_role, args_json, outcome, idempotency_key, result_hash)`;
++      // SHA2 is computed inline rather than in its own `SELECT SHA2(?)` round
++      // trip: this is on the interactive agent tool-call path, where it took the
++      // success path from 3 statements to 2.
+       const sel = appIdCol
+-        ? `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, ?, ?`
+-        : `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, ?`;
++        ? `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, SHA2(?), ?`
++        : `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, SHA2(?)`;
+       const binds: unknown[] = [
+         event.verb,
+         event.actor,
+         event.actor_role,
+         JSON.stringify(event.args ?? {}),
+         event.idempotency_key,
+-        hash,
++        JSON.stringify(event.result),
+       ];
+       if (appIdCol) binds.push(appId);
+       await conn.exec(`INSERT INTO ${table}${cols} ${sel}`, binds);
+diff --git a/src/build/bundle.ts b/src/build/bundle.ts
+index 2f8f370..14a5377 100644
+--- a/src/build/bundle.ts
++++ b/src/build/bundle.ts
+@@ -386,6 +386,17 @@ function injectAuditConfig(
+       : audit.table;
+   let out = src.replace(/__SYNAPSE_AUDIT_TABLE__/g, qualified);
+   out = out.replace(/__SYNAPSE_APP_ID_FIELD__/g, audit.appIdField ?? '');
++  // LOCAL PATCH (see ../../VENDOR.md): the idempotency claim table needs the same
++  // database.schema qualification as the audit table above, and for the same
++  // reason - the emitted proc body resolves a bare name against the CALLER's
++  // session schema, not the deploy-time schema. Name matches claimTableDDL()'s
++  // default.
++  const claimBare = 'verb_claim';
++  const claimQualified =
++    catalog?.database && catalog?.schema
++      ? `${catalog.database}.${catalog.schema}.${claimBare}`
++      : claimBare;
++  out = out.replace(/__SYNAPSE_CLAIM_TABLE__/g, claimQualified);
+   return out;
+ }
+ 
+diff --git a/src/build/install-sql.ts b/src/build/install-sql.ts
+index 02a74d4..d23bc0a 100644
+--- a/src/build/install-sql.ts
++++ b/src/build/install-sql.ts
+@@ -1,7 +1,7 @@
+ import * as fs from 'node:fs';
+ import * as path from 'node:path';
+ import type { ProcDef } from '../defineProc.js';
+-import { auditTableDDL } from '../ddl.js';
++import { auditTableDDL, claimTableDDL } from '../ddl.js';
+ import { procDDL } from './ddl.js';
+ import { bundleProc, type ProcBuildInput, type AuditBundleConfig, type CatalogBundleConfig } from './bundle.js';
+ 
+@@ -39,6 +39,21 @@ export async function buildSprocs(opts: BuildSprocsOpts): Promise<void> {
+       hybrid: opts.schema?.hybrid ?? true,
+     }),
+     '',
++    // Idempotency claim table (LOCAL PATCH, see VENDOR.md). Follows the audit
++    // table's hybrid setting. The PK is enforced only on a hybrid table, so on a
++    // standard table `claim()` relies on its conditional insert rather than on a
++    // violation being raised - a repeat claim is still rejected, only exact
++    // simultaneity is not.
++    // Qualified with the install target for the same reason the audit table is
++    // (materialize.ts pre-qualifies that one): the emitted DDL must not depend on
++    // the session's current schema.
++    claimTableDDL({
++      table: opts.catalog?.database && opts.catalog?.schema
++        ? `${opts.catalog.database}.${opts.catalog.schema}.verb_claim`
++        : 'verb_claim',
++      hybrid: opts.schema?.hybrid ?? true,
++    }),
++    '',
+   ];
+ 
+   for (const input of opts.procs) {
+diff --git a/src/cli/materialize.ts b/src/cli/materialize.ts
+index 62740e6..078595e 100644
+--- a/src/cli/materialize.ts
++++ b/src/cli/materialize.ts
+@@ -9,7 +9,7 @@ import { buildLocalGrants } from '../build/local-grants.js';
+ import { bundleRuntime } from '../build/runtime-js.js';
+ import { bundlePlugin } from '../build/plugin.js';
+ import { buildMcpServerSql, resolveMcpServerName } from '../build/mcp-server-sql.js';
+-import { auditTableDDL } from '../ddl.js';
++import { auditTableDDL, claimTableDDL } from '../ddl.js';
+ import { TRACKING_COMMENT, TRACKING_QUERY_TAG } from '../tracking.js';
+ import { readInstallConfig, installRuntime } from '../build/install.js';
+ import { resolveTargetDir, parseTargetFlags } from './target.js';
+@@ -115,7 +115,7 @@ export async function runMaterialize(app: ResolvedSynapseAppConfig, argv: string
+       table: app.audit.table,
+       ...(app.audit.appIdField ? { appIdColumn: app.audit.appIdField } : {}),
+       hybrid: true,
+-    }) + '\n', 'utf8');
++    }) + '\n' + claimTableDDL({ hybrid: true }) + '\n', 'utf8');
+     await buildLocalGrants({ procs: procInputs.map(p => p.proc), out: grantsSql });
+   }
+ 
+diff --git a/src/ddl.ts b/src/ddl.ts
+index 79f2deb..21335cf 100644
+--- a/src/ddl.ts
++++ b/src/ddl.ts
+@@ -49,3 +49,57 @@ export function auditTableDDL(opts: AuditTableDDLOpts = {}): string {
+     result_hash     STRING${extra}
+ ) COMMENT='${track}';`;
+ }
++
++export interface ClaimTableDDLOpts {
++  /** Default 'verb_claim'. Must match defaultAuditSink({claimTable}). */
++  table?: string;
++  /** Default true. A standard table CANNOT enforce the PK, so the claim is a no-op there. */
++  hybrid?: boolean;
++}
++
++/**
++ * LOCAL PATCH (see VENDOR.md): idempotency claim table.
++ *
++ * `checkReplay` in audit.ts is a read-before-write with no transaction, no lock
++ * and no unique constraint, so two concurrent calls carrying the same
++ * (actor, verb, idempotency_key) both miss the replay check and both run
++ * `execute()`. For mutating verbs that is precisely the double-execution
++ * idempotency is supposed to prevent.
++ *
++ * This cannot be fixed with a UNIQUE constraint on `verb_attempt` itself,
++ * because that table intentionally holds MULTIPLE rows per key (the original
++ * 'ok'/'error' plus one 'idempotent_replay' per repeat). So the claim lives in
++ * its own table whose PRIMARY KEY *is* the idempotency triple, and the insert
++ * happens BEFORE execute(): the first caller wins, the loser is rejected by the
++ * PK and replays or fails instead of re-executing.
++ *
++ * A HYBRID table is preferred because it ENFORCES the primary key, which is the
++ * only thing that can reject two callers claiming the same key at the same
++ * instant. A standard Snowflake table does not enforce PRIMARY KEY, so on the
++ * accounts that have no hybrid tables (GCP / trial / SnowGov) `claim()` must not
++ * rely on a violation being raised - it issues a `WHERE NOT EXISTS` conditional
++ * insert and reads the inserted-row count instead, so a repeat claim is still
++ * rejected on both table kinds. The residual gap on a standard table is exact
++ * simultaneity, not repetition.
++ *
++ * Retention: rows outlive the replay window (default 24h) and are not pruned on
++ * the request path, deliberately - pruning per call would add a statement to
++ * every verb. Prune out of band, e.g.
++ *   DELETE FROM <claim_table> WHERE claimed_at < DATEADD(day, -7, CURRENT_TIMESTAMP());
++ */
++export function claimTableDDL(opts: ClaimTableDDLOpts = {}): string {
++  const table = opts.table ?? 'verb_claim';
++  const hybrid = opts.hybrid !== false;
++  const kind = hybrid ? 'HYBRID TABLE' : 'TABLE';
++  const track = TRACKING_COMMENT;
++  // TIMESTAMP_NTZ, not _TZ: hybrid tables reject TIMESTAMP_TZ in an indexed
++  // column, and keeping it index-eligible leaves the retention sweep open to a
++  // secondary index later.
++  return `CREATE ${kind} IF NOT EXISTS ${table} (
++    actor           STRING       NOT NULL,
++    verb            STRING       NOT NULL,
++    idempotency_key STRING       NOT NULL,
++    claimed_at      TIMESTAMP_NTZ NOT NULL,
++    PRIMARY KEY (actor, verb, idempotency_key)
++) COMMENT='${track}';`;
++}
+diff --git a/src/errors.ts b/src/errors.ts
+index ebc3eed..3c4ebcc 100644
+--- a/src/errors.ts
++++ b/src/errors.ts
+@@ -9,6 +9,11 @@ export const Codes = {
+   WRONG_STATE_FOR_VERB: 'WRONG_STATE_FOR_VERB',
+   INSUFFICIENT_ROLE:    'INSUFFICIENT_ROLE',
+   NOT_FOUND:            'NOT_FOUND',
++  /**
++   * LOCAL PATCH (see VENDOR.md): another attempt with the same idempotency key
++   * is still in flight, so this call refused to execute rather than duplicate it.
++   */
++  CONCURRENT_ATTEMPT:   'CONCURRENT_ATTEMPT',
+   UNKNOWN:              'UNKNOWN',
+ } as const;
+ 
+diff --git a/src/runtime/envelope.ts b/src/runtime/envelope.ts
+index 8c18252..de7ec6c 100644
+--- a/src/runtime/envelope.ts
++++ b/src/runtime/envelope.ts
+@@ -86,6 +86,30 @@ export async function runEnvelope<TArgs, TReturns>(
+     }
+ 
+     if (proc.validate) await proc.validate(parsedArgs, ctx);
++
++    // LOCAL PATCH (see VENDOR.md): stake an exclusive claim before executing.
++    // `checkReplay` above is a read-before-write with no lock, so without this
++    // two concurrent calls sharing an idempotency key both miss and both
++    // execute. Losing the claim means someone else owns this key: re-check for a
++    // terminal row (the winner may have finished in between) and replay it,
++    // otherwise refuse rather than double-execute a mutating verb.
++    if (audit.claim && idempotencyKey) {
++      const won = await audit.claim(conn, ident, proc.name, idempotencyKey);
++      if (!won) {
++        const raced = await audit.checkReplay(conn, ident, proc.name, idempotencyKey, parsedArgs);
++        if (raced) {
++          if (raced.outcome === 'error') {
++            throw new SynapseError(raced.error_code ?? 'UNKNOWN', raced.error_message ?? '');
++          }
++          return { replayed: true, result_hash: raced.result_hash };
++        }
++        fail(
++          'CONCURRENT_ATTEMPT',
++          `another attempt with idempotency_key '${idempotencyKey}' for verb '${proc.name}' is still in flight`,
++        );
++      }
++    }
++
+     const rawResult = await proc.execute(parsedArgs, ctx);
+     const parsedResult = parseRecord(
+       proc.returns as { [K in keyof TReturns]: Schema<TReturns[K]> } as Record<string, Schema<unknown>>,
+diff --git a/src/runtime/sproc.ts b/src/runtime/sproc.ts
+index 153bed3..e0da68c 100644
+--- a/src/runtime/sproc.ts
++++ b/src/runtime/sproc.ts
+@@ -109,11 +109,13 @@ export function runProcSproc<TArgs, TReturns>(
+   //   __SYNAPSE_AUDIT_TABLE__   -> e.g. 'verb_attempt'
+   //   __SYNAPSE_APP_ID_FIELD__  -> e.g. 'rollout_id' or '' (empty when no app_id)
+   const auditTable: string = '__SYNAPSE_AUDIT_TABLE__';
++  const claimTable: string = '__SYNAPSE_CLAIM_TABLE__';
+   const appIdFieldRaw: string = '__SYNAPSE_APP_ID_FIELD__';
+   // The bundler post-processor replaces audit-config placeholders with their
+   // configured values; an empty appIdField means "no app_id column".
+   const audit = defaultAuditSink({
+     table: auditTable,
++    claimTable: claimTable,
+     ...(appIdFieldRaw.length > 0
+       ? {
+           appIdField: appIdFieldRaw,
+diff --git a/src/testing/index.ts b/src/testing/index.ts
+index b9f4411..8831a38 100644
+--- a/src/testing/index.ts
++++ b/src/testing/index.ts
+@@ -58,30 +58,52 @@ export function mockConn(opts: { rows?: MockMatch[] } = {}): MockConn {
+ export interface MockSinkOpts {
+   identity?: Identity;
+   replay?: ReplayHit | null;
++  /**
++   * When set, the sink implements the optional `claim` method and returns this
++   * value. Leave undefined to model an upstream sink that has no claim support,
++   * which is what the envelope must keep tolerating.
++   */
++  claim?: boolean;
++  /**
++   * Replay result for the SECOND and later `checkReplay` calls - i.e. the
++   * re-check the envelope performs after LOSING a claim. Defaults to `replay`.
++   */
++  replayOnRace?: ReplayHit | null;
+ }
+ 
+ export interface MockSink extends AuditSink {
+   events: AuditEvent[];
+   readonly replays: number;
++  readonly claims: number;
+ }
+ 
+ export function mockSink(opts: MockSinkOpts = {}): MockSink {
+   const events: AuditEvent[] = [];
+   let replays = 0;
++  let claims = 0;
++  let checkReplayCalls = 0;
+   const ident = opts.identity ?? { user: 'TEST_USER', role: 'TEST_ROLE' };
+   const sink: MockSink = {
+     events,
+     get replays() { return replays; },
++    get claims() { return claims; },
+     async identity() { return ident; },
+     async checkReplay(_conn, _ident, _verb, idemKey) {
+-      if (idemKey && opts.replay) {
++      const nth = ++checkReplayCalls;
++      const hit = nth === 1
++        ? opts.replay
++        : (opts.replayOnRace !== undefined ? opts.replayOnRace : opts.replay);
++      if (idemKey && hit) {
+         replays++;
+-        return opts.replay;
++        return hit;
+       }
+       return null;
+     },
+     async recordOk(_conn, event) { events.push(event); },
+     async recordError(_conn, event) { events.push(event); },
+   };
++  if (opts.claim !== undefined) {
++    sink.claim = async () => { claims++; return opts.claim as boolean; };
++  }
+   return sink;
+ }
+diff --git a/tests/unit/audit.test.ts b/tests/unit/audit.test.ts
+new file mode 100644
+index 0000000..660e6f1
+--- /dev/null
++++ b/tests/unit/audit.test.ts
+@@ -0,0 +1,66 @@
++import { describe, it, expect } from 'vitest';
++import { defaultAuditSink } from '../../src/audit.js';
++import { mockConn } from '../../src/testing/index.js';
++
++// LOCAL PATCH (see VENDOR.md patch 06). These tests exist because the failure
++// they cover is silent: the claim table is emitted as a HYBRID table only where
++// hybrid tables exist, and a STANDARD Snowflake table does not enforce PRIMARY
++// KEY. An unconditional `INSERT` therefore always succeeds there, the
++// PK-violation catch never fires, and the guard permits exactly the double
++// execution of a mutating verb it was added to block.
++describe('defaultAuditSink.claim', () => {
++  const ident = { user: 'U', role: 'R' };
++
++  it('claims with a conditional insert, so the guard does not depend on an enforced PK', async () => {
++    const conn = mockConn({
++      rows: [{ match: /INSERT INTO CLAIMS/i, rows: [{ 'number of rows inserted': 1 }] }],
++    });
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(true);
++
++    const sql = conn.calls[0]!.sql;
++    expect(sql).toMatch(/INSERT INTO CLAIMS/i);
++    expect(sql).toMatch(/WHERE NOT EXISTS/i);
++    // One statement, not a read followed by a write: this is the interactive
++    // verb path, and a second round trip here is paid on every mutating call.
++    expect(conn.calls).toHaveLength(1);
++    // Both halves of the statement bind the same triple.
++    expect(conn.calls[0]!.binds).toEqual(['U', 'v', 'k1', 'U', 'v', 'k1']);
++  });
++
++  it('loses the claim when the conditional insert writes no row', async () => {
++    const conn = mockConn({
++      rows: [{ match: /INSERT INTO CLAIMS/i, rows: [{ 'number of rows inserted': 0 }] }],
++    });
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    // This is the case a standard (PK-unenforced) claim table can only express
++    // as a zero count - no exception is raised - so returning false here is
++    // what keeps the guard alive on GCP / trial / SnowGov accounts.
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(false);
++  });
++
++  it('still loses the claim on an enforced-PK violation (concurrent hybrid case)', async () => {
++    const conn = mockConn();
++    conn.execScalar = async () => {
++      throw new Error('A primary key already exists.');
++    };
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(false);
++  });
++
++  it('rethrows a non-violation error rather than silently allowing execution', async () => {
++    const conn = mockConn();
++    conn.execScalar = async () => {
++      throw new Error('Insufficient privileges to operate on table');
++    };
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).rejects.toThrow(/Insufficient privileges/);
++  });
++
++  it('issues no statement when there is no idempotency key', async () => {
++    const conn = mockConn();
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', null)).resolves.toBe(true);
++    expect(conn.calls).toHaveLength(0);
++  });
++});
+diff --git a/tests/unit/bundle.test.ts b/tests/unit/bundle.test.ts
+index f99c14c..cabd4a8 100644
+--- a/tests/unit/bundle.test.ts
++++ b/tests/unit/bundle.test.ts
+@@ -115,6 +115,11 @@ export const noop = defineProc({
+     );
+     expect(body).not.toContain('__SYNAPSE_AUDIT_TABLE__');
+     expect(body).not.toContain('__SYNAPSE_APP_ID_FIELD__');
++    // An unsubstituted placeholder would ship as a literal table NAME in the
++    // emitted INSERT, so assert the claim table is substituted and qualified for
++    // the same session-schema reason as the audit table.
++    expect(body).not.toContain('__SYNAPSE_CLAIM_TABLE__');
++    expect(body).toContain('"TEST_DB.TEST_SCHEMA.verb_claim"');
+     // esbuild normalizes string literals to double-quoted form; astring
+     // round-trips them as such. LOCAL PATCH: the audit table is qualified with
+     // the install target so the envelope's INSERT does not depend on the
+diff --git a/tests/unit/ddl.test.ts b/tests/unit/ddl.test.ts
+index 1f024ca..e286007 100644
+--- a/tests/unit/ddl.test.ts
++++ b/tests/unit/ddl.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+ import { defineProc, t } from '../../src/index.js';
+ import { procDDL, sqlType, quoteArg, argsCaptureSuffix } from '../../src/build/ddl.js';
++import { claimTableDDL } from '../../src/ddl.js';
+ 
+ const sample = defineProc({
+   name: 'sample',
+@@ -105,4 +106,29 @@ describe('DDL emitter', () => {
+       expect(suffix).toContain('return __synapseEntry(__args, IDEMPOTENCY_KEY);');
+     });
+   });
++
++  // LOCAL PATCH (see VENDOR.md): idempotency claim table.
++  describe('claimTableDDL', () => {
++    it('emits a HYBRID TABLE by default - a standard table cannot enforce the PK', () => {
++      expect(claimTableDDL()).toContain('CREATE HYBRID TABLE IF NOT EXISTS verb_claim');
++    });
++
++    it('makes the idempotency triple the PRIMARY KEY', () => {
++      expect(claimTableDDL()).toContain('PRIMARY KEY (actor, verb, idempotency_key)');
++    });
++
++    it('uses TIMESTAMP_NTZ, since a hybrid index rejects TIMESTAMP_TZ', () => {
++      const ddl = claimTableDDL();
++      expect(ddl).toContain('claimed_at      TIMESTAMP_NTZ NOT NULL');
++      expect(ddl).not.toContain('TIMESTAMP_TZ');
++    });
++
++    it('carries the tracking COMMENT tag required by AGENTS.md', () => {
++      expect(claimTableDDL()).toContain('"origin":"sf_sit-is-fleet"');
++    });
++
++    it('can be downgraded to a standard table', () => {
++      expect(claimTableDDL({ hybrid: false })).toContain('CREATE TABLE IF NOT EXISTS verb_claim');
++    });
++  });
+ });
+diff --git a/tests/unit/envelope.test.ts b/tests/unit/envelope.test.ts
+index e5a91c5..42ae12e 100644
+--- a/tests/unit/envelope.test.ts
++++ b/tests/unit/envelope.test.ts
+@@ -92,4 +92,77 @@ describe('envelope', () => {
+     expect(sink.events).toHaveLength(1);
+     expect(sink.events[0]?.outcome).toBe('error');
+   });
++
++  // Idempotency claim (LOCAL PATCH, see VENDOR.md). The guard exists because
++  // checkReplay is a read-before-write with no lock, so two concurrent callers
++  // sharing a key would both miss and both execute.
++  describe('idempotency claim', () => {
++    let executed = 0;
++    const counter = defineProc({
++      name: 'counter',
++      args:    { x: t.string() },
++      returns: { ok: t.boolean() },
++      execute: async () => { executed++; return { ok: true }; },
++    });
++
++    it('winning the claim proceeds to execute', async () => {
++      executed = 0;
++      const sink = mockSink({ claim: true });
++      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
++
++      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).resolves.toEqual({ ok: true });
++      expect(sink.claims).toBe(1);
++      expect(executed).toBe(1);
++    });
++
++    it('losing the claim does NOT execute, and replays the winner result', async () => {
++      executed = 0;
++      const sink = mockSink({
++        claim: false,
++        replay: null,
++        replayOnRace: {
++          replayed: true, outcome: 'ok',
++          result_hash: 'winner-hash', error_code: null, error_message: null,
++        },
++      });
++      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
++
++      const out = await rt.counter({ x: 'a' }, { idempotency_key: 'k1' });
++      expect(out).toEqual({ replayed: true, result_hash: 'winner-hash' });
++      expect(executed).toBe(0);
++    });
++
++    it('losing the claim with the winner still in flight refuses rather than double-executing', async () => {
++      executed = 0;
++      const sink = mockSink({ claim: false, replay: null, replayOnRace: null });
++      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
++
++      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).rejects.toMatchObject({
++        code: 'CONCURRENT_ATTEMPT',
++      });
++      expect(executed).toBe(0);
++      // The refusal is itself audited as an error.
++      expect(sink.events).toHaveLength(1);
++      expect(sink.events[0]?.error_code).toBe('CONCURRENT_ATTEMPT');
++    });
++
++    it('no idempotency key means no claim statement at all (agent steady state)', async () => {
++      executed = 0;
++      const sink = mockSink({ claim: true });
++      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
++
++      await expect(rt.counter({ x: 'a' })).resolves.toEqual({ ok: true });
++      expect(sink.claims).toBe(0);
++      expect(executed).toBe(1);
++    });
++
++    it('a sink without claim support still executes (upstream compatibility)', async () => {
++      executed = 0;
++      const sink = mockSink();
++      const rt = createSynapseRuntime({ connector: mockConn(), procs: { counter }, audit: sink });
++
++      await expect(rt.counter({ x: 'a' }, { idempotency_key: 'k1' })).resolves.toEqual({ ok: true });
++      expect(executed).toBe(1);
++    });
++  });
+ });

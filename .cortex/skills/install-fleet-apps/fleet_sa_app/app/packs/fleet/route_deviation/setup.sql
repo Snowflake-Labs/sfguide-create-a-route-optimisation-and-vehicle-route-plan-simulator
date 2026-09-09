@@ -28,18 +28,14 @@ SELECT
   DISTANCE_DEVIATION_PCT AS DISTANCE_DEVIATION_PCT,
   DURATION_DEVIATION_MIN AS DURATION_DEVIATION_MIN,
   DURATION_DEVIATION_PCT AS DURATION_DEVIATION_PCT,
-  ((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
-   (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
-    WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
- AS IS_DISTANCE_DEVIATION,
+  IS_DISTANCE_DEVIATION AS IS_DISTANCE_DEVIATION,
   IS_DURATION_DEVIATION AS IS_DURATION_DEVIATION,
-  (((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
-    (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
-     WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
- OR (IS_ROUTE_DEVIATION AND NOT IS_DISTANCE_DEVIATION))
- AS IS_ROUTE_DEVIATION,
+  IS_ROUTE_DEVIATION AS IS_ROUTE_DEVIATION,
   ACTUAL_PATH AS ACTUAL_PATH,
-  EXPECTED_PATH AS EXPECTED_PATH
+  EXPECTED_PATH AS EXPECTED_PATH,
+  REGION AS REGION,
+  REGION_LABEL AS REGION_LABEL,
+  VEHICLE_TYPE AS VEHICLE_TYPE
 FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
 
 CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_CONFIG
@@ -53,6 +49,7 @@ CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_DRIVER_DEVIATION_SUMMARY
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
   DRIVER_ID,
+  REGION,
   COUNT(*) AS TOTAL_TRIPS,
   COUNT_IF(IS_ROUTE_DEVIATION) AS DEVIATION_TRIPS,
   ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2) AS DEVIATION_RATE_PCT,
@@ -63,12 +60,13 @@ SELECT
   MAX(DISTANCE_DEVIATION_PCT) AS MAX_DISTANCE_DEVIATION_PCT,
   MAX(DURATION_DEVIATION_PCT) AS MAX_DURATION_DEVIATION_PCT
 FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION
-GROUP BY DRIVER_ID;
+GROUP BY DRIVER_ID, REGION;
 
 CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_DAILY_DEVIATION_TRENDS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
   TRIP_DATE,
+  REGION,
   ANY_VALUE(DAYNAME(TRIP_DATE)) AS DAY_OF_WEEK,
   COUNT(*) AS TOTAL_TRIPS,
   COUNT_IF(IS_ROUTE_DEVIATION) AS DEVIATION_TRIPS,
@@ -78,31 +76,99 @@ SELECT
   AVG(DISTANCE_DEVIATION_PCT) AS AVG_DISTANCE_DEVIATION_PCT,
   AVG(DURATION_DEVIATION_PCT) AS AVG_DURATION_DEVIATION_PCT
 FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION
-GROUP BY TRIP_DATE;
+GROUP BY TRIP_DATE, REGION;
 
 CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- MULTI-REGION. The teleport threshold is joined from the ping's OWN
+-- vehicle type rather than read from a single CONFIG value: an e-bike and
+-- an HGV have very different plausible jump distances, so one scalar
+-- threshold mislabels every other asset mode's pings.
 SELECT
   t.TRIP_ID, t.VEHICLE_ID, t.POINT_INDEX, t.TS,
   t.SPEED_KMH, t.GPS_ACCURACY_M, t.IS_DETOUR,
   t.POINT_GEOM,
   ST_X(t.POINT_GEOM) AS LNG,
   ST_Y(t.POINT_GEOM) AS LAT,
+  t.REGION,
+  FLEET_APP.CORE.REGION_LABEL(t.REGION) AS REGION_LABEL,
+  t.VEHICLE_TYPE,
   CASE WHEN ST_DISTANCE(
              t.POINT_GEOM,
              ST_MAKEPOINT(
                LAG(ST_X(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX),
                LAG(ST_Y(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX)
              )
-           ) > (
-             SELECT TELEPORT_DISTANCE_M FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
-             WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-             LIMIT 1
-           ) THEN TRUE ELSE FALSE END AS IS_TELEPORT
+           ) > vp.TELEPORT_DISTANCE_M THEN TRUE ELSE FALSE END AS IS_TELEPORT
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
-WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
-  AND t.POINT_GEOM IS NOT NULL;
+LEFT JOIN FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = t.VEHICLE_TYPE
+WHERE t.POINT_GEOM IS NOT NULL;
+
+CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- WHY UNPIVOTED, AND WHY GEOJSON STRINGS
+--
+-- TRIP_DEVIATION already carries ACTUAL_PATH and EXPECTED_PATH, but neither
+-- is reachable from a Cortex agent: a semantic view cannot hold a GEOGRAPHY
+-- column, so SV_ROUTE_DEVIATION excluded both and no agent could ever draw a
+-- driven route. Outside the app the only mappable source is a query_* result
+-- (data_to_map rejects an MCP verb result - cortex#156984), which made an
+-- actual-vs-expected map structurally impossible rather than merely awkward.
+--
+-- Unpivoted because data_to_map draws exactly ONE layer (MapSpec.Layer is a
+-- single struct). Two side-by-side geojson COLUMNS could not be overlaid; one
+-- geojson column plus a PATH_TYPE category column can, coloured categorically.
+--
+-- ST_SIMPLIFY at 250 m is a hard requirement, not tidiness. Measured over the
+-- 663 trips that hold both paths: raw ST_ASGEOJSON reaches 388 KB per row,
+-- which renders a BLANK map with no error raised; at 250 m the worst row is
+-- 31 KB and the average is 826 B. 250 m is well inside GPS-trace noise for a
+-- road-following line, so nothing visible is lost.
+--
+-- EXPECTED_PATH is populated only on deviated trips (663 of 14,053 loaded),
+-- so the two rows exist together only where there is a real divergence to
+-- show. On a non-deviated trip the driven track reproduces the planned route
+-- exactly - measured: Hausdorff distance 0 - hence HAS_BOTH_PATHS, so a
+-- consumer can pick a trip that will actually show two distinct lines instead
+-- of drawing one line twice.
+SELECT
+  d.TRIP_ID,
+  d.VEHICLE_ID,
+  d.DRIVER_ID,
+  d.TRIP_DATE,
+  d.REGION,
+  d.REGION_LABEL,
+  d.VEHICLE_TYPE,
+  d.IS_ROUTE_DEVIATION,
+  d.DISTANCE_DEVIATION_PCT,
+  d.DURATION_DEVIATION_PCT,
+  d.EXPECTED_PATH IS NOT NULL                              AS HAS_BOTH_PATHS,
+  'ACTUAL'                                                 AS PATH_TYPE,
+  d.ACTUAL_DISTANCE_KM                                     AS PATH_DISTANCE_KM,
+  d.ACTUAL_DURATION_MIN                                    AS PATH_DURATION_MIN,
+  ST_ASGEOJSON(ST_SIMPLIFY(d.ACTUAL_PATH, 250))::VARCHAR   AS PATH_GEOJSON
+FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION d
+WHERE d.ACTUAL_PATH IS NOT NULL
+UNION ALL
+SELECT
+  d.TRIP_ID,
+  d.VEHICLE_ID,
+  d.DRIVER_ID,
+  d.TRIP_DATE,
+  d.REGION,
+  d.REGION_LABEL,
+  d.VEHICLE_TYPE,
+  d.IS_ROUTE_DEVIATION,
+  d.DISTANCE_DEVIATION_PCT,
+  d.DURATION_DEVIATION_PCT,
+  TRUE                                                     AS HAS_BOTH_PATHS,
+  'EXPECTED'                                               AS PATH_TYPE,
+  d.EXPECTED_DISTANCE_KM                                   AS PATH_DISTANCE_KM,
+  d.EXPECTED_DURATION_MIN                                  AS PATH_DURATION_MIN,
+  ST_ASGEOJSON(ST_SIMPLIFY(d.EXPECTED_PATH, 250))::VARCHAR AS PATH_GEOJSON
+FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION d
+WHERE d.EXPECTED_PATH IS NOT NULL;
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql)
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_USER;

@@ -109,11 +109,13 @@ export function runProcSproc<TArgs, TReturns>(
   //   __SYNAPSE_AUDIT_TABLE__   -> e.g. 'verb_attempt'
   //   __SYNAPSE_APP_ID_FIELD__  -> e.g. 'rollout_id' or '' (empty when no app_id)
   const auditTable: string = '__SYNAPSE_AUDIT_TABLE__';
+  const claimTable: string = '__SYNAPSE_CLAIM_TABLE__';
   const appIdFieldRaw: string = '__SYNAPSE_APP_ID_FIELD__';
   // The bundler post-processor replaces audit-config placeholders with their
   // configured values; an empty appIdField means "no app_id column".
   const audit = defaultAuditSink({
     table: auditTable,
+    claimTable: claimTable,
     ...(appIdFieldRaw.length > 0
       ? {
           appIdField: appIdFieldRaw,

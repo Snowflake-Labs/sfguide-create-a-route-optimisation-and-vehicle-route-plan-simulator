@@ -49,6 +49,20 @@ export interface AuditSink {
     idemKey: string | null,
     args: unknown,
   ): Promise<ReplayHit | null>;
+  /**
+   * LOCAL PATCH (see VENDOR.md). Stake an exclusive claim on
+   * (actor, verb, idemKey) BEFORE execute() runs. Returns true when this caller
+   * won the claim and may proceed, false when another caller already holds it.
+   *
+   * Optional so that sinks written against the upstream interface still satisfy
+   * the type. When absent the envelope keeps the old read-before-write behavior.
+   */
+  claim?(
+    conn: Conn,
+    ident: Identity,
+    verb: string,
+    idemKey: string | null,
+  ): Promise<boolean>;
   recordOk(conn: Conn, event: AuditEvent): Promise<void>;
   recordError(conn: Conn, event: AuditEvent): Promise<void>;
 }
@@ -56,6 +70,14 @@ export interface AuditSink {
 export interface DefaultAuditSinkOpts {
   /** Audit table name. Must match auditTableDDL({table}). */
   table: string;
+  /**
+   * Idempotency claim table. Must match claimTableDDL({table}). A HYBRID table
+   * additionally enforces the PRIMARY KEY, which is what covers two callers
+   * claiming the same key at the same instant; on a standard table the guard
+   * still rejects a repeat claim, just not a simultaneous one. Default
+   * 'verb_claim'.
+   */
+  claimTable?: string;
   /** Optional column for an app-specific row key (e.g. 'rollout_id'). */
   appIdField?: string;
   /** Extracts app_id from args. Required if appIdField is set. */
@@ -70,6 +92,7 @@ export interface DefaultAuditSinkOpts {
  */
 export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
   const table = opts.table;
+  const claimTable = opts.claimTable ?? 'verb_claim';
   const appIdCol = opts.appIdField;
   const appIdFrom = opts.appIdFromArgs ?? (() => null);
   const windowH = opts.idempotencyWindowHours ?? 24;
@@ -131,24 +154,64 @@ export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
       };
     },
 
+    async claim(conn, ident, verb, idemKey) {
+      // No key means no idempotency contract to enforce, and therefore no added
+      // statement. This is the steady state on the agent path: the Cortex Agent
+      // MCP server omits idempotency_key, so this costs nothing there.
+      if (!idemKey) return true;
+      try {
+        // Conditional insert rather than a bare insert, because the claim table
+        // is a HYBRID table only where hybrid tables exist - `claimTableDDL`
+        // emits a STANDARD table on GCP / trial / SnowGov accounts, and a
+        // standard Snowflake table does NOT enforce PRIMARY KEY. A bare insert
+        // there always succeeds, so the catch below never fires and the guard
+        // silently permits the double execution it exists to prevent.
+        //
+        // `WHERE NOT EXISTS` restores the guard on both table kinds in ONE
+        // statement (measured: returns 1 then 0 on standard AND on hybrid, with
+        // no PK error on the hybrid repeat), so the request path does not grow a
+        // round trip. On a hybrid table the enforced PK still covers the case
+        // this predicate cannot - two callers passing the NOT EXISTS check
+        // simultaneously - which is why the violation catch stays.
+        const inserted = await conn.execScalar<number>(
+          `INSERT INTO ${claimTable}(actor, verb, idempotency_key, claimed_at)
+           SELECT ?, ?, ?, CURRENT_TIMESTAMP()
+           WHERE NOT EXISTS (
+             SELECT 1 FROM ${claimTable}
+             WHERE actor = ? AND verb = ? AND idempotency_key = ?
+           )`,
+          [ident.user, verb, idemKey, ident.user, verb, idemKey],
+        );
+        return Number(inserted ?? 0) > 0;
+      } catch (e) {
+        // A primary-key violation is the intended signal that a concurrent
+        // caller won the claim first (hybrid table only). Anything else is a
+        // real failure and must not silently disable the guard - rethrow so it
+        // surfaces.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/unique|primary key|duplicate/i.test(msg)) return false;
+        throw e;
+      }
+    },
+
     async recordOk(conn, event) {
-      const hash = await conn.execScalar<string>("SELECT SHA2(?)", [
-        JSON.stringify(event.result),
-      ]);
       const appId = appIdCol ? appIdFrom(event.args) : null;
       const cols = appIdCol
         ? `(id, at, verb, actor, actor_role, args_json, outcome, idempotency_key, result_hash, ${appIdCol})`
         : `(id, at, verb, actor, actor_role, args_json, outcome, idempotency_key, result_hash)`;
+      // SHA2 is computed inline rather than in its own `SELECT SHA2(?)` round
+      // trip: this is on the interactive agent tool-call path, where it took the
+      // success path from 3 statements to 2.
       const sel = appIdCol
-        ? `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, ?, ?`
-        : `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, ?`;
+        ? `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, SHA2(?), ?`
+        : `SELECT UUID_STRING(), CURRENT_TIMESTAMP(), ?, ?, ?, PARSE_JSON(?), 'ok', ?, SHA2(?)`;
       const binds: unknown[] = [
         event.verb,
         event.actor,
         event.actor_role,
         JSON.stringify(event.args ?? {}),
         event.idempotency_key,
-        hash,
+        JSON.stringify(event.result),
       ];
       if (appIdCol) binds.push(appId);
       await conn.exec(`INSERT INTO ${table}${cols} ${sel}`, binds);

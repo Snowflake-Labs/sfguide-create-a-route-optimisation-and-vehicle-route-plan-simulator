@@ -61,8 +61,19 @@ export function orsServiceFqn(region: string | null | undefined): string {
 }
 
 // SQL fragment that pulls the currently-active region from a per-demo CONFIG
-// table. Single source of truth for the otherwise duplicated subquery
-// "(SELECT REGION FROM FLEET_INTELLIGENCE.<schema>.CONFIG LIMIT 1)".
+// table.
+//
+// DEPRECATED - do NOT use in a view definition. Every contract view used to
+// filter on this, which pinned each domain layer to ONE region: CONFIG holds a
+// single row, so every other loaded dataset was excluded before the first
+// aggregate. Because CONFIG is writable at runtime (the /api/region promote path
+// and the ops verb set_active_context, which an agent can call), the same
+// question returned different data at different times.
+//
+// The contract views now carry REGION as a dimension and the consumer chooses
+// the slice. CONFIG survives only as a DEFAULT-SELECTION HINT for the app's
+// context bar. Kept exported for that read path; check_region_scoping.py fails
+// the build if it reappears inside a CREATE VIEW.
 export function currentRegionScalar(
   schema: 'BACKLOAD_MATCHING' | 'ROUTE_OPTIMIZATION',
 ): string {

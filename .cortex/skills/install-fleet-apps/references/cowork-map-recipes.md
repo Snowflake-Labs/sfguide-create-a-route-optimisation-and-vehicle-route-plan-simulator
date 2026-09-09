@@ -44,6 +44,7 @@ A GEOGRAPHY column cannot exist in a semantic view, so geometry is projected int
 | `latlon` | `query_backload` | `pickup_lat`/`pickup_lon`, `home_lat`/`home_lon`, `current_lat`/`current_lon` |
 | `latlon` | `query_emergency` | `center_lat`/`center_lon`, `participant_lat`/`participant_lon` |
 | `latlon` | `query_fleet_ops` | trip origin / destination pairs |
+| `geojson` | `query_route_deviation` | `path_geojson` + `path_type` - a **routed** LineString, one row per (trip, path type) |
 | `geojson` | `query_emergency` | `hazard_geojson` (already a Polygon string - no conversion) |
 | `geojson` | `query_location` | `zip_geojson` (ZIP boundary, simplified to 100 m) |
 | `geojson` | `query_backload` | `lane_geojson` - a **straight line**, not a routed path |
@@ -58,10 +59,55 @@ Payload sizes measured on this deployment:
 | ZIP boundaries, raw | 45 | **100 KB** | 696 KB |
 | ZIP boundaries, `ST_SIMPLIFY(GEOG, 100)` | 45 | 7.3 KB | 71 KB |
 | ZIP boundaries, `ST_SIMPLIFY(GEOG, 250)` | 45 | 3.2 KB | 32 KB |
+| Trip paths, raw `ST_ASGEOJSON` | 663 | **388 KB** | - |
+| Trip paths, `ST_SIMPLIFY(..., 250)` (`path_geojson`) | 1326 | 31 KB | 976 KB |
 
 Raw ZIP polygons are unusable - hence the 100 m simplification baked into `zip_geojson`.
 Hazard cells are individually tiny but there are ~1200 of them, so filter by
-`composite_rating` or region before mapping.
+`composite_rating` or region before mapping. Trip paths are the same story at a different
+scale: the worst raw path is 388 KB on its own, so `path_geojson` is simplified to 250 m
+(well inside GPS noise for a road-following line) and is meant to be selected for ONE trip,
+not swept across a region.
+
+## Drawing a trip's actual vs expected route
+
+`query_route_deviation` is the one `query_*` tool that projects **routed** geometry. It
+sits on `FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS`, which unpivots the two GEOGRAPHY columns
+on the deviation fact into one row per (trip, path type) - because `data_to_map` draws a
+single layer, two side-by-side geojson *columns* could never be overlaid, while one geojson
+column plus a category column can.
+
+```sql
+SELECT * FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+  DIMENSIONS trip_paths.path_type, trip_paths.path_geojson,
+             trip_dev.vehicle_id, trip_dev.region_label,
+             trip_dev.has_expected_path
+) WHERE REGION_LABEL = 'Europe' AND HAS_EXPECTED_PATH
+    AND VEHICLE_ID = 'V-DRI-00037';
+```
+
+Map it as a `geojson` layer with `color_column: PATH_TYPE` and `color_scheme: categorical`.
+Measured on this deployment: 2 rows, ACTUAL 9.3 KB (1157 km driven) and EXPECTED 6.8 KB
+(530 km planned).
+
+Three traps, all observed:
+
+1. **A planned route exists ONLY for deviated trips** - 663 of 14,053 loaded. On any other
+   trip the driven track reproduces the plan exactly (measured: `ST_HAUSDORFFDISTANCE` = 0,
+   and a live `DIRECTIONS` call returns byte-identical geometry), so filter
+   `has_expected_path` or `is_route_deviation` first. Presenting one line as a comparison,
+   or calling the absence "missing data", are both wrong.
+2. **The query must be DIMENSIONS-ONLY.** Mixing `trip_paths` dimensions with `trip_dev`
+   FACTS fails with `All expressions referenced in the query must come from the same entity
+   when both FACTS and DIMENSIONS are specified`. Filtering is unaffected, since
+   `is_route_deviation` and `has_expected_path` are dimensions.
+3. **Selecting `path_geojson` doubles the rows**, so it cannot be combined with a trip-level
+   aggregate. Choose the trip first, then fetch its geometry.
+
+Engine-computed geometry (`DIRECTIONS` / `ISOCHRONES` / `OPTIMIZATION`) is still NOT
+mappable, for the reason in the section below: it is reachable only through `run_sql`, and
+an MCP result is rejected as a map source.
 
 ## Live routing geometry (Tenet 9)
 
@@ -237,11 +283,15 @@ The call is silently ignored and the agent burns the rest of the turn trying alt
 Tracked upstream as [cortex#156984](https://github.com/snowflake-eng/cortex/issues/156984).
 
 Practical consequence for routing geometry: a routed LineString from `get_directions` (MCP)
-cannot be fed to `data_to_map`. To draw a route on a CoWork map today, the geometry must
-come from a `query_*` semantic-view result that projects a GeoJSON column. No semantic view
-currently projects routed geometry - the `lane_geojson` in `query_backload` is a straight
-line, not an ORS route - so the honest path for a "draw my route" question is to report the
-distance/duration figures and offer `deep_link` to the app view that can render it.
+cannot be fed to `data_to_map`. To draw a route on a CoWork map, the geometry must come from
+a `query_*` semantic-view result that projects a GeoJSON column.
+
+For a **recorded** trip route that is now possible: `query_route_deviation` projects
+`path_geojson` (see "Drawing a trip's actual vs expected route" above). For geometry the
+engine computes **live** - a fresh `DIRECTIONS` route, an isochrone, a solved tour - it is
+still not, because there is no `query_*` path to it at all; report the distance and duration
+figures and offer `deep_link` to the app view that renders it. Note `lane_geojson` in
+`query_backload` is a straight line, not an ORS route, so it is not a substitute.
 
 ## Choosing between a map and a link
 

@@ -18,7 +18,6 @@ import type {
   GenerationProgress, SnowSqlFn, VehicleLifecycle, FleetMember,
 } from './engine/types';
 
-import { buildFleet } from './engine/fleet';
 import { loadPOIs } from './engine/routability';
 import {
   fetchRoute, fetchDetourRoute, pickDestination,
@@ -64,9 +63,22 @@ interface VehicleDayResult {
   busyUntilDayOffset?: number;
 }
 
+// `fleet` is REQUIRED and must be the SAME array that was written to DIM_FLEET.
+// This used to be rebuilt here from a second, differently-seeded RNG
+// (`createRng(start_date.length * 31 + num_vehicles)`) while jobs.ts inserted a
+// fleet drawn from `createRng(num_vehicles * 31)`. Vehicle ids are index-derived
+// so every join still succeeded and every panel still populated, but everything
+// rng-derived (home_poi, profile_type, base_speed_kmh, and the ghost window)
+// described a DIFFERENT fleet than the one that produced the facts. Measured on
+// a live account: 2 of 96 Europe vehicles had a DIM_FLEET home base matching
+// their first telemetry ping, and speeding rate by driver profile was flat
+// (COMPLIANT 5.78%, MILD 5.83%, OUTLIER 5.19%) - i.e. the dimension was
+// uncorrelated with the behaviour it is supposed to explain. Never rebuild the
+// fleet in here.
 export async function* generateTelemetry(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
+  fleet: FleetMember[],
   onProgress?: (p: GenerationProgress) => void,
   abortSignal?: { aborted: boolean },
   onLog?: (msg: string) => void,
@@ -110,7 +122,6 @@ export async function* generateTelemetry(
     );
   }
 
-  const fleet = buildFleet(config, pois, rng);
   const profileBreakdown: Record<string, number> = {};
   for (const m of fleet) profileBreakdown[m.profile_type] = (profileBreakdown[m.profile_type] || 0) + 1;
   const shiftBreakdown: Record<string, number> = {};
@@ -118,7 +129,7 @@ export async function* generateTelemetry(
     const key = `${m.shift_start}:00-${m.shift_end}:00`;
     shiftBreakdown[key] = (shiftBreakdown[key] || 0) + 1;
   }
-  log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles (parallelism=${PARALLELISM})`, {
+  log('INFO', 'Studio', `Using fleet of ${fleet.length} ${vt} vehicles as written to DIM_FLEET (parallelism=${PARALLELISM})`, {
     detail: { driverProfiles: profileBreakdown, shifts: shiftBreakdown, homePoisUsed: new Set(fleet.map(m => m.home_poi.location_id)).size },
   });
 
@@ -131,6 +142,13 @@ export async function* generateTelemetry(
   let routeFailures = 0;
   let consecutiveFails = 0;
   let unroutableSkips = 0;
+  // Trips produced per vehicle across the whole horizon, so the run can report
+  // WHICH vehicles ended up with none. Until this existed, a vehicle that lost
+  // every route call was indistinguishable from one the generator deliberately
+  // parked: both emit IDLE-only telemetry with no trip and no schedule row, and
+  // only fleet-wide counters (unroutableSkips / routeFailures) recorded that
+  // anything had gone wrong at all.
+  const tripsByVehicle = new Map<string, number>();
   const unroutablePoiIds = new Set<string>();
   const busyUntil = new Map<string, number>();
   const MAX_CONSECUTIVE_FAILURES = 25;
@@ -560,6 +578,7 @@ export async function* generateTelemetry(
       routeFailures += result.failures;
       unroutableSkips += result.unroutable;
       totalTrips += result.trips.length;
+      tripsByVehicle.set(result.vehicleId, (tripsByVehicle.get(result.vehicleId) || 0) + result.trips.length);
       if (result.successes > 0) {
         consecutiveFails = 0;
       } else       if (result.failures > 0) {
@@ -683,5 +702,35 @@ export async function* generateTelemetry(
       unroutablePois: unroutablePoiIds.size,
       status: `Day ${dayOffset + 1}/${totalDays} complete: ${totalTrips} trips total${unroutableSuffix}${cacheSuffix}`,
     });
+  }
+
+  // Per-vehicle zero-trip diagnostic. A vehicle that produced no trip has no
+  // actual or expected path anywhere downstream, and its whole stay collapses
+  // into one unbroken IDLE dwell session. Two very different causes produce
+  // that identical signature, so name both rather than leaving a reader to
+  // guess from fleet-wide counters:
+  //   ghost   - deliberate. config.ghost_trailer parked it for a day window,
+  //             and when that window spans the horizon it never works at all.
+  //   no_route- a defect. Every destination it tried was unroutable, or the
+  //             routing engine hard-failed, and the trip loop skipped out.
+  // The ghost share is expected (probability * fleet size); a non-zero
+  // no_route count means the POI catalog and the graph disagree.
+  const undispatched = fleet.filter(m => (tripsByVehicle.get(m.vehicle_id) || 0) === 0);
+  if (undispatched.length > 0) {
+    const ghosts = undispatched.filter(m => m.ghost_start_day !== undefined);
+    const noRoute = undispatched.filter(m => m.ghost_start_day === undefined);
+    const msg = `${undispatched.length}/${fleet.length} vehicles produced ZERO trips: `
+      + `${ghosts.length} parked by design (ghost window), ${noRoute.length} with no routable work`
+      + (noRoute.length > 0 ? ` - INVESTIGATE: ${noRoute.slice(0, 10).map(m => m.vehicle_id).join(', ')}` : '');
+    log(noRoute.length > 0 ? 'WARN' : 'INFO', 'Studio', msg, {
+      detail: {
+        region: config.region,
+        ghost_vehicles: ghosts.map(m => ({ vehicle_id: m.vehicle_id, from_day: m.ghost_start_day, to_day: m.ghost_end_day })),
+        no_route_vehicles: noRoute.map(m => m.vehicle_id),
+        unroutable_poi_skips: unroutableSkips,
+        route_failures: routeFailures,
+      },
+    });
+    onLog?.(msg);
   }
 }

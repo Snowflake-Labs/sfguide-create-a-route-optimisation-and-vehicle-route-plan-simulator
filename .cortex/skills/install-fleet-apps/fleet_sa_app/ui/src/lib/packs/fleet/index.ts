@@ -9,9 +9,9 @@ import packViews from './pack-views.json';
 //
 // This pack is vehicle/industry-AGNOSTIC: the routing/ops showcases
 // (vrp_simulator, emergency_wizard, ops_console) are tool-driven and always
-// register. Backload Matching is a neutral, DHL-free showcase gated by its
-// pack probe (FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS). The remaining
-// industry-vertical showcases (freight exchange, DHL NTBO) stay excluded.
+// register. Backload Matching is a neutral, customer-agnostic showcase gated by
+// its pack probe (FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS). The remaining
+// industry-vertical showcases (freight exchange) stay excluded.
 //
 // This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
 // it generically via the configured `domainPacks` array - there is no fleet
@@ -69,9 +69,9 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     ),
   });
 
-  // Backload Matching: neutral (DHL-free) backhaul optimizer. Loads idle trailers
-  // + internal loads + external offers from the FLEET_APP.BACKLOAD_MATCHING pack,
-  // builds a VROOM challenge, and solves via /api/backload/solve (contract seam).
+  // Backload Matching: neutral (customer-agnostic) backhaul optimizer. Loads idle
+  // trailers + internal loads + external offers from the FLEET_APP.BACKLOAD_MATCHING
+  // pack, builds a VROOM challenge, and solves via /api/backload/solve (contract seam).
   viewRegistry.register({
     id: 'backload_matching',
     ...metaFor('backload_matching'),
@@ -93,6 +93,21 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
     component: lazy(() =>
       import('@/components/views/areas/backload-proposals').then((mod) => ({
         default: mod.BackloadProposalsView,
+      })),
+    ),
+  });
+
+  // Triangle Proposals: chained two-hop backhaul over the same neutral
+  // FLEET_APP.BACKLOAD_MATCHING views. Enumerates chains in SQL (VW_LEG1_CANDIDATES
+  // -> VW_TRIANGLES), prices every leg live with one MATRIX_TABULAR call, applies an
+  // internal-first cascade, and compares each chain against running home empty.
+  // This is the case single-hop matching structurally cannot find.
+  viewRegistry.register({
+    id: 'triangle_proposals',
+    ...metaFor('triangle_proposals'),
+    component: lazy(() =>
+      import('@/components/views/areas/triangle-proposals').then((mod) => ({
+        default: mod.TriangleProposalsView,
       })),
     ),
   });
