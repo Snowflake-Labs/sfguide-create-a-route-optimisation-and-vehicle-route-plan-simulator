@@ -2661,7 +2661,7 @@
         "Free capacity without buying more {{labels.entity_plural}}"
       ],
       "method": "Dwell sessions are sessionized from position pings: consecutive stationary pings inside a site radius are grouped into one session. SLA compliance is the fraction of sessions at or under the configured threshold, 30 minutes by default.",
-      "caveats": "Synthetic telemetry. A stop shorter than the detection threshold is not a session at all, so very brief stops are invisible by design. This view has no map; use SLA Alerts for dwell geography."
+      "caveats": "Synthetic telemetry. A stop shorter than the detection threshold is not a session at all, so very brief stops are invisible by design. The four headline numbers count REAL dwell only: IDLE spans are excluded so the KPIs match the trend and facility charts beside them, and vehicles that were never dispatched over the horizon are excluded because their whole stay is one unbroken multi-day idle span that would otherwise dominate every average. This view has no map; use SLA Alerts for dwell geography."
     },
     "agentKnowledge": {
       "preferredTool": "query_dwell",
@@ -2677,7 +2677,7 @@
         "Which facility has the most visits?",
         "Are dwells trending up or down?"
       ],
-      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
+      "gotchas": "SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. The KPIs count STATUS LIKE 'DWELL%' on dispatched vehicles only - the same basis as the trend and facility charts. Two traps this closes: the KPI used to include IDLE while its sibling charts did not, and it counted DISTINCT SESSION_ID, which is a PER-VEHICLE counter, so the headline read 628 where the true session count was 2,802. A vehicle with IS_DISPATCHED = FALSE never left its base, so it has no trip and no route; if asked for its path, say it never moved rather than reporting missing data. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view."
     },
     "layout": {
       "default": {
@@ -2695,7 +2695,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ",
+          "query": "SELECT COUNT(*) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE STATUS LIKE 'DWELL%' AND IS_DISPATCHED AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) AND (:region IS NULL OR REGION = :region) ",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -2706,7 +2706,7 @@
             "metrics": [
               {
                 "column": "total_trips",
-                "label": "Total Trips",
+                "label": "Dwell Sessions",
                 "format": "number"
               },
               {
