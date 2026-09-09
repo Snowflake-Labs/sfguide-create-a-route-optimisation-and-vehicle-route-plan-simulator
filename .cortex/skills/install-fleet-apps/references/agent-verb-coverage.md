@@ -66,16 +66,36 @@ These carry bespoke server compute, so each needs checking individually.
 | `vrp_simulator` | `/api/tool` | Covered - `optimize_routes` |
 | `emergency_response` | `/api/query`, `/api/tool`, `/api/ops` | Covered - `evac_seed` + `evac_solve` |
 | `ops_console` | `/api/ops` | Covered - ops bundle verbs |
-| `backload_matching` | `/api/query`, `/api/backload/solve`, `/api/backload/decide` | `backload_solve` (+ inputs via `query_backload`) |
-| `backload_proposals` | `/api/query`, `/api/backload/solve` | `backload_solve` |
-| `triangle_proposals` | `sfRead` -> `/api/query`, `MATRIX_TABULAR` in SQL | `backload_chain_solve` |
+| `backload_matching` | `/api/query`, `/api/backload/solve`, `/api/backload/decide` | `backload_solve` (+ history via `query_backload`) |
+| `backload_proposals` | `/api/tool` -> `backload_solve` | Covered - same procedure |
+| `triangle_proposals` | `/api/tool` -> `backload_chain_solve` | Covered - same procedure |
 
 `/api/tool` and `/api/ops` are **verb dispatchers**, not bespoke logic: they `CALL` a
 synapse proc from an allowlist with a checked arity, and optionally bind the trailing
-`IDEMPOTENCY_KEY`. So `vrp_simulator`, `emergency_response` and `ops_console` were already
-at parity by construction - the app and the agent invoke the same procedure. This is the
-pattern the backload views should follow, and the reason step 5 of the parity work
-repoints them at `/api/tool` rather than growing a second implementation.
+`IDEMPOTENCY_KEY`. So `vrp_simulator`, `emergency_response` and `ops_console` were at
+parity by construction - the app and the agent invoke the same procedure. Backload
+Proposals and Triangle Proposals now follow the same pattern.
+
+`backload_matching` is the one remaining split: its solve still posts to
+`/api/backload/solve`, and its write-back to `/api/backload/decide` has no verb at all
+(deliberately - a write-back verb makes the agent a writer, which is a separate
+decision). Its `preferredTool` names `backload_solve` because that is the tool able to
+answer a question about its plan.
+
+### Keeping interactivity while sharing one implementation
+
+The naive repoint moves everything server-side and costs the pages their
+responsiveness. Both verbs therefore take a **granularity** argument so the split falls
+where it should - the engine work behind the verb, the instant work in the browser:
+
+| Verb | Default | Interactive shape | Why |
+|---|---|---|---|
+| `backload_solve` | `vehicle` - one best proposal per vehicle | `pair` - every graded pair **with per-dimension scores** | Applying weights is a pure function of (scores, weights), so a slider re-ranks with no round trip. The cockpit also shows several candidates per vehicle, which a per-vehicle-best response cannot express. |
+| `backload_chain_solve` | `chain` - graded, cascade applied | `raw` - source row + **six per-leg road distances** | Grading is a pure function of (chain, road legs, constraints, rates), so four constraint sliders and two rate boxes re-grade without a second matrix call. |
+
+Both non-default shapes are documented to the agent as things to avoid: `raw` is **not**
+cascade-filtered, so presenting it as the recommended set would surface chains the
+internal-first policy excluded.
 
 ## What is deliberately NOT exposed
 
@@ -98,10 +118,21 @@ claiming to have drawn a composite map is a defect, not a feature gap.
 
 1. If its panels are SQL over `FLEET_APP`, you are done - name a `preferredTool` when a
    semantic view models the data, otherwise leave it out and let `run_sql` serve it.
-2. If it computes something, put the computation in a shared framework-agnostic module,
-   expose it as a verb, and have the app call the verb. Never a second implementation:
-   two copies drift, and only one of them is audited by the synapse envelope (Tenet 7).
-3. Add the routing line to every agent spec whose `mcp_servers` includes that bundle -
+2. If it computes something, put the computation in a `TOOL_*` owner's-rights procedure,
+   expose it as a thin verb, and have the app call that verb through `/api/tool`. Never a
+   second implementation: two copies drift, and only one of them is audited by the
+   synapse envelope (Tenet 7). If the page needs to stay interactive, add a granularity
+   argument that returns the intermediate values the browser needs - do not move the
+   interaction server-side, and do not fork the maths.
+3. Register the verb in **both** `api/tool/route.ts` (`DEFAULT_VERBS`) and
+   `app-config.json` (`tools.verbs`). The config **replaces** the default wholesale
+   (`cfg?.verbs ?? DEFAULT_VERBS`), so registering only in the route is dead config on
+   any real deployment.
+4. Adding a defaulted argument to an existing procedure needs an explicit
+   `DROP PROCEDURE IF EXISTS` of the old signature. With every argument defaulted,
+   `CREATE OR REPLACE` does not replace it and Snowflake rejects the new one as
+   "ambiguous PROCEDURE overloading" - on upgrades only, never on a fresh install.
+5. Add the routing line to every agent spec whose `mcp_servers` includes that bundle -
    `scripts/check_agent_verb_coverage.py` fails otherwise, and an unguided verb is either
    ignored or preferred over a better tool.
-4. Update this table.
+6. Update this table.
