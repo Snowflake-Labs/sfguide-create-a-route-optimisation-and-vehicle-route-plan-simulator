@@ -735,39 +735,41 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const busy = loading || costing;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%' }}>
-      {/* Controls */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <button onClick={() => void load()} disabled={busy}
-          style={{ padding: '6px 12px', borderRadius: 6, cursor: busy ? 'wait' : 'pointer' }}>
-          Reload chains
-        </button>
-        <button onClick={() => void runCosting()} disabled={busy || !chains.length}
-          style={{ padding: '6px 12px', borderRadius: 6, fontWeight: 600, cursor: busy ? 'wait' : 'pointer' }}>
-          {costing ? 'Costing...' : 'Cost legs on road network'}
-        </button>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-          Acceptance score
-          <input type="number" min={0} max={100} value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            style={{ width: 60, padding: '2px 4px' }} />
-        </label>
-        <span style={{ fontSize: 12, opacity: 0.75 }}>
-          Cost basis: {costBasis === 'road' ? 'live road network' : 'straight-line estimate'}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflow: 'auto' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 20, lineHeight: '24px', fontWeight: 700 }}>Triangle Proposals</h2>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          {costBasis === 'road' ? 'live road network' : 'straight-line estimate'}
+          {region ? ` \u00B7 ${region}` : ''}
         </span>
-        <button type="button" onClick={() => setLegendOpen(true)}
-          style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}>
-          Legend
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button type="button" className="btn secondary" disabled={busy} onClick={() => void load()}>
+            Reload chains
+          </button>
+          <button type="button" className="btn secondary" onClick={() => setLegendOpen(true)}>
+            Legend
+          </button>
+        </span>
+      </div>
+
+      {/* Controls */}
+      <div className="control-bar">
+        <button type="button" className="btn primary" disabled={busy || !chains.length}
+          onClick={() => void runCosting()}>
+          {costing ? 'Costing\u2026' : 'Cost legs on road network'}
         </button>
+        <div className="control-bar-group">
+          <span className="control-bar-label">Acceptance score</span>
+          <input type="number" className="sf-input" style={{ width: 72 }} min={0} max={100}
+            value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} />
+        </div>
       </div>
 
       {/* Constraint sliders + economics. Both are session-only: MATCH_PARAMS is
           shared state and this page is read-only by design. */}
       {constraints && envelope && econ && (
-        <div style={{
-          display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start',
-          border: '1px solid rgba(128,128,128,0.25)', borderRadius: 8, padding: '8px 10px',
-        }}>
+        <div className="control-bar" style={{ gap: 16, alignItems: 'flex-start' }}>
           <Slider label="Target radius" unit="km" value={constraints.targetRadiusKm}
             max={envelope.targetRadiusKm}
             onChange={(v) => setConstraints({ ...constraints, targetRadiusKm: v })} />
@@ -780,21 +782,21 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
           <Slider label="Chains per vehicle" unit="" value={constraints.maxPerVehicle}
             max={envelope.maxPerVehicle} step={1}
             onChange={(v) => setConstraints({ ...constraints, maxPerVehicle: v })} />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-            <label style={{ fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ opacity: 0.7 }}>Cost / empty km</span>
-              <input type="number" step={0.05} min={0} value={econ.costPerEmptyKm}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+            <label className="control-bar-group" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+              <span className="control-bar-label">Cost / empty km</span>
+              <input type="number" className="sf-input" step={0.05} min={0} value={econ.costPerEmptyKm}
                 onChange={(e) => setEcon({ ...econ, costPerEmptyKm: Number(e.target.value) })}
-                style={{ width: 70, padding: '2px 4px' }} />
+                style={{ width: 72 }} />
             </label>
-            <label style={{ fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ opacity: 0.7 }}>Revenue / loaded km</span>
-              <input type="number" step={0.05} min={0} value={econ.revPerLoadedKm}
+            <label className="control-bar-group" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+              <span className="control-bar-label">Revenue / loaded km</span>
+              <input type="number" className="sf-input" step={0.05} min={0} value={econ.revPerLoadedKm}
                 onChange={(e) => setEcon({ ...econ, revPerLoadedKm: Number(e.target.value) })}
-                style={{ width: 70, padding: '2px 4px' }} />
+                style={{ width: 72 }} />
             </label>
           </div>
-          <div style={{ fontSize: 10, opacity: 0.6, maxWidth: 260, lineHeight: 1.4 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 260, lineHeight: 1.4 }}>
             Sliders tighten inside the envelope the chain view already pruned at
             (each maximum above). Loosening past it would show nothing new,
             because those chains were never enumerated.
@@ -804,56 +806,55 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
       {/* Filters */}
       {graded.length > 0 && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            Rung
-            <select value={String(rungFilter)}
-              onChange={(e) => setRungFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-              style={{ padding: '2px 4px' }}>
+        <div className="control-bar">
+          <div className="control-bar-group">
+            <span className="control-bar-label">Rung</span>
+            <select className="sf-select" value={String(rungFilter)}
+              onChange={(e) => setRungFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}>
               <option value="all">All</option>
               {[1, 2, 3, 4].map((r) => (
                 <option key={r} value={r}>{r} - {RUNG_LABEL[r]}</option>
               ))}
             </select>
-          </label>
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            Vehicle
-            <select value={vehicleFilter} onChange={(e) => setVehicleFilter(e.target.value)}
-              style={{ padding: '2px 4px' }}>
+          </div>
+          <div className="control-bar-group">
+            <span className="control-bar-label">Vehicle</span>
+            <select className="sf-select" value={vehicleFilter}
+              onChange={(e) => setVehicleFilter(e.target.value)}>
               <option value="all">All ({vehicleIds.length})</option>
               {vehicleIds.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
-          </label>
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          </div>
+          <label className="control-bar-check">
             <input type="checkbox" checked={eligibleOnly}
               onChange={(e) => setEligibleOnly(e.target.checked)} />
             Eligible only
           </label>
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <label className="control-bar-check">
             <input type="checkbox" checked={beatsOnly}
               onChange={(e) => setBeatsOnly(e.target.checked)} />
             Beats the status quo only
           </label>
-          <span style={{ opacity: 0.7 }}>
+          <span className="control-bar-count">
             {shown.length} of {graded.length} chains shown
             {droppedFromMatrix ? ` (${droppedFromMatrix} deferred from costing)` : ''}
           </span>
         </div>
       )}
 
-      {status && <div style={{ fontSize: 12, opacity: 0.8 }}>{status}</div>}
+      {status && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{status}</div>}
       {rungReached == null && costBasis === 'road' && shown.length > 0 && (
-        <div style={{ fontSize: 12, opacity: 0.8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           No rung reached the {threshold} acceptance score, so every rung is shown as a near miss.
         </div>
       )}
-      {err && <div style={{ fontSize: 12, color: '#b91c1c' }}>{err}</div>}
+      {err && <div style={{ fontSize: 12, color: 'var(--text-error)' }}>{err}</div>}
 
       <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 380 }}>
         {/* Chain cards, grouped per vehicle */}
         <div style={{ width: 470, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {shown.length === 0 && !busy && (
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {graded.length === 0
                 ? 'No chains to show.'
                 : 'Every chain is filtered out. Loosen a slider or clear a filter.'}
@@ -863,11 +864,11 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
             <div key={trailer} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-                fontSize: 12, fontWeight: 700, paddingBottom: 2,
-                borderBottom: '1px solid rgba(128,128,128,0.3)',
+                fontSize: 12, fontWeight: 700, paddingBottom: 4,
+                borderBottom: '1px solid var(--border)',
               }}>
                 <span>{trailer}</span>
-                <span style={{ fontWeight: 400, opacity: 0.7 }}>
+                <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}>
                   {items.length} {items.length === 1 ? 'chain' : 'chains'}
                   {' '}&middot; back to {place(items[0].TARGET_LABEL, items[0].TARGET_LON, items[0].TARGET_LAT)}
                 </span>
@@ -881,15 +882,14 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
         </div>
 
         {/* Map */}
-        <div style={{ flex: 1, position: 'relative', minHeight: 380 }}>
+        <div style={{ display: 'grid', gridTemplateRows: 'minmax(0,1fr) auto', gap: 8, flex: 1, minHeight: 380 }}>
           <ProposalMap
             vehicles={vehicles} loads={loads} links={[]} stops={stops}
             legKinds={CHAIN_LEG_KINDS} endLabel="Return target"
             routeLegs={routeLegs} routePath={null} focusKey={selectedKey}
           />
-          <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
-            <button type="button" onClick={() => setLegendOpen(true)}
-              style={{ padding: '3px 9px', borderRadius: 6, fontSize: 11, cursor: 'pointer' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn small secondary" onClick={() => setLegendOpen(true)}>
               Legend
             </button>
           </div>
@@ -910,7 +910,7 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
                 label="Empty running - to hop 1, between the hops, and the residual run from hop 2 to the target. No revenue." />
               <Line color={COLOR_LEG_LOADED}
                 label="Loaded, revenue-bearing - hop 1 and hop 2 only." />
-              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
                 {routeOnRoads
                   ? 'Legs follow the road network (live DIRECTIONS call per leg).'
                   : 'Some legs are drawn straight: the road geometry has not been returned for them. Distances on the cards are still road distances once costing has run.'}
@@ -933,10 +933,10 @@ function Slider({ label, unit, value, max, step = 5, onChange }: {
 }) {
   const min = step;
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 11, minWidth: 140 }}>
-      <span style={{ opacity: 0.7 }}>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 11, minWidth: 150 }}>
+      <span style={{ color: 'var(--text-secondary)' }}>
         {label}: <strong>{value}{unit && ` ${unit}`}</strong>
-        <span style={{ opacity: 0.6 }}> / max {max}</span>
+        <span style={{ color: 'var(--text-tertiary)' }}> / max {max}</span>
       </span>
       <input type="range" min={Math.min(min, max)} max={max} step={step} value={Math.min(value, max)}
         onChange={(e) => onChange(Number(e.target.value))} />
@@ -949,10 +949,10 @@ function Swatch({ color, label, ring = false }: {
 }) {
   const rgb = `rgb(${color.join(',')})`;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 4 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 6 }}>
       <span style={{
-        width: 12, height: 12, borderRadius: '50%', flex: '0 0 auto',
-        background: ring ? '#fff' : rgb,
+        width: 12, height: 12, borderRadius: ring ? '50%' : 3, flex: '0 0 auto',
+        background: ring ? 'var(--surface)' : rgb,
         border: ring ? `2px solid ${rgb}` : 'none',
       }} />
       <span>{label}</span>
@@ -965,7 +965,7 @@ function Line({ color, label, dashed = false }: {
 }) {
   const rgb = `rgb(${color.join(',')})`;
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, marginBottom: 4 }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, marginBottom: 6 }}>
       <span style={{
         width: 22, flex: '0 0 auto', marginTop: 7,
         borderTop: `3px ${dashed ? 'dashed' : 'solid'} ${rgb}`,
@@ -982,52 +982,52 @@ function ChainCard({ c, selected, costed, onSelect }: {
   return (
     <div onClick={onSelect}
       style={{
-        border: `1px solid ${selected ? '#29b5e8' : 'rgba(128,128,128,0.35)'}`,
-        borderRadius: 8, padding: 10, cursor: 'pointer',
-        background: selected ? 'rgba(41,181,232,0.08)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 8, padding: 12, cursor: 'pointer',
+        background: selected ? 'var(--surface-accent)' : 'var(--surface)',
       }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
         <strong style={{ fontSize: 12 }}>
           {RUNG_LABEL[c.CASCADE_RUNG]}
         </strong>
-        <span style={{ fontSize: 11, opacity: 0.8 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
           {c.grade !== '-' && <>grade {c.grade} &middot; </>}
           rung {c.CASCADE_RUNG}
         </span>
       </div>
-      <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
         {RUNG_NOTE[c.CASCADE_RUNG]}
       </div>
 
       <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
         <div>
-          <span style={{ opacity: 0.65 }}>Empty to hop 1:</span>{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>Empty to hop 1:</span>{' '}
           {place(c.EMPTY_CITY, c.EMPTY_LON, c.EMPTY_LAT)} &rarr;{' '}
           {place(c.LEG1_PICKUP_CITY, c.LEG1_PICKUP_LON, c.LEG1_PICKUP_LAT)}{' '}
           ({fmtKm(c.roadE1Km ?? c.LEG1_EMPTY_KM)})
         </div>
         <div>
-          <span style={{ opacity: 0.65 }}>Hop 1:</span>{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>Hop 1:</span>{' '}
           {place(c.LEG1_PICKUP_CITY, c.LEG1_PICKUP_LON, c.LEG1_PICKUP_LAT)} &rarr;{' '}
           {place(c.LEG1_DELIVERY_CITY, c.LEG1_DELIVERY_LON, c.LEG1_DELIVERY_LAT)}{' '}
           ({fmtKm(c.roadLoaded1Km ?? c.LEG1_LOADED_KM)}){' '}
-          <em style={{ opacity: 0.7 }}>({c.LEG1_IS_INTERNAL ? 'own load' : 'external'})</em>
+          <em style={{ color: 'var(--text-secondary)' }}>({c.LEG1_IS_INTERNAL ? 'own load' : 'external'})</em>
         </div>
         <div>
-          <span style={{ opacity: 0.65 }}>Empty between hops:</span>{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>Empty between hops:</span>{' '}
           {place(c.LEG1_DELIVERY_CITY, c.LEG1_DELIVERY_LON, c.LEG1_DELIVERY_LAT)} &rarr;{' '}
           {place(c.LEG2_PICKUP_CITY, c.LEG2_PICKUP_LON, c.LEG2_PICKUP_LAT)}{' '}
           ({fmtKm(c.roadE2Km ?? c.LEG2_EMPTY_KM)})
         </div>
         <div>
-          <span style={{ opacity: 0.65 }}>Hop 2:</span>{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>Hop 2:</span>{' '}
           {place(c.LEG2_PICKUP_CITY, c.LEG2_PICKUP_LON, c.LEG2_PICKUP_LAT)} &rarr;{' '}
           {place(c.LEG2_DELIVERY_CITY, c.LEG2_DELIVERY_LON, c.LEG2_DELIVERY_LAT)}{' '}
           ({fmtKm(c.roadLoaded2Km ?? c.LEG2_LOADED_KM)}){' '}
-          <em style={{ opacity: 0.7 }}>({c.LEG2_IS_INTERNAL ? 'own load' : 'external'})</em>
+          <em style={{ color: 'var(--text-secondary)' }}>({c.LEG2_IS_INTERNAL ? 'own load' : 'external'})</em>
         </div>
         <div>
-          <span style={{ opacity: 0.65 }}>Empty residual to {place(c.TARGET_LABEL, c.TARGET_LON, c.TARGET_LAT)}:</span>{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>Empty residual to {place(c.TARGET_LABEL, c.TARGET_LON, c.TARGET_LAT)}:</span>{' '}
           {fmtKm(c.residualKm)}
         </div>
       </div>
@@ -1036,43 +1036,41 @@ function ChainCard({ c, selected, costed, onSelect }: {
           empty total includes the residual run, because the baseline is a
           complete run home. */}
       <div style={{
-        marginTop: 6, paddingTop: 6, borderTop: '1px dashed rgba(128,128,128,0.3)',
+        marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)',
         fontSize: 11,
       }}>
         <div>
           Empty km: <strong>{fmtKm(c.emptyKm)}</strong>{' '}
           vs <strong>{fmtKm(c.baselineEmptyKm)}</strong> running home empty
-          <span style={{ color: c.emptySavedKm > 0 ? '#15803d' : '#b91c1c' }}>
+          <span style={{ color: c.emptySavedKm > 0 ? 'var(--text-success)' : 'var(--text-error)' }}>
             {' '}({c.emptySavedKm > 0 ? '-' : '+'}{fmtKm(Math.abs(c.emptySavedKm))})
           </span>
         </div>
         <div>
           Net: <strong>{fmtUsd(c.netUsd)}</strong> vs <strong>{fmtUsd(c.baselineNetUsd)}</strong> doing nothing
           {' '}
-          <span style={{ color: c.beatsBaseline ? '#15803d' : '#b91c1c' }}>
+          <span style={{ color: c.beatsBaseline ? 'var(--text-success)' : 'var(--text-error)' }}>
             {c.beatsBaseline ? 'better than the status quo' : 'does not beat the status quo'}
           </span>
         </div>
         {!costed && (
-          <div style={{ opacity: 0.6, marginTop: 2 }}>
+          <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>
             Straight-line estimate. Run costing for road distances.
           </div>
         )}
       </div>
 
       {/* Per-constraint chips, evaluated against the current slider values */}
-      <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {([
           ['Total empty', c.totalEmptyOk],
           ['Hop-1 detour', c.leg1DetourOk],
           ['Reaches target', c.targetOk],
           ['Hop order', c.sequenceOk],
         ] as [string, boolean][]).map(([label, ok]) => (
-          <span key={label} style={{
-            fontSize: 10, padding: '1px 6px', borderRadius: 10,
-            border: `1px solid ${ok ? 'rgba(21,128,61,0.5)' : 'rgba(185,28,28,0.5)'}`,
-            color: ok ? '#15803d' : '#b91c1c',
-          }}>{ok ? '\u2713' : '\u2717'} {label}</span>
+          <span key={label} className={`status-badge ${ok ? 'success' : 'critical'}`}>
+            {ok ? '\u2713' : '\u2717'} {label}
+          </span>
         ))}
       </div>
     </div>
