@@ -271,3 +271,32 @@ if [ -f "$REGION_SCOPE_CHECK" ]; then
     exit 1
   }
 fi
+
+# 9. Verb JavaScript globals: a bundled verb source must not use a host API the
+# Snowflake LANGUAGE JAVASCRIPT proc runtime does not have.
+#
+# Nothing else in the toolchain notices. tsc accepts it (the repo pulls in DOM and
+# @types/node for the build-time half of the framework), esbuild bundles it, and
+# `npx synapse deploy` creates the procedure cleanly - so the first symptom is an
+# agent hitting a bare "<name> is not defined" mid-conversation, with no line
+# number and nothing useful in VERB_ATTEMPT.
+#
+# That is how deep_link shipped broken: its LAST statement built the query string
+# with `new URLSearchParams()`, so the verb looked up the view label, probed
+# SHOW ENDPOINTS for the ingress host, and then threw. deep_link is the sanctioned
+# fallback for every visual question the agent cannot draw, so its failure removed
+# the only honest visual path - and the agent, handed an opaque internal error,
+# told the user to escalate a repo bug to their Fleet Ops administrator.
+#
+# Runs on EVERY commit with no staged-path filter: the scan is 47 files and
+# finishes instantly, and a bad global can arrive in a verb, a shared helper, or
+# the vendored envelope. Comments and string literals are stripped first, which
+# matters because these files legitimately discuss the APIs they must not call.
+VERB_GLOBALS_CHECK="$SKILL_DIR/scripts/check_verb_js_globals.py"
+if [ -f "$VERB_GLOBALS_CHECK" ]; then
+  echo "pre-commit: verb JavaScript globals check..."
+  python3 "$VERB_GLOBALS_CHECK" || {
+    echo "pre-commit FAILED: a verb uses a JavaScript global the Snowflake proc runtime lacks."
+    exit 1
+  }
+fi
