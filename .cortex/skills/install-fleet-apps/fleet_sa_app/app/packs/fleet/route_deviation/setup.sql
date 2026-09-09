@@ -105,6 +105,71 @@ LEFT JOIN FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE vp
   ON vp.VEHICLE_TYPE = t.VEHICLE_TYPE
 WHERE t.POINT_GEOM IS NOT NULL;
 
+CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- WHY UNPIVOTED, AND WHY GEOJSON STRINGS
+--
+-- TRIP_DEVIATION already carries ACTUAL_PATH and EXPECTED_PATH, but neither
+-- is reachable from a Cortex agent: a semantic view cannot hold a GEOGRAPHY
+-- column, so SV_ROUTE_DEVIATION excluded both and no agent could ever draw a
+-- driven route. Outside the app the only mappable source is a query_* result
+-- (data_to_map rejects an MCP verb result - cortex#156984), which made an
+-- actual-vs-expected map structurally impossible rather than merely awkward.
+--
+-- Unpivoted because data_to_map draws exactly ONE layer (MapSpec.Layer is a
+-- single struct). Two side-by-side geojson COLUMNS could not be overlaid; one
+-- geojson column plus a PATH_TYPE category column can, coloured categorically.
+--
+-- ST_SIMPLIFY at 250 m is a hard requirement, not tidiness. Measured over the
+-- 663 trips that hold both paths: raw ST_ASGEOJSON reaches 388 KB per row,
+-- which renders a BLANK map with no error raised; at 250 m the worst row is
+-- 31 KB and the average is 826 B. 250 m is well inside GPS-trace noise for a
+-- road-following line, so nothing visible is lost.
+--
+-- EXPECTED_PATH is populated only on deviated trips (663 of 14,053 loaded),
+-- so the two rows exist together only where there is a real divergence to
+-- show. On a non-deviated trip the driven track reproduces the planned route
+-- exactly - measured: Hausdorff distance 0 - hence HAS_BOTH_PATHS, so a
+-- consumer can pick a trip that will actually show two distinct lines instead
+-- of drawing one line twice.
+SELECT
+  d.TRIP_ID,
+  d.VEHICLE_ID,
+  d.DRIVER_ID,
+  d.TRIP_DATE,
+  d.REGION,
+  d.REGION_LABEL,
+  d.VEHICLE_TYPE,
+  d.IS_ROUTE_DEVIATION,
+  d.DISTANCE_DEVIATION_PCT,
+  d.DURATION_DEVIATION_PCT,
+  d.EXPECTED_PATH IS NOT NULL                              AS HAS_BOTH_PATHS,
+  'ACTUAL'                                                 AS PATH_TYPE,
+  d.ACTUAL_DISTANCE_KM                                     AS PATH_DISTANCE_KM,
+  d.ACTUAL_DURATION_MIN                                    AS PATH_DURATION_MIN,
+  ST_ASGEOJSON(ST_SIMPLIFY(d.ACTUAL_PATH, 250))::VARCHAR   AS PATH_GEOJSON
+FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION d
+WHERE d.ACTUAL_PATH IS NOT NULL
+UNION ALL
+SELECT
+  d.TRIP_ID,
+  d.VEHICLE_ID,
+  d.DRIVER_ID,
+  d.TRIP_DATE,
+  d.REGION,
+  d.REGION_LABEL,
+  d.VEHICLE_TYPE,
+  d.IS_ROUTE_DEVIATION,
+  d.DISTANCE_DEVIATION_PCT,
+  d.DURATION_DEVIATION_PCT,
+  TRUE                                                     AS HAS_BOTH_PATHS,
+  'EXPECTED'                                               AS PATH_TYPE,
+  d.EXPECTED_DISTANCE_KM                                   AS PATH_DISTANCE_KM,
+  d.EXPECTED_DURATION_MIN                                  AS PATH_DURATION_MIN,
+  ST_ASGEOJSON(ST_SIMPLIFY(d.EXPECTED_PATH, 250))::VARCHAR AS PATH_GEOJSON
+FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION d
+WHERE d.EXPECTED_PATH IS NOT NULL;
+
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql)
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_USER;
 GRANT USAGE ON SCHEMA FLEET_APP.ROUTE_DEVIATION TO ROLE FLEET_APP_USER;
