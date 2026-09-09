@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import { usePublishMapState } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
 import {
@@ -142,11 +143,18 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [rationaleByKey, setRationaleByKey] = useState<Record<string, string>>({});
   const [explaining, setExplaining] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  // Region bbox for the map camera. Keyed off the region the feeds were actually
+  // scoped to (cfg.region), not the raw store value, so camera and data agree.
+  const regionCoords = useRegionCamera(cfg?.region ?? region);
 
   useEffect(() => { setWeights(loadWeights()); }, []);
 
   const load = useCallback(async () => {
     setLoadErr(null);
+    // A pair key from the previous region cannot exist in the new one, and holding
+    // it also pins `focusKey`, which is one of the two things that can force the
+    // camera to re-fit.
+    setSelectedKey(null);
     try {
       const cfgRows = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const c = cfgRows[0] as { VEHICLE_TYPE?: string; REGION?: string } | undefined;
@@ -624,6 +632,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
               stops={mapStops}
               routePath={routePath}
               focusKey={selectedKey ?? ''}
+              regionKey={cfg?.region ?? ''}
+              regionCoords={regionCoords}
             />
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
               <button type="button" className="btn small secondary" onClick={() => setLegendOpen(true)}>Legend</button>

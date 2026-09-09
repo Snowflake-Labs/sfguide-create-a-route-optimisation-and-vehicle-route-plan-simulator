@@ -49,6 +49,16 @@ interface Props {
   routeLegs?: MapRouteLeg[];
   // Label for the final stop. Defaults to the single-hop meaning ("Next start").
   endLabel?: string;
+  // Active region key. Load-bearing for the camera, not cosmetic: MapView resets
+  // hasFitted/userMoved and arms a forced data fit ONLY when fitTo.regionKey
+  // changes, so a constant key meant a region switch never re-framed the map -
+  // once the user had panned, the camera stayed on the previous region for good.
+  regionKey?: string;
+  // Bounding-box corners of the active region, from useRegionCamera. Frames the
+  // region before its rows arrive, and keeps it framed when the region has NO
+  // rows at all - which is the normal San Francisco case for chained returns,
+  // since chains are a long-haul pattern a metro region correctly yields none of.
+  regionCoords?: [number, number][] | null;
 }
 
 // Selected route stop palette, matched to the Backload Matching map:
@@ -62,6 +72,7 @@ const ROUTE_COLOR: [number, number, number] = [29, 78, 216];
 
 export default function ProposalMap({
   vehicles, loads, links, stops, routePath, focusKey, legKinds, routeLegs, endLabel,
+  regionKey, regionCoords,
 }: Props) {
   const layers = useMemo(() => {
     const arr: any[] = [];
@@ -230,7 +241,21 @@ export default function ProposalMap({
 
   return (
     <div style={{ position: 'relative', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', minHeight: 0, height: '100%' }}>
-      <MapView layers={layers} fitTo={{ coords: fitCoords, regionKey: focused ? `route:${focusKey}` : 'all', maxZoom: 12, focusKey }} getTooltip={getTooltip} onRecenterReady={onRecenterReady} />
+      {/* The region is part of the key in BOTH branches: with it only in the
+          unfocused branch, switching region while a proposal is selected would
+          again leave the key unchanged and the camera stranded. */}
+      <MapView
+        layers={layers}
+        fitTo={{
+          coords: fitCoords,
+          regionKey: focused ? `route:${regionKey ?? ''}:${focusKey}` : `region:${regionKey ?? ''}`,
+          regionCoords,
+          maxZoom: 12,
+          focusKey,
+        }}
+        getTooltip={getTooltip}
+        onRecenterReady={onRecenterReady}
+      />
     </div>
   );
 }

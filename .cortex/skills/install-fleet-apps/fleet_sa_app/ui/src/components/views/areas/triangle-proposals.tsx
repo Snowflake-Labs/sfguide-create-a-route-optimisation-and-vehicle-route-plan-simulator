@@ -36,6 +36,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import { usePublishMapState } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
 import { sfRead, sqlLiteral, callVerb } from './backload-matching/helpers';
@@ -260,6 +261,12 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [threshold, setThreshold] = useState(70);
   const [profile, setProfile] = useState('driving-car');
+  // The region the feeds were ACTUALLY scoped to: the app's selection when it has
+  // one, else CONFIG's default-selection hint. Held in state rather than recomputed
+  // for the camera, so the map can never frame a different region than the queries
+  // read - which is the whole failure mode this view had.
+  const [activeRegion, setActiveRegion] = useState<string>('');
+  const regionCoords = useRegionCamera(activeRegion || region);
   const [status, setStatus] = useState('');
   const [legendOpen, setLegendOpen] = useState(false);
   const [costBasis, setCostBasis] = useState<'great_circle' | 'road'>('great_circle');
@@ -291,6 +298,10 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const load = useCallback(async () => {
     setLoading(true); setErr(null); setSuspended(null);
     setRoadByKey({}); setRouteGeo({}); setDroppedFromMatrix(0);
+    // A chain key from the previous region is meaningless against the new chain
+    // set, and leaving it also froze `focusKey`, removing the one remaining
+    // path that could have forced the camera to re-fit.
+    setSelectedKey('');
     setCostBasis('great_circle');
     try {
       const cfg = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
@@ -298,6 +309,7 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
       // The APP's selected region wins over CONFIG's single row, which is only a
       // default-selection hint.
       const scopeRegion = String(region ?? cfg[0]?.REGION ?? 'SanFrancisco');
+      setActiveRegion(scopeRegion);
       const scope = { region: scopeRegion };
       // VW_TRIANGLES, VW_TRAILERS_GEO and VW_LOADS do not project REGION, so bare
       // reads pool every loaded region. Measured on this account: all 9 chains
@@ -879,6 +891,7 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
             vehicles={vehicles} loads={loads} links={[]} stops={stops}
             legKinds={CHAIN_LEG_KINDS} endLabel="Return target"
             routeLegs={routeLegs} routePath={null} focusKey={selectedKey}
+            regionKey={activeRegion} regionCoords={regionCoords}
           />
           <LegendOverlay open={legendOpen} onClose={() => setLegendOpen(false)} title="Legend">
             <LegendSection title="Estate">
