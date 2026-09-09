@@ -41,6 +41,50 @@ function pickSubtype(dist: SubtypeShare[] | null | undefined, vehicleId: string)
   return dist[dist.length - 1].subtype;
 }
 
+// Golden-ratio conjugate: generates a low-discrepancy sequence over [0,1).
+const GOLDEN_CONJUGATE = 0.6180339887498949;
+
+/**
+ * Pick a shift index for vehicle `i`, honouring each shift's declared
+ * `proportion`.
+ *
+ * Why this is not `i % shifts.length`: it used to be, which silently made
+ * `proportion` DEAD CONFIG in every preset. The e-bike preset declares
+ * 0.3 / 0.5 / 0.2 and got 34 / 33 / 33 instead, and because shift width is what
+ * determines how long a duty day is, the whole fleet's hours distribution was an
+ * artifact of the vehicle count rather than of the configured shift mix.
+ *
+ * Two properties are deliberate:
+ *
+ * 1. It consumes NO RNG. Drawing a weighted random shift here (the obvious fix,
+ *    mirroring the driver_profiles loop below) would pull one extra value from
+ *    the seeded stream per vehicle and shift every downstream random decision -
+ *    home POI, base speed, ghost selection, and every trip in the run - so a
+ *    "fix the shift mix" change would silently regenerate unrelated data.
+ *
+ * 2. It uses a golden-ratio low-discrepancy sequence rather than contiguous
+ *    blocks, so shift assignment stays interleaved across the index space. Home
+ *    POI is also assigned by index (round-robin over spatial bins), so blocking
+ *    shifts contiguously would correlate shift with geography and put, say,
+ *    every night-shift vehicle in the same part of the region.
+ *
+ * Falls back to the historical round-robin when no usable proportions are
+ * declared, so a preset that omits them is unchanged.
+ */
+function pickShiftIndex(shifts: { proportion?: number }[], i: number): number {
+  if (shifts.length <= 1) return 0;
+  const weights = shifts.map(s => (Number.isFinite(s.proportion) && (s.proportion ?? 0) > 0 ? s.proportion! : 0));
+  const total = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) return i % shifts.length; // no proportions declared
+  const frac = (i * GOLDEN_CONJUGATE) % 1;
+  let cum = 0;
+  for (let k = 0; k < weights.length; k++) {
+    cum += weights[k] / total;
+    if (frac < cum) return k;
+  }
+  return weights.length - 1;
+}
+
 export interface BuildFleetDiagnostics {
   bin_deg: number;
   populated_home_bins: number;
@@ -112,7 +156,7 @@ export function buildFleetWithDiagnostics(
       if (r < cumulative) { profileType = name; profileCfg = cfg; break; }
     }
 
-    const shiftIdx = i % config.shifts.length;
+    const shiftIdx = pickShiftIndex(config.shifts, i);
     const shift = config.shifts[shiftIdx];
 
     let home: POI;
