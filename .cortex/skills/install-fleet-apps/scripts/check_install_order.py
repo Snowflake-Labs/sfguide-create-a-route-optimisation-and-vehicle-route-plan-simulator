@@ -55,6 +55,7 @@ ORDER = [
     ("4   packs",            SKILL / "fleet_sa_app" / "app" / "packs"),            # dir: all setup.sql
     ("4   contract",         SKILL / "fleet_sa_app" / "app" / "scoped_contract.sql"),
     ("4.2 delivery_sync",    SCRIPTS / "delivery_sync_layer.sql"),
+    ("4.25 labour",          SKILL / "fleet_sa_app" / "app" / "labor_layer.sql"),
     ("4.5 semantic",         SKILL / "fleet_sa_app" / "app" / "semantic_views.sql"),
     # SV_OFFERS reads FLEET_INTELLIGENCE.MARKETPLACE, which NO install step
     # creates (the admin app boot init / the freight-exchange skill do). It is

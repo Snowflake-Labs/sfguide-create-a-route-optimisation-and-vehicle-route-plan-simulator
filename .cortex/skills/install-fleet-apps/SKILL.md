@@ -219,4 +219,6 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 - `references/snowflake-sql-gotchas.md` - engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
 - `references/troubleshooting.md` - engine image build / registry / service troubleshooting.
 - `references/cost-guardrails.sql` - OPTIONAL privileged resource monitor + budget (see Cost Guardrails).
+- `references/overtime-alert.sql` - OPTIONAL overtime-risk alert over `FLEET_APP.LABOR`. Warns a supervisor before a weekly hours threshold is crossed. Created SUSPENDED and NOT run by the installer, because its only purpose is to send email.
+- `references/agent-verb-coverage.md` - why every synapse verb needs a routing line in each agent that can see it.
 - `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` - the locked agnostic contract.

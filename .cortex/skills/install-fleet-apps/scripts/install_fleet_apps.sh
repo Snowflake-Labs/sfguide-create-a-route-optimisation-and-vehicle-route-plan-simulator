@@ -73,6 +73,7 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # which wrap table functions), so it must run AFTER the packs have built the
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
+LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
@@ -560,6 +561,28 @@ if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
     || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
 else
   step "4.2 delivery-sync" SKIPPED
+fi
+
+# ── 4.25 labour + overtime contract (FLEET_APP.LABOR) ────────────────────
+# Derives paid hours per operator from the trip record and allocates them to
+# payroll weeks, so the Labour and Overtime view and SV_LABOR have a source.
+# Must run BEFORE 4.5, which creates SV_LABOR over these views.
+#
+# Engine-free by construction: it reads only FLEET_APP.UNIFIED_FLEET, so it is
+# correct under --no-engine and is NOT gated on the routing engine.
+#
+# Uses the PERIOD data type (PERIOD_CONSTRUCT / PERIOD_INTERSECT / PERIOD_OVERLAPS)
+# to split a duty period that straddles a payroll week boundary. On an account
+# where PERIOD is not yet enabled these statements fail, which is why this is a
+# WARN rather than a hard failure - the rest of the install is unaffected, and
+# only the labour view and SV_LABOR are lost.
+if [ "${SKIP_LABOR:-0}" != "1" ]; then
+  note "[4.25/8] labour + overtime contract (FLEET_APP.LABOR)..."
+  snow sql -c "$CONNECTION" -f "$LABOR_LAYER_SQL" --enable-templating NONE >/tmp/ifa_labor.log 2>&1 \
+    && step "4.25 labour" OK \
+    || { note "  WARN: labour layer reported errors (PERIOD data type not enabled on this account?); see /tmp/ifa_labor.log"; step "4.25 labour" WARN; }
+else
+  step "4.25 labour" SKIPPED
 fi
 
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────

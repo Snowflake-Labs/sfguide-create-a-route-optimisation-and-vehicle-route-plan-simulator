@@ -79,11 +79,34 @@ def _check_skill(skill_name: str, sql_texts: list[tuple[str, str]], skips: set) 
     }
 
 
+def _strip_sql_comments(text: str) -> str:
+    """Blank out SQL comments, preserving line numbering.
+
+    Load-bearing for any check that matches a SQL keyword pattern, because these
+    files DISCUSS the constructs they must not use. Without this,
+    `_check_reserved_word_rows` matched the prose "... as rows with a null
+    QUESTION ..." inside a `--` comment and reported it as a reserved-word alias
+    at that line - a failure no edit to the SQL could ever clear, since there was
+    no SQL there. Same reasoning as check_verb_js_globals.py, which strips
+    comments and string literals before matching for exactly this reason.
+
+    Comment text is replaced with spaces rather than removed so reported line
+    numbers still point at the right line.
+    """
+    # Block comments first, so a -- inside /* */ cannot terminate early.
+    def _blank(m: re.Match) -> str:
+        return re.sub(r"[^\n]", " ", m.group(0))
+
+    text = re.sub(r"/\*.*?\*/", _blank, text, flags=re.DOTALL)
+    text = re.sub(r"--[^\n]*", _blank, text)
+    return text
+
+
 def _check_reserved_word_rows(sql_texts: list[tuple[str, str]]) -> tuple[bool, str]:
     pattern = re.compile(r"\bAS\s+ROWS\b", re.IGNORECASE)
     violations = []
     for source, text in sql_texts:
-        for m in pattern.finditer(text):
+        for m in pattern.finditer(_strip_sql_comments(text)):
             line_num = text[:m.start()].count("\n") + 1
             violations.append(f"{source}:{line_num}")
     if violations:
