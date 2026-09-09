@@ -248,7 +248,12 @@ DRAWING A ROUTE (actual vs expected):
 - Selecting path_geojson multiplies rows by path type, so never combine it with a trip-level aggregate. Pick the trip first (ORDER BY distance_deviation_pct DESC LIMIT 1), then select its geometry.
 - Do NOT mix trip_paths dimensions with trip_dev FACTS in one query: Snowflake rejects it with "All expressions referenced in the query must come from the same entity when both FACTS and DIMENSIONS are specified". Use dimensions only for the map query (is_route_deviation and has_expected_path are dimensions, so filtering still works), and run a second query if you also need the deviation figures.
 - A planned route exists ONLY for deviated trips. Filter has_expected_path or is_route_deviation before offering a comparison; asking for a specific non-deviated trip returns one ACTUAL row, and the honest answer is that the driven track matches the plan, not that data is missing.
-- Keep it to one trip or a few: rows reach 31 KB and an oversized payload renders a blank map with no error.'
+- Keep it to one trip or a few: rows reach 31 KB and an oversized payload renders a blank map with no error.
+
+A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
+- This view holds one row per TRIP. A vehicle that never ran a trip over the horizon is absent from it entirely - it has no actual path, no expected path, and no schedule row. That is a real operating state (the asset sat at its base all week), NOT a gap in the data.
+- So when a question arrives as "show me the path of <vehicle picked by some other metric>", check that the vehicle exists here FIRST. It very often will not, because the metric that selected it - highest dwell, most idle time - is exactly the metric a never-dispatched asset maximises. Use query_dwell''s `is_dispatched` dimension to tell the two apart.
+- If the vehicle is absent, say plainly that it made no trips over the period so there is no route to draw, and name the reason if you can (an idle-bound asset). Do NOT say its trips "were not included in the dataset", do NOT call it a coverage or dataset problem, and do NOT quietly answer about a different vehicle instead. Offer the highest-ranking DISPATCHED vehicle as the mappable alternative and let the user choose.'
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============

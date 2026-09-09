@@ -700,7 +700,7 @@
         "How many stops and how much dwell time?",
         "Were there any safety events on this journey?"
       ],
-      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
+      "gotchas": "The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). A vehicle that was never dispatched has no journey here at all and no path to draw - say it never moved rather than reporting missing data, and check query_dwell's is_dispatched before promising a route for a vehicle that a dwell ranking selected. Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool."
     },
     "layout": {
       "default": {
