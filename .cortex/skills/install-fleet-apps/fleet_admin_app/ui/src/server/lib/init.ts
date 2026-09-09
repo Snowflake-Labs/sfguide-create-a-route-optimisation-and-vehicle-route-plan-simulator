@@ -317,6 +317,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    // Dispatch state (ghost window). See the DIM_FLEET CREATE TABLE in
+    // studio/ensure-tables.ts for why this is persisted. Legacy rows stay NULL,
+    // which the dwell contract treats as "unknown, assume dispatched" so an
+    // un-regenerated dataset keeps its current behaviour rather than silently
+    // reclassifying every vehicle as parked.
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS IS_GHOST BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_START_DAY INT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_END_DAY INT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     // Recreate V_DIM_FLEET_CURRENT right after the ADD COLUMN migration that
     // dropped it (line above). This is the SAME canonical definition used by
     // the main V_*_CURRENT projection block further down - kept here (earlier)

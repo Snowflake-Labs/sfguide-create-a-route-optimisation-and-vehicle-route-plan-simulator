@@ -50,7 +50,16 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       OPERATING_MODE VARCHAR(30), BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT,
       JOB_ID VARCHAR,
       WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2),
-      WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2), HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR(16)
+      WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2), HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR(16),
+      -- Dispatch state. A "ghost" is a vehicle the generator deliberately parks
+      -- at its home POI for a stretch of days (config.ghost_trailer), emitting
+      -- only IDLE pings with TRIP_ID NULL. When the window covers the whole
+      -- horizon the vehicle has NO trips and NO schedule rows at all, so it has
+      -- no route to draw and its single unbroken IDLE span otherwise tops the
+      -- dwell leaderboard ahead of genuinely busy vehicles. Persisting the
+      -- window is what lets the dwell contract and the agent tell "parked all
+      -- week" apart from "dwelled a lot at customer sites".
+      IS_GHOST BOOLEAN, GHOST_START_DAY INT, GHOST_END_DAY INT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
       LOCATION_ID VARCHAR, REGION VARCHAR(100), NAME VARCHAR,
