@@ -187,14 +187,43 @@ entities:
       - { name: WEIGHT_KG, type: NUMBER }
     sql: |
       -- MULTI-REGION. `cls` now JOINs each trip's own VEHICLE_TYPE instead of
-      -- resolving one CONFIG value, and the POOL_CAP is applied PER REGION -
+      -- resolving one CONFIG value, and the pool bound is applied PER REGION -
       -- a single global QUALIFY would let the region with the most recent trips
-      -- consume the whole cap and starve every other region of internal volumes.
+      -- consume the whole pool and starve every other region of internal volumes.
+      --
+      -- POOL SIZE IS DERIVED FROM THE FLEET, NOT TRUNCATED TO A CONSTANT.
+      -- Every row here is a historical trip reinterpreted as an open order, so
+      -- the pool size is a modelling choice with no natural bound in the data.
+      -- It used to be `<= INTERNAL_POOL_CAP` (5000), which meant the number the
+      -- dispatcher reads was the CAP in a busy region and the TRUE trip count in
+      -- a quiet one: measured 16,535 SanFrancisco trips truncated to exactly
+      -- 5,000 next to 332 in Europe, i.e. one tile with two different meanings.
+      -- Sizing by INTERNAL_LOADS_PER_TRAILER makes it mean "loads waiting per
+      -- vehicle" everywhere and scales with any preset. INTERNAL_POOL_CAP is
+      -- retained as an absolute ceiling.
+      --
+      -- Do NOT filter this pool by PLANNING_LEAD_DAYS instead: MEASURED, that is
+      -- a no-op. PICKUP_FROM_TS below is GREATEST(TRIP_START, now + hash), and
+      -- TRIP_START is historical, so the synthetic future value always wins and
+      -- every row already lands inside the horizon (4,975 of 5,000 within 4
+      -- days, none in the past). Pickup feasibility is enforced downstream by
+      -- MAX_PICKUP_HORIZON_DAYS in VW_CANDIDATES.
       WITH p AS (
         SELECT
           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
-          COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+          COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
+          COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
         FROM {schema}.VW_MATCH_PARAMS
+      ),
+      -- Fleet population per region. Counted from the shared fleet dimension
+      -- rather than VW_TRAILERS so both copies of this view (the FLEET_APP one
+      -- here and the FLEET_INTELLIGENCE one in the admin app's init.ts) can use
+      -- an identical basis, and so the ratio does not move when a vehicle
+      -- temporarily has no recorded drop-off.
+      fleet_size AS (
+        SELECT REGION, COUNT(DISTINCT VEHICLE_ID) AS TRAILERS
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+        GROUP BY REGION
       )
       SELECT
         'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -230,7 +259,14 @@ entities:
       JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
       LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
       LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)
+      LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+      -- GREATEST(1, ...) so a region that has trips but no countable trailers
+      -- still yields a non-empty pool rather than silently emptying the page.
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC)
+              <= LEAST(
+                   (SELECT POOL_CAP FROM p),
+                   GREATEST(1, CEIL(COALESCE(fs.TRAILERS, 0) * (SELECT LOADS_PER_TRAILER FROM p)))
+                 )
 
   - name: EXTERNAL_OFFERS
     description: "External freight-exchange offers for the active region, weight rescaled into the class band. Neutral SOURCE / LISTING_TEXT (no vendor branding)."

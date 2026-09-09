@@ -213,14 +213,18 @@ WITH cls AS (
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 ),
 -- Pickup windows spread across PLANNING_LEAD_DAYS, and the pool sized by
--- INTERNAL_POOL_CAP. Vehicle availability is forward-looking (see
+-- INTERNAL_LOADS_PER_TRAILER x the active region's fleet (INTERNAL_POOL_CAP is
+-- now an absolute ceiling only). A flat cap made this count the CAP wherever the
+-- trip history was larger than it and the TRUE trip count everywhere else, so the
+-- same number meant two different things. Vehicle availability is forward-looking (see
 -- proposals-schema.sql VW_TRAILERS_GEO), so a pool bunched into the next few
 -- hours would be reachable only by vehicles free today and would silently
 -- starve every later vehicle of candidates.
 p AS (
   SELECT
     COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
-    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
   FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
 )
 SELECT
@@ -257,7 +261,15 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND EXISTS (SELECT 1 FROM cls)
-QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p);
+QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC)
+        <= LEAST(
+             (SELECT POOL_CAP FROM p),
+             GREATEST(1, CEIL(
+               (SELECT COUNT(DISTINCT VEHICLE_ID)
+                  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+                 WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1))
+               * (SELECT LOADS_PER_TRAILER FROM p)))
+           );
 
 -- ----------------------------------------------------------------------------
 -- 4b. Ensure FACT_FREIGHT_OFFERS exists and is populated for the active region.

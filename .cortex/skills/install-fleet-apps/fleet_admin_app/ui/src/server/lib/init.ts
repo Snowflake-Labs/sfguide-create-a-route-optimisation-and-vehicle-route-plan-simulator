@@ -550,8 +550,17 @@ export async function ensureBackloadAndAssetVelocityObjects(
         p AS (
           SELECT
             COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
-            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Fleet population per region. Same basis as the FLEET_APP copy of this
+        -- view in packs/fleet/backload_matching/data-model.yaml - keep the two in
+        -- step, this file is the RUNTIME owner and overwrites on every boot.
+        fleet_size AS (
+          SELECT REGION, COUNT(DISTINCT VEHICLE_ID) AS TRAILERS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+          GROUP BY REGION
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -594,7 +603,18 @@ export async function ensureBackloadAndAssetVelocityObjects(
         JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
         LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC) <= (SELECT POOL_CAP FROM p)`,
+        LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+        -- Pool size derived from the fleet, not truncated to a constant. See the
+        -- long note on the FLEET_APP copy: a flat INTERNAL_POOL_CAP made this
+        -- count the CAP in a busy region (16,535 SanFrancisco trips -> exactly
+        -- 5,000) and the TRUE trip count in a quiet one (332 Europe). The cap is
+        -- now an absolute ceiling only. GREATEST(1, ...) keeps a region with
+        -- trips but no countable vehicles from emptying the page.
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC)
+                <= LEAST(
+                     (SELECT POOL_CAP FROM p),
+                     GREATEST(1, CEIL(COALESCE(fs.TRAILERS, 0) * (SELECT LOADS_PER_TRAILER FROM p)))
+                   )`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
