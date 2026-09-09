@@ -2683,9 +2683,14 @@ try {
         return { status: 'FAILED', reason: 'BAD_STRATEGY', region: region,
                  error: 'strategy must be one of ' + VALID.join(', ') + ' (got ' + strategy + ')' };
     }
-    var maxVehicles = finite(P_MAX_VEHICLES) && Number(P_MAX_VEHICLES) > 0 ? Math.floor(Number(P_MAX_VEHICLES)) : 20;
-    var maxLoads    = finite(P_MAX_LOADS)    && Number(P_MAX_LOADS)    > 0 ? Math.floor(Number(P_MAX_LOADS))    : 120;
-    var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.floor(Number(P_LIMIT))        : 25;
+    // Upper clamps live HERE, not in the verb's arg schema: the framework's
+    // t.number() carries no bounds, so an agent asking for 100000 vehicles would
+    // otherwise reach the feed SQL. Both caps are concatenated into that SQL
+    // (LIMIT cannot be a bind), so integer-and-bounded is also the injection
+    // guarantee.
+    var maxVehicles = finite(P_MAX_VEHICLES) && Number(P_MAX_VEHICLES) > 0 ? Math.min(200,  Math.floor(Number(P_MAX_VEHICLES))) : 20;
+    var maxLoads    = finite(P_MAX_LOADS)    && Number(P_MAX_LOADS)    > 0 ? Math.min(1000, Math.floor(Number(P_MAX_LOADS)))    : 120;
+    var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.min(200,  Math.floor(Number(P_LIMIT)))        : 25;
     // Math.floor'd above because LIMIT cannot be a bind in Snowflake, so these two
     // are string-concatenated into the feed SQL. Integer-only, hence injection-safe.
 
