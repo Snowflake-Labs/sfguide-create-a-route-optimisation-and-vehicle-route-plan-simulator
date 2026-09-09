@@ -1175,7 +1175,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* KPI grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 12 }}>
         <div style={kpiCard}><div style={kpiLabel}>Trailers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{trailers.length}</div></div>
-        <div style={kpiCard}><div style={kpiLabel}>Internal volumes</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internal.length}</div></div>
+        <div style={kpiCard}><div style={kpiLabel}>Internal load pool</div><div style={{ fontSize: 22, fontWeight: 700 }}>{internal.length}</div></div>
         <div style={kpiCard}><div style={kpiLabel}>External offers</div><div style={{ fontSize: 22, fontWeight: 700 }}>{external.length}</div></div>
         <div style={kpiCard}>
           <div style={kpiLabel}>% dispatched assigned</div>
@@ -1191,9 +1191,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       {/* PAYLOAD SIZE */}
       <div style={sectionHdr}>PAYLOAD SIZE (matrix budget)</div>
       <div style={sectionBox}>
-        {slider('Max trailers', `How many idle trailers (closest to shipments) get sent to the solver. Auto-clamped on Solve so the precomputed ORS matrix stays under ${BM_MAX_MATRIX_LOCATIONS} unique locations.`, maxVehicles, setMaxVehicles, BM_VEHICLES_MIN, BM_VEHICLES_MAX)}
-        {slider('Max internal volumes', 'How many internal (own-fleet) shipments enter the solver, sorted by proximity to the nearest idle trailer.', maxInternal, setMaxInternal, BM_INTERNAL_MIN, BM_INTERNAL_MAX)}
-        {slider('Max external offers', 'How many external freight-exchange offers enter the solver, sorted by proximity to the nearest idle trailer.', maxExternal, setMaxExternal, BM_EXTERNAL_MIN, BM_EXTERNAL_MAX)}
+        {slider('Max trailers', `How many idle trailers get sent to the solver, taken in id order. Auto-clamped on Solve so the precomputed ORS matrix stays under ${BM_MAX_MATRIX_LOCATIONS} unique locations.`, maxVehicles, setMaxVehicles, BM_VEHICLES_MIN, BM_VEHICLES_MAX)}
+        {slider('Max internal loads', 'How many loads from the internal pool enter the solver, ranked by straight-line proximity to the nearest idle trailer. Proximity only - the ranking does not consider the pickup window, weight fit or revenue.', maxInternal, setMaxInternal, BM_INTERNAL_MIN, BM_INTERNAL_MAX)}
+        {slider('Max external offers', 'How many external freight-exchange offers enter the solver, ranked by straight-line proximity to the nearest idle trailer.', maxExternal, setMaxExternal, BM_EXTERNAL_MIN, BM_EXTERNAL_MAX)}
         <div style={{ minWidth: 220, fontSize: 12, color: budget.counterColor }}>
           <div style={{ fontWeight: 600 }}>Locations used: {budget.used} / {BM_MAX_MATRIX_LOCATIONS}</div>
           {budget.overBudget && budget.preview && (<div style={{ fontSize: 11 }}>Will clamp on Solve to {budget.preview.v}/{budget.preview.i}/{budget.preview.e}</div>)}
