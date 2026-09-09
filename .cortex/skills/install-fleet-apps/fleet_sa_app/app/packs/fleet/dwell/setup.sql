@@ -32,7 +32,18 @@ SELECT
     f.DRIVER_PROFILE, f.OPERATING_MODE, f.SHIFT_TYPE, f.BASE_SPEED_KMH,
     f.VEHICLE_TYPE, f.REGION,
     FLEET_APP.CORE.REGION_LABEL(f.REGION) AS REGION_LABEL,
-    f.REGION AS HOME_BASE_NAME
+    f.REGION AS HOME_BASE_NAME,
+    -- Dispatch state. IS_GHOST means the generator deliberately parked
+    -- this vehicle at its home POI for the GHOST_* day window, emitting
+    -- only IDLE pings with no TRIP_ID. When the window covers the whole
+    -- horizon the vehicle has NO trips at all, hence no actual/expected
+    -- path to draw - which is the honest answer to "show me this
+    -- vehicle's route", rather than the dataset looking incomplete.
+    -- NULL on datasets generated before the column existed, so it is
+    -- COALESCEd to FALSE (assume dispatched) rather than reclassifying
+    -- every legacy vehicle as parked.
+    COALESCE(f.IS_GHOST, FALSE) AS IS_GHOST,
+    f.GHOST_START_DAY, f.GHOST_END_DAY
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
 QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
 
@@ -89,12 +100,27 @@ CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_SESSIONS_RAW
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 WITH sessions AS (
   SELECT *,
-    CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID
+    CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID,
+    -- Dispatch state, derived from the telemetry itself rather than from
+    -- DIM_FLEET, so it holds for ANY mapping source (a customer table has
+    -- no notion of the generator's ghost window, but it does have a trip
+    -- reference). A vehicle whose EVERY ping carries a NULL TRIP_ID was
+    -- never dispatched over the horizon: it produced no trip, therefore no
+    -- actual or expected path, and its whole stay is one unbroken IDLE
+    -- span. Left in the fact and flagged rather than deleted - a parked
+    -- asset is a real and interesting thing (it is the premise of the
+    -- backload demo) - but it must not be silently ranked against
+    -- vehicles that actually worked. Measured before this flag existed:
+    -- 5 of the top 7 Europe vehicles by total dwell minutes were parked
+    -- trailers with a single ~10,000-minute session, beating the real
+    -- leader which had 45 sessions.
+    MAX(CASE WHEN TRIP_ID IS NOT NULL THEN 1 ELSE 0 END)
+      OVER (PARTITION BY VEHICLE_ID) = 1 AS IS_DISPATCHED
   FROM FLEET_APP.DWELL.VW_STATE_CHANGES
 )
 SELECT
   VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID,
-  REGION,
+  REGION, IS_DISPATCHED,
   MIN(TS) AS SESSION_START, MAX(TS) AS SESSION_END,
   DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SECONDS,
   ROUND(DATEDIFF('second', MIN(TS), MAX(TS)) / 60.0, 1) AS DWELL_MINUTES,
@@ -103,7 +129,7 @@ SELECT
   H3_POINT_TO_CELL_STRING(ST_CENTROID(ST_COLLECT(POINT_GEOM)), 7) AS H3_CELL_R7
 FROM sessions
 WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
-GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION;
+GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION, IS_DISPATCHED;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DWELL_SESSIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
@@ -168,7 +194,7 @@ SELECT
   END AS LOCATION_MATCH,
   -- Region is carried as a first-class dimension so a consumer can filter
   -- it. Nothing here is scoped to one region any more.
-  s.REGION,
+  s.REGION, s.IS_DISPATCHED,
   -- Region LABEL, never 'N/A': the geographic column stays populated even
   -- when the specific location cannot be named.
   COALESCE(d.CITY, FLEET_APP.CORE.REGION_LABEL(s.REGION)) AS CITY,
@@ -246,7 +272,12 @@ SELECT
 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS e
 LEFT JOIN FLEET_APP.DWELL.VW_SLA_ALERTS a
   ON e.VEHICLE_ID = a.VEHICLE_ID AND e.SESSION_ID = a.SESSION_ID AND e.STATUS = a.STATUS
-WHERE e.STATUS LIKE 'DWELL%'
+-- Only vehicles that were actually dispatched. This is the one rollup
+-- that RANKS vehicles against each other, so a never-dispatched asset
+-- sitting on a single multi-day IDLE span would top it while having done
+-- no work at all. The parked vehicles remain fully queryable in
+-- VW_DWELL_SESSIONS via IS_DISPATCHED = FALSE.
+WHERE e.STATUS LIKE 'DWELL%' AND e.IS_DISPATCHED
 GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME, e.REGION;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DAILY_TRENDS

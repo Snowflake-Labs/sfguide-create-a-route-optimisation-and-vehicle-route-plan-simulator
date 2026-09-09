@@ -354,6 +354,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
     , sessions.driver_profile AS DRIVER_PROFILE COMMENT = 'Driver profile'
     , sessions.operating_mode AS OPERATING_MODE COMMENT = 'Operating mode'
     , sessions.session_start AS SESSION_START WITH SYNONYMS ('dwell start') COMMENT = 'Dwell session start timestamp'
+    , sessions.is_dispatched AS IS_DISPATCHED
+      WITH SYNONYMS ('dispatched', 'was the vehicle used', 'active vehicle', 'parked', 'idle-bound', 'never dispatched')
+      COMMENT = 'TRUE when the vehicle ran at least one trip over the horizon. FALSE means it never left its base: it has no route, no trip and no schedule, and its whole stay is ONE unbroken idle span. Exclude FALSE when ranking vehicles by dwell, or a parked asset outranks every vehicle that actually worked.'
     , driver_dwell.dd_driver_profile AS DRIVER_PROFILE COMMENT = 'Driver profile (driver summary)'
     , driver_dwell.dd_operating_mode AS OPERATING_MODE COMMENT = 'Operating mode (driver summary)'
     , driver_dwell.home_base_name AS HOME_BASE_NAME WITH SYNONYMS ('home base', 'depot') COMMENT = 'Driver home base name'
@@ -392,7 +395,12 @@ Conventions:
 - "congestion" / "heatmap" -> group sessions by h3_cell.
 - "SLA breaches" / "violations" -> driver_dwell.total_sla_breaches or total_critical_breaches.
 - "dwell time" -> sessions.total_dwell_minutes or avg_dwell_minutes.
-- status values look like DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST.'
+- status values look like DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST.
+
+DISPATCHED VS PARKED (read before ranking vehicles by dwell):
+- Some vehicles are never dispatched over the horizon. They sit at their base emitting idle pings only, so they have NO trip, NO schedule row and NO route - one unbroken idle span of days. `is_dispatched = FALSE` marks them.
+- Any "highest dwell", "worst dwell", "most idle time" style ranking must add `is_dispatched = TRUE`, otherwise a parked asset with a single ~10,000-minute span beats a busy vehicle with dozens of real stops. Measured: 5 of the top 7 Europe vehicles by total dwell were parked assets.
+- If the user then asks to see that vehicle''s route or path, the honest answer is that it never moved, so no actual or expected path exists. Do NOT report this as missing data, a dataset gap or a coverage problem, and do not silently substitute a different vehicle - say the vehicle was never dispatched, then offer the highest-dwell DISPATCHED vehicle as the mappable alternative.'
 ;
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============

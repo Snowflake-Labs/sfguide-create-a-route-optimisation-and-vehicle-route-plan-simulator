@@ -56,6 +56,9 @@ entities:
       - { name: DRIVER_PROFILE, type: VARCHAR }
       - { name: OPERATING_MODE, type: VARCHAR }
       - { name: HOME_BASE_NAME, type: VARCHAR }
+      - { name: IS_GHOST,       type: BOOLEAN }
+      - { name: GHOST_START_DAY, type: NUMBER }
+      - { name: GHOST_END_DAY,  type: NUMBER }
 
   - name: DESTINATIONS
     description: "Non-rest-stop POIs (warehouses, stores, addresses) for the active region."
@@ -105,12 +108,27 @@ entities:
     sql: |
       WITH sessions AS (
         SELECT *,
-          CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID
+          CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID,
+          -- Dispatch state, derived from the telemetry itself rather than from
+          -- DIM_FLEET, so it holds for ANY mapping source (a customer table has
+          -- no notion of the generator's ghost window, but it does have a trip
+          -- reference). A vehicle whose EVERY ping carries a NULL TRIP_ID was
+          -- never dispatched over the horizon: it produced no trip, therefore no
+          -- actual or expected path, and its whole stay is one unbroken IDLE
+          -- span. Left in the fact and flagged rather than deleted - a parked
+          -- asset is a real and interesting thing (it is the premise of the
+          -- backload demo) - but it must not be silently ranked against
+          -- vehicles that actually worked. Measured before this flag existed:
+          -- 5 of the top 7 Europe vehicles by total dwell minutes were parked
+          -- trailers with a single ~10,000-minute session, beating the real
+          -- leader which had 45 sessions.
+          MAX(CASE WHEN TRIP_ID IS NOT NULL THEN 1 ELSE 0 END)
+            OVER (PARTITION BY VEHICLE_ID) = 1 AS IS_DISPATCHED
         FROM {src}
       )
       SELECT
         VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID,
-        REGION,
+        REGION, IS_DISPATCHED,
         MIN(TS) AS SESSION_START, MAX(TS) AS SESSION_END,
         DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SECONDS,
         ROUND(DATEDIFF('second', MIN(TS), MAX(TS)) / 60.0, 1) AS DWELL_MINUTES,
@@ -119,7 +137,7 @@ entities:
         H3_POINT_TO_CELL_STRING(ST_CENTROID(ST_COLLECT(POINT_GEOM)), 7) AS H3_CELL_R7
       FROM sessions
       WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
-      GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION
+      GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION, IS_DISPATCHED
 
   # ---- Consumer-facing: enriched sessions (was DT_DWELL_ENRICHED) -----------
   - name: DWELL_SESSIONS
@@ -201,7 +219,7 @@ entities:
         END AS LOCATION_MATCH,
         -- Region is carried as a first-class dimension so a consumer can filter
         -- it. Nothing here is scoped to one region any more.
-        s.REGION,
+        s.REGION, s.IS_DISPATCHED,
         -- Region LABEL, never 'N/A': the geographic column stays populated even
         -- when the specific location cannot be named.
         COALESCE(d.CITY, FLEET_APP.CORE.REGION_LABEL(s.REGION)) AS CITY,
@@ -331,7 +349,12 @@ entities:
       FROM {src} e
       LEFT JOIN {schema}.VW_SLA_ALERTS a
         ON e.VEHICLE_ID = a.VEHICLE_ID AND e.SESSION_ID = a.SESSION_ID AND e.STATUS = a.STATUS
-      WHERE e.STATUS LIKE 'DWELL%'
+      -- Only vehicles that were actually dispatched. This is the one rollup
+      -- that RANKS vehicles against each other, so a never-dispatched asset
+      -- sitting on a single multi-day IDLE span would top it while having done
+      -- no work at all. The parked vehicles remain fully queryable in
+      -- VW_DWELL_SESSIONS via IS_DISPATCHED = FALSE.
+      WHERE e.STATUS LIKE 'DWELL%' AND e.IS_DISPATCHED
       GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME, e.REGION
 
   - name: DAILY_TRENDS

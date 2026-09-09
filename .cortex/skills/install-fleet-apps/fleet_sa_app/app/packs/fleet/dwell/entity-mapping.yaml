@@ -58,7 +58,18 @@ entities:
           f.DRIVER_PROFILE, f.OPERATING_MODE, f.SHIFT_TYPE, f.BASE_SPEED_KMH,
           f.VEHICLE_TYPE, f.REGION,
           FLEET_APP.CORE.REGION_LABEL(f.REGION) AS REGION_LABEL,
-          f.REGION AS HOME_BASE_NAME
+          f.REGION AS HOME_BASE_NAME,
+          -- Dispatch state. IS_GHOST means the generator deliberately parked
+          -- this vehicle at its home POI for the GHOST_* day window, emitting
+          -- only IDLE pings with no TRIP_ID. When the window covers the whole
+          -- horizon the vehicle has NO trips at all, hence no actual/expected
+          -- path to draw - which is the honest answer to "show me this
+          -- vehicle's route", rather than the dataset looking incomplete.
+          -- NULL on datasets generated before the column existed, so it is
+          -- COALESCEd to FALSE (assume dispatched) rather than reclassifying
+          -- every legacy vehicle as parked.
+          COALESCE(f.IS_GHOST, FALSE) AS IS_GHOST,
+          f.GHOST_START_DAY, f.GHOST_END_DAY
       FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
       QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1
 
