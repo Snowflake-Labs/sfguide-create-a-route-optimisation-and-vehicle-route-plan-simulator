@@ -61,6 +61,28 @@ CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ALTER DATABASE FLEET_INTELLIGENCE SET DATA_RETENTION_TIME_IN_DAYS = 0;
 
+-- FLEET_APP contract DB + the REGION_LABEL UDF are created UP FRONT here because
+-- the very first view below (VW_TRIP_DEVIATION, line ~136) already calls
+-- FLEET_APP.CORE.REGION_LABEL. This layer (step 3.5) runs BEFORE the packs step
+-- (step 4) that normally creates FLEET_APP, and snow sql -f stops on the first
+-- error, so defining these any later aborts the whole file with "Unknown
+-- user-defined function FLEET_APP.CORE.REGION_LABEL". The FLEET_APP DB/CORE schema
+-- are re-declared (IF NOT EXISTS) alongside the contract views further down; the
+-- detailed design rationale for REGION_LABEL lives next to VW_REGION_PROFILE.
+CREATE DATABASE IF NOT EXISTS FLEET_APP
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE FLEET_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.CORE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.REGION_LABEL(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  TRIM(REGEXP_REPLACE(COALESCE(P_REGION, ''), '([a-z0-9])([A-Z])', '\\1 \\2'))
+$$;
+
 -- =============================================================================
 -- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
 -- =============================================================================
@@ -1025,14 +1047,10 @@ $$;
 --      worse than the derived 'Us New Jersey'), against 5 of 7 sampled keys
 --      where the derivation matches the catalog exactly.
 -- Idempotent and dependency-free: safe on any install mode.
-CREATE OR REPLACE FUNCTION FLEET_APP.CORE.REGION_LABEL(P_REGION VARCHAR)
-RETURNS VARCHAR
-LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-AS
-$$
-  TRIM(REGEXP_REPLACE(COALESCE(P_REGION, ''), '([a-z0-9])([A-Z])', '\\1 \\2'))
-$$;
+-- NOTE: the CREATE for this function was hoisted to the TOP of this file (right
+-- after the FLEET_INTELLIGENCE DB) because the ROUTE_DEVIATION views above call
+-- it; the rationale above documents why the derivation is used. Nothing to create
+-- here anymore.
 
 -- Region -> ORS profile. Every live-routing view below used to hardcode
 -- 'driving-car', which is only correct when the region's graph happens to have
