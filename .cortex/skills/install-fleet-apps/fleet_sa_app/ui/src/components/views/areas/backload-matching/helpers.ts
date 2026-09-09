@@ -116,10 +116,22 @@ export type VehicleClass = {
 
 // SELECT-only read through the SA app query proxy. /api/query lowercases column
 // keys; we re-upper them so uppercase field access (t.DROPOFF_LON) resolves.
-export async function sfRead(sql: string, opts: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>[]> {
+//
+// `params` binds `:name` placeholders, resolved and escaped server-side by
+// /api/query. Prefer it over string interpolation for any value that scopes a
+// read - notably REGION. The contract views are MULTI-REGION (region is a
+// dimension, not a pre-filter), so an unparameterized `SELECT *` silently
+// returns every loaded region: that is how San Francisco trailers and loads
+// ended up inside a Europe VROOM challenge, which the Europe road graph
+// rejected as "out of bounds".
+export async function sfRead(
+  sql: string,
+  opts: { signal?: AbortSignal; params?: Record<string, string | null> } = {},
+): Promise<Record<string, unknown>[]> {
   const res = await fetch('/api/query', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql }), signal: opts.signal,
+    body: JSON.stringify(opts.params ? { sql, params: opts.params } : { sql }),
+    signal: opts.signal,
   });
   const body = await res.json();
   // A suspended routing engine returns a typed 503 with NO `error` key, so this
@@ -338,15 +350,46 @@ export function coordKey(lon: number, lat: number): string {
 // reachable inbound but dead outbound; see the Friesland case). Returns the set
 // of coordKey()s to exclude. Fails OPEN: any probe/parse error keeps the batch
 // so a transient MATRIX hiccup never blocks a valid solve.
+//
+// `opts.stats`, when supplied, is filled in with the evidence behind the result
+// so the caller can tell a TRUSTWORTHY shear from a backed-off probe. Without
+// that distinction the caller cannot safely act on "the pre-filter removed
+// everything": it has to assume the probe misfired and solve the full set,
+// which is how a pool that was half out-of-region reached the engine intact.
+export interface UnroutableProbeStats {
+  probed: number;
+  // Points that routed cleanly in BOTH directions and snapped close. Any value
+  // above zero proves the engine is up and answering, so a large rejected
+  // fraction is real data rather than a degraded probe.
+  clean: number;
+  rejected: number;
+  // True when the probe backed off and deliberately returned an EMPTY set.
+  backedOff: boolean;
+}
+
 export async function findUnroutablePoints(
   profile: string,
   points: [number, number][],
   anchor: [number, number],
   region: string | null | undefined,
-  opts: { signal?: AbortSignal; snapRadiusM?: number; batchSize?: number } = {},
+  opts: {
+    signal?: AbortSignal;
+    snapRadiusM?: number;
+    batchSize?: number;
+    stats?: UnroutableProbeStats;
+  } = {},
 ): Promise<Set<string>> {
   const bad = new Set<string>();
-  if (!points.length) return bad;
+  let clean = 0;
+  const publish = (backedOff: boolean) => {
+    if (opts.stats) {
+      opts.stats.probed = points.length;
+      opts.stats.clean = clean;
+      opts.stats.rejected = bad.size;
+      opts.stats.backedOff = backedOff;
+    }
+  };
+  if (!points.length) { publish(false); return bad; }
   const prof = profile.replace(/[^a-z0-9-]/gi, '');
   const regionLit = region ? `'${sqlLiteral(String(region))}'` : 'NULL';
   const snapMax = opts.snapRadiusM ?? SOLVER_SNAP_RADIUS_M;
@@ -388,6 +431,7 @@ export async function findUnroutablePoints(
         const nullOut = outD == null || !Number.isFinite(Number(outD));
         const farSnap = snap == null || !Number.isFinite(Number(snap)) || Number(snap) > snapMax;
         if (nullIn || nullOut || farSnap) bad.add(coordKey(batch[j][0], batch[j][1]));
+        else clean++;
       }
     } catch {
       // Transient MATRIX error: keep this batch's points, let the solve-time
@@ -396,14 +440,23 @@ export async function findUnroutablePoints(
   }
   // Sanity backoff: the pre-filter must only ever remove a MINORITY of genuinely
   // unroutable points (bad data is ~1% of a preset). If it flags a large
-  // fraction, the probe is untrustworthy - a suspended/degraded ORS returns null
-  // durations rather than throwing, a mis-snapped anchor makes everything look
-  // far, and a proxy/parse hiccup can null whole batches. Treating those as
-  // "unroutable" would wrongly strip every trailer/shipment. Back off entirely
-  // (drop nothing) and let the solve path handle it: /api/backload/solve detects
-  // a suspended engine and triggers resume, and the drop-and-retry loop shears
-  // any real code-3 point one at a time.
-  if (points.length && bad.size > Math.floor(points.length * 0.5)) return new Set();
+  // fraction, the probe MAY be untrustworthy - a suspended/degraded ORS returns
+  // null durations rather than throwing, a mis-snapped anchor makes everything
+  // look far, and a proxy/parse hiccup can null whole batches.
+  //
+  // But a large fraction is NOT automatically a bad probe. When the pool spans
+  // two regions, half of it is legitimately off-graph, and backing off there is
+  // the worst possible move: it hands the engine the very coordinates it cannot
+  // route, which fails the matrix pre-compute outright (ORS 6010) instead of
+  // shearing 29 points and solving the rest. So the backoff is now gated on
+  // `clean === 0` - zero cleanly-routed points is the actual signature of a
+  // probe that cannot see the graph. One clean point proves the engine is
+  // answering, which makes every rejection real.
+  if (points.length && bad.size > Math.floor(points.length * 0.5) && clean === 0) {
+    publish(true);
+    return new Set();
+  }
+  publish(false);
   return bad;
 }
 

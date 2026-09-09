@@ -263,6 +263,18 @@ fi
 # Runs on EVERY commit with no staged-path filter: the filter can come back in a
 # pack YAML, an installer SQL file, or a server-side view definition. Fast (a
 # scoped glob, well under a second).
+#
+# Two later additions, both from the same defect class reappearing one layer out:
+#   RULE 1b - a PHYSICAL view must not keep a CONFIG pin when a contract view of
+#     the same name has been de-scoped. FLEET_INTELLIGENCE.BACKLOAD_MATCHING and
+#     FLEET_APP.BACKLOAD_MATCHING both define VW_TRAILERS /
+#     VW_INTERNAL_VOLUMES / VW_EXTERNAL_OFFERS, and after the de-scope the two
+#     names meant opposite things depending on which schema you read.
+#   RULE 4 - de-scoping moves the filtering duty to the CONSUMER, and nothing
+#     checked the consumer took it. `SELECT * FROM ...VW_TRAILERS` compiles and
+#     renders a full page while returning every loaded region; the Backload
+#     Matching page then posted 29 San Francisco coordinates to the Europe road
+#     graph, which refused the matrix in 5 ms with ORS 6010 "out of bounds".
 REGION_SCOPE_CHECK="$SKILL_DIR/scripts/check_region_scoping.py"
 if [ -f "$REGION_SCOPE_CHECK" ]; then
   echo "pre-commit: region scoping check..."

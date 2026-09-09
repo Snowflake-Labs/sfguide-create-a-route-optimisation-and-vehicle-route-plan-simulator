@@ -15,6 +15,11 @@
 
 export const SUSPEND_REASON = 'ORS_SUSPENDED' as const;
 
+// Typed reason for a request naming coordinates outside the region's road graph.
+// Distinct from SUSPEND_REASON on purpose: one is an engine state the app can
+// fix by resuming, the other is a payload the app must correct.
+export const OUT_OF_GRAPH_REASON = 'ORS_OUT_OF_GRAPH' as const;
+
 export type RegionTier = 'S' | 'L' | 'XXL';
 export type RoutingServiceKind = 'ORS' | 'VROOM' | 'GATEWAY';
 
@@ -50,6 +55,10 @@ export interface SuspendDetection {
   kind?: RoutingServiceKind;
   // Only meaningful when suspended is true.
   state?: EngineState;
+  // True when the request named coordinates the region's road graph does not
+  // cover. This is a PAYLOAD defect on a HEALTHY engine, so it deliberately
+  // suppresses `suspended` - see OUT_OF_GRAPH_SIGNATURES.
+  outOfGraph?: boolean;
 }
 
 // Normalize a region token to the SPCS service-name suffix form (UPPER, only
@@ -107,6 +116,72 @@ const NOT_READY_SIGNATURES = [
   /\btimed out after\b/i,
 ];
 
+// Signatures for coordinates the region's road graph does not cover. These are
+// a PAYLOAD defect on a perfectly healthy engine, and they are checked BEFORE
+// the suspend signatures because the two overlap: the gateway reports an
+// out-of-bounds ORS matrix rejection as `matrix_precompute_failed`, which is
+// also (correctly) a suspend signature when the cause is an unreachable engine.
+//
+// Getting the precedence wrong is not cosmetic. A Europe solve that carried 29
+// San Francisco coordinates was rejected by the Europe graph in 5 ms with ORS
+// 6010; the detector called it a suspended engine, the resume path found the
+// service RUNNING and downgraded it to `not_ready`, and the page told the user
+// to wait 2 to 5 minutes for an engine that was already up. Retry could never
+// clear it, because nothing was starting and the same off-graph points went
+// back on every attempt.
+const OUT_OF_GRAPH_SIGNATURES = [
+  /out of bounds/i,
+  // ORS 6010 (matrix) / 2010 (directions): point not on the graph.
+  /["']?code["']?\s*:\s*["']?(?:6010|2010)\b/i,
+  /could not find routable point/i,
+  /point\(s\) \[[^\]]*\] out of bounds/i,
+];
+
+// Extract the `lat,lon` pairs ORS lists after "out of bounds:". ORS reports them
+// LAT FIRST (the opposite of the [lon,lat] order it accepts as input), so they
+// are swapped here rather than passed through - reporting a San Francisco stop
+// as 37.57E 122.34S would send someone looking in the wrong hemisphere.
+export function parseOutOfGraphPoints(text: string): { lon: number; lat: number }[] {
+  const tail = /out of bounds:\s*([^}\n]*)/i.exec(text);
+  if (!tail) return [];
+  const pts: { lon: number; lat: number }[] = [];
+  const re = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(tail[1])) !== null) {
+    const lat = Number(m[1]);
+    const lon = Number(m[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) pts.push({ lon, lat });
+  }
+  return pts;
+}
+
+// True when the text describes coordinates outside the region's road graph.
+export function isOutOfGraph(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return OUT_OF_GRAPH_SIGNATURES.some((re) => re.test(text));
+}
+
+// User-facing copy for an out-of-graph payload. Names the region and the count,
+// and promises NO wait - waiting is exactly the wrong action here.
+export function outOfGraphMessage(
+  region: string | null | undefined,
+  count: number,
+  sample: { lon: number; lat: number }[] = [],
+): string {
+  const where = region ? `the ${region} road graph` : "this region's road graph";
+  const n = count > 0 ? `${count} location${count === 1 ? '' : 's'}` : 'One or more locations';
+  const coords = sample
+    .slice(0, 3)
+    .map((p) => `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`)
+    .join('; ');
+  return (
+    `${n} in this request ${count === 1 ? 'is' : 'are'} outside ${where}, so the routing ` +
+    `engine refused the request. The engine is healthy - waiting will not help. ` +
+    `Check that the selected region matches the data being solved` +
+    (coords ? ` (for example: ${coords}).` : '.')
+  );
+}
+
 // Extract the (kind, region) named in a "ors-service-<region>" /
 // "vroom-service-<region>" / "routing-gateway-service" host reference.
 function extractServiceRef(text: string): { kind?: RoutingServiceKind; region?: string } {
@@ -122,6 +197,10 @@ function extractServiceRef(text: string): { kind?: RoutingServiceKind; region?: 
 // Detect a suspended-routing-engine condition from any error string / message.
 export function detectOrsSuspended(text: string | null | undefined): SuspendDetection {
   if (!text) return { suspended: false };
+  // An out-of-graph payload wins over everything else: the engine is up and a
+  // resume is not the remedy, so claiming an engine state here is a lie that
+  // sends the user off to wait for something that will never happen.
+  if (isOutOfGraph(text)) return { suspended: false, outOfGraph: true };
   // Check suspended first: a payload naming both (e.g. a breaker opened by a
   // timeout on a since-suspended host) is better treated as the actionable one.
   const suspendedHit = SUSPEND_SIGNATURES.some((re) => re.test(text));
@@ -140,6 +219,12 @@ export function detectOrsSuspended(text: string | null | undefined): SuspendDete
 // proc failure shape, e.g. { status:'FAILED', reason:'OPTIMIZATION_UNAVAILABLE',
 // vroom_service, error }). Falls back to scanning the serialized object.
 export function detectSuspendedInResult(result: unknown): SuspendDetection {
+  let serialized = '';
+  try { serialized = JSON.stringify(result) ?? ''; } catch { serialized = ''; }
+  // Out-of-graph first, and ahead of the typed OPTIMIZATION_UNAVAILABLE branch:
+  // that reason is also raised when the solve was refused for an off-graph
+  // point, and treating it as an outage produces the false "engine is starting".
+  if (isOutOfGraph(serialized)) return { suspended: false, outOfGraph: true };
   if (result && typeof result === 'object') {
     const o = result as Record<string, unknown>;
     if (typeof o.reason === 'string' && o.reason.toUpperCase() === 'OPTIMIZATION_UNAVAILABLE') {
@@ -149,11 +234,7 @@ export function detectSuspendedInResult(result: unknown): SuspendDetection {
       return { suspended: true, region: region || fromSvc.region, kind: 'VROOM', state: 'suspended' };
     }
   }
-  try {
-    return detectOrsSuspended(JSON.stringify(result));
-  } catch {
-    return { suspended: false };
-  }
+  return detectOrsSuspended(serialized);
 }
 
 // Region-size -> friendly wait estimate. Region tier is REGION_ORS_MAP.COMPUTE_SIZE

@@ -33,7 +33,7 @@ import {
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
-  type VehicleClass, type EmptyLegBaseline,
+  type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
 } from './backload-matching/helpers';
 
 // Cached ORS empty-leg result (geometry + real road km) keyed by
@@ -160,20 +160,51 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     try {
       const cfgRows = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const c = cfgRows[0] as { VEHICLE_TYPE?: string; REGION?: string } | undefined;
-      const vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
-      const cfgRegion = String(c?.REGION ?? region ?? 'SanFrancisco');
-      setCfg({ vehicleType, region: cfgRegion });
+      // The APP SELECTION is authoritative; VW_CONFIG is a default hint only.
+      // CONFIG holds one row and is writable at runtime (the /api/region promote
+      // path, and the ops verb set_active_context which an agent can call), so
+      // trusting it over the selection makes the same page answer differently at
+      // different times - and, worse, mixes regions when the two disagree.
+      const cfgRegion = String(region ?? c?.REGION ?? 'SanFrancisco');
 
+      // MULTI-REGION contract views: region MUST be bound here. Without it the
+      // pool spans every loaded region and the unsorted `.slice(0, maxVehicles)`
+      // below feeds off-graph coordinates to the region's routing engine, which
+      // fails the matrix pre-compute with ORS 6010 ("out of bounds").
+      const scope = { region: cfgRegion };
       const [tRows, iRows, oRows] = await Promise.all([
-        sfRead(`SELECT * FROM ${BM}.VW_TRAILERS`),
-        sfRead(`SELECT * FROM ${BM}.VW_INTERNAL_VOLUMES`),
-        sfRead(`SELECT * FROM ${BM}.VW_EXTERNAL_OFFERS`),
+        sfRead(`SELECT * FROM ${BM}.VW_TRAILERS WHERE REGION = :region`, { params: scope }),
+        sfRead(`SELECT * FROM ${BM}.VW_INTERNAL_VOLUMES WHERE REGION = :region`, { params: scope }),
+        sfRead(`SELECT * FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`, { params: scope }),
       ]);
+
+      // Vehicle type for the region we actually loaded. DIM_DATASETS allows one
+      // ACTIVE dataset per (REGION, VEHICLE_TYPE), so CONFIG's vehicle type is
+      // only meaningful when CONFIG's region is the region on screen; otherwise
+      // take it from the fleet itself (VW_TRAILERS.CURRENT_LOAD is VEHICLE_TYPE).
+      // Filtering trailers by it keeps a future mixed-vehicle region honest -
+      // one class profile cannot describe two vehicle types.
+      let vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
+      if (String(c?.REGION ?? '') !== cfgRegion) {
+        const counts = new Map<string, number>();
+        for (const r of tRows as unknown as Trailer[]) {
+          const vt = String(r.CURRENT_LOAD ?? '').trim();
+          if (vt) counts.set(vt, (counts.get(vt) ?? 0) + 1);
+        }
+        const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        if (dominant) vehicleType = dominant;
+      }
+      setCfg({ vehicleType, region: cfgRegion });
 
       // Defensive dedupe (guards against upstream view regressions feeding VROOM
       // duplicate vehicles / shipments -> visually-identical duplicate cards).
+      // Trailers are additionally narrowed to the resolved vehicle type: the
+      // single VehicleClass profile below (payload, speed, ORS profile) describes
+      // exactly one type, so mixing types would cost and route the pool wrongly.
       const seenT = new Set<string>();
       const tDeduped = (tRows as unknown as Trailer[]).filter((r) => {
+        const vt = String(r.CURRENT_LOAD ?? '').trim();
+        if (vt && vt !== vehicleType) return false;
         const id = String(r.TRAILER_ID);
         if (seenT.has(id)) return false; seenT.add(id); return true;
       });
@@ -407,6 +438,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
     }
 
+    // Whether the routability probe produced EVIDENCE we can act on. False when
+    // it never ran, threw, or backed off - see the zero-pool branch below.
+    let probeTrustworthy = false;
+
     if (anchor) {
       setSolverLog('Checking stop routability...');
       const uniq = new Map<string, [number, number]>();
@@ -422,8 +457,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         addPt((s.delivery as { location?: unknown }).location);
       }
       let badKeys = new Set<string>();
-      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal }); }
-      catch { badKeys = new Set(); }
+      const probe: UnroutableProbeStats = { probed: 0, clean: 0, rejected: 0, backedOff: false };
+      try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal, stats: probe }); }
+      catch { badKeys = new Set(); probe.backedOff = true; }
+      probeTrustworthy = probe.clean > 0 && !probe.backedOff;
       if (badKeys.size) {
         const locBad = (loc: unknown): boolean =>
           Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
@@ -449,12 +486,29 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }
     }
 
-    // Belt-and-suspenders: a pre-filter must never zero out the whole solve. If
-    // it did (untrustworthy probe that slipped past the helper's own backoff),
-    // discard it and solve the full set - the solve path detects a suspended
-    // engine and the retry loop shears any real code-3 point. Do NOT surface an
-    // "all unroutable" error here; that hides a live-but-degraded engine.
+    // A pre-filter that zeroes out the solve is either a bad probe or a genuinely
+    // unusable pool, and the two need OPPOSITE handling.
+    //
+    // Untrustworthy probe (nothing routed cleanly, or it threw): discard the
+    // shear and solve the full set - the solve path detects a suspended engine
+    // and the retry loop shears any real code-3 point one at a time.
+    //
+    // Trustworthy probe (some points routed cleanly, so the engine is provably
+    // answering): the rejections are real. Restoring them here is what used to
+    // hand the engine coordinates it had just refused, turning a shear-and-solve
+    // into a hard matrix pre-compute failure. Report it instead.
     if (!workVehicles.length || !workShipments.length) {
+      if (probeTrustworthy) {
+        const what = !workVehicles.length ? 'vehicle start/end locations' : 'load pickup/dropoff locations';
+        setSolveError(
+          `Every one of the ${what} in this selection is outside the ${cfg.region} road graph, ` +
+          `so there is nothing to solve. The routing engine is healthy - check that the ` +
+          `selected region matches the data, or regenerate the preset for this region.`,
+        );
+        setSolving(false);
+        solveAbortRef.current = null;
+        return;
+      }
       workVehicles = vrpVehicles;
       workShipments = vrpShipments;
       excludedLabels.length = 0;

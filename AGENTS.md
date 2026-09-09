@@ -73,6 +73,21 @@ python3 .cortex/skills/evals/run_evals.py
 # `FLEET_APP.CORE.REGION_LABEL()` and the `city` / `region_label` dimensions. Reading
 # CONFIG to EXPOSE the active context is still legal (an explicit in-file allowlist);
 # what is banned is FILTERING analytic data by it.
+#
+# Two further rules cover the same defect one layer out. RULE 1b: a PHYSICAL view
+# must not keep its CONFIG pin once a contract view of the SAME NAME has been
+# de-scoped - FLEET_INTELLIGENCE.BACKLOAD_MATCHING and FLEET_APP.BACKLOAD_MATCHING
+# both define VW_TRAILERS / VW_INTERNAL_VOLUMES / VW_EXTERNAL_OFFERS, so after the
+# de-scope one name meant two opposite region semantics depending on which schema
+# was read. RULE 4: de-scoping transfers the filtering duty to the CONSUMER, and
+# nothing checked the consumer accepted it - `SELECT * FROM ...VW_TRAILERS`
+# compiles, returns rows and renders a populated page while carrying every loaded
+# region, which is how the Backload Matching page posted 29 San Francisco
+# coordinates into a Europe solve and got ORS 6010 "out of bounds" back in 5 ms.
+# The demo skills' references SQL is scanned under RULE 1b ONLY (twin views), not
+# full RULE 1: those legacy files hold 42 pre-existing pins, mostly in seed
+# loaders where a CONFIG read legitimately picks the region to INGEST, so failing
+# on them would gate nothing and block everything.
 python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping.py
 
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
