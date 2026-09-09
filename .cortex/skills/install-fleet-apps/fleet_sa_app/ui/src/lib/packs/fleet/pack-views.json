@@ -179,7 +179,7 @@
       "caveats": "Vehicles, loads and offers are synthetic, and the economics use the rates configured on screen. Nothing is computed until Solve is pressed, and the plan is not written back to a TMS - it is a recommendation. Requires the region routing and optimizer services to be running."
     },
     "agentKnowledge": {
-      "preferredTool": "query_backload",
+      "preferredTool": "backload_solve",
       "keyMetrics": [
         "assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count, empty_km_total, deadhead_avoided_km_total",
         "trailers / internal_volumes / external_offers loaded for the active preset, and selected_trailer",
@@ -243,7 +243,7 @@
       "caveats": "Synthetic vehicles and loads. Everything is null until Run is pressed, and Accept, Reject and Flag are session-only rather than persisted. The routing strategies require the region routing and optimizer services to be running."
     },
     "agentKnowledge": {
-      "preferredTool": "query_backload",
+      "preferredTool": "backload_solve",
       "keyMetrics": [
         "vehicles_matched, internal_matched, total_empty_km, total_margin_usd (revenue minus empty-leg cost across the plan), avg_composite (0-100 ensemble score)",
         "per-vehicle graded proposal (trailer -> load), its strategy family, and how many of the 4 strategies agree",
@@ -372,6 +372,7 @@
       "caveats": "Vehicles, loads and offers are synthetic, and revenue per loaded km and cost per empty km are stated assumptions rather than source data - both are editable on the page for what-if purposes only. Vehicle equipment is synthesized and the equipment constraint is seeded off. Many load endpoints have no upstream place name, so cards fall back to a coordinate label. Constraint sliders can only tighten inside the envelope the chain view already pruned at, since chains outside it were never enumerated. Chaining only applies over long distances: on a single-metro dataset the page correctly reports that no chain is needed. Read-only - nothing is written back. Requires the region routing services to be running."
     },
     "agentKnowledge": {
+      "preferredTool": "backload_chain_solve",
       "keyMetrics": [
         "chains (costed two-hop candidates), vehicles covered, and the cascade rung the ladder stopped at (1 own-loads-only .. 4 external-on-both-hops)",
         "per chain: both hops as pickup -> delivery with own/external on each, the three empty legs (to hop 1, between hops, residual to target), loaded km, grade and eligibility",
