@@ -179,7 +179,18 @@ ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;
 
+-- Explicit column list (25 cols) is REQUIRED: the table carries TRIP_KIND at
+-- ordinal 25 (before JOB_ID) but the seed parquet has no TRIP_KIND field, so the
+-- SELECT supplies 25 values. Without a target column list Snowflake maps by
+-- position and expects all 26 columns, failing with "Insert value list does not
+-- match column list expecting 26 but got 25". Naming the 25 populated columns
+-- lets TRIP_KIND take its DEFAULT ('LADEN').
 COPY INTO SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+  (TRIP_ID, VEHICLE_ID, DRIVER_ID, VEHICLE_TYPE, REGION, ORIGIN_POI_ID,
+   DESTINATION_POI_ID, ORIGIN_LAT, ORIGIN_LON, ORIGIN, DESTINATION_LAT,
+   DESTINATION_LON, DESTINATION, ROUTE_GEOG, DISTANCE_KM, DURATION_MINUTES,
+   PLANNED_ROUTE_GEOG, PLANNED_DISTANCE_KM, IS_DETOUR, DETOUR_DISTANCE_KM,
+   TRIP_START, TRIP_END, STATUS, ORS_PROFILE, JOB_ID)
 FROM (
   SELECT
     $1:TRIP_ID::VARCHAR,
