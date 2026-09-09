@@ -509,6 +509,60 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Global-active wrapper views.
+--
+-- These are what SV_LABOR binds to: a semantic view cannot pass a scope
+-- argument, so it needs a plain relation. Each wrapper resolves the region's
+-- ACTIVE dataset (both args NULL), matching the VW_* pattern in
+-- scoped_contract.sql. The app itself calls the scoped UDTFs directly so each
+-- session keeps its own scope.
+--
+-- Columns are listed EXPLICITLY rather than SELECT *, for two reasons. A view
+-- freezes its column list at creation, so a SELECT * wrapper silently breaks
+-- ("declared N columns, but view query produces M") the moment the function
+-- signature gains a column - which is exactly what happened to
+-- VW_PROPOSAL_DECISIONS and took SV_BACKLOAD_MATCHING (and therefore an entire
+-- agent tool) down with it. And VW_LABOR_WEEK must add a surrogate key anyway:
+-- the fact is grained by (operator, week) but a semantic view PRIMARY KEY wants
+-- one column.
+--
+-- DUTY_PERIOD is deliberately NOT projected. A semantic view has no use for it:
+-- PERIOD cannot be aggregated (SUM/AVG are unsupported and MAX is rejected), and
+-- a canonical '[begin, end)' range string is not something anyone filters or
+-- groups by in natural language. The typed bounds are exposed instead.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_LABOR_OPERATOR
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT
+       OPERATOR_ID, OPERATOR_LABEL, SHIFT_TYPE, DRIVER_PROFILE, HOME_SITE_ID,
+       TEAM_ID, SUPERVISOR_ID, CONTRACTED_HOURS_PER_WEEK, HOURLY_RATE,
+       OT_MULTIPLIER, CURRENCY_CODE, REGION, REGION_LABEL, VEHICLE_TYPE
+     FROM TABLE(FLEET_APP.LABOR.F_DIM_LABOR_OPERATOR_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_DUTY_PERIOD
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT
+       DUTY_ID, OPERATOR_ID, DUTY_SEQ, DUTY_START, DUTY_END,
+       PAID_HOURS, DRIVE_HOURS, IDLE_HOURS, DRIVE_SHARE, TRIPS, DISTANCE_KM,
+       REGION, REGION_LABEL, VEHICLE_TYPE
+     FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_LABOR_WEEK
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT
+       OPERATOR_ID || '|' || TO_VARCHAR(WEEK_START, 'YYYY-MM-DD') AS LABOR_WEEK_ID,
+       OPERATOR_ID, WEEK_START, WEEK_END, WEEK_LABEL, TEAM_ID, SUPERVISOR_ID,
+       SHIFT_TYPE, DRIVER_PROFILE, HOURS_TO_DATE, DAYS_WORKED, DAYS_ELAPSED,
+       DAYS_REMAINING, IS_CURRENT_WEEK, IS_PARTIAL_START, PROJECTED_WEEK_HOURS,
+       CONTRACTED_HOURS_PER_WEEK, STRAIGHT_HOURS, OT_HOURS, PROJECTED_OT_HOURS,
+       HOURLY_RATE, EST_OT_COST, CURRENCY_CODE, OT_BAND,
+       OT_THRESHOLD_1, OT_THRESHOLD_2, OT_THRESHOLD_3,
+       DRIVE_HOURS, DRIVE_SHARE_OF_PAID, TRIPS, DISTANCE_KM,
+       KM_PER_PAID_HOUR, STOPS_PER_PAID_HOUR,
+       REGION, REGION_LABEL, VEHICLE_TYPE
+     FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+-- ---------------------------------------------------------------------------
 -- Grants. Read-only analytics, so all three app roles get USAGE.
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_USER;
@@ -530,3 +584,10 @@ GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCH
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_ADMIN;

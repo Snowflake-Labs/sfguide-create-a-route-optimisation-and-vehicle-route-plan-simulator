@@ -815,3 +815,224 @@ Conventions:
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
 ;
+
+-- ============ SV_LABOR (FLEET_APP.LABOR.*) ============
+-- Labour and overtime: paid hours per operator per payroll week, the projection
+-- to week end, and the resulting overtime exposure in hours and money.
+--
+-- Grain model (one fact + its parent dimension + one standalone fact):
+--   labor_week - FACT, one row per (operator, payroll week). Everything about
+--                thresholds, projection and overtime cost lives here.
+--   operators  - DIMENSION (parent of labor_week by OPERATOR_ID): team,
+--                supervisor, depot, contracted hours, pay rate. No metrics, so
+--                a grouping can never accidentally cross grains.
+--   duty       - standalone FACT, one row per continuous stretch of work. Use
+--                for "how long was that shift", NOT for weekly totals.
+--
+-- NO PERIOD COLUMN. The physical layer stores each duty period as a
+-- PERIOD(TIMESTAMP_NTZ) because week allocation needs PERIOD_INTERSECT, but a
+-- semantic view has no use for it: PERIOD cannot be aggregated (SUM and AVG are
+-- unsupported, and MAX is rejected outright), and a canonical '[begin, end)'
+-- string is not something anyone filters or groups by in words. The typed bounds
+-- (duty_start / duty_end) and the derived hours are exposed instead.
+--
+-- Thresholds are DATA, not vocabulary: ot_threshold_1/2/3 are projected as facts
+-- so the agent can state the actual limit in force rather than assuming 40/50/60
+-- (correct for US FLSA, wrong for the EU's 48-hour average).
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
+
+  TABLES (
+    labor_week AS FLEET_APP.LABOR.VW_LABOR_WEEK
+      PRIMARY KEY (LABOR_WEEK_ID)
+      COMMENT = 'Operator-week labour fact: hours to date, projection, overtime hours and cost.'
+    , operators AS FLEET_APP.LABOR.VW_LABOR_OPERATOR
+      PRIMARY KEY (OPERATOR_ID)
+      COMMENT = 'Operator dimension (team, supervisor, depot, contracted hours, pay rate). Parent of labor_week.'
+    , duty AS FLEET_APP.LABOR.VW_DUTY_PERIOD
+      PRIMARY KEY (DUTY_ID)
+      COMMENT = 'Duty-period fact (standalone): one continuous stretch of work per row.'
+  )
+
+  RELATIONSHIPS (
+    labor_week_to_operators AS labor_week(OPERATOR_ID) REFERENCES operators(OPERATOR_ID)
+  )
+
+  FACTS (
+    labor_week.hours_to_date AS HOURS_TO_DATE
+      COMMENT = 'Paid hours accrued so far in this payroll week'
+    , labor_week.projected_hours AS PROJECTED_WEEK_HOURS
+      COMMENT = 'Paid hours projected to week end. Equals hours_to_date for a completed week; extrapolated by daily run rate for the current week.'
+    , labor_week.ot_hours AS OT_HOURS
+      COMMENT = 'Overtime hours accrued so far (hours above the first threshold)'
+    , labor_week.projected_ot_hours AS PROJECTED_OT_HOURS
+      COMMENT = 'Overtime hours projected to week end'
+    , labor_week.est_ot_cost AS EST_OT_COST
+      COMMENT = 'Estimated overtime cost at week end (projected OT hours x hourly rate x overtime multiplier). Rates are synthesized.'
+    , labor_week.straight_hours AS STRAIGHT_HOURS
+      COMMENT = 'Hours at straight time (up to the first threshold)'
+    , labor_week.week_drive_hours AS DRIVE_HOURS
+      COMMENT = 'Of the paid hours, those spent driving'
+    , labor_week.drive_share AS DRIVE_SHARE_OF_PAID
+      COMMENT = 'Driving hours as a fraction of paid hours (0-1). Utilization of paid time.'
+    , labor_week.week_trips AS TRIPS
+      COMMENT = 'Trips (stops) completed in the week'
+    , labor_week.week_distance_km AS DISTANCE_KM
+      COMMENT = 'Distance covered in the week, km'
+    , labor_week.km_per_paid_hour AS KM_PER_PAID_HOUR
+      COMMENT = 'Productivity: km covered per paid hour'
+    , labor_week.stops_per_paid_hour AS STOPS_PER_PAID_HOUR
+      COMMENT = 'Productivity: stops completed per paid hour'
+    , labor_week.days_worked AS DAYS_WORKED
+      COMMENT = 'Distinct days the operator worked in the week'
+    , labor_week.days_elapsed AS DAYS_ELAPSED
+      COMMENT = 'Days of the week that have happened as at the dataset as-of instant (1-7)'
+    , labor_week.days_remaining AS DAYS_REMAINING
+      COMMENT = 'Days left in the week (0 for a completed week)'
+    , labor_week.threshold_1 AS OT_THRESHOLD_1
+      COMMENT = 'Weekly hours above which overtime begins (configured; 40 by default)'
+    , labor_week.threshold_2 AS OT_THRESHOLD_2
+      COMMENT = 'First at-risk weekly hours threshold (configured; 50 by default)'
+    , labor_week.threshold_3 AS OT_THRESHOLD_3
+      COMMENT = 'Breach weekly hours threshold (configured; 60 by default)'
+    , operators.contracted_hours AS CONTRACTED_HOURS_PER_WEEK
+      COMMENT = 'Contracted weekly hours for the operator (synthesized)'
+    , operators.hourly_rate AS HOURLY_RATE
+      COMMENT = 'Operator hourly rate (synthesized)'
+    , duty.paid_hours AS PAID_HOURS
+      COMMENT = 'Length of this duty period in hours (first trip start to last trip end)'
+    , duty.duty_drive_hours AS DRIVE_HOURS
+      COMMENT = 'Driving hours within this duty period'
+    , duty.duty_idle_hours AS IDLE_HOURS
+      COMMENT = 'On the clock but not driving, within this duty period'
+    , duty.duty_trips AS TRIPS
+      COMMENT = 'Trips within this duty period'
+    , duty.duty_distance_km AS DISTANCE_KM
+      COMMENT = 'Distance within this duty period, km'
+  )
+
+  DIMENSIONS (
+    labor_week.operator_id AS OPERATOR_ID
+      WITH SYNONYMS ('operator', 'driver', 'employee', 'rider', 'courier', 'team member')
+      COMMENT = 'Mode-neutral operator identifier'
+    , labor_week.week_start AS WEEK_START
+      WITH SYNONYMS ('week', 'payroll week', 'work week', 'week beginning')
+      COMMENT = 'First day of the payroll week (week start day is configured, Sunday by default)'
+    , labor_week.week_label AS WEEK_LABEL
+      WITH SYNONYMS ('week name')
+      COMMENT = 'Payroll week as a YYYY-MM-DD string for display'
+    , labor_week.is_current_week AS IS_CURRENT_WEEK
+      WITH SYNONYMS ('this week', 'current week', 'in progress')
+      COMMENT = 'TRUE for the one week still in progress as at the dataset as-of instant. This is the week a projection is meaningful for.'
+    , labor_week.is_partial_start AS IS_PARTIAL_START
+      COMMENT = 'TRUE when the dataset begins part-way through this week, so its totals are legitimately low and must NOT be compared against a full week.'
+    , labor_week.ot_band AS OT_BAND
+      WITH SYNONYMS ('overtime band', 'risk band', 'overtime status', 'at risk')
+      COMMENT = 'Projected overtime band: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH. Derived from projected hours against the configured thresholds.'
+    , labor_week.team_id AS TEAM_ID
+      WITH SYNONYMS ('team', 'crew', 'depot team')
+      COMMENT = 'Operator team, derived from their home depot'
+    , labor_week.supervisor_id AS SUPERVISOR_ID
+      WITH SYNONYMS ('supervisor', 'manager', 'lead')
+      COMMENT = 'Supervisor responsible for the team (synthesized)'
+    , labor_week.shift_type AS SHIFT_TYPE
+      WITH SYNONYMS ('shift', 'shift pattern')
+      COMMENT = 'Operator shift pattern. An opaque label whose vocabulary varies by fleet (e.g. 10-15, Day, Night) - never assume a fixed set.'
+    , labor_week.driver_profile AS DRIVER_PROFILE
+      WITH SYNONYMS ('operator profile', 'behaviour profile')
+      COMMENT = 'Operator behaviour profile'
+    , labor_week.currency_code AS CURRENCY_CODE
+      COMMENT = 'Currency for pay rate and overtime cost'
+    , labor_week.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Operating region KEY - the exact filter value (e.g. SanFrancisco, Europe). Use region_label for a place name in words.'
+    , labor_week.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'region name')
+      COMMENT = 'Human-readable region label (e.g. "San Francisco", not "SanFrancisco").'
+    , labor_week.vehicle_type AS VEHICLE_TYPE
+      WITH SYNONYMS ('vehicle class', 'fleet type', 'mode')
+      COMMENT = 'Asset mode dimension (car, hgv, ebike, ...). A data value, not a fixed set.'
+    , operators.home_site_id AS HOME_SITE_ID
+      WITH SYNONYMS ('depot', 'home base', 'branch', 'site')
+      COMMENT = 'Operator home depot identifier'
+    , duty.duty_operator_id AS OPERATOR_ID
+      COMMENT = 'Operator this duty period belongs to'
+    , duty.duty_start AS DUTY_START
+      WITH SYNONYMS ('shift start', 'clock in', 'start of duty')
+      COMMENT = 'Start of the duty period (first trip start)'
+    , duty.duty_end AS DUTY_END
+      WITH SYNONYMS ('shift end', 'clock out', 'end of duty')
+      COMMENT = 'End of the duty period (last trip end)'
+    , duty.duty_region AS REGION
+      COMMENT = 'Region of this duty period'
+  )
+
+  METRICS (
+    labor_week.total_operators AS COUNT(DISTINCT OPERATOR_ID)
+      WITH SYNONYMS ('number of operators', 'headcount', 'operator count')
+      COMMENT = 'Distinct operators with recorded hours'
+    , labor_week.total_paid_hours AS SUM(HOURS_TO_DATE)
+      WITH SYNONYMS ('total hours', 'hours paid', 'labour hours')
+      COMMENT = 'Total paid hours'
+    , labor_week.total_ot_hours AS SUM(OT_HOURS)
+      WITH SYNONYMS ('overtime hours', 'total overtime')
+      COMMENT = 'Total overtime hours accrued'
+    , labor_week.total_projected_ot_hours AS SUM(PROJECTED_OT_HOURS)
+      COMMENT = 'Total overtime hours projected to week end'
+    , labor_week.total_ot_cost AS SUM(EST_OT_COST)
+      WITH SYNONYMS ('overtime cost', 'overtime spend', 'cost of overtime')
+      COMMENT = 'Total estimated overtime cost at week end. Pay rates are synthesized, so treat as indicative.'
+    , labor_week.avg_projected_hours AS AVG(PROJECTED_WEEK_HOURS)
+      WITH SYNONYMS ('average projected hours')
+      COMMENT = 'Mean projected week-end hours per operator'
+    , labor_week.avg_paid_hours AS AVG(HOURS_TO_DATE)
+      COMMENT = 'Mean paid hours per operator per week'
+    , labor_week.avg_utilization AS AVG(DRIVE_SHARE_OF_PAID)
+      WITH SYNONYMS ('utilization', 'paid hour utilisation')
+      COMMENT = 'Mean share of paid hours spent driving (0-1)'
+    , labor_week.avg_km_per_paid_hour AS AVG(KM_PER_PAID_HOUR)
+      COMMENT = 'Mean km per paid hour'
+    , labor_week.avg_stops_per_paid_hour AS AVG(STOPS_PER_PAID_HOUR)
+      COMMENT = 'Mean stops per paid hour'
+    , duty.total_duty_periods AS COUNT(DISTINCT DUTY_ID)
+      WITH SYNONYMS ('number of shifts', 'duty periods', 'shifts worked')
+      COMMENT = 'Distinct duty periods (continuous stretches of work)'
+    , duty.avg_duty_hours AS AVG(PAID_HOURS)
+      WITH SYNONYMS ('average shift length', 'typical shift length')
+      COMMENT = 'Mean duty-period length in hours'
+    , duty.max_duty_hours AS MAX(PAID_HOURS)
+      WITH SYNONYMS ('longest shift')
+      COMMENT = 'Longest duty period in hours'
+  )
+
+  COMMENT = 'Labour and overtime for a vehicle fleet: paid hours per operator per payroll week, the projection to week end, and the resulting overtime exposure in hours and money.
+
+WHAT THE HOURS ARE
+Paid time is DERIVED from the trip record, not read from a timekeeping system (there is none in this deployment). A "duty period" is a continuous stretch of work: a maximal run of an operator''s trips with no gap longer than a configured threshold. Paid hours for a duty period are its SPAN - first trip start to last trip end - because an operator waiting between stops is on the clock. Driving hours are tracked separately, so the difference is visible as utilization rather than hidden.
+
+Duty periods are sessionized by GAP, never by calendar date. A shift that crosses midnight is one duty period, not two.
+
+THRESHOLDS ARE CONFIGURED, NOT ASSUMED
+ot_threshold_1/2/3 are columns. Read them rather than assuming 40/50/60 - that is US FLSA, and other jurisdictions differ (the EU uses a 48-hour average). ot_band is already computed against whatever is in force: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH.
+
+PROJECTION AND THE CURRENT WEEK
+"Who will exceed 60 hours this week" is answered with projected_week_hours, NOT hours_to_date. Projection is anchored to the latest activity in the DATASET, not to wall-clock time, so filter is_current_week = TRUE for the in-progress week; for a completed week the projection equals the actual. A week with is_partial_start = TRUE is truncated at its BEGINNING by the dataset boundary: its totals are legitimately low and must not be compared against a full week or presented as a drop in hours.
+
+REGION IS A DIMENSION, NOT A GLOBAL SETTING
+This view holds every loaded region at once, so an unfiltered aggregate MIXES regions. `region` is the KEY (SanFrancisco, Europe); `region_label` is the readable form ("San Francisco"). region = ''San Francisco'' matches NOTHING - use region_label for a spoken place name. If a region returns no rows, say that region has no labour data; do NOT conclude the dataset is missing.
+
+ENTITIES (three grains - do NOT mix in one grouping)
+- labor_week: per operator per payroll week. Everything about thresholds, projection, overtime hours and cost.
+- operators: descriptive attributes only (team, supervisor, depot, contracted hours, pay rate).
+- duty: per continuous stretch of work. Use for "how long was that shift" or "longest shift", NEVER for weekly totals - a duty period straddling a week boundary is counted in both weeks by labor_week but appears once here.
+
+CONVENTIONS
+- "approaching overtime" / "at risk" -> filter ot_band IN (''AT_RISK'', ''BREACH'') on the current week, ordered by projected_week_hours descending.
+- "will exceed 50/60 hours" -> projected_week_hours against threshold_2 / threshold_3.
+- "overtime cost" -> total_ot_cost.
+- "which depot/team is the problem" -> group by team_id.
+- "who should I call" -> supervisor_id.
+- "productivity relative to hours paid" -> avg_km_per_paid_hour, avg_stops_per_paid_hour, avg_utilization.
+
+WHAT IS SYNTHESIZED
+Hours, days worked, trips and distance are derived from real recorded trips. Contracted hours, hourly rate, team and supervisor do NOT exist in the source data and are generated deterministically from the operator id, so overtime COST is indicative and team structure is illustrative. Say so when quoting money. Hours themselves are not synthesized.'
+;
