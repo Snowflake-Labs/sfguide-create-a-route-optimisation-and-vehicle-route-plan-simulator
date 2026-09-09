@@ -73,9 +73,14 @@ export interface ClaimTableDDLOpts {
  * happens BEFORE execute(): the first caller wins, the loser is rejected by the
  * PK and replays or fails instead of re-executing.
  *
- * This only works on a HYBRID TABLE - a standard Snowflake table does not
- * enforce PRIMARY KEY, so the insert would always succeed and the guard would
- * silently do nothing.
+ * A HYBRID table is preferred because it ENFORCES the primary key, which is the
+ * only thing that can reject two callers claiming the same key at the same
+ * instant. A standard Snowflake table does not enforce PRIMARY KEY, so on the
+ * accounts that have no hybrid tables (GCP / trial / SnowGov) `claim()` must not
+ * rely on a violation being raised - it issues a `WHERE NOT EXISTS` conditional
+ * insert and reads the inserted-row count instead, so a repeat claim is still
+ * rejected on both table kinds. The residual gap on a standard table is exact
+ * simultaneity, not repetition.
  *
  * Retention: rows outlive the replay window (default 24h) and are not pruned on
  * the request path, deliberately - pruning per call would add a statement to

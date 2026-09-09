@@ -222,12 +222,19 @@ PRIMARY KEY *is* the idempotency triple, and the insert happens BEFORE `execute(
 caller wins, the loser re-checks for a terminal row and replays it, or fails
 `CONCURRENT_ATTEMPT` rather than re-executing.
 
-The guard only works on a HYBRID table - a standard Snowflake table does not enforce
-PRIMARY KEY, so the insert would always succeed and the claim would silently do nothing.
-Measured on wgb26798: the hybrid table rejects the duplicate with `A primary key already
-exists.`, while the same DDL as a standard table accepts both rows. `claimTableDDL()`
-therefore follows the audit table's `hybrid` flag, and the degradation is documented rather
-than hidden.
+Only a HYBRID table ENFORCES that primary key. Measured on wgb26798: the hybrid table
+rejects the duplicate with `A primary key already exists.`, while the same DDL as a
+standard table accepts both rows - so an unconditional insert would always succeed on
+the accounts that have no hybrid tables (GCP, trial, SnowGov), and the guard would
+silently permit the double execution it exists to block. `claim()` therefore does NOT
+rely on a violation being raised: it issues a `WHERE NOT EXISTS` conditional insert and
+reads the inserted-row count, which was measured to return 1 then 0 on BOTH table kinds
+(and no PK error on the hybrid repeat), so the guard holds against a repeat claim
+everywhere in a single statement. The PK-violation catch stays because it covers the one
+case the predicate cannot - two callers passing `NOT EXISTS` simultaneously - which is
+also the exact residual gap on a standard table. `claimTableDDL()` still follows the
+audit table's `hybrid` flag; the difference is that the non-hybrid path is now degraded
+rather than inert.
 
 Two incidental properties worth preserving on a re-vendor:
 
@@ -253,7 +260,7 @@ pruned on the request path (that would add a statement per verb); prune out of b
    git apply patches/*.patch
    ```
    If a patch does not apply, reseat it by hand - upstream may have moved the code - then regenerate the patch file by diffing this tree against the fresh upstream copy.
-4. `npm install && npm run build && npm test` (expect 82 passing).
+4. `npm install && npm run build && npm test` (expect 87 passing).
 5. Re-materialize and re-deploy the three bundles, then **recreate the agents** (`synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so agents bound to the old server go stale).
 6. Assert the generated `install.sql` still carries `query_tag`, per-procedure `COMMENT` positioned before `EXECUTE AS`, `IDEMPOTENCY_KEY STRING DEFAULT NULL`, and `USE ROLE <installer role>` (NOT a `FLEET_APP_*` consumer role) ahead of the hybrid-table DDL. Also assert BOTH hybrid tables are emitted and fully qualified (`verb_attempt` and `verb_claim`) and that no `__SYNAPSE_` placeholder survived - an unsubstituted `__SYNAPSE_CLAIM_TABLE__` would ship as a literal table NAME:
    ```bash

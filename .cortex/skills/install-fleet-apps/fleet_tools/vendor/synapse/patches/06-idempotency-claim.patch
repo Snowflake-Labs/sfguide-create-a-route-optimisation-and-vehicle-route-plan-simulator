@@ -1,5 +1,5 @@
 diff --git a/src/audit.ts b/src/audit.ts
-index 153f1b62..edbaecbd 100644
+index 153f1b6..3980a4c 100644
 --- a/src/audit.ts
 +++ b/src/audit.ts
 @@ -49,6 +49,20 @@ export interface AuditSink {
@@ -23,19 +23,22 @@ index 153f1b62..edbaecbd 100644
    recordOk(conn: Conn, event: AuditEvent): Promise<void>;
    recordError(conn: Conn, event: AuditEvent): Promise<void>;
  }
-@@ -56,6 +70,11 @@ export interface AuditSink {
+@@ -56,6 +70,14 @@ export interface AuditSink {
  export interface DefaultAuditSinkOpts {
    /** Audit table name. Must match auditTableDDL({table}). */
    table: string;
 +  /**
-+   * Idempotency claim table. Must match claimTableDDL({table}) and must be a
-+   * HYBRID table for the guard to work. Default 'verb_claim'.
++   * Idempotency claim table. Must match claimTableDDL({table}). A HYBRID table
++   * additionally enforces the PRIMARY KEY, which is what covers two callers
++   * claiming the same key at the same instant; on a standard table the guard
++   * still rejects a repeat claim, just not a simultaneous one. Default
++   * 'verb_claim'.
 +   */
 +  claimTable?: string;
    /** Optional column for an app-specific row key (e.g. 'rollout_id'). */
    appIdField?: string;
    /** Extracts app_id from args. Required if appIdField is set. */
-@@ -70,6 +89,7 @@ export interface DefaultAuditSinkOpts {
+@@ -70,6 +92,7 @@ export interface DefaultAuditSinkOpts {
   */
  export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
    const table = opts.table;
@@ -43,7 +46,7 @@ index 153f1b62..edbaecbd 100644
    const appIdCol = opts.appIdField;
    const appIdFrom = opts.appIdFromArgs ?? (() => null);
    const windowH = opts.idempotencyWindowHours ?? 24;
-@@ -131,24 +151,46 @@ export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
+@@ -131,24 +154,64 @@ export function defaultAuditSink(opts: DefaultAuditSinkOpts): AuditSink {
        };
      },
  
@@ -53,16 +56,34 @@ index 153f1b62..edbaecbd 100644
 +      // MCP server omits idempotency_key, so this costs nothing there.
 +      if (!idemKey) return true;
 +      try {
-+        await conn.exec(
++        // Conditional insert rather than a bare insert, because the claim table
++        // is a HYBRID table only where hybrid tables exist - `claimTableDDL`
++        // emits a STANDARD table on GCP / trial / SnowGov accounts, and a
++        // standard Snowflake table does NOT enforce PRIMARY KEY. A bare insert
++        // there always succeeds, so the catch below never fires and the guard
++        // silently permits the double execution it exists to prevent.
++        //
++        // `WHERE NOT EXISTS` restores the guard on both table kinds in ONE
++        // statement (measured: returns 1 then 0 on standard AND on hybrid, with
++        // no PK error on the hybrid repeat), so the request path does not grow a
++        // round trip. On a hybrid table the enforced PK still covers the case
++        // this predicate cannot - two callers passing the NOT EXISTS check
++        // simultaneously - which is why the violation catch stays.
++        const inserted = await conn.execScalar<number>(
 +          `INSERT INTO ${claimTable}(actor, verb, idempotency_key, claimed_at)
-+           SELECT ?, ?, ?, CURRENT_TIMESTAMP()`,
-+          [ident.user, verb, idemKey],
++           SELECT ?, ?, ?, CURRENT_TIMESTAMP()
++           WHERE NOT EXISTS (
++             SELECT 1 FROM ${claimTable}
++             WHERE actor = ? AND verb = ? AND idempotency_key = ?
++           )`,
++          [ident.user, verb, idemKey, ident.user, verb, idemKey],
 +        );
-+        return true;
++        return Number(inserted ?? 0) > 0;
 +      } catch (e) {
-+        // A primary-key violation is the intended signal that a concurrent (or
-+        // prior) caller owns this key. Anything else is a real failure and must
-+        // not silently disable the guard - rethrow so it surfaces.
++        // A primary-key violation is the intended signal that a concurrent
++        // caller won the claim first (hybrid table only). Anything else is a
++        // real failure and must not silently disable the guard - rethrow so it
++        // surfaces.
 +        const msg = e instanceof Error ? e.message : String(e);
 +        if (/unique|primary key|duplicate/i.test(msg)) return false;
 +        throw e;
@@ -97,7 +118,7 @@ index 153f1b62..edbaecbd 100644
        if (appIdCol) binds.push(appId);
        await conn.exec(`INSERT INTO ${table}${cols} ${sel}`, binds);
 diff --git a/src/build/bundle.ts b/src/build/bundle.ts
-index 2f8f3700..14a53775 100644
+index 2f8f370..14a5377 100644
 --- a/src/build/bundle.ts
 +++ b/src/build/bundle.ts
 @@ -386,6 +386,17 @@ function injectAuditConfig(
@@ -119,7 +140,7 @@ index 2f8f3700..14a53775 100644
  }
  
 diff --git a/src/build/install-sql.ts b/src/build/install-sql.ts
-index 02a74d46..1d78a6cb 100644
+index 02a74d4..d23bc0a 100644
 --- a/src/build/install-sql.ts
 +++ b/src/build/install-sql.ts
 @@ -1,7 +1,7 @@
@@ -131,13 +152,15 @@ index 02a74d46..1d78a6cb 100644
  import { procDDL } from './ddl.js';
  import { bundleProc, type ProcBuildInput, type AuditBundleConfig, type CatalogBundleConfig } from './bundle.js';
  
-@@ -39,6 +39,19 @@ export async function buildSprocs(opts: BuildSprocsOpts): Promise<void> {
+@@ -39,6 +39,21 @@ export async function buildSprocs(opts: BuildSprocsOpts): Promise<void> {
        hybrid: opts.schema?.hybrid ?? true,
      }),
      '',
 +    // Idempotency claim table (LOCAL PATCH, see VENDOR.md). Follows the audit
-+    // table's hybrid setting: the PK is only enforced on a hybrid table, so on a
-+    // standard table the claim degrades to today's read-before-write behavior.
++    // table's hybrid setting. The PK is enforced only on a hybrid table, so on a
++    // standard table `claim()` relies on its conditional insert rather than on a
++    // violation being raised - a repeat claim is still rejected, only exact
++    // simultaneity is not.
 +    // Qualified with the install target for the same reason the audit table is
 +    // (materialize.ts pre-qualifies that one): the emitted DDL must not depend on
 +    // the session's current schema.
@@ -152,7 +175,7 @@ index 02a74d46..1d78a6cb 100644
  
    for (const input of opts.procs) {
 diff --git a/src/cli/materialize.ts b/src/cli/materialize.ts
-index 62740e61..078595e2 100644
+index 62740e6..078595e 100644
 --- a/src/cli/materialize.ts
 +++ b/src/cli/materialize.ts
 @@ -9,7 +9,7 @@ import { buildLocalGrants } from '../build/local-grants.js';
@@ -174,10 +197,10 @@ index 62740e61..078595e2 100644
    }
  
 diff --git a/src/ddl.ts b/src/ddl.ts
-index 79f2debb..0a9f1745 100644
+index 79f2deb..21335cf 100644
 --- a/src/ddl.ts
 +++ b/src/ddl.ts
-@@ -49,3 +49,52 @@ export function auditTableDDL(opts: AuditTableDDLOpts = {}): string {
+@@ -49,3 +49,57 @@ export function auditTableDDL(opts: AuditTableDDLOpts = {}): string {
      result_hash     STRING${extra}
  ) COMMENT='${track}';`;
  }
@@ -205,9 +228,14 @@ index 79f2debb..0a9f1745 100644
 + * happens BEFORE execute(): the first caller wins, the loser is rejected by the
 + * PK and replays or fails instead of re-executing.
 + *
-+ * This only works on a HYBRID TABLE - a standard Snowflake table does not
-+ * enforce PRIMARY KEY, so the insert would always succeed and the guard would
-+ * silently do nothing.
++ * A HYBRID table is preferred because it ENFORCES the primary key, which is the
++ * only thing that can reject two callers claiming the same key at the same
++ * instant. A standard Snowflake table does not enforce PRIMARY KEY, so on the
++ * accounts that have no hybrid tables (GCP / trial / SnowGov) `claim()` must not
++ * rely on a violation being raised - it issues a `WHERE NOT EXISTS` conditional
++ * insert and reads the inserted-row count instead, so a repeat claim is still
++ * rejected on both table kinds. The residual gap on a standard table is exact
++ * simultaneity, not repetition.
 + *
 + * Retention: rows outlive the replay window (default 24h) and are not pruned on
 + * the request path, deliberately - pruning per call would add a statement to
@@ -231,7 +259,7 @@ index 79f2debb..0a9f1745 100644
 +) COMMENT='${track}';`;
 +}
 diff --git a/src/errors.ts b/src/errors.ts
-index ebc3eede..3c4ebcc0 100644
+index ebc3eed..3c4ebcc 100644
 --- a/src/errors.ts
 +++ b/src/errors.ts
 @@ -9,6 +9,11 @@ export const Codes = {
@@ -247,7 +275,7 @@ index ebc3eede..3c4ebcc0 100644
  } as const;
  
 diff --git a/src/runtime/envelope.ts b/src/runtime/envelope.ts
-index 8c182527..de7ec6ca 100644
+index 8c18252..de7ec6c 100644
 --- a/src/runtime/envelope.ts
 +++ b/src/runtime/envelope.ts
 @@ -86,6 +86,30 @@ export async function runEnvelope<TArgs, TReturns>(
@@ -282,7 +310,7 @@ index 8c182527..de7ec6ca 100644
      const parsedResult = parseRecord(
        proc.returns as { [K in keyof TReturns]: Schema<TReturns[K]> } as Record<string, Schema<unknown>>,
 diff --git a/src/runtime/sproc.ts b/src/runtime/sproc.ts
-index 153bed31..e0da68c2 100644
+index 153bed3..e0da68c 100644
 --- a/src/runtime/sproc.ts
 +++ b/src/runtime/sproc.ts
 @@ -109,11 +109,13 @@ export function runProcSproc<TArgs, TReturns>(
@@ -300,7 +328,7 @@ index 153bed31..e0da68c2 100644
        ? {
            appIdField: appIdFieldRaw,
 diff --git a/src/testing/index.ts b/src/testing/index.ts
-index b9f44113..8831a382 100644
+index b9f4411..8831a38 100644
 --- a/src/testing/index.ts
 +++ b/src/testing/index.ts
 @@ -58,30 +58,52 @@ export function mockConn(opts: { rows?: MockMatch[] } = {}): MockConn {
@@ -358,8 +386,80 @@ index b9f44113..8831a382 100644
 +  }
    return sink;
  }
+diff --git a/tests/unit/audit.test.ts b/tests/unit/audit.test.ts
+new file mode 100644
+index 0000000..660e6f1
+--- /dev/null
++++ b/tests/unit/audit.test.ts
+@@ -0,0 +1,66 @@
++import { describe, it, expect } from 'vitest';
++import { defaultAuditSink } from '../../src/audit.js';
++import { mockConn } from '../../src/testing/index.js';
++
++// LOCAL PATCH (see VENDOR.md patch 06). These tests exist because the failure
++// they cover is silent: the claim table is emitted as a HYBRID table only where
++// hybrid tables exist, and a STANDARD Snowflake table does not enforce PRIMARY
++// KEY. An unconditional `INSERT` therefore always succeeds there, the
++// PK-violation catch never fires, and the guard permits exactly the double
++// execution of a mutating verb it was added to block.
++describe('defaultAuditSink.claim', () => {
++  const ident = { user: 'U', role: 'R' };
++
++  it('claims with a conditional insert, so the guard does not depend on an enforced PK', async () => {
++    const conn = mockConn({
++      rows: [{ match: /INSERT INTO CLAIMS/i, rows: [{ 'number of rows inserted': 1 }] }],
++    });
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(true);
++
++    const sql = conn.calls[0]!.sql;
++    expect(sql).toMatch(/INSERT INTO CLAIMS/i);
++    expect(sql).toMatch(/WHERE NOT EXISTS/i);
++    // One statement, not a read followed by a write: this is the interactive
++    // verb path, and a second round trip here is paid on every mutating call.
++    expect(conn.calls).toHaveLength(1);
++    // Both halves of the statement bind the same triple.
++    expect(conn.calls[0]!.binds).toEqual(['U', 'v', 'k1', 'U', 'v', 'k1']);
++  });
++
++  it('loses the claim when the conditional insert writes no row', async () => {
++    const conn = mockConn({
++      rows: [{ match: /INSERT INTO CLAIMS/i, rows: [{ 'number of rows inserted': 0 }] }],
++    });
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    // This is the case a standard (PK-unenforced) claim table can only express
++    // as a zero count - no exception is raised - so returning false here is
++    // what keeps the guard alive on GCP / trial / SnowGov accounts.
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(false);
++  });
++
++  it('still loses the claim on an enforced-PK violation (concurrent hybrid case)', async () => {
++    const conn = mockConn();
++    conn.execScalar = async () => {
++      throw new Error('A primary key already exists.');
++    };
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).resolves.toBe(false);
++  });
++
++  it('rethrows a non-violation error rather than silently allowing execution', async () => {
++    const conn = mockConn();
++    conn.execScalar = async () => {
++      throw new Error('Insufficient privileges to operate on table');
++    };
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', 'k1')).rejects.toThrow(/Insufficient privileges/);
++  });
++
++  it('issues no statement when there is no idempotency key', async () => {
++    const conn = mockConn();
++    const sink = defaultAuditSink({ table: 'ATT', claimTable: 'CLAIMS' });
++    await expect(sink.claim!(conn, ident, 'v', null)).resolves.toBe(true);
++    expect(conn.calls).toHaveLength(0);
++  });
++});
 diff --git a/tests/unit/bundle.test.ts b/tests/unit/bundle.test.ts
-index f99c14cc..cabd4a8d 100644
+index f99c14c..cabd4a8 100644
 --- a/tests/unit/bundle.test.ts
 +++ b/tests/unit/bundle.test.ts
 @@ -115,6 +115,11 @@ export const noop = defineProc({
@@ -375,7 +475,7 @@ index f99c14cc..cabd4a8d 100644
      // round-trips them as such. LOCAL PATCH: the audit table is qualified with
      // the install target so the envelope's INSERT does not depend on the
 diff --git a/tests/unit/ddl.test.ts b/tests/unit/ddl.test.ts
-index 1f024cad..e286007b 100644
+index 1f024ca..e286007 100644
 --- a/tests/unit/ddl.test.ts
 +++ b/tests/unit/ddl.test.ts
 @@ -1,6 +1,7 @@
@@ -417,7 +517,7 @@ index 1f024cad..e286007b 100644
 +  });
  });
 diff --git a/tests/unit/envelope.test.ts b/tests/unit/envelope.test.ts
-index e5a91c50..42ae12e3 100644
+index e5a91c5..42ae12e 100644
 --- a/tests/unit/envelope.test.ts
 +++ b/tests/unit/envelope.test.ts
 @@ -92,4 +92,77 @@ describe('envelope', () => {

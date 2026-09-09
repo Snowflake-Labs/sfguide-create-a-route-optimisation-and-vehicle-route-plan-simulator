@@ -33,18 +33,91 @@ interface MirrorRow {
 // Deliberately best-effort: a blocked egress rule, a slow mirror or a missing
 // sidecar degrades to 'unknown' rather than failing the panel. Never let this
 // determine whether the settings render.
+//
+// SSRF: the two hosts come from CORE.PBF_MIRRORS, which the install seed owns but
+// which is a plain table any role with UPDATE on it can rewrite. That makes this
+// a server-side fetch of a semi-trusted URL, so the probe target is validated
+// rather than trusted: https only, default port only, no embedded credentials,
+// and a public hostname (an IP literal or a loopback / link-local / RFC1918 /
+// carrier-grade-NAT / .internal name is refused). An unusable row degrades to
+// 'unknown', exactly like an unreachable one - the panel is unaffected either way.
+const PRIVATE_HOST =
+  /^(localhost|.*\.localhost|.*\.internal|.*\.local|metadata|metadata\..*)$/i;
+
+// Validates an ALREADY-ABSOLUTE probe URL. Takes the finished URL rather than
+// (base, path) so the identical checks apply to a redirect target, which is the
+// hop that would otherwise bypass them.
+function safeProbeUrl(candidate: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:') return null;
+  if (u.port) return null;
+  if (u.username || u.password) return null;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (PRIVATE_HOST.test(host)) return null;
+  // Refuse IP literals outright: every legitimate mirror is a DNS name, and an
+  // allowlist of "public" IP ranges is the wrong shape here (DNS rebinding aside,
+  // there is no reason to reach a mirror by address).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return null;
+  if (host.includes(':')) return null; // IPv6 literal
+  if (!host.includes('.')) return null; // bare hostname = not a public FQDN
+  // The probe must stay on the sidecar it was built for. `new URL` already
+  // resolves any `..` in the seeded base, so re-check the final path.
+  if (!u.pathname.endsWith('.osm.pbf.md5')) return null;
+  return u.toString();
+}
+
 async function checkFreshness(mirrorBase: string, sourceHost: string): Promise<string> {
   // Probe one file the mirror is known to carry. europe-latest is the largest
   // and the one whose outage motivated mirrors in the first place.
-  const path = '/europe-latest.osm.pbf.md5';
-  const fetchMd5 = async (url: string) => {
+  const path = 'europe-latest.osm.pbf.md5';
+  // Join, then validate. A trailing slash on the base is required or `new URL`
+  // would drop the last path segment of a nested mirror base.
+  const probeUrl = (base: string) => {
+    const b = base.endsWith('/') ? base : `${base}/`;
+    try {
+      return safeProbeUrl(new URL(path, b).toString());
+    } catch {
+      return null;
+    }
+  };
+  const fetchMd5 = async (rawUrl: string | null) => {
+    if (!rawUrl) return null;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 6000);
     try {
-      const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
-      if (!r.ok) return null;
-      const txt = (await r.text()).trim().split(/\s+/)[0];
-      return txt && txt.length === 32 ? txt.toLowerCase() : null;
+      // Redirects are followed MANUALLY so every hop goes back through
+      // safeProbeUrl. Blanket `redirect: 'error'` would be the simpler guard and
+      // is wrong here: the primary origin answers this sidecar with a 302 (to a
+      // mirror), so refusing redirects turns freshness permanently 'unknown' -
+      // it removes the only actionable fact on the panel. Letting fetch follow
+      // them silently is the actual SSRF hole, because a public host can redirect
+      // into an internal address after validation has already passed.
+      let url: string | null = rawUrl;
+      for (let hop = 0; hop < 4; hop++) {
+        if (!url) return null;
+        const r: Response = await fetch(url, {
+          signal: ctl.signal,
+          cache: 'no-store',
+          redirect: 'manual',
+        });
+        if (r.status >= 300 && r.status < 400) {
+          const loc = r.headers.get('location');
+          if (!loc) return null;
+          // Resolve relative Location values against the hop we just made, then
+          // re-validate: a redirect target is no more trusted than the seed was.
+          url = safeProbeUrl(new URL(loc, url).toString());
+          continue;
+        }
+        if (!r.ok) return null;
+        const txt = (await r.text()).trim().split(/\s+/)[0];
+        return txt && txt.length === 32 ? txt.toLowerCase() : null;
+      }
+      return null;
     } catch {
       return null;
     } finally {
@@ -52,8 +125,8 @@ async function checkFreshness(mirrorBase: string, sourceHost: string): Promise<s
     }
   };
   const [origin, mirror] = await Promise.all([
-    fetchMd5(`https://${sourceHost}${path}`),
-    fetchMd5(`${mirrorBase}${path}`),
+    fetchMd5(probeUrl(`https://${sourceHost}`)),
+    fetchMd5(probeUrl(mirrorBase)),
   ]);
   if (!origin || !mirror) return 'unknown';
   return origin === mirror ? 'in sync with origin' : 'BEHIND origin';

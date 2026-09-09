@@ -40,8 +40,10 @@ export async function buildSprocs(opts: BuildSprocsOpts): Promise<void> {
     }),
     '',
     // Idempotency claim table (LOCAL PATCH, see VENDOR.md). Follows the audit
-    // table's hybrid setting: the PK is only enforced on a hybrid table, so on a
-    // standard table the claim degrades to today's read-before-write behavior.
+    // table's hybrid setting. The PK is enforced only on a hybrid table, so on a
+    // standard table `claim()` relies on its conditional insert rather than on a
+    // violation being raised - a repeat claim is still rejected, only exact
+    // simultaneity is not.
     // Qualified with the install target for the same reason the audit table is
     // (materialize.ts pre-qualifies that one): the emitted DDL must not depend on
     // the session's current schema.
