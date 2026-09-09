@@ -95,6 +95,12 @@ DEPLOYMENT_FACTS_SQL="$SKILL_DIR/fleet_sa_app/app/deployment_facts.sql"
 # ops/admin agents' query_deployment Cortex Analyst tool. Its own schema, so the
 # FLEET_APP_USER FUTURE grant on FLEET_INTELLIGENCE.SEMANTIC cannot reach it.
 SEMANTIC_VIEWS_DEPLOY_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_deployment.sql"
+# Agent BEHAVIOUR layer (SEMANTIC_OPS.SV_AGENT_BEHAVIOUR + the AGENT_TURN table the
+# SA app writes to). Answers "are the agents behaving well", which no other gate does:
+# every static check proves an agent is well FORMED, not that its verbs succeed or that
+# it picks the governed tool. Same schema as above, for the same isolation reason -
+# behaviour data carries user questions and names actors.
+SEMANTIC_VIEWS_BEHAVIOUR_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views_behaviour.sql"
 # Registers the four agents with the account's Snowflake CoWork object. Without it
 # an account that has a CoWork object hides the agents from the CoWork agent list.
 COWORK_BINDING_SQL="$SKILL_DIR/fleet_sa_app/app/cowork_binding.sql"
@@ -730,6 +736,25 @@ if [ -f "$SEMANTIC_VIEWS_DEPLOY_SQL" ]; then
     || { note "  WARN: SV_FLEET_DEPLOYMENT failed; see /tmp/ifa_semantic_deploy.log"; step "5.5 sv-deployment" FAILED; }
 else
   step "5.5 sv-deployment" SKIPPED
+fi
+
+# ── 5.6 agent behaviour layer ──────────────────────────────────
+# SV_AGENT_BEHAVIOUR + AGENT_TURN. Best-effort and non-blocking: it is an
+# observability surface, so a failure here must never stop an install.
+#
+# MUST run after 5.5 (which creates the SEMANTIC_OPS schema) and after step 5
+# (the three bundles create the VERB_ATTEMPT tables the views union). It reads
+# INFORMATION_SCHEMA.SEMANTIC_TABLES live, so it does not care whether the
+# consumer semantic views already exist - it simply reports fewer governed
+# objects until they do.
+if [ -f "$SEMANTIC_VIEWS_BEHAVIOUR_SQL" ]; then
+  note "[5.6/8] creating agent behaviour layer (SV_AGENT_BEHAVIOUR + AGENT_TURN)..."
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_BEHAVIOUR_SQL" --enable-templating NONE \
+      >/tmp/ifa_semantic_behaviour.log 2>&1 \
+    && step "5.6 sv-behaviour" OK \
+    || { note "  WARN: SV_AGENT_BEHAVIOUR failed; see /tmp/ifa_semantic_behaviour.log"; step "5.6 sv-behaviour" FAILED; }
+else
+  step "5.6 sv-behaviour" SKIPPED
 fi
 
 # ── 6. agents ───────────────────────────────────────────────────
