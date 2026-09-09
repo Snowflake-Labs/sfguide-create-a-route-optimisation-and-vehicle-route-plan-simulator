@@ -1528,7 +1528,7 @@ export async function startGeneration(
       const pendingTrips: TripRecord[] = [];
       let stoppedEvent: any = null;
 
-      const gen = generateTelemetry(config, snowSql,
+      const gen = generateTelemetry(config, snowSql, fleet,
         (p: GenerationProgress) => {
           job.pointsGenerated = p.totalPoints;
           job.tripsGenerated = p.totalTrips;

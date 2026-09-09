@@ -18,7 +18,6 @@ import type {
   GenerationProgress, SnowSqlFn, VehicleLifecycle, FleetMember,
 } from './engine/types';
 
-import { buildFleet } from './engine/fleet';
 import { loadPOIs } from './engine/routability';
 import {
   fetchRoute, fetchDetourRoute, pickDestination,
@@ -64,9 +63,22 @@ interface VehicleDayResult {
   busyUntilDayOffset?: number;
 }
 
+// `fleet` is REQUIRED and must be the SAME array that was written to DIM_FLEET.
+// This used to be rebuilt here from a second, differently-seeded RNG
+// (`createRng(start_date.length * 31 + num_vehicles)`) while jobs.ts inserted a
+// fleet drawn from `createRng(num_vehicles * 31)`. Vehicle ids are index-derived
+// so every join still succeeded and every panel still populated, but everything
+// rng-derived (home_poi, profile_type, base_speed_kmh, and the ghost window)
+// described a DIFFERENT fleet than the one that produced the facts. Measured on
+// a live account: 2 of 96 Europe vehicles had a DIM_FLEET home base matching
+// their first telemetry ping, and speeding rate by driver profile was flat
+// (COMPLIANT 5.78%, MILD 5.83%, OUTLIER 5.19%) - i.e. the dimension was
+// uncorrelated with the behaviour it is supposed to explain. Never rebuild the
+// fleet in here.
 export async function* generateTelemetry(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
+  fleet: FleetMember[],
   onProgress?: (p: GenerationProgress) => void,
   abortSignal?: { aborted: boolean },
   onLog?: (msg: string) => void,
@@ -110,7 +122,6 @@ export async function* generateTelemetry(
     );
   }
 
-  const fleet = buildFleet(config, pois, rng);
   const profileBreakdown: Record<string, number> = {};
   for (const m of fleet) profileBreakdown[m.profile_type] = (profileBreakdown[m.profile_type] || 0) + 1;
   const shiftBreakdown: Record<string, number> = {};
@@ -118,7 +129,7 @@ export async function* generateTelemetry(
     const key = `${m.shift_start}:00-${m.shift_end}:00`;
     shiftBreakdown[key] = (shiftBreakdown[key] || 0) + 1;
   }
-  log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles (parallelism=${PARALLELISM})`, {
+  log('INFO', 'Studio', `Using fleet of ${fleet.length} ${vt} vehicles as written to DIM_FLEET (parallelism=${PARALLELISM})`, {
     detail: { driverProfiles: profileBreakdown, shifts: shiftBreakdown, homePoisUsed: new Set(fleet.map(m => m.home_poi.location_id)).size },
   });
 
