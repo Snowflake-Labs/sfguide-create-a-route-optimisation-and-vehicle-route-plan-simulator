@@ -561,59 +561,82 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT REGION, COUNT(DISTINCT VEHICLE_ID) AS TRAILERS
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
           GROUP BY REGION
-        )
-        SELECT
-          'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
-          COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
-          t.ORIGIN_LON                                                                AS PICKUP_LON,
-          t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-          COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
-          t.DESTINATION_LON                                                           AS DROPOFF_LON,
-          t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-          -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
-          -- horizon rather than the next ~10 hours. Vehicle availability is now
-          -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
-          -- today would be reachable only by the handful of vehicles free today
-          -- and would silently starve every later vehicle of candidates.
-          GREATEST(
-            t.TRIP_START,
-            DATEADD('minute',
-              MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
-              CURRENT_TIMESTAMP())
-          )                                                                           AS PICKUP_FROM_TS,
-          DATEADD(hour, 4,
+        ),
+        -- Same-lane same-weight dedupe, applied BEFORE the pool bound. The app
+        -- used to do this in the browser, so the number on screen was smaller
+        -- than the pool the solver got and no SQL consumer benefited. Deduping
+        -- after the bound would reproduce that gap, since duplicates would
+        -- consume rank slots and leave the pool under its target.
+        deduped AS (
+          SELECT
+            COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+            t.ORIGIN_LON                                                                AS PICKUP_LON,
+            t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+            COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+            t.DESTINATION_LON                                                           AS DROPOFF_LON,
+            t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+            -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
+            -- horizon rather than the next ~10 hours. Vehicle availability is now
+            -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
+            -- today would be reachable only by the handful of vehicles free today
+            -- and would silently starve every later vehicle of candidates.
             GREATEST(
               t.TRIP_START,
               DATEADD('minute',
                 MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
-            )
-          )                                                                           AS PICKUP_TO_TS,
-          -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
-          (
-            c.SHIPMENT_KG_MIN
-            + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
-          )::NUMBER                                                                   AS WEIGHT_KG,
-          'B2B pallets'                                                               AS PRODUCT,
-          FALSE                                                                       AS HAZMAT
-        FROM trips t
-        -- Class band resolved from the TRIP's own vehicle type. An unknown
-        -- vehicle_type drops those trips, which is what the old global
-        -- EXISTS-on-cls guard did for the single active type.
-        JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
-        LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+            )                                                                           AS PICKUP_FROM_TS,
+            DATEADD(hour, 4,
+              GREATEST(
+                t.TRIP_START,
+                DATEADD('minute',
+                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                  CURRENT_TIMESTAMP())
+              )
+            )                                                                           AS PICKUP_TO_TS,
+            -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
+            (
+              c.SHIPMENT_KG_MIN
+              + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
+            )::NUMBER                                                                   AS WEIGHT_KG,
+            'B2B pallets'                                                               AS PRODUCT,
+            FALSE                                                                       AS HAZMAT,
+            t.REGION                                                                    AS REGION,
+            t.TRIP_START                                                                AS TRIP_START,
+            COALESCE(fs.TRAILERS, 0)                                                    AS TRAILERS
+          FROM trips t
+          -- Class band resolved from the TRIP's own vehicle type. An unknown
+          -- vehicle_type drops those trips, which is what the old global
+          -- EXISTS-on-cls guard did for the single active type.
+          JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
+          LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
+          LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+          LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+          QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY t.REGION,
+                                 t.ORIGIN_LON, t.ORIGIN_LAT,
+                                 t.DESTINATION_LON, t.DESTINATION_LAT,
+                                 (c.SHIPMENT_KG_MIN
+                                  + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))
+                    ORDER BY t.TRIP_START DESC) = 1
+        )
+        SELECT
+          'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
+          PICKUP_CITY, PICKUP_LON, PICKUP_LAT,
+          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT,
+          PICKUP_FROM_TS, PICKUP_TO_TS,
+          WEIGHT_KG, PRODUCT, HAZMAT
+        FROM deduped
         -- Pool size derived from the fleet, not truncated to a constant. See the
         -- long note on the FLEET_APP copy: a flat INTERNAL_POOL_CAP made this
         -- count the CAP in a busy region (16,535 SanFrancisco trips -> exactly
         -- 5,000) and the TRUE trip count in a quiet one (332 Europe). The cap is
         -- now an absolute ceiling only. GREATEST(1, ...) keeps a region with
         -- trips but no countable vehicles from emptying the page.
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC)
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY TRIP_START DESC)
                 <= LEAST(
                      (SELECT POOL_CAP FROM p),
-                     GREATEST(1, CEIL(COALESCE(fs.TRAILERS, 0) * (SELECT LOADS_PER_TRAILER FROM p)))
+                     GREATEST(1, CEIL(TRAILERS * (SELECT LOADS_PER_TRAILER FROM p)))
                    )`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },

@@ -208,18 +208,18 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         const id = String(r.TRAILER_ID);
         if (seenT.has(id)) return false; seenT.add(id); return true;
       });
-      const seenI = new Set<string>();
-      const iDeduped = (iRows as unknown as Volume[]).filter((v) => {
-        const k = `${Number(v.PICKUP_LON).toFixed(6)},${Number(v.PICKUP_LAT).toFixed(6)}|${Number(v.DROPOFF_LON).toFixed(6)},${Number(v.DROPOFF_LAT).toFixed(6)}|${v.WEIGHT_KG}`;
-        if (seenI.has(k)) return false; seenI.add(k); return true;
-      });
+      // Internal volumes are deduped in SQL now (same lane, same weight), before
+      // the pool bound is applied, so there is nothing left to drop here. Doing
+      // it in the browser meant the "Internal volumes" tile reported a smaller
+      // number than the pool the solver actually received - measured 4,979 on
+      // screen against 5,000 rows - and no SQL consumer got the benefit.
       const seenO = new Set<string>();
       const oDeduped = (oRows as unknown as Offer[]).filter((o) => {
         const k = String(o.OFFER_ID);
         if (seenO.has(k)) return false; seenO.add(k); return true;
       });
       setTrailers(tDeduped);
-      setInternal(iDeduped);
+      setInternal(iRows as unknown as Volume[]);
       setExternal(oDeduped);
       // A data reload invalidates the previous solve: drop the results and the
       // dispatch stats together so the KPI denominator can never be paired with
@@ -238,8 +238,8 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         if (Number.isFinite(cls.COST_PER_HR)) setCostPerHourUsd(cls.COST_PER_HR);
       }
 
-      if (!tDeduped.length || !iDeduped.length || !oDeduped.length) {
-        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iDeduped.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
+      if (!tDeduped.length || !iRows.length || !oDeduped.length) {
+        setSeedHint(`Tables are empty for the active preset (${vehicleType} / ${cfgRegion}) - trailers: ${tDeduped.length}, internal: ${iRows.length}, external: ${oDeduped.length}. Run a Data Studio job for this preset to populate the freight data.`);
       } else {
         setSeedHint(null);
       }

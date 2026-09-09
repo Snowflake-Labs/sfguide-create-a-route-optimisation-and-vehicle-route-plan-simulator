@@ -208,6 +208,16 @@ entities:
       -- every row already lands inside the horizon (4,975 of 5,000 within 4
       -- days, none in the past). Pickup feasibility is enforced downstream by
       -- MAX_PICKUP_HORIZON_DAYS in VW_CANDIDATES.
+      --
+      -- DEDUPE HAPPENS HERE, BEFORE THE BOUND, AND THAT ORDER MATTERS. The app
+      -- used to drop same-lane same-weight duplicates in the browser, so the
+      -- number on screen was smaller than the pool the solver received (5,000
+      -- became 4,979) and no SQL consumer got the benefit at all. Deduping after
+      -- the bound would reproduce that gap, because duplicates would consume
+      -- rank slots and the pool would land under its target. It also collapses
+      -- the row multiplication a repeated DIM_POIS LOCATION_ID would otherwise
+      -- cause here, which the sibling copy in init.ts handles with a pre-aggregated
+      -- `poi` CTE instead.
       WITH p AS (
         SELECT
           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
@@ -224,48 +234,66 @@ entities:
         SELECT REGION, COUNT(DISTINCT VEHICLE_ID) AS TRAILERS
         FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
         GROUP BY REGION
-      )
-      SELECT
-        'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
-        t.REGION                                                                    AS REGION,
-        FLEET_APP.CORE.REGION_LABEL(t.REGION)                                       AS REGION_LABEL,
-        COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
-        t.ORIGIN_LON                                                                AS PICKUP_LON,
-        t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-        COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
-        t.DESTINATION_LON                                                           AS DROPOFF_LON,
-        t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-        GREATEST(
-          t.TRIP_START,
-          DATEADD('minute',
-            MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
-            CURRENT_TIMESTAMP())
-        )                                                                           AS PICKUP_FROM_TS,
-        DATEADD(hour, 4,
+      ),
+      deduped AS (
+        SELECT
+          t.REGION                                                                    AS REGION,
+          FLEET_APP.CORE.REGION_LABEL(t.REGION)                                       AS REGION_LABEL,
+          COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+          t.ORIGIN_LON                                                                AS PICKUP_LON,
+          t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+          COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+          t.DESTINATION_LON                                                           AS DROPOFF_LON,
+          t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
           GREATEST(
             t.TRIP_START,
             DATEADD('minute',
               MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
               CURRENT_TIMESTAMP())
-          )
-        )                                                                           AS PICKUP_TO_TS,
-        (
-          c.SHIPMENT_KG_MIN
-          + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
-        )::NUMBER                                                                   AS WEIGHT_KG,
-        'B2B pallets'                                                               AS PRODUCT,
-        FALSE                                                                       AS HAZMAT
-      FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
-      JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-      LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+          )                                                                           AS PICKUP_FROM_TS,
+          DATEADD(hour, 4,
+            GREATEST(
+              t.TRIP_START,
+              DATEADD('minute',
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
+            )
+          )                                                                           AS PICKUP_TO_TS,
+          (
+            c.SHIPMENT_KG_MIN
+            + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
+          )::NUMBER                                                                   AS WEIGHT_KG,
+          'B2B pallets'                                                               AS PRODUCT,
+          FALSE                                                                       AS HAZMAT,
+          t.TRIP_START                                                                AS TRIP_START,
+          COALESCE(fs.TRAILERS, 0)                                                    AS TRAILERS
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+        JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+        LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+        QUALIFY ROW_NUMBER() OVER (
+                  PARTITION BY t.REGION,
+                               t.ORIGIN_LON, t.ORIGIN_LAT,
+                               t.DESTINATION_LON, t.DESTINATION_LAT,
+                               (c.SHIPMENT_KG_MIN
+                                + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))
+                  ORDER BY t.TRIP_START DESC) = 1
+      )
+      SELECT
+        'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
+        REGION, REGION_LABEL,
+        PICKUP_CITY, PICKUP_LON, PICKUP_LAT,
+        DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT,
+        PICKUP_FROM_TS, PICKUP_TO_TS,
+        WEIGHT_KG, PRODUCT, HAZMAT
+      FROM deduped
       -- GREATEST(1, ...) so a region that has trips but no countable trailers
       -- still yields a non-empty pool rather than silently emptying the page.
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY t.TRIP_START DESC)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY TRIP_START DESC)
               <= LEAST(
                    (SELECT POOL_CAP FROM p),
-                   GREATEST(1, CEIL(COALESCE(fs.TRAILERS, 0) * (SELECT LOADS_PER_TRAILER FROM p)))
+                   GREATEST(1, CEIL(TRAILERS * (SELECT LOADS_PER_TRAILER FROM p)))
                  )
 
   - name: EXTERNAL_OFFERS
