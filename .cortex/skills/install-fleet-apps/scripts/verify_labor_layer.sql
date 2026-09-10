@@ -58,6 +58,37 @@
 -- by period intersection while trips are attributed by start week, so the two
 -- can disagree at a boundary; the ratio is capped at 1.0 and this confirms the
 -- cap is not hiding a systematic inversion.
+--
+-- CHECK 8 is the one that protects a savings claim from being wrong by 3x.
+-- EST_OT_COST is the fully loaded cost of the overtime hours; only the premium
+-- above straight time is avoidable. If a future edit made the premium equal the
+-- loaded cost, every "here is what you could save" figure in the demo would
+-- triple, and nothing else would look wrong.
+--
+-- CHECK 9 asserts BINDING_CONSTRAINT is always populated. It is the column that
+-- answers "which rule applies to this person", so a NULL is not a cosmetic gap:
+-- the exception list would show a named individual with no stated reason, which
+-- is exactly the surveillance-without-context failure the view is designed to
+-- avoid.
+--
+-- CHECK 10 asserts the two regimes stay mutually exclusive. DOT hours-of-service
+-- and driver-salesperson status are defined for commercial motor vehicles, so on
+-- a light-vehicle fleet they must be NULL (not applicable) rather than computed.
+-- Applied ungated this produced pure noise: every operator-week "failed" a 50%
+-- driving test written for CMVs, because e-bike couriers drive ~94% of paid time.
+-- The inverse also matters, so this checks that a CMV fleet DOES get them
+-- populated rather than only checking the light case.
+--
+-- CHECK 11 asserts the FLSA small-vehicle exception uses the LIGHTEST vehicle of
+-- the week. The exception covers the WHOLE workweek if any vehicle was at or
+-- under 10,000 lb, even when heavier vehicles were also driven, so a MAX or AVG
+-- here would silently suppress a real overtime obligation.
+--
+-- CHECK 12 asserts weight precision survives the contract. The physical column is
+-- NUMBER(6,2) but the contract function once declared a bare NUMBER, which is
+-- NUMBER(38,0) and TRUNCATED - 0.1 arrived as 0 and a 3.5t van would have arrived
+-- as 4. That makes the 4.536t eligibility boundary fuzzy by half a tonne in the
+-- one test whose entire purpose is which side of it you are on.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -72,6 +103,7 @@ wk AS (
 ),
 cfg AS (
   SELECT COALESCE(MAX(HOURLY_RATE_MIN), 22.0) AS RMIN,
+         COALESCE(MAX(GVWR_OT_THRESHOLD_TONNES), 4.536) AS GVWR_T,
          COALESCE(MAX(HOURLY_RATE_MAX), 34.0) AS RMAX
   FROM FLEET_APP.LABOR.LABOR_CONFIG
   WHERE REGION = '*' AND VEHICLE_TYPE = '*'
@@ -122,4 +154,45 @@ SELECT * FROM (
          TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE DRIVE_HOURS > HOURS_TO_DATE + 0.01))
            || ' weeks inverted',
          IFF((SELECT COUNT(*) FROM wk WHERE DRIVE_HOURS > HOURS_TO_DATE + 0.01) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  SELECT 8, 'OT premium is below loaded cost (avoidable vs total)',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE PROJECTED_OT_HOURS > 0
+                       AND EST_OT_PREMIUM >= EST_OT_COST)) || ' rows not below, ratio '
+           || TO_VARCHAR(ROUND((SELECT DIV0(SUM(EST_OT_COST), SUM(EST_OT_PREMIUM)) FROM wk), 2)),
+         IFF((SELECT COUNT(*) FROM wk WHERE PROJECTED_OT_HOURS > 0
+                AND EST_OT_PREMIUM >= EST_OT_COST) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  SELECT 9, 'binding constraint always populated',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE BINDING_CONSTRAINT IS NULL)) || ' null of '
+           || TO_VARCHAR((SELECT COUNT(*) FROM wk)),
+         IFF((SELECT COUNT(*) FROM wk WHERE BINDING_CONSTRAINT IS NULL) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  -- Mutually exclusive regimes, checked in BOTH directions: a light-vehicle row
+  -- must have the CMV-only columns NULL, and a CMV row must have them populated.
+  SELECT 10, 'DOT and driver-salesperson apply to CMVs only',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE OT_ELIGIBLE_FLSA AND DOT_ONDUTY_7D_HOURS IS NOT NULL))
+           || ' light rows with DOT set, '
+           || TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE NOT OT_ELIGIBLE_FLSA AND DOT_ONDUTY_7D_HOURS IS NULL))
+           || ' CMV rows missing DOT',
+         IFF((SELECT COUNT(*) FROM wk WHERE OT_ELIGIBLE_FLSA AND DOT_ONDUTY_7D_HOURS IS NOT NULL) = 0
+             AND (SELECT COUNT(*) FROM wk WHERE NOT OT_ELIGIBLE_FLSA AND DOT_ONDUTY_7D_HOURS IS NULL) = 0,
+             'PASS', 'FAIL')
+  UNION ALL
+  -- Eligibility must follow the LIGHTEST vehicle, so no row may be marked exempt
+  -- while its recorded minimum weight is at or under the threshold.
+  SELECT 11, 'FLSA eligibility follows the lightest vehicle',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk, cfg
+                     WHERE NOT OT_ELIGIBLE_FLSA AND MIN_VEHICLE_TONNES <= cfg.GVWR_T))
+           || ' exempt rows at or under the threshold',
+         IFF((SELECT COUNT(*) FROM wk, cfg
+              WHERE NOT OT_ELIGIBLE_FLSA AND MIN_VEHICLE_TONNES <= cfg.GVWR_T) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  -- A bare NUMBER declaration in the contract truncates NUMBER(6,2) to integer,
+  -- which would make every sub-tonne weight 0 and shift a 3.5t van to 4t.
+  SELECT 12, 'vehicle weight precision survives the contract',
+         'min ' || TO_VARCHAR((SELECT MIN(MIN_VEHICLE_TONNES) FROM wk))
+           || ', fractional rows '
+           || TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE MIN_VEHICLE_TONNES <> ROUND(MIN_VEHICLE_TONNES, 0))),
+         IFF((SELECT COUNT(*) FROM wk WHERE MIN_VEHICLE_TONNES IS NOT NULL) = 0
+             OR (SELECT MIN(MIN_VEHICLE_TONNES) FROM wk) > 0, 'PASS', 'FAIL')
 ) ORDER BY CHK;
