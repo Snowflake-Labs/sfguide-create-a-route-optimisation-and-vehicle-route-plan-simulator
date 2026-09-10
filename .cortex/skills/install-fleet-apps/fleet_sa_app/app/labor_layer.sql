@@ -101,9 +101,67 @@ CREATE TABLE IF NOT EXISTS FLEET_APP.LABOR.LABOR_CONFIG (
   HOURLY_RATE_MIN           FLOAT,
   HOURLY_RATE_MAX           FLOAT,
   TEAM_COUNT                NUMBER,
-  CURRENCY_CODE             VARCHAR
+  CURRENCY_CODE             VARCHAR,
+  -- Compliance parameters. Defaults are the VERIFIED regulatory values, not
+  -- guesses, and they are configuration because the regime differs by
+  -- jurisdiction and by fleet:
+  --
+  --   DOT_ONDUTY_LIMIT_7D / _8D - 49 CFR 395.3(b): a driver may not drive after
+  --     60 hours on duty in 7 consecutive days (carrier not operating every day)
+  --     or 70 in 8 (operating every day). This is an HOURS-OF-SERVICE ceiling,
+  --     NOT a pay threshold, and it is almost certainly what an operations
+  --     director means by "60 hours".
+  --
+  --   DS_MAX_DRIVE_SHARE / DS_RADIUS_MILES - 49 CFR 395.2 defines a
+  --     "driver-salesperson" as one who sells AND delivers, operates entirely
+  --     within a 100-mile radius of the reporting point, and devotes NOT MORE
+  --     THAN 50 PERCENT of on-duty hours to driving. Both are status-determining:
+  --     drift above either and the exemption in 395.1(c) is lost.
+  --
+  --   GVWR_OT_THRESHOLD_TONNES - the FLSA small-vehicle exception boundary.
+  --     10,000 lb = 4.536 tonnes. Under the 13(b)(1) motor carrier exemption
+  --     (DOL Fact Sheet #19) drivers for a motor private carrier are exempt from
+  --     FLSA overtime, EXCEPT in a workweek where they work on a vehicle at or
+  --     below this weight - and then the whole workweek is covered even if
+  --     heavier vehicles were also driven.
+  DOT_ONDUTY_LIMIT_7D       FLOAT,
+  DOT_ONDUTY_LIMIT_8D       FLOAT,
+  DS_MAX_DRIVE_SHARE        FLOAT,
+  DS_RADIUS_MILES           FLOAT,
+  GVWR_OT_THRESHOLD_TONNES  FLOAT
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- The table is created IF NOT EXISTS, so on an account that already has it the
+-- compliance columns above are absent. Add them idempotently. A bare
+-- ADD COLUMN IF NOT EXISTS + DEFAULT trips Snowflake bug 002028 ("ambiguous
+-- column name") when the column already exists, so this uses the same temporary
+-- procedure exception-guard as scoped_contract.sql's _ADD_TRIP_KIND_IF_MISSING.
+--
+-- Safe with respect to the SELECT * wrapper hazard: nothing wraps LABOR_CONFIG
+-- (the wrapper views cover the FUNCTIONS, not this table), so widening it cannot
+-- invalidate a frozen view column list.
+CREATE OR REPLACE PROCEDURE FLEET_APP.LABOR._ADD_COMPLIANCE_COLS_IF_MISSING()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+  ALTER TABLE FLEET_APP.LABOR.LABOR_CONFIG ADD COLUMN
+    DOT_ONDUTY_LIMIT_7D FLOAT,
+    DOT_ONDUTY_LIMIT_8D FLOAT,
+    DS_MAX_DRIVE_SHARE FLOAT,
+    DS_RADIUS_MILES FLOAT,
+    GVWR_OT_THRESHOLD_TONNES FLOAT;
+  RETURN 'added';
+EXCEPTION
+  WHEN OTHER THEN RETURN 'already present';
+END;
+$$;
+CALL FLEET_APP.LABOR._ADD_COMPLIANCE_COLS_IF_MISSING();
+DROP PROCEDURE IF EXISTS FLEET_APP.LABOR._ADD_COMPLIANCE_COLS_IF_MISSING();
 
 -- Idempotent seed of the global default row only. Per-region overrides are
 -- operator-owned and are never touched by a redeploy.
@@ -111,9 +169,12 @@ DELETE FROM FLEET_APP.LABOR.LABOR_CONFIG WHERE REGION = '*' AND VEHICLE_TYPE = '
 INSERT INTO FLEET_APP.LABOR.LABOR_CONFIG
   (REGION, VEHICLE_TYPE, DUTY_GAP_MINUTES, OT_THRESHOLD_1, OT_THRESHOLD_2, OT_THRESHOLD_3,
    OT_MULTIPLIER, WEEK_START_DOW, CONTRACTED_HOURS_PER_WEEK, HOURLY_RATE_MIN, HOURLY_RATE_MAX,
-   TEAM_COUNT, CURRENCY_CODE)
+   TEAM_COUNT, CURRENCY_CODE,
+   DOT_ONDUTY_LIMIT_7D, DOT_ONDUTY_LIMIT_8D, DS_MAX_DRIVE_SHARE, DS_RADIUS_MILES,
+   GVWR_OT_THRESHOLD_TONNES)
 VALUES
-  ('*', '*', 240, 40, 50, 60, 1.5, 7, 40, 22.0, 34.0, 8, 'USD');
+  ('*', '*', 240, 40, 50, 60, 1.5, 7, 40, 22.0, 34.0, 8, 'USD',
+   60, 70, 0.50, 100, 4.536);
 
 -- ---------------------------------------------------------------------------
 -- F_DIM_LABOR_OPERATOR_SCOPED - the driver, with the commercial attributes the
@@ -327,10 +388,50 @@ RETURNS TABLE (
   HOURS_TO_DATE FLOAT, DAYS_WORKED NUMBER, DAYS_ELAPSED NUMBER, DAYS_REMAINING NUMBER,
   IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
   CONTRACTED_HOURS_PER_WEEK FLOAT, STRAIGHT_HOURS FLOAT, OT_HOURS FLOAT,
-  PROJECTED_OT_HOURS FLOAT, HOURLY_RATE FLOAT, EST_OT_COST FLOAT, CURRENCY_CODE VARCHAR,
+  PROJECTED_OT_HOURS FLOAT, HOURLY_RATE FLOAT, EST_OT_COST FLOAT,
+  -- The AVOIDABLE portion. EST_OT_COST is the FULLY LOADED cost of the overtime
+  -- hours (hours x rate x multiplier); only the premium above straight time is
+  -- incremental, because the straight-time portion would be paid to somebody
+  -- regardless. Presenting the loaded figure as "cost of overtime" overstates
+  -- the savings opportunity by 3x at a 1.5x multiplier, which is a documented
+  -- and common error in labour dashboards.
+  EST_OT_PREMIUM FLOAT,
+  CURRENCY_CODE VARCHAR,
+  -- OT rate with the denominator NAMED. Three variants are in circulation and
+  -- they are not interchangeable, so an unlabelled "OT %" tile will be misread.
+  OT_PCT_OF_PAID FLOAT, OT_PCT_OF_STRAIGHT FLOAT,
+  -- Per-operator-week FTE contribution (paid hours / contracted). Sums to fleet
+  -- FTE, so a rising FTE against flat headcount is the structural understaffing
+  -- signal rather than a scheduling one.
+  FTE_EQUIVALENT FLOAT,
   OT_BAND VARCHAR, OT_THRESHOLD_1 FLOAT, OT_THRESHOLD_2 FLOAT, OT_THRESHOLD_3 FLOAT,
   DRIVE_HOURS FLOAT, DRIVE_SHARE_OF_PAID FLOAT, TRIPS NUMBER, DISTANCE_KM FLOAT,
   KM_PER_PAID_HOUR FLOAT, STOPS_PER_PAID_HOUR FLOAT,
+  -- ---------------------------------------------------------------------------
+  -- Compliance layer. Which regime actually binds this operator this week.
+  -- ---------------------------------------------------------------------------
+  -- FLSA overtime eligibility is NOT a static employee attribute. Under the
+  -- 13(b)(1) motor carrier exemption a driver for a motor private carrier (which
+  -- a bottler distributing its own product is) is exempt from FLSA overtime
+  -- entirely - EXCEPT in a workweek where they work on a vehicle of 10,000 lb or
+  -- less, and then the whole workweek is covered even if heavier vehicles were
+  -- also driven that week. So eligibility is a function of
+  -- (operator, workweek, lightest vehicle operated).
+  OT_ELIGIBLE_FLSA BOOLEAN, MIN_VEHICLE_TONNES FLOAT,
+  -- DOT on-duty hours are a DIFFERENT CLOCK from payroll hours: 49 CFR 395.2
+  -- on-duty time includes waiting to be dispatched, inspection, and loading.
+  -- Kept in its own columns and deliberately never merged into a paid-hours
+  -- tile, because mixing the two gives false compliance comfort. The window is
+  -- a rolling 7 consecutive days, not the payroll week.
+  DOT_ONDUTY_7D_HOURS FLOAT, DOT_ONDUTY_LIMIT FLOAT, DOT_ONDUTY_PCT FLOAT,
+  -- Driver-salesperson status (49 CFR 395.2): sells and delivers, operates
+  -- entirely within a radius of the reporting point, and devotes not more than
+  -- 50 percent of on-duty hours to driving. Losing either test forfeits the
+  -- 395.1(c) exemption from the 60/70-hour rule.
+  MAX_RADIUS_MILES FLOAT, DRIVER_SALESPERSON_OK BOOLEAN,
+  -- The single readable answer to "what limits this person": FLSA_40, POLICY_50,
+  -- DOT_ONDUTY, DS_DRIVE_PCT, DS_RADIUS, or NONE.
+  BINDING_CONSTRAINT VARCHAR,
   REGION VARCHAR, REGION_LABEL VARCHAR, VEHICLE_TYPE VARCHAR
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -351,7 +452,9 @@ $$
     SELECT ANY_VALUE(REGION) AS RG, ANY_VALUE(VEHICLE_TYPE) AS VT FROM duty
   ),
   cfg AS (
-    SELECT c.OT_THRESHOLD_1, c.OT_THRESHOLD_2, c.OT_THRESHOLD_3, c.WEEK_START_DOW
+    SELECT c.OT_THRESHOLD_1, c.OT_THRESHOLD_2, c.OT_THRESHOLD_3, c.WEEK_START_DOW,
+           c.DOT_ONDUTY_LIMIT_7D, c.DS_MAX_DRIVE_SHARE, c.DS_RADIUS_MILES,
+           c.GVWR_OT_THRESHOLD_TONNES
     FROM FLEET_APP.LABOR.LABOR_CONFIG c, scope s
     WHERE (c.REGION = s.RG OR c.REGION = '*')
       AND (c.VEHICLE_TYPE = s.VT OR c.VEHICLE_TYPE = '*')
@@ -365,6 +468,10 @@ $$
       COALESCE((SELECT OT_THRESHOLD_2 FROM cfg), 50) AS T2,
       COALESCE((SELECT OT_THRESHOLD_3 FROM cfg), 60) AS T3,
       COALESCE((SELECT WEEK_START_DOW FROM cfg), 7)  AS DOW,
+      COALESCE((SELECT DOT_ONDUTY_LIMIT_7D FROM cfg), 60)      AS DOT_LIMIT,
+      COALESCE((SELECT DS_MAX_DRIVE_SHARE FROM cfg), 0.50)     AS DS_DRIVE_MAX,
+      COALESCE((SELECT DS_RADIUS_MILES FROM cfg), 100)         AS DS_RADIUS,
+      COALESCE((SELECT GVWR_OT_THRESHOLD_TONNES FROM cfg), 4.536) AS GVWR_T,
       (SELECT MAX(DUTY_END) FROM duty)               AS AS_OF_TS,
       (SELECT MIN(DUTY_START) FROM duty)             AS FIRST_TS
   ),
@@ -461,6 +568,70 @@ $$
                      DIV0(c.HOURS_TO_DATE, c.DAYS_ELAPSED_C) * 7,
                      c.HOURS_TO_DATE), 2) AS PROJ_HOURS
     FROM calc c
+  ),
+  -- ==========================================================================
+  -- Compliance layer
+  -- ==========================================================================
+  -- Vehicle weight per operator. The FLSA small-vehicle exception turns on the
+  -- LIGHTEST vehicle worked in the week: if any vehicle is at or under the
+  -- threshold, overtime applies to the WHOLE workweek even though heavier
+  -- vehicles were also driven. So MIN, never MAX or AVG.
+  veh AS (
+    SELECT t.DRIVER_ID AS OPERATOR_ID,
+           MIN(f.WEIGHT_TONS) AS MIN_TONNES
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID)) t
+    JOIN (
+      SELECT VEHICLE_ID, WEIGHT_TONS,
+             ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+      FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
+    ) f ON f.VEHICLE_ID = t.VEHICLE_ID AND f.RN = 1
+    GROUP BY t.DRIVER_ID
+  ),
+  -- Furthest trip destination from the operator's reporting point, in air miles.
+  -- The driver-salesperson definition and the short-haul exception are both
+  -- RADIUS tests from the reporting location, not route-distance tests, so this
+  -- is a straight-line ST_DISTANCE and deliberately not a road distance.
+  home AS (
+    SELECT f.VEHICLE_ID, p.POINT_GEOM AS HOME_GEOG
+    FROM (
+      SELECT VEHICLE_ID, HOME_LOCATION_ID,
+             ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+      FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
+    ) f
+    JOIN TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_POIS_SCOPED(P_REGION, P_DATASET_ID)) p
+      ON p.LOCATION_ID = f.HOME_LOCATION_ID
+    WHERE f.RN = 1
+  ),
+  radius AS (
+    SELECT t.DRIVER_ID AS OPERATOR_ID,
+           MAX(ST_DISTANCE(h.HOME_GEOG, t.DESTINATION) / 1609.34) AS MAX_MILES
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID)) t
+    JOIN home h ON h.VEHICLE_ID = t.VEHICLE_ID
+    WHERE t.DESTINATION IS NOT NULL
+    GROUP BY t.DRIVER_ID
+  ),
+  -- Rolling 7-CONSECUTIVE-DAY on-duty total, which is the DOT window and is NOT
+  -- the payroll week. Reported per payroll week as the PEAK exposure whose window
+  -- ends inside that week, since that is the number that would have triggered a
+  -- violation.
+  duty_day AS (
+    SELECT OPERATOR_ID, DUTY_START::DATE AS D, SUM(PAID_HOURS) AS H
+    FROM duty GROUP BY OPERATOR_ID, DUTY_START::DATE
+  ),
+  duty_roll AS (
+    SELECT OPERATOR_ID, D,
+           SUM(H) OVER (
+             PARTITION BY OPERATOR_ID ORDER BY D
+             RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW
+           ) AS ONDUTY_7D
+    FROM duty_day
+  ),
+  dot AS (
+    SELECT r.OPERATOR_ID,
+           DATEADD('day', -MOD(DAYOFWEEKISO(r.D) - p.DOW + 7, 7), r.D) AS WEEK_START,
+           MAX(r.ONDUTY_7D) AS ONDUTY_7D_PEAK
+    FROM duty_roll r, params p
+    GROUP BY 1, 2
   )
   SELECT
     p.OPERATOR_ID,
@@ -484,7 +655,14 @@ $$
     ROUND(GREATEST(0, p.PROJ_HOURS - p.T1), 2)::FLOAT  AS PROJECTED_OT_HOURS,
     o.HOURLY_RATE,
     ROUND(GREATEST(0, p.PROJ_HOURS - p.T1) * o.HOURLY_RATE * o.OT_MULTIPLIER, 2)::FLOAT AS EST_OT_COST,
+    -- Only the premium ABOVE straight time is avoidable: (multiplier - 1), so
+    -- 0.5x at a 1.5x rate, not 1.5x. Costing the full loaded rate as "the cost of
+    -- overtime" overstates the savings opportunity by 3x.
+    ROUND(GREATEST(0, p.PROJ_HOURS - p.T1) * o.HOURLY_RATE * GREATEST(0, o.OT_MULTIPLIER - 1), 2)::FLOAT AS EST_OT_PREMIUM,
     o.CURRENCY_CODE,
+    ROUND(DIV0(GREATEST(0, p.HOURS_TO_DATE - p.T1), p.HOURS_TO_DATE), 4)::FLOAT    AS OT_PCT_OF_PAID,
+    ROUND(DIV0(GREATEST(0, p.HOURS_TO_DATE - p.T1), LEAST(p.HOURS_TO_DATE, p.T1)), 4)::FLOAT AS OT_PCT_OF_STRAIGHT,
+    ROUND(DIV0(p.HOURS_TO_DATE, NULLIF(o.CONTRACTED_HOURS_PER_WEEK, 0)), 4)::FLOAT AS FTE_EQUIVALENT,
     -- Bands are named for their meaning, not for a threshold value, because the
     -- thresholds are jurisdiction-specific configuration.
     CASE
@@ -500,12 +678,70 @@ $$
     ROUND(COALESCE(tw.DISTANCE_KM, 0), 2)::FLOAT       AS DISTANCE_KM,
     ROUND(DIV0(COALESCE(tw.DISTANCE_KM, 0), p.HOURS_TO_DATE), 2)::FLOAT AS KM_PER_PAID_HOUR,
     ROUND(DIV0(COALESCE(tw.TRIPS, 0), p.HOURS_TO_DATE), 2)::FLOAT       AS STOPS_PER_PAID_HOUR,
+    -- Compliance -------------------------------------------------------------
+    -- The GVWR threshold splits the population into two mutually exclusive
+    -- regimes, and almost everything else follows from which side you are on:
+    --
+    --   LIGHT vehicle (at or under the threshold) - not a commercial motor
+    --     vehicle for these purposes. The FLSA small-vehicle exception applies,
+    --     so overtime IS owed. DOT hours-of-service and driver-salesperson
+    --     status are NOT APPLICABLE and are returned as NULL rather than as a
+    --     number, because a computed value here would be pure noise: an e-bike
+    --     courier drives ~94% of paid time, which "fails" a 50% driving test
+    --     that was never written for them.
+    --
+    --   CMV (above the threshold) - the FLSA 13(b)(1) motor carrier exemption
+    --     applies, so FLSA overtime may not be owed at all, and the binding
+    --     limit becomes the DOT on-duty ceiling plus driver-salesperson status.
+    --
+    -- Failing OPEN on a NULL weight (treating it as light, therefore OT-eligible)
+    -- is the safe direction: a missing GVWR must never silently suppress an
+    -- overtime obligation.
+    COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE)          AS OT_ELIGIBLE_FLSA,
+    ROUND(v.MIN_TONNES, 3)::FLOAT                      AS MIN_VEHICLE_TONNES,
+    IFF(COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE), NULL,
+        ROUND(COALESCE(dt.ONDUTY_7D_PEAK, 0), 2))::FLOAT AS DOT_ONDUTY_7D_HOURS,
+    IFF(COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE), NULL, pp.DOT_LIMIT)::FLOAT AS DOT_ONDUTY_LIMIT,
+    IFF(COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE), NULL,
+        ROUND(DIV0(COALESCE(dt.ONDUTY_7D_PEAK, 0), pp.DOT_LIMIT), 4))::FLOAT AS DOT_ONDUTY_PCT,
+    ROUND(rd.MAX_MILES, 1)::FLOAT                      AS MAX_RADIUS_MILES,
+    -- NULL for a light vehicle (not applicable). For a CMV both tests must hold;
+    -- a NULL radius (no routable destinations) fails open on that leg so a data
+    -- gap does not read as a compliance breach.
+    IFF(COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE), NULL,
+        (LEAST(1.0, DIV0(p.DRIVE_HOURS, p.HOURS_TO_DATE)) <= pp.DS_DRIVE_MAX
+         AND COALESCE(rd.MAX_MILES <= pp.DS_RADIUS, TRUE))) AS DRIVER_SALESPERSON_OK,
+    -- Which limit actually binds, evaluated within the applicable regime only.
+    -- For a CMV, ordered by severity of consequence: an hours-of-service breach
+    -- grounds the driver, and losing driver-salesperson status changes which HOS
+    -- regime applies at all. For a light vehicle it is a pay question.
+    CASE
+      WHEN NOT COALESCE(v.MIN_TONNES <= pp.GVWR_T, TRUE) THEN
+        CASE
+          WHEN COALESCE(dt.ONDUTY_7D_PEAK, 0) >= pp.DOT_LIMIT                    THEN 'DOT_ONDUTY'
+          WHEN LEAST(1.0, DIV0(p.DRIVE_HOURS, p.HOURS_TO_DATE)) > pp.DS_DRIVE_MAX THEN 'DS_DRIVE_PCT'
+          WHEN COALESCE(rd.MAX_MILES, 0) > pp.DS_RADIUS                          THEN 'DS_RADIUS'
+          ELSE 'NONE'
+        END
+      WHEN p.PROJ_HOURS >= pp.DOT_LIMIT                                          THEN 'POLICY_60'
+      WHEN p.PROJ_HOURS >= p.T2                                                  THEN 'POLICY_50'
+      WHEN p.PROJ_HOURS >= p.T1                                                  THEN 'FLSA_40'
+      ELSE 'NONE'
+    END                                                AS BINDING_CONSTRAINT,
     p.REGION,
     p.REGION_LABEL,
     p.VEHICLE_TYPE
+  -- CROSS JOIN, not a comma join. A comma has LOWER precedence than an explicit
+  -- JOIN, so `FROM proj p, params pp LEFT JOIN ops o ON o.X = p.X` parses as
+  -- `proj p, (params pp LEFT JOIN ops o ...)` and `p` is not in scope inside that
+  -- ON clause - it fails with a bare "invalid identifier 'P.OPERATOR_ID'".
   FROM proj p
-  LEFT JOIN ops o     ON o.OPERATOR_ID = p.OPERATOR_ID
+  CROSS JOIN params pp
+  LEFT JOIN ops o      ON o.OPERATOR_ID = p.OPERATOR_ID
   LEFT JOIN trip_wk tw ON tw.OPERATOR_ID = p.OPERATOR_ID AND tw.WEEK_START = p.WEEK_START
+  LEFT JOIN veh v      ON v.OPERATOR_ID = p.OPERATOR_ID
+  LEFT JOIN radius rd  ON rd.OPERATOR_ID = p.OPERATOR_ID
+  LEFT JOIN dot dt     ON dt.OPERATOR_ID = p.OPERATOR_ID AND dt.WEEK_START = p.WEEK_START
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -555,10 +791,14 @@ CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_LABOR_WEEK
        SHIFT_TYPE, DRIVER_PROFILE, HOURS_TO_DATE, DAYS_WORKED, DAYS_ELAPSED,
        DAYS_REMAINING, IS_CURRENT_WEEK, IS_PARTIAL_START, PROJECTED_WEEK_HOURS,
        CONTRACTED_HOURS_PER_WEEK, STRAIGHT_HOURS, OT_HOURS, PROJECTED_OT_HOURS,
-       HOURLY_RATE, EST_OT_COST, CURRENCY_CODE, OT_BAND,
+       HOURLY_RATE, EST_OT_COST, EST_OT_PREMIUM, CURRENCY_CODE,
+       OT_PCT_OF_PAID, OT_PCT_OF_STRAIGHT, FTE_EQUIVALENT, OT_BAND,
        OT_THRESHOLD_1, OT_THRESHOLD_2, OT_THRESHOLD_3,
        DRIVE_HOURS, DRIVE_SHARE_OF_PAID, TRIPS, DISTANCE_KM,
        KM_PER_PAID_HOUR, STOPS_PER_PAID_HOUR,
+       OT_ELIGIBLE_FLSA, MIN_VEHICLE_TONNES,
+       DOT_ONDUTY_7D_HOURS, DOT_ONDUTY_LIMIT, DOT_ONDUTY_PCT,
+       MAX_RADIUS_MILES, DRIVER_SALESPERSON_OK, BINDING_CONSTRAINT,
        REGION, REGION_LABEL, VEHICLE_TYPE
      FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
 
