@@ -496,6 +496,17 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
     }
   }, []);
 
+  // Every layer has reported and none produced a feature. Worth saying out loud:
+  // an empty map raises no error and still renders a basemap, so a filter that
+  // matched nothing looks exactly like a broken view. Keyed on `counts` having an
+  // entry per spec, which is what distinguishes "loaded and empty" from "still
+  // loading" (a gated layer reports 0 too, which is correct - it draws nothing).
+  const isEmpty = useMemo(() => {
+    if (!specs.length) return false;
+    if (Object.keys(counts).length < specs.length) return false;
+    return specs.every((_, i) => (counts[i] ?? 0) === 0);
+  }, [specs, counts]);
+
   const orderedLayers = useMemo<Layer[]>(
     () => specs.map((_, i) => layers[i]).filter((l): l is Layer => !!l),
     [specs, layers],
@@ -712,6 +723,21 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
       {suspendedInfo ? (
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5 }}>
           <RoutingSuspendedNotice info={suspendedInfo} onRetry={retryAllLayers} />
+        </div>
+      ) : null}
+      {!suspendedInfo && isEmpty ? (
+        <div
+          style={{
+            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 4, maxWidth: '360px', textAlign: 'center', padding: '10px 14px',
+            borderRadius: '8px', fontSize: '13px', lineHeight: 1.45,
+            backgroundColor: 'var(--surface-primary, #fff)',
+            border: '1px solid var(--border-default, #e5e7eb)',
+            color: 'var(--text-secondary, #6b7280)',
+            pointerEvents: 'none',
+          }}
+        >
+          {config.emptyMessage ?? 'No features match the current selection.'}
         </div>
       ) : null}
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}

@@ -228,4 +228,9 @@ export interface MapAreaConfig {
    *  Typically written by a table row click, so a user gesture can move the
    *  camera even on a `lockCamera` map. */
   focusOn?: { lngKey: string; latKey: string; zoom?: number };
+  /** Overlay text shown when every layer has reported and none produced a
+   *  feature. Without it an empty result is indistinguishable from a broken
+   *  map: the basemap renders, no error is raised, and nothing says why the
+   *  map is blank. Defaults to a generic message. */
+  emptyMessage?: string;
 }
