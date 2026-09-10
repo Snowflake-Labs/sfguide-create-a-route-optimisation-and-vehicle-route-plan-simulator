@@ -695,7 +695,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORES (
   LON         FLOAT,
   LAT         FLOAT,
   GEOG        GEOGRAPHY,
-  STORE_ROLE  VARCHAR             -- OWNED | CANDIDATE
+  STORE_ROLE  VARCHAR             -- OWNED | CANDIDATE | COMPETITOR
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Drive-time bands (minutes) offered in the app band picker. Isochrones for these
@@ -734,8 +734,54 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.STORE_FACTS (
   RENT_PSF         NUMBER(10,2),  -- synthetic rent per sqft
   ANNUAL_RENT      NUMBER(18,2),  -- synthetic = SQFT * RENT_PSF
   RATES_PSF        NUMBER(10,2),  -- synthetic business rates per sqft
-  VALUE_PER_COST   NUMBER(12,3)   -- ANNUAL_REVENUE / ANNUAL_RENT
+  VALUE_PER_COST   NUMBER(12,3),  -- ANNUAL_REVENUE / ANNUAL_RENT
+  ATTRACTIVENESS   NUMBER(10,3)   -- SQFT / region mean SQFT; the Huff pull factor
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- ATTRACTIVENESS was added after the table shipped, so the CREATE TABLE IF NOT
+-- EXISTS above is a no-op on any existing deployment and the column has to be
+-- added explicitly. The FLEET_APP.LOCATION.VW_STORE_FACTS contract wrapper is a
+-- SELECT * view, which freezes its column list at creation time: adding a column
+-- without recreating the wrapper makes EVERY read of it fail with "view declared
+-- N column(s), but view query produces M column(s)". The CREATE OR REPLACE of
+-- that wrapper lives later in THIS file, so ordering already covers it - but do
+-- not move either statement into a separate script.
+ALTER TABLE IF EXISTS FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+  ADD COLUMN IF NOT EXISTS ATTRACTIVENESS NUMBER(10,3);
+
+-- Anchor grid for the live drive-time matrix. HH_CELLS is H3 res 8, which is far too
+-- many sources to price against every store in one ORS matrix call (ORS refuses a
+-- matrix above 2500 pairs). Rolling up one level to res 7 collapses the SanFrancisco
+-- grid from 423 cells to 87 anchors, so 87 x 25 stores = 2175 pairs fits in a SINGLE
+-- call while keeping the anchors ~3 km apart - finer than the drive-time bands the
+-- app offers, so the loss of precision is well below the resolution of the question.
+--
+-- The centroid is HOUSEHOLD-WEIGHTED, not the geometric centre of the parent cell:
+-- a res-7 anchor routinely spans both a dense core and empty land, and using the
+-- geometric centre would measure the drive time to a field nobody lives in. Weighting
+-- puts the anchor where the households actually are.
+--
+-- NO ORS here (Architecture Tenet 9 is about not caching ORS OUTPUT; this is the
+-- non-ORS input geometry the live matrix call is made against).
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.LOCATION.VW_ANCHOR_CELLS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT REGION,
+       H3_CELL_TO_PARENT(H3, 7) AS ANCHOR_H3,
+       SUM(HH) AS HH,
+       ST_MAKEPOINT(SUM(ST_X(CENTROID) * HH) / NULLIF(SUM(HH), 0),
+                    SUM(ST_Y(CENTROID) * HH) / NULLIF(SUM(HH), 0)) AS CENTROID
+FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS
+WHERE HH > 0
+GROUP BY REGION, H3_CELL_TO_PARENT(H3, 7);
+
+-- Child-cell to anchor map, so a Huff share priced at anchor resolution can be pushed
+-- back down to the res-8 cells the map layer renders.
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.LOCATION.VW_CELL_ANCHOR
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT REGION, H3, HH, CENTROID, H3_CELL_TO_PARENT(H3, 7) AS ANCHOR_H3
+FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS;
 
 -- ZIP/postcode areas: REAL postcode polygons + REAL demographics (US demo only).
 -- Reference data (NO ORS): polygons come from the free SFR "U.S. ZIP Code Metadata
@@ -775,6 +821,17 @@ BEGIN
   END IF;
 
   -- 1. Store estate: deterministic subset of the region most-spread retail category.
+  --    THREE roles, all drawn from the same one-per-H3-res-6-cell spread so they are
+  --    spatially comparable: OWNED (our estate today), CANDIDATE (proposed sites),
+  --    COMPETITOR (third-party stores competing for the same households).
+  --    COMPETITOR exists because without it 100% of a candidate's demand is by
+  --    construction cannibalised from ourselves, so "net new revenue" - the number a
+  --    site decision actually turns on - is not computable.
+  --    The 25 cap is NOT cosmetic: every store is a DESTINATION in the live
+  --    drive-time matrix, and the routing gateway caps a matrix at 1500 locations
+  --    (ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS in routing-gateway-service.yaml). Each
+  --    extra store therefore costs an anchor cell - i.e. spatial resolution - so
+  --    raising this coarsens Site Impact rather than enriching it.
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = :rg;
   INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
     (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
@@ -800,8 +857,10 @@ BEGIN
   SELECT :rg,
          'ST' || LPAD(gidx::VARCHAR, 4, '0'),
          POI_ID, POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY,
-         CASE WHEN gidx <= 10 THEN 'OWNED' ELSE 'CANDIDATE' END
-  FROM spread WHERE gidx <= 13;
+         CASE WHEN gidx <= 10 THEN 'OWNED'
+              WHEN gidx <= 13 THEN 'CANDIDATE'
+              ELSE 'COMPETITOR' END
+  FROM spread WHERE gidx <= 25;
 
   -- 2. Drive-time band list offered by the app picker (isochrones computed LIVE).
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.BANDS;
@@ -818,37 +877,68 @@ BEGIN
   WHERE REGION = :rg AND GEOMETRY IS NOT NULL
   GROUP BY 1, 2;
 
-  -- 4. Synthetic store facts. REFERENCE_HH = the store's nearest-store Voronoi
-  --    territory over HH_CELLS (OWNED stores partition the region; CANDIDATE sites
-  --    get a radius-based base purely for a plausible synthetic revenue). Data-only,
-  --    no ORS. The live cannibalisation view uses the SAME owned-Voronoi partition,
-  --    so captured households are always a subset of REFERENCE_HH (transfer_pct <= 1).
+  -- 4. Synthetic store facts. Data-only, no ORS.
+  --
+  --    REFERENCE_HH is measured on ONE basis per role, and the two bases are stated
+  --    here because they are NOT the same quantity:
+  --      OWNED       - the store's territory in a nearest-store tessellation of the
+  --                    OWNED estate only. These sum to the region's households.
+  --      CANDIDATE   - its CONTESTABLE BASE: households that are closer to it than
+  --      COMPETITOR    to any owned store, i.e. what it would take from the owned
+  --                    estate if it opened. These deliberately do NOT sum to the
+  --                    region and overlap each other.
+  --    Previously CANDIDATE used a flat 8 km straight-line radius, which is a third,
+  --    incomparable measure - so a candidate's synthetic revenue could not be read
+  --    against an owned store's at all. Both are now the same nearest-store logic.
+  --
+  --    ATTRACTIVENESS is the Huff pull factor: SQFT relative to the region mean. SQFT
+  --    was already drawn here but fed only rent, so store size had NO effect on which
+  --    households a store attracted - a 9,000 sqft store pulled exactly like a 3,000
+  --    sqft one. LIVE_HUFF_ALLOCATION now divides it by drive time.
+  --
+  --    COMPETITOR rows carry geometry, SQFT, rent and attractiveness but NULL revenue,
+  --    EBITDA and interaction mix: we model where competitors pull demand from, and we
+  --    do not invent a third party's P&L. Anything summing revenue must therefore be
+  --    NULL-safe or role-filtered.
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = :rg;
   INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
     (REGION, STORE_ID, POI_NAME, CATEGORY, STORE_ROLE, LON, LAT, REFERENCE_HH,
      AVG_SPEND_PER_HH, ANNUAL_REVENUE, EBITDA_PCT, ANNUAL_EBITDA,
      HV_PCT, SAMPLE_PCT, WALKIN_PCT, HV_REVENUE, SAMPLE_REVENUE, WALKIN_REVENUE,
-     SQFT, RENT_PSF, ANNUAL_RENT, RATES_PSF, VALUE_PER_COST)
-  WITH owned_terr AS (
+     SQFT, RENT_PSF, ANNUAL_RENT, RATES_PSF, VALUE_PER_COST, ATTRACTIVENESS)
+  WITH owned AS (
+    SELECT STORE_ID, GEOG FROM FLEET_INTELLIGENCE.LOCATION.STORES
+    WHERE REGION = :rg AND STORE_ROLE = 'OWNED'
+  ),
+  owned_terr AS (
     SELECT STORE_ID, SUM(HH) AS REF_HH FROM (
       SELECT c.H3, c.HH, s.STORE_ID,
              ROW_NUMBER() OVER (PARTITION BY c.H3 ORDER BY ST_DISTANCE(c.CENTROID, s.GEOG)) AS rn
       FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
-      CROSS JOIN (SELECT STORE_ID, GEOG FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = :rg AND STORE_ROLE = 'OWNED') s
+      CROSS JOIN owned s
       WHERE c.REGION = :rg
     ) WHERE rn = 1 GROUP BY STORE_ID
   ),
-  cand_radius AS (
-    SELECT s.STORE_ID, SUM(c.HH) AS REF_HH
+  -- Distance from each household cell to the CLOSEST owned store: the incumbent
+  -- benchmark a non-owned site has to beat to contest that cell.
+  cell_own AS (
+    SELECT c.H3, ANY_VALUE(c.HH) AS HH, ANY_VALUE(c.CENTROID) AS CENTROID,
+           MIN(ST_DISTANCE(c.CENTROID, s.GEOG)) AS d_own
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+    CROSS JOIN owned s
+    WHERE c.REGION = :rg
+    GROUP BY c.H3
+  ),
+  contest_terr AS (
+    SELECT s.STORE_ID, SUM(co.HH) AS REF_HH
     FROM FLEET_INTELLIGENCE.LOCATION.STORES s
-    JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
-      ON c.REGION = :rg AND ST_DWITHIN(c.CENTROID, s.GEOG, 8000)
-    WHERE s.REGION = :rg AND s.STORE_ROLE = 'CANDIDATE'
+    JOIN cell_own co ON ST_DISTANCE(co.CENTROID, s.GEOG) < co.d_own
+    WHERE s.REGION = :rg AND s.STORE_ROLE IN ('CANDIDATE', 'COMPETITOR')
     GROUP BY s.STORE_ID
   ),
   refhh AS (
     SELECT STORE_ID, REF_HH FROM owned_terr
-    UNION ALL SELECT STORE_ID, REF_HH FROM cand_radius
+    UNION ALL SELECT STORE_ID, REF_HH FROM contest_terr
   ),
   base AS (
     SELECT s.STORE_ID, s.POI_NAME, s.CATEGORY, s.STORE_ROLE, s.LON, s.LAT,
@@ -862,20 +952,30 @@ BEGIN
     FROM FLEET_INTELLIGENCE.LOCATION.STORES s
     LEFT JOIN refhh r ON r.STORE_ID = s.STORE_ID
     WHERE s.REGION = :rg
+  ),
+  attr AS (
+    SELECT *, SQFT / NULLIF(AVG(SQFT) OVER (), 0) AS ATTR FROM base
+  ),
+  comp AS (
+    SELECT *, IFF(STORE_ROLE = 'COMPETITOR', TRUE, FALSE) AS is_comp FROM attr
   )
   SELECT :rg, STORE_ID, POI_NAME, CATEGORY, STORE_ROLE, LON, LAT, REFHH,
-         SPEND,
-         REFHH * SPEND                                  AS REVENUE,
-         EBIT,
-         REFHH * SPEND * EBIT                           AS EBITDA,
-         HV, SAMP, (1 - HV - SAMP)                      AS WALKIN,
-         REFHH * SPEND * HV                             AS HV_REV,
-         REFHH * SPEND * SAMP                           AS SAMPLE_REV,
-         REFHH * SPEND * (1 - HV - SAMP)                AS WALKIN_REV,
-         SQFT, RENT, SQFT * RENT                        AS ANNUAL_RENT,
-         RENT * 0.45                                    AS RATES,
-         CASE WHEN SQFT * RENT > 0 THEN (REFHH * SPEND) / (SQFT * RENT) ELSE 0 END AS VALUE_PER_COST
-  FROM base;
+         IFF(is_comp, NULL, SPEND)                                   AS SPEND,
+         IFF(is_comp, NULL, REFHH * SPEND)                           AS REVENUE,
+         IFF(is_comp, NULL, EBIT)                                    AS EBITDA_PCT,
+         IFF(is_comp, NULL, REFHH * SPEND * EBIT)                    AS EBITDA,
+         IFF(is_comp, NULL, HV)                                      AS HV_PCT,
+         IFF(is_comp, NULL, SAMP)                                    AS SAMPLE_PCT,
+         IFF(is_comp, NULL, 1 - HV - SAMP)                           AS WALKIN_PCT,
+         IFF(is_comp, NULL, REFHH * SPEND * HV)                      AS HV_REV,
+         IFF(is_comp, NULL, REFHH * SPEND * SAMP)                    AS SAMPLE_REV,
+         IFF(is_comp, NULL, REFHH * SPEND * (1 - HV - SAMP))         AS WALKIN_REV,
+         SQFT, RENT, SQFT * RENT                                     AS ANNUAL_RENT,
+         RENT * 0.45                                                 AS RATES,
+         IFF(is_comp OR SQFT * RENT = 0, NULL,
+             (REFHH * SPEND) / (SQFT * RENT))                        AS VALUE_PER_COST,
+         ROUND(ATTR, 3)                                              AS ATTRACTIVENESS
+  FROM comp;
 
   RETURN 'LOCATION built for ' || rg || ' (live-routing model; no precomputed isochrones)';
 END;
@@ -1140,6 +1240,9 @@ CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_BANDS
 CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_ZIP_AREAS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS;
+CREATE OR REPLACE VIEW FLEET_APP.LOCATION.VW_ANCHOR_CELLS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM FLEET_INTELLIGENCE.LOCATION.VW_ANCHOR_CELLS;
 
 -- [live-routing UDTFs moved -> analytic_layer_live_routing.sql]
 
