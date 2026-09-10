@@ -35,6 +35,201 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
 
 -- ---------------------------------------------------------------------------
+-- ROUTABLE_BOUNDARY: BOUNDARY clipped to land
+-- ---------------------------------------------------------------------------
+-- BOUNDARY is the PBF *extract* polygon (Geofabrik poly / BBBike bbox). An
+-- extract polygon is a download cut line, NOT a land outline, and Geofabrik's
+-- coastal cuts run well out to sea so the extract fully contains the coastline.
+-- Measured on this repo's own account: `UsTexas` BOUNDARY is 833,217 km2 while
+-- Texas is ~695,700 km2 of land - roughly 137,000 km2 of Gulf of Mexico inside
+-- a polygon every consumer treats as "the region".
+--
+-- That is not a cosmetic overshoot. Anything that tessellates BOUNDARY emits
+-- cells in open water, the routing graph has no data there, and ORS answers
+-- `6010 ... out of bounds`. The travel-time matrix build failed exactly this
+-- way: 526 of 2,897 RES5 cells (18.2%) sat offshore, and because
+-- BUILD_WORK_QUEUE chunks destinations by MOD(HASH(dest_h3), n) the water
+-- cells were spread across EVERY chunk. One out-of-bounds destination fails an
+-- entire ~1000-destination matrix call, so all 14,485 requests returned errors
+-- and the build produced zero rows - a total failure caused by an 18% defect.
+--
+-- ROUTABLE_BOUNDARY is BOUNDARY intersected with the union of the Overture
+-- DIVISION_AREA polygons that intersect it. Three properties matter:
+--   * It needs NO region-name lookup. The land mask is selected spatially, by
+--     what the boundary overlaps, so it works for any region on earth without
+--     a mapping table from region key to division name.
+--   * It keeps land in NEIGHBOURING divisions that legitimately falls inside
+--     the extract. Geofabrik cuts the PBF to this polygon, so a Louisiana
+--     sliver inside the Texas extract DOES have OSM data and is routable.
+--     Clipping to "Texas only" would wrongly discard it.
+--   * It uses admin polygons at `subtype = 'region'`, which INCLUDE internal
+--     waters (bays, lakes). San Francisco Bay therefore survives the clip.
+--     That is deliberate: this layer removes the catastrophic open-ocean case
+--     cheaply and in SQL, and leaves the fine-grained "no road within reach"
+--     judgement to the routability gate, which is the only thing that can
+--     actually answer it. Over-pruning here would silently delete valid cells.
+--
+-- Cached rather than recomputed per build: the clip is stable for the life of
+-- the boundary, and a matrix build runs it once per resolution.
+--
+-- NULL is a legitimate, safe value meaning "not clipped" - consumers must
+-- COALESCE back to BOUNDARY. It stays NULL when the Overture share is not
+-- mounted or the clip looks wrong, so a missing share degrades to today's
+-- behaviour instead of emptying a grid.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY GEOGRAPHY;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- Separate block per column, deliberately: sharing one block would skip every
+-- later column on any deployment that already has the first one (the first
+-- statement raises, the handler swallows it, the rest never run).
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_AREA_KM2 FLOAT;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_SOURCE VARCHAR;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_BAKED_AT TIMESTAMP_NTZ;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+-- Compute + cache ROUTABLE_BOUNDARY for one region. Idempotent: returns
+-- immediately when already baked unless P_FORCE.
+--
+-- Every failure mode leaves ROUTABLE_BOUNDARY NULL so callers fall back to the
+-- unclipped BOUNDARY. Refusing to write is always safer than writing a bad
+-- clip, because a bad clip silently deletes routable area from every build.
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(P_REGION VARCHAR, P_FORCE BOOLEAN DEFAULT FALSE)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"land-clip"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    match_count   INTEGER DEFAULT 0;
+    already_baked INTEGER DEFAULT 0;
+    orig_area     FLOAT;
+    clip_area     FLOAT;
+    land_polys    INTEGER DEFAULT 0;
+    ratio         FLOAT;
+    -- Below this share of the original area the clip is treated as broken
+    -- rather than tight. A land clip legitimately removes coastal water (Texas
+    -- measured 0.82); losing more than 80% of the region means the mask was
+    -- wrong (stale share, bad geometry, projection surprise), and silently
+    -- shrinking a region to a fifth of itself would be far worse than not
+    -- clipping at all.
+    min_ratio     FLOAT DEFAULT 0.20;
+BEGIN
+    SELECT COUNT(*) INTO :match_count
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+
+    IF (match_count = 0) THEN
+        RETURN 'SKIPPED: no REGION_CATALOG row with a BOUNDARY matched ' || :P_REGION;
+    END IF;
+
+    IF (NOT :P_FORCE) THEN
+        SELECT COUNT(*) INTO :already_baked
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE ROUTABLE_BOUNDARY IS NOT NULL
+          AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+        IF (already_baked > 0) THEN
+            RETURN 'CACHED: ROUTABLE_BOUNDARY already baked for ' || :P_REGION;
+        END IF;
+    END IF;
+
+    BEGIN
+        -- TEMP table so the (expensive) intersection is computed ONCE and can
+        -- be sanity-checked before it is committed to the catalog. Session
+        -- scoped, so it is exempt from the object COMMENT requirement.
+        CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP AS
+        WITH src AS (
+            SELECT BOUNDARY AS B
+            FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE BOUNDARY IS NOT NULL
+              AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION))
+            ORDER BY BOUNDARY_AREA_KM2 ASC
+            LIMIT 1
+        ),
+        land AS (
+            -- The Overture bbox columns are a partition prefilter only; without
+            -- them this scans the global divisions table. ST_INTERSECTS against
+            -- the real boundary is the authoritative filter.
+            SELECT ST_UNION_AGG(d.GEOMETRY) AS G, COUNT(*) AS N
+            FROM OVERTURE_MAPS__DIVISIONS.CARTO.DIVISION_AREA d, src
+            WHERE d.SUBTYPE = 'region'
+              AND d.bbox:xmin::FLOAT <= ST_XMAX(src.B)
+              AND d.bbox:xmax::FLOAT >= ST_XMIN(src.B)
+              AND d.bbox:ymin::FLOAT <= ST_YMAX(src.B)
+              AND d.bbox:ymax::FLOAT >= ST_YMIN(src.B)
+              AND ST_INTERSECTS(d.GEOMETRY, src.B)
+        )
+        SELECT
+            ST_INTERSECTION(src.B, land.G) AS CLIPPED,
+            ST_AREA(src.B) / 1e6          AS ORIG_KM2,
+            land.N                        AS LAND_POLYS
+        FROM src, land
+        WHERE land.G IS NOT NULL;
+
+        SELECT COUNT(*), MAX(ORIG_KM2), MAX(ST_AREA(CLIPPED) / 1e6), MAX(LAND_POLYS)
+          INTO :match_count, :orig_area, :clip_area, :land_polys
+        FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+    EXCEPTION WHEN OTHER THEN
+        -- Overture DIVISION_AREA not shared / not authorized / geometry error.
+        -- Leave NULL: callers fall back to the unclipped boundary.
+        RETURN 'UNAVAILABLE: land clip could not be computed for ' || :P_REGION
+               || ' (' || SQLERRM || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END;
+
+    IF (match_count = 0 OR clip_area IS NULL OR clip_area <= 0) THEN
+        RETURN 'UNAVAILABLE: land clip produced no geometry for ' || :P_REGION
+               || '. ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END IF;
+
+    ratio := clip_area / NULLIF(orig_area, 0);
+    IF (ratio IS NULL OR ratio < min_ratio) THEN
+        RETURN 'REJECTED: land clip kept only ' || ROUND(COALESCE(ratio, 0) * 100, 1)
+               || '% of ' || :P_REGION || ' (' || ROUND(clip_area) || ' of ' || ROUND(orig_area)
+               || ' km2), below the ' || ROUND(min_ratio * 100) || '% floor. Treating the mask as'
+               || ' wrong rather than the region as tiny; ROUTABLE_BOUNDARY left NULL.';
+    END IF;
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_CATALOG t
+    SET ROUTABLE_BOUNDARY = c.CLIPPED,
+        ROUTABLE_BOUNDARY_AREA_KM2 = ROUND(:clip_area, 4),
+        ROUTABLE_BOUNDARY_SOURCE = 'overture-division-area',
+        ROUTABLE_BOUNDARY_BAKED_AT = SYSDATE()
+    FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP c
+    WHERE t.BOUNDARY IS NOT NULL
+      AND (UPPER(t.LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(t.REGION_KEY) = UPPER(:P_REGION));
+
+    RETURN 'BAKED: ' || :P_REGION || ' land-clipped from ' || ROUND(orig_area) || ' to '
+           || ROUND(clip_area) || ' km2 (' || ROUND(ratio * 100, 1) || '% kept, '
+           || land_polys || ' division polygons).';
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- PBF_MIRRORS + PBF_MIRROR_URLS
 -- ---------------------------------------------------------------------------
 -- Alternate hosts to fall back to when the primary PBF origin is unreachable.

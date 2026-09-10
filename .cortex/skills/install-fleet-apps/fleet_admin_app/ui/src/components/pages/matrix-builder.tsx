@@ -366,6 +366,21 @@ export function MatrixBuilderPage() {
                       <span>Started {timeAgo(job.started_at || job.created_at)}</span>
                       <button className="btn small danger" onClick={() => cancelJob(job.job_id)}>Cancel</button>
                     </div>
+                    {/* Explain a shrinking cell count rather than letting it look
+                        like data loss. These exclusions happen whether or not
+                        Road-Aware Filtering is on, because a cell the routing
+                        graph cannot reach produces no travel times either way. */}
+                    {!!job.hexagons_before_routability
+                      && !!job.hexagons_after_routability
+                      && job.hexagons_before_routability > job.hexagons_after_routability && (
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
+                        {formatNumber(job.hexagons_after_routability)} of {formatNumber(job.hexagons_before_routability)} cells are reachable by road;
+                        {' '}{formatNumber(job.hexagons_before_routability - job.hexagons_after_routability)} excluded as unroutable.
+                      </div>
+                    )}
+                    {!!job.filter_warning && (
+                      <div style={{ fontSize: 11, color: '#f9a825', marginTop: 6 }}>{job.filter_warning}</div>
+                    )}
                   </>
                 )}
               </div>
@@ -396,6 +411,12 @@ export function MatrixBuilderPage() {
                 <div style={{ fontSize: 12, color: '#e53935', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                   {job.error_msg || 'Unknown error'}
                 </div>
+                {!!job.routability_note && (
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>{job.routability_note}</div>
+                )}
+                {!!job.filter_warning && (
+                  <div style={{ fontSize: 11, color: '#f9a825', marginTop: 6 }}>{job.filter_warning}</div>
+                )}
               </div>
             );
           })}
@@ -451,7 +472,11 @@ export function MatrixBuilderPage() {
                 {roadFilterAvailable === null && 'Checking Overture Maps Transportation availability...'}
                 {roadFilterAvailable === false && `Unavailable: ${roadFilterReason}`}
                 {roadFilterAvailable === true && roadFilterEnabled && 'Only hexagons intersecting roads will be tessellated (default ON)'}
-                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled - full bbox tessellation (legacy behaviour)'}
+                {/* Not "bbox": the build tessellates the region BOUNDARY polygon
+                    whenever the catalog has one, and land-clips it either way.
+                    Off means a uniform grid over the region, which is a valid
+                    coverage choice - it does not mean unroutable cells. */}
+                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled - uniform grid over the whole region (unroutable cells are still excluded)'}
               </div>
             </div>
           </label>
