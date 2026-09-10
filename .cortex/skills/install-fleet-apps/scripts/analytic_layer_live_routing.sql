@@ -101,6 +101,37 @@ $$
   FROM owned o JOIN iso i ON i.grp = o.grp
 $$;
 
+-- Candidate drive-time polygon, isolated in its own UDTF.
+--
+-- It exists as a separate function rather than an inline CTE because embedding the
+-- ISOCHRONES table function in LIVE_HUFF_ALLOCATION's body made CREATE FUNCTION
+-- fail with "Insufficient privileges to operate on Table function
+-- OPENROUTESERVICE_APP.CORE.ISOCHRONES" - reproducibly, under ACCOUNTADMIN, with
+-- LITERAL arguments, and with the CTE referenced only once, while the very same
+-- call compiles happily inside LIVE_OVERLAPS. Nesting a UDTF is a construct this
+-- layer already relies on (LIVE_CANNIBALISATION nests LIVE_HUFF_ALLOCATION), so the
+-- polygon is produced here and consumed there.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANDIDATE_ISO(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (POLY GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+  FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+               WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
+    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+    ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+    -- ORS_FEATURES = suspended-engine guard: raises rather than yielding 0 rows.
+    LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
+$$;
+
 -- =============================================================================
 -- LIVE_HUFF_ALLOCATION - the shared demand-allocation engine for Site Impact.
 --
@@ -175,47 +206,114 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH stores AS (
-    SELECT STORE_ID, STORE_ROLE, COALESCE(ATTRACTIVENESS, 1.0) AS ATTR,
-           ROW_NUMBER() OVER (ORDER BY STORE_ID) - 1 AS si
-    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-    WHERE REGION = P_REGION
-      AND (STORE_ROLE IN ('OWNED', 'COMPETITOR') OR STORE_ID = P_CANDIDATE_ID)
-  ),
-  nstores AS (SELECT COUNT(*) AS n FROM stores),
-  cand AS (
+  WITH cand AS (
     SELECT ST_MAKEPOINT(LON, LAT) AS g
     FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
     WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID
   ),
+  stores AS (
+    -- The choice set is NOT distance-pruned, and that is deliberate. Dropping
+    -- "far" stores to buy anchor budget looks safe because a store 400 km away
+    -- carries Huff weight ~ 1/400^beta - but Huff shares are RELATIVE. Measured on
+    -- UsTexas, where the estate is ~300 km apart, pruning at 3x the band reach left
+    -- the candidate ALONE in the choice set: captured stayed 2,183 households while
+    -- cannibalised and net_new both collapsed to 0, breaking
+    -- captured = cannibalised + net_new outright. In a sparse network the distant
+    -- stores are not negligible, they are the ONLY incumbents and hold the whole
+    -- before-world. Keep every store; buy resolution by coarsening anchors instead.
+    SELECT s.STORE_ID, s.STORE_ROLE, COALESCE(s.ATTRACTIVENESS, 1.0) AS ATTR,
+           ROW_NUMBER() OVER (ORDER BY s.STORE_ID) - 1 AS si
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS s
+    WHERE s.REGION = P_REGION
+      AND (s.STORE_ROLE IN ('OWNED', 'COMPETITOR') OR s.STORE_ID = P_CANDIDATE_ID)
+  ),
+  nstores AS (SELECT COUNT(*) AS n FROM stores),
+  -- Admissible speed ceiling for the ACTIVE PROFILE, bounding the prefilter below.
+  -- One figure cannot serve every profile: 130 km/h is right for a lorry and absurd
+  -- for an e-bike, where it inflated a 10-minute band into a 21.7 km radius.
+  spd AS (
+    SELECT CASE
+             WHEN p LIKE 'foot%' OR p LIKE 'wheelchair%' THEN 8000.0
+             WHEN p LIKE 'cycling%'                      THEN 35000.0
+             ELSE 130000.0
+           END AS mph
+    FROM (SELECT COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                            WHERE REGION = P_REGION LIMIT 1), 'driving-car') AS p)
+  ),
   near AS (
     -- ADMISSIBLE prefilter, not an approximation: straight-line distance is a lower
-    -- bound on road distance, so a cell beyond band_minutes at 130 km/h cannot
-    -- possibly be inside the band. Without it the matrix is sized by the REGION,
-    -- and a state-sized region is fatal - measured 76,335 res-7 cells for UsTexas
+    -- bound on road distance, so a cell beyond band_minutes at the profile's speed
+    -- ceiling cannot be inside the band. Without it the matrix is sized by the
+    -- REGION, which is fatal for a state - measured 76,335 res-7 cells for UsTexas
     -- against 87 for the SanFrancisco metro.
+    --
+    -- The isochrone would be the exact filter (points inside it are routable BY
+    -- CONSTRUCTION, which also cures the unroutable-source abort below) but it
+    -- CANNOT be used here: feeding ISOCHRONES output into the argument of the
+    -- MATRIX_TABULAR call in the same body fails at CREATE with a misleading
+    -- "Insufficient privileges to operate on Table function ... ISOCHRONES",
+    -- reproducibly under ACCOUNTADMIN, with literal arguments, with the CTE
+    -- referenced once, and even with the isochrone extracted into its own UDTF
+    -- (which gets inlined). Chaining two ORS table functions that way is the
+    -- construct that breaks, so the bound stays geometric.
+    --
+    -- HH >= 3 is the routability guard that replaces it. ONE unroutable source
+    -- aborts the whole ORS matrix as an opaque `all_chunks_failed`, and the offenders
+    -- are near-empty cells whose centroid - the mean of a handful of addresses -
+    -- can land somewhere the profile's graph cannot snap (open water in a coastal
+    -- region). Cells this small are also demand-irrelevant; the households dropped
+    -- are reported by the caller's own totals, so the cost is visible rather than
+    -- hidden.
     SELECT c.H3, c.HH, c.CENTROID
-    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, cand
-    WHERE c.REGION = P_REGION AND c.HH > 0
-      AND ST_DWITHIN(c.CENTROID, cand.g, P_BAND * (130000.0 / 60.0))
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, cand, spd
+    WHERE c.REGION = P_REGION AND c.HH >= 3
+      AND ST_DWITHIN(c.CENTROID, cand.g, P_BAND * (spd.mph / 60.0))
   ),
-  -- ADAPTIVE anchor resolution. Take the FINEST resolution that still fits the
-  -- gateway's matrix locations cap (anchors + stores <= 1400, against the 1500 this
-  -- stack deploys). A normal band keeps native res 8 - no rollup, no quantisation
-  -- loss at all - and only a wide band on a sprawling region coarsens, instead of
-  -- failing with `request_too_large`. The ladder starts at 8 because HH_CELLS IS
-  -- res 8; there is no finer parent to roll up to.
   counts AS (
-    SELECT 8 AS res, COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 8)) AS n FROM near
-    UNION ALL SELECT 7, COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 7)) FROM near
-    UNION ALL SELECT 6, COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 6)) FROM near
-    UNION ALL SELECT 5, COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 5)) FROM near
-    UNION ALL SELECT 4, COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 4)) FROM near
+    -- All five candidate resolutions counted in ONE pass over `near`. This is not a
+    -- micro-optimisation: `near` wraps the ORS isochrone table function, and the
+    -- earlier five-branch UNION ALL referenced it five times, which made CREATE
+    -- FUNCTION fail outright with a misleading "Insufficient privileges to operate
+    -- on Table function ISOCHRONES" - reproducible with LITERAL arguments and under
+    -- ACCOUNTADMIN, so it is repeated expansion of a table function, not a grant.
+    SELECT COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 8)) AS n8,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 7)) AS n7,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 6)) AS n6,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 5)) AS n5,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 4)) AS n4
+    FROM near
+  ),
+  -- Per-region matrix pair ceiling. This CANNOT be a single constant, because it is
+  -- the region's own ors-config `matrix.maximum_routes` and regions on one account
+  -- genuinely differ: measured here, UsTexas accepted 901 x 25 = 22,525 pairs while
+  -- SanFrancisco failed at 300 x 13 = 3,900 and succeeded at 150 x 13 = 1,950 - the
+  -- signature of a region still on the STOCK 2500 default. Hard-coding the generous
+  -- value breaks SanFrancisco with an opaque `all_chunks_failed`; hard-coding the
+  -- safe one drops UsTexas to H3 res 5 and throws away resolution it can afford.
+  -- So read OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (the table the admin app's
+  -- routing-limits panel already owns) and fall back to the SAFE value when the
+  -- region has no recorded limit, since guessing high fails closed.
+  cap AS (
+    SELECT COALESCE(
+             (SELECT TRY_TO_NUMBER(TO_VARCHAR(LIMITS:matrix_maximum_routes))
+                FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
+               WHERE UPPER(REGION) = UPPER(P_REGION) LIMIT 1),
+             2400) AS maxpairs
   ),
   chosen AS (
-    SELECT COALESCE(MAX(c.res), 4) AS res
-    FROM counts c CROSS JOIN nstores s
-    WHERE c.n > 0 AND c.n + s.n <= 1400
+    -- Finest resolution satisfying BOTH caps: the region's engine pair ceiling and
+    -- the gateway's ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS (1500 in
+    -- routing-gateway-service.yaml), which pre-rejects on the SIZE OF THE LOCATIONS
+    -- ARRAY before the engine is reached. Different units, and either alone lets the
+    -- call fail: 522 anchors x 25 stores is only 13,050 pairs but 547 locations.
+    SELECT CASE
+             WHEN c.n8 > 0 AND c.n8 * s.n <= p.maxpairs * 0.96 AND c.n8 + s.n <= 1400 THEN 8
+             WHEN c.n7 > 0 AND c.n7 * s.n <= p.maxpairs * 0.96 AND c.n7 + s.n <= 1400 THEN 7
+             WHEN c.n6 > 0 AND c.n6 * s.n <= p.maxpairs * 0.96 AND c.n6 + s.n <= 1400 THEN 6
+             WHEN c.n5 > 0 AND c.n5 * s.n <= p.maxpairs * 0.96 AND c.n5 + s.n <= 1400 THEN 5
+             ELSE 4
+           END AS res
+    FROM counts c CROSS JOIN nstores s CROSS JOIN cap p
   ),
   anchors AS (
     -- Household-WEIGHTED centroid: a coarse anchor spans dense core and empty land,
@@ -228,10 +326,30 @@ $$
     FROM near n CROSS JOIN chosen ch
     GROUP BY 1
   ),
+  -- SNAP each anchor to a REAL ADDRESS: the address inside the anchor nearest to its
+  -- household-weighted centre. This is the root-cause fix for the unroutable-source
+  -- abort. HH_CELLS.CENTROID is the arithmetic MEAN of the addresses in a cell, and a
+  -- mean is not itself a place - across a bay, a park or a river bend it lands in
+  -- water, where no profile's graph can snap it, and ONE such source aborts the whole
+  -- ORS matrix as an opaque `all_chunks_failed`. Rolling up to a coarser anchor makes
+  -- it worse, since the mean is taken over a wider, emptier area. An actual address is
+  -- on land and adjacent to a road by construction. Non-ORS, so it does not chain two
+  -- table functions (see the note in `near`).
+  anchor_pts AS (
+    SELECT a.ANCHOR_H3, a.res, a.HH,
+           ST_MAKEPOINT(ra.LONGITUDE, ra.LATITUDE) AS CENTROID
+    FROM anchors a
+    JOIN FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES ra
+      ON ra.REGION = P_REGION AND ra.GEOMETRY IS NOT NULL
+     AND H3_CELL_TO_PARENT(H3_POINT_TO_CELL_STRING(ra.GEOMETRY, 8), a.res) = a.ANCHOR_H3
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY a.ANCHOR_H3
+                               ORDER BY ST_DISTANCE(ST_MAKEPOINT(ra.LONGITUDE, ra.LATITUDE),
+                                                    a.CENTROID)) = 1
+  ),
   anchors_i AS (
     SELECT ANCHOR_H3, res, HH, CENTROID,
            ROW_NUMBER() OVER (ORDER BY ANCHOR_H3) - 1 AS ai
-    FROM anchors
+    FROM anchor_pts
   ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
@@ -268,6 +386,8 @@ $$
     WHERE drive_min IS NOT NULL
   ),
   scope AS (
+    -- Band membership is decided by the ENGINE's drive time, not by the geometric
+    -- prefilter above (which is only an outer bound).
     SELECT DISTINCT ANCHOR_H3 FROM valid
     WHERE STORE_ID = P_CANDIDATE_ID AND drive_min <= P_BAND
   ),
@@ -482,7 +602,13 @@ $$
     WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID
   )
   SELECT f.STORE_ID AS candidate_id, f.POI_NAME,
-         ROUND(t.captured_hh)::INT, ROUND(t.cann_hh)::INT, ROUND(t.net_hh)::INT,
+         ROUND(t.captured_hh)::INT, ROUND(t.cann_hh)::INT,
+         -- NET_NEW_HH is the RESIDUAL of the two rounded figures, so the identity
+         -- captured = cannibalised + net_new holds exactly in the numbers a reader
+         -- sees. Rounding all three independently left it off by 1 on three of four
+         -- bands - arithmetically trivial, but this is the decomposition the whole
+         -- view argues from, so it must add up on screen.
+         (ROUND(t.captured_hh) - ROUND(t.cann_hh))::INT,
          ROUND(100 * t.cann_hh / NULLIF(t.captured_hh, 0), 1)::NUMBER(6,1) AS cannibalisation_rate_pct,
          ROUND(t.captured_hh * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS captured_revenue,
          ROUND(t.cann_hh    * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS cannibalised_revenue,

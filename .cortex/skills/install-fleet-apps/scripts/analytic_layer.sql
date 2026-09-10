@@ -806,7 +806,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS (
 -- Build procedure: materializes the estate + household grid + synthetic facts for
 -- the active region. NO ORS calls (isochrones are computed live by the app views).
 -- Owner's rights. Idempotent per region.
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(P_REGION VARCHAR)
   RETURNS VARCHAR
   LANGUAGE SQL
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -815,9 +815,9 @@ $$
 DECLARE
   rg VARCHAR;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  rg := P_REGION;
   IF (rg IS NULL) THEN
-    RETURN 'no active region in CATCHMENT.CONFIG';
+    RETURN 'no region supplied';
   END IF;
 
   -- 1. Store estate: deterministic subset of the region most-spread retail category.
@@ -978,6 +978,32 @@ BEGIN
   FROM comp;
 
   RETURN 'LOCATION built for ' || rg || ' (live-routing model; no precomputed isochrones)';
+END;
+$$;
+
+-- Zero-arg form kept for the installer and for callers that just want "the active
+-- region". The region-parameterised form above exists because the estate is built
+-- per region while CATCHMENT.CONFIG holds exactly ONE row: without it, bringing a
+-- second loaded region up to date meant MUTATING that shared row, which every other
+-- domain's default selection also reads. A stale region is not harmless here - it
+-- keeps the pre-competitor estate, so Site Impact reports 100% cannibalisation for
+-- every candidate, which is a plausible-looking wrong answer rather than an error.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  rg VARCHAR;
+  res VARCHAR;
+BEGIN
+  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  IF (rg IS NULL) THEN
+    RETURN 'no active region in CATCHMENT.CONFIG';
+  END IF;
+  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(:rg) INTO :res;
+  RETURN res;
 END;
 $$;
 
