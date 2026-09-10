@@ -33,12 +33,15 @@ function hashStr(s: string): number {
 
 // Pick a subtype from the catalog distribution by HASH bucket. Returns null when
 // the mode has no subtype distribution (car / ebike) - no vehicle-type branch.
-function pickSubtype(dist: SubtypeShare[] | null | undefined, vehicleId: string): string | null {
+// Returns the whole SHARE row, not just the name, so a per-subtype weight
+// override travels with it (see SubtypeShare.weightTons: the FLSA small-vehicle
+// boundary sits inside a real mixed fleet, so weight cannot be mode-level only).
+function pickSubtypeRow(dist: SubtypeShare[] | null | undefined, vehicleId: string): SubtypeShare | null {
   if (!dist || dist.length === 0) return null;
   const bucket = hashStr(`${vehicleId}|sub`) % 100;
   let cum = 0;
-  for (const s of dist) { cum += s.pct; if (bucket < cum) return s.subtype; }
-  return dist[dist.length - 1].subtype;
+  for (const s of dist) { cum += s.pct; if (bucket < cum) return s; }
+  return dist[dist.length - 1];
 }
 
 // Golden-ratio conjugate: generates a low-discrepancy sequence over [0,1).
@@ -178,7 +181,8 @@ export function buildFleetWithDiagnostics(
     const baseSpeed = spd ? rngFloat(rng, spd.min, spd.max) : rngFloat(rng, 30, 55);
 
     const vehicleId = `V-${config.ors_profile.slice(0, 3).toUpperCase()}-${i.toString().padStart(5, '0')}`;
-    const subtype = pickSubtype(assetRow?.subtypeDist, vehicleId);
+    const subtypeRow = pickSubtypeRow(assetRow?.subtypeDist, vehicleId);
+    const subtype = subtypeRow?.subtype ?? null;
     const hazmat = subtype === 'TANKER'
       && (hashStr(`${vehicleId}|hz`) % 100) / 100 < (assetRow?.hazmatProb ?? 0);
 
@@ -197,7 +201,9 @@ export function buildFleetWithDiagnostics(
       base_speed_kmh: baseSpeed,
       vehicle_type: vt,
       battery_pct: config.battery ? 100 : -1,
-      weight_tons: assetRow?.weightTons ?? null,
+      // Per-subtype override wins over the mode weight, so a mixed fleet can
+      // straddle the 4.536t FLSA small-vehicle boundary.
+      weight_tons: subtypeRow?.weightTons ?? assetRow?.weightTons ?? null,
       height_m: assetRow?.heightM ?? null,
       length_m: assetRow?.lengthM ?? null,
       width_m: assetRow?.widthM ?? null,

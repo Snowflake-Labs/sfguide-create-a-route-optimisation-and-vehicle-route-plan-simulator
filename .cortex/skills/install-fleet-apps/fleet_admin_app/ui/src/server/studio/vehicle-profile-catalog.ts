@@ -31,6 +31,20 @@ const TRACK = `{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","vers
 export interface SubtypeShare {
   subtype: string;
   pct: number; // integer percentage; pcts across the array sum to 100
+  /**
+   * Optional per-subtype gross weight override, in tonnes. When absent the
+   * mode-level `weightTons` applies.
+   *
+   * This exists because a real distribution fleet is MIXED, and the mix is
+   * legally load-bearing rather than cosmetic. The FLSA small-vehicle exception
+   * (DOL Fact Sheet 19) turns on 10,000 lb / 4.536 tonnes: a driver for a motor
+   * private carrier is exempt from FLSA overtime under the 13(b)(1) motor
+   * carrier exemption, EXCEPT in a workweek where they work on a vehicle at or
+   * below that weight - and then the whole workweek is covered. With a single
+   * mode-level weight every vehicle lands on the same side of that line, so
+   * mixed eligibility (the interesting and realistic case) is unreachable.
+   */
+  weightTons?: number;
 }
 
 export interface DwellSlaRow {
@@ -128,10 +142,16 @@ const ASSET_SPEC: Record<VehicleType, {
     weightTons: 40.0, heightM: 4.00, lengthM: 16.50, widthM: 2.55, axleloadT: 11.50,
     hazmatProb: 0.18, // of TANKER subtype vehicles (matches legacy bucket-99 share)
     subtypeDist: [
-      { subtype: 'DRY', pct: 60 },
-      { subtype: 'REEFER', pct: 25 },
-      { subtype: 'FLAT', pct: 12 },
+      // Weights straddle the 4.536 tonne (10,000 lb) FLSA small-vehicle boundary
+      // on purpose, so a distribution fleet shows MIXED overtime eligibility the
+      // way a real one does. DRY/REEFER/FLAT/TANKER are commercial motor
+      // vehicles and inherit the 40t mode weight; VAN is a light delivery
+      // vehicle whose drivers ARE owed FLSA overtime.
+      { subtype: 'DRY', pct: 52 },
+      { subtype: 'REEFER', pct: 22 },
+      { subtype: 'FLAT', pct: 10 },
       { subtype: 'TANKER', pct: 3 },
+      { subtype: 'VAN', pct: 13, weightTons: 3.5 },
     ],
     deviationDistanceRatio: 0.25, teleportDistanceM: 2500, speedingRatio: 1.05,
     minStopSeconds: 180,
