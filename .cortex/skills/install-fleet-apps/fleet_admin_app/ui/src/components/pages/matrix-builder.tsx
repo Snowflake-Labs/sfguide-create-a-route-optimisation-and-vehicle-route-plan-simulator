@@ -35,6 +35,7 @@ export function MatrixBuilderPage() {
   const [serverHexEstimate, setServerHexEstimate] = useState<Record<number, number>>({});
   const [estimateLoading, setEstimateLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const estimateGenRef = useRef(0);
 
   const fetchRegions = useCallback(async () => {
     setLoadingRegions(true);
@@ -125,43 +126,62 @@ export function MatrixBuilderPage() {
     void fetchProfiles(selectedRegion);
   }, [selectedRegion, fetchProfiles]);
 
+  // Road-aware hexagon estimate. The road-aware SQL in /api/matrix/cost-estimate
+  // keys off region bbox/polygon and resolution ONLY - `selectedProfile` never
+  // enters the query, so it is deliberately NOT a dependency here. Adding it back
+  // makes every profile switch fire a fresh multi-second Overture SEGMENT scan
+  // that cannot change the answer.
   useEffect(() => {
     if (!roadFilterEnabled || !roadFilterAvailable || !selectedRegion || selectedRes.size === 0) {
+      // Orphan any in-flight run and release the latch: with the road filter off
+      // there is nothing to estimate, so leaving `estimateLoading` set here is
+      // what previously pinned the UI at "Estimating..." with no way back.
+      estimateGenRef.current++;
       setServerHexEstimate({});
+      setEstimateLoading(false);
       return;
     }
-    let cancelled = false;
+    const gen = ++estimateGenRef.current;
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       setEstimateLoading(true);
-      const { ok, data, error } = await safeFetchJson<{ resolutions: any[] }>('/api/matrix/cost-estimate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          region: selectedRegion,
-          profile: selectedProfile,
-          resolutions: Array.from(selectedRes).sort(),
-          road_filter: true,
-        }),
-      });
-      if (cancelled) return;
-      if (ok && data) {
-        const map: Record<number, number> = {};
-        (data.resolutions || []).forEach((e: any) => {
-          if (e.road_filter_applied) {
-            map[parseInt(e.resolution.replace('RES', ''))] = e.hex_count;
-          }
+      try {
+        const { ok, data, error, aborted } = await safeFetchJson<{ resolutions: any[] }>('/api/matrix/cost-estimate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            region: selectedRegion,
+            profile: selectedProfile,
+            resolutions: Array.from(selectedRes).sort(),
+            road_filter: true,
+          }),
+          signal: controller.signal,
         });
-        setServerHexEstimate(map);
-      } else {
-        setServerHexEstimate({});
-        if (error?.includes('504') || error?.includes('timed out')) {
-          setBuildError('Road-aware estimate timed out. Try disabling Road-aware filter or selecting fewer resolutions.');
+        // Stale response: a newer run has started, so its result wins. Guard the
+        // state WRITES only - the finally block below must still run.
+        if (estimateGenRef.current !== gen || aborted) return;
+        if (ok && data) {
+          const map: Record<number, number> = {};
+          (data.resolutions || []).forEach((e: any) => {
+            if (e.road_filter_applied) {
+              map[parseInt(e.resolution.replace('RES', ''))] = e.hex_count;
+            }
+          });
+          setServerHexEstimate(map);
+        } else {
+          setServerHexEstimate({});
+          if (error?.includes('504') || error?.includes('timed out')) {
+            setBuildError('Road-aware estimate timed out. Try disabling Road-aware filter or selecting fewer resolutions.');
+          }
         }
+      } finally {
+        // Unconditional release for the latest run, on every exit path.
+        if (estimateGenRef.current === gen) setEstimateLoading(false);
       }
-      setEstimateLoading(false);
     }, 500);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedProfile, selectedRes]);
+    return () => { controller.abort(); clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedProfile is sent for logging only; see comment above.
+  }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedRes]);
 
   useEffect(() => {
     const hasActive = jobs.some((j) => j.status === 'RUNNING' || j.status === 'PENDING');
@@ -470,8 +490,11 @@ export function MatrixBuilderPage() {
         <div className="existing-info">
           {activeJobs.length > 0 && <span>{activeJobs.length} build{activeJobs.length > 1 ? 's' : ''} in progress</span>}
         </div>
-        <button className="btn primary" onClick={startBuild} disabled={isLaunching || estimateLoading || selectedRes.size === 0 || !region?.ready}>
-          {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
+        {/* The estimate is ADVISORY: displayed pairs/credits already fall back to
+            the bbox figure, so a pending road-aware refinement must not block the
+            build. Progress is signalled by the "(recalculating...)" label above. */}
+        <button className="btn primary" onClick={startBuild} disabled={isLaunching || selectedRes.size === 0 || !region?.ready}>
+          {isLaunching ? 'Launching...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
       {buildWarning && (
