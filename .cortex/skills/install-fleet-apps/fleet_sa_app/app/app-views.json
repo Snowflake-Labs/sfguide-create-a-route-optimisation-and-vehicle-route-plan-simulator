@@ -1734,15 +1734,15 @@
     "layout": {
       "default": {
         "columns": "1fr 1fr",
-        "rows": "auto auto $content $map",
-        "grid": "\"kpi kpi\"\n\"projection team\"\n\"table table\"\n\"map map\""
+        "rows": "auto $content auto auto $map",
+        "grid": "\"kpi kpi\"\n\"table table\"\n\"distribution trend\"\n\"compliance team\"\n\"map map\""
       }
     },
     "areas": {
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT OPERATOR_ID) AS operators, SUM(IFF(OT_BAND = 'AT_RISK', 1, 0)) AS approaching, SUM(IFF(OT_BAND = 'BREACH', 1, 0)) AS projected_breach, ROUND(SUM(EST_OT_COST), 0) AS ot_cost, ROUND(AVG(DRIVE_SHARE_OF_PAID) * 100, 1) AS utilization FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK",
+          "query": "SELECT COUNT(DISTINCT OPERATOR_ID) AS headcount, ROUND(SUM(FTE_EQUIVALENT), 1) AS fte, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk, ROUND(100 * AVG(DRIVE_SHARE_OF_PAID), 1) AS drive_share FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -1751,104 +1751,43 @@
           "mapping": {
             "metrics": [
               {
-                "column": "operators",
-                "label": "{{labels.operator_plural}} On Clock",
+                "column": "headcount",
+                "label": "{{labels.operator_plural}}",
                 "format": "number"
               },
               {
-                "column": "approaching",
-                "label": "Approaching Limit",
+                "column": "fte",
+                "label": "FTE",
+                "format": "number_2dp"
+              },
+              {
+                "column": "ot_pct",
+                "label": "OT % of Paid Hours",
+                "format": "number_2dp"
+              },
+              {
+                "column": "ot_premium",
+                "label": "OT Premium (avoidable)",
                 "format": "number"
               },
               {
-                "column": "projected_breach",
-                "label": "Projected Breach",
+                "column": "at_risk",
+                "label": "At Risk or Breach",
                 "format": "number"
               },
               {
-                "column": "ot_cost",
-                "label": "Est. Overtime Cost",
-                "format": "number"
-              },
-              {
-                "column": "utilization",
-                "label": "Paid-Hour Utilisation %",
+                "column": "drive_share",
+                "label": "Driving % of Paid",
                 "format": "number_2dp"
               }
             ]
           }
         }
       },
-      "projection": {
-        "component": "Chart",
-        "data": {
-          "query": "WITH wk AS (  SELECT MIN(WEEK_START) AS WS FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK), d AS (  SELECT DUTY_START::DATE AS DAY, PAID_HOURS, OPERATOR_ID  FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))), wk  WHERE DUTY_START >= wk.WS::TIMESTAMP_NTZ    AND (:selected_operator IS NULL OR OPERATOR_ID = :selected_operator)), agg AS (  SELECT DAY, SUM(PAID_HOURS) / COUNT(DISTINCT OPERATOR_ID) AS HRS FROM d GROUP BY DAY) SELECT TO_VARCHAR(DAY, 'Dy DD Mon') AS day, ROUND(SUM(HRS) OVER (ORDER BY DAY), 1) AS cumulative_hours, (SELECT MAX(OT_THRESHOLD_1) FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))) AS ot_starts, (SELECT MAX(OT_THRESHOLD_3) FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))) AS breach_limit FROM agg ORDER BY DAY",
-          "params": {
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
-            "dataset_id": "context.dataset_id",
-            "selected_operator": "viewState.selected_operator"
-          }
-        },
-        "config": {
-          "title": "Cumulative Paid Hours This Week vs Thresholds",
-          "xAxis": {
-            "field": "day",
-            "fieldType": "category"
-          },
-          "series": [
-            {
-              "type": "bar",
-              "field": "cumulative_hours",
-              "label": "Cumulative Hours"
-            },
-            {
-              "type": "line",
-              "field": "ot_starts",
-              "label": "Overtime Starts"
-            },
-            {
-              "type": "line",
-              "field": "breach_limit",
-              "label": "Breach Limit"
-            }
-          ]
-        }
-      },
-      "team": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT TEAM_ID AS team, ROUND(SUM(PROJECTED_OT_HOURS), 1) AS projected_ot_hours, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK', 'BREACH'), OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK AND TEAM_ID IS NOT NULL GROUP BY TEAM_ID ORDER BY projected_ot_hours DESC NULLS LAST LIMIT 12",
-          "params": {
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
-            "dataset_id": "context.dataset_id"
-          }
-        },
-        "config": {
-          "title": "Projected Overtime by Team",
-          "xAxis": {
-            "field": "team",
-            "fieldType": "category"
-          },
-          "series": [
-            {
-              "type": "bar",
-              "field": "projected_ot_hours",
-              "label": "Projected OT Hours"
-            },
-            {
-              "type": "bar",
-              "field": "at_risk_operators",
-              "label": "At-Risk {{labels.operator_plural}}"
-            }
-          ]
-        }
-      },
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT OPERATOR_ID AS operator, TEAM_ID AS team, SUPERVISOR_ID AS supervisor, SHIFT_TYPE AS shift, OT_BAND AS band, HOURS_TO_DATE AS hours_so_far, DAYS_WORKED AS days_worked, PROJECTED_WEEK_HOURS AS projected_hours, PROJECTED_OT_HOURS AS projected_ot_hours, EST_OT_COST AS est_ot_cost, ROUND(DRIVE_SHARE_OF_PAID * 100, 1) AS utilisation_pct, STOPS_PER_PAID_HOUR AS stops_per_hour FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK ORDER BY projected_hours DESC NULLS LAST LIMIT 100",
+          "query": "SELECT OPERATOR_ID AS operator, TEAM_ID AS team, SUPERVISOR_ID AS supervisor, OT_BAND AS band, BINDING_CONSTRAINT AS binding_limit, HOURS_TO_DATE AS hours_so_far, PROJECTED_WEEK_HOURS AS projected_hours, DAYS_REMAINING AS days_left, PROJECTED_OT_HOURS AS projected_ot_hours, EST_OT_PREMIUM AS ot_premium, SHIFT_TYPE AS shift_pattern, DAYS_WORKED AS days_worked, ROUND(100 * DRIVE_SHARE_OF_PAID, 1) AS driving_pct, IFF(OT_ELIGIBLE_FLSA, 'Yes', 'Exempt (CMV)') AS flsa_ot_eligible FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK ORDER BY projected_hours DESC NULLS LAST LIMIT 100",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -1864,6 +1803,116 @@
         },
         "emits": {
           "selected_operator": "selection"
+        }
+      },
+      "distribution": {
+        "component": "Chart",
+        "data": {
+          "query": "WITH b AS (  SELECT CASE     WHEN PROJECTED_WEEK_HOURS < 20 THEN '00-20'     WHEN PROJECTED_WEEK_HOURS < 30 THEN '20-30'     WHEN PROJECTED_WEEK_HOURS < 40 THEN '30-40'     WHEN PROJECTED_WEEK_HOURS < 50 THEN '40-50'     WHEN PROJECTED_WEEK_HOURS < 60 THEN '50-60'     WHEN PROJECTED_WEEK_HOURS < 70 THEN '60-70'     ELSE '70+' END AS bucket, OPERATOR_ID   FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT bucket AS projected_hours_band, COUNT(DISTINCT OPERATOR_ID) AS operators FROM b GROUP BY bucket ORDER BY bucket",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type",
+            "dataset_id": "context.dataset_id"
+          }
+        },
+        "config": {
+          "title": "Projected Week Hours: How Many {{labels.operator_plural}} in Each Band",
+          "xAxis": {
+            "field": "projected_hours_band",
+            "fieldType": "category"
+          },
+          "series": [
+            {
+              "type": "bar",
+              "field": "operators",
+              "label": "{{labels.operator_plural}}"
+            }
+          ]
+        }
+      },
+      "trend": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT WEEK_LABEL AS week, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct_of_paid, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE NOT IS_PARTIAL_START GROUP BY WEEK_LABEL ORDER BY week",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type",
+            "dataset_id": "context.dataset_id"
+          }
+        },
+        "config": {
+          "title": "Weekly Overtime Trend (no smoothing: FLSA forbids multi-week averaging)",
+          "xAxis": {
+            "field": "week",
+            "fieldType": "category"
+          },
+          "series": [
+            {
+              "type": "bar",
+              "field": "ot_premium",
+              "label": "OT Premium"
+            },
+            {
+              "type": "line",
+              "field": "at_risk_operators",
+              "label": "At-Risk {{labels.operator_plural}}"
+            }
+          ]
+        }
+      },
+      "compliance": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT BINDING_CONSTRAINT AS binding_limit, COUNT(DISTINCT OPERATOR_ID) AS operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK GROUP BY BINDING_CONSTRAINT ORDER BY operators DESC",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type",
+            "dataset_id": "context.dataset_id"
+          }
+        },
+        "config": {
+          "title": "Which Limit Binds (FLSA pay vs DOT hours-of-service)",
+          "xAxis": {
+            "field": "binding_limit",
+            "fieldType": "category"
+          },
+          "series": [
+            {
+              "type": "bar",
+              "field": "operators",
+              "label": "{{labels.operator_plural}}"
+            }
+          ]
+        }
+      },
+      "team": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT TEAM_ID AS team, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK AND TEAM_ID IS NOT NULL GROUP BY TEAM_ID ORDER BY ot_premium DESC NULLS LAST LIMIT 12",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type",
+            "dataset_id": "context.dataset_id"
+          }
+        },
+        "config": {
+          "title": "Overtime Premium by Depot Team",
+          "xAxis": {
+            "field": "team",
+            "fieldType": "category"
+          },
+          "series": [
+            {
+              "type": "bar",
+              "field": "ot_premium",
+              "label": "OT Premium"
+            },
+            {
+              "type": "bar",
+              "field": "at_risk_operators",
+              "label": "At-Risk {{labels.operator_plural}}"
+            }
+          ]
         }
       },
       "map": {
@@ -1896,7 +1945,7 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "WITH wk AS (  SELECT MIN(WEEK_START) AS WS FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT t.TRIP_ID AS trip_id, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) t, wk WHERE t.ROUTE_GEOG IS NOT NULL   AND t.TRIP_START >= wk.WS::TIMESTAMP_NTZ   AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START LIMIT 400",
+                "query": "WITH wk AS (SELECT MIN(WEEK_START) AS WS FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT t.TRIP_ID AS trip_id, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) t, wk WHERE t.ROUTE_GEOG IS NOT NULL   AND t.TRIP_START >= wk.WS::TIMESTAMP_NTZ   AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START LIMIT 400",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
