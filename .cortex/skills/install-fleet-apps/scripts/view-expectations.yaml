@@ -25,6 +25,50 @@
 # would silently move an exemption onto a different query.
 
 views:
+  asset_velocity:
+    areas:
+      # Asset Velocity detects NON-MOVING assets so a trailer is not sitting on
+      # rented ground. That premise needs a fleet that can actually sit still.
+      # A courier preset cannot: MEASURED on the SanFrancisco e-bike dataset the
+      # longest idle span in the entire fleet is 27.5 MINUTES across 97 vehicles,
+      # against a UsTexas HGV fleet where 4 ghost trailers sit for 10,068 minutes
+      # (~7 days, $1,103 projected savings). Any idle_min threshold above about
+      # half an hour therefore excludes every courier, and zero rows is the
+      # CORRECT answer rather than a broken panel.
+      #
+      # Scoped with `regions` deliberately rather than left as a blanket
+      # exemption, so UsTexas must still return rows and a real regression there
+      # is not grandfathered in.
+      #
+      # NOTE the true predicate is VEHICLE TYPE, not region - SanFrancisco is
+      # simply where the e-bike preset lives today. If a courier preset is added
+      # in another region, widen this list rather than dropping the scoping.
+      areas.byseverity:
+        expect: may_be_empty
+        regions: [SanFrancisco]
+        reason: >-
+          Courier fleet: longest measured idle is 27.5 minutes, so no vehicle
+          clears the idle threshold and the severity breakdown is legitimately
+          empty. Populates on an HGV preset.
+      areas.table:
+        expect: may_be_empty
+        regions: [SanFrancisco]
+        reason: >-
+          Same cause as areas.byseverity - no courier vehicle is idle long
+          enough to appear in the action list.
+      idle:
+        expect: may_be_empty
+        regions: [SanFrancisco]
+        reason: >-
+          Map layer over the same idle-vehicle set as areas.table; empty for a
+          courier fleet for the same measured reason.
+      demand:
+        expect: may_be_empty
+        regions: [SanFrancisco]
+        reason: >-
+          The lane-demand layer is only rendered against idle vehicles to
+          reposition, so it follows the idle set and is empty for a courier
+          fleet.
   journey_inspector:
     areas:
       actual_on_plan:
@@ -224,6 +268,16 @@ code_views:
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED
       - FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+  asset_velocity:
+    objects:
+      # Owned by the admin app's ensureAssetVelocityViews() at container boot,
+      # not by any scripts/*.sql, so assert them explicitly - the same ownership
+      # caveat as backload_proposals. These were silently absent for a long time
+      # because the ensure gate probed DWELL_ANALYSIS.DT_DWELL_ENRICHED, which
+      # belongs to the separate opt-in dwell-analysis skill; it now probes the
+      # installer's own FLEET_APP.DWELL.VW_DWELL_SESSIONS.
+      - FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
+      - FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
   triangle_proposals:
     objects:
       # Same ownership caveat as backload_proposals: created only by the admin

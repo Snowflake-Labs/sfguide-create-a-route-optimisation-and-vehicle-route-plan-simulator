@@ -387,7 +387,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
   AI_SQL_GENERATION 'Dwell analysis semantic view for the Route Optimisation & Fleet Intelligence solution.
 
 Entities (two independent facts):
-- sessions (DT_DWELL_ENRICHED): one row per dwell session (a vehicle stopped at a location). Use for dwell time, facility utilization (group by facility_type/city/location_name), and congestion (group by h3_cell).
+- sessions (FLEET_APP.DWELL.VW_DWELL_SESSIONS): one row per dwell session (a vehicle stopped at a location). Use for dwell time, facility utilization (group by facility_type/city/location_name), and congestion (group by h3_cell).
 - driver_dwell (DT_DRIVER_DWELL_SUMMARY): per-driver aggregates including SLA breach counts. Use for SLA / per-driver dwell questions.
 
 REGION IS A DIMENSION, NOT A GLOBAL SETTING:
