@@ -22,6 +22,7 @@ import {
 } from 'recharts';
 import { useViewData } from '@/hooks/use-view-data';
 import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildChartMemo, useAgentMemo } from '@/lib/agent-memo';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -58,6 +59,18 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
   // Chart palette comes from the centralized style config (app-config.json),
   // falling back to the bundled Snowflake-forward defaults.
   const CHART_COLORS = resolveChartPalette(useStyleConfig());
+  const display = useDisplayConfig();
+
+  // Series labels carry the same neutral {{labels.x}} / {{units.x}} tokens as
+  // every other authored string, but only the area TITLE was ever interpolated
+  // (view-renderer does that). So a titled chart read correctly while its legend
+  // and tooltip printed the raw token - e.g. "{{labels.operator_plural}}: 32".
+  // Resolved once here and used for every display name below; `field` is never
+  // touched, so data binding is unaffected.
+  const series = useMemo(
+    () => config.series.map((s) => ({ ...s, label: interpolateTokens(s.label, display) })),
+    [config.series, display],
+  );
 
   const chartData = useMemo(() => {
     if (!data?.rows) return [];
@@ -124,9 +137,9 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
         // category as the y key and name the rest as series.
         yKey: groupedData ? (groupedData.categories[0] ?? config.series[0].field) : config.series[0].field,
         points,
-        seriesNames: groupedData ? groupedData.categories : config.series.map((s) => s.label).filter(Boolean),
+        seriesNames: groupedData ? groupedData.categories : series.map((s) => s.label).filter(Boolean),
       });
-    }, [chartData, groupedData, config]),
+    }, [chartData, groupedData, config, series]),
     'chart',
   );
 
@@ -182,10 +195,10 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis type="number" dataKey={config.xAxis.field} name={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis type="number" dataKey={config.series[0].field} name={config.series[0].label} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis type="number" dataKey={series[0].field} name={series[0].label} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
             <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Scatter key={s.field} name={s.label} data={chartData} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </ScatterChart>
@@ -204,7 +217,7 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
             <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
             <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Area
                 key={s.field}
                 type="monotone"
@@ -251,7 +264,7 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
             <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
             <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Bar key={s.field} dataKey={s.field} name={s.label} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </BarChart>
@@ -272,7 +285,7 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
           )}
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
           <Legend wrapperStyle={{ fontSize: '12px' }} />
-          {config.series.map((s, i) => (
+          {series.map((s, i) => (
             <Line
               key={s.field}
               type="monotone"
