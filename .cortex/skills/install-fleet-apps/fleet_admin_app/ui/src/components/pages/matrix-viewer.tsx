@@ -22,7 +22,10 @@ import type { LngLat } from '@/components/shared/mapFit';
 type ViewerMode = 'area' | 'pair';
 
 export function MatrixViewerPage() {
-  const { regionName } = useRegion();
+  // `regions` here is the CATALOG of provisioned regions (with bbox + boundary
+  // centroid), used only to aim the camera. It is NOT the viewer's region
+  // selector - that is `selRegion`, derived from the matrix table names below.
+  const { regions: regionCatalog } = useRegion();
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
@@ -50,6 +53,9 @@ export function MatrixViewerPage() {
   const [destLon, setDestLon] = useState(0);
   const [pairResult, setPairResult] = useState<{ secs: number; meters: number } | null>(null);
   const [pairMsg, setPairMsg] = useState('');
+  // Explains an intentionally empty view (unbuilt matrix, load failure). Without
+  // this the viewer showed the previous region's hexagons and said nothing.
+  const [emptyMsg, setEmptyMsg] = useState('');
 
   useEffect(() => {
     fetch('/api/matrix/viewer-inventory')
@@ -123,10 +129,29 @@ export function MatrixViewerPage() {
       distance_meters: Number(r.TRAVEL_DISTANCE_METERS || 0),
     }));
 
+  // Drops every trace of the previously viewed matrix. Called when a load
+  // cannot produce an origin: the old code just `return`ed, which left
+  // originHex / originLat / originLon / allHexes / activeTable pointing at the
+  // PREVIOUS region, so its hexagons kept drawing and its coordinates kept
+  // holding the camera - presenting one region's data under another region's
+  // label, with no message.
+  const clearMatrixView = useCallback(() => {
+    setDestinations([]);
+    setAllHexes([]);
+    setOriginHex('');
+    setOriginLat(0);
+    setOriginLon(0);
+    setActiveTable('');
+    setPairResult(null);
+    setDestHex('');
+    setGlobalMaxTime(0);
+  }, []);
+
   const loadRandomOrigin = useCallback(async (table: MatrixInventoryItem) => {
     setLoading(true);
     setLoadingMsg('Loading...');
     setDestinations([]);
+    setEmptyMsg('');
     try {
       const tbl = encodeURIComponent(table.table_name);
       const [originRes, hexesRes] = await Promise.all([
@@ -134,7 +159,16 @@ export function MatrixViewerPage() {
         fetch(`/api/matrix/all-hexes?table=${tbl}`),
       ]);
       const [originData, hexesData] = await Promise.all([originRes.json(), hexesRes.json()]);
-      if (!originData.origin_hex) return;
+      if (!originData.origin_hex) {
+        // An empty table is the normal case for a build that is still running,
+        // so name that rather than reporting a generic failure.
+        clearMatrixView();
+        setEmptyMsg(
+          `No travel-time pairs in ${table.table_name} yet`
+          + (table.row_count === 0 ? ' - the build for this resolution may still be running.' : '.')
+        );
+        return;
+      }
 
       setAllHexes(hexesData.hexes || []);
       const gMax = Number(originData.global_max_time_secs || 0);
@@ -142,8 +176,8 @@ export function MatrixViewerPage() {
       const sMax = Math.ceil(gMax / 60) || 60;
       setSliderMax(sMax);
       setOriginHex(originData.origin_hex);
-      setOriginLat(originData.origin_lat);
-      setOriginLon(originData.origin_lon);
+      setOriginLat(Number(originData.origin_lat || 0));
+      setOriginLon(Number(originData.origin_lon || 0));
       setActiveTable(table.table_name);
 
       setLoadingMsg('Loading reachability...');
@@ -153,12 +187,17 @@ export function MatrixViewerPage() {
       const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
       setDriveTimeLimit(Math.ceil(maxVisible / 60) || sMax);
     } catch (e: any) {
-      if (e.name !== 'AbortError') setDestinations([]);
+      // An abort means a newer selection superseded this one - it owns the
+      // state now, so touching anything here would clobber it.
+      if (e.name !== 'AbortError') {
+        clearMatrixView();
+        setEmptyMsg(`Could not load ${table.table_name}: ${e?.message || 'unknown error'}`);
+      }
     } finally {
       setLoading(false);
       setLoadingMsg('');
     }
-  }, [fetchReachability]);
+  }, [fetchReachability, clearMatrixView]);
 
   useEffect(() => {
     if (matchedTable) loadRandomOrigin(matchedTable);
@@ -430,12 +469,75 @@ export function MatrixViewerPage() {
   }, [mode, originLat, originLon, destHex, destLat, destLon, destinations]);
 
   const hasDests = destinations.length > 0;
+
+  // Camera fallback for the SELECTED region, used until (or instead of) a data
+  // fit. Previously a literal { -122.43, 37.77, zoom 10 } - San Francisco - which
+  // is what hid the broken auto-fit: the camera never moved, and the one region
+  // whose data sat under that fallback looked correct while every other region
+  // appeared not to repoint.
+  //
+  // `selRegion` comes from parseViewerTableName so it is UPPERCASE ('USTEXAS'),
+  // while the region catalog holds CamelCase ('UsTexas'). A `===` match finds
+  // NOTHING and silently falls through to the default, which lands the camera
+  // back on San Francisco - the same failure this replaces. Hence the
+  // case-insensitive compare on both the region name and the ORS key.
+  const regionFallback = useMemo(() => {
+    const want = (selRegion || '').toUpperCase();
+    const info = regionCatalog.find(r =>
+      (r.REGION_NAME || '').toUpperCase() === want
+      || (r.ORS_REGION_KEY || '').toUpperCase() === want);
+    // Boundary centroid before CENTER_LAT/LON: for bbox-defined regions the
+    // plain centre can land in water (see AGENTS.md geospatial conventions).
+    const lat = Number(info?.BOUNDARY_CENTROID_LAT ?? info?.CENTER_LAT ?? NaN);
+    const lon = Number(info?.BOUNDARY_CENTROID_LON ?? info?.CENTER_LON ?? NaN);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return { longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 };
+    }
+    const zoom = Number(info?.ZOOM_LEVEL);
+    return {
+      longitude: lon,
+      latitude: lat,
+      zoom: Number.isFinite(zoom) && zoom > 0 ? zoom : 6,
+      pitch: 0,
+      bearing: 0,
+    };
+  }, [selRegion, regionCatalog]);
+
+  // Region-extent fit for when there are no data coords to frame (empty or
+  // still-building matrix). Without this the camera has nothing to aim at and
+  // stays wherever it was, i.e. on the previous region.
+  const fallbackCoords = useMemo<LngLat[]>(() => {
+    const want = (selRegion || '').toUpperCase();
+    const info = regionCatalog.find(r =>
+      (r.REGION_NAME || '').toUpperCase() === want
+      || (r.ORS_REGION_KEY || '').toUpperCase() === want);
+    if (!info || info.BBOX_MIN_LAT == null || info.BBOX_MAX_LAT == null
+        || info.BBOX_MIN_LON == null || info.BBOX_MAX_LON == null) return [];
+    return [
+      [Number(info.BBOX_MIN_LON), Number(info.BBOX_MIN_LAT)],
+      [Number(info.BBOX_MAX_LON), Number(info.BBOX_MAX_LAT)],
+    ];
+  }, [selRegion, regionCatalog]);
+
+  // Prefer real data coords, but ONLY while they belong to the current
+  // selection. `originHex`/`originLat/Lon` survive until the new matrix loads,
+  // so during a region switch fitCoords still describes the PREVIOUS region -
+  // using it here would fly the camera to the old region and then to the new
+  // one, showing the wrong place first. Falling back to the region extent until
+  // the load lands makes the switch go straight there.
+  const dataMatchesSelection = !!activeTable && activeTable === matchedTable?.table_name;
+  const cameraCoords = dataMatchesSelection && fitCoords.length > 0 ? fitCoords : fallbackCoords;
+
   const fitKey = useMemo(
-    () => `${regionName}|${activeTable || ''}|${originHex || ''}|${mode}|${destHex || ''}|${hasDests ? '1' : '0'}`,
-    [regionName, activeTable, originHex, mode, destHex, hasDests]
+    // Keyed on the viewer's OWN selection. It used to key on `regionName` from
+    // the global region context - a value this page never uses to pick data -
+    // so a refit only happened incidentally when activeTable/originHex/hasDests
+    // changed, never in response to the dropdown the user actually touched.
+    () => `${selRegion}|${selProfile}|${selRes}|${activeTable || ''}|${originHex || ''}|${mode}|${destHex || ''}|${hasDests ? '1' : '0'}`,
+    [selRegion, selProfile, selRes, activeTable, originHex, mode, destHex, hasDests]
   );
-  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, {
-    fallback: { longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 },
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(cameraCoords, {
+    fallback: regionFallback,
     regionKey: fitKey,
   });
 
@@ -526,6 +628,12 @@ export function MatrixViewerPage() {
             </span>
           )}
         </>
+      )}
+
+      {!originHex && emptyMsg && (
+        <div style={{ fontSize: 13, color: '#f59e0b', margin: '8px 0', padding: '10px 14px', background: 'rgba(245,158,11,0.1)', borderRadius: 8, border: '1px solid rgba(245,158,11,0.35)' }}>
+          {emptyMsg}
+        </div>
       )}
 
       {originHex && (
@@ -651,7 +759,7 @@ export function MatrixViewerPage() {
               getTooltip={getTooltip}
               style={{ width: '100%', height: '100%' }}
             />
-            <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
+            <RecenterButton onClick={recenter} disabled={!cameraCoords.length} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
             {mode === 'area'

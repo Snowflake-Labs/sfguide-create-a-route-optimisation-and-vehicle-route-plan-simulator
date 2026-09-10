@@ -85,9 +85,36 @@ export function useFitMap(
     hasFittedRef.current = false;
   }
 
+  // Attach the ResizeObserver to the container as soon as it EXISTS, which is
+  // not necessarily on mount.
+  //
+  // This effect deliberately has NO dependency array. With `[]` it ran exactly
+  // once, before the consumer's container had rendered, took the `if (!el)`
+  // branch, and never ran again - so `dims` stayed null forever and the fit
+  // effect below died on its first line. Every camera feature silently became a
+  // no-op: no auto-fit on load, none on a region switch, and `recenter()` too,
+  // since it only sets a flag the same `!dims` guard discards.
+  //
+  // That is not a hypothetical. The Matrix Viewer renders its map inside
+  // `{originHex && (...)}`, so on first render there was no element, and the
+  // camera sat permanently on that page's fallback - which happened to be San
+  // Francisco, so the one region whose data matched the fallback looked correct
+  // while every other region appeared to "not repoint". ResultMap escaped it
+  // only by rendering its container unconditionally, which is luck, not design.
+  //
+  // `observingRef` makes the attach idempotent, so running after every render
+  // costs one ref check once the observer is live. The disconnect is stored
+  // rather than returned from this effect: returning it would tear the observer
+  // down after EVERY render, and clearing the flag on that teardown is what lets
+  // a container that unmounts and remounts (the Matrix Viewer clears
+  // `originHex`) be picked up again.
+  const observingRef = useRef(false);
+  const disconnectRef = useRef<(() => void) | null>(null);
   useEffect(() => {
+    if (observingRef.current) return;
     const el = containerRef.current;
     if (!el) return;
+    observingRef.current = true;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -97,11 +124,31 @@ export function useFitMap(
       }
     });
     ro.observe(el);
+    // Seed dims synchronously: waiting for the first ResizeObserver callback
+    // would delay the initial fit by a frame, and for an element that is
+    // already laid out no resize may fire at all.
     if (el.clientWidth > 0 && el.clientHeight > 0) {
       setDims({ width: el.clientWidth, height: el.clientHeight });
     }
-    return () => ro.disconnect();
-  }, []);
+    disconnectRef.current = () => {
+      ro.disconnect();
+      observingRef.current = false;
+      disconnectRef.current = null;
+    };
+  });
+
+  // Unmount-only teardown. Separate from the attach effect above so the
+  // observer is not disconnected on every render.
+  useEffect(() => () => { disconnectRef.current?.(); }, []);
+
+  // A container that goes away (conditionally unmounted by the consumer) must
+  // release the observer so the next mount re-attaches. Checked per render
+  // because there is no unmount notification for a ref we do not own.
+  useEffect(() => {
+    if (observingRef.current && !containerRef.current) {
+      disconnectRef.current?.();
+    }
+  });
 
   const sig = useMemo(() => coordsSignature(coords ?? null), [coords]);
 
