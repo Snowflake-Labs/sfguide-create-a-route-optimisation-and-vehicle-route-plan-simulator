@@ -131,7 +131,27 @@ CREATE TABLE IF NOT EXISTS FLEET_APP.LABOR.LABOR_CONFIG (
   DOT_ONDUTY_LIMIT_8D       FLOAT,
   DS_MAX_DRIVE_SHARE        FLOAT,
   DS_RADIUS_MILES           FLOAT,
-  GVWR_OT_THRESHOLD_TONNES  FLOAT
+  GVWR_OT_THRESHOLD_TONNES  FLOAT,
+  -- SUBSTANTIVE_DAY_MIN_SHARE - what fraction of a region's MEDIAN daily trip
+  --   volume a day must reach to count as a real operating day. It exists because
+  --   a generated dataset stops mid-day rather than on a clean boundary, so the
+  --   last calendar day carries a taper: measured on this account, SanFrancisco's
+  --   final day held 21 trips against a 1,933/day median (1.1%) and UsTexas held
+  --   6 against 71 (8.5%). Anchoring the as-of instant on that raw maximum put
+  --   the "current week" inside a one-day stub, and since every panel of the
+  --   Labour and Overtime view filters IS_CURRENT_WEEK, the whole dashboard
+  --   collapsed to the operators who happened to work in the stub - 15 of 47 in
+  --   UsTexas. Trimming the taper moves the anchor back to the last real day and
+  --   restores the roster, while keeping days remaining above zero so the
+  --   projection the view exists to show is still a projection.
+  --
+  --   It is CONFIGURATION rather than a literal for the same reason the overtime
+  --   thresholds are: a fleet whose real volume swings by day of week needs a
+  --   looser share than one with flat volume. 0.50 separates cleanly here (the
+  --   last real day scores 99.5% and 111.3% of median, the taper 1.1% to 38.0%).
+  --   Because half of all days are at or above the median by definition, some day
+  --   always qualifies, so this can never trim a dataset down to nothing.
+  SUBSTANTIVE_DAY_MIN_SHARE FLOAT
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
@@ -166,6 +186,30 @@ $$;
 CALL FLEET_APP.LABOR._ADD_COMPLIANCE_COLS_IF_MISSING();
 DROP PROCEDURE IF EXISTS FLEET_APP.LABOR._ADD_COMPLIANCE_COLS_IF_MISSING();
 
+-- SUBSTANTIVE_DAY_MIN_SHARE gets its OWN guard rather than joining the ALTER
+-- above. That ALTER adds five columns as one statement under a catch-all
+-- handler, so on an account that already has the compliance columns it fails as
+-- a whole and returns 'already present' - appending a sixth column to it would
+-- mean the new column is silently never added on exactly the accounts that need
+-- upgrading. One guard per migration wave keeps each one independently
+-- idempotent.
+CREATE OR REPLACE PROCEDURE FLEET_APP.LABOR._ADD_SUBSTANTIVE_SHARE_IF_MISSING()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+  ALTER TABLE FLEET_APP.LABOR.LABOR_CONFIG ADD COLUMN SUBSTANTIVE_DAY_MIN_SHARE FLOAT;
+  RETURN 'added';
+EXCEPTION
+  WHEN OTHER THEN RETURN 'already present';
+END;
+$$;
+CALL FLEET_APP.LABOR._ADD_SUBSTANTIVE_SHARE_IF_MISSING();
+DROP PROCEDURE IF EXISTS FLEET_APP.LABOR._ADD_SUBSTANTIVE_SHARE_IF_MISSING();
+
 -- Idempotent seed of the global default row only. Per-region overrides are
 -- operator-owned and are never touched by a redeploy.
 DELETE FROM FLEET_APP.LABOR.LABOR_CONFIG WHERE REGION = '*' AND VEHICLE_TYPE = '*';
@@ -174,10 +218,10 @@ INSERT INTO FLEET_APP.LABOR.LABOR_CONFIG
    OT_MULTIPLIER, WEEK_START_DOW, CONTRACTED_HOURS_PER_WEEK, HOURLY_RATE_MIN, HOURLY_RATE_MAX,
    TEAM_COUNT, CURRENCY_CODE,
    DOT_ONDUTY_LIMIT_7D, DOT_ONDUTY_LIMIT_8D, DS_MAX_DRIVE_SHARE, DS_RADIUS_MILES,
-   GVWR_OT_THRESHOLD_TONNES)
+   GVWR_OT_THRESHOLD_TONNES, SUBSTANTIVE_DAY_MIN_SHARE)
 VALUES
   ('*', '*', 240, 40, 50, 60, 1.5, 7, 40, 22.0, 34.0, 8, 'USD',
-   60, 70, 0.50, 100, 4.536);
+   60, 70, 0.50, 100, 4.536, 0.50);
 
 -- ---------------------------------------------------------------------------
 -- F_DIM_LABOR_OPERATOR_SCOPED - the driver, with the commercial attributes the
@@ -215,8 +259,10 @@ $$
     FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
   ),
   fleet AS (
-    SELECT VEHICLE_ID, SHIFT_TYPE, DRIVER_PROFILE, HOME_LOCATION_ID,
-           ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+    SELECT VEHICLE_ID, REGION, VEHICLE_TYPE, SHIFT_TYPE, DRIVER_PROFILE, HOME_LOCATION_ID,
+           ROW_NUMBER() OVER (
+             PARTITION BY REGION, VEHICLE_TYPE, VEHICLE_ID ORDER BY SHIFT_TYPE
+           ) AS RN
     FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
   ),
   scope AS (
@@ -241,17 +287,25 @@ $$
       COALESCE((SELECT TEAM_COUNT FROM cfg), 8)                  AS TEAM_N,
       COALESCE((SELECT CURRENCY_CODE FROM cfg), 'USD')           AS CCY
   ),
+  -- The operator's grain is (REGION, VEHICLE_TYPE, OPERATOR_ID), not OPERATOR_ID.
+  -- Vehicle and driver ids are index-derived per dataset, so DRV-00009 and its
+  -- vehicle exist in every region; grouping on the id alone merged two different
+  -- people into one row and then picked one of their regions with ANY_VALUE.
   ops AS (
     SELECT
+      t.REGION,
+      t.VEHICLE_TYPE,
       t.DRIVER_ID                        AS OPERATOR_ID,
       ANY_VALUE(f.SHIFT_TYPE)            AS SHIFT_TYPE,
       ANY_VALUE(f.DRIVER_PROFILE)        AS DRIVER_PROFILE,
-      ANY_VALUE(f.HOME_LOCATION_ID)      AS HOME_SITE_ID,
-      ANY_VALUE(t.REGION)                AS REGION,
-      ANY_VALUE(t.VEHICLE_TYPE)          AS VEHICLE_TYPE
+      ANY_VALUE(f.HOME_LOCATION_ID)      AS HOME_SITE_ID
     FROM trips t
-    LEFT JOIN fleet f ON t.VEHICLE_ID = f.VEHICLE_ID AND f.RN = 1
-    GROUP BY t.DRIVER_ID
+    LEFT JOIN fleet f
+      ON t.VEHICLE_ID = f.VEHICLE_ID
+     AND EQUAL_NULL(f.REGION, t.REGION)
+     AND EQUAL_NULL(f.VEHICLE_TYPE, t.VEHICLE_TYPE)
+     AND f.RN = 1
+    GROUP BY t.REGION, t.VEHICLE_TYPE, t.DRIVER_ID
   )
   SELECT
     o.OPERATOR_ID,
@@ -286,8 +340,19 @@ $$;
 -- between two stops is on the clock, so the span is both the simpler rule and
 -- the more accurate one. DRIVE_HOURS is kept separately so the gap between them
 -- is visible as utilization rather than hidden.
+--
+-- P_FROM / P_TO are the analysis window (inclusive dates, either may be NULL for
+-- unbounded) fed by the app's global date-range picker. Sessionization runs over
+-- the FULL scope and the window is applied to the RESULT as an overlap test, not
+-- as a predicate on the input trips. Filtering the trips first would cut a duty
+-- period at the window edge and report a fragment of a shift as a whole shift -
+-- a driver who started at 22:00 on the last selected day would appear to have
+-- worked two hours. Overlap semantics mean a duty period straddling either edge
+-- is returned whole, which is also what keeps the hour-conservation equality in
+-- verify_labor_layer.sql true under a narrowed window.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(
+  P_REGION VARCHAR, P_DATASET_ID VARCHAR, P_FROM DATE, P_TO DATE)
 RETURNS TABLE (
   DUTY_ID VARCHAR, OPERATOR_ID VARCHAR, DUTY_SEQ NUMBER,
   DUTY_PERIOD PERIOD(TIMESTAMP_NTZ), DUTY_START TIMESTAMP_NTZ, DUTY_END TIMESTAMP_NTZ,
@@ -318,9 +383,22 @@ $$
   params AS (
     SELECT COALESCE((SELECT DUTY_GAP_MINUTES FROM cfg), 240) AS GAP_MIN
   ),
+  -- SESSIONIZATION IS PER (REGION, VEHICLE_TYPE, OPERATOR). Operator ids are
+  -- index-derived per dataset, so DRV-00009 exists in EVERY region, and
+  -- partitioning by DRIVER_ID alone fuses two different people the moment the
+  -- scope covers more than one dataset. That is not a rounding error: with both
+  -- args NULL the trips of a San Francisco courier and a Texas HGV driver
+  -- interleave into one gap-based session, so 607 real duty periods collapsed to
+  -- 519 and the longest span fell from 215.49h to 96.31h - the sessionization
+  -- itself changes, which is why the hours-conservation check cannot see it (it
+  -- compares two equally regrouped totals). (REGION, VEHICLE_TYPE) is the key
+  -- because DIM_DATASETS keys an ACTIVE dataset on exactly that pair, so a region
+  -- may legitimately carry two populations at once.
   flagged AS (
     SELECT t.*,
-           LAG(t.TRIP_END) OVER (PARTITION BY t.DRIVER_ID ORDER BY t.TRIP_START) AS PREV_END,
+           LAG(t.TRIP_END) OVER (
+             PARTITION BY t.REGION, t.VEHICLE_TYPE, t.DRIVER_ID ORDER BY t.TRIP_START
+           ) AS PREV_END,
            -- Latest end seen so far for this operator, used to strip the part of
            -- this trip that OVERLAPS an earlier one. The generator can assign a
            -- driver two trips at once (measured: 15 negative gaps on UsTexas), and
@@ -328,7 +406,7 @@ $$
            -- DRIVE_HOURS above PAID_HOURS in 17 operator-weeks. LAG is not enough
            -- here - the overlapping trip need not be the immediately preceding one.
            MAX(t.TRIP_END) OVER (
-             PARTITION BY t.DRIVER_ID ORDER BY t.TRIP_START
+             PARTITION BY t.REGION, t.VEHICLE_TYPE, t.DRIVER_ID ORDER BY t.TRIP_START
              ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
            ) AS PRIOR_MAX_END,
            p.GAP_MIN
@@ -350,13 +428,17 @@ $$
   grouped AS (
     SELECT s.*,
            SUM(s.NEW_DUTY) OVER (
-             PARTITION BY s.DRIVER_ID ORDER BY s.TRIP_START
+             PARTITION BY s.REGION, s.VEHICLE_TYPE, s.DRIVER_ID ORDER BY s.TRIP_START
              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
            ) AS DUTY_SEQ
     FROM seeded s
   )
   SELECT
-    g.DRIVER_ID || '|' || TO_VARCHAR(g.DUTY_SEQ)          AS DUTY_ID,
+    -- Region and vehicle type belong in the key: DUTY_ID is the PRIMARY KEY of
+    -- the duty table in SV_LABOR, and DRIVER_ID|DUTY_SEQ is not unique across
+    -- datasets that share operator ids.
+    g.REGION || '|' || g.VEHICLE_TYPE || '|' || g.DRIVER_ID
+      || '|' || TO_VARCHAR(g.DUTY_SEQ)                    AS DUTY_ID,
     g.DRIVER_ID                                           AS OPERATOR_ID,
     g.DUTY_SEQ,
     PERIOD_CONSTRUCT(MIN(g.TRIP_START), MAX(g.TRIP_END))   AS DUTY_PERIOD,
@@ -376,36 +458,96 @@ $$
                           DATEDIFF('second', MIN(g.TRIP_START), MAX(g.TRIP_END)) / 3600.0), 4))::FLOAT AS DRIVE_SHARE,
     COUNT(*)                                               AS TRIPS,
     ROUND(SUM(g.DISTANCE_KM), 2)::FLOAT                    AS DISTANCE_KM,
-    ANY_VALUE(g.REGION)                                    AS REGION,
-    FLEET_APP.CORE.REGION_LABEL(ANY_VALUE(g.REGION))       AS REGION_LABEL,
-    ANY_VALUE(g.VEHICLE_TYPE)                              AS VEHICLE_TYPE
+    g.REGION                                               AS REGION,
+    FLEET_APP.CORE.REGION_LABEL(g.REGION)                  AS REGION_LABEL,
+    g.VEHICLE_TYPE                                         AS VEHICLE_TYPE
   FROM grouped g
-  GROUP BY g.DRIVER_ID, g.DUTY_SEQ
+  GROUP BY g.REGION, g.VEHICLE_TYPE, g.DRIVER_ID, g.DUTY_SEQ
+  -- Overlap test, applied AFTER the aggregate so the duty period is intact:
+  -- keep it when it ends at or after the window start and begins before the
+  -- window end. P_TO is an inclusive DATE, so the exclusive upper bound is the
+  -- following midnight.
+  HAVING (P_FROM IS NULL OR MAX(g.TRIP_END)   >= P_FROM::TIMESTAMP_NTZ)
+     AND (P_TO   IS NULL OR MIN(g.TRIP_START) <  DATEADD('day', 1, P_TO)::TIMESTAMP_NTZ)
+$$;
+
+-- Two-arg overload: the whole dataset, unbounded. Retained because the wrapper
+-- views, SV_LABOR, the overtime alert and every existing caller bind to this
+-- signature, and because the agent has no date picker to read a window from.
+-- SELECT * is correct HERE, unlike in a view: a UDTF's RETURNS TABLE is declared
+-- explicitly, so a column added to the four-arg form and not to this one is a
+-- hard error at CREATE time during install rather than a silent drift.
+CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  DUTY_ID VARCHAR, OPERATOR_ID VARCHAR, DUTY_SEQ NUMBER,
+  DUTY_PERIOD PERIOD(TIMESTAMP_NTZ), DUTY_START TIMESTAMP_NTZ, DUTY_END TIMESTAMP_NTZ,
+  PAID_HOURS FLOAT, DRIVE_HOURS FLOAT, IDLE_HOURS FLOAT, DRIVE_SHARE FLOAT,
+  TRIPS NUMBER, DISTANCE_KM FLOAT,
+  REGION VARCHAR, REGION_LABEL VARCHAR, VEHICLE_TYPE VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(
+    P_REGION, P_DATASET_ID, CAST(NULL AS DATE), CAST(NULL AS DATE)))
 $$;
 
 -- ---------------------------------------------------------------------------
 -- F_FACT_LABOR_WEEK_SCOPED - per operator per payroll week, with a projection.
 --
 -- WEEK ALLOCATION. Each duty period is intersected with the payroll week(s) it
--- touches. A duty period is bounded by the gap threshold so it can span at most
--- one week boundary, which is why this emits the begin-week row plus - only when
--- the end falls in a different week - an end-week row, rather than cross-joining
--- to a generated week table. PERIOD_INTERSECT is guaranteed non-NULL for both
--- because the period demonstrably overlaps both weeks.
+-- touches - one segment per week TOUCHED, generated from an offset table, so a
+-- duty period of any length conserves its hours. PERIOD_INTERSECT is guaranteed
+-- non-NULL for each emitted week because the period demonstrably overlaps it.
 --
--- PROJECTION. "Now" is the latest activity in the DATASET, not
--- CURRENT_TIMESTAMP: the data is historical, so against wall-clock time every
--- week would be complete and the projection would be dead. For the week
--- containing that as-of instant, hours are extrapolated by linear daily run
--- rate (hours so far / days elapsed * 7). Completed weeks project to their
--- actual. This is the "it is Tuesday, who will pass 60 by Friday" number.
+-- THE GRAIN IS (REGION, VEHICLE_TYPE, OPERATOR_ID, WEEK_START). Operator ids are
+-- index-derived per dataset, so DRV-00009 exists in every region and the region
+-- keys are NOT decoration - drop them from the grain and two different people are
+-- summed into one row.
+--
+-- PROJECTION. "Now" is derived from the DATASET, not from CURRENT_TIMESTAMP:
+-- the data is historical, so against wall-clock time every week would be
+-- complete and the projection would be dead. For the week containing that as-of
+-- instant, hours are extrapolated by linear daily run rate (hours so far / days
+-- elapsed * 7). Completed weeks project to their actual. This is the "it is
+-- Tuesday, who will pass 60 by Friday" number.
+--
+-- THE AS-OF INSTANT IS PER REGION AND IS TRIMMED, AND BOTH HALVES ARE LOAD-BEARING.
+-- It used to be a single unpartitioned MAX(DUTY_END) over everything in scope,
+-- which failed in two independent ways at once.
+--
+--   Trimming. A generated dataset stops mid-day, so its last calendar day is a
+--   taper rather than a full day of work - 21 trips against a 1,933/day median
+--   in SanFrancisco, 6 against 71 in UsTexas. The raw maximum therefore landed
+--   inside a one-day stub, and because every panel of the Labour and Overtime
+--   view filters IS_CURRENT_WEEK, the dashboard showed only the operators who
+--   happened to work in that stub: 15 of 47. Note the symmetric case at the
+--   START of a dataset was already guarded by IS_PARTIAL_S below, whose comment
+--   explains that an unlabelled truncated week "reads as a fleet-wide drop in
+--   hours" - the same defect at the other end went unguarded. The anchor is now
+--   the last day whose trip volume reaches SUBSTANTIVE_DAY_MIN_SHARE of that
+--   region's median daily volume.
+--
+--   Partitioning. Because MAX was unpartitioned, the freshest region set the
+--   anchor for every region. Measured on a two-region account: called with no
+--   region the current-week headcount was 15, while SanFrancisco called on its
+--   own returned 100 - the UsTexas tail had pushed the shared anchor into a week
+--   where SanFrancisco had almost no activity, pruning it out. That matters most
+--   on the agent path, since SV_LABOR and VW_LABOR_WEEK read this function with
+--   no region argument at all.
+--
+-- P_FROM / P_TO are the app's global date-range picker (inclusive dates, either
+-- may be NULL). They CLAMP the trimmed per-region bound rather than replacing
+-- it, so narrowing the range moves the current week earlier and the trim still
+-- protects the unbounded default that the agent and the alert use.
 --
 -- TRIPS and DISTANCE are attributed to the week containing TRIP_START, which is
 -- exact and keeps trip counts integral, whereas PAID_HOURS is allocated by
 -- intersection. For a duty period straddling midnight on the week boundary the
 -- two can disagree slightly, so DRIVE_SHARE_OF_PAID is capped at 1.0.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(
+  P_REGION VARCHAR, P_DATASET_ID VARCHAR, P_FROM DATE, P_TO DATE)
 RETURNS TABLE (
   OPERATOR_ID VARCHAR, WEEK_START DATE, WEEK_END DATE, WEEK_LABEL VARCHAR,
   TEAM_ID VARCHAR, SUPERVISOR_ID VARCHAR, SHIFT_TYPE VARCHAR, DRIVER_PROFILE VARCHAR,
@@ -462,15 +604,17 @@ COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"maj
 AS
 $$
   WITH duty AS (
-    SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(P_REGION, P_DATASET_ID))
+    SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(P_REGION, P_DATASET_ID, P_FROM, P_TO))
   ),
   ops AS (
     SELECT * FROM TABLE(FLEET_APP.LABOR.F_DIM_LABOR_OPERATOR_SCOPED(P_REGION, P_DATASET_ID))
   ),
   trips AS (
-    SELECT DRIVER_ID, TRIP_START, DISTANCE_KM, DURATION_MINUTES
+    SELECT DRIVER_ID, REGION, VEHICLE_TYPE, TRIP_START, DISTANCE_KM, DURATION_MINUTES
     FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
     WHERE TRIP_START IS NOT NULL
+      AND (P_FROM IS NULL OR TRIP_START >= P_FROM::TIMESTAMP_NTZ)
+      AND (P_TO   IS NULL OR TRIP_START <  DATEADD('day', 1, P_TO)::TIMESTAMP_NTZ)
   ),
   scope AS (
     SELECT ANY_VALUE(REGION) AS RG, ANY_VALUE(VEHICLE_TYPE) AS VT FROM duty
@@ -478,7 +622,7 @@ $$
   cfg AS (
     SELECT c.OT_THRESHOLD_1, c.OT_THRESHOLD_2, c.OT_THRESHOLD_3, c.WEEK_START_DOW,
            c.DOT_ONDUTY_LIMIT_7D, c.DS_MAX_DRIVE_SHARE, c.DS_RADIUS_MILES,
-           c.GVWR_OT_THRESHOLD_TONNES
+           c.GVWR_OT_THRESHOLD_TONNES, c.SUBSTANTIVE_DAY_MIN_SHARE
     FROM FLEET_APP.LABOR.LABOR_CONFIG c, scope s
     WHERE (c.REGION = s.RG OR c.REGION = '*')
       AND (c.VEHICLE_TYPE = s.VT OR c.VEHICLE_TYPE = '*')
@@ -496,17 +640,82 @@ $$
       COALESCE((SELECT DS_MAX_DRIVE_SHARE FROM cfg), 0.50)     AS DS_DRIVE_MAX,
       COALESCE((SELECT DS_RADIUS_MILES FROM cfg), 100)         AS DS_RADIUS,
       COALESCE((SELECT GVWR_OT_THRESHOLD_TONNES FROM cfg), 4.536) AS GVWR_T,
-      (SELECT MAX(DUTY_END) FROM duty)               AS AS_OF_TS,
-      (SELECT MIN(DUTY_START) FROM duty)             AS FIRST_TS
+      COALESCE((SELECT SUBSTANTIVE_DAY_MIN_SHARE FROM cfg), 0.50) AS MIN_SHARE
+  ),
+  -- ==========================================================================
+  -- Per-region as-of anchor
+  -- ==========================================================================
+  -- Daily trip volume per region, read over the FULL scope and deliberately NOT
+  -- through the window-filtered `trips` CTE above: the substantive bound is a
+  -- property of the DATASET, and P_TO then clamps it. Reading a filtered input
+  -- would make the trim self-referential - a narrowed range would redefine its
+  -- own median and could trim again inside the user's selection.
+  day_act AS (
+    SELECT REGION, TRIP_START::DATE AS D, COUNT(*) AS TRIPS
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
+    WHERE TRIP_START IS NOT NULL
+    GROUP BY 1, 2
+  ),
+  -- Last day per region that looks like a real operating day. At least half of a
+  -- region's days are at or above its own median by definition, so with any
+  -- MIN_SHARE at or below 1.0 this always yields a row per region and can never
+  -- empty a region out.
+  substantive AS (
+    SELECT REGION, MAX(D) AS LAST_SUBSTANTIVE_D
+    FROM (
+      SELECT REGION, D, TRIPS, MEDIAN(TRIPS) OVER (PARTITION BY REGION) AS MED_TRIPS
+      FROM day_act
+    ) r, params p
+    WHERE r.TRIPS >= r.MED_TRIPS * p.MIN_SHARE
+    GROUP BY REGION
+  ),
+  region_span AS (
+    SELECT REGION, MIN(DUTY_START) AS FIRST_DUTY_TS, MAX(DUTY_END) AS LAST_DUTY_TS
+    FROM duty
+    GROUP BY REGION
+  ),
+  -- The trimmed bound expressed as the LAST INSTANT of the substantive day
+  -- (23:59:59), not the following midnight. AS_OF_TS::DATE drives DAYS_ELAPSED,
+  -- so rounding up to midnight would credit the week with an extra elapsed day
+  -- and understate every projection by a seventh. Falls back to the raw duty
+  -- maximum if a region somehow has duty but no trip days, so a region can never
+  -- lose its anchor and disappear.
+  region_avail AS (
+    SELECT r.REGION,
+           COALESCE(
+             DATEADD('second', -1, DATEADD('day', 1, s.LAST_SUBSTANTIVE_D))::TIMESTAMP_NTZ,
+             r.LAST_DUTY_TS
+           ) AS AVAIL_TS,
+           r.FIRST_DUTY_TS
+    FROM region_span r
+    LEFT JOIN substantive s ON EQUAL_NULL(s.REGION, r.REGION)
+  ),
+  -- EQUAL_NULL rather than = on the join below, and here: REGION is carried
+  -- through ANY_VALUE() aggregates upstream, so a NULL region would silently
+  -- drop every one of its rows out of an equality join rather than failing.
+  region_window AS (
+    SELECT REGION,
+           LEAST(AVAIL_TS,
+                 COALESCE(DATEADD('second', -1, DATEADD('day', 1, P_TO))::TIMESTAMP_NTZ,
+                          AVAIL_TS)) AS AS_OF_TS,
+           GREATEST(FIRST_DUTY_TS,
+                    COALESCE(P_FROM::TIMESTAMP_NTZ, FIRST_DUTY_TS)) AS FIRST_TS
+    FROM region_avail
   ),
   -- Week start for an instant, computed arithmetically so it does not depend on
   -- the session WEEK_START parameter.
   bounded AS (
     SELECT d.*,
-           p.T1, p.T2, p.T3, p.DOW, p.AS_OF_TS, p.FIRST_TS,
+           p.T1, p.T2, p.T3, p.DOW, rw.AS_OF_TS, rw.FIRST_TS,
            DATEADD('day', -MOD(DAYOFWEEKISO(d.DUTY_START) - p.DOW + 7, 7), d.DUTY_START::DATE) AS WK_BEGIN,
            DATEADD('day', -MOD(DAYOFWEEKISO(d.DUTY_END)   - p.DOW + 7, 7), d.DUTY_END::DATE)   AS WK_END
-    FROM duty d, params p
+    -- CROSS JOIN, not a comma join. A comma has LOWER precedence than an
+    -- explicit JOIN, so `FROM duty d, params p JOIN region_window rw ON ...`
+    -- parses as `duty d, (params p JOIN region_window rw ON ...)` and `d` is not
+    -- in scope inside that ON clause.
+    FROM duty d
+    CROSS JOIN params p
+    JOIN region_window rw ON EQUAL_NULL(rw.REGION, d.REGION)
   ),
   -- One segment per payroll week the duty period TOUCHES. This used to emit the
   -- begin week plus, when different, the end week - which is correct only while a
@@ -558,42 +767,57 @@ $$
   -- Saturday evening to Monday morning as ONE day worked, which is how the view
   -- came to show 42.51 paid hours against DAYS_WORKED = 1. A segment is confined
   -- to a single payroll week, so 7 offsets cover every case.
+  --
+  -- SEG_END is the EXCLUSIVE end of the intersect with [WEEK_START, WEEK_START+7),
+  -- so for a segment covering the whole week it is midnight on the FOLLOWING
+  -- Sunday - a day the operator did not work. Bounding on `SEG_END::DATE`
+  -- therefore counted 8 days in a 7-day week and reported DAYS_WORKED above
+  -- DAYS_ELAPSED, an impossibility that reached the dashboard on 5 UsTexas
+  -- operator-weeks. Bound on the last instant INSIDE the segment instead. The
+  -- GREATEST keeps a zero-length segment (a duty period whose intersect with the
+  -- week is a single instant) on its own date rather than the day before.
   day_offsets AS (
     SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 7))
   ),
   seg_days AS (
-    SELECT s.OPERATOR_ID, s.WEEK_START,
+    SELECT s.OPERATOR_ID, s.REGION, s.VEHICLE_TYPE, s.WEEK_START,
            DATEADD('day', d.N, s.SEG_BEGIN::DATE) AS D
     FROM seg_hours s
     JOIN day_offsets d
-      ON DATEADD('day', d.N, s.SEG_BEGIN::DATE) <= s.SEG_END::DATE
+      ON DATEADD('day', d.N, s.SEG_BEGIN::DATE)
+         <= GREATEST(s.SEG_BEGIN::DATE, DATEADD('second', -1, s.SEG_END)::DATE)
   ),
   days AS (
-    SELECT OPERATOR_ID, WEEK_START, COUNT(DISTINCT D) AS DAYS_WORKED
+    SELECT OPERATOR_ID, REGION, VEHICLE_TYPE, WEEK_START, COUNT(DISTINCT D) AS DAYS_WORKED
     FROM seg_days
-    GROUP BY OPERATOR_ID, WEEK_START
+    GROUP BY OPERATOR_ID, REGION, VEHICLE_TYPE, WEEK_START
   ),
+  -- The weekly grain is (REGION, VEHICLE_TYPE, OPERATOR_ID, WEEK_START). Leaving
+  -- region out did not merely mislabel a row: it SUMMED the hours of two different
+  -- people who share an index-derived operator id, so a call with no region
+  -- returned 196 operator-weeks where the two regions hold 256, and produced weeks
+  -- of 170.05 paid hours - more than a week contains.
   wk AS (
     SELECT
-      OPERATOR_ID, WEEK_START,
-      ANY_VALUE(REGION) AS REGION, ANY_VALUE(REGION_LABEL) AS REGION_LABEL,
-      ANY_VALUE(VEHICLE_TYPE) AS VEHICLE_TYPE,
+      OPERATOR_ID, REGION, VEHICLE_TYPE, WEEK_START,
+      -- Functionally dependent on REGION, so it needs no group key of its own.
+      ANY_VALUE(REGION_LABEL) AS REGION_LABEL,
       ANY_VALUE(T1) AS T1, ANY_VALUE(T2) AS T2, ANY_VALUE(T3) AS T3,
       ANY_VALUE(AS_OF_TS) AS AS_OF_TS,
       ANY_VALUE(FIRST_TS) AS FIRST_TS,
       SUM(SEG_HOURS)               AS HOURS_TO_DATE,
       SUM(SEG_DRIVE_HOURS)         AS DRIVE_HOURS
     FROM seg_hours
-    GROUP BY OPERATOR_ID, WEEK_START
+    GROUP BY OPERATOR_ID, REGION, VEHICLE_TYPE, WEEK_START
   ),
   -- Trips attributed to the week containing TRIP_START: exact, integral counts.
   trip_wk AS (
-    SELECT t.DRIVER_ID AS OPERATOR_ID,
+    SELECT t.DRIVER_ID AS OPERATOR_ID, t.REGION, t.VEHICLE_TYPE,
            DATEADD('day', -MOD(DAYOFWEEKISO(t.TRIP_START) - p.DOW + 7, 7), t.TRIP_START::DATE) AS WEEK_START,
            COUNT(*) AS TRIPS,
            SUM(t.DISTANCE_KM) AS DISTANCE_KM
     FROM trips t, params p
-    GROUP BY 1, 2
+    GROUP BY 1, 2, 3, 4
   ),
   calc AS (
     SELECT
@@ -616,6 +840,8 @@ $$
     FROM wk w
     JOIN days d
       ON d.OPERATOR_ID = w.OPERATOR_ID AND d.WEEK_START = w.WEEK_START
+     AND EQUAL_NULL(d.REGION, w.REGION)
+     AND EQUAL_NULL(d.VEHICLE_TYPE, w.VEHICLE_TYPE)
   ),
   proj AS (
     SELECT c.*,
@@ -624,9 +850,17 @@ $$
            -- over very few elapsed days can otherwise project past what a week even
            -- holds, and a figure above 168 is not a forecast. The clamp is a floor
            -- under nonsense, not a fix: when it binds, look at the input hours.
-           ROUND(LEAST(168, IFF(c.IS_CUR,
-                     DIV0(c.HOURS_TO_DATE, c.DAYS_ELAPSED_C) * 7,
-                     c.HOURS_TO_DATE)), 2) AS PROJ_HOURS
+           --
+           -- GREATEST(HOURS_TO_DATE, ...) because a clamp with no floor can put the
+           -- forecast BELOW the hours already worked: with the pre-fix region
+           -- fusion an operator-week held 170.05 hours and this column reported a
+           -- projection of 168, i.e. a prediction that someone will end the week
+           -- with fewer hours than they have. The floor makes that impossible
+           -- regardless of how the input hours arise.
+           ROUND(GREATEST(c.HOURS_TO_DATE,
+                          LEAST(168, IFF(c.IS_CUR,
+                            DIV0(c.HOURS_TO_DATE, c.DAYS_ELAPSED_C) * 7,
+                            c.HOURS_TO_DATE))), 2) AS PROJ_HOURS
     FROM calc c
   ),
   -- ==========================================================================
@@ -636,62 +870,80 @@ $$
   -- LIGHTEST vehicle worked in the week: if any vehicle is at or under the
   -- threshold, overtime applies to the WHOLE workweek even though heavier
   -- vehicles were also driven. So MIN, never MAX or AVG.
+  --
+  -- Deliberately read over the FULL scope and NOT through the window-filtered
+  -- `trips` CTE. This and `radius` below are operator ATTRIBUTES - which vehicle
+  -- class a person works and how far they range - so narrowing the date picker to
+  -- a week must not flip somebody's FLSA regime merely because they happened not
+  -- to take the light van in that week. (Both are already coarser than the law,
+  -- which scopes the test to the workweek; that pre-existing grain simplification
+  -- is unchanged here rather than compounded by the window.)
   veh AS (
-    SELECT t.DRIVER_ID AS OPERATOR_ID,
+    SELECT t.DRIVER_ID AS OPERATOR_ID, t.REGION, t.VEHICLE_TYPE,
            MIN(f.WEIGHT_TONS) AS MIN_TONNES
     FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID)) t
     JOIN (
-      SELECT VEHICLE_ID, WEIGHT_TONS,
-             ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+      SELECT VEHICLE_ID, REGION, VEHICLE_TYPE, WEIGHT_TONS,
+             ROW_NUMBER() OVER (
+               PARTITION BY REGION, VEHICLE_TYPE, VEHICLE_ID ORDER BY SHIFT_TYPE
+             ) AS RN
       FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
-    ) f ON f.VEHICLE_ID = t.VEHICLE_ID AND f.RN = 1
-    GROUP BY t.DRIVER_ID
+    ) f ON f.VEHICLE_ID = t.VEHICLE_ID
+       AND EQUAL_NULL(f.REGION, t.REGION)
+       AND EQUAL_NULL(f.VEHICLE_TYPE, t.VEHICLE_TYPE)
+       AND f.RN = 1
+    GROUP BY t.DRIVER_ID, t.REGION, t.VEHICLE_TYPE
   ),
   -- Furthest trip destination from the operator's reporting point, in air miles.
   -- The driver-salesperson definition and the short-haul exception are both
   -- RADIUS tests from the reporting location, not route-distance tests, so this
   -- is a straight-line ST_DISTANCE and deliberately not a road distance.
   home AS (
-    SELECT f.VEHICLE_ID, p.POINT_GEOM AS HOME_GEOG
+    SELECT f.VEHICLE_ID, f.REGION, f.VEHICLE_TYPE, p.POINT_GEOM AS HOME_GEOG
     FROM (
-      SELECT VEHICLE_ID, HOME_LOCATION_ID,
-             ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+      SELECT VEHICLE_ID, REGION, VEHICLE_TYPE, HOME_LOCATION_ID,
+             ROW_NUMBER() OVER (
+               PARTITION BY REGION, VEHICLE_TYPE, VEHICLE_ID ORDER BY SHIFT_TYPE
+             ) AS RN
       FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
     ) f
     JOIN TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_POIS_SCOPED(P_REGION, P_DATASET_ID)) p
       ON p.LOCATION_ID = f.HOME_LOCATION_ID
+     AND EQUAL_NULL(p.REGION, f.REGION)
     WHERE f.RN = 1
   ),
   radius AS (
-    SELECT t.DRIVER_ID AS OPERATOR_ID,
+    SELECT t.DRIVER_ID AS OPERATOR_ID, t.REGION, t.VEHICLE_TYPE,
            MAX(ST_DISTANCE(h.HOME_GEOG, t.DESTINATION) / 1609.34) AS MAX_MILES
     FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID)) t
     JOIN home h ON h.VEHICLE_ID = t.VEHICLE_ID
+               AND EQUAL_NULL(h.REGION, t.REGION)
+               AND EQUAL_NULL(h.VEHICLE_TYPE, t.VEHICLE_TYPE)
     WHERE t.DESTINATION IS NOT NULL
-    GROUP BY t.DRIVER_ID
+    GROUP BY t.DRIVER_ID, t.REGION, t.VEHICLE_TYPE
   ),
   -- Rolling 7-CONSECUTIVE-DAY on-duty total, which is the DOT window and is NOT
   -- the payroll week. Reported per payroll week as the PEAK exposure whose window
   -- ends inside that week, since that is the number that would have triggered a
   -- violation.
   duty_day AS (
-    SELECT OPERATOR_ID, DUTY_START::DATE AS D, SUM(PAID_HOURS) AS H
-    FROM duty GROUP BY OPERATOR_ID, DUTY_START::DATE
+    SELECT OPERATOR_ID, REGION, VEHICLE_TYPE, DUTY_START::DATE AS D, SUM(PAID_HOURS) AS H
+    FROM duty GROUP BY OPERATOR_ID, REGION, VEHICLE_TYPE, DUTY_START::DATE
   ),
   duty_roll AS (
-    SELECT OPERATOR_ID, D,
+    SELECT OPERATOR_ID, REGION, VEHICLE_TYPE, D,
            SUM(H) OVER (
-             PARTITION BY OPERATOR_ID ORDER BY D
+             PARTITION BY REGION, VEHICLE_TYPE, OPERATOR_ID ORDER BY D
              RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW
            ) AS ONDUTY_7D
     FROM duty_day
   ),
   dot AS (
-    SELECT r.OPERATOR_ID,
+    SELECT r.OPERATOR_ID, r.REGION, r.VEHICLE_TYPE,
            DATEADD('day', -MOD(DAYOFWEEKISO(r.D) - p.DOW + 7, 7), r.D) AS WEEK_START,
            MAX(r.ONDUTY_7D) AS ONDUTY_7D_PEAK
     FROM duty_roll r, params p
-    GROUP BY 1, 2
+    GROUP BY 1, 2, 3, 4
   )
   SELECT
     p.OPERATOR_ID,
@@ -795,13 +1047,62 @@ $$
   -- JOIN, so `FROM proj p, params pp LEFT JOIN ops o ON o.X = p.X` parses as
   -- `proj p, (params pp LEFT JOIN ops o ...)` and `p` is not in scope inside that
   -- ON clause - it fails with a bare "invalid identifier 'P.OPERATOR_ID'".
+  -- Every join below carries REGION and VEHICLE_TYPE, because an operator id is
+  -- unique only WITHIN a dataset. Without them a two-region scope fans out: one
+  -- weekly row would match the ops, veh, radius and dot rows of BOTH regions.
+  -- EQUAL_NULL rather than =, consistent with the region joins above, so a NULL
+  -- region cannot silently drop rows out of an equality join.
   FROM proj p
   CROSS JOIN params pp
   LEFT JOIN ops o      ON o.OPERATOR_ID = p.OPERATOR_ID
+                      AND EQUAL_NULL(o.REGION, p.REGION)
+                      AND EQUAL_NULL(o.VEHICLE_TYPE, p.VEHICLE_TYPE)
   LEFT JOIN trip_wk tw ON tw.OPERATOR_ID = p.OPERATOR_ID AND tw.WEEK_START = p.WEEK_START
+                      AND EQUAL_NULL(tw.REGION, p.REGION)
+                      AND EQUAL_NULL(tw.VEHICLE_TYPE, p.VEHICLE_TYPE)
   LEFT JOIN veh v      ON v.OPERATOR_ID = p.OPERATOR_ID
+                      AND EQUAL_NULL(v.REGION, p.REGION)
+                      AND EQUAL_NULL(v.VEHICLE_TYPE, p.VEHICLE_TYPE)
   LEFT JOIN radius rd  ON rd.OPERATOR_ID = p.OPERATOR_ID
+                      AND EQUAL_NULL(rd.REGION, p.REGION)
+                      AND EQUAL_NULL(rd.VEHICLE_TYPE, p.VEHICLE_TYPE)
   LEFT JOIN dot dt     ON dt.OPERATOR_ID = p.OPERATOR_ID AND dt.WEEK_START = p.WEEK_START
+                      AND EQUAL_NULL(dt.REGION, p.REGION)
+                      AND EQUAL_NULL(dt.VEHICLE_TYPE, p.VEHICLE_TYPE)
+$$;
+
+-- Two-arg overload: the whole dataset, unbounded. See the note on the duty-period
+-- overload above for why the signature is kept and why SELECT * is safe here.
+-- This is the form VW_LABOR_WEEK, SV_LABOR and the overtime alert bind to, so it
+-- is also the form the AGENT sees - which is precisely why the per-region trim
+-- lives inside the function rather than in the app's query. A fix applied only
+-- at the panel would have left the agent answering with one region's tail.
+CREATE OR REPLACE FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  OPERATOR_ID VARCHAR, WEEK_START DATE, WEEK_END DATE, WEEK_LABEL VARCHAR,
+  TEAM_ID VARCHAR, SUPERVISOR_ID VARCHAR, SHIFT_TYPE VARCHAR, DRIVER_PROFILE VARCHAR,
+  HOURS_TO_DATE FLOAT, DAYS_WORKED NUMBER, DAYS_ELAPSED NUMBER, DAYS_REMAINING NUMBER,
+  IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
+  CONTRACTED_HOURS_PER_WEEK FLOAT, STRAIGHT_HOURS FLOAT, OT_HOURS FLOAT,
+  PROJECTED_OT_HOURS FLOAT, HOURLY_RATE FLOAT, EST_OT_COST FLOAT,
+  EST_OT_PREMIUM FLOAT,
+  CURRENCY_CODE VARCHAR,
+  OT_PCT_OF_PAID FLOAT, OT_PCT_OF_STRAIGHT FLOAT,
+  FTE_EQUIVALENT FLOAT,
+  OT_BAND VARCHAR, OT_THRESHOLD_1 FLOAT, OT_THRESHOLD_2 FLOAT, OT_THRESHOLD_3 FLOAT,
+  DRIVE_HOURS FLOAT, DRIVE_SHARE_OF_PAID FLOAT, TRIPS NUMBER, DISTANCE_KM FLOAT,
+  KM_PER_PAID_HOUR FLOAT, STOPS_PER_PAID_HOUR FLOAT,
+  OT_ELIGIBLE_FLSA BOOLEAN, MIN_VEHICLE_TONNES FLOAT,
+  DOT_ONDUTY_7D_HOURS FLOAT, DOT_ONDUTY_LIMIT FLOAT, DOT_ONDUTY_PCT FLOAT,
+  MAX_RADIUS_MILES FLOAT, DRIVER_SALESPERSON_OK BOOLEAN,
+  BINDING_CONSTRAINT VARCHAR,
+  REGION VARCHAR, REGION_LABEL VARCHAR, VEHICLE_TYPE VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(
+    P_REGION, P_DATASET_ID, CAST(NULL AS DATE), CAST(NULL AS DATE)))
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -846,7 +1147,10 @@ CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_DUTY_PERIOD
 CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_LABOR_WEEK
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS SELECT
-       OPERATOR_ID || '|' || TO_VARCHAR(WEEK_START, 'YYYY-MM-DD') AS LABOR_WEEK_ID,
+       -- REGION and VEHICLE_TYPE are part of the key: this is SV_LABOR's PRIMARY
+       -- KEY and operator ids repeat across datasets, so operator|week collides.
+       REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID
+         || '|' || TO_VARCHAR(WEEK_START, 'YYYY-MM-DD') AS LABOR_WEEK_ID,
        OPERATOR_ID, WEEK_START, WEEK_END, WEEK_LABEL, TEAM_ID, SUPERVISOR_ID,
        SHIFT_TYPE, DRIVER_PROFILE, HOURS_TO_DATE, DAYS_WORKED, DAYS_ELAPSED,
        DAYS_REMAINING, IS_CURRENT_WEEK, IS_PARTIAL_START, PROJECTED_WEEK_HOURS,
@@ -881,9 +1185,19 @@ GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCH
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
 
+-- The four-arg window overloads need their OWN grants: a grant is per signature,
+-- so granting the two-arg form leaves the form the app actually calls unusable.
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_ADMIN;
+
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(VARCHAR, VARCHAR, DATE, DATE) TO ROLE FLEET_APP_ADMIN;
 
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.LABOR TO ROLE FLEET_APP_OPS;
