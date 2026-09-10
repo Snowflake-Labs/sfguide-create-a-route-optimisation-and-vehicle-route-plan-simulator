@@ -1768,12 +1768,12 @@
               {
                 "column": "fte",
                 "label": "FTE",
-                "format": "number_2dp"
+                "format": "number"
               },
               {
                 "column": "ot_pct",
                 "label": "OT % of Paid Hours",
-                "format": "number_2dp"
+                "format": "number"
               },
               {
                 "column": "ot_premium",
@@ -1788,7 +1788,7 @@
               {
                 "column": "drive_share",
                 "label": "Driving % of Paid",
-                "format": "number_2dp"
+                "format": "number"
               }
             ]
           }
@@ -1927,11 +1927,18 @@
       },
       "map": {
         "component": "Map",
+        "title": "Recent Work on the Road",
+        "subtitle": "Routed trips in the last 7 days of dataset activity, newest 400. Click a route to select its {{labels.operator}}.",
         "config": {
           "noPad": true,
+          "emptyMessage": "No routed work in the last 7 days of this dataset for the current selection. Clear the selected row to see the whole fleet.",
+          "clickEmits": {
+            "object": "selected_operator",
+            "objectColumn": "operator"
+          },
           "legend": [
             {
-              "label": "Work this week",
+              "label": "Work, last 7 days of activity",
               "color": [
                 41,
                 181,
@@ -1944,8 +1951,9 @@
           "layers": [
             {
               "type": "path",
-              "id": "labor-week-trips",
+              "id": "labor-recent-trips",
               "geojsonColumn": "route_geojson",
+              "tooltip": "{operator} - {started}<br/>{distance_km} km, {duration_min} min",
               "color": [
                 41,
                 181,
@@ -1955,7 +1963,7 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "WITH wk AS (SELECT MIN(WEEK_START) AS WS FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT t.TRIP_ID AS trip_id, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) t, wk WHERE t.ROUTE_GEOG IS NOT NULL   AND t.TRIP_START >= wk.WS::TIMESTAMP_NTZ   AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START LIMIT 400",
+                "query": "WITH tt AS (SELECT * FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), win AS (SELECT DATEADD('day', -7, MAX(TRIP_START)) AS FROM_TS FROM tt) SELECT t.TRIP_ID AS trip_id, t.DRIVER_ID AS operator, TO_VARCHAR(t.TRIP_START, 'YYYY-MM-DD HH24:MI') AS started, ROUND(t.DISTANCE_KM, 1) AS distance_km, ROUND(t.DURATION_MINUTES, 0) AS duration_min, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM tt t, win w WHERE t.ROUTE_GEOG IS NOT NULL AND t.TRIP_START >= w.FROM_TS AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START DESC LIMIT 400",
                 "params": {
                   "region": "context.region",
                   "vehicle_type": "context.vehicle_type",
