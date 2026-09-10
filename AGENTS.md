@@ -155,6 +155,32 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.
 # patterns would silently disable auto-resume, which is the opposite defect.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_suspend.mts
 
+# Regression test for the generator's ROSTER-vs-LEGAL cap split (22 cases).
+# Lives in fleet_tools/user for the same tsx reason as the test above.
+#
+# What it protects: the trip loop used to hard-stop at shift end and silently
+# DISCARD the remaining assigned jobs, which made daily capacity equal to shift
+# width and nothing else. Measured on a 100-vehicle e-bike fleet: a flat ~3.5
+# jobs/hour on all three shifts, the 13h shift finishing 0.5h EARLY because it
+# exhausted its assignment, and the 5h and 6h shifts stopping dead at the wall
+# after 18.8 and 22.3 jobs. Weekly hours collapsed to `shift_width x
+# days_worked` with hard ceilings of 35h / 42h / 91h, so two of three cohorts
+# could never reach a 40-hour overtime threshold at ANY horizon - and
+# `trips_per_day` acted as an unreachable ceiling rather than a workload. That
+# inverts the real causality: in a real fleet overtime IS the overrun.
+#
+# Both directions are asserted. `enabled: false` (or an absent block) must
+# reproduce the historical hard stop EXACTLY, or every existing dataset becomes
+# irreproducible. Over-shooting is worse than under-shooting: an allowance
+# ignoring the rest guard would let a vehicle work into its own next shift, and
+# the `breaks.max_daily_driving_hours` LEGAL cap must stay a hard break in
+# engine.ts - a driver may finish a late route, but may not drive beyond
+# permitted hours (real breaches stay rare and are modelled as
+# IS_HOS_VIOLATION). A NaN allowance is specifically tested because
+# `currentHour >= shiftEnd + NaN` is always false, which would run the loop to
+# its trip limit and produce absurd duty spans with no error.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_shift_overrun.mts
+
 # Validate that no bundled verb source uses a JavaScript global the Snowflake
 # LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
 # catches this: `tsc` accepts it (the repo pulls in DOM and @types/node for the

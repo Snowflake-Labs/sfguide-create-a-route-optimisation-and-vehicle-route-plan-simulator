@@ -40,6 +40,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       telemetry: { ping_interval_moving: { mean_sec: 10, std_sec: 3 }, ping_interval_dwell: { min_sec: 30, max_sec: 120 }, gps_jitter: { typical_m: 6, multipath_probability: 0.02, multipath_max_m: 80 } },
       dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12, long_wait_probability: 0.08 }, destination: { median_min: 2, sigma: 0.4, max_min: 20, long_wait_probability: 0.05 }, idle: { median_min: 5, sigma: 0.5, max_min: 20, long_wait_probability: 0.08 } },
       detour: { probability: 0.05, max_detour_factor: 1.4 },
+      shift_overrun: { enabled: true, probability: 0.4, max_hours: 2.5, min_rest_hours: 8, profile_multiplier: { COMPLIANT: 0.6, MILD: 1.0, OUTLIER: 1.6 } },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
       base_speed_kmh: { min: 30, max: 55 },
       // Without a category_map every POI fell through to the mapper's catch-all
@@ -111,6 +112,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       battery: { range_km: 60, drain_per_km: 1.67, recharge_threshold_pct: 15 },
       delivery_sla: { target_minutes: 30, warning_minutes: 25 },
       detour: { probability: 0.03, max_detour_factor: 1.3 },
+      shift_overrun: { enabled: true, probability: 0.4, max_hours: 2.5, min_rest_hours: 8, profile_multiplier: { COMPLIANT: 0.6, MILD: 1.0, OUTLIER: 1.6 } },
       poi_categories: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
       base_speed_kmh: { min: 15, max: 22 },
       home_location_types: ['RESTAURANT'],
@@ -177,6 +179,11 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
         ping_interval_max_sec: 900,
       },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
+      // NOTE for this preset: `breaks.max_daily_driving_hours` (9h) is a LEGAL cap
+      // and may bind before the roster does, in which case the overrun allowance
+      // correctly yields nothing. That is the intended precedence - an HGV driver
+      // may finish a late route, but not by driving beyond their permitted hours.
+      shift_overrun: { enabled: true, probability: 0.4, max_hours: 2.5, min_rest_hours: 8, profile_multiplier: { COMPLIANT: 0.6, MILD: 1.0, OUTLIER: 1.6 } },
       poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
       base_speed_kmh: { min: 60, max: 85 },
       home_location_types: ['WAREHOUSE'],
@@ -263,6 +270,54 @@ export interface GenerationConfig {
   };
   dwell: Record<string, DwellConfig | Record<string, DwellConfig>>;
   breaks?: { driving_hours_between_breaks: number; mandatory_break_duration_min: number; max_daily_driving_hours: number };
+  // Shift OVERRUN: how far past the rostered shift end a vehicle may keep working
+  // when it still has assigned jobs left.
+  //
+  // WHY THIS EXISTS. Without it the trip loop hard-stops at shift end and silently
+  // DISCARDS the remaining assigned jobs, which makes daily capacity equal to shift
+  // width and nothing else. Measured on a 100-vehicle e-bike fleet: throughput was a
+  // flat ~3.5 jobs/hour on all three shifts, the 13h shift finished 0.5h EARLY
+  // (it exhausted its assignment) while the 5h and 6h shifts stopped dead at the
+  // wall having delivered 18.8 and 22.3 jobs. Weekly hours therefore reduced to
+  // `shift_width x days_worked`, with hard ceilings of 35h / 42h / 91h - so two of
+  // three cohorts could never reach a 40-hour overtime threshold at ANY horizon,
+  // and `trips_per_day` acted as an unreachable ceiling rather than a workload.
+  //
+  // That inverts the real causality. In a real fleet overtime IS the overrun:
+  // nobody is rostered 13 hours, they are rostered 8 and the route takes 10. The
+  // old model could only produce overtime by rostering a long shift, never by a
+  // day going badly - which also understated dwell at closing sites and SLA
+  // breaches across the other demos.
+  //
+  // WORKLOAD-DRIVEN, not a coin flip. The allowance only matters when jobs remain,
+  // so a shift that exhausts its assignment gains nothing and a capacity-bound
+  // shift accrues overtime precisely because it was given more work than fits.
+  // A purely probabilistic overrun would produce overtime unrelated to workload,
+  // leaving no way to explain WHY a driver ran late.
+  //
+  // DISTINCT FROM `breaks.max_daily_driving_hours`. That is an hours-of-service
+  // LEGAL cap and stays hard; this is a ROSTER boundary and is the thing that goes
+  // soft. Exceeding legal driving hours remains rare and is modelled separately as
+  // IS_HOS_VIOLATION.
+  //
+  // Omit the block entirely (or set enabled:false) to reproduce the historical
+  // hard-stop behaviour exactly.
+  shift_overrun?: {
+    enabled?: boolean;
+    /** Share of vehicle-days eligible to overrun at all (0-1). */
+    probability: number;
+    /** Hard cap on overrun hours before the profile multiplier is applied. */
+    max_hours: number;
+    /** Never encroach within this many hours of the next shift start. */
+    min_rest_hours: number;
+    /**
+     * Per-driver persistence, keyed by DRIVER_PROFILE. Reuses the existing
+     * behaviour model (which already drives detour / speeding / HOS probability)
+     * so a consistently slower driver is consistently later, WITHOUT introducing
+     * new per-vehicle state. A key absent from this map defaults to 1.0.
+     */
+    profile_multiplier?: Record<string, number>;
+  };
   overnight?: {
     enabled?: boolean;
     rest_hours_min: number;

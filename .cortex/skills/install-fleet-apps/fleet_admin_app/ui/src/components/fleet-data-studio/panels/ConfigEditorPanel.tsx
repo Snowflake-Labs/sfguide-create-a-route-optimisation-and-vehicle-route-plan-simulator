@@ -198,6 +198,16 @@ export default function ConfigEditorPanel(props: Props) {
             </div>
           ))}
 
+          {/* Shift overrun applies to EVERY vehicle type: the roster boundary is
+              mode-agnostic, unlike HOS breaks (hgv) or battery (ebike). */}
+          {renderSection('shift_overrun', 'Shift Overrun / Overtime', (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {renderField('Overrun Probability', 'shift_overrun.probability')}
+              {renderField('Max Overrun (h)', 'shift_overrun.max_hours')}
+              {renderField('Min Rest Before Next Shift (h)', 'shift_overrun.min_rest_hours')}
+            </div>
+          ))}
+
           {activeVehicleType === 'ebike' && renderSection('battery', 'Battery', (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               {renderField('Range (km)', 'battery.range_km')}
