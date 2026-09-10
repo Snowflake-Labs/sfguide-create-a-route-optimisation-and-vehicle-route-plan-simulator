@@ -1823,7 +1823,17 @@ $$`,
           VEHICLE_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, ORS_PROFILE VARCHAR, SHIFT_TYPE VARCHAR,
           SHIFT_START_HOUR NUMBER, SHIFT_END_HOUR NUMBER, HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR,
           OPERATING_MODE VARCHAR, BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, JOB_ID VARCHAR,
-          WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER, WIDTH_M NUMBER, AXLELOAD_T NUMBER,
+          -- Scales MUST match the physical DIM_FLEET columns (WEIGHT_TONS
+          -- NUMBER(6,2), the rest NUMBER(4,2)). A bare NUMBER is NUMBER(38,0)
+          -- and TRUNCATES: an e-bike's 0.10 t arrives as 0 and a 3.5 t van
+          -- arrives as 4, which fuzzes the 4.536 t (10,000 lb) FLSA
+          -- small-vehicle boundary that FLEET_APP.LABOR uses to decide whether
+          -- overtime is owed. This function is the UPSTREAM half of a two-owner
+          -- pair: FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED (in
+          -- scoped_contract.sql) is a SELECT * over this one, so widening only
+          -- that copy is silently undone the next time the app boots and
+          -- recreates this one.
+          WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2), WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2),
           HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR
         )
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
