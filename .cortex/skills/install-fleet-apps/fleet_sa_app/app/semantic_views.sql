@@ -867,7 +867,25 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
     , labor_week.projected_ot_hours AS PROJECTED_OT_HOURS
       COMMENT = 'Overtime hours projected to week end'
     , labor_week.est_ot_cost AS EST_OT_COST
-      COMMENT = 'Estimated overtime cost at week end (projected OT hours x hourly rate x overtime multiplier). Rates are synthesized.'
+      COMMENT = 'FULLY LOADED cost of the projected overtime hours (hours x rate x multiplier). This is NOT the saving available - see est_ot_premium. Rates are synthesized.'
+    , labor_week.est_ot_premium AS EST_OT_PREMIUM
+      COMMENT = 'AVOIDABLE overtime cost: the premium above straight time only ((multiplier - 1) x rate x hours). This is the right answer to "what could we save", because the straight-time portion would be paid to somebody regardless. Quoting est_ot_cost instead overstates the saving threefold at a 1.5x multiplier.'
+    , labor_week.ot_pct_of_paid AS OT_PCT_OF_PAID
+      COMMENT = 'Overtime hours as a fraction of total PAID hours (0-1). Name this denominator when quoting an overtime percentage; ot_pct_of_straight is a different, larger number.'
+    , labor_week.ot_pct_of_straight AS OT_PCT_OF_STRAIGHT
+      COMMENT = 'Overtime hours as a fraction of STRAIGHT-TIME hours (0-1). More sensitive than ot_pct_of_paid and not interchangeable with it.'
+    , labor_week.fte_equivalent AS FTE_EQUIVALENT
+      COMMENT = 'Operator-week contribution to fleet FTE (paid hours / contracted hours). SUM this for fleet FTE and compare against a distinct operator count: rising FTE against flat headcount is structural understaffing rather than a scheduling problem.'
+    , labor_week.dot_onduty_7d_hours AS DOT_ONDUTY_7D_HOURS
+      COMMENT = 'Peak DOT on-duty hours in any rolling 7 CONSECUTIVE DAYS (49 CFR 395.3(b) limit is 60, or 70 in 8 days). NULL means NOT APPLICABLE (a light vehicle, not a commercial motor vehicle), never missing data. This is a DIFFERENT CLOCK from paid hours - on-duty time includes waiting to be dispatched, inspection and loading - so never add it to or compare it with hours_to_date.'
+    , labor_week.dot_onduty_limit AS DOT_ONDUTY_LIMIT
+      COMMENT = 'The configured DOT on-duty ceiling in force (default 60 hours per 7 consecutive days). NULL for light vehicles.'
+    , labor_week.dot_onduty_pct AS DOT_ONDUTY_PCT
+      COMMENT = 'Rolling 7-day on-duty hours as a fraction of the DOT limit (0-1). NULL for light vehicles.'
+    , labor_week.min_vehicle_tonnes AS MIN_VEHICLE_TONNES
+      COMMENT = 'LIGHTEST vehicle the operator worked in the week, in tonnes. Lightest, not heaviest, because the FLSA small-vehicle exception covers the WHOLE workweek if any vehicle was at or under 10,000 lb (4.536 t).'
+    , labor_week.max_radius_miles AS MAX_RADIUS_MILES
+      COMMENT = 'Furthest trip destination from the reporting point, in AIR miles (straight line, not road distance) - the driver-salesperson definition and the short-haul exception are both radius tests.'
     , labor_week.straight_hours AS STRAIGHT_HOURS
       COMMENT = 'Hours at straight time (up to the first threshold)'
     , labor_week.week_drive_hours AS DRIVE_HOURS
@@ -928,6 +946,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
     , labor_week.ot_band AS OT_BAND
       WITH SYNONYMS ('overtime band', 'risk band', 'overtime status', 'at risk')
       COMMENT = 'Projected overtime band: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH. Derived from projected hours against the configured thresholds.'
+    , labor_week.ot_eligible_flsa AS OT_ELIGIBLE_FLSA
+      WITH SYNONYMS ('overtime eligible', 'owed overtime', 'flsa eligible')
+      COMMENT = 'Whether FLSA overtime is owed for this operator-week. FALSE means the 13(b)(1) motor carrier exemption applies (a commercial motor vehicle above 10,000 lb at a motor private carrier), so no FLSA overtime may be owed at all and the binding limit is the DOT on-duty ceiling instead. Determined per WORKWEEK from the lightest vehicle worked, not as a fixed employee attribute.'
+    , labor_week.driver_salesperson_ok AS DRIVER_SALESPERSON_OK
+      WITH SYNONYMS ('driver salesperson status', 'ds status')
+      COMMENT = 'Whether the operator still satisfies BOTH 49 CFR 395.2 driver-salesperson tests: not more than 50 percent of on-duty hours driving, and within the configured radius of the reporting point. Losing either forfeits the 395.1(c) exemption from the 60/70-hour rule. NULL means NOT APPLICABLE (light vehicle).'
+    , labor_week.binding_constraint AS BINDING_CONSTRAINT
+      WITH SYNONYMS ('which rule applies', 'binding limit', 'limiting factor', 'what limits them')
+      COMMENT = 'Which limit actually binds this operator-week: FLSA_40 (statutory weekly overtime), POLICY_50 or POLICY_60 (company tiers, NOT statutory), DOT_ONDUTY (49 CFR 395.3 on-duty ceiling), DS_DRIVE_PCT or DS_RADIUS (driver-salesperson status lost), or NONE. Evaluated within the applicable regime only, so a light-vehicle operator never returns a DOT or DS reason.'
     , labor_week.team_id AS TEAM_ID
       WITH SYNONYMS ('team', 'crew', 'depot team')
       COMMENT = 'Operator team, derived from their home depot'
@@ -980,7 +1007,16 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
       COMMENT = 'Total overtime hours projected to week end'
     , labor_week.total_ot_cost AS SUM(EST_OT_COST)
       WITH SYNONYMS ('overtime cost', 'overtime spend', 'cost of overtime')
-      COMMENT = 'Total estimated overtime cost at week end. Pay rates are synthesized, so treat as indicative.'
+      COMMENT = 'Total FULLY LOADED cost of projected overtime. For "what could we save" use total_ot_premium instead; this figure includes straight time that would be paid regardless.'
+    , labor_week.total_ot_premium AS SUM(EST_OT_PREMIUM)
+      WITH SYNONYMS ('avoidable overtime cost', 'overtime premium', 'what could we save')
+      COMMENT = 'Total AVOIDABLE overtime cost (the premium above straight time). The correct figure for a savings opportunity. Rates are synthesized, so treat as indicative.'
+    , labor_week.fleet_fte AS SUM(FTE_EQUIVALENT)
+      WITH SYNONYMS ('fte', 'full time equivalents')
+      COMMENT = 'Fleet FTE. Compare against total_operators (headcount): a growing gap is structural understaffing.'
+    , labor_week.operators_at_risk AS COUNT(DISTINCT CASE WHEN OT_BAND IN ('AT_RISK', 'BREACH') THEN OPERATOR_ID END)
+      WITH SYNONYMS ('at risk operators', 'how many at risk', 'approaching the limit')
+      COMMENT = 'Distinct operators projected to reach the at-risk threshold or beyond. Filter is_current_week = TRUE for the actionable count.'
     , labor_week.avg_projected_hours AS AVG(PROJECTED_WEEK_HOURS)
       WITH SYNONYMS ('average projected hours')
       COMMENT = 'Mean projected week-end hours per operator'
@@ -1012,7 +1048,22 @@ Paid time is DERIVED from the trip record, not read from a timekeeping system (t
 Duty periods are sessionized by GAP, never by calendar date. A shift that crosses midnight is one duty period, not two.
 
 THRESHOLDS ARE CONFIGURED, NOT ASSUMED
-ot_threshold_1/2/3 are columns. Read them rather than assuming 40/50/60 - that is US FLSA, and other jurisdictions differ (the EU uses a 48-hour average). ot_band is already computed against whatever is in force: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH.
+ot_threshold_1/2/3 are columns. Read them rather than assuming 40/50/60 - that is US FLSA, and other jurisdictions differ (the EU uses a 48-hour average). ot_band is already computed against whatever is in force: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH. Note that only 40 (FLSA weekly) and 60/70 (DOT on-duty) have regulatory force; a 50-hour tier is company policy, which is why binding_constraint labels it POLICY_50 rather than a statute.
+
+WHICH RULE BINDS, AND THE TWO REGIMES
+binding_constraint is the single readable answer to "what limits this person". It is evaluated within the APPLICABLE regime, which is decided by vehicle weight:
+- LIGHT vehicle (at or under 10,000 lb / 4.536 t): the FLSA small-vehicle exception applies, so overtime IS owed. DOT hours-of-service and driver-salesperson status are NOT APPLICABLE and their columns are NULL.
+- COMMERCIAL MOTOR VEHICLE (above that weight): the FLSA 13(b)(1) motor carrier exemption applies, so FLSA overtime may not be owed at all, and the real ceiling is the DOT on-duty limit plus driver-salesperson status.
+So a NULL in dot_onduty_7d_hours or driver_salesperson_ok means "this rule does not apply to this operator", NOT "we are missing data". Never report it as a gap. And ot_eligible_flsa is decided PER WORKWEEK from the LIGHTEST vehicle worked, because the exception covers the whole week if any vehicle was light - it is not a fixed employee attribute.
+
+TWO COST COLUMNS, AND THEY ARE NOT INTERCHANGEABLE
+est_ot_premium is the AVOIDABLE cost (the premium above straight time) and is the right answer to "what could we save". est_ot_cost is the fully loaded cost of those hours and includes straight time that would be paid to somebody regardless. Quoting the loaded figure as a saving overstates it threefold at a 1.5x multiplier. Same for the metrics: total_ot_premium for savings, total_ot_cost for total spend.
+
+OVERTIME PERCENTAGE HAS A NAMED DENOMINATOR
+ot_pct_of_paid and ot_pct_of_straight are different numbers. Say which one you used; an unlabelled "overtime percentage" is ambiguous.
+
+DOT ON-DUTY IS A DIFFERENT CLOCK FROM PAID HOURS
+49 CFR 395.2 on-duty time includes waiting to be dispatched, inspection and loading, and its window is 7 CONSECUTIVE DAYS rather than the payroll week. Never add dot_onduty_7d_hours to hours_to_date, and never present them as the same measure.
 
 PROJECTION AND THE CURRENT WEEK
 "Who will exceed 60 hours this week" is answered with projected_week_hours, NOT hours_to_date. Projection is anchored to the latest activity in the DATASET, not to wall-clock time, so filter is_current_week = TRUE for the in-progress week; for a completed week the projection equals the actual. A week with is_partial_start = TRUE is truncated at its BEGINNING by the dataset boundary: its totals are legitimately low and must not be compared against a full week or presented as a drop in hours.
