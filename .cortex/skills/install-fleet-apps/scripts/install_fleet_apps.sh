@@ -578,9 +578,73 @@ fi
 # only the labour view and SV_LABOR are lost.
 if [ "${SKIP_LABOR:-0}" != "1" ]; then
   note "[4.25/8] labour + overtime contract (FLEET_APP.LABOR)..."
-  snow sql -c "$CONNECTION" -f "$LABOR_LAYER_SQL" --enable-templating NONE >/tmp/ifa_labor.log 2>&1 \
-    && step "4.25 labour" OK \
-    || { note "  WARN: labour layer reported errors (PERIOD data type not enabled on this account?); see /tmp/ifa_labor.log"; step "4.25 labour" WARN; }
+  if snow sql -c "$CONNECTION" -f "$LABOR_LAYER_SQL" --enable-templating NONE >/tmp/ifa_labor.log 2>&1; then
+    step "4.25 labour" OK
+    # ── 4.26 labour invariant gate ────────────────────────────────────────
+    # verify_labor_layer.sql was written as the guard for this layer and cited
+    # twice inside labor_layer.sql as the thing that asserts hour conservation -
+    # and nothing ever ran it. It was failing: the week split assumed a duty
+    # period could not span more than one week boundary, a long-haul dataset
+    # produced duty periods up to 215.5h, and 504 of 5,378 paid hours (9.4%)
+    # disappeared between the duty fact and the weekly fact. An unrun assertion
+    # is not a guard, so it is wired here, per LOADED region rather than only the
+    # default one - the defect showed up on UsTexas while SanFrancisco was exact.
+    #
+    # FAIL blocks; WARN does not. The two WARN checks report implausible source
+    # data (single generated trips longer than 24h), which this layer is
+    # reporting faithfully - failing the install would punish it for being right.
+    if [ "${SKIP_LABOR_VERIFY:-0}" != "1" ]; then
+      LABOR_REGIONS=$(snow sql -c "$CONNECTION" --format=CSV -q \
+        "$TAG_SQL SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE;" \
+        2>/dev/null | grep -oE '^[A-Za-z][A-Za-z0-9_]*$' | grep -viE '^(status|region)$' || true)
+      [ -n "$LABOR_REGIONS" ] || LABOR_REGIONS="SanFrancisco"
+      LABOR_BAD=0
+      for RG in $LABOR_REGIONS; do
+        snow sql -c "$CONNECTION" -f "$SCRIPTS/verify_labor_layer.sql" \
+          -D "REGION=$RG" --format json >"/tmp/ifa_labor_verify_$RG.json" 2>/dev/null || true
+        # Parsed as JSON, NOT grepped. `snow sql` echoes each statement into its
+        # output, and every assertion here contains the literal 'FAIL' inside its
+        # IFF expression, so a grep for FAIL matches the SQL text and reports a
+        # breach on a perfectly healthy layer (measured: both regions "failed"
+        # while all 15 checks passed).
+        LABOR_RES=$(python3 - "/tmp/ifa_labor_verify_$RG.json" <<'PYEOF' 2>/dev/null || echo "PARSE_ERROR"
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("PARSE_ERROR"); raise SystemExit
+sets = doc if doc and isinstance(doc[0], list) else [doc]
+rows = [r for s in sets for r in s if isinstance(r, dict) and "STATUS" in r]
+if not rows:
+    print("PARSE_ERROR"); raise SystemExit
+bad = [r for r in rows if r["STATUS"] == "FAIL"]
+warn = [r for r in rows if r["STATUS"] == "WARN"]
+print(("FAIL:" + ",".join(str(r["CHK"]) for r in bad)) if bad
+      else ("WARN:" + ",".join(str(r["CHK"]) for r in warn)) if warn
+      else "PASS")
+PYEOF
+)
+        case "$LABOR_RES" in
+          FAIL:*) note "  FAIL: labour invariants broken for $RG (checks ${LABOR_RES#FAIL:}); see /tmp/ifa_labor_verify_$RG.json"; LABOR_BAD=1 ;;
+          WARN:*) note "  $RG: invariants hold; data-quality warnings on checks ${LABOR_RES#WARN:}" ;;
+          PASS)   note "  $RG: all labour invariants hold" ;;
+          *)      note "  WARN: could not read labour invariant results for $RG; see /tmp/ifa_labor_verify_$RG.json" ;;
+        esac
+      done
+      if [ "$LABOR_BAD" = "1" ]; then
+        step "4.26 labour invariants" FAILED
+        echo "ERROR: labour layer produced numbers that must not be shown; aborting"
+        exit 1
+      fi
+      step "4.26 labour invariants" OK
+    else
+      step "4.26 labour invariants" SKIPPED
+    fi
+  else
+    note "  WARN: labour layer reported errors (PERIOD data type not enabled on this account?); see /tmp/ifa_labor.log"
+    step "4.25 labour" WARN
+    step "4.26 labour invariants" SKIPPED
+  fi
 else
   step "4.25 labour" SKIPPED
 fi

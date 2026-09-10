@@ -23,13 +23,16 @@
 -- the proof. Tolerance is 0.5h to absorb per-row rounding across ~600 rows, not
 -- to absorb a systematic loss - a real regression moves this by tens of hours.
 --
--- CHECK 2 guards the sessionization bound that CHECK 1's implementation relies
--- on. The week split emits at most two rows per duty period (begin week, and end
--- week when different), which is complete ONLY while a duty period cannot span a
--- whole week. That holds because duty periods are bounded by DUTY_GAP_MINUTES,
--- but a misconfigured gap (say 20160 minutes) would silently produce duty
--- periods spanning several weeks whose intermediate weeks are dropped. 24h is
--- the assertion because no legitimate duty period approaches it.
+-- CHECK 2 guards the ceiling the week generation relies on. The split now emits
+-- one row per payroll week a duty period TOUCHES, generated from a 60-row offset
+-- table, so a duty period longer than 60 weeks would lose its tail. This replaces
+-- an earlier 24h assertion that was written for the old two-segment split: that
+-- split was complete only while a duty period could not span a whole week, and it
+-- was NOT - a long-haul HGV dataset produced 75 duty periods over 24h, the
+-- longest 215.5h, and every intermediate week was dropped, losing 504 of 5,378
+-- paid hours. The generation removes the assumption, so the assertion moves to
+-- the generator's own bound and long spans become a data-quality signal
+-- (CHECK 13) rather than a correctness failure.
 --
 -- CHECK 3 asserts no operator is on two duty periods at once. Sessionization
 -- partitions by operator and orders by start, so overlap indicates either
@@ -39,9 +42,13 @@
 --
 -- CHECK 4 catches the calendar-day regression specifically. Grouping duty by
 -- TRIP_START::DATE instead of by gap put 146 of 633 driver-days over 14 hours
--- with a max span of 24.6h, purely from night shifts wrapping midnight. If
--- someone "simplifies" the sessionization back to a date grouping, the count of
--- long duty periods jumps and this check fails.
+-- with a max span of 24.6h, purely from night shifts wrapping midnight. The
+-- signature of that regression is exact and dataset-independent: under date
+-- grouping NO duty period can cross midnight. So the check is implication - if
+-- any source trip crosses midnight, some duty period must too. An earlier version
+-- capped long duty periods at 5% of the population, which reads as a regression on
+-- a long-haul fleet where a SINGLE recorded trip runs 42h and no grouping choice
+-- could make its duty period shorter.
 --
 -- CHECK 5 asserts the projection is anchored to the DATASET's latest activity
 -- rather than to CURRENT_TIMESTAMP. The data is historical, so against
@@ -89,6 +96,16 @@
 -- NUMBER(38,0) and TRUNCATED - 0.1 arrived as 0 and a 3.5t van would have arrived
 -- as 4. That makes the 4.536t eligibility boundary fuzzy by half a tonne in the
 -- one test whose entire purpose is which side of it you are on.
+--
+-- CHECK 13 and CHECK 14 report DATA quality, not correctness, so they return WARN
+-- rather than FAIL and the installer does not block on them. A duty period over
+-- 24h and a week whose projection hits the 168h clamp are both real signals -
+-- nobody is on the clock for a day straight - but the cause is upstream in the
+-- generated trips (48 UsTexas trips are single records longer than 24h, the
+-- longest 42.6h), so failing the install would punish this layer for faithfully
+-- reporting its input. CHECK 15 asserts DAYS_WORKED counts the days a duty period
+-- COVERS: counting only the date each segment STARTED reported 42.51 paid hours
+-- against one day worked, an impossibility that reached the dashboard.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -115,6 +132,16 @@ overlaps AS (
     ON a.OPERATOR_ID = b.OPERATOR_ID
    AND a.DUTY_SEQ < b.DUTY_SEQ
    AND PERIOD_OVERLAPS(a.DUTY_PERIOD, b.DUTY_PERIOD)
+),
+-- Midnight crossing, in the source trips and in the duty periods. A date-grouped
+-- sessionization cannot produce a duty period that crosses midnight, so trips
+-- crossing with zero duty periods crossing is the exact regression signature.
+midnight AS (
+  SELECT
+    (SELECT COUNT(*) FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED($REGION, NULL::VARCHAR))
+       WHERE TRIP_START IS NOT NULL AND TRIP_END IS NOT NULL
+         AND TRIP_START::DATE <> TRIP_END::DATE) AS TRIPS_X,
+    (SELECT COUNT(*) FROM duty WHERE DUTY_START::DATE <> DUTY_END::DATE) AS DUTY_X
 )
 SELECT * FROM (
   SELECT 1 AS CHK, 'hours conserved across week split' AS ASSERTION,
@@ -123,20 +150,21 @@ SELECT * FROM (
          IFF(ABS((SELECT SUM(PAID_HOURS) FROM duty)
                  - (SELECT SUM(HOURS_TO_DATE) FROM wk)) <= 0.5, 'PASS', 'FAIL') AS STATUS
   UNION ALL
-  SELECT 2, 'no duty period spans a week (split completeness bound)',
-         TO_VARCHAR((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 24)) || ' over 24h, max '
-           || TO_VARCHAR(ROUND((SELECT MAX(PAID_HOURS) FROM duty), 2)) || 'h',
-         IFF((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 24) = 0, 'PASS', 'FAIL')
+  SELECT 2, 'duty periods stay inside the week-generation ceiling',
+         TO_VARCHAR((SELECT MAX(DATEDIFF('day', DUTY_START, DUTY_END)) FROM duty))
+           || ' day max span (ceiling 420 = 60 weeks)',
+         IFF(COALESCE((SELECT MAX(DATEDIFF('day', DUTY_START, DUTY_END)) FROM duty), 0) < 420,
+             'PASS', 'FAIL')
   UNION ALL
   SELECT 3, 'no operator on two duty periods at once',
          TO_VARCHAR((SELECT N FROM overlaps)) || ' overlapping pairs',
          IFF((SELECT N FROM overlaps) = 0, 'PASS', 'FAIL')
   UNION ALL
   SELECT 4, 'sessionized by gap, not calendar day',
-         TO_VARCHAR((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 16)) || ' of '
-           || TO_VARCHAR((SELECT COUNT(*) FROM duty)) || ' duty periods over 16h',
-         IFF((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 16)
-             <= 0.05 * GREATEST(1, (SELECT COUNT(*) FROM duty)), 'PASS', 'FAIL')
+         TO_VARCHAR((SELECT TRIPS_X FROM midnight)) || ' trips cross midnight, '
+           || TO_VARCHAR((SELECT DUTY_X FROM midnight)) || ' duty periods cross',
+         IFF((SELECT TRIPS_X FROM midnight) = 0 OR (SELECT DUTY_X FROM midnight) > 0,
+             'PASS', 'FAIL')
   UNION ALL
   SELECT 5, 'projection anchored to dataset as-of, not wall clock',
          TO_VARCHAR((SELECT COUNT(DISTINCT WEEK_START) FROM wk WHERE IS_CURRENT_WEEK))
@@ -195,4 +223,26 @@ SELECT * FROM (
            || TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE MIN_VEHICLE_TONNES <> ROUND(MIN_VEHICLE_TONNES, 0))),
          IFF((SELECT COUNT(*) FROM wk WHERE MIN_VEHICLE_TONNES IS NOT NULL) = 0
              OR (SELECT MIN(MIN_VEHICLE_TONNES) FROM wk) > 0, 'PASS', 'FAIL')
+  UNION ALL
+  -- WARN, not FAIL: the cause is upstream in the generated trips, and this layer
+  -- reporting it faithfully is correct behaviour.
+  SELECT 13, 'duty spans are physically plausible (data quality)',
+         TO_VARCHAR((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 24)) || ' of '
+           || TO_VARCHAR((SELECT COUNT(*) FROM duty)) || ' duty periods over 24h, max '
+           || TO_VARCHAR(ROUND(COALESCE((SELECT MAX(PAID_HOURS) FROM duty), 0), 2)) || 'h',
+         IFF((SELECT COUNT(*) FROM duty WHERE PAID_HOURS > 24) = 0, 'PASS', 'WARN')
+  UNION ALL
+  SELECT 14, 'no week projection hits the 168h clamp (data quality)',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk WHERE PROJECTED_WEEK_HOURS >= 168)) || ' clamped of '
+           || TO_VARCHAR((SELECT COUNT(*) FROM wk)),
+         IFF((SELECT COUNT(*) FROM wk WHERE PROJECTED_WEEK_HOURS >= 168) = 0, 'PASS', 'WARN')
+  UNION ALL
+  -- Days worked must count days COVERED, so paid hours per day worked cannot
+  -- exceed 24. Counting only each segment's START date reported 42.51h against
+  -- one day worked.
+  SELECT 15, 'days worked counts days covered, not start dates',
+         'max ' || TO_VARCHAR(ROUND(COALESCE((SELECT MAX(DIV0(HOURS_TO_DATE, DAYS_WORKED)) FROM wk), 0), 2))
+           || 'h per day worked',
+         IFF(COALESCE((SELECT MAX(DIV0(HOURS_TO_DATE, DAYS_WORKED)) FROM wk), 0) <= 24.01,
+             'PASS', 'FAIL')
 ) ORDER BY CHK;

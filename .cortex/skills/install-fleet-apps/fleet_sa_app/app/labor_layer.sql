@@ -46,12 +46,15 @@
 --    That equality is asserted by scripts/verify_labor_layer.sql and is the test
 --    that would have caught the 157.7h drop.
 --
---    A duty period spans at most one week boundary (it is bounded by the gap
---    threshold, so it cannot approach 7 days), which is why the split below
---    emits at most two rows per duty period rather than cross-joining to a
---    generated week table. INVARIANT: if DUTY_GAP_MINUTES were ever configured
---    large enough to let a duty period span a full week, intermediate weeks
---    would be missed. verify_labor_layer.sql asserts no duty period exceeds 24h.
+--    A duty period is generated against EVERY payroll week it touches, so its
+--    length is not load-bearing. It used to emit only the begin week plus, when
+--    different, the end week, on the stated assumption that the gap threshold
+--    kept a duty period well under 7 days. That assumption was false on a
+--    long-haul dataset - 75 duty periods over 24h, the longest 215.5h across 9
+--    days - and every intermediate week was silently dropped, losing 504 of
+--    5,378 paid hours. verify_labor_layer.sql asserts the conservation equality
+--    and also reports duty periods long enough to be implausible, which is a
+--    DATA quality signal about the source trips rather than a bug here.
 --
 -- 3. NOTHING BRANCHES ON VEHICLE TYPE OR ON A SHIFT LABEL.
 --    SHIFT_TYPE is carried as an opaque dimension and never parsed. Three
@@ -318,11 +321,28 @@ $$
   flagged AS (
     SELECT t.*,
            LAG(t.TRIP_END) OVER (PARTITION BY t.DRIVER_ID ORDER BY t.TRIP_START) AS PREV_END,
+           -- Latest end seen so far for this operator, used to strip the part of
+           -- this trip that OVERLAPS an earlier one. The generator can assign a
+           -- driver two trips at once (measured: 15 negative gaps on UsTexas), and
+           -- summing raw durations then counts those minutes twice, which pushed
+           -- DRIVE_HOURS above PAID_HOURS in 17 operator-weeks. LAG is not enough
+           -- here - the overlapping trip need not be the immediately preceding one.
+           MAX(t.TRIP_END) OVER (
+             PARTITION BY t.DRIVER_ID ORDER BY t.TRIP_START
+             ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+           ) AS PRIOR_MAX_END,
            p.GAP_MIN
     FROM trips t, params p
   ),
   seeded AS (
     SELECT f.*,
+           -- Driving minutes with the overlapped head removed. With no overlap the
+           -- subtrahend is 0 and this is exactly DURATION_MINUTES, so a clean
+           -- dataset is unaffected.
+           GREATEST(0, f.DURATION_MINUTES
+                       - GREATEST(0, DATEDIFF('minute', f.TRIP_START,
+                                    LEAST(f.TRIP_END, COALESCE(f.PRIOR_MAX_END, f.TRIP_START))))
+           ) AS EFF_DRIVE_MIN,
            IFF(f.PREV_END IS NULL
                OR DATEDIFF('minute', f.PREV_END, f.TRIP_START) > f.GAP_MIN, 1, 0) AS NEW_DUTY
     FROM flagged f
@@ -343,12 +363,16 @@ $$
     MIN(g.TRIP_START)                                      AS DUTY_START,
     MAX(g.TRIP_END)                                        AS DUTY_END,
     ROUND(DATEDIFF('second', MIN(g.TRIP_START), MAX(g.TRIP_END)) / 3600.0, 4)::FLOAT AS PAID_HOURS,
-    ROUND(SUM(g.DURATION_MINUTES) / 60.0, 4)::FLOAT        AS DRIVE_HOURS,
-    -- On the clock but not driving. Floored at 0 because trip durations are
-    -- recorded independently of the span and can marginally exceed it.
+    -- Capped at the duty SPAN. Trip durations are recorded independently of the
+    -- span and can marginally exceed it, and DRIVE_SHARE / IDLE_HOURS below were
+    -- already clamped for exactly that reason - leaving DRIVE_HOURS itself
+    -- unclamped let it exceed PAID_HOURS while the two derived columns looked fine.
+    LEAST(ROUND(DATEDIFF('second', MIN(g.TRIP_START), MAX(g.TRIP_END)) / 3600.0, 4),
+          ROUND(SUM(g.EFF_DRIVE_MIN) / 60.0, 4))::FLOAT        AS DRIVE_HOURS,
+    -- On the clock but not driving.
     GREATEST(0, ROUND(DATEDIFF('second', MIN(g.TRIP_START), MAX(g.TRIP_END)) / 3600.0
-                      - SUM(g.DURATION_MINUTES) / 60.0, 4))::FLOAT AS IDLE_HOURS,
-    LEAST(1.0, ROUND(DIV0(SUM(g.DURATION_MINUTES) / 60.0,
+                      - SUM(g.EFF_DRIVE_MIN) / 60.0, 4))::FLOAT AS IDLE_HOURS,
+    LEAST(1.0, ROUND(DIV0(SUM(g.EFF_DRIVE_MIN) / 60.0,
                           DATEDIFF('second', MIN(g.TRIP_START), MAX(g.TRIP_END)) / 3600.0), 4))::FLOAT AS DRIVE_SHARE,
     COUNT(*)                                               AS TRIPS,
     ROUND(SUM(g.DISTANCE_KM), 2)::FLOAT                    AS DISTANCE_KM,
@@ -484,19 +508,28 @@ $$
            DATEADD('day', -MOD(DAYOFWEEKISO(d.DUTY_END)   - p.DOW + 7, 7), d.DUTY_END::DATE)   AS WK_END
     FROM duty d, params p
   ),
-  -- At most two segments per duty period: the begin week always, the end week
-  -- only when it differs. Emitting both and intersecting is what conserves hours.
+  -- One segment per payroll week the duty period TOUCHES. This used to emit the
+  -- begin week plus, when different, the end week - which is correct only while a
+  -- duty period spans at most one week boundary. That invariant does not hold:
+  -- measured on a long-haul HGV dataset, 75 duty periods exceeded 24h and the
+  -- longest ran 215.5h across 9 days, so every intermediate week was dropped and
+  -- 504 of 5,378 paid hours (9.4%) vanished between the duty fact and this one.
+  -- Generating the weeks instead removes the assumption entirely: hours are
+  -- conserved for a duty period of ANY length, and for a period that does touch
+  -- only one or two weeks the output is identical to before.
+  --
+  -- The 60-week ceiling bounds the join; a duty period longer than that would
+  -- lose its tail, so verify_labor_layer.sql asserts none comes close.
+  wk_offsets AS (
+    SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 60))
+  ),
   segs AS (
     SELECT b.OPERATOR_ID, b.DUTY_PERIOD, b.DRIVE_HOURS, b.PAID_HOURS, b.DUTY_START,
            b.REGION, b.REGION_LABEL, b.VEHICLE_TYPE, b.T1, b.T2, b.T3, b.AS_OF_TS, b.FIRST_TS,
-           b.WK_BEGIN AS WEEK_START
+           DATEADD('day', 7 * o.N, b.WK_BEGIN) AS WEEK_START
     FROM bounded b
-    UNION ALL
-    SELECT b.OPERATOR_ID, b.DUTY_PERIOD, b.DRIVE_HOURS, b.PAID_HOURS, b.DUTY_START,
-           b.REGION, b.REGION_LABEL, b.VEHICLE_TYPE, b.T1, b.T2, b.T3, b.AS_OF_TS, b.FIRST_TS,
-           b.WK_END AS WEEK_START
-    FROM bounded b
-    WHERE b.WK_END <> b.WK_BEGIN
+    JOIN wk_offsets o
+      ON DATEADD('day', 7 * o.N, b.WK_BEGIN) <= b.WK_END
   ),
   clipped AS (
     SELECT s.*,
@@ -515,9 +548,30 @@ $$
            -- duty period does not double-count driving.
            c.DRIVE_HOURS * DIV0(DATEDIFF('second', PERIOD_BEGIN(c.SEG), PERIOD_END(c.SEG)) / 3600.0,
                                 c.PAID_HOURS) AS SEG_DRIVE_HOURS,
-           PERIOD_BEGIN(c.SEG)::DATE AS SEG_DAY
+           PERIOD_BEGIN(c.SEG) AS SEG_BEGIN,
+           PERIOD_END(c.SEG)   AS SEG_END
     FROM clipped c
     WHERE c.SEG IS NOT NULL
+  ),
+  -- Days actually COVERED by each segment, not just the date it starts on.
+  -- COUNT(DISTINCT segment-start-date) reported a duty period running from
+  -- Saturday evening to Monday morning as ONE day worked, which is how the view
+  -- came to show 42.51 paid hours against DAYS_WORKED = 1. A segment is confined
+  -- to a single payroll week, so 7 offsets cover every case.
+  day_offsets AS (
+    SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 7))
+  ),
+  seg_days AS (
+    SELECT s.OPERATOR_ID, s.WEEK_START,
+           DATEADD('day', d.N, s.SEG_BEGIN::DATE) AS D
+    FROM seg_hours s
+    JOIN day_offsets d
+      ON DATEADD('day', d.N, s.SEG_BEGIN::DATE) <= s.SEG_END::DATE
+  ),
+  days AS (
+    SELECT OPERATOR_ID, WEEK_START, COUNT(DISTINCT D) AS DAYS_WORKED
+    FROM seg_days
+    GROUP BY OPERATOR_ID, WEEK_START
   ),
   wk AS (
     SELECT
@@ -528,8 +582,7 @@ $$
       ANY_VALUE(AS_OF_TS) AS AS_OF_TS,
       ANY_VALUE(FIRST_TS) AS FIRST_TS,
       SUM(SEG_HOURS)               AS HOURS_TO_DATE,
-      SUM(SEG_DRIVE_HOURS)         AS DRIVE_HOURS,
-      COUNT(DISTINCT SEG_DAY)      AS DAYS_WORKED
+      SUM(SEG_DRIVE_HOURS)         AS DRIVE_HOURS
     FROM seg_hours
     GROUP BY OPERATOR_ID, WEEK_START
   ),
@@ -558,15 +611,22 @@ $$
       -- low, so it must be labelled rather than silently compared against a full
       -- week. Without this the first week of any dataset reads as a fleet-wide
       -- drop in hours.
-      (w.FIRST_TS > w.WEEK_START::TIMESTAMP_NTZ)                                 AS IS_PARTIAL_S
+      (w.FIRST_TS > w.WEEK_START::TIMESTAMP_NTZ)                                 AS IS_PARTIAL_S,
+      d.DAYS_WORKED
     FROM wk w
+    JOIN days d
+      ON d.OPERATOR_ID = w.OPERATOR_ID AND d.WEEK_START = w.WEEK_START
   ),
   proj AS (
     SELECT c.*,
            7 - c.DAYS_ELAPSED_C AS DAYS_REMAINING_C,
-           ROUND(IFF(c.IS_CUR,
+           -- Clamped at 168, the number of hours a week contains. A run rate taken
+           -- over very few elapsed days can otherwise project past what a week even
+           -- holds, and a figure above 168 is not a forecast. The clamp is a floor
+           -- under nonsense, not a fix: when it binds, look at the input hours.
+           ROUND(LEAST(168, IFF(c.IS_CUR,
                      DIV0(c.HOURS_TO_DATE, c.DAYS_ELAPSED_C) * 7,
-                     c.HOURS_TO_DATE), 2) AS PROJ_HOURS
+                     c.HOURS_TO_DATE)), 2) AS PROJ_HOURS
     FROM calc c
   ),
   -- ==========================================================================
