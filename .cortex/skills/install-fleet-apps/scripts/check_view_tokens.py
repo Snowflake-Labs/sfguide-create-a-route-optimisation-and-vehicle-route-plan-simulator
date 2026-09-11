@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-check_view_tokens.py - every {{...}} token in an authored view spec must sit on a
-path the renderer actually interpolates.
+check_view_tokens.py - every {{...}} token in an authored view spec must (a) sit
+on a path the renderer actually interpolates and (b) name a group.key the paired
+display config actually defines.
 
 WHY THIS IS A GATE AND NOT A REVIEW NOTE
 
@@ -51,6 +52,17 @@ A concrete path is `labor_overtime.areas.trend.config.series.[].label`. The view
 and the area name are author-chosen, so both are collapsed to `*` before matching:
 `*.areas.*.config.series.[].label`.
 
+THE NAME CHECK
+
+Sitting on an interpolated path is necessary but not sufficient: a token still has
+to name something. `{{labels.operatr_plural}}` (a typo) or `{{labels.rider}}` (a
+key this config never defined) resolves to nothing, and interpolateTokens leaves
+the literal braces on screen - the identical invisible failure. So each token's
+group.key is checked against the display config PAIRED with that surface
+(app-config.json for the fleet views, starter/app-config.json for the starter
+views), built to mirror interpolateTokens: a name resolves iff display[group] is a
+string map that contains key.
+
 Exit 0 clean, 1 on any violation.
 """
 
@@ -66,11 +78,16 @@ SKILL = REPO / ".cortex/skills/install-fleet-apps"
 APP = SKILL / "fleet_sa_app/app"
 UI_SRC = SKILL / "fleet_sa_app/ui/src"
 
-# The two authoring surfaces. app-views.json is the declarative one; pack-views
-# lives under the UI because the pack registers its views in code.
-SPECS = [
-    APP / "app-views.json",
-    UI_SRC / "lib/packs/fleet/pack-views.json",
+# The authoring surfaces, each paired with the display config whose vocabulary its
+# tokens resolve against. app-views.json is the declarative one; pack-views lives
+# under the UI because the pack registers its views in code; both resolve against
+# the shipped app-config.json. The starter pair is what a fresh retarget begins
+# from, and it ships too, so a broken token there is a broken starting point - it
+# is scanned against its OWN config, not the fleet one.
+SURFACES = [
+    (APP / "app-views.json", APP / "app-config.json"),
+    (UI_SRC / "lib/packs/fleet/pack-views.json", APP / "app-config.json"),
+    (APP / "starter/app-views.json", APP / "starter/app-config.json"),
 ]
 
 # Normalized path -> the render site that interpolates it. Adding an entry is a
@@ -122,6 +139,10 @@ INTERPOLATED_PATHS: dict[str, str] = {
 }
 
 TOKEN_RE = re.compile(r"\{\{\s*[\w.]+\s*\}\}")
+# The renderer's own token grammar (display-config.ts): {{group.key}} where group
+# is a display subsection and key is a leaf. Kept in lockstep so the NAME check
+# below accepts exactly what interpolateTokens will resolve and no more.
+TOKEN_NAME_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\}\}")
 
 
 def normalize(path: str) -> str:
@@ -160,6 +181,31 @@ def token_paths(spec: Path) -> list[tuple[str, str]]:
     return found
 
 
+def token_names(text: str) -> list[tuple[str, str]]:
+    """(group, key) for every {{group.key}} in a string, renderer grammar."""
+    return TOKEN_NAME_RE.findall(text)
+
+
+def token_vocab(config: Path) -> dict[str, set[str]]:
+    """The set of resolvable {{group.key}} names for a display config.
+
+    Mirrors interpolateTokens exactly: a token resolves iff cfg.display[group] is
+    an object and cfg.display[group][key] is a STRING. So labels and units qualify,
+    and so would icons or statusEnums whose values are strings - anything whose
+    values are objects (thresholds) is not a string map and cannot be a token
+    target. Building the vocabulary from the config, rather than hardcoding
+    'labels'/'units', keeps the check honest if a new string section is added.
+    """
+    disp = (json.loads(config.read_text(encoding="utf-8")).get("display") or {})
+    vocab: dict[str, set[str]] = {}
+    for group, bag in disp.items():
+        if isinstance(bag, dict):
+            keys = {k for k, v in bag.items() if isinstance(v, str)}
+            if keys:
+                vocab[group] = keys
+    return vocab
+
+
 def interpolated_field_names() -> set[str]:
     """Advisory cross-check: field names reaching interpolateTokens anywhere."""
     names: set[str] = set()
@@ -186,22 +232,38 @@ def main() -> int:
     violations: list[str] = []
     checked = 0
 
-    for spec in SPECS:
+    for spec, config in SURFACES:
         if not spec.exists():
             print(f"  note: {spec.relative_to(REPO)} absent, skipped")
             continue
         rel = spec.relative_to(REPO)
+        vocab = token_vocab(config) if config.exists() else {}
         for path, text in token_paths(spec):
             checked += 1
             norm = normalize(path)
-            if norm in INTERPOLATED_PATHS:
-                continue
-            snippet = text if len(text) <= 90 else text[:87] + "..."
-            violations.append(
-                f"{rel}: {path}\n"
-                f"      '{norm}' is not a known interpolated path, so the braces\n"
-                f"      print on screen: {snippet}"
-            )
+            if norm not in INTERPOLATED_PATHS:
+                snippet = text if len(text) <= 90 else text[:87] + "..."
+                violations.append(
+                    f"{rel}: {path}\n"
+                    f"      '{norm}' is not a known interpolated path, so the braces\n"
+                    f"      print on screen: {snippet}"
+                )
+            # NAME check: even on an interpolated path, a token whose group/key is
+            # not in the paired display config resolves to nothing and interpolateTokens
+            # leaves the literal braces on screen - the same visible failure, from a
+            # typo ({{labels.operatr_plural}}) or a token the config never defined.
+            for group, key in token_names(text):
+                if group not in vocab or key not in vocab[group]:
+                    known = (
+                        f"config defines {group}.{{{', '.join(sorted(vocab[group]))}}}"
+                        if group in vocab
+                        else f"config has no '{group}' string section"
+                    )
+                    violations.append(
+                        f"{rel}: {path}\n"
+                        f"      token {{{{{group}.{key}}}}} is not in "
+                        f"{config.relative_to(REPO)} - {known}"
+                    )
 
     # Advisory only - see the module docstring for why this cannot block.
     derived = interpolated_field_names()
