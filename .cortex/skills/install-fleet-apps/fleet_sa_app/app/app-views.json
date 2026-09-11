@@ -1752,10 +1752,9 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT OPERATOR_ID) AS headcount, ROUND(SUM(FTE_EQUIVALENT), 1) AS fte, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk, ROUND(100 * AVG(DRIVE_SHARE_OF_PAID), 1) AS drive_share FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK",
+          "query": "SELECT COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID) AS headcount, ROUND(SUM(FTE_EQUIVALENT), 1) AS fte, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID, NULL)) AS at_risk, ROUND(100 * DIV0(SUM(DRIVE_HOURS), SUM(HOURS_TO_DATE)), 1) AS drive_share FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           },
           "mapping": {
@@ -1797,10 +1796,9 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT OPERATOR_ID AS operator, TEAM_ID AS team, SUPERVISOR_ID AS supervisor, OT_BAND AS band, BINDING_CONSTRAINT AS binding_limit, HOURS_TO_DATE AS hours_so_far, PROJECTED_WEEK_HOURS AS projected_hours, DAYS_REMAINING AS days_left, PROJECTED_OT_HOURS AS projected_ot_hours, EST_OT_PREMIUM AS ot_premium, SHIFT_TYPE AS shift_pattern, DAYS_WORKED AS days_worked, ROUND(100 * DRIVE_SHARE_OF_PAID, 1) AS driving_pct, IFF(OT_ELIGIBLE_FLSA, 'Yes', 'Exempt (CMV)') AS flsa_ot_eligible FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK ORDER BY projected_hours DESC NULLS LAST LIMIT 100",
+          "query": "SELECT OPERATOR_ID AS operator, REGION_LABEL AS region, TEAM_ID AS team, SUPERVISOR_ID AS supervisor, OT_BAND AS band, BINDING_CONSTRAINT AS binding_limit, HOURS_TO_DATE AS hours_so_far, PROJECTED_WEEK_HOURS AS projected_hours, DAYS_REMAINING AS days_left, PROJECTED_OT_HOURS AS projected_ot_hours, EST_OT_PREMIUM AS ot_premium, SHIFT_TYPE AS shift_pattern, DAYS_WORKED AS days_worked, ROUND(100 * DRIVE_SHARE_OF_PAID, 1) AS driving_pct, IFF(OT_ELIGIBLE_FLSA, 'Yes', 'Exempt (CMV)') AS flsa_ot_eligible FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK ORDER BY projected_hours DESC NULLS LAST LIMIT 100",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           }
         },
@@ -1818,10 +1816,9 @@
       "distribution": {
         "component": "Chart",
         "data": {
-          "query": "WITH b AS (  SELECT CASE     WHEN PROJECTED_WEEK_HOURS < 20 THEN '00-20'     WHEN PROJECTED_WEEK_HOURS < 30 THEN '20-30'     WHEN PROJECTED_WEEK_HOURS < 40 THEN '30-40'     WHEN PROJECTED_WEEK_HOURS < 50 THEN '40-50'     WHEN PROJECTED_WEEK_HOURS < 60 THEN '50-60'     WHEN PROJECTED_WEEK_HOURS < 70 THEN '60-70'     ELSE '70+' END AS bucket, OPERATOR_ID   FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT bucket AS projected_hours_band, COUNT(DISTINCT OPERATOR_ID) AS operators FROM b GROUP BY bucket ORDER BY bucket",
+          "query": "WITH b AS (  SELECT CASE     WHEN PROJECTED_WEEK_HOURS < 20 THEN '00-20'     WHEN PROJECTED_WEEK_HOURS < 30 THEN '20-30'     WHEN PROJECTED_WEEK_HOURS < 40 THEN '30-40'     WHEN PROJECTED_WEEK_HOURS < 50 THEN '40-50'     WHEN PROJECTED_WEEK_HOURS < 60 THEN '50-60'     WHEN PROJECTED_WEEK_HOURS < 70 THEN '60-70'     ELSE '70+' END AS bucket, REGION_LABEL, REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID AS op_key   FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK) SELECT bucket AS projected_hours_band, REGION_LABEL AS region, COUNT(DISTINCT op_key) AS operators FROM b GROUP BY bucket, REGION_LABEL ORDER BY bucket, region",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           }
         },
@@ -1835,7 +1832,8 @@
             {
               "type": "bar",
               "field": "operators",
-              "label": "{{labels.operator_plural}}"
+              "label": "{{labels.operator_plural}}",
+              "groupBy": "region"
             }
           ]
         }
@@ -1843,10 +1841,9 @@
       "trend": {
         "component": "Chart",
         "data": {
-          "query": "SELECT WEEK_LABEL AS week, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct_of_paid, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE NOT IS_PARTIAL_START GROUP BY WEEK_LABEL ORDER BY week",
+          "query": "SELECT WEEK_LABEL || ' - ' || REGION_LABEL AS week, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct_of_paid, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE NOT IS_PARTIAL_START GROUP BY WEEK_LABEL, REGION_LABEL ORDER BY week",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           }
         },
@@ -1873,10 +1870,9 @@
       "compliance": {
         "component": "Chart",
         "data": {
-          "query": "SELECT BINDING_CONSTRAINT AS binding_limit, COUNT(DISTINCT OPERATOR_ID) AS operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK GROUP BY BINDING_CONSTRAINT ORDER BY operators DESC",
+          "query": "SELECT BINDING_CONSTRAINT AS binding_limit, REGION_LABEL AS region, COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID) AS operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK GROUP BY BINDING_CONSTRAINT, REGION_LABEL ORDER BY operators DESC",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           }
         },
@@ -1890,7 +1886,8 @@
             {
               "type": "bar",
               "field": "operators",
-              "label": "{{labels.operator_plural}}"
+              "label": "{{labels.operator_plural}}",
+              "groupBy": "region"
             }
           ]
         }
@@ -1898,10 +1895,9 @@
       "team": {
         "component": "Chart",
         "data": {
-          "query": "SELECT TEAM_ID AS team, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK AND TEAM_ID IS NOT NULL GROUP BY TEAM_ID ORDER BY ot_premium DESC NULLS LAST LIMIT 12",
+          "query": "SELECT REGION_LABEL || ' - ' || TEAM_ID AS team, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_CURRENT_WEEK AND TEAM_ID IS NOT NULL GROUP BY REGION_LABEL, TEAM_ID ORDER BY ot_premium DESC NULLS LAST LIMIT 12",
           "params": {
             "region": "context.region",
-            "vehicle_type": "context.vehicle_type",
             "dataset_id": "context.dataset_id"
           }
         },
@@ -1953,7 +1949,7 @@
               "type": "path",
               "id": "labor-recent-trips",
               "geojsonColumn": "route_geojson",
-              "tooltip": "{operator} - {started}<br/>{distance_km} km, {duration_min} min",
+              "tooltip": "{operator} ({region}) - {started}<br/>{distance_km} km, {duration_min} min",
               "color": [
                 41,
                 181,
@@ -1963,10 +1959,9 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "WITH tt AS (SELECT * FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), win AS (SELECT DATEADD('day', -7, MAX(TRIP_START)) AS FROM_TS FROM tt) SELECT t.TRIP_ID AS trip_id, t.DRIVER_ID AS operator, TO_VARCHAR(t.TRIP_START, 'YYYY-MM-DD HH24:MI') AS started, ROUND(t.DISTANCE_KM, 1) AS distance_km, ROUND(t.DURATION_MINUTES, 0) AS duration_min, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM tt t, win w WHERE t.ROUTE_GEOG IS NOT NULL AND t.TRIP_START >= w.FROM_TS AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START DESC LIMIT 400",
+                "query": "WITH tt AS (SELECT * FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), win AS (SELECT REGION, DATEADD('day', -7, MAX(TRIP_START)) AS FROM_TS FROM tt GROUP BY REGION) SELECT t.TRIP_ID AS trip_id, t.DRIVER_ID AS operator, FLEET_APP.CORE.REGION_LABEL(t.REGION) AS region, TO_VARCHAR(t.TRIP_START, 'YYYY-MM-DD HH24:MI') AS started, ROUND(t.DISTANCE_KM, 1) AS distance_km, ROUND(t.DURATION_MINUTES, 0) AS duration_min, ST_ASGEOJSON(t.ROUTE_GEOG)::STRING AS route_geojson FROM tt t JOIN win w ON EQUAL_NULL(w.REGION, t.REGION) WHERE t.ROUTE_GEOG IS NOT NULL AND t.TRIP_START >= w.FROM_TS AND (:selected_operator IS NULL OR t.DRIVER_ID = :selected_operator) ORDER BY t.TRIP_START DESC LIMIT 400",
                 "params": {
                   "region": "context.region",
-                  "vehicle_type": "context.vehicle_type",
                   "dataset_id": "context.dataset_id",
                   "selected_operator": "viewState.selected_operator"
                 }
