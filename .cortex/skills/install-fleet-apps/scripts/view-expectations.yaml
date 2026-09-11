@@ -163,6 +163,21 @@ views:
           two at 10 min. So zero cannibalisation is the correct answer for the
           opening selection, not a broken panel. The click-through path is covered
           in the app rather than here.
+      areas.transfers:
+        expect: may_be_empty
+        reason: >-
+          MEASURED, not assumed: this is the cannibalisation breakdown table
+          (LIVE_CANNIBALISATION) listing which owned stores lose households to
+          the selected candidate - it is the row-level detail behind
+          areas.overlaps, so it is empty exactly when overlaps is. It keys on
+          :selected_candidate + :selected_band, and the harness seeds neither
+          (only :selected_store), so on both passes it runs with the default
+          candidate at the default band. Measured on SanFrancisco: the nearest
+          candidate is 8.26 km from any owned store and LIVE_CANNIBALISATION
+          returns zero rows at the default band, so no transferred demand is the
+          correct opening state. The populated case (a candidate whose drive-time
+          catchment overlaps owned territory) is exercised by clicking a
+          candidate in the app, not by this harness.
       overlap-intensity-hex:
         expect: may_be_empty
         reason: Hex intensity is derived from areas.overlaps - see that entry.
