@@ -638,31 +638,56 @@ $$
       AND (P_FROM IS NULL OR TRIP_START >= P_FROM::TIMESTAMP_NTZ)
       AND (P_TO   IS NULL OR TRIP_START <  DATEADD('day', 1, P_TO)::TIMESTAMP_NTZ)
   ),
-  scope AS (
-    SELECT ANY_VALUE(REGION) AS RG, ANY_VALUE(VEHICLE_TYPE) AS VT FROM duty
+  -- Distinct scope pairs actually present in the data. Config is resolved PER
+  -- (region, vehicle_type), NOT once for the whole call.
+  scopes AS (
+    SELECT DISTINCT REGION AS RG, VEHICLE_TYPE AS VT FROM duty
   ),
+  -- Thresholds, the payroll week-start day, the DOT on-duty ceiling, the
+  -- driver-salesperson limits and the GVWR boundary are JURISDICTION config: US
+  -- FLSA is 40h weekly, the EU uses a 48h average. The old resolver collapsed the
+  -- whole scope to ONE row via ANY_VALUE(region), so the moment a region-specific
+  -- LABOR_CONFIG row existed, one region's rules silently applied to every region.
+  -- Inert while only the '*'/'*' row exists, but it defeated the table's entire
+  -- purpose. Resolve one row per scope pair, taking the MOST SPECIFIC matching row
+  -- (an exact region+type match beats a wildcard). LEFT JOIN so a pair with no
+  -- matching row still yields a row and COALESCEs to the defaults below - a region
+  -- can never lose its config and drop out of the joins that consume params.
   cfg AS (
-    SELECT c.OT_THRESHOLD_1, c.OT_THRESHOLD_2, c.OT_THRESHOLD_3, c.WEEK_START_DOW,
+    SELECT s.RG, s.VT,
+           c.OT_THRESHOLD_1, c.OT_THRESHOLD_2, c.OT_THRESHOLD_3, c.WEEK_START_DOW,
            c.DOT_ONDUTY_LIMIT_7D, c.DS_MAX_DRIVE_SHARE, c.DS_RADIUS_MILES,
            c.GVWR_OT_THRESHOLD_TONNES, c.SUBSTANTIVE_DAY_MIN_SHARE
-    FROM FLEET_APP.LABOR.LABOR_CONFIG c, scope s
-    WHERE (c.REGION = s.RG OR c.REGION = '*')
-      AND (c.VEHICLE_TYPE = s.VT OR c.VEHICLE_TYPE = '*')
+    FROM scopes s
+    LEFT JOIN FLEET_APP.LABOR.LABOR_CONFIG c
+      ON (c.REGION = s.RG OR c.REGION = '*')
+     AND (c.VEHICLE_TYPE = s.VT OR c.VEHICLE_TYPE = '*')
     QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY s.RG, s.VT
       ORDER BY IFF(c.REGION = '*', 1, 0) + IFF(c.VEHICLE_TYPE = '*', 1, 0)
     ) = 1
   ),
+  -- One resolved row per scope pair, defaults applied. Carries RG/VT so every
+  -- consumer joins on its own region and vehicle type rather than CROSS JOINing a
+  -- single global row.
   params AS (
-    SELECT
-      COALESCE((SELECT OT_THRESHOLD_1 FROM cfg), 40) AS T1,
-      COALESCE((SELECT OT_THRESHOLD_2 FROM cfg), 50) AS T2,
-      COALESCE((SELECT OT_THRESHOLD_3 FROM cfg), 60) AS T3,
-      COALESCE((SELECT WEEK_START_DOW FROM cfg), 7)  AS DOW,
-      COALESCE((SELECT DOT_ONDUTY_LIMIT_7D FROM cfg), 60)      AS DOT_LIMIT,
-      COALESCE((SELECT DS_MAX_DRIVE_SHARE FROM cfg), 0.50)     AS DS_DRIVE_MAX,
-      COALESCE((SELECT DS_RADIUS_MILES FROM cfg), 100)         AS DS_RADIUS,
-      COALESCE((SELECT GVWR_OT_THRESHOLD_TONNES FROM cfg), 4.536) AS GVWR_T,
-      COALESCE((SELECT SUBSTANTIVE_DAY_MIN_SHARE FROM cfg), 0.50) AS MIN_SHARE
+    SELECT RG, VT,
+      COALESCE(OT_THRESHOLD_1, 40) AS T1,
+      COALESCE(OT_THRESHOLD_2, 50) AS T2,
+      COALESCE(OT_THRESHOLD_3, 60) AS T3,
+      COALESCE(WEEK_START_DOW, 7)  AS DOW,
+      COALESCE(DOT_ONDUTY_LIMIT_7D, 60)      AS DOT_LIMIT,
+      COALESCE(DS_MAX_DRIVE_SHARE, 0.50)     AS DS_DRIVE_MAX,
+      COALESCE(DS_RADIUS_MILES, 100)         AS DS_RADIUS,
+      COALESCE(GVWR_OT_THRESHOLD_TONNES, 4.536) AS GVWR_T,
+      COALESCE(SUBSTANTIVE_DAY_MIN_SHARE, 0.50) AS MIN_SHARE
+    FROM cfg
+  ),
+  -- MIN_SHARE at region grain for the as-of trim below, which is region-only.
+  -- MIN() collapses the unlikely case of two vehicle types in one region to a
+  -- single value; MIN_SHARE is a dataset-tapering knob, not a per-vehicle law.
+  region_min_share AS (
+    SELECT RG AS REGION, MIN(MIN_SHARE) AS MIN_SHARE FROM params GROUP BY RG
   ),
   -- ==========================================================================
   -- Per-region as-of anchor
@@ -683,13 +708,14 @@ $$
   -- MIN_SHARE at or below 1.0 this always yields a row per region and can never
   -- empty a region out.
   substantive AS (
-    SELECT REGION, MAX(D) AS LAST_SUBSTANTIVE_D
+    SELECT r.REGION, MAX(D) AS LAST_SUBSTANTIVE_D
     FROM (
       SELECT REGION, D, TRIPS, MEDIAN(TRIPS) OVER (PARTITION BY REGION) AS MED_TRIPS
       FROM day_act
-    ) r, params p
-    WHERE r.TRIPS >= r.MED_TRIPS * p.MIN_SHARE
-    GROUP BY REGION
+    ) r
+    JOIN region_min_share ms ON EQUAL_NULL(ms.REGION, r.REGION)
+    WHERE r.TRIPS >= r.MED_TRIPS * ms.MIN_SHARE
+    GROUP BY r.REGION
   ),
   region_span AS (
     SELECT REGION, MIN(DUTY_START) AS FIRST_DUTY_TS, MAX(DUTY_END) AS LAST_DUTY_TS
@@ -731,12 +757,14 @@ $$
            p.T1, p.T2, p.T3, p.DOW, rw.AS_OF_TS, rw.FIRST_TS,
            DATEADD('day', -MOD(DAYOFWEEKISO(d.DUTY_START) - p.DOW + 7, 7), d.DUTY_START::DATE) AS WK_BEGIN,
            DATEADD('day', -MOD(DAYOFWEEKISO(d.DUTY_END)   - p.DOW + 7, 7), d.DUTY_END::DATE)   AS WK_END
-    -- CROSS JOIN, not a comma join. A comma has LOWER precedence than an
-    -- explicit JOIN, so `FROM duty d, params p JOIN region_window rw ON ...`
-    -- parses as `duty d, (params p JOIN region_window rw ON ...)` and `d` is not
-    -- in scope inside that ON clause.
+    -- params is now per (region, vehicle_type), so JOIN on the scope keys rather
+    -- than CROSS JOIN a single global row. Explicit JOIN, never a comma: a comma
+    -- has LOWER precedence than an explicit JOIN, so `FROM duty d, params p JOIN
+    -- region_window rw ON ...` parses as `duty d, (params p JOIN region_window rw
+    -- ...)` and `d` is not in scope inside that ON clause.
     FROM duty d
-    CROSS JOIN params p
+    JOIN params p
+      ON EQUAL_NULL(p.RG, d.REGION) AND EQUAL_NULL(p.VT, d.VEHICLE_TYPE)
     JOIN region_window rw ON EQUAL_NULL(rw.REGION, d.REGION)
   ),
   -- One segment per payroll week the duty period TOUCHES. This used to emit the
@@ -1078,7 +1106,8 @@ $$
     p.REGION,
     p.REGION_LABEL,
     p.VEHICLE_TYPE
-  -- CROSS JOIN, not a comma join. A comma has LOWER precedence than an explicit
+  -- params is per (region, vehicle_type), so it JOINs on the scope keys. Explicit
+  -- JOIN, not a comma: a comma has LOWER precedence than an explicit
   -- JOIN, so `FROM proj p, params pp LEFT JOIN ops o ON o.X = p.X` parses as
   -- `proj p, (params pp LEFT JOIN ops o ...)` and `p` is not in scope inside that
   -- ON clause - it fails with a bare "invalid identifier 'P.OPERATOR_ID'".
@@ -1088,7 +1117,8 @@ $$
   -- EQUAL_NULL rather than =, consistent with the region joins above, so a NULL
   -- region cannot silently drop rows out of an equality join.
   FROM proj p
-  CROSS JOIN params pp
+  JOIN params pp
+    ON EQUAL_NULL(pp.RG, p.REGION) AND EQUAL_NULL(pp.VT, p.VEHICLE_TYPE)
   LEFT JOIN ops o      ON o.OPERATOR_ID = p.OPERATOR_ID
                       AND EQUAL_NULL(o.REGION, p.REGION)
                       AND EQUAL_NULL(o.VEHICLE_TYPE, p.VEHICLE_TYPE)
