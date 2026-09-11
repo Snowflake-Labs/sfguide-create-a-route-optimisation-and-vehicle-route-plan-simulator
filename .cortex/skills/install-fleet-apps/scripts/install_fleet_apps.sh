@@ -606,7 +606,8 @@ if [ "${SKIP_LABOR:-0}" != "1" ]; then
         # output, and every assertion here contains the literal 'FAIL' inside its
         # IFF expression, so a grep for FAIL matches the SQL text and reports a
         # breach on a perfectly healthy layer (measured: both regions "failed"
-        # while all 15 checks passed).
+        # while every check passed). The parse is count-agnostic on purpose, so
+        # adding a check to the script needs no edit here.
         LABOR_RES=$(python3 - "/tmp/ifa_labor_verify_$RG.json" <<'PYEOF' 2>/dev/null || echo "PARSE_ERROR"
 import json, sys
 try:

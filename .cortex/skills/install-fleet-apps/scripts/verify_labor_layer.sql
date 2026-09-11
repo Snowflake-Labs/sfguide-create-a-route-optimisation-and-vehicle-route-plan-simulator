@@ -106,6 +106,42 @@
 -- reporting its input. CHECK 15 asserts DAYS_WORKED counts the days a duty period
 -- COVERS: counting only the date each segment STARTED reported 42.51 paid hours
 -- against one day worked, an impossibility that reached the dashboard.
+--
+-- CHECK 16 is the one that matters most after CHECK 1, and it is the only check
+-- here that compares two SCOPES rather than inspecting one. Operator and vehicle
+-- ids are index-derived per dataset, so DRV-00009 exists in every region. All
+-- three functions grouped and partitioned on the id alone, so any call covering
+-- more than one dataset MERGED two different people: the operator dimension
+-- returned 147 rows for two regions holding 100 + 47, the duty fact interleaved a
+-- San Francisco courier's trips with a Texas HGV driver's into one gap-based
+-- session (607 real duty periods collapsed to 519, longest span 215.49h -> 96.31h),
+-- and the weekly fact SUMMED their hours (256 operator-weeks -> 196, with weeks of
+-- 170.05 paid hours). None of the single-scope checks could see it. CHECK 1 in
+-- particular cannot: it compares the duty total to the weekly total, and under
+-- fusion BOTH are computed from the same regrouped sessions, so the equality held
+-- while both sides were wrong. The test is therefore additivity - this region read
+-- on its own must return exactly the rows the unscoped read attributes to it.
+-- This is also the scope the AGENT uses: VW_LABOR_WEEK and SV_LABOR call these
+-- functions with no region argument at all.
+--
+-- CHECK 17, CHECK 18 and CHECK 19 are arithmetic impossibilities about a payroll
+-- week, and they are asserted on the UNSCOPED wrapper views deliberately, because
+-- that is where they failed. Per region they all passed; it was the pooled read
+-- that produced DAYS_WORKED = 8 in a 7-day week, HOURS_TO_DATE = 170.05 in a week
+-- that holds 168, and a PROJECTED_WEEK_HOURS of 168 for an operator who had
+-- already worked 170.05 - a forecast that someone will finish the week with fewer
+-- hours than they have. CHECK 17 is not merely a tighter CHECK 15: an extra day
+-- makes hours-per-day-worked SMALLER, so the off-by-one made CHECK 15 pass MORE
+-- comfortably (21.26h against its 24h bound, now exactly 24h). A check that gets
+-- looser as the defect worsens cannot guard it. Note DAYS_WORKED may legitimately
+-- exceed DAYS_ELAPSED: the as-of anchor is trimmed to the last substantive day, so
+-- work in the tapering tail is real work on a day the projection does not count.
+-- Measured on 37 rows, so the bound is 7 and not LEAST(7, DAYS_ELAPSED).
+--
+-- CHECK 20 asserts the two surrogate keys are unique. Both are declared PRIMARY
+-- KEY in SV_LABOR and both were built from the operator id alone, so they
+-- collided across datasets - silently, because Snowflake does not enforce a
+-- primary key on a standard view.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -117,6 +153,20 @@ WITH duty AS (
 ),
 wk AS (
   SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED($REGION, NULL::VARCHAR))
+),
+-- The UNSCOPED reads, which are what VW_LABOR_WEEK, VW_DUTY_PERIOD and therefore
+-- SV_LABOR and every agent question actually go through. Kept separate from `wk`
+-- because the defects CHECK 16 to CHECK 19 guard appeared ONLY when more than one
+-- dataset was in scope, so asserting on the region-scoped read alone passed while
+-- the agent path was wrong.
+wk_all AS (
+  SELECT * FROM FLEET_APP.LABOR.VW_LABOR_WEEK
+),
+duty_all AS (
+  SELECT * FROM FLEET_APP.LABOR.VW_DUTY_PERIOD
+),
+op_all AS (
+  SELECT * FROM FLEET_APP.LABOR.VW_LABOR_OPERATOR
 ),
 cfg AS (
   SELECT COALESCE(MAX(HOURLY_RATE_MIN), 22.0) AS RMIN,
@@ -244,5 +294,55 @@ SELECT * FROM (
          'max ' || TO_VARCHAR(ROUND(COALESCE((SELECT MAX(DIV0(HOURS_TO_DATE, DAYS_WORKED)) FROM wk), 0), 2))
            || 'h per day worked',
          IFF(COALESCE((SELECT MAX(DIV0(HOURS_TO_DATE, DAYS_WORKED)) FROM wk), 0) <= 24.01,
+             'PASS', 'FAIL')
+  UNION ALL
+  -- Additivity across scopes. This region read on its own must return exactly the
+  -- rows the unscoped read attributes to it; anything less means the unscoped read
+  -- merged operators that share an index-derived id across datasets.
+  SELECT 16, 'operator identity survives a multi-dataset scope',
+         'week ' || TO_VARCHAR((SELECT COUNT(*) FROM wk)) || '/'
+           || TO_VARCHAR((SELECT COUNT(*) FROM wk_all WHERE REGION = $REGION))
+           || ', duty ' || TO_VARCHAR((SELECT COUNT(*) FROM duty))
+           || '/' || TO_VARCHAR((SELECT COUNT(*) FROM duty_all WHERE REGION = $REGION))
+           || ', operators ' || TO_VARCHAR((SELECT COUNT(*) FROM TABLE(FLEET_APP.LABOR.F_DIM_LABOR_OPERATOR_SCOPED($REGION, NULL::VARCHAR))))
+           || '/' || TO_VARCHAR((SELECT COUNT(*) FROM op_all WHERE REGION = $REGION))
+           || ' (scoped/unscoped)',
+         IFF((SELECT COUNT(*) FROM wk)   = (SELECT COUNT(*) FROM wk_all   WHERE REGION = $REGION)
+             AND (SELECT COUNT(*) FROM duty) = (SELECT COUNT(*) FROM duty_all WHERE REGION = $REGION)
+             AND (SELECT COUNT(*) FROM TABLE(FLEET_APP.LABOR.F_DIM_LABOR_OPERATOR_SCOPED($REGION, NULL::VARCHAR)))
+                 = (SELECT COUNT(*) FROM op_all WHERE REGION = $REGION),
+             'PASS', 'FAIL')
+  UNION ALL
+  -- A payroll week has 7 days. Asserted on the unscoped read, where the fused
+  -- grain produced 8, and bounded at 7 rather than at DAYS_ELAPSED because the
+  -- trimmed as-of anchor makes DAYS_WORKED > DAYS_ELAPSED legitimate.
+  SELECT 17, 'days worked fits inside a payroll week',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk_all WHERE DAYS_WORKED NOT BETWEEN 1 AND 7))
+           || ' rows outside 1..7, max '
+           || TO_VARCHAR(COALESCE((SELECT MAX(DAYS_WORKED) FROM wk_all), 0)),
+         IFF((SELECT COUNT(*) FROM wk_all WHERE DAYS_WORKED NOT BETWEEN 1 AND 7) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  SELECT 18, 'paid hours fit inside a payroll week',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk_all WHERE HOURS_TO_DATE > 168.01))
+           || ' rows over 168h, max '
+           || TO_VARCHAR(ROUND(COALESCE((SELECT MAX(HOURS_TO_DATE) FROM wk_all), 0), 2)) || 'h',
+         IFF((SELECT COUNT(*) FROM wk_all WHERE HOURS_TO_DATE > 168.01) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  -- A forecast below the hours already worked is not a forecast.
+  SELECT 19, 'projection is never below hours already worked',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk_all WHERE PROJECTED_WEEK_HOURS < HOURS_TO_DATE - 0.01))
+           || ' rows projected below actual',
+         IFF((SELECT COUNT(*) FROM wk_all WHERE PROJECTED_WEEK_HOURS < HOURS_TO_DATE - 0.01) = 0,
+             'PASS', 'FAIL')
+  UNION ALL
+  -- Both keys are declared PRIMARY KEY in SV_LABOR, and a view does not enforce
+  -- one, so a collision across datasets is silent.
+  SELECT 20, 'semantic-view primary keys are unique',
+         TO_VARCHAR((SELECT COUNT(*) - COUNT(DISTINCT LABOR_WEEK_ID) FROM wk_all))
+           || ' duplicate week keys, '
+           || TO_VARCHAR((SELECT COUNT(*) - COUNT(DISTINCT DUTY_ID) FROM duty_all))
+           || ' duplicate duty keys',
+         IFF((SELECT COUNT(*) - COUNT(DISTINCT LABOR_WEEK_ID) FROM wk_all) = 0
+             AND (SELECT COUNT(*) - COUNT(DISTINCT DUTY_ID) FROM duty_all) = 0,
              'PASS', 'FAIL')
 ) ORDER BY CHK;
