@@ -98,9 +98,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     trips.total_trips AS COUNT(DISTINCT TRIP_ID)
       WITH SYNONYMS ('number of trips', 'trip count')
       COMMENT = 'Distinct count of actual trips'
-    , trips.total_operators AS COUNT(DISTINCT OPERATOR_ID)
+    , trips.total_operators AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'active operators', 'drivers')
-      COMMENT = 'Distinct count of operators'
+      COMMENT = 'Distinct count of operators. Keyed on (region, vehicle_type, operator_id) because operator ids are index-derived per dataset and repeat across regions, so counting the bare id merges different people whenever more than one region is in scope.'
     , trips.total_distance_km AS SUM(distance_km)
       WITH SYNONYMS ('total km driven', 'total distance')
       COMMENT = 'Total actual distance driven (km)'
@@ -994,9 +994,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
   )
 
   METRICS (
-    labor_week.total_operators AS COUNT(DISTINCT OPERATOR_ID)
+    labor_week.total_operators AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'headcount', 'operator count')
-      COMMENT = 'Distinct operators with recorded hours'
+      COMMENT = 'Distinct operators with recorded hours. Keyed on (region, vehicle_type, operator_id) because operator ids are index-derived per dataset and repeat across regions, so counting the bare id understates headcount whenever more than one region is in scope.'
     , labor_week.total_paid_hours AS SUM(HOURS_TO_DATE)
       WITH SYNONYMS ('total hours', 'hours paid', 'labour hours')
       COMMENT = 'Total paid hours'

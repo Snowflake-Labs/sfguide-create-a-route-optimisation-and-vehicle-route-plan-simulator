@@ -1537,7 +1537,7 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT OPERATOR_ID) AS operators, COUNT(*) AS journeys, ROUND(AVG(DISTANCE_VALUE),2) AS avg_dist, SUM(IFF(IS_DEVIATION,1,0)) AS deviations FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(DISTINCT REGION || '|' || OPERATOR_ID) AS operators, COUNT(*) AS journeys, ROUND(AVG(DISTANCE_VALUE),2) AS avg_dist, SUM(IFF(IS_DEVIATION,1,0)) AS deviations FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
@@ -2459,7 +2459,7 @@
       "kpi": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS scheduled, COUNT(DISTINCT ENTITY_ID) AS entities, COUNT(DISTINCT OPERATOR_ID) AS operators, COUNT(DISTINCT DESTINATION_SITE_ID) AS dest_sites FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "query": "SELECT COUNT(*) AS scheduled, COUNT(DISTINCT ENTITY_ID) AS entities, COUNT(DISTINCT REGION || '|' || OPERATOR_ID) AS operators, COUNT(DISTINCT DESTINATION_SITE_ID) AS dest_sites FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
           "params": {
             "region": "context.region",
             "vehicle_type": "context.vehicle_type",
