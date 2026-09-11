@@ -80,7 +80,34 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  TRIM(REGEXP_REPLACE(COALESCE(P_REGION, ''), '([a-z0-9])([A-Z])', '\\1 \\2'))
+  -- Render a camelCase region KEY as a human label. Three passes, all pure string
+  -- logic (no lookup table, no engine):
+  --   1. Split camelCase into words: SanFrancisco -> San Francisco.
+  --   2. Uppercase geographic acronyms the key writes camel-style (Us -> US), so
+  --      UsTexas renders "US Texas" not "Us Texas". The old single-pass version
+  --      title-cased the acronym and shipped "Us Texas" to every chart legend.
+  --   3. Lowercase English connectors (Of -> of) so UnitedStatesOfAmerica renders
+  --      "United States of America".
+  -- Every acronym/connector replace is \b-anchored and case-sensitive, so a real
+  -- word that merely starts with those letters is untouched: "Uster" stays
+  -- "Uster" (no boundary after "Us"), "Ofallon" keeps its leading "Of". Longer
+  -- acronyms are handled before their prefixes (Usa before Us) but the trailing
+  -- boundary already prevents Us from biting into Usa.
+  REGEXP_REPLACE(
+   REGEXP_REPLACE(
+    REGEXP_REPLACE(
+     REGEXP_REPLACE(
+      REGEXP_REPLACE(
+       REGEXP_REPLACE(
+        REGEXP_REPLACE(
+         TRIM(REGEXP_REPLACE(COALESCE(P_REGION, ''), '([a-z0-9])([A-Z])', '\\1 \\2')),
+        '\\bUsa\\b', 'USA'),
+       '\\bUs\\b', 'US'),
+      '\\bUk\\b', 'UK'),
+     '\\bEu\\b', 'EU'),
+    '\\bUae\\b', 'UAE'),
+   '\\bOf\\b', 'of'),
+  '\\bAnd\\b', 'and')
 $$;
 
 -- =============================================================================
