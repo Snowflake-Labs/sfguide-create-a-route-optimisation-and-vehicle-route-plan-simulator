@@ -80,8 +80,11 @@
 --    Nothing failed, which is why this needed a test rather than a review: the
 --    app never saw it because the app always passes a region, while SV_LABOR and
 --    VW_LABOR_WEEK pass none, so the defect was confined to the AGENT's answers.
---    verify_labor_layer.sql now asserts the unscoped call equals the sum of the
---    per-region calls on both operator count and total hours.
+--    verify_labor_layer.sql CHECK 16 now asserts that the per-region scoped read
+--    returns exactly the weeks, duty periods and operators the unscoped read
+--    attributes to that region - a roster-additivity test on COUNTS. Hours are
+--    guarded separately: CHECK 1 asserts duty-to-weekly hours conservation within
+--    a scope, so a fused grain that inflated hours fails there.
 --
 --    Vehicle and location ids are globally unique (measured: 150 and 12,978
 --    distinct either way), so joins on those keys are deliberately left bare -

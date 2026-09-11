@@ -318,7 +318,7 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when a synapse verb has no routing guidance in an agent that can see it, when a verb uses a JavaScript global the Snowflake proc runtime lacks, and when a session or created object is missing its tracking tag):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when an authored view token sits on a path the renderer never interpolates or names a `{{group.key}}` the display config does not define, when a synapse verb has no routing guidance in an agent that can see it, when a verb uses a JavaScript global the Snowflake proc runtime lacks, and when a session or created object is missing its tracking tag):
 
 ```bash
 chmod +x .githooks/pre-commit
