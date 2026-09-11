@@ -118,6 +118,24 @@ if [ -f "$USECASE_CHECK" ] && staged_any \
   }
 fi
 
+# ── 2c. Authored tokens must land on interpolated paths ─────────────────────
+# A {{labels.x}} token on a field the renderer does not interpolate prints its own
+# braces on screen. Nothing errors - the query runs and the numbers are right -
+# which is how a chart legend reading "{{labels.operator_plural}}: 32" reached a
+# live account. Default-deny by path: a new token-bearing field fails until its
+# render site is verified and recorded.
+TOKEN_CHECK="$SKILL_DIR/scripts/check_view_tokens.py"
+if [ -f "$TOKEN_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
+  "$SKILL_DIR/scripts/check_view_tokens.py"; then
+  echo "pre-commit: authored token interpolation check..."
+  python3 "$TOKEN_CHECK" || {
+    echo "pre-commit FAILED: a {{...}} token sits on a field rendered raw."
+    exit 1
+  }
+fi
+
 # ── 3. Live-routing views must fail loudly on a suspended engine ─────────────
 # A suspended ORS service does not throw: it returns NULL payloads, so a view
 # that filters those away renders BLANK instead of triggering the app's

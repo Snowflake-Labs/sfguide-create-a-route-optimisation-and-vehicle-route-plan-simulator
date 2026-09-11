@@ -73,6 +73,7 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # which wrap table functions), so it must run AFTER the packs have built the
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
+LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
@@ -504,7 +505,13 @@ fi
 # guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
-  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1; then
+  # --enable-templating NONE is REQUIRED: authored prose in the file contains
+  # ampersands (e.g. "P&L" in a comment), which snow CLI's default templating
+  # parses as an undefined variable ("SQL rendering error: 'L' is undefined"),
+  # aborting the whole file before REGION_LABEL and the LOCATION/SOURCING layers
+  # are created - which then hard-fails the pack install on the missing
+  # FLEET_APP.CORE.REGION_LABEL function.
+  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" --enable-templating NONE >/tmp/ifa_analytic.log 2>&1; then
     # The file completed, but the guarded builders report their own failures as
     # WARN strings in the result set rather than a non-zero exit - surface those
     # too, otherwise "OK" still overstates what happened.
@@ -555,11 +562,101 @@ fi
 # does disable the delivery-notification view.
 if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
   note "[4.2/8] delivery-sync layer (site arrival/departure detection)..."
-  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" >/tmp/ifa_delivery_sync.log 2>&1 \
+  # --enable-templating NONE is REQUIRED: authored prose contains ampersands
+  # (e.g. the POI name "J&T Cargo" in a comment), which snow CLI's default
+  # templating parses as an undefined variable and aborts the whole file.
+  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" --enable-templating NONE >/tmp/ifa_delivery_sync.log 2>&1 \
     && step "4.2 delivery-sync" OK \
     || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
 else
   step "4.2 delivery-sync" SKIPPED
+fi
+
+# ── 4.25 labour + overtime contract (FLEET_APP.LABOR) ────────────────────
+# Derives paid hours per operator from the trip record and allocates them to
+# payroll weeks, so the Labour and Overtime view and SV_LABOR have a source.
+# Must run BEFORE 4.5, which creates SV_LABOR over these views.
+#
+# Engine-free by construction: it reads only FLEET_APP.UNIFIED_FLEET, so it is
+# correct under --no-engine and is NOT gated on the routing engine.
+#
+# Uses the PERIOD data type (PERIOD_CONSTRUCT / PERIOD_INTERSECT / PERIOD_OVERLAPS)
+# to split a duty period that straddles a payroll week boundary. On an account
+# where PERIOD is not yet enabled these statements fail, which is why this is a
+# WARN rather than a hard failure - the rest of the install is unaffected, and
+# only the labour view and SV_LABOR are lost.
+if [ "${SKIP_LABOR:-0}" != "1" ]; then
+  note "[4.25/8] labour + overtime contract (FLEET_APP.LABOR)..."
+  if snow sql -c "$CONNECTION" -f "$LABOR_LAYER_SQL" --enable-templating NONE >/tmp/ifa_labor.log 2>&1; then
+    step "4.25 labour" OK
+    # ── 4.26 labour invariant gate ────────────────────────────────────────
+    # verify_labor_layer.sql was written as the guard for this layer and cited
+    # twice inside labor_layer.sql as the thing that asserts hour conservation -
+    # and nothing ever ran it. It was failing: the week split assumed a duty
+    # period could not span more than one week boundary, a long-haul dataset
+    # produced duty periods up to 215.5h, and 504 of 5,378 paid hours (9.4%)
+    # disappeared between the duty fact and the weekly fact. An unrun assertion
+    # is not a guard, so it is wired here, per LOADED region rather than only the
+    # default one - the defect showed up on UsTexas while SanFrancisco was exact.
+    #
+    # FAIL blocks; WARN does not. The two WARN checks report implausible source
+    # data (single generated trips longer than 24h), which this layer is
+    # reporting faithfully - failing the install would punish it for being right.
+    if [ "${SKIP_LABOR_VERIFY:-0}" != "1" ]; then
+      LABOR_REGIONS=$(snow sql -c "$CONNECTION" --format=CSV -q \
+        "$TAG_SQL SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE;" \
+        2>/dev/null | grep -oE '^[A-Za-z][A-Za-z0-9_]*$' | grep -viE '^(status|region)$' || true)
+      [ -n "$LABOR_REGIONS" ] || LABOR_REGIONS="SanFrancisco"
+      LABOR_BAD=0
+      for RG in $LABOR_REGIONS; do
+        snow sql -c "$CONNECTION" -f "$SCRIPTS/verify_labor_layer.sql" \
+          -D "REGION=$RG" --format json >"/tmp/ifa_labor_verify_$RG.json" 2>/dev/null || true
+        # Parsed as JSON, NOT grepped. `snow sql` echoes each statement into its
+        # output, and every assertion here contains the literal 'FAIL' inside its
+        # IFF expression, so a grep for FAIL matches the SQL text and reports a
+        # breach on a perfectly healthy layer (measured: both regions "failed"
+        # while every check passed). The parse is count-agnostic on purpose, so
+        # adding a check to the script needs no edit here.
+        LABOR_RES=$(python3 - "/tmp/ifa_labor_verify_$RG.json" <<'PYEOF' 2>/dev/null || echo "PARSE_ERROR"
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("PARSE_ERROR"); raise SystemExit
+sets = doc if doc and isinstance(doc[0], list) else [doc]
+rows = [r for s in sets for r in s if isinstance(r, dict) and "STATUS" in r]
+if not rows:
+    print("PARSE_ERROR"); raise SystemExit
+bad = [r for r in rows if r["STATUS"] == "FAIL"]
+warn = [r for r in rows if r["STATUS"] == "WARN"]
+print(("FAIL:" + ",".join(str(r["CHK"]) for r in bad)) if bad
+      else ("WARN:" + ",".join(str(r["CHK"]) for r in warn)) if warn
+      else "PASS")
+PYEOF
+)
+        case "$LABOR_RES" in
+          FAIL:*) note "  FAIL: labour invariants broken for $RG (checks ${LABOR_RES#FAIL:}); see /tmp/ifa_labor_verify_$RG.json"; LABOR_BAD=1 ;;
+          WARN:*) note "  $RG: invariants hold; data-quality warnings on checks ${LABOR_RES#WARN:}" ;;
+          PASS)   note "  $RG: all labour invariants hold" ;;
+          *)      note "  WARN: could not read labour invariant results for $RG; see /tmp/ifa_labor_verify_$RG.json" ;;
+        esac
+      done
+      if [ "$LABOR_BAD" = "1" ]; then
+        step "4.26 labour invariants" FAILED
+        echo "ERROR: labour layer produced numbers that must not be shown; aborting"
+        exit 1
+      fi
+      step "4.26 labour invariants" OK
+    else
+      step "4.26 labour invariants" SKIPPED
+    fi
+  else
+    note "  WARN: labour layer reported errors (PERIOD data type not enabled on this account?); see /tmp/ifa_labor.log"
+    step "4.25 labour" WARN
+    step "4.26 labour invariants" SKIPPED
+  fi
+else
+  step "4.25 labour" SKIPPED
 fi
 
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────

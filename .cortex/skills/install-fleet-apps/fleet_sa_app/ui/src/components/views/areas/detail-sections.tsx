@@ -7,6 +7,7 @@
 // generic auto-table, and the two query-backed section renderers.
 
 import { useViewData } from '@/hooks/use-view-data';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // ── Shared config types ─────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
 // tables rendered side by side line up regardless of row count; omit it for the
 // default max-height behavior.
 export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number; scrollHeight?: number }) {
+  const display = useDisplayConfig();
   const displayed = rows.length;
   const total = totalRows ?? displayed;
   return (
@@ -104,7 +106,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
           <tr>
             {columns.map(col => (
               <th key={col.field} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, backgroundColor: 'var(--surface-secondary, #f3f4f6)', borderBottom: '2px solid var(--border-default, #e5e7eb)', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 1 }}>
-                {col.header}
+                {interpolateTokens(col.header, display)}
               </th>
             ))}
           </tr>
@@ -181,6 +183,11 @@ export function RelatedTableSection({
   scrollHeight?: number;
 }) {
   const { data, loading, error, suspended, refetch } = useViewData(section.query, params);
+  // emptyMessage is an authored, on-screen string, so it carries the same neutral
+  // {{labels.x}} tokens as every other one and must be interpolated. It was
+  // rendered raw here, in DetailPanel and in ViewMap - the same defect that made
+  // chart series labels print "{{labels.operator_plural}}" on screen.
+  const display = useDisplayConfig();
 
   return (
     <div style={{ marginBottom: '28px' }}>
@@ -193,7 +200,7 @@ export function RelatedTableSection({
         ) : error ? (
           <div style={{ padding: '12px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
         ) : !data?.rows.length ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{section.emptyMessage ?? 'No records found.'}</div>
+          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{interpolateTokens(section.emptyMessage ?? 'No records found.', display)}</div>
         ) : (
           <AutoTable columns={section.columns} rows={data.rows} scrollHeight={scrollHeight} />
         )}

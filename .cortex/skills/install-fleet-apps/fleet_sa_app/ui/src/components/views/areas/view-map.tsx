@@ -15,6 +15,7 @@ import { useViewData } from '@/hooks/use-view-data';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import type { SuspendedInfo } from '@/lib/routing-suspend';
 import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
@@ -280,6 +281,12 @@ function OverlayCard({
 function MapLegend({
   items, title = 'Legend', corner = 'bottom-left',
 }: { items: LegendItem[]; title?: string; corner?: 'bottom-left' | 'top-right' | 'bottom-right' }) {
+  // Legend text is authored in app-views.json alongside every other on-screen
+  // string, so it carries the same neutral {{labels.x}} tokens and must be
+  // interpolated. Rendering it raw is the defect that printed
+  // "{{labels.operator_plural}}" in chart legends.
+  const display = useDisplayConfig();
+  const tr = (t?: string) => (t ? interpolateTokens(t, display) : t);
   const rgba = (c: LegendItem['color']) =>
     c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})` : 'transparent';
   return (
@@ -287,7 +294,7 @@ function MapLegend({
       {items.map((it, i) =>
         it.gradient?.length ? (
           <div key={i} style={{ padding: '4px 0' }}>
-            <div style={{ marginBottom: '3px' }}>{it.label}</div>
+            <div style={{ marginBottom: '3px' }}>{tr(it.label)}</div>
             <div
               style={{
                 width: '124px', height: '10px', borderRadius: '3px',
@@ -297,8 +304,8 @@ function MapLegend({
             />
             {it.minLabel || it.maxLabel ? (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px', fontSize: '10px', opacity: 0.8 }}>
-                <span>{it.minLabel ?? ''}</span>
-                <span>{it.maxLabel ?? ''}</span>
+                <span>{tr(it.minLabel) ?? ''}</span>
+                <span>{tr(it.maxLabel) ?? ''}</span>
               </div>
             ) : null}
           </div>
@@ -309,7 +316,7 @@ function MapLegend({
             ) : (
               <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: rgba(it.color), flex: '0 0 auto' }} />
             )}
-            <span>{it.label}</span>
+            <span>{tr(it.label)}</span>
           </div>
         ),
       )}
@@ -323,6 +330,7 @@ function MapLegend({
 function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
+  const display = useDisplayConfig();
   // Seed each toggle's default into viewState once so gated layers have a value.
   useEffect(() => {
     const seed: Record<string, unknown> = {};
@@ -345,7 +353,7 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
               onChange={(e) => updateViewState({ [t.key]: e.target.checked })}
               style={{ cursor: 'pointer', width: '14px', height: '14px' }}
             />
-            <span>{t.label}</span>
+            <span>{interpolateTokens(t.label, display)}</span>
           </label>
         );
       })}
@@ -355,6 +363,9 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
 
 export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMapAreaProps) {
   const config = areaConfig.config;
+  // Tooltip templates and the empty-state message are authored strings, so they
+  // carry {{labels.x}} tokens and are interpolated before rendering.
+  const display = useDisplayConfig();
   const specs = config.layers ?? [];
 
   const panelViewState = useAppStore((s) => s.panel.viewState);
@@ -495,6 +506,17 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
       try { fn(); } catch { /* ignore */ }
     }
   }, []);
+
+  // Every layer has reported and none produced a feature. Worth saying out loud:
+  // an empty map raises no error and still renders a basemap, so a filter that
+  // matched nothing looks exactly like a broken view. Keyed on `counts` having an
+  // entry per spec, which is what distinguishes "loaded and empty" from "still
+  // loading" (a gated layer reports 0 too, which is correct - it draws nothing).
+  const isEmpty = useMemo(() => {
+    if (!specs.length) return false;
+    if (Object.keys(counts).length < specs.length) return false;
+    return specs.every((_, i) => (counts[i] ?? 0) === 0);
+  }, [specs, counts]);
 
   const orderedLayers = useMemo<Layer[]>(
     () => specs.map((_, i) => layers[i]).filter((l): l is Layer => !!l),
@@ -654,18 +676,17 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object || !layer) return null;
     const tpl = templates[layer.id];
-    if (!tpl) return null;
-    // GeoJsonLayer picks return a Feature; the source row columns live under
+    if (!tpl) return null;    // GeoJsonLayer picks return a Feature; the source row columns live under
     // `object.properties`, so resolve tokens against properties first, then the
     // object itself (scatterplot/path picks carry columns on the object).
     const src = object.properties && typeof object.properties === 'object'
       ? { ...object, ...object.properties }
       : object;
     return {
-      html: renderTooltip(tpl, src),
+      html: renderTooltip(interpolateTokens(tpl, display), src),
       style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
     };
-  }, [templates]);
+  }, [templates, display]);
 
   // Views that opt into a locked camera frame once on load and then stay put:
   // no selection focus fit, no refit when a layer toggle or a periodic refetch
@@ -712,6 +733,21 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
       {suspendedInfo ? (
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5 }}>
           <RoutingSuspendedNotice info={suspendedInfo} onRetry={retryAllLayers} />
+        </div>
+      ) : null}
+      {!suspendedInfo && isEmpty ? (
+        <div
+          style={{
+            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 4, maxWidth: '360px', textAlign: 'center', padding: '10px 14px',
+            borderRadius: '8px', fontSize: '13px', lineHeight: 1.45,
+            backgroundColor: 'var(--surface-primary, #fff)',
+            border: '1px solid var(--border-default, #e5e7eb)',
+            color: 'var(--text-secondary, #6b7280)',
+            pointerEvents: 'none',
+          }}
+        >
+          {interpolateTokens(config.emptyMessage ?? 'No features match the current selection.', display)}
         </div>
       ) : null}
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}

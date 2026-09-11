@@ -121,6 +121,14 @@ export interface MatrixJob {
   hexagons_before_filter?: number;
   hexagons_after_filter?: number;
   filter_duration_seconds?: number;
+  // Routability accounting. Distinct from the *_filter fields above: those
+  // record the user's road-coverage choice, these record cells the build had to
+  // drop because the routing graph cannot reach them (which happens either way).
+  hexagons_before_routability?: number;
+  hexagons_after_routability?: number;
+  routability_note?: string;
+  // Set only when road-aware filtering was REQUESTED and could not be applied.
+  filter_warning?: string;
 }
 
 export interface MatrixInventoryItem {

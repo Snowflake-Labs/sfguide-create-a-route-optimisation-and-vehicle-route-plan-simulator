@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 
 interface DataTableProps {
   columns: Array<{ key: string; label: string }>;
@@ -10,6 +11,7 @@ interface DataTableProps {
 
 export function DataTable({ columns, rows, totalRows }: DataTableProps) {
   const [expanded, setExpanded] = useState(false);
+  const display = useDisplayConfig();
   const displayRows = expanded ? rows : rows.slice(0, 6);
   const hasMore = rows.length > 6;
   const serverHasMore = totalRows ? totalRows > rows.length : false;
@@ -37,7 +39,7 @@ export function DataTable({ columns, rows, totalRows }: DataTableProps) {
                   color: 'var(--text-primary, #111827)',
                 }}
               >
-                {col.label}
+                {interpolateTokens(col.label, display)}
               </th>
             ))}
           </tr>

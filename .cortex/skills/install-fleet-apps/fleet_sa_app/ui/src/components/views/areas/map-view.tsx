@@ -183,7 +183,29 @@ export default function MapView({
 
   useEffect(() => {
     if (!dims) return;
-    if (!fitTo || !fitCoords || fitCoords.length === 0) return;
+    if (!fitTo) return;
+    // No coords at all: either this view's layers returned nothing for the active
+    // scope, or their data has not arrived yet. Returning here used to leave the
+    // camera on the world fallback (lon 0 / lat 30 / zoom 2), which on a wide
+    // window renders as a whole-hemisphere frame with a couple of stray features
+    // in the corner - indistinguishable from a broken map. The region bbox is a
+    // FLOOR: frame the region instead, and deliberately leave regionPendingRef
+    // armed and hasFittedRef unset so the real data fit still supersedes this the
+    // moment coords arrive.
+    if (!fitCoords || fitCoords.length === 0) {
+      if (!regionCoords || regionCoords.length === 0) return;
+      if (hasFittedRef.current || userMovedRef.current) return;
+      const floor = fitBoundsToData({
+        width: dims.width,
+        height: dims.height,
+        coords: regionCoords,
+        padding: fitPadding ?? DEFAULT_PADDING,
+        minZoom: fitMinZoom,
+        maxZoom: fitMaxZoom,
+      });
+      if (floor && isValidViewState(floor)) setViewState(prev => ({ ...prev, ...floor }));
+      return;
+    }
     const explicitRecenter = forceFitRef.current;
     // Locked: only the initial fit (and the settle window right after it) may
     // move the camera; everything later is the user's own view.
@@ -204,6 +226,12 @@ export default function MapView({
       if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
     }
 
+    // No `fallback` on purpose. Passing fallbackViewState here made a FAILED fit
+    // (degenerate bounds, a fitBounds throw) look like a successful one: the
+    // world view was written to the camera and hasFittedRef was set, so every
+    // later attempt took the "already fitted / coords within view" path and the
+    // map stayed at world zoom permanently. With no fallback a failure yields
+    // null, the camera is left alone, and the next coords change retries.
     const next = fitBoundsToData({
       width: dims.width,
       height: dims.height,
@@ -211,7 +239,6 @@ export default function MapView({
       padding: fitPadding ?? DEFAULT_PADDING,
       minZoom: fitMinZoom,
       maxZoom: fitMaxZoom,
-      fallback: fallbackViewState,
     });
     if (next && isValidViewState(next)) {
       if (!hasFittedRef.current) firstFitAtRef.current = Date.now();
@@ -221,7 +248,7 @@ export default function MapView({
       if (forcedByRegion) regionPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick, regionCoords]);
 
   // Provisional region framing. Declared AFTER the data fit on purpose: in the
   // commit where the region changed, the data fit above still sees the previous
@@ -245,7 +272,6 @@ export default function MapView({
       padding: fitPadding ?? DEFAULT_PADDING,
       minZoom: fitMinZoom,
       maxZoom: fitMaxZoom,
-      fallback: fallbackViewState,
     });
     if (next && isValidViewState(next)) {
       setViewState(prev => ({ ...prev, ...next }));

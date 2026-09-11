@@ -3,6 +3,12 @@ export interface SafeFetchResult<T = any> {
   status: number;
   data?: T;
   error?: string;
+  /**
+   * True when the caller aborted the request via an AbortSignal. A caller that
+   * supersedes its own in-flight request MUST NOT surface this as an error -
+   * it is not a timeout and not a server fault.
+   */
+  aborted?: boolean;
 }
 
 export async function safeFetchJson<T = any>(
@@ -13,6 +19,9 @@ export async function safeFetchJson<T = any>(
   try {
     resp = await fetch(input, init);
   } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      return { ok: false, status: 0, aborted: true, error: 'Request aborted' };
+    }
     return { ok: false, status: 0, error: e.message || 'Network error' };
   }
 

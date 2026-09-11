@@ -178,7 +178,7 @@ function DetailPanelBody({
         ) : error ? (
           <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
         ) : !row ? (
-          <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{config.emptyMessage ?? 'No data for this selection.'}</div>
+          <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{tr(config.emptyMessage) ?? 'No data for this selection.'}</div>
         ) : (
           <>
             {(config.properties ?? []).length > 0 && (

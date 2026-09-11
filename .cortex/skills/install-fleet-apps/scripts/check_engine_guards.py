@@ -56,6 +56,7 @@ ENGINE_FREE = (
     "scripts/projection_views.sql",
     "scripts/vehicle_profile_catalog.sql",
     "fleet_sa_app/app/scoped_contract.sql",
+    "fleet_sa_app/app/labor_layer.sql",
     "fleet_sa_app/app/semantic_views.sql",
     "fleet_sa_app/app/view_catalog.sql",
     "fleet_sa_app/app/deployment_facts.sql",

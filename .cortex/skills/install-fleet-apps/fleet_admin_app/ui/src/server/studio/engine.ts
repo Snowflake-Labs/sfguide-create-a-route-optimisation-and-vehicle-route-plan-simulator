@@ -26,6 +26,7 @@ import {
 } from './engine/routing';
 import { interpolateRoute } from './engine/interpolate';
 import { emitDwell, emitLongIdleDwell } from './engine/dwell';
+import { overrunAllowanceHours } from './engine/shift-overrun';
 
 export type {
   TelemetryPoint, TripRecord, GenerationEvent, POI, RouteGeometry,
@@ -271,6 +272,23 @@ export async function* generateTelemetry(
     const numTrips = rngInt(memberRng, config.fleet.trips_per_day.min, config.fleet.trips_per_day.max);
     let currentOriginPoi = member.home_poi;
 
+    // How far past the rostered shift end this vehicle may work TODAY if it still
+    // has jobs left. Drawn ONCE per vehicle-day: drawing per trip would let the
+    // allowance change mid-shift, so a day could stop and then resume.
+    //
+    // This is an ALLOWANCE, not an instruction. The loop below still ends when
+    // the assignment is exhausted, so a shift with time to spare gains nothing
+    // and only a capacity-bound shift accrues overtime - which is what makes the
+    // overtime explainable (more work was assigned than fits). See
+    // engine/shift-overrun.ts for the measurements that motivated this.
+    const overrunHours = overrunAllowanceHours({
+      shiftStartHour: member.shift_start,
+      shiftEndHour: member.shift_end,
+      driverProfile: member.profile_type,
+      cfg: config.shift_overrun,
+      draw: memberRng(),
+    });
+
     // Empty-leg / deadhead modeling (all vehicle types, default on). Routes a
     // repositioning leg from the vehicle's current location to `toPoi`, emitting
     // MOVING pings and a TRIP_KIND='EMPTY' trip row. Returns true when the
@@ -330,7 +348,11 @@ export async function* generateTelemetry(
       if (abortSignal?.aborted) break;
       const shiftEnd = member.shift_end < member.shift_start ? member.shift_end + 24 : member.shift_end;
       const currentHour = lifecycle.currentTime.getHours() + (lifecycle.currentTime.getHours() < member.shift_start ? 24 : 0);
-      if (currentHour >= shiftEnd) break;
+      // ROSTER boundary - soft. Exceeding it is ordinary overtime, so the vehicle
+      // may keep working its remaining jobs up to today's allowance. With
+      // overrunHours = 0 (no shift_overrun config, or a day that does not run
+      // late) this is exactly the historical hard stop.
+      if (currentHour >= shiftEnd + overrunHours) break;
 
       if (config.breaks && lifecycle.minSinceBreak >= config.breaks.driving_hours_between_breaks * 60) {
         const breakDwell: DwellConfig = { median_min: config.breaks.mandatory_break_duration_min, sigma: 0.2, max_min: config.breaks.mandatory_break_duration_min * 1.5 };
@@ -340,6 +362,9 @@ export async function* generateTelemetry(
         lifecycle.minSinceBreak = 0;
       }
 
+      // LEGAL cap - hard, deliberately unlike the roster boundary above. A driver
+      // may finish a late route; they may not drive beyond permitted hours. Real
+      // breaches are modelled separately and rarely as IS_HOS_VIOLATION.
       if (config.breaks?.max_daily_driving_hours && lifecycle.dailyDrivingMin >= config.breaks.max_daily_driving_hours * 60) break;
 
       if (config.battery && lifecycle.vehicle.battery_pct <= (config.battery.recharge_threshold_pct || 15)) {

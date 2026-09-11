@@ -102,6 +102,27 @@ bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 # how two views shipped with no agent grounding at all.
 python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
 
+# Validate that every {{...}} token in an authored view spec sits on a path the
+# renderer actually interpolates. A token on a field rendered raw does not fail
+# anything - the query runs, the panel renders, the numbers are right - it just
+# prints its own braces on screen, which is how a chart legend reading
+# "{{labels.operator_plural}}: 32" reached a live account. `series[].label` was the
+# ONE authored string never interpolated (view-renderer handles the area title, so
+# a titled chart looked correct while its own legend and tooltip did not), and the
+# same audit found `emptyMessage` rendered raw in three components with two views
+# already authoring tokens into it, plus map legend labels, map toggle labels and
+# map tooltips - so the defect is a class, not one field.
+#
+# The allowlist is keyed on the normalized PATH and is DEFAULT-DENY. An earlier
+# version derived the allowed set from the renderer sources by field NAME and was
+# rejected by its own negative test: `label` is interpolated on a metric card and
+# on a detail-panel action, so a token on the chart's `series[].label` PASSED - the
+# gate could not catch the one defect it was written for. Each entry names its
+# render site so the claim is checkable in one grep, and an advisory cross-check
+# reports entries whose field appears in no interpolateTokens call (expected for
+# templates passed as locals, e.g. the map tooltip).
+python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens.py
+
 # Regenerate / verify the generated agent-facing artifacts. Both are derived, so a
 # stale committed copy is a real defect: the catalog is what an agent reads to
 # answer "what can you show me" outside the app, and the super agent spec is a
@@ -154,6 +175,32 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.
 # suspended/warming cases are there because over-broadening the off-graph
 # patterns would silently disable auto-resume, which is the opposite defect.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_suspend.mts
+
+# Regression test for the generator's ROSTER-vs-LEGAL cap split (22 cases).
+# Lives in fleet_tools/user for the same tsx reason as the test above.
+#
+# What it protects: the trip loop used to hard-stop at shift end and silently
+# DISCARD the remaining assigned jobs, which made daily capacity equal to shift
+# width and nothing else. Measured on a 100-vehicle e-bike fleet: a flat ~3.5
+# jobs/hour on all three shifts, the 13h shift finishing 0.5h EARLY because it
+# exhausted its assignment, and the 5h and 6h shifts stopping dead at the wall
+# after 18.8 and 22.3 jobs. Weekly hours collapsed to `shift_width x
+# days_worked` with hard ceilings of 35h / 42h / 91h, so two of three cohorts
+# could never reach a 40-hour overtime threshold at ANY horizon - and
+# `trips_per_day` acted as an unreachable ceiling rather than a workload. That
+# inverts the real causality: in a real fleet overtime IS the overrun.
+#
+# Both directions are asserted. `enabled: false` (or an absent block) must
+# reproduce the historical hard stop EXACTLY, or every existing dataset becomes
+# irreproducible. Over-shooting is worse than under-shooting: an allowance
+# ignoring the rest guard would let a vehicle work into its own next shift, and
+# the `breaks.max_daily_driving_hours` LEGAL cap must stay a hard break in
+# engine.ts - a driver may finish a late route, but may not drive beyond
+# permitted hours (real breaches stay rare and are modelled as
+# IS_HOS_VIOLATION). A NaN allowance is specifically tested because
+# `currentHour >= shiftEnd + NaN` is always false, which would run the loop to
+# its trip limit and produce absurd duty spans with no error.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_shift_overrun.mts
 
 # Validate that no bundled verb source uses a JavaScript global the Snowflake
 # LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
@@ -271,7 +318,7 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when a synapse verb has no routing guidance in an agent that can see it, when a verb uses a JavaScript global the Snowflake proc runtime lacks, and when a session or created object is missing its tracking tag):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when an authored view token sits on a path the renderer never interpolates or names a `{{group.key}}` the display config does not define, when a synapse verb has no routing guidance in an agent that can see it, when a verb uses a JavaScript global the Snowflake proc runtime lacks, and when a session or created object is missing its tracking tag):
 
 ```bash
 chmod +x .githooks/pre-commit

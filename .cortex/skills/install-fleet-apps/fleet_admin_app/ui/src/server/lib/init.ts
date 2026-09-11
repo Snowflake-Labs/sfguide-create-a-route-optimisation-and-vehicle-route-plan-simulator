@@ -1,6 +1,6 @@
 // Boot-time idempotent init for Backload Matching (BACKLOAD_MATCHING schema +
 // projection views over UNIFIED) and Asset Velocity (ROUTE_OPTIMIZATION views
-// over DWELL_ANALYSIS DTs). Mirrors the contents of:
+// over the installer's FLEET_APP.DWELL view chain). Mirrors the contents of:
 //   .cortex/skills/backload-matching/references/bootstrap.sql
 //   .cortex/skills/route-optimization/references/asset-velocity-views.sql
 // so a fresh install of install-fleet-apps makes both demos work without
@@ -56,7 +56,23 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
             e.DWELL_MINUTES, e.AVG_POINT, e.HOME_BASE_NAME, e.OPERATING_MODE,
             e.DRIVER_PROFILE,
             ROW_NUMBER() OVER (PARTITION BY e.VEHICLE_ID ORDER BY e.SESSION_END DESC) AS RN
-          FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED e
+          -- Dwell sessions come from the INSTALLER's own view chain
+          -- (FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY -> VW_STATE_CHANGES ->
+          -- VW_SESSIONS_RAW -> VW_DWELL_SESSIONS), created by the fleet/dwell
+          -- pack, so Asset Velocity works on every standard install.
+          --
+          -- Do NOT point this back at FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_*.
+          -- Those dynamic tables compute the same thing but are owned by the
+          -- SEPARATE, OPT-IN dwell-analysis skill, so on an account that only
+          -- ran the installer they do not exist and this whole view was skipped
+          -- - the page then rendered empty with no error anywhere. SV_DWELL
+          -- already treats VW_DWELL_SESSIONS as the canonical dwell source, so
+          -- this keeps the semantic layer and the page on one source.
+          --
+          -- Tradeoff: this chain sessionizes telemetry on every read rather than
+          -- reading a materialized table. If that becomes too slow, materialize
+          -- it inside the installer; do not reintroduce the optional dependency.
+          FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS e
           WHERE (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
             AND COALESCE(UPPER(e.STATUS), '') NOT LIKE '%MAINTENANCE%'
             AND COALESCE(UPPER(e.DRIVER_PROFILE), 'COMPLIANT') <> 'OUTLIER'
@@ -196,9 +212,9 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
 }
 
 // Lazy self-heal for the Asset Velocity page. Called at boot AND by
-// POST /api/asset-velocity/ensure. Gated on DWELL_ANALYSIS.DT_DWELL_ENRICHED
-// existing (Snowflake validates referenced objects at CREATE VIEW time), so on
-// a fresh install where dwell-analysis is deployed AFTER the container boots,
+// POST /api/asset-velocity/ensure. Gated on the fleet/dwell pack's
+// FLEET_APP.DWELL.VW_DWELL_SESSIONS existing (Snowflake validates referenced
+// objects at CREATE VIEW time), so on a boot that races the packs install step
 // the first page visit recreates the views without a restart. Log-only; never
 // throws to the caller.
 export async function ensureAssetVelocityViews(
@@ -229,15 +245,23 @@ export async function ensureAssetVelocityViews(
     log('WARN', 'Init', `asset-velocity CONFIG guard failed: ${e?.message?.slice(0, 200)}`);
   }
 
-  // Gate on the dwell-analysis dependency. If absent, skip cleanly so the page
-  // keeps its empty state instead of surfacing a SQL error.
+  // Gate on the dwell dependency. This probes the INSTALLER's dwell view, which
+  // the fleet/dwell pack always creates (packs are install step 4, apps step 7,
+  // so it normally exists well before boot). It still skips cleanly rather than
+  // throwing, because the pack can legitimately be absent - SKIP_PACKS=1, or a
+  // boot racing the packs step - and the page should keep its empty state
+  // instead of surfacing a SQL error.
+  //
+  // This used to probe FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED,
+  // which belongs to the optional dwell-analysis skill. That made the whole page
+  // silently dead on every install that did not also run that separate skill.
   try {
     await sqlFn(
-      `SELECT 1 FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED LIMIT 1`,
-      'FLEET_INTELLIGENCE', 'DWELL_ANALYSIS',
+      `SELECT 1 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS LIMIT 1`,
+      'FLEET_APP', 'DWELL',
     );
   } catch {
-    return { ensured: false, reason: 'dwell-not-deployed' };
+    return { ensured: false, reason: 'dwell-pack-not-installed' };
   }
 
   for (const { sql, db, schema } of assetVelocityStmts()) {
@@ -1386,8 +1410,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
     // Asset Velocity views (ROUTE_OPTIMIZATION) are NOT created here. They are
     // owned by ensureAssetVelocityViews(), invoked after this loop (and lazily
     // by POST /api/asset-velocity/ensure), because they reference
-    // DWELL_ANALYSIS.DT_DWELL_ENRICHED which Snowflake validates at CREATE VIEW
-    // time and may not exist yet on a fresh boot.
+    // FLEET_APP.DWELL.VW_DWELL_SESSIONS which Snowflake validates at CREATE VIEW
+    // time and may not exist yet on a boot that races the packs install step.
     // ---------------------------------------------------------------
     // Freight Exchange (Phase A/B): MARKETPLACE schema + projection views
     // over SYNTHETIC_DATASETS.UNIFIED.{FACT_OFFERS, DIM_PARTNERS,
@@ -1823,7 +1847,17 @@ $$`,
           VEHICLE_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, ORS_PROFILE VARCHAR, SHIFT_TYPE VARCHAR,
           SHIFT_START_HOUR NUMBER, SHIFT_END_HOUR NUMBER, HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR,
           OPERATING_MODE VARCHAR, BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, JOB_ID VARCHAR,
-          WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER, WIDTH_M NUMBER, AXLELOAD_T NUMBER,
+          -- Scales MUST match the physical DIM_FLEET columns (WEIGHT_TONS
+          -- NUMBER(6,2), the rest NUMBER(4,2)). A bare NUMBER is NUMBER(38,0)
+          -- and TRUNCATES: an e-bike's 0.10 t arrives as 0 and a 3.5 t van
+          -- arrives as 4, which fuzzes the 4.536 t (10,000 lb) FLSA
+          -- small-vehicle boundary that FLEET_APP.LABOR uses to decide whether
+          -- overtime is owed. This function is the UPSTREAM half of a two-owner
+          -- pair: FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED (in
+          -- scoped_contract.sql) is a SELECT * over this one, so widening only
+          -- that copy is silently undone the next time the app boots and
+          -- recreates this one.
+          WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2), WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2),
           HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR
         )
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
@@ -2133,10 +2167,10 @@ $$`,
     }
   }
 
-  // Create the Asset Velocity views via the shared self-heal path (gated on
-  // DT_DWELL_ENRICHED). On a fresh boot before dwell-analysis is deployed this
-  // returns { ensured:false } and the page stays in its empty state until the
-  // first visit re-triggers it via POST /api/asset-velocity/ensure.
+  // Create the Asset Velocity views via the shared self-heal path (gated on the
+  // fleet/dwell pack's FLEET_APP.DWELL.VW_DWELL_SESSIONS). If the packs step has
+  // not run, this returns { ensured:false } and the page stays in its empty state
+  // until the first visit re-triggers it via POST /api/asset-velocity/ensure.
   try {
     const av = await ensureAssetVelocityViews(sqlFn);
     log('INFO', 'Init', `asset-velocity ensure at boot: ${JSON.stringify(av)}`);
@@ -2150,7 +2184,7 @@ $$`,
   // partial init can leave the app "healthy" with broken pages. These probes
   // turn the two highest-impact silent failures into diagnosable ERROR lines:
   //   * Asset Velocity views missing (e.g. CREATE VIEW threw because
-  //     DWELL_ANALYSIS.DT_DWELL_ENRICHED did not exist yet at boot).
+  //     FLEET_APP.DWELL.VW_DWELL_SESSIONS did not exist yet at boot).
   //   * MARKETPLACE.CONFIG empty -> VW_OFFER_ENRICHED filters to 0 rows.
   // -----------------------------------------------------------------
   try {

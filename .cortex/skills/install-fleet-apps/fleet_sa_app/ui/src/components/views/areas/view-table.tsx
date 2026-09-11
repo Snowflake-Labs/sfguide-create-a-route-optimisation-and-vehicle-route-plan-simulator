@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -51,6 +52,7 @@ function isNumericColumn(rows: Record<string, unknown>[], key: string): boolean 
 
 export function ViewTableArea({ areaConfig, areaName }: ViewTableAreaProps) {
   const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const display = useDisplayConfig();
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -161,7 +163,7 @@ export function ViewTableArea({ areaConfig, areaName }: ViewTableAreaProps) {
                   zIndex: 1,
                 }}
               >
-                {col.label}
+                {interpolateTokens(col.label, display)}
                 {sortKey === col.key && (
                   <span style={{ marginLeft: '4px', fontSize: '10px' }}>
                     {sortDir === 'asc' ? '▲' : '▼'}

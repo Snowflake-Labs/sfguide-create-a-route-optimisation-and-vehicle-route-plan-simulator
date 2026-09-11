@@ -101,13 +101,400 @@ $$
   FROM owned o JOIN iso i ON i.grp = o.grp
 $$;
 
+-- Candidate drive-time polygon, isolated in its own UDTF.
+--
+-- It exists as a separate function rather than an inline CTE because embedding the
+-- ISOCHRONES table function in LIVE_HUFF_ALLOCATION's body made CREATE FUNCTION
+-- fail with "Insufficient privileges to operate on Table function
+-- OPENROUTESERVICE_APP.CORE.ISOCHRONES" - reproducibly, under ACCOUNTADMIN, with
+-- LITERAL arguments, and with the CTE referenced only once, while the very same
+-- call compiles happily inside LIVE_OVERLAPS. Nesting a UDTF is a construct this
+-- layer already relies on (LIVE_CANNIBALISATION nests LIVE_HUFF_ALLOCATION), so the
+-- polygon is produced here and consumed there.
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANDIDATE_ISO(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR)
+RETURNS TABLE (POLY GEOGRAPHY)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
+  FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+               WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
+    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
+      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
+      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+    ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
+    -- ORS_FEATURES = suspended-engine guard: raises rather than yielding 0 rows.
+    LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
+$$;
+
+-- =============================================================================
+-- LIVE_HUFF_ALLOCATION - the shared demand-allocation engine for Site Impact.
+--
+-- WHY THIS EXISTS. The previous model assigned each household cell to exactly ONE
+-- owned store, chosen by STRAIGHT-LINE ST_DISTANCE. Two things were wrong with
+-- that, and both were invisible on screen:
+--   1. Membership was drive-time (the isochrone) while allocation was crow-flies,
+--      so a store on the far side of a bay or a motorway won households it cannot
+--      actually serve. The view contradicted its own premise.
+--   2. Winner-takes-all. A household 5 minutes from store A and 6 minutes from B
+--      gave 100% to A and nothing to B. Real trade areas are probabilistic and
+--      overlap, which is exactly what a retail property team expects to see.
+-- SQFT was already stored per store and fed nothing but rent, so store size had no
+-- influence on demand at all - a 9,000 sqft store pulled like a 3,000 sqft one.
+--
+-- WHAT IT DOES. A Huff gravity model. For each anchor cell the pull of a store is
+--     w = ATTRACTIVENESS / drive_minutes ^ BETA
+-- and the store's share of that cell's households is its w over the sum of w
+-- across the whole choice set. BETA is the distance-decay exponent (2.0 is the
+-- conventional retail value): higher BETA means households are less willing to
+-- travel, so demand concentrates on nearby stores.
+--
+-- It returns TWO shares per (anchor, store):
+--   SHARE_BEFORE - the allocation with the candidate absent (today's world)
+--   SHARE_AFTER  - the allocation with the candidate present
+-- The difference IS the transfer, per store, signed. That decomposition is the
+-- whole point: it cannot be expressed in a winner-takes-all model, and it is what
+-- lets the caller split the candidate's captured demand into revenue taken from
+-- OUR estate (cannibalisation) versus revenue taken from COMPETITORS (net new).
+-- Because shares sum to 1 both before and after, the losses sum EXACTLY to the
+-- candidate's gain - an invariant worth asserting rather than trusting.
+--
+-- CHOICE SET. Owned stores + competitors + the ONE candidate being evaluated. The
+-- other candidate sites are deliberately excluded: they do not exist in either
+-- world, and including them would silently dilute every share.
+--
+-- BAND SEMANTICS. P_BAND scopes WHICH ANCHORS are in play (those the candidate can
+-- reach within the band) and does NOT truncate the choice set inside them. A
+-- household 40 minutes from an owned store still has that store as an option;
+-- clipping the denominator to the band would inflate the candidate's share. Decay
+-- handles remoteness, which is what decay is for.
+--
+-- COST. Exactly ONE ORS matrix call (Architecture Tenet 9: live, never cached).
+-- Two mechanisms bound that call so region size cannot break it, and both are
+-- load-bearing rather than tuning:
+--   * an ADMISSIBLE straight-line prefilter (a cell further than the band could
+--     reach at 130 km/h cannot be in the band, because straight-line distance is a
+--     lower bound on road distance), and
+--   * an ADAPTIVE anchor resolution - the finest H3 level that still fits the
+--     routing gateway's cap on the SIZE OF THE LOCATIONS ARRAY.
+--
+-- The binding limit is LOCATIONS, not O-D pairs, and getting that wrong is the
+-- trap here. The ORS engine itself is configured wide open in this repo (matrix
+-- maximum_routes = 2,000,000, so ~1414 x 1414), but the GATEWAY pre-rejects on
+-- ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS before the engine is ever called, returning
+-- `request_too_large`. A pair-based budget therefore passes its own arithmetic and
+-- still fails: 522 anchors x 25 stores is a mere 13,050 pairs but 547 locations.
+-- The cap this stack ships is 1500 (routing-gateway-service.yaml), verified live on
+-- the deployed service; the 200 in routing_service.py is only the bare-process
+-- fallback for a gateway started without that env var. Budget is anchors + stores
+-- <= 1400, which leaves headroom under 1500 and keeps native res 8 for a 20-minute
+-- band even on a state-sized region (measured UsTexas: 901 + 23 = 924 locations).
+-- ANCHOR_RES is returned so a caller can see how coarse the answer had to be; a
+-- low value means the band is wide relative to how spread the households are.
+-- =============================================================================
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR, P_BETA FLOAT)
+RETURNS TABLE (ANCHOR_H3 VARCHAR, ANCHOR_RES INT, STORE_ID VARCHAR, STORE_ROLE VARCHAR,
+               DRIVE_MIN NUMBER(14,1), HH INT,
+               SHARE_BEFORE NUMBER(12,8), SHARE_AFTER NUMBER(12,8))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH cand AS (
+    SELECT ST_MAKEPOINT(LON, LAT) AS g
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID
+  ),
+  stores AS (
+    -- The choice set is NOT distance-pruned, and that is deliberate. Dropping
+    -- "far" stores to buy anchor budget looks safe because a store 400 km away
+    -- carries Huff weight ~ 1/400^beta - but Huff shares are RELATIVE. Measured on
+    -- UsTexas, where the estate is ~300 km apart, pruning at 3x the band reach left
+    -- the candidate ALONE in the choice set: captured stayed 2,183 households while
+    -- cannibalised and net_new both collapsed to 0, breaking
+    -- captured = cannibalised + net_new outright. In a sparse network the distant
+    -- stores are not negligible, they are the ONLY incumbents and hold the whole
+    -- before-world. Keep every store; buy resolution by coarsening anchors instead.
+    SELECT s.STORE_ID, s.STORE_ROLE, COALESCE(s.ATTRACTIVENESS, 1.0) AS ATTR,
+           ROW_NUMBER() OVER (ORDER BY s.STORE_ID) - 1 AS si
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS s
+    WHERE s.REGION = P_REGION
+      AND (s.STORE_ROLE IN ('OWNED', 'COMPETITOR') OR s.STORE_ID = P_CANDIDATE_ID)
+  ),
+  nstores AS (SELECT COUNT(*) AS n FROM stores),
+  -- Admissible speed ceiling for the ACTIVE PROFILE, bounding the prefilter below.
+  -- One figure cannot serve every profile: 130 km/h is right for a lorry and absurd
+  -- for an e-bike, where it inflated a 10-minute band into a 21.7 km radius.
+  spd AS (
+    SELECT CASE
+             WHEN p LIKE 'foot%' OR p LIKE 'wheelchair%' THEN 8000.0
+             WHEN p LIKE 'cycling%'                      THEN 35000.0
+             ELSE 130000.0
+           END AS mph
+    FROM (SELECT COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                            WHERE REGION = P_REGION LIMIT 1), 'driving-car') AS p)
+  ),
+  near AS (
+    -- ADMISSIBLE prefilter, not an approximation: straight-line distance is a lower
+    -- bound on road distance, so a cell beyond band_minutes at the profile's speed
+    -- ceiling cannot be inside the band. Without it the matrix is sized by the
+    -- REGION, which is fatal for a state - measured 76,335 res-7 cells for UsTexas
+    -- against 87 for the SanFrancisco metro.
+    --
+    -- The isochrone would be the exact filter (points inside it are routable BY
+    -- CONSTRUCTION, which also cures the unroutable-source abort below) but it
+    -- CANNOT be used here: feeding ISOCHRONES output into the argument of the
+    -- MATRIX_TABULAR call in the same body fails at CREATE with a misleading
+    -- "Insufficient privileges to operate on Table function ... ISOCHRONES",
+    -- reproducibly under ACCOUNTADMIN, with literal arguments, with the CTE
+    -- referenced once, and even with the isochrone extracted into its own UDTF
+    -- (which gets inlined). Chaining two ORS table functions that way is the
+    -- construct that breaks, so the bound stays geometric.
+    --
+    -- HH >= 3 is the routability guard that replaces it. ONE unroutable source
+    -- aborts the whole ORS matrix as an opaque `all_chunks_failed`, and the offenders
+    -- are near-empty cells whose centroid - the mean of a handful of addresses -
+    -- can land somewhere the profile's graph cannot snap (open water in a coastal
+    -- region). Cells this small are also demand-irrelevant; the households dropped
+    -- are reported by the caller's own totals, so the cost is visible rather than
+    -- hidden.
+    SELECT c.H3, c.HH, c.CENTROID
+    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, cand, spd
+    WHERE c.REGION = P_REGION AND c.HH >= 3
+      AND ST_DWITHIN(c.CENTROID, cand.g, P_BAND * (spd.mph / 60.0))
+  ),
+  counts AS (
+    -- All five candidate resolutions counted in ONE pass over `near`. This is not a
+    -- micro-optimisation: `near` wraps the ORS isochrone table function, and the
+    -- earlier five-branch UNION ALL referenced it five times, which made CREATE
+    -- FUNCTION fail outright with a misleading "Insufficient privileges to operate
+    -- on Table function ISOCHRONES" - reproducible with LITERAL arguments and under
+    -- ACCOUNTADMIN, so it is repeated expansion of a table function, not a grant.
+    SELECT COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 8)) AS n8,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 7)) AS n7,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 6)) AS n6,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 5)) AS n5,
+           COUNT(DISTINCT H3_CELL_TO_PARENT(H3, 4)) AS n4
+    FROM near
+  ),
+  -- Per-region matrix pair ceiling. This CANNOT be a single constant, because it is
+  -- the region's own ors-config `matrix.maximum_routes` and regions on one account
+  -- genuinely differ: measured here, UsTexas accepted 901 x 25 = 22,525 pairs while
+  -- SanFrancisco failed at 300 x 13 = 3,900 and succeeded at 150 x 13 = 1,950 - the
+  -- signature of a region still on the STOCK 2500 default. Hard-coding the generous
+  -- value breaks SanFrancisco with an opaque `all_chunks_failed`; hard-coding the
+  -- safe one drops UsTexas to H3 res 5 and throws away resolution it can afford.
+  -- So read OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (the table the admin app's
+  -- routing-limits panel already owns) and fall back to the SAFE value when the
+  -- region has no recorded limit, since guessing high fails closed.
+  cap AS (
+    SELECT COALESCE(
+             (SELECT TRY_TO_NUMBER(TO_VARCHAR(LIMITS:matrix_maximum_routes))
+                FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
+               WHERE UPPER(REGION) = UPPER(P_REGION) LIMIT 1),
+             2400) AS maxpairs
+  ),
+  chosen AS (
+    -- Finest resolution satisfying BOTH caps: the region's engine pair ceiling and
+    -- the gateway's ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS (1500 in
+    -- routing-gateway-service.yaml), which pre-rejects on the SIZE OF THE LOCATIONS
+    -- ARRAY before the engine is reached. Different units, and either alone lets the
+    -- call fail: 522 anchors x 25 stores is only 13,050 pairs but 547 locations.
+    SELECT CASE
+             WHEN c.n8 > 0 AND c.n8 * s.n <= p.maxpairs * 0.96 AND c.n8 + s.n <= 1400 THEN 8
+             WHEN c.n7 > 0 AND c.n7 * s.n <= p.maxpairs * 0.96 AND c.n7 + s.n <= 1400 THEN 7
+             WHEN c.n6 > 0 AND c.n6 * s.n <= p.maxpairs * 0.96 AND c.n6 + s.n <= 1400 THEN 6
+             WHEN c.n5 > 0 AND c.n5 * s.n <= p.maxpairs * 0.96 AND c.n5 + s.n <= 1400 THEN 5
+             ELSE 4
+           END AS res
+    FROM counts c CROSS JOIN nstores s CROSS JOIN cap p
+  ),
+  anchors AS (
+    -- Household-WEIGHTED centroid: a coarse anchor spans dense core and empty land,
+    -- and the geometric centre would measure drive time to a field nobody lives in.
+    SELECT H3_CELL_TO_PARENT(n.H3, ch.res) AS ANCHOR_H3,
+           ANY_VALUE(ch.res) AS res,
+           SUM(n.HH) AS HH,
+           ST_MAKEPOINT(SUM(ST_X(n.CENTROID) * n.HH) / NULLIF(SUM(n.HH), 0),
+                        SUM(ST_Y(n.CENTROID) * n.HH) / NULLIF(SUM(n.HH), 0)) AS CENTROID
+    FROM near n CROSS JOIN chosen ch
+    GROUP BY 1
+  ),
+  -- SNAP each anchor to a REAL ADDRESS: the address inside the anchor nearest to its
+  -- household-weighted centre. This is the root-cause fix for the unroutable-source
+  -- abort. HH_CELLS.CENTROID is the arithmetic MEAN of the addresses in a cell, and a
+  -- mean is not itself a place - across a bay, a park or a river bend it lands in
+  -- water, where no profile's graph can snap it, and ONE such source aborts the whole
+  -- ORS matrix as an opaque `all_chunks_failed`. Rolling up to a coarser anchor makes
+  -- it worse, since the mean is taken over a wider, emptier area. An actual address is
+  -- on land and adjacent to a road by construction. Non-ORS, so it does not chain two
+  -- table functions (see the note in `near`).
+  anchor_pts AS (
+    SELECT a.ANCHOR_H3, a.res, a.HH,
+           ST_MAKEPOINT(ra.LONGITUDE, ra.LATITUDE) AS CENTROID
+    FROM anchors a
+    JOIN FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES ra
+      ON ra.REGION = P_REGION AND ra.GEOMETRY IS NOT NULL
+     AND H3_CELL_TO_PARENT(H3_POINT_TO_CELL_STRING(ra.GEOMETRY, 8), a.res) = a.ANCHOR_H3
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY a.ANCHOR_H3
+                               ORDER BY ST_DISTANCE(ST_MAKEPOINT(ra.LONGITUDE, ra.LATITUDE),
+                                                    a.CENTROID)) = 1
+  ),
+  anchors_i AS (
+    SELECT ANCHOR_H3, res, HH, CENTROID,
+           ROW_NUMBER() OVER (ORDER BY ANCHOR_H3) - 1 AS ai
+    FROM anchor_pts
+  ),
+  mtx AS (
+    -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
+    -- letting the `durations IS NOT NULL` filter below quietly return no rows,
+    -- which would render an empty panel indistinguishable from "no impact".
+    -- Both coordinate arrays are aggregated from the SAME CTEs that assign the
+    -- positional indexes, deliberately: the matrix is addressed purely by position,
+    -- so a re-stated filter that drifted would silently attach every drive time to
+    -- the wrong store with nothing to error on.
+    SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTROID), ST_Y(CENTROID)))
+                WITHIN GROUP (ORDER BY ai) FROM anchors_i),
+      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY s.si)
+         FROM stores s JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS f
+           ON f.REGION = P_REGION AND f.STORE_ID = s.STORE_ID),
+      P_REGION)) AS m
+  ),
+  pairs AS (
+    SELECT a.ANCHOR_H3, a.res, a.HH, s.STORE_ID, s.STORE_ROLE, s.ATTR,
+           (mtx.m:durations[a.ai][s.si]::FLOAT) / 60.0 AS drive_min
+    FROM mtx, anchors_i a CROSS JOIN stores s
+  ),
+  valid AS (
+    -- Unreachable pairs are dropped HERE, before any normalisation. Dropping them
+    -- afterwards would leave the surviving shares in an anchor summing to less
+    -- than 1, understating every store silently rather than failing.
+    -- GREATEST(drive_min, 1.0) guards the divide-by-zero when an anchor centroid
+    -- lands on a store: 0 ^ -beta is infinity, which poisons the whole SUM().
+    SELECT ANCHOR_H3, res, HH, STORE_ID, STORE_ROLE, drive_min,
+           ATTR / POWER(GREATEST(drive_min, 1.0), P_BETA) AS w
+    FROM pairs
+    WHERE drive_min IS NOT NULL
+  ),
+  scope AS (
+    -- Band membership is decided by the ENGINE's drive time, not by the geometric
+    -- prefilter above (which is only an outer bound).
+    SELECT DISTINCT ANCHOR_H3 FROM valid
+    WHERE STORE_ID = P_CANDIDATE_ID AND drive_min <= P_BAND
+  ),
+  inscope AS (
+    SELECT v.* FROM valid v JOIN scope sc ON sc.ANCHOR_H3 = v.ANCHOR_H3
+  ),
+  norm AS (
+    SELECT ANCHOR_H3, res, HH, STORE_ID, STORE_ROLE, drive_min,
+           w / NULLIF(SUM(w) OVER (PARTITION BY ANCHOR_H3), 0) AS share_after,
+           IFF(STORE_ID = P_CANDIDATE_ID, 0,
+               w / NULLIF(SUM(IFF(STORE_ID = P_CANDIDATE_ID, 0, w))
+                            OVER (PARTITION BY ANCHOR_H3), 0)) AS share_before
+    FROM inscope
+  )
+  SELECT ANCHOR_H3, res::INT AS anchor_res, STORE_ID, STORE_ROLE,
+         ROUND(drive_min, 1)::NUMBER(14,1) AS drive_min, HH,
+         share_before::NUMBER(12,8), share_after::NUMBER(12,8)
+  FROM norm
+$$;
+
 -- Finance is user-driven (not synthetic ANNUAL_REVENUE/ANNUAL_EBITDA): the caller
 -- supplies annual value per household, EBITDA margin, and capture rate, so:
---   revenue        = captured_hh * P_VALUE_PER_HH * P_CAPTURE_RATE
+--   revenue        = transferred_hh * P_VALUE_PER_HH * P_CAPTURE_RATE
 --   ebitda_transfer= revenue * P_EBITDA_MARGIN
 --   home/sample/walk= revenue * per-store interaction split (HV/SAMPLE/WALKIN_PCT)
 -- P_EBITDA_MARGIN and P_CAPTURE_RATE are passed as fractions (0..1).
+--
+-- HOUSEHOLDS is now the DEMAND THE CANDIDATE TAKES FROM THIS STORE - a Huff share
+-- difference (see LIVE_HUFF_ALLOCATION) - not "cells whose centroid is nearest to
+-- this store". Two consequences worth stating before anyone reads the table:
+--   * Many MORE owned stores now appear, each with a smaller number. Previously
+--     only nearest-neighbour stores could ever show a loss; a real gravity model
+--     spreads a little transfer across the estate, which is what it should do.
+--   * P_CAPTURE_RATE is no longer the model. The share of a household's spend that
+--     moves is derived from drive time and store size; the slider is now a
+--     calibration multiplier on top of it.
+-- TRANSFER_PCT is each store's SHARE OF THE TOTAL TRANSFER - how the loss is
+-- distributed across the estate - and the rows sum to 100. It is deliberately not
+-- a per-store loss intensity, because in a gravity model that quantity carries
+-- almost no information: share_after / share_before collapses to
+-- base_w / (base_w + candidate_w), which is IDENTICAL for every incumbent in a
+-- given anchor. Measured, it printed 99.5 on all ten stores at once - a column that
+-- looks broken while being arithmetically correct. Distribution is also the
+-- question being asked here, since the table exists to identify WHICH store bears
+-- the hit. A percentage of store turnover is not available at all: the honest
+-- denominator would be the store's own revenue, which for the owned estate is
+-- itself synthetic.
 DROP FUNCTION IF EXISTS FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR);
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
+  P_VALUE_PER_HH FLOAT, P_EBITDA_MARGIN FLOAT, P_CAPTURE_RATE FLOAT, P_BETA FLOAT)
+RETURNS TABLE (STORE_ID VARCHAR, POI_NAME VARCHAR, HOUSEHOLDS INT, TRANSFER_PCT NUMBER(6,1),
+               REVENUE NUMBER(18,0), HOME_VISIT NUMBER(18,0), SAMPLE_REV NUMBER(18,0),
+               WALK_IN NUMBER(18,0), EBITDA_TRANSFER NUMBER(18,0))
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH alloc AS (
+    SELECT * FROM TABLE(FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(
+      P_CANDIDATE_ID, P_BAND, P_REGION, P_BETA))
+    WHERE STORE_ROLE = 'OWNED'
+  ),
+  agg AS (
+    SELECT STORE_ID, SUM(HH * (SHARE_BEFORE - SHARE_AFTER)) AS lost_hh
+    FROM alloc
+    GROUP BY STORE_ID
+  ),
+  facts AS (
+    SELECT STORE_ID, POI_NAME, HV_PCT, SAMPLE_PCT, WALKIN_PCT
+    FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
+  ),
+  calc AS (
+    SELECT a.STORE_ID, f.POI_NAME, a.lost_hh,
+           a.lost_hh * P_VALUE_PER_HH * P_CAPTURE_RATE AS rev,
+           f.HV_PCT, f.SAMPLE_PCT, f.WALKIN_PCT
+    FROM agg a JOIN facts f ON f.STORE_ID = a.STORE_ID
+    -- A store can gain a sliver when the candidate reshapes a shared anchor; only
+    -- genuine losses belong in a cannibalisation table.
+    WHERE a.lost_hh > 0
+  ),
+  money AS (
+    -- WALK_IN is the RESIDUAL, not its own rounded product. Rounding the three
+    -- interaction splits independently left them failing to sum to REVENUE on 3 of
+    -- 10 rows - visible on screen, and exactly the arithmetic a reader spot-checks.
+    SELECT STORE_ID, POI_NAME, lost_hh, rev,
+           SUM(lost_hh) OVER () AS all_lost,
+           ROUND(rev * HV_PCT)     AS hv,
+           ROUND(rev * SAMPLE_PCT) AS sm
+    FROM calc
+  )
+  SELECT STORE_ID, POI_NAME, ROUND(lost_hh)::INT AS households,
+         ROUND(100 * lost_hh / NULLIF(all_lost, 0), 1)::NUMBER(6,1) AS transfer_pct,
+         ROUND(rev)::NUMBER(18,0) AS revenue,
+         hv::NUMBER(18,0) AS home_visit,
+         sm::NUMBER(18,0) AS sample_rev,
+         (ROUND(rev) - hv - sm)::NUMBER(18,0) AS walk_in,
+         ROUND(rev * P_EBITDA_MARGIN)::NUMBER(18,0) AS ebitda_transfer
+  FROM money
+$$;
+
+-- Arity overload keeping the pre-Huff 6-arg signature alive at the conventional
+-- retail decay of 2.0, so any caller not passing BETA (a saved query, an agent's
+-- semantic-view tool, an older app image) keeps working instead of failing to
+-- resolve. Overloading rather than defaulting is deliberate: a DEFAULT on a
+-- trailing arg makes the two forms ambiguous and needs an explicit DROP to replace.
 CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(
   P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR,
   P_VALUE_PER_HH FLOAT, P_EBITDA_MARGIN FLOAT, P_CAPTURE_RATE FLOAT)
@@ -118,53 +505,121 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH iso AS (
-    SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-      -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
-      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
-                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
-      ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
-      -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
-      -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
-      LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
+  SELECT * FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(
+    P_CANDIDATE_ID, P_BAND, P_REGION, P_VALUE_PER_HH, P_EBITDA_MARGIN,
+    P_CAPTURE_RATE, 2.0::FLOAT))
+$$;
+
+-- =============================================================================
+-- LIVE_SITE_VERDICT - the number a site decision actually turns on.
+--
+-- Cannibalisation on its own cannot answer "should we open this?". A site that
+-- takes 1M from our own estate and 1M from competitors is a completely different
+-- proposition from one that takes 2M from our own estate, and until now the view
+-- could not tell them apart - because there were no competitors in the model, so
+-- 100% of a candidate's demand was cannibalisation BY CONSTRUCTION.
+--
+-- Splitting the candidate's captured demand by the ROLE it was taken from gives:
+--   CANNIBALISED   - taken from our OWNED estate (a transfer, not growth)
+--   NET_NEW        - taken from COMPETITOR stores (genuine incremental demand)
+--   captured       = cannibalised + net_new, exactly, because Huff shares sum to 1
+--                    before and after, so every loss is someone's gain.
+-- PAYBACK_YEARS deliberately divides occupancy cost by NET NEW EBITDA, not total
+-- EBITDA: charging the site for profit merely moved from a store we already own
+-- would be double-counting, and is the standard way a property team is misled.
+--
+-- ONE ROW PER CANDIDATE, from ONE ORS matrix call. Evaluating every candidate in a
+-- single call is not just an optimisation - it is the only way this works. ORS SQL
+-- functions accept literal, bind or scalar-subquery arguments but NOT a correlated
+-- per-row column, so `FROM candidates c, TABLE(f(c.STORE_ID))` cannot be used to
+-- build a league table over a per-candidate function. Instead every candidate is
+-- priced against the SAME shared base pull, which is also more correct: each
+-- candidate is evaluated against a world where the other candidates do not exist.
+--
+-- ONE ROW, for ONE candidate, from ONE ORS matrix call.
+--
+-- It is deliberately per-candidate rather than a whole league table in one call,
+-- and that was settled by measurement rather than taste. Pricing every candidate
+-- together needs the UNION of their neighbourhoods in a single locations array,
+-- and measured on UsTexas that shared grid collapsed to H3 res 5, leaving ONE
+-- anchor inside a 20-minute band per candidate - a 47,000-household trade area
+-- represented by a single point. Coarsening does not merely blur the answer there,
+-- it DELETES the trade area. Per-candidate keeps the native res-8 grid.
+--
+-- To rank candidates, call this once per candidate and UNION the rows. Do NOT try
+-- to lateral-join it against the candidate list: ORS SQL functions accept literal,
+-- bind or scalar-subquery arguments but NOT a correlated per-row column, so
+-- `FROM candidates c, TABLE(LIVE_SITE_VERDICT(c.STORE_ID, ...))` fails to evaluate.
+--
+-- Anchor sizing and the 200-location gateway cap: see LIVE_HUFF_ALLOCATION.
+-- Live, never cached (Tenet 9).
+-- =============================================================================
+CREATE OR REPLACE FUNCTION FLEET_APP.LOCATION.LIVE_SITE_VERDICT(
+  P_CANDIDATE_ID VARCHAR, P_BAND INT, P_REGION VARCHAR, P_VALUE_PER_HH FLOAT,
+  P_EBITDA_MARGIN FLOAT, P_CAPTURE_RATE FLOAT, P_BETA FLOAT)
+RETURNS TABLE (CANDIDATE_ID VARCHAR, POI_NAME VARCHAR, CAPTURED_HH INT,
+               CANNIBALISED_HH INT, NET_NEW_HH INT, CANNIBALISATION_RATE_PCT NUMBER(6,1),
+               CAPTURED_REVENUE NUMBER(18,0), CANNIBALISED_REVENUE NUMBER(18,0),
+               NET_NEW_REVENUE NUMBER(18,0), NET_NEW_EBITDA NUMBER(18,0),
+               ANNUAL_OCCUPANCY_COST NUMBER(18,0), PAYBACK_YEARS NUMBER(10,2),
+               STORES_IMPACTED INT, ANCHORS_IN_BAND INT, ANCHOR_RES INT)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH alloc AS (
+    -- Reuses the SAME allocation the transfer table reads, so the headline KPIs and
+    -- the per-store rows can never disagree - and the whole verdict costs the one
+    -- ORS matrix call that allocation already makes.
+    SELECT * FROM TABLE(FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(
+      P_CANDIDATE_ID, P_BAND, P_REGION, P_BETA))
   ),
-  owned AS (
-    SELECT STORE_ID, POI_NAME, LON, LAT,
-           HV_PCT, SAMPLE_PCT, WALKIN_PCT, REFERENCE_HH
+  per_store AS (
+    SELECT STORE_ID, STORE_ROLE,
+           SUM(HH * (SHARE_BEFORE - SHARE_AFTER)) AS lost_hh,
+           SUM(HH * SHARE_AFTER)                  AS gained_hh
+    FROM alloc
+    GROUP BY STORE_ID, STORE_ROLE
+  ),
+  tot AS (
+    SELECT
+      -- The candidate's own row carries SHARE_BEFORE = 0, so its SHARE_AFTER mass
+      -- IS the demand it captures.
+      COALESCE(SUM(IFF(STORE_ROLE = 'CANDIDATE', gained_hh, 0)), 0) AS captured_hh,
+      COALESCE(SUM(IFF(STORE_ROLE = 'OWNED', GREATEST(lost_hh, 0), 0)), 0) AS cann_hh,
+      COALESCE(SUM(IFF(STORE_ROLE = 'COMPETITOR', GREATEST(lost_hh, 0), 0)), 0) AS net_hh,
+      COALESCE(SUM(IFF(STORE_ROLE = 'OWNED' AND lost_hh > 0, 1, 0)), 0) AS owned_hit
+    FROM per_store
+  ),
+  grid AS (
+    SELECT COUNT(DISTINCT ANCHOR_H3) AS anchors_in_band, MIN(ANCHOR_RES) AS res
+    FROM alloc
+  ),
+  f AS (
+    SELECT STORE_ID, POI_NAME,
+           COALESCE(ANNUAL_RENT, 0) + COALESCE(RATES_PSF, 0) * COALESCE(SQFT, 0) AS occ
     FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-    WHERE REGION = P_REGION AND STORE_ROLE = 'OWNED'
-  ),
-  incell AS (
-    SELECT c.H3, c.HH, c.CENTROID
-    FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c, iso
-    WHERE c.REGION = P_REGION AND iso.poly IS NOT NULL AND ST_WITHIN(c.CENTROID, iso.poly)
-  ),
-  captured AS (
-    SELECT OWN_ID, SUM(HH) AS cap_hh
-    FROM (
-      SELECT ic.H3, ic.HH, o.STORE_ID AS OWN_ID,
-             ROW_NUMBER() OVER (PARTITION BY ic.H3 ORDER BY ST_DISTANCE(ic.CENTROID, ST_MAKEPOINT(o.LON, o.LAT))) rn
-      FROM incell ic CROSS JOIN owned o
-    ) WHERE rn = 1 GROUP BY OWN_ID
-  ),
-  calc AS (
-    SELECT o.STORE_ID, o.POI_NAME, cap.cap_hh,
-           ROUND(100 * cap.cap_hh / NULLIF(o.REFERENCE_HH, 0), 1) AS transfer_pct,
-           cap.cap_hh * P_VALUE_PER_HH * P_CAPTURE_RATE AS rev,
-           o.HV_PCT, o.SAMPLE_PCT, o.WALKIN_PCT
-    FROM captured cap JOIN owned o ON o.STORE_ID = cap.OWN_ID
+    WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID
   )
-  SELECT STORE_ID, POI_NAME, cap_hh AS households, transfer_pct,
-         ROUND(rev)::NUMBER(18,0) AS revenue,
-         ROUND(rev * HV_PCT)::NUMBER(18,0) AS home_visit,
-         ROUND(rev * SAMPLE_PCT)::NUMBER(18,0) AS sample_rev,
-         ROUND(rev * WALKIN_PCT)::NUMBER(18,0) AS walk_in,
-         ROUND(rev * P_EBITDA_MARGIN)::NUMBER(18,0) AS ebitda_transfer
-  FROM calc
+  SELECT f.STORE_ID AS candidate_id, f.POI_NAME,
+         ROUND(t.captured_hh)::INT, ROUND(t.cann_hh)::INT,
+         -- NET_NEW_HH is the RESIDUAL of the two rounded figures, so the identity
+         -- captured = cannibalised + net_new holds exactly in the numbers a reader
+         -- sees. Rounding all three independently left it off by 1 on three of four
+         -- bands - arithmetically trivial, but this is the decomposition the whole
+         -- view argues from, so it must add up on screen.
+         (ROUND(t.captured_hh) - ROUND(t.cann_hh))::INT,
+         ROUND(100 * t.cann_hh / NULLIF(t.captured_hh, 0), 1)::NUMBER(6,1) AS cannibalisation_rate_pct,
+         ROUND(t.captured_hh * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS captured_revenue,
+         ROUND(t.cann_hh    * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS cannibalised_revenue,
+         ROUND(t.net_hh     * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS net_new_revenue,
+         ROUND(t.net_hh * P_VALUE_PER_HH * P_CAPTURE_RATE * P_EBITDA_MARGIN)::NUMBER(18,0) AS net_new_ebitda,
+         ROUND(f.occ)::NUMBER(18,0) AS annual_occupancy_cost,
+         ROUND(f.occ / NULLIF(t.net_hh * P_VALUE_PER_HH * P_CAPTURE_RATE * P_EBITDA_MARGIN, 0),
+               2)::NUMBER(10,2) AS payback_years,
+         t.owned_hit::INT AS stores_impacted,
+         g.anchors_in_band::INT, g.res::INT AS anchor_res
+  FROM f CROSS JOIN tot t CROSS JOIN grid g
 $$;
 
 -- Live overlap geometry for Site Impact: computes the candidate isochrone with
@@ -231,6 +686,21 @@ $$
     FROM ovf JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
       ON z.REGION = P_REGION AND ST_WITHIN(z.CENTROID, ovf.g)
     GROUP BY ovf.STORE_ID
+  ),
+  -- Households inside the overlap that ALSO fall within an attributed postcode
+  -- polygon: the numerator of the CONFIDENCE measure below.
+  hc AS (
+    SELECT ovf.STORE_ID, SUM(c.HH) AS covered_hh
+    FROM ovf
+    JOIN FLEET_INTELLIGENCE.LOCATION.HH_CELLS c
+      ON c.REGION = P_REGION AND ST_WITHIN(c.CENTROID, ovf.g)
+    JOIN FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS z
+      ON z.REGION = P_REGION AND ST_WITHIN(c.CENTROID, z.GEOG)
+    GROUP BY ovf.STORE_ID
+  ),
+  zt AS (
+    SELECT COUNT(*) AS n FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS
+    WHERE REGION = P_REGION
   )
   SELECT P_CANDIDATE_ID || '~' || ovf.STORE_ID AS overlap_id,
          ovf.STORE_ID AS owned_store_id, ovf.POI_NAME AS owned_store, P_BAND AS band_min,
@@ -242,11 +712,22 @@ $$
          ROUND(COALESCE(hh.households, 0) * P_VALUE_PER_HH * P_CAPTURE_RATE)::NUMBER(18,0) AS cannibalised_revenue,
          ROUND(COALESCE(hh.households, 0) * P_VALUE_PER_HH * P_CAPTURE_RATE * P_EBITDA_MARGIN)::NUMBER(18,0) AS cannibalised_ebitda,
          LEAST(1, COALESCE(hh.households, 0) / NULLIF(f.REFERENCE_HH, 0))::NUMBER(6,3) AS transfer_prob,
-         ROUND(LEAST(1, COALESCE(zp.zip_count, 0) / 5.0), 3)::NUMBER(6,3) AS confidence
+         -- Formerly LEAST(1, zip_count / 5.0): an arbitrary constant labelled
+         -- "confidence" that rose with the SIZE of the overlap, so a big overlap
+         -- always looked trustworthy regardless of evidence. This is the real
+         -- thing - the share of the overlap's households that sit inside a
+         -- postcode we could actually attribute demographics to. NULL when the
+         -- region has no ZIP_AREAS at all (non-US), because absence of evidence
+         -- must not read as high confidence.
+         IFF(zt.n = 0, NULL,
+             ROUND(COALESCE(hc.covered_hh, 0)
+                   / NULLIF(COALESCE(hh.households, 0), 0), 3))::NUMBER(6,3) AS confidence
   FROM ovf
   LEFT JOIN hh    ON hh.STORE_ID = ovf.STORE_ID
   LEFT JOIN zp    ON zp.STORE_ID = ovf.STORE_ID
+  LEFT JOIN hc    ON hc.STORE_ID = ovf.STORE_ID
   LEFT JOIN facts f ON f.STORE_ID = ovf.STORE_ID
+  CROSS JOIN zt
 $$;
 
 -- Per-ZIP rows inside each candidate/owned overlap (postcode-in-overlap table +
@@ -584,6 +1065,15 @@ GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OWNED_CATCHMENTS(INT, VARCHAR) T
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_CANNIBALISATION(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(VARCHAR, INT, VARCHAR, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(VARCHAR, INT, VARCHAR, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_HUFF_ALLOCATION(VARCHAR, INT, VARCHAR, FLOAT) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_SITE_VERDICT(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_SITE_VERDICT(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_SITE_VERDICT(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.LOCATION.LIVE_OVERLAPS(VARCHAR, INT, VARCHAR, FLOAT, FLOAT, FLOAT) TO ROLE FLEET_APP_ADMIN;
@@ -766,16 +1256,28 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH mtx AS (
+  WITH prof AS (
+    -- Guard the profile at the boundary where it reaches the engine. A NULL or
+    -- empty P_PROFILE (e.g. a map layer that fires before the picker resolves, or
+    -- any caller that omits it) reaches ORS as 'unknown' and the engine rejects
+    -- the whole matrix. Fall back to the sourcing region's active profile.
+    -- Resolved as a CTE column, NOT inlined as a scalar subquery into the ORS
+    -- argument: a scalar subquery that itself wraps a view carrying aggregation
+    -- reproduces "Unsupported subquery type cannot be evaluated" as a UDTF arg.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
+  mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `distances IS NOT NULL` filter below silently return no lanes.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      P_PROFILE,
+      prof.PR,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
       P_REGION)) AS m
+    FROM prof
   ),
   p AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
@@ -876,15 +1378,22 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH mtx AS (
+  WITH prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES for the rationale. NULL/'' -> the
+    -- sourcing region's active profile, resolved as a column not a nested subquery.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
+  mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE).
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      P_PROFILE,
+      prof.PR,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       P_REGION)) AS m
+    FROM prof
   ),
   a AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
@@ -1149,6 +1658,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   swap AS (
     SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
@@ -1161,9 +1676,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM swap s, reg,
+  FROM swap s, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
                reg.r)) d
@@ -1184,6 +1699,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   flows AS (
     SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
@@ -1197,9 +1718,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM flows f, reg,
+  FROM flows f, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
                ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
                reg.r)) d
@@ -1221,6 +1742,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   cur AS (
     SELECT CUSTOMER_ID, CURRENT_PLANT_GEOG, CUSTOMER_GEOG
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
@@ -1233,9 +1760,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM cur c, reg,
+  FROM cur c, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(ST_X(c.CURRENT_PLANT_GEOG), ST_Y(c.CURRENT_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(c.CUSTOMER_GEOG), ST_Y(c.CUSTOMER_GEOG)),
                reg.r)) d

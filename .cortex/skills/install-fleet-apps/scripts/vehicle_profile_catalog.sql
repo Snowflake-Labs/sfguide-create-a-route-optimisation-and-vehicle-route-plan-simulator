@@ -148,7 +148,15 @@ SET WEIGHT_TONS = p.WEIGHT_TONS,
     AXLELOAD_T  = p.AXLELOAD_T,
     HAZMAT      = COALESCE(f.HAZMAT, FALSE)
 FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE p
-WHERE f.VEHICLE_TYPE = p.VEHICLE_TYPE;
+WHERE f.VEHICLE_TYPE = p.VEHICLE_TYPE
+  -- Stamp ONLY rows that have no weight yet. The catalog carries one weight per
+  -- MODE, whereas the Studio generator writes a PER-SUBTYPE weight (a light VAN
+  -- sits below the 4.536 tonne FLSA small-vehicle boundary while the tractor
+  -- units sit far above it). Without this guard, any re-run of the installer -
+  -- which is documented as idempotent and is the normal way to resume - would
+  -- flatten every generated vehicle back to the mode weight and silently destroy
+  -- the mixed overtime-eligibility signal the labour view depends on.
+  AND f.WEIGHT_TONS IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- RECREATE the contract view this file dropped at the top.

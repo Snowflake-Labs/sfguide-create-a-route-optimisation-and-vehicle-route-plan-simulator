@@ -21,6 +21,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
 import { FreshnessBadge } from './freshness-badge';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
@@ -79,6 +80,7 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
   const { data, loading, error, suspended, refetch, fetchedAt } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   const styleConfig = useStyleConfig();
+  const display = useDisplayConfig();
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
@@ -179,7 +181,7 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
     useMemo(
       () =>
         buildTableMemo({
-          columns: columns.map((c) => ({ key: c.field, label: c.header ?? c.field })),
+          columns: columns.map((c) => ({ key: c.field, label: interpolateTokens(c.header ?? c.field, display) })),
           rows,
           totalRows: data?.totalRows,
           sortKey,
@@ -230,7 +232,7 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
           <tr>
             {columns.map((c) => (
               <th key={c.field} onClick={() => handleSort(c.field)} style={{ textAlign: 'left', padding: '8px 12px', position: 'sticky', top: 0, backgroundColor: 'var(--surface-secondary, #f9fafb)', borderBottom: '1px solid var(--border-default, #e5e7eb)', fontWeight: 600, color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', userSelect: 'none' }}>
-                {c.header ?? c.field}
+                {interpolateTokens(c.header ?? c.field, display)}
                 {sortKey === c.field && (
                   <span style={{ marginLeft: '4px', fontSize: '10px' }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
                 )}
