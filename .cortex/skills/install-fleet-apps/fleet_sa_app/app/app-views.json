@@ -1847,7 +1847,7 @@
       "trend": {
         "component": "Chart",
         "data": {
-          "query": "SELECT WEEK_LABEL || ' - ' || REGION_LABEL AS week, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct_of_paid, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:date_range_start AS DATE), CAST(:date_range_end AS DATE))) WHERE NOT IS_PARTIAL_START GROUP BY WEEK_LABEL, REGION_LABEL ORDER BY week",
+          "query": "SELECT WEEK_LABEL || ' - ' || REGION_LABEL AS week, ROUND(100 * DIV0(SUM(OT_HOURS), SUM(HOURS_TO_DATE)), 1) AS ot_pct_of_paid, ROUND(SUM(EST_OT_PREMIUM), 0) AS ot_premium, COUNT(DISTINCT IFF(OT_BAND IN ('AT_RISK','BREACH'), REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID, NULL)) AS at_risk_operators FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:date_range_start AS DATE), CAST(:date_range_end AS DATE))) WHERE NOT IS_PARTIAL_START AND NOT IS_PARTIAL_END GROUP BY WEEK_LABEL, REGION_LABEL ORDER BY week",
           "params": {
             "region": "context.region",
             "dataset_id": "context.dataset_id",

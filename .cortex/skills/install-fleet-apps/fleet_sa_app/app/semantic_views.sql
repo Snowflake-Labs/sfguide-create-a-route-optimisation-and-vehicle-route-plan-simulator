@@ -943,6 +943,8 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
       COMMENT = 'TRUE for the one week still in progress as at the dataset as-of instant. This is the week a projection is meaningful for.'
     , labor_week.is_partial_start AS IS_PARTIAL_START
       COMMENT = 'TRUE when the dataset begins part-way through this week, so its totals are legitimately low and must NOT be compared against a full week.'
+    , labor_week.is_partial_end AS IS_PARTIAL_END
+      COMMENT = 'TRUE when this week lies entirely past the region as-of instant - the tapering tail of the dataset, not a real operating week. Like is_partial_start its totals are legitimately low and must NOT be presented as a drop in hours or compared against a full week.'
     , labor_week.ot_band AS OT_BAND
       WITH SYNONYMS ('overtime band', 'risk band', 'overtime status', 'at risk')
       COMMENT = 'Projected overtime band: UNDER_CONTRACT, OVERTIME, AT_RISK, BREACH. Derived from projected hours against the configured thresholds.'
@@ -1066,7 +1068,7 @@ DOT ON-DUTY IS A DIFFERENT CLOCK FROM PAID HOURS
 49 CFR 395.2 on-duty time includes waiting to be dispatched, inspection and loading, and its window is 7 CONSECUTIVE DAYS rather than the payroll week. Never add dot_onduty_7d_hours to hours_to_date, and never present them as the same measure.
 
 PROJECTION AND THE CURRENT WEEK
-"Who will exceed 60 hours this week" is answered with projected_week_hours, NOT hours_to_date. Projection is anchored to the latest activity in the DATASET, not to wall-clock time, so filter is_current_week = TRUE for the in-progress week; for a completed week the projection equals the actual. A week with is_partial_start = TRUE is truncated at its BEGINNING by the dataset boundary: its totals are legitimately low and must not be compared against a full week or presented as a drop in hours.
+"Who will exceed 60 hours this week" is answered with projected_week_hours, NOT hours_to_date. Projection is anchored to the latest activity in the DATASET, not to wall-clock time, so filter is_current_week = TRUE for the in-progress week; for a completed week the projection equals the actual. A week with is_partial_start = TRUE is truncated at its BEGINNING by the dataset boundary: its totals are legitimately low and must not be compared against a full week or presented as a drop in hours. A week with is_partial_end = TRUE lies entirely past the dataset as-of instant (the tapering tail of activity) and must be excluded from any week-over-week series for the same reason.
 
 REGION IS A DIMENSION, NOT A GLOBAL SETTING
 This view holds every loaded region at once, so an unfiltered aggregate MIXES regions. `region` is the KEY (SanFrancisco, Europe); `region_label` is the readable form ("San Francisco"). region = ''San Francisco'' matches NOTHING - use region_label for a spoken place name. If a region returns no rows, say that region has no labour data; do NOT conclude the dataset is missing.

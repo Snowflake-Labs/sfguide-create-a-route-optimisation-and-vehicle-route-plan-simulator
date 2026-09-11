@@ -574,7 +574,7 @@ RETURNS TABLE (
   OPERATOR_ID VARCHAR, WEEK_START DATE, WEEK_END DATE, WEEK_LABEL VARCHAR,
   TEAM_ID VARCHAR, SUPERVISOR_ID VARCHAR, SHIFT_TYPE VARCHAR, DRIVER_PROFILE VARCHAR,
   HOURS_TO_DATE FLOAT, DAYS_WORKED NUMBER, DAYS_ELAPSED NUMBER, DAYS_REMAINING NUMBER,
-  IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
+  IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, IS_PARTIAL_END BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
   CONTRACTED_HOURS_PER_WEEK FLOAT, STRAIGHT_HOURS FLOAT, OT_HOURS FLOAT,
   PROJECTED_OT_HOURS FLOAT, HOURLY_RATE FLOAT, EST_OT_COST FLOAT,
   -- The AVOIDABLE portion. EST_OT_COST is the FULLY LOADED cost of the overtime
@@ -858,6 +858,18 @@ $$
       -- week. Without this the first week of any dataset reads as a fleet-wide
       -- drop in hours.
       (w.FIRST_TS > w.WEEK_START::TIMESTAMP_NTZ)                                 AS IS_PARTIAL_S,
+      -- The whole week lies PAST the region's trimmed as-of anchor: it is the
+      -- tapering tail of the dataset (a handful of trips on the last calendar day
+      -- before the data stops), not a real operating week. This is the symmetric
+      -- twin of IS_PARTIAL_S above - the START-of-dataset case was guarded, the
+      -- END-of-dataset case was not - and it reached the dashboard: a UsTexas week
+      -- of 15 rows past the anchor made the trend chart (which filters
+      -- NOT IS_PARTIAL_START) read as overtime collapsing from 52,825 to 30, and
+      -- made the projection assert those operators finish the week on ~16 hours.
+      -- Such a week is NOT current and NOT partial-start, so it needs its own flag;
+      -- consumers that plot a week-over-week series must exclude it exactly as they
+      -- exclude a partial-start week.
+      (w.WEEK_START::TIMESTAMP_NTZ > w.AS_OF_TS)                                 AS IS_PARTIAL_E,
       d.DAYS_WORKED
     FROM wk w
     JOIN days d
@@ -982,6 +994,7 @@ $$
     p.DAYS_REMAINING_C                                 AS DAYS_REMAINING,
     p.IS_CUR                                           AS IS_CURRENT_WEEK,
     p.IS_PARTIAL_S                                     AS IS_PARTIAL_START,
+    p.IS_PARTIAL_E                                     AS IS_PARTIAL_END,
     p.PROJ_HOURS::FLOAT                                AS PROJECTED_WEEK_HOURS,
     o.CONTRACTED_HOURS_PER_WEEK,
     ROUND(LEAST(p.HOURS_TO_DATE, p.T1), 2)::FLOAT      AS STRAIGHT_HOURS,
@@ -1104,7 +1117,7 @@ RETURNS TABLE (
   OPERATOR_ID VARCHAR, WEEK_START DATE, WEEK_END DATE, WEEK_LABEL VARCHAR,
   TEAM_ID VARCHAR, SUPERVISOR_ID VARCHAR, SHIFT_TYPE VARCHAR, DRIVER_PROFILE VARCHAR,
   HOURS_TO_DATE FLOAT, DAYS_WORKED NUMBER, DAYS_ELAPSED NUMBER, DAYS_REMAINING NUMBER,
-  IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
+  IS_CURRENT_WEEK BOOLEAN, IS_PARTIAL_START BOOLEAN, IS_PARTIAL_END BOOLEAN, PROJECTED_WEEK_HOURS FLOAT,
   CONTRACTED_HOURS_PER_WEEK FLOAT, STRAIGHT_HOURS FLOAT, OT_HOURS FLOAT,
   PROJECTED_OT_HOURS FLOAT, HOURLY_RATE FLOAT, EST_OT_COST FLOAT,
   EST_OT_PREMIUM FLOAT,
@@ -1175,7 +1188,7 @@ CREATE OR REPLACE VIEW FLEET_APP.LABOR.VW_LABOR_WEEK
          || '|' || TO_VARCHAR(WEEK_START, 'YYYY-MM-DD') AS LABOR_WEEK_ID,
        OPERATOR_ID, WEEK_START, WEEK_END, WEEK_LABEL, TEAM_ID, SUPERVISOR_ID,
        SHIFT_TYPE, DRIVER_PROFILE, HOURS_TO_DATE, DAYS_WORKED, DAYS_ELAPSED,
-       DAYS_REMAINING, IS_CURRENT_WEEK, IS_PARTIAL_START, PROJECTED_WEEK_HOURS,
+       DAYS_REMAINING, IS_CURRENT_WEEK, IS_PARTIAL_START, IS_PARTIAL_END, PROJECTED_WEEK_HOURS,
        CONTRACTED_HOURS_PER_WEEK, STRAIGHT_HOURS, OT_HOURS, PROJECTED_OT_HOURS,
        HOURLY_RATE, EST_OT_COST, EST_OT_PREMIUM, CURRENCY_CODE,
        OT_PCT_OF_PAID, OT_PCT_OF_STRAIGHT, FTE_EQUIVALENT, OT_BAND,
