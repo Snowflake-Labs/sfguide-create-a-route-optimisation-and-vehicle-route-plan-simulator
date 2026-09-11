@@ -65,6 +65,28 @@
 --    Overtime thresholds are configuration, not literals, because 40/50/60 is
 --    US FLSA and the EU uses a 48-hour average.
 --
+-- 4. AN OPERATOR IS (REGION, DRIVER_ID), NEVER DRIVER_ID ALONE.
+--    Driver ids are index-derived per region and are therefore REUSED across
+--    regions: measured on a two-region account, 100 SanFrancisco ids and 47
+--    UsTexas ids yielded only 100 distinct values, meaning every UsTexas driver
+--    shared an id with a different SanFrancisco driver. Sessionizing or grouping
+--    on the bare id silently fuses two different people into one whenever more
+--    than one region is in scope - their trips interleave into duty periods that
+--    belong to neither, and ANY_VALUE(REGION) then files the composite under
+--    whichever region happens to win. Measured cost before the fix: the unscoped
+--    call returned 118 operators and 8,371 paid hours against 147 and 9,299 from
+--    the sum of the per-region calls, losing 29 operators and 10% of all hours.
+--
+--    Nothing failed, which is why this needed a test rather than a review: the
+--    app never saw it because the app always passes a region, while SV_LABOR and
+--    VW_LABOR_WEEK pass none, so the defect was confined to the AGENT's answers.
+--    verify_labor_layer.sql now asserts the unscoped call equals the sum of the
+--    per-region calls on both operator count and total hours.
+--
+--    Vehicle and location ids are globally unique (measured: 150 and 12,978
+--    distinct either way), so joins on those keys are deliberately left bare -
+--    region-qualifying them would add noise without removing a defect.
+--
 -- Region scoping: every function carries REGION and REGION_LABEL as ordinary
 -- dimensions and filters only on its scope ARGS. No function reads a singleton
 -- CONFIG row (see check_region_scoping.py).
