@@ -142,11 +142,55 @@
 -- KEY in SV_LABOR and both were built from the operator id alone, so they
 -- collided across datasets - silently, because Snowflake does not enforce a
 -- primary key on a standard view.
+--
+-- CHECK 21 to CHECK 24 guard the as-of anchor itself, which nothing above them
+-- can see.
+--
+-- CHECK 21 is the guard for the reported defect. The anchor used to be the raw
+-- MAX(DUTY_END), which lands in the taper a generated dataset ends with (21 trips
+-- against a 1,933/day median in SanFrancisco, 6 against 71 in UsTexas), so the
+-- current week was a one-day stub containing 15 of 47 UsTexas operators and 1 of
+-- 100 in SanFrancisco. Every panel of the Labour view filters IS_CURRENT_WEEK, so
+-- the whole dashboard collapsed to that population. CHECK 5 could not see it: a
+-- stub is still exactly one current week, so CHECK 5 passed the entire time. What
+-- was wrong was the current week's POPULATION, which is what CHECK 21 measures.
+--
+-- CHECK 22 is the arithmetic identity on the projection window. DAYS_REMAINING is
+-- rendered as "days left to act", so a break here is a wrong number on screen.
+--
+-- CHECK 23 is the only check that can see the anchor PARTITIONING. CHECK 16
+-- cannot: it compares row counts, and which week is flagged current does not
+-- change how many rows exist, so a pooled anchor passes it unchanged. CHECK 21
+-- cannot either: it reads the region-scoped call, where there is nothing to pool.
+-- CHECK 23 is therefore CHECK 21's roster test applied PER REGION to the UNSCOPED
+-- read. Pooling let the freshest region's tail drag every other region's current
+-- week with it - measured, an unscoped call reported 15 current-week operators
+-- while SanFrancisco called alone reported 100. Vacuous on a single-region
+-- account, so it passes there by construction.
+--
+-- It was first written as "each region's current week IS that region's latest
+-- week", which looked equivalent and was wrong: the trim exists precisely to
+-- leave a tapering final week NOT flagged current, so that form failed on a
+-- correct deployment. Recorded because the wrong form is the intuitive one.
+--
+-- CHECK 24 re-runs CHECK 1's conservation equality through the four-arg WINDOW
+-- overload the app now calls on every panel. The window has to be an overlap test
+-- on the duty periods, not a predicate on the input trips: filtering the trips
+-- first cuts a shift at the window edge, reporting a fragment as a whole shift and
+-- breaking the equality. Asserting it is what stops that regression.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-labor-overtime","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 SET REGION = COALESCE('<% REGION %>', 'SanFrancisco');
+
+-- Window for CHECK 24: this region's own last 14 days of activity. Derived from
+-- the data rather than hardcoded, so the range is genuinely narrower than the
+-- dataset on any account and the check does not silently degenerate into a repeat
+-- of the unbounded CHECK 1.
+SET WIN_TO = (SELECT MAX(TRIP_START)::DATE
+              FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED($REGION, NULL::VARCHAR)));
+SET WIN_FROM = DATEADD('day', -13, $WIN_TO);
 
 WITH duty AS (
   SELECT * FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED($REGION, NULL::VARCHAR))
@@ -344,5 +388,77 @@ SELECT * FROM (
            || ' duplicate duty keys',
          IFF((SELECT COUNT(*) - COUNT(DISTINCT LABOR_WEEK_ID) FROM wk_all) = 0
              AND (SELECT COUNT(*) - COUNT(DISTINCT DUTY_ID) FROM duty_all) = 0,
+             'PASS', 'FAIL')
+  UNION ALL
+  -- The guard for the reported defect: the current week must hold a plausible
+  -- ROSTER, not merely exist. CHECK 5 asserts exactly one current week and passed
+  -- throughout, because a one-day stub is still exactly one week - it was the
+  -- stub's POPULATION that was wrong. Bounded at 60% rather than 100% because a
+  -- genuine mid-week snapshot legitimately misses people rostered off; a stub, by
+  -- contrast, held a few percent.
+  SELECT 21, 'current week holds a plausible share of the roster',
+         TO_VARCHAR((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk WHERE IS_CURRENT_WEEK))
+           || ' of ' || TO_VARCHAR((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk))
+           || ' operators in the current week',
+         IFF((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk WHERE IS_CURRENT_WEEK)
+             >= 0.6 * (SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk), 'PASS', 'FAIL')
+  UNION ALL
+  -- Arithmetic identity on the projection window. DAYS_REMAINING is rendered as
+  -- "days left to act", so a break here is a wrong number on screen.
+  SELECT 22, 'days elapsed and remaining partition the week',
+         TO_VARCHAR((SELECT COUNT(*) FROM wk_all
+                     WHERE DAYS_ELAPSED NOT BETWEEN 1 AND 7
+                        OR DAYS_REMAINING <> 7 - DAYS_ELAPSED)) || ' rows inconsistent',
+         IFF((SELECT COUNT(*) FROM wk_all
+              WHERE DAYS_ELAPSED NOT BETWEEN 1 AND 7
+                 OR DAYS_REMAINING <> 7 - DAYS_ELAPSED) = 0, 'PASS', 'FAIL')
+  UNION ALL
+  -- The only check that can see the anchor PARTITIONING, and CHECK 21 cannot:
+  -- CHECK 21 reads the region-SCOPED call, where there is only one region and so
+  -- nothing to pool. This is CHECK 21's roster test applied PER REGION to the
+  -- UNSCOPED read, which is the scope the agent uses.
+  --
+  -- Under a single pooled anchor the freshest region's tail set the current week
+  -- for every region, so a region whose activity ended earlier had its current
+  -- week land in a week it had barely worked: measured, SanFrancisco held 1 of its
+  -- 100 operators in the pooled current week while returning 100 when called on
+  -- its own. Any region falling below the roster share is therefore the pooling
+  -- signature. Vacuous on a single-region account, so it passes there.
+  --
+  -- Deliberately NOT asserted as "the current week is the region's latest week":
+  -- that formulation looked equivalent and is wrong, because the trim exists
+  -- precisely to leave a tapering final week NOT flagged current. It failed on a
+  -- correct deployment before being restated.
+  SELECT 23, 'as-of anchor is resolved per region, not pooled',
+         TO_VARCHAR((SELECT COUNT(DISTINCT REGION) FROM wk_all)) || ' region(s), '
+           || TO_VARCHAR((SELECT COUNT(*) FROM (
+                SELECT REGION FROM wk_all GROUP BY REGION
+                HAVING COUNT(DISTINCT IFF(IS_CURRENT_WEEK, WEEK_START, NULL)) <> 1
+                    OR COUNT(DISTINCT IFF(IS_CURRENT_WEEK, OPERATOR_ID, NULL))
+                       < 0.6 * COUNT(DISTINCT OPERATOR_ID)
+              ))) || ' with a thin or ambiguous current week',
+         IFF((SELECT COUNT(DISTINCT REGION) FROM wk_all) < 2
+             OR (SELECT COUNT(*) FROM (
+                   SELECT REGION FROM wk_all GROUP BY REGION
+                   HAVING COUNT(DISTINCT IFF(IS_CURRENT_WEEK, WEEK_START, NULL)) <> 1
+                       OR COUNT(DISTINCT IFF(IS_CURRENT_WEEK, OPERATOR_ID, NULL))
+                          < 0.6 * COUNT(DISTINCT OPERATOR_ID)
+                 )) = 0,
+             'PASS', 'FAIL')
+  UNION ALL
+  -- CHECK 1's conservation equality re-run through the four-arg WINDOW overload
+  -- the app calls on every panel. The window must be an overlap test on the duty
+  -- periods, not a predicate on the input trips: filtering trips first cuts a
+  -- shift at the window edge and the two sides stop agreeing.
+  SELECT 24, 'hours conserved under a narrowed date range',
+         TO_VARCHAR(ROUND(COALESCE((SELECT SUM(PAID_HOURS) FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(
+                            $REGION, NULL::VARCHAR, $WIN_FROM, $WIN_TO))), 0), 2)) || 'h duty vs '
+           || TO_VARCHAR(ROUND(COALESCE((SELECT SUM(HOURS_TO_DATE) FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(
+                            $REGION, NULL::VARCHAR, $WIN_FROM, $WIN_TO))), 0), 2)) || 'h weekly over '
+           || TO_VARCHAR($WIN_FROM) || '..' || TO_VARCHAR($WIN_TO),
+         IFF(ABS(COALESCE((SELECT SUM(PAID_HOURS) FROM TABLE(FLEET_APP.LABOR.F_FACT_DUTY_PERIOD_SCOPED(
+                            $REGION, NULL::VARCHAR, $WIN_FROM, $WIN_TO))), 0)
+                 - COALESCE((SELECT SUM(HOURS_TO_DATE) FROM TABLE(FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED(
+                            $REGION, NULL::VARCHAR, $WIN_FROM, $WIN_TO))), 0)) <= 0.5,
              'PASS', 'FAIL')
 ) ORDER BY CHK;
