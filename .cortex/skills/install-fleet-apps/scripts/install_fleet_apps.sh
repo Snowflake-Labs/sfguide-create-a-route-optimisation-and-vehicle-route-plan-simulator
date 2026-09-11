@@ -505,7 +505,13 @@ fi
 # guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
-  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1; then
+  # --enable-templating NONE is REQUIRED: authored prose in the file contains
+  # ampersands (e.g. "P&L" in a comment), which snow CLI's default templating
+  # parses as an undefined variable ("SQL rendering error: 'L' is undefined"),
+  # aborting the whole file before REGION_LABEL and the LOCATION/SOURCING layers
+  # are created - which then hard-fails the pack install on the missing
+  # FLEET_APP.CORE.REGION_LABEL function.
+  if snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" --enable-templating NONE >/tmp/ifa_analytic.log 2>&1; then
     # The file completed, but the guarded builders report their own failures as
     # WARN strings in the result set rather than a non-zero exit - surface those
     # too, otherwise "OK" still overstates what happened.
@@ -556,7 +562,10 @@ fi
 # does disable the delivery-notification view.
 if [ "${SKIP_DELIVERY_SYNC:-0}" != "1" ]; then
   note "[4.2/8] delivery-sync layer (site arrival/departure detection)..."
-  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" >/tmp/ifa_delivery_sync.log 2>&1 \
+  # --enable-templating NONE is REQUIRED: authored prose contains ampersands
+  # (e.g. the POI name "J&T Cargo" in a comment), which snow CLI's default
+  # templating parses as an undefined variable and aborts the whole file.
+  snow sql -c "$CONNECTION" -f "$DELIVERY_SYNC_SQL" --enable-templating NONE >/tmp/ifa_delivery_sync.log 2>&1 \
     && step "4.2 delivery-sync" OK \
     || { note "  WARN: delivery-sync layer reported errors; see /tmp/ifa_delivery_sync.log"; step "4.2 delivery-sync" WARN; }
 else
