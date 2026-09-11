@@ -123,6 +123,12 @@ INTERPOLATED_PATHS: dict[str, str] = {
     "*.areas.*.config.actions.[].label": "detail-panel.tsx tr(action.label)",
     "*.areas.*.config.properties.[].label": "detail-panel.tsx tr(prop.label)",
     "*.areas.*.config.sections.[].title": "detail-panel.tsx tr(section.title)",
+    # Table column headers - view-clickable-table.tsx (config.columns) and
+    # detail-sections.tsx AutoTable (config.sections[].columns). Both were rendered
+    # raw, so a token in a table header printed its braces; now interpolated at the
+    # <th> and in the ClickableTable agent memo.
+    "*.areas.*.config.columns.[].header": "view-clickable-table.tsx interpolates c.header",
+    "*.areas.*.config.sections.[].columns.[].header": "detail-sections.tsx AutoTable interpolates col.header",
     # Empty states - detail-panel.tsx, detail-sections.tsx, view-map.tsx
     "*.areas.*.config.emptyMessage": "detail-panel/detail-sections/view-map interpolate emptyMessage",
     "*.areas.*.config.sections.[].emptyMessage": "detail-sections.tsx interpolates section.emptyMessage",

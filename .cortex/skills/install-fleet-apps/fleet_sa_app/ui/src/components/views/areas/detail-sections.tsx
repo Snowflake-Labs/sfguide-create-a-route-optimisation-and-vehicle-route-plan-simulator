@@ -95,6 +95,7 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
 // tables rendered side by side line up regardless of row count; omit it for the
 // default max-height behavior.
 export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number; scrollHeight?: number }) {
+  const display = useDisplayConfig();
   const displayed = rows.length;
   const total = totalRows ?? displayed;
   return (
@@ -105,7 +106,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
           <tr>
             {columns.map(col => (
               <th key={col.field} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, backgroundColor: 'var(--surface-secondary, #f3f4f6)', borderBottom: '2px solid var(--border-default, #e5e7eb)', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 1 }}>
-                {col.header}
+                {interpolateTokens(col.header, display)}
               </th>
             ))}
           </tr>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '@/lib/store';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { throwIfSuspended, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -60,6 +61,7 @@ function fmt(val: string | null): string {
 export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaProps) {
   const showView = useAppStore((s) => s.showView);
   const viewsVersion = useAppStore((s) => s.viewsVersion);
+  const display = useDisplayConfig();
 
   const [rows, setRows] = useState<WorkflowInstance[]>([]);
   const [loading, setLoading] = useState(true);
@@ -188,7 +190,7 @@ export function WorkflowManagerArea({ database, schema }: WorkflowManagerAreaPro
                 <tr>
                   {COLS.map((col) => (
                     <th key={col.key} style={thStyle(col.key)} onClick={() => handleSort(col.key)}>
-                      {col.label}
+                      {interpolateTokens(col.label, display)}
                       {sortKey === col.key && <span style={{ marginLeft: '4px', fontSize: '10px' }}>{sortDir === 'asc' ? '▲' : '▼'}</span>}
                     </th>
                   ))}
