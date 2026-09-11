@@ -32,11 +32,21 @@ interface DateBounds {
 // 1,933/day median (1.1%) and UsTexas held 6 against 71 (8.5%). Offering that day
 // as the range end pinned every relative preset to a near-empty anchor, and it
 // put the Labour view's "current week" inside a one-day stub - which, because
-// every panel there filters IS_CURRENT_WEEK, showed 15 of 47 operators. The
-// threshold is read from LABOR_CONFIG rather than written twice, so the picker
-// and the labour layer's own trim cannot drift apart. min_date is left as the
-// true minimum: a dataset's first day is short for a different reason and the
-// labour layer already labels that case (IS_PARTIAL_START).
+// every panel there filters IS_CURRENT_WEEK, showed 15 of 47 operators.
+//
+// The 0.5 share is INLINE rather than read from FLEET_APP.LABOR.LABOR_CONFIG,
+// which holds the authoritative copy for the labour layer itself. Reading it here
+// would make this GLOBAL control depend on the labour schema, and the installer
+// explicitly tolerates that schema being absent (step 4.25 degrades to a WARN when
+// the PERIOD data type is not enabled, and SKIP_LABOR=1 is supported). A missing
+// table is a compile error that no COALESCE can rescue, so the picker would return
+// nothing and silently fall back to "All time" for all eleven other date-aware
+// areas. Drift between the two copies is benign by construction: both ends clamp
+// with LEAST, so whichever trims more wins and neither can produce a wrong number.
+//
+// min_date is left as the true minimum: a dataset's first day is short for a
+// different reason and the labour layer already labels that case
+// (IS_PARTIAL_START).
 const DEFAULT_BOUNDS_SOURCE =
   'WITH d AS (' +
   'SELECT TRIP_START::DATE AS d FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT WHERE REGION = :region ' +
@@ -45,9 +55,8 @@ const DEFAULT_BOUNDS_SOURCE =
   '), c AS (SELECT d, COUNT(*) AS n FROM d GROUP BY d' +
   '), m AS (SELECT d, n, MEDIAN(n) OVER () AS med FROM c) ' +
   "SELECT TO_VARCHAR(MIN(d)::DATE, 'YYYY-MM-DD') AS min_date, " +
-  "TO_VARCHAR(COALESCE(MAX(IFF(n >= med * COALESCE((SELECT MAX(SUBSTANTIVE_DAY_MIN_SHARE) " +
-  "FROM FLEET_APP.LABOR.LABOR_CONFIG WHERE REGION = '*' AND VEHICLE_TYPE = '*'), 0.5), d, NULL)), " +
-  "MAX(d))::DATE, 'YYYY-MM-DD') AS max_date FROM m";
+  "TO_VARCHAR(COALESCE(MAX(IFF(n >= med * 0.5, d, NULL)), MAX(d))::DATE, 'YYYY-MM-DD') AS max_date " +
+  'FROM m';
 
 // Coerce a bounds value to YYYY-MM-DD. Accepts an ISO/date-only string and also
 // a bare days-since-epoch number, which is how the SQL REST API serializes a

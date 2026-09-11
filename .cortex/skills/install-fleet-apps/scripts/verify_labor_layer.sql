@@ -212,6 +212,53 @@ duty_all AS (
 op_all AS (
   SELECT * FROM FLEET_APP.LABOR.VW_LABOR_OPERATOR
 ),
+-- ── as-of anchor, reconstructed ──────────────────────────────────────────────
+-- AS_OF_TS is internal to the function, but the current week's row exposes enough
+-- to recover the day it fell on: WEEK_START + DAYS_ELAPSED - 1.
+--
+-- CHECK 21 and CHECK 23 assert properties of THAT DAY rather than of the current
+-- week's headcount. The headcount version was written first and is unusable as a
+-- gate: a payroll week legitimately begins with one elapsed day, and on a single
+-- typical day only 15% of the SanFrancisco roster and 13% of the UsTexas roster is
+-- working, so a dataset ending on or near a week boundary would fail a roster-share
+-- assertion while being perfectly correct - and because CHECK 21 is FAIL-level, that
+-- ABORTS the installer at step 4.26. Gating the roster test on elapsed days does not
+-- rescue it either: the defect being guarded had DAYS_ELAPSED = 2, so any such gate
+-- skips exactly the case it exists to catch. The anchor-day properties below hold
+-- regardless of rostering, headcount, or how many days the week has run.
+anchor AS (
+  SELECT REGION, MAX(DATEADD('day', DAYS_ELAPSED - 1, WEEK_START)) AS ANCHOR_D
+  FROM wk_all WHERE IS_CURRENT_WEEK GROUP BY REGION
+),
+anchor_scoped AS (
+  SELECT MAX(DATEADD('day', DAYS_ELAPSED - 1, WEEK_START)) AS ANCHOR_D
+  FROM wk WHERE IS_CURRENT_WEEK
+),
+day_vol AS (
+  SELECT REGION, TRIP_START::DATE AS D, COUNT(*) AS N
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(NULL::VARCHAR, NULL::VARCHAR))
+  WHERE TRIP_START IS NOT NULL
+  GROUP BY 1, 2
+),
+day_med AS (
+  SELECT REGION, D, N, MEDIAN(N) OVER (PARTITION BY REGION) AS MED FROM day_vol
+),
+-- Volume on each region's anchor day as a share of that region's median day. The
+-- trim guarantees this is at or above SUBSTANTIVE_DAY_MIN_SHARE; before the trim it
+-- was 1.1% for SanFrancisco and 8.5% for UsTexas.
+anchor_vol AS (
+  SELECT a.REGION, a.ANCHOR_D,
+         COALESCE(m.N, 0) AS N,
+         ROUND(COALESCE(m.MED, 0)) AS MED,
+         ROUND(DIV0(COALESCE(m.N, 0), COALESCE(m.MED, 0)), 3) AS SHARE
+  FROM anchor a
+  LEFT JOIN day_med m ON EQUAL_NULL(m.REGION, a.REGION) AND m.D = a.ANCHOR_D
+),
+cfg_share AS (
+  SELECT COALESCE(MAX(SUBSTANTIVE_DAY_MIN_SHARE), 0.5) AS MIN_SHARE
+  FROM FLEET_APP.LABOR.LABOR_CONFIG
+  WHERE REGION = '*' AND VEHICLE_TYPE = '*'
+),
 cfg AS (
   SELECT COALESCE(MAX(HOURLY_RATE_MIN), 22.0) AS RMIN,
          COALESCE(MAX(GVWR_OT_THRESHOLD_TONNES), 4.536) AS GVWR_T,
@@ -390,18 +437,20 @@ SELECT * FROM (
              AND (SELECT COUNT(*) - COUNT(DISTINCT DUTY_ID) FROM duty_all) = 0,
              'PASS', 'FAIL')
   UNION ALL
-  -- The guard for the reported defect: the current week must hold a plausible
-  -- ROSTER, not merely exist. CHECK 5 asserts exactly one current week and passed
-  -- throughout, because a one-day stub is still exactly one week - it was the
-  -- stub's POPULATION that was wrong. Bounded at 60% rather than 100% because a
-  -- genuine mid-week snapshot legitimately misses people rostered off; a stub, by
-  -- contrast, held a few percent.
-  SELECT 21, 'current week holds a plausible share of the roster',
-         TO_VARCHAR((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk WHERE IS_CURRENT_WEEK))
+  -- The guard for the reported defect. CHECK 5 asserts exactly one current week and
+  -- passed throughout, because a one-day stub IS exactly one week - what was wrong
+  -- was the day the anchor landed on. So this asserts the anchor day is a real
+  -- operating day, which is roster-independent and therefore safe as a gate.
+  SELECT 21, 'as-of anchor lands on a substantive day',
+         (SELECT TO_VARCHAR(ANCHOR_D) || ' at ' || TO_VARCHAR(N) || ' trips, '
+                 || TO_VARCHAR(ROUND(100 * SHARE, 1)) || '% of the '
+                 || TO_VARCHAR(MED) || '/day median'
+          FROM anchor_vol WHERE REGION = $REGION)
+           || ' (' || TO_VARCHAR((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk WHERE IS_CURRENT_WEEK))
            || ' of ' || TO_VARCHAR((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk))
-           || ' operators in the current week',
-         IFF((SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk WHERE IS_CURRENT_WEEK)
-             >= 0.6 * (SELECT COUNT(DISTINCT OPERATOR_ID) FROM wk), 'PASS', 'FAIL')
+           || ' operators)',
+         IFF(COALESCE((SELECT v.SHARE >= c.MIN_SHARE FROM anchor_vol v, cfg_share c
+                       WHERE v.REGION = $REGION), FALSE), 'PASS', 'FAIL')
   UNION ALL
   -- Arithmetic identity on the projection window. DAYS_REMAINING is rendered as
   -- "days left to act", so a break here is a wrong number on screen.
@@ -413,37 +462,34 @@ SELECT * FROM (
               WHERE DAYS_ELAPSED NOT BETWEEN 1 AND 7
                  OR DAYS_REMAINING <> 7 - DAYS_ELAPSED) = 0, 'PASS', 'FAIL')
   UNION ALL
-  -- The only check that can see the anchor PARTITIONING, and CHECK 21 cannot:
-  -- CHECK 21 reads the region-SCOPED call, where there is only one region and so
-  -- nothing to pool. This is CHECK 21's roster test applied PER REGION to the
-  -- UNSCOPED read, which is the scope the agent uses.
+  -- The only check that can see the anchor PARTITIONING. It is the DIRECT test:
+  -- adding other regions to the scope must not move THIS region's anchor. Under a
+  -- single pooled anchor it did - the freshest region's tail set the current week
+  -- for everyone, so the scoped and unscoped reads disagreed (SanFrancisco returned
+  -- 100 current-week operators alone and 1 when pooled).
   --
-  -- Under a single pooled anchor the freshest region's tail set the current week
-  -- for every region, so a region whose activity ended earlier had its current
-  -- week land in a week it had barely worked: measured, SanFrancisco held 1 of its
-  -- 100 operators in the pooled current week while returning 100 when called on
-  -- its own. Any region falling below the roster share is therefore the pooling
-  -- signature. Vacuous on a single-region account, so it passes there.
+  -- Compares anchor DAYS, not headcounts, so it is independent of rostering and of
+  -- how many days the week has run, and it is meaningful even on a single-region
+  -- account (where it trivially holds) rather than being skipped as vacuous.
   --
   -- Deliberately NOT asserted as "the current week is the region's latest week":
   -- that formulation looked equivalent and is wrong, because the trim exists
   -- precisely to leave a tapering final week NOT flagged current. It failed on a
-  -- correct deployment before being restated.
+  -- correct deployment before being restated. Nor as a roster share: see the note
+  -- on the anchor CTEs for why that cannot be a gate.
   SELECT 23, 'as-of anchor is resolved per region, not pooled',
          TO_VARCHAR((SELECT COUNT(DISTINCT REGION) FROM wk_all)) || ' region(s), '
-           || TO_VARCHAR((SELECT COUNT(*) FROM (
-                SELECT REGION FROM wk_all GROUP BY REGION
-                HAVING COUNT(DISTINCT IFF(IS_CURRENT_WEEK, WEEK_START, NULL)) <> 1
-                    OR COUNT(DISTINCT IFF(IS_CURRENT_WEEK, OPERATOR_ID, NULL))
-                       < 0.6 * COUNT(DISTINCT OPERATOR_ID)
-              ))) || ' with a thin or ambiguous current week',
-         IFF((SELECT COUNT(DISTINCT REGION) FROM wk_all) < 2
-             OR (SELECT COUNT(*) FROM (
-                   SELECT REGION FROM wk_all GROUP BY REGION
-                   HAVING COUNT(DISTINCT IFF(IS_CURRENT_WEEK, WEEK_START, NULL)) <> 1
-                       OR COUNT(DISTINCT IFF(IS_CURRENT_WEEK, OPERATOR_ID, NULL))
-                          < 0.6 * COUNT(DISTINCT OPERATOR_ID)
-                 )) = 0,
+           || $REGION || ' anchor scoped='
+           || TO_VARCHAR((SELECT ANCHOR_D FROM anchor_scoped))
+           || ' unscoped='
+           || TO_VARCHAR((SELECT ANCHOR_D FROM anchor_vol WHERE REGION = $REGION))
+           || ', ' || TO_VARCHAR((SELECT COUNT(*) FROM anchor_vol v, cfg_share c
+                                  WHERE v.SHARE < c.MIN_SHARE))
+           || ' region(s) anchored on a thin day',
+         IFF(EQUAL_NULL((SELECT ANCHOR_D FROM anchor_scoped),
+                        (SELECT ANCHOR_D FROM anchor_vol WHERE REGION = $REGION))
+             AND (SELECT COUNT(*) FROM anchor_vol v, cfg_share c
+                  WHERE v.SHARE < c.MIN_SHARE) = 0,
              'PASS', 'FAIL')
   UNION ALL
   -- CHECK 1's conservation equality re-run through the four-arg WINDOW overload
