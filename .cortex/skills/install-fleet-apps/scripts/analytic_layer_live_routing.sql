@@ -1256,16 +1256,28 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH mtx AS (
+  WITH prof AS (
+    -- Guard the profile at the boundary where it reaches the engine. A NULL or
+    -- empty P_PROFILE (e.g. a map layer that fires before the picker resolves, or
+    -- any caller that omits it) reaches ORS as 'unknown' and the engine rejects
+    -- the whole matrix. Fall back to the sourcing region's active profile.
+    -- Resolved as a CTE column, NOT inlined as a scalar subquery into the ORS
+    -- argument: a scalar subquery that itself wraps a view carrying aggregation
+    -- reproduces "Unsupported subquery type cannot be evaluated" as a UDTF arg.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
+  mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `distances IS NOT NULL` filter below silently return no lanes.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      P_PROFILE,
+      prof.PR,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
       P_REGION)) AS m
+    FROM prof
   ),
   p AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
@@ -1366,15 +1378,22 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH mtx AS (
+  WITH prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES for the rationale. NULL/'' -> the
+    -- sourcing region's active profile, resolved as a column not a nested subquery.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
+  mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE).
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      P_PROFILE,
+      prof.PR,
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
          FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
       P_REGION)) AS m
+    FROM prof
   ),
   a AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
@@ -1639,6 +1658,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   swap AS (
     SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
@@ -1651,9 +1676,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM swap s, reg,
+  FROM swap s, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
                reg.r)) d
@@ -1674,6 +1699,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   flows AS (
     SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
@@ -1687,9 +1718,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM flows f, reg,
+  FROM flows f, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
                ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
                reg.r)) d
@@ -1711,6 +1742,12 @@ $$
   WITH reg AS (
     SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
   ),
+  prof AS (
+    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
+    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
+    SELECT COALESCE(NULLIF(P_PROFILE, ''),
+                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
+  ),
   cur AS (
     SELECT CUSTOMER_ID, CURRENT_PLANT_GEOG, CUSTOMER_GEOG
     FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
@@ -1723,9 +1760,9 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM cur c, reg,
+  FROM cur c, reg, prof,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               P_PROFILE,
+               prof.PR,
                ARRAY_CONSTRUCT(ST_X(c.CURRENT_PLANT_GEOG), ST_Y(c.CURRENT_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(c.CUSTOMER_GEOG), ST_Y(c.CUSTOMER_GEOG)),
                reg.r)) d

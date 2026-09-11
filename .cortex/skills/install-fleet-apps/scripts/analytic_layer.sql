@@ -1646,20 +1646,35 @@ CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_REGION
 
 -- The sourcing region's ORS profile, already resolved to ONE flat row.
 --
+-- Anchored on SOURCING.PLANTS, NOT CATCHMENT.CONFIG. The comment always claimed
+-- this was "the sourcing region's" profile, but the body read the CATCHMENT
+-- region's active dataset via a `CONFIG LIMIT 1` with no ordering. Those two
+-- regions differ: sourcing plants live in SanFrancisco (ebike -> cycling-electric)
+-- while CONFIG's first row resolved to UsTexas (hgv -> driving-hgv). The
+-- SanFrancisco ORS graph has no driving-hgv profile, so the engine reported the
+-- profile as 'unknown' and EVERY live sourcing lane and route errored - the
+-- profile picker seeded driving-hgv and passed it into a graph that cannot honour
+-- it. Anchoring on the region that actually holds the plants yields a profile the
+-- serving graph supports.
+--
 -- Joins only, deliberately: the app passes this into a table function, and a UDTF
 -- argument may be a literal, a bind or a scalar subquery but NOT a scalar subquery
 -- that itself contains scalar subqueries. Views are inlined, so building this from
 -- nested `(SELECT ...)` expressions pushed the nesting into the caller and
 -- reproduced "Unsupported subquery type cannot be evaluated". Keep it join-shaped.
+-- GROUP BY + ORDER BY + LIMIT 1 collapse the many-plants-one-region case to a
+-- single deterministic row without a nested subquery.
 CREATE OR REPLACE VIEW FLEET_APP.SOURCING.VW_ACTIVE_PROFILE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS
 SELECT COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
-FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG c
+FROM FLEET_INTELLIGENCE.SOURCING.PLANTS pl
 LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
-  ON d.REGION = c.REGION AND d.IS_ACTIVE
+  ON d.REGION = pl.REGION AND d.IS_ACTIVE
 LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
   ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
+GROUP BY COALESCE(vp.ORS_PROFILE, 'driving-car')
+ORDER BY ORS_PROFILE
 LIMIT 1;
 
 -- Estate-only facts view for the semantic view (SV_SOURCING). Current annual
