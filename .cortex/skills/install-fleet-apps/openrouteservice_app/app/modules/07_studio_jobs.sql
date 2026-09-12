@@ -158,6 +158,10 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.STUDIO_JOB_GC
     WAREHOUSE = ROUTING_ANALYTICS
     SCHEDULE  = '60 MINUTE'
+    -- Session-level, so STUDIO_GC_FINISHED_JOBS's internal SHOW SERVICES /
+    -- DROP SERVICE / DELETE statements are attributed. ALTER SESSION cannot be
+    -- run inside a procedure body, so the task is the only place to set this.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-gc","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
     COMMENT   = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-gc","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.STUDIO_GC_FINISHED_JOBS();

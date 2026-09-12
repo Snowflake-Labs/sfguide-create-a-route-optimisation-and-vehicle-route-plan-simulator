@@ -5222,6 +5222,17 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
     SCHEDULE = 'USING CRON */2 * * * * UTC'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    -- A task's QUERY_TAG is a SESSION parameter, which is what makes it worth
+    -- setting: a session-level tag propagates into the body of every procedure
+    -- the task calls, so the CALL and all of its child statements land in
+    -- QUERY_HISTORY attributed. That propagation is measured, and it is the only
+    -- mechanism available here - a stored procedure cannot tag itself, because
+    -- both `ALTER SESSION SET query_tag` and the EXECUTE IMMEDIATE form of it
+    -- fail inside a procedure body with "Unsupported statement type
+    -- 'ALTER_SESSION'" (SQL and JavaScript alike). Without this line the task
+    -- and everything it drives is unattributed, which on this task means the
+    -- entire reconciler and provisioner-relaunch path.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
@@ -5684,6 +5695,13 @@ BEGIN
         -- job row RUNNING forever with nobody driving it. 12h gives the
         -- documented ceiling room to actually apply (max allowed is 24h).
         ' USER_TASK_TIMEOUT_MS = 43200000' ||
+        -- Session-level QUERY_TAG so the whole build is attributed. This is the
+        -- highest-value tag in the repo: PROVISION_REGION_WRAPPER runs for
+        -- hours and drives the download, config, graph-build and service-start
+        -- statements, none of which could be attributed before, because a
+        -- procedure cannot tag its own session (ALTER SESSION is rejected
+        -- inside a procedure body) and the task had no tag to inherit.
+        ' QUERY_TAG = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
         ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
         '''' || :job_id || ''', ' ||

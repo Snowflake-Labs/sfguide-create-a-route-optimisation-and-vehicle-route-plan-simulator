@@ -59,6 +59,12 @@ $$;
 CREATE OR REPLACE TASK TASK_BACKLOAD_RESCAN
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
+  -- QUERY_TAG here is a SESSION parameter, so it also attributes every
+  -- statement inside SP_SOLVE_REGION_BACKLOAD. The procedure cannot set it
+  -- itself (ALTER SESSION is rejected inside a procedure body), so leaving it
+  -- off the task means the whole solve is unattributed.
+  QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 INSERT INTO BACKLOAD_PLAN_HISTORY (REGION, VEHICLE, STEPS, DURATION)
 SELECT 'California', VEHICLE, STEPS, DURATION

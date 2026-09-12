@@ -741,6 +741,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"ma
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.DELIVERY_SYNC.LOG_DELIVERY_EVENTS
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
+  QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 MERGE INTO FLEET_INTELLIGENCE.DELIVERY_SYNC.DELIVERY_EVENT_LOG t
