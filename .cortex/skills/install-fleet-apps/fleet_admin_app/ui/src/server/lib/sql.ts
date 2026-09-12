@@ -12,7 +12,77 @@ import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../con
 import { getSpcsToken } from './sanitize';
 import { log } from '../diagnostics';
 
-const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
+// `parameters: { QUERY_TAG }` on a SQL REST request is REQUEST-scoped, and a
+// request-scoped tag does NOT propagate into the body of a procedure the
+// statement calls. Measured on one procedure invoked two ways: called from a
+// task carrying a session-level QUERY_TAG, both the CALL and its inner SELECT
+// were tagged; called with a request-scoped tag, the CALL was tagged and the
+// inner SELECT was not. That is the whole reason thousands of the admin app's
+// warehouse-consuming statements were unattributed - the app tags every
+// statement it issues, but the work happens one level down, inside
+// BUILD_HEXAGONS, RECOMMEND_RETRY_STRATEGY, SET_ACTIVE_REGION and friends.
+//
+// The procedures cannot fix this themselves: `ALTER SESSION SET query_tag`
+// fails inside a procedure body with "Unsupported statement type
+// 'ALTER_SESSION'", and so does the EXECUTE IMMEDIATE form, in SQL and
+// JavaScript procedures alike. So the tag has to become SESSION-level on the
+// caller's side, which over the stateless REST API means sending it as the
+// first statement of a MULTI-STATEMENT request - the exact pattern the SQL API
+// docs use as their multi-statement example.
+//
+// Only CALL statements get this treatment. Everything else already lands
+// tagged, and doubling the statement count for every SELECT would buy nothing.
+const SESSION_TAG_STMT = `ALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}'`;
+
+function needsSessionTag(sql: string): boolean {
+  // Strip leading line comments and whitespace before testing the keyword, so a
+  // commented preamble does not hide the CALL.
+  const head = sql.replace(/^(?:\s|--[^\n]*\n|\/\*[\s\S]*?\*\/)+/, '');
+  return /^CALL\s/i.test(head);
+}
+
+// Body builder shared by the sync and async transports.
+function statementBody(sql: string, extra: Record<string, unknown>): Record<string, unknown> {
+  const tagged = needsSessionTag(sql);
+  const parameters: Record<string, string> = { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' };
+  if (tagged) parameters.MULTI_STATEMENT_COUNT = '2';
+  return {
+    statement: tagged ? `${SESSION_TAG_STMT};\n${sql}` : sql,
+    ...extra,
+    parameters,
+  };
+}
+
+// A multi-statement response carries no rows: `data` is just the string
+// "Multiple statements executed successfully." and the per-statement handles
+// live in `statementHandles`. Resolve to the LAST child (our real statement -
+// the first is the ALTER SESSION). Returns null when the argument is an
+// ordinary single-statement result, so callers can fall through unchanged.
+async function resolveMultiStatement(
+  result: any,
+  headers: Record<string, string>,
+): Promise<any | null> {
+  const handles: string[] = result?.statementHandles || [];
+  if (handles.length < 2) return null;
+  const last = handles[handles.length - 1];
+  // The parent has already completed at this point, so the children have too -
+  // but poll briefly rather than assume, since a 202 here would otherwise be
+  // read as an empty result set.
+  const deadline = Date.now() + 60_000;
+  let delay = 200;
+  for (;;) {
+    const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${last}`, { headers });
+    if (r.status !== 202) {
+      const child: any = await r.json();
+      if (child.code !== '333334') return child;
+    }
+    if (Date.now() > deadline) throw new Error(`SQL error: timed out reading multi-statement child ${last}`);
+    await new Promise((res) => setTimeout(res, delay));
+    delay = Math.min(Math.floor(delay * 1.5), 3000);
+  }
+}
 
 export function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
   const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
@@ -35,7 +105,7 @@ export function snowSqlLocal(sql: string, database?: string, schema?: string): a
 
 export async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600): Promise<any[]> {
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' } };
+  const body = statementBody(sql, { timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -69,6 +139,11 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
   if (result.message && !result.data) {
     log('ERROR', 'SQL', `Statement error: ${result.message?.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
     throw new Error(`SQL error: ${result.message}`);
+  }
+  const child = await resolveMultiStatement(result, headers);
+  if (child) {
+    if (child.message && !child.data) throw new Error(`SQL error: ${child.message}`);
+    return child.data ? mapSqlApiResult(child, headers) : [];
   }
   if (!result.data) return [];
   return mapSqlApiResult(result, headers);
@@ -150,7 +225,7 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     return handle;
   }
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' } };
+  const body = statementBody(sql, { timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -191,6 +266,16 @@ export async function fetchResultByHandle(handle: string): Promise<{ status: 'ru
   }
   if (result.message && !result.data) {
     throw new Error(`SQL error: ${result.message}`);
+  }
+  // A CALL submitted through this path is a multi-statement request (session
+  // tag + the CALL), so the handle the caller polled is the PARENT. Its result
+  // holds no rows - unwrap to the real statement's child result, or every
+  // caller of the async path would read the string "Multiple statements
+  // executed successfully." instead of the procedure's return value.
+  const child = await resolveMultiStatement(result, headers);
+  if (child) {
+    if (child.message && !child.data) throw new Error(`SQL error: ${child.message}`);
+    return { rows: child.data ? await mapSqlApiResult(child, headers) : [] };
   }
   if (!result.data) return { rows: [] };
   return { rows: await mapSqlApiResult(result, headers) };
