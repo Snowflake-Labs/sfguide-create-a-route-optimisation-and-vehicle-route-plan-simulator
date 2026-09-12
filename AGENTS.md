@@ -274,6 +274,32 @@ bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connecti
 # session, so an earlier tag does not carry over). Checks inside procedure bodies
 # too - a `$$`-aware split alone would let a nested CREATE inherit the enclosing
 # procedure's COMMENT. Platform exceptions are an explicit in-file allowlist.
+#
+# Two further rules cover the case where a tag exists and still attributes
+# nothing. RULE E: a `CREATE TASK` must set a `QUERY_TAG` session parameter. A
+# task's QUERY_TAG is SESSION-level, and only a session-level tag propagates into
+# the body of a procedure the task calls - measured both ways on one procedure,
+# where a request-scoped tag stopped at the `CALL` and left the inner `SELECT`
+# bare. Since the credits are spent inside the procedure, an untagged task loses
+# attribution for its entire workload, which was ~10,800 queries over 3 days.
+# Nothing else can fix it: a procedure cannot tag its own session, because
+# `ALTER SESSION SET query_tag` (and its EXECUTE IMMEDIATE form) fails inside a
+# procedure body with "Unsupported statement type 'ALTER_SESSION'", in SQL and
+# JavaScript alike. Rule A is blind to it by construction - it asserts a
+# file-level ALTER SESSION, which tags the INSTALL session that runs CREATE TASK,
+# not any later run of the task. Getting the match right was the hard part: the
+# first version demanded a bare identifier after TASK and so counted 8 of the 10
+# sites, skipping precisely the two built by interpolation (the provisioner's
+# concatenated name, the shell-expanded eval tasks).
+#
+# RULE F: `CREATE <tracked type>` in `.ts`/`.mts`/`.js`. The apps create objects
+# at container boot from TypeScript and only `.sql`/`.sh` were scanned before, so
+# ~90 CREATE sites were correct by convention alone. Needs a JS-aware comment
+# stripper (these files describe the DDL they emit) and must resolve an
+# interpolated `COMMENT = '${TRACK}'` against consts collected repo-wide - the
+# literal-only check reported 23 correct tags as missing the moment they were
+# hoisted to a const. Test and `verify_*` files are excluded: they assert on the
+# shape of generated SQL and create nothing.
 python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
 
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
@@ -520,12 +546,19 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Create a new branch per change** - there is one branch per user per feature (`feat/<GITHUB_LOGIN>-<feat-name>`). No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same feature branch.
 - **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py` via `.githooks/pre-commit`.
   - **The tag schema is part of the requirement, not decoration.** `version` must be `{"major":N,"minor":N}` (NOT a `"1.0"` string), `attributes` must carry `is_quickstart` and `source`, and `name` must be `oss-` prefixed. A tag missing these still parses and still looks right, so nothing fails - but every consumer filtering on `version.major` or `attributes.is_quickstart` silently matches none of those objects.
+  - **A `query_tag` must be SESSION-level to be worth anything, and only two mechanisms produce one.** A tag set as a REQUEST parameter (`parameters: { QUERY_TAG }` on a SQL REST call) tags only the statement you sent; it does NOT propagate into the body of a procedure that statement calls. A SESSION-level tag does. Measured on one procedure invoked two ways: called from a task carrying `QUERY_TAG = ...`, both the `CALL` and its inner `SELECT` were tagged; called with a request-scoped tag, the `CALL` was tagged and the inner `SELECT` was not. Since the work (and the warehouse credits) happens inside the procedure, a request-scoped tag attributes the cheap statement and loses the expensive one - 27,672 successful queries touching fleet objects over 3 days, of which ~10,800 were task-driven and ~6,400 came from the admin app.
+    - **You cannot fix this inside the procedure.** `ALTER SESSION SET query_tag` fails inside a procedure body with `Unsupported statement type 'ALTER_SESSION'`, and so does the `EXECUTE IMMEDIATE 'ALTER SESSION ...'` form, in `LANGUAGE SQL` and `LANGUAGE JAVASCRIPT` procedures alike. Do not spend time on it - it is not a privilege problem.
+    - So: **every `CREATE TASK` sets `QUERY_TAG`** (enforced by rule E of `check_tracking_tags.py`), and **an app calling a procedure over the REST API sends the tag as the first statement of a MULTI-STATEMENT request** (`ALTER SESSION SET query_tag = '...'; CALL ...` with `MULTI_STATEMENT_COUNT: '2'`, which is the SQL API docs' own example). A multi-statement response carries no rows - `data` is the string `Multiple statements executed successfully.` and the per-statement handles are in `statementHandles` - so the transport must unwrap to the LAST child handle, or callers silently read that string instead of the procedure's return value. `fleet_admin_app`'s `server/lib/sql.ts` does this for `CALL` statements only, on both the sync and async transports.
+    - **Known gap, deliberately not closed:** the SA app's one CALL site (`FLEET_APP.CORE.QUERY_DYNAMIC`) passes its SQL as a *binding*, and Snowflake does not support bindings in multi-statement requests. Inlining the SQL instead was rejected in that code on purpose, to avoid dollar-quoting hazards on agent-emitted text. That path's untagged volume is 134 queries over the same 3 days, so the trade is documented rather than forced.
   - **Each `snow sql` invocation is a NEW session.** A `query_tag` set by a previous invocation does not carry over, so any `-q` payload that runs DDL/DML must include the tag itself. This is why the installer scripts define a `TRACK` / `TAG_SQL` pair and prepend it per call rather than tagging once up front. Note that prepending a statement makes the CLI emit a leading `status` / `Statement executed successfully.` result block, which breaks naive output parsing: `--format json` starts returning one result set PER statement (a list of lists), and the literal string `status` matches loose identifier filters like `^[a-z0-9_-]+$`. Fix the parse, do not drop the tag.
-  - **Four documented platform exceptions**, where Snowflake itself makes the tag impossible. These are an explicit allowlist in the gate; adding a fifth must be a deliberate edit, never a silent pass:
+  - **`attributes.source` names the surface that CREATED the object**, not the language the DDL happens to be written in: `app` for anything the admin/SA app's Node process issues at container boot or at runtime, `sql` for installer modules and shell-driven DDL, `notebook` for notebook cells. This is not cosmetic - a consumer asking "which objects did the app create" matched none of the 23 app-boot sites that claimed `sql`, and `ensure-tables.ts` contradicted itself (two `JOB_STATE` literals said `app`, the other 19 said `sql`). Hoist the tag to a module-level const rather than repeating the literal per statement, so the value cannot drift again.
+  - **Six documented platform exceptions**, where Snowflake itself makes the tag impossible. These are an explicit allowlist in the gate; adding a seventh must be a deliberate edit, never a silent pass:
     - **Service functions** (`SERVICE=...`): reject both an inline COMMENT and `ALTER FUNCTION ... SET COMMENT`. Ensure the parent procedure carries a tag.
     - **`CREATE SEMANTIC VIEW`**: has exactly ONE object-level COMMENT and it holds the Cortex Analyst model description that the agent reads. The two uses collide on one slot, so the JSON tag is deliberately omitted rather than degrading Analyst.
     - **`CREATE DATABASE ... FROM LISTING` / `FROM SHARE`**: read-only share mounts accept no COMMENT clause and cannot be ALTERed afterwards.
     - **`CREATE MCP SERVER`**: has no COMMENT clause at all; tracked via its JSON-tagged parent schema instead (see `fleet_tools/vendor/synapse/src/tracking.ts`).
+    - **The SPCS stage-volume `GET`**: declared by `volumes.source` in `fleet_sa_app_service.yaml`, so the platform issues a `GET @...FLEET_APP_STAGE/config` as the service user on every container start. No session exists for the app to tag, and the app only reads the mounted file off disk afterwards. Appears in `QUERY_HISTORY` as untagged `GET_FILES` from the app's user; not an app defect.
+    - **`CREATE CORTEX EXTENSION`** (`fleet_tools/vendor/synapse/src/cli/publish.ts`): its single COMMENT slot holds the plugin description a consumer reads when browsing the catalog - the same one-slot collision as `CREATE SEMANTIC VIEW`.
   - Session-scoped `TEMP`/`TEMPORARY` objects are also exempt: they are dropped at session end, so they are never left behind for the cleanup skill to find and cannot accrue cost.
 
 ## Skill Dependency Graph
