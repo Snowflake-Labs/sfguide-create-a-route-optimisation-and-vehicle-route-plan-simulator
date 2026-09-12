@@ -33,7 +33,7 @@
 // or one whose clip was rejected as implausible, keeps working exactly as it did
 // before this change rather than losing its polygon entirely.
 
-import { runSql } from '@/server/lib/sql';
+import { runSql, runSqlBatch } from '@/server/lib/sql';
 import { SF_DATABASE } from '@/server/constants';
 import { regionCatalogMatch } from '@/server/lib/region-catalog-match';
 import { escapeString } from '@/server/lib/sanitize';
@@ -77,7 +77,10 @@ export function ensureRoutableBoundaryAsync(region: string): void {
   bakeAttempted.add(key);
   void (async () => {
     try {
-      await runSql(
+      // Batch: this intersects the extract polygon against the Overture
+      // DIVISION_AREA union. Deliberately split from getBoundarySource() below,
+      // which is a single cheap catalog row and stays interactive.
+      await runSqlBatch(
         `CALL ${SF_DATABASE}.CORE.ENSURE_ROUTABLE_BOUNDARY('${escapeString(region)}')`,
       );
       log('INFO', 'RoutableBoundary', `Baked land clip for ${region}`);

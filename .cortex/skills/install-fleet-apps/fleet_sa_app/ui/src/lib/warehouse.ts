@@ -20,3 +20,21 @@ const raw = process.env.SNOWFLAKE_WAREHOUSE || '';
 // a spec that ships `{{warehouse}}` verbatim would otherwise be used as a
 // warehouse name and fail on every statement.
 export const WAREHOUSE = (raw && !raw.includes('{{')) ? raw : DEFAULT_WAREHOUSE;
+
+// BATCH warehouse. Solver verbs (backload_solve, backload_chain_solve, evac_seed,
+// evac_solve, optimize_routes, delivery_optimization, network_optimization) and
+// /api/backload/solve run a full VRP inside a stored procedure. Every one of them
+// is issued SYNCHRONOUSLY, so each occupies a warehouse slot for the whole solve.
+// On an X-Small (MAX_CONCURRENCY_LEVEL 8) a handful of concurrent solves starved
+// the dashboard reads sharing the interactive warehouse - the same failure mode
+// /api/pack-status already recorded at 112,691 ms. Solves belong on the batch
+// warehouse; read-only verbs stay interactive.
+//
+// FLEET_APP_USER already holds USAGE on ROUTING_ANALYTICS, so no new grant.
+export const DEFAULT_BATCH_WAREHOUSE = 'ROUTING_ANALYTICS';
+
+const rawBatch = process.env.SNOWFLAKE_BATCH_WAREHOUSE || '';
+
+export const BATCH_WAREHOUSE = (rawBatch && !rawBatch.includes('{{'))
+  ? rawBatch
+  : DEFAULT_BATCH_WAREHOUSE;

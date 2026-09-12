@@ -91,7 +91,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
   MIN_CLUSTER_COUNT = 1
-  MAX_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 3
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC

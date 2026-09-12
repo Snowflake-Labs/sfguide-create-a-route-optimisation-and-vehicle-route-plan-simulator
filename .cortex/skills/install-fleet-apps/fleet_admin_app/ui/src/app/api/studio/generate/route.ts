@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
-import { runSql } from '@/server/lib/sql';
+import { runSql, runSqlBatch } from '@/server/lib/sql';
 import { startGeneration } from '@/server/studio/jobs';
 import { GenerationConfig, defaultDistanceDistributionForArea } from '@/server/studio/profiles';
 import { bboxAreaKm2, parallelismForArea } from '@/server/studio/engine/spatial';
@@ -77,7 +77,16 @@ export const POST = withLogging(async (req: NextRequest) => {
       return NextResponse.json({ error: (health as { error?: string }).error, code: 'ORS_NOT_READY' }, { status: 409 });
     }
 
-    const jobId = await startGeneration(config, name, runSql);
+    // runSqlBatch, NOT runSql. This single argument is closed over by the
+    // detached job IIFE for the entire run and reaches ~60 studio functions:
+    // every 2000-row telemetry INSERT, every ORS DIRECTIONS call, ensureTables,
+    // captureAndScaleUp/scaleDown, the 6-minute waitForOrsReady poll loop and
+    // two 60s-per-job timers. Passing the interactive fn here put a job that
+    // runs 13-15 concurrent statements onto the X-Small reserved for dashboard
+    // reads, which is the same starvation the warehouse split exists to prevent.
+    // The pre-flight reads above deliberately stay on runSql: a user is waiting
+    // on this POST and it is bounded at READINESS_PREFLIGHT_MS.
+    const jobId = await startGeneration(config, name, runSqlBatch);
     return NextResponse.json({ job_id: jobId, status: 'RUNNING' });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

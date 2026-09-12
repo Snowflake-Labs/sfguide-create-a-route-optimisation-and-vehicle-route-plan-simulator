@@ -52,10 +52,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-f
 
 -- ---------------------------------------------------------------------------
 -- 1. ROUTING_ANALYTICS - batch / engine warehouse.
---    Keep MAX_CLUSTER_COUNT = 1: long CALLs here are meant to serialise, and
---    scaling out would multiply the credit burn of a build rather than speed
---    it up. STATEMENT_TIMEOUT is deliberately left at the account default,
---    because a continental region build legitimately runs for hours.
+--    MAX_CLUSTER_COUNT = 3. This was 1 while the warehouse carried only
+--    serialised region builds, where scaling out would have multiplied a build's
+--    credit burn without speeding it up. That is no longer the shape of the
+--    workload: Data Studio generation now runs here too, and it is deliberately
+--    CONCURRENT - `parallelismForArea` returns 8/10/12 by region area (and a
+--    preset can raise it with no upper bound), plus 8 more concurrent calls in
+--    the offer-route precompute and two 60s timers per job. That is 13-15
+--    concurrent statements against an X-Small's MAX_CONCURRENCY_LEVEL of 8, so a
+--    single cluster made generation queue against ITSELF, and queue behind any
+--    region build in flight. Clusters spin down when idle, so the cost is the
+--    burst rather than a standing charge.
+--    STATEMENT_TIMEOUT is deliberately left at the account default, because a
+--    continental region build legitimately runs for hours.
 -- ---------------------------------------------------------------------------
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   WAREHOUSE_SIZE = 'XSMALL'
@@ -63,7 +72,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
   MIN_CLUSTER_COUNT = 1
-  MAX_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 3
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 ALTER WAREHOUSE ROUTING_ANALYTICS SET
@@ -71,7 +80,7 @@ ALTER WAREHOUSE ROUTING_ANALYTICS SET
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   MIN_CLUSTER_COUNT = 1
-  MAX_CLUSTER_COUNT = 1;
+  MAX_CLUSTER_COUNT = 3;
 
 -- ---------------------------------------------------------------------------
 -- 2. FLEET_APPS_WH - interactive warehouse for both apps' dashboard reads.

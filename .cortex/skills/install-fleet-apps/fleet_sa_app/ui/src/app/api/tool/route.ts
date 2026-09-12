@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/snowflake';
+import { query, queryBatch } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
@@ -37,6 +37,20 @@ const DEFAULT_VERBS: Record<string, number> = {
   backload_solve: 6,
   backload_chain_solve: 6,
 };
+
+// Verbs that run an optimisation/solve rather than a read. These go to the BATCH
+// warehouse. Kept as an explicit set rather than a name heuristic: `*_solve` would
+// have missed delivery_optimization / network_optimization / optimize_routes, and
+// a heuristic that misses cases silently is how the original misrouting survived.
+const SOLVER_VERBS = new Set([
+  'optimize_routes',
+  'delivery_optimization',
+  'network_optimization',
+  'evac_seed',
+  'evac_solve',
+  'backload_solve',
+  'backload_chain_solve',
+]);
 
 function resolveTools(): { schema: string; verbs: Record<string, number> } {
   const cfg = getServerConfig().tools;
@@ -82,7 +96,14 @@ async function handlePost(req: Request) {
   ];
 
   try {
-    const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);
+    // Solver verbs run a full VRP inside the procedure and are issued
+    // synchronously, so each holds a warehouse slot for the whole solve. On an
+    // X-Small (MAX_CONCURRENCY_LEVEL 8) a few concurrent solves starved the
+    // dashboard reads sharing the interactive warehouse. Read-only verbs
+    // (find_poi, get_directions, compute_isochrone, catchment, ...) stay
+    // interactive - a user or the agent is waiting on a single fast call.
+    const exec = SOLVER_VERBS.has(verb) ? queryBatch : query;
+    const rows = await exec(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);
     const row = rows[0] as Record<string, unknown> | undefined;
     const raw = row ? Object.values(row)[0] : null;
     let result: unknown = raw;

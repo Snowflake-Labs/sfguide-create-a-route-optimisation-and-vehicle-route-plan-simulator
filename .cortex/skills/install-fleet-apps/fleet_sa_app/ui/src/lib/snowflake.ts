@@ -1,7 +1,7 @@
 // Shared Snowflake REST API client for Next.js app (used by workflow engine routes)
 // Dual-mode auth via getSnowflakeAuth(): SPCS OAuth (token file) or local PAT.
 import { getSnowflakeAuth } from './sf-auth';
-import { WAREHOUSE } from './warehouse';
+import { WAREHOUSE, BATCH_WAREHOUSE } from './warehouse';
 
 const warehouse = WAREHOUSE;
 const role = process.env.SNOWFLAKE_ROLE ?? 'ACCOUNTADMIN';
@@ -21,14 +21,14 @@ interface SnowflakeResponse {
   numRowsInserted?: number;
 }
 
-async function callSnowflake(sql: string, bindings?: Record<string, { type: string; value: string }>): Promise<SnowflakeResponse> {
+async function callSnowflake(sql: string, bindings?: Record<string, { type: string; value: string }>, wh: string = warehouse): Promise<SnowflakeResponse> {
   const auth = getSnowflakeAuth();
   // 80s statement timeout: must stay under the 90s SPCS ingress connection
   // timeout so a slow-but-valid call (e.g. routing/isochrone ops while ORS is
   // under load) still returns synchronously instead of going async + polling
   // past the ingress limit (which surfaces to the browser as a 504
   // "upstream request timeout" that fails JSON.parse).
-  const body: Record<string, unknown> = { statement: sql, timeout: 80, warehouse, role, parameters: { QUERY_TAG } };
+  const body: Record<string, unknown> = { statement: sql, timeout: 80, warehouse: wh, role, parameters: { QUERY_TAG } };
   if (bindings) body.bindings = bindings;
 
   const response = await fetch(`${auth.baseUrl}/api/v2/statements`, {
@@ -61,7 +61,22 @@ async function pollResult(handle: string): Promise<SnowflakeResponse> {
     const result: SnowflakeResponse = await r.json() as SnowflakeResponse;
     if (result.resultSetMetaData || result.data || result.message?.includes('success')) return result;
   }
-  throw new Error(`Statement ${handle} timed out`);
+  // CANCEL before throwing. The statement carries `timeout: 80` while this loop
+  // gives up at 30x2s = 60s, so an abandoned solve kept running - and kept its
+  // warehouse slot - for up to another 20 seconds after the caller had already
+  // failed. That makes the contention that caused the timeout measurably worse.
+  // /api/query already cancels on its giveup path; this one did not.
+  try {
+    await fetch(`${auth.baseUrl}/api/v2/statements/${handle}/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: 'application/json',
+        'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+      },
+    });
+  } catch { /* best-effort: a failed cancel must not mask the real error */ }
+  throw new Error(`Statement ${handle} timed out after 60s (cancelled)`);
 }
 
 function rowToObject(row: string[], cols: Array<{ name: string; type: string }>): Record<string, unknown> {
@@ -85,6 +100,24 @@ export async function query<T = QueryRow>(sql: string, binds: (string | number |
     };
   });
   const result = await callSnowflake(sql, binds.length > 0 ? bindings : undefined);
+  const cols = result.resultSetMetaData?.rowType ?? [];
+  return (result.data ?? []).map((row) => rowToObject(row, cols) as T);
+}
+
+// Same semantics as query(), on the BATCH warehouse. For synchronous solver calls
+// that would otherwise hold an interactive slot for the length of a VRP solve.
+// NOTE this fixes STARVATION, not the ceiling: pollResult still gives up at 60s
+// and the statement is capped at 80s to stay under the ~90s SPCS ingress limit,
+// so a solve needing longer cannot complete synchronously on either warehouse.
+export async function queryBatch<T = QueryRow>(sql: string, binds: (string | number | null)[] = []): Promise<T[]> {
+  const bindings: Record<string, { type: string; value: string }> = {};
+  binds.forEach((v, i) => {
+    bindings[String(i + 1)] = {
+      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
+      value: v === null ? '' : String(v),
+    };
+  });
+  const result = await callSnowflake(sql, binds.length > 0 ? bindings : undefined, BATCH_WAREHOUSE);
   const cols = result.resultSetMetaData?.rowType ?? [];
   return (result.data ?? []).map((row) => rowToObject(row, cols) as T);
 }

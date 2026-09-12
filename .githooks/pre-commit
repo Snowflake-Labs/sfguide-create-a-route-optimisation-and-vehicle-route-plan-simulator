@@ -363,3 +363,20 @@ if [ -f "$CLIENT_POLLING_CHECK" ]; then
     exit 1
   }
 fi
+
+# 11. Batch workloads must use the batch SQL transport, not the interactive one.
+# This is the gate that would have caught a real shipped defect: the two-warehouse
+# split LOOKED complete because both submitSqlAsync call sites were correct, while
+# nothing verified that callers of the SYNCHRONOUS transport had been classified.
+# Three subsystems were still interactive - the whole studio generation pipeline
+# (from ONE injected argument), all of instrumentation.ts, and six heavy routes.
+# A batch workload is invisible at the transport, so the check has to know which
+# entry points are batch BY NAME and assert they never receive `runSql`.
+BATCH_TRANSPORT_CHECK="$SKILL_DIR/scripts/check_batch_transport.py"
+if [ -f "$BATCH_TRANSPORT_CHECK" ]; then
+  echo "pre-commit: batch SQL transport routing check..."
+  python3 "$BATCH_TRANSPORT_CHECK" || {
+    echo "pre-commit FAILED: batch work on the interactive warehouse starves dashboard reads."
+    exit 1
+  }
+fi

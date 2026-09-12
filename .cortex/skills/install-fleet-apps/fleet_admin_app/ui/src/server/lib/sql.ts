@@ -84,10 +84,16 @@ async function resolveMultiStatement(
   }
 }
 
-export function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
+export function snowSqlLocal(sql: string, database?: string, schema?: string, warehouse?: string): any[] {
   const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
   const db = database || SF_DATABASE;
-  let fullSql = `ALTER SESSION SET TIMEZONE='UTC';\nALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+  // `warehouse` is explicit so the BATCH transport keeps its warehouse under
+  // `npm run dev` too. submitSqlAsync's non-SPCS fallback delegates here, and
+  // while this defaulted to SF_WAREHOUSE it silently ran batch work on the
+  // interactive warehouse in local dev - the same misrouting this file exists to
+  // prevent, just invisible because it only reproduced off-SPCS.
+  const wh = warehouse || SF_WAREHOUSE;
+  let fullSql = `ALTER SESSION SET TIMEZONE='UTC';\nALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}';\nUSE WAREHOUSE ${wh};\nUSE DATABASE ${db};\n`;
   if (schema) fullSql += `USE SCHEMA ${schema};\n`;
   fullSql += `${sql};`;
   writeFileSync(tmpFile, fullSql);
@@ -103,14 +109,18 @@ export function snowSqlLocal(sql: string, database?: string, schema?: string): a
   }
 }
 
-export async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600): Promise<any[]> {
+export async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600, warehouse?: string): Promise<any[]> {
   const token = getSpcsToken();
-  const body = statementBody(sql, { timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE });
+  // ONE place decides the warehouse for the sync transport. Callers pass it
+  // explicitly (runSqlBatch) rather than the module reading a constant, so a
+  // batch caller cannot silently inherit the interactive warehouse.
+  const wh = warehouse || SF_WAREHOUSE;
+  const body = statementBody(sql, { timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: wh });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
-  console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${SF_WAREHOUSE}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
+  console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${wh}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
   const sqlStart = Date.now();
   const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
   const submitMs = Date.now() - sqlStart;
@@ -128,7 +138,7 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
     durationMs: submitMs,
     detail: {
       handle: String(result?.statementHandle || '').slice(0, 20),
-      warehouse: SF_WAREHOUSE,
+      warehouse: wh,
     },
   });
   if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
@@ -165,7 +175,7 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
     }
     log('DEBUG', 'SQL', completed ? 'poll complete' : 'poll deadline exceeded', {
       durationMs: Date.now() - sqlStart,
-      detail: { polls, budgetMs: pollBudgetMs, warehouse: SF_WAREHOUSE },
+      detail: { polls, budgetMs: pollBudgetMs, warehouse: wh },
     });
     if (!completed) {
       const handle = String(result?.statementHandle || '').slice(0, 40);
@@ -175,11 +185,11 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
       cancelStatement(handle).catch(() => {});
       log('ERROR', 'SQL', `Statement did not complete within ${timeoutSecs}s`, {
         durationMs: Date.now() - sqlStart,
-        detail: { handle, warehouse: SF_WAREHOUSE },
+        detail: { handle, warehouse: wh },
       });
       throw new Error(
         `SQL error: statement did not complete within ${timeoutSecs}s on warehouse `
-        + `${SF_WAREHOUSE} (handle ${handle}, cancelled). This is a timeout, not an empty result.`,
+        + `${wh} (handle ${handle}, cancelled). This is a timeout, not an empty result.`,
       );
     }
   }
@@ -251,8 +261,27 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
 // spinner for eight minutes and then renders 0 is worse than a fast, visible
 // failure.
 export async function runSql(sql: string, database?: string, schema?: string, timeoutSecs?: number): Promise<any[]> {
-  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs);
-  return snowSqlLocal(sql, database, schema);
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs, SF_WAREHOUSE);
+  return snowSqlLocal(sql, database, schema, SF_WAREHOUSE);
+}
+
+// INTERACTIVE vs BATCH is a property of the WORKLOAD, not of the transport.
+//
+// `submitSqlAsync` below is the batch transport for fire-and-forget work, but it
+// returns a statement HANDLE - useless to a caller that needs rows. The Data
+// Studio generation pipeline needs rows on every one of its ~60 injected calls,
+// so it had no batch option and used `runSql`, putting bulk INSERTs, every ORS
+// DIRECTIONS call, a 6-minute waitForOrsReady poll loop and two 60s-per-job
+// timers onto the warehouse reserved for dashboard reads. Generation alone runs
+// 13-15 concurrent statements against MAX_CONCURRENCY_LEVEL 8.
+//
+// So: same synchronous semantics as runSql, batch warehouse. Use this for
+// anything a user is not actively waiting on - bulk writes, boot DDL,
+// reconcilers, catalog refreshes, generation. Enforced for the known batch entry
+// points by scripts/check_batch_transport.py.
+export async function runSqlBatch(sql: string, database?: string, schema?: string, timeoutSecs?: number): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs, SF_BATCH_WAREHOUSE);
+  return snowSqlLocal(sql, database, schema, SF_BATCH_WAREHOUSE);
 }
 
 export async function callProcedure(proc: string): Promise<string> {
@@ -269,7 +298,7 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     // fetch-by-handle path can pop. Keeps `npm run dev` working without SPCS.
     const handle = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      localResultCache.set(handle, { rows: snowSqlLocal(sql, database, schema), ts: Date.now() });
+      localResultCache.set(handle, { rows: snowSqlLocal(sql, database, schema, SF_BATCH_WAREHOUSE), ts: Date.now() });
     } catch (e: any) {
       localResultCache.set(handle, { error: e?.message || String(e), ts: Date.now() });
     }

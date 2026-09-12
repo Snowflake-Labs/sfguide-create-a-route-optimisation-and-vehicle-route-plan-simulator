@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/snowflake';
+import { queryBatch } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { requireUser } from '@/lib/ingress-identity';
@@ -65,7 +65,7 @@ async function handlePost(req: Request) {
     typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
   try {
-    const rows = await query(
+    const rows = await queryBatch(
       `SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP`,
       [challengeJson, region],
     );
