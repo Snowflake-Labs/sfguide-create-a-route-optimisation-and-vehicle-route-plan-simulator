@@ -149,11 +149,17 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     grep -nE 'image:' "$STAGE_YAML" || true
     exit 1
   fi
-  # ROUTING_ANALYTICS is ensured alongside the spec stage: the service spec sets
-  # SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS and every admin-app query runs on it, so a
-  # missing warehouse means the service deploys fine and then fails every query.
-  # The engine/seed/analytic scripts create it too, but any of them can be skipped.
-  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}'; CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"core\"}}'; CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';" >/dev/null 2>&1 || true
+  # Warehouses are ensured alongside the spec stage: the service spec points
+  # SNOWFLAKE_WAREHOUSE at FLEET_APPS_WH and SNOWFLAKE_BATCH_WAREHOUSE at
+  # ROUTING_ANALYTICS, so a missing warehouse means the service deploys fine and
+  # then fails every query. The engine/seed/analytic scripts create them too,
+  # but any of them can be skipped, so this must not rely on ordering.
+  # scripts/warehouses.sql is the SINGLE owner of both specs -- do not inline a
+  # CREATE WAREHOUSE here again. This script previously created
+  # ROUTING_ANALYTICS with AUTO_SUSPEND = 600 while three .sql layers created it
+  # with 60, and `IF NOT EXISTS` silently kept whichever ran first.
+  snow sql -c "$CONNECTION" -f "$SKILL_DIR/scripts/warehouses.sql" >/dev/null 2>&1 || true
+  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}'; CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';" >/dev/null 2>&1 || true
   snow stage copy "$STAGE_YAML" "$SPEC_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 
   echo "[5/7] CREATE SERVICE IF NOT EXISTS (first deploy) ..."

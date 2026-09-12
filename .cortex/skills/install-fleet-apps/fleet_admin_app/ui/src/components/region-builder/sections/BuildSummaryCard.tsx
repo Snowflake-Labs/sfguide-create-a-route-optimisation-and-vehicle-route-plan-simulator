@@ -11,11 +11,12 @@
 //
 // All UI here is read-only; cancel / dismiss still live in ActiveJobsTable.
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { ProvisionJob } from '../helpers';
 import type { BuildProgress } from '../types';
 import { getTimeSince } from './shared';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 interface Props {
   job: ProvisionJob;
@@ -41,7 +42,6 @@ export default function BuildSummaryCard({ job, buildProgress }: Props) {
   const [logs, setLogs] = useState<string>('');
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
-  const pollRef = useRef<number | null>(null);
 
   const fetchLogs = useCallback(async () => {
     setLogsLoading(true);
@@ -54,12 +54,14 @@ export default function BuildSummaryCard({ job, buildProgress }: Props) {
     }
   }, [job.region]);
 
+  // Fetch once on expand, then poll on a visibility-guarded interval. The raw
+  // setInterval this replaces kept pulling service logs while the tab sat in the
+  // background, which is pure warehouse cost for output nobody is reading.
   useEffect(() => {
     if (!logsExpanded) return;
     fetchLogs();
-    pollRef.current = window.setInterval(fetchLogs, 15_000);
-    return () => { if (pollRef.current) window.clearInterval(pollRef.current); };
   }, [logsExpanded, fetchLogs]);
+  useVisiblePolling(fetchLogs, 15000, logsExpanded);
 
   const bp = buildProgress;
   const progressPct = bp?.progress ?? 0;

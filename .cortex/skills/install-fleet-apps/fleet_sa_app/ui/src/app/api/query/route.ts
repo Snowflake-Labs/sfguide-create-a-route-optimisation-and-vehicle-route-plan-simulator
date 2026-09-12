@@ -9,8 +9,10 @@ import {
   OUT_OF_GRAPH_REASON,
 } from '@/lib/routing-suspend';
 import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
+// Warehouse comes from lib/warehouse.ts (single owner). Do not reintroduce a
+// `|| 'COMPUTE_WH'` fallback: that named a warehouse this stack never creates.
+import { WAREHOUSE } from '@/lib/warehouse';
 
-const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
 
 interface StatementResponse {
@@ -202,7 +204,31 @@ async function pollForResults(handle: string, sqlPreview: string): Promise<State
       throw new Error(data.message || 'Query failed');
     }
   }
-  throw new Error('Query timed out after 30s');
+  // Give up, but CANCEL the statement first. An abandoned statement keeps
+  // running and keeps holding a slot on an X-Small whose MAX_CONCURRENCY_LEVEL
+  // is 8, so a page that times out several panels at once makes the contention
+  // that caused the timeout measurably worse. Best-effort: a failed cancel must
+  // not replace the real error.
+  try {
+    await fetch(`${auth.baseUrl}/api/v2/statements/${handle}/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: 'application/json',
+        'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+      },
+    });
+  } catch (e) {
+    logger.warn('sf-cancel-failed', { handle: handle.slice(0, 16), err: String(e) });
+  }
+  // Name the warehouse in the message. The previous bare "Query timed out after
+  // 30s" gave no way to tell a slow query from a saturated warehouse, which is
+  // what this actually was: reads queueing behind a multi-hour provisioning
+  // statement on a shared warehouse.
+  throw new Error(
+    `Query timed out after 30s on warehouse ${WAREHOUSE} (statement cancelled). `
+    + `The query itself may be fine - check whether the warehouse is saturated.`,
+  );
 }
 
 async function handleQuery(request: NextRequest): Promise<Response> {

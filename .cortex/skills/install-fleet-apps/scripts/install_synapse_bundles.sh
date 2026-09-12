@@ -149,6 +149,12 @@ BUNDLES=(
   "admin|fleet-admin-tools|FLEET_INTELLIGENCE|SYNAPSE_ADMIN|FLEET_ADMIN_MCP|admin|FLEET_APP_ADMIN"
 )
 
+# Warehouses once, before the bundle loop, from the single owner
+# (scripts/warehouses.sql). This script used to create ROUTING_ANALYTICS inline
+# with AUTO_SUSPEND = 600 while three .sql layers used 60; `IF NOT EXISTS` meant
+# whichever ran first won silently. Do not inline a CREATE WAREHOUSE here again.
+snow sql -c "$CONNECTION" -f "$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/warehouses.sql" >/dev/null 2>&1 || true
+
 for row in "${BUNDLES[@]}"; do
   IFS='|' read -r SRC INSTALLED DB SCHEMA MCP ROLEKEY ROLENAME <<< "$row"
   SRC_DIR="$TOOLS_DIR/$SRC"
@@ -162,7 +168,7 @@ for row in "${BUNDLES[@]}"; do
   # On a fresh install the target schema may not exist yet (e.g.
   # OPENROUTESERVICE_APP.ROUTING - the routing-verb home - or the SYNAPSE_OPS /
   # SYNAPSE_ADMIN bundle schemas), so ensure it first. Idempotent.
-  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\",\"component\":\"core\"}}'; CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
+  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
     || { echo "ERROR: could not ensure schema $DB.$SCHEMA"; tail -20 /tmp/synapse_${SRC}_schema.log; exit 1; }
 
   # Per-account install.json (binds connection + logical->actual role).

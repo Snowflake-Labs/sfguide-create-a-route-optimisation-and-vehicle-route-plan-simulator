@@ -61,19 +61,41 @@ async function handleGet() {
 
   const dataLayerDb = getServerConfig().dataLayer?.database ?? DEFAULT_DATA_LAYER_DB;
   const probes = collectSchemaProbes(viewsConfig, dataLayerDb);
+  const degraded: string[] = [];
   await Promise.all(
     Object.entries(probes).map(async ([schema, fqn]) => {
       try {
         const rows = await query<Record<string, unknown>>(`SELECT 1 AS X FROM ${fqn} LIMIT 1`);
         status[schema] = rows.length > 0;
       } catch (err) {
-        // Missing object or no access -> treat pack as not present (hidden).
-        logger.warn('pack-status-probe-failed', { schema, fqn, err: String(err) });
-        status[schema] = false;
+        // Two very different failures used to land here identically, and both
+        // hid the pack:
+        //   (a) the object does not exist or the role cannot see it -> the pack
+        //       genuinely is not installed, so hiding it is correct;
+        //   (b) the probe could not COMPLETE - a statement timeout, a busy
+        //       warehouse, a transport error. Nothing is known about the pack.
+        // Treating (b) as (a) is why every dashboard vanished during a
+        // warehouse-contention incident: all four probes timed out, every pack
+        // was marked absent, and the UI rendered with no region or date picker
+        // as though the deployment were empty. Measured: this endpoint took
+        // 112,691 ms with all probes timing out while the views themselves
+        // returned in under a second once compute was free.
+        const msg = String(err);
+        const missing = /does not exist|not authorized|Unknown user-defined|Insufficient privileges/i.test(msg);
+        if (missing) {
+          logger.warn('pack-status-probe-absent', { schema, fqn, err: msg });
+          status[schema] = false;
+        } else {
+          // Could not measure. Keep the pack VISIBLE rather than silently
+          // deleting a working dashboard, and tell the caller it is unverified.
+          logger.error('pack-status-probe-unverified', { schema, fqn, err: msg });
+          degraded.push(schema);
+          status[schema] = true;
+        }
       }
     }),
   );
-  return NextResponse.json({ schemas: status });
+  return NextResponse.json({ schemas: status, degraded });
 }
 
 export const GET = withLogging(handleGet);

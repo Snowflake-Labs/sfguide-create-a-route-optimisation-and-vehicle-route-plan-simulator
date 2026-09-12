@@ -12,7 +12,7 @@
 spec:
   containers:
     - name: fleet-sa-app
-      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.127
+      image: /openrouteservice_app/core/image_repository/fleet_sa_app:v0.1.130
       env:
         HOSTNAME: "0.0.0.0"   # override SPCS pod hostname so Next standalone binds to all interfaces
         APP_CONFIG: "/app-config/app-config.json"
@@ -21,7 +21,12 @@ spec:
         AGENT_DATABASE: "FLEET_INTELLIGENCE"
         AGENT_SCHEMA: "SYNAPSE_USER"
         AGENT_NAME: "FLEET_AGENT"
-        SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"
+        # Two warehouses (scripts/warehouses.sql). Dashboard/consumer reads go to
+        # FLEET_APPS_WH; solver verbs (backload/evac/optimize/delivery/network)
+        # run a full VRP synchronously and would hold an interactive slot for the
+        # whole solve, so they go to the batch warehouse instead.
+        SNOWFLAKE_WAREHOUSE: "FLEET_APPS_WH"
+        SNOWFLAKE_BATCH_WAREHOUSE: "ROUTING_ANALYTICS"
         SNOWFLAKE_ROLE: "ACCOUNTADMIN"
         NODE_ENV: "production"
       volumeMounts:

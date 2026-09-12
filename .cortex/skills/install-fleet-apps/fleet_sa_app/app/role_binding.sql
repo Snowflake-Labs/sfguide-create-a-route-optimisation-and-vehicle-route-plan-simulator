@@ -27,6 +27,28 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_USER;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_OPS;
 
 -- Compute + database/schema usage (consumer).
+-- TWO warehouses, split by workload (see scripts/warehouses.sql):
+--   FLEET_APPS_WH     - every interactive read from both apps.
+--   ROUTING_ANALYTICS - long batch work (provisioning, matrix, dynamic tables).
+-- Both are granted because the admin app legitimately uses both: its dashboard
+-- reads go to FLEET_APPS_WH, while `PROVISION_REGION_WRAPPER` -- which runs as
+-- the app itself for up to 6.5 hours in a SINGLE statement -- must stay on
+-- ROUTING_ANALYTICS. Sharing one warehouse is what caused Data Studio to render
+-- "Total Points 0": the provisioning statement and its `SYSTEM$WAIT(30)` poll
+-- loop saturated an X-Small whose MAX_CONCURRENCY_LEVEL is 8, dashboard reads
+-- queued past their timeout, and the API routes reported the failure as an
+-- empty result set.
+-- Guarded so a missing warehouse cannot abort the rest of this file: `snow sql
+-- -f` stops at the first failing statement, and one bare grant here previously
+-- killed ~25 later grants including the SA app endpoint binding.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON WAREHOUSE FLEET_APPS_WH TO ROLE FLEET_APP_USER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (warehouse absent): USAGE ON WAREHOUSE FLEET_APPS_WH -> ' || SQLERRM;
+END;
+$$;
 GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE FLEET_APP_USER;
 GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO ROLE FLEET_APP_USER;
 GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO ROLE FLEET_APP_USER;
@@ -128,6 +150,16 @@ CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER
 GRANT ROLE FLEET_APP_DYNAMIC_READER TO ROLE SYSADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE FLEET_APP_DYNAMIC_READER;
+-- The dynamic reader serves interactive `QUERY_DYNAMIC` reads from the app, so
+-- it needs the interactive warehouse too. Guarded (see the FLEET_APP_USER note).
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON WAREHOUSE FLEET_APPS_WH TO ROLE FLEET_APP_DYNAMIC_READER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (warehouse absent): USAGE ON WAREHOUSE FLEET_APPS_WH -> ' || SQLERRM;
+END;
+$$;
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.CORE              TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.FLEET_OPS         TO ROLE FLEET_APP_DYNAMIC_READER;

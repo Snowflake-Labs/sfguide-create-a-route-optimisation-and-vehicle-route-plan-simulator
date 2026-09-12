@@ -184,6 +184,18 @@ snow sql -c "$CONNECTION" -q "
 # it must NOT leave COMPUTE_POOL unset (that previously crashed the admin-app
 # deploy with "COMPUTE_POOL: unbound variable" under set -u).
 export IMAGE_REPO_SQL_NAME COMPUTE_POOL CARTO_EAI OSM_EAI SPEC_STAGE_NAME
+
+# Warehouses FIRST, before any step that runs a query. scripts/warehouses.sql is
+# the single owner of both specs (see the header there): seven files used to
+# create ROUTING_ANALYTICS with three different specs, and `IF NOT EXISTS` meant
+# whichever step ran first silently decided what the account got. Running it
+# here makes the spec deterministic regardless of which later steps are skipped,
+# and its ALTER ... SET converges an account an earlier install already drifted.
+note "[0/8] canonical warehouses (ROUTING_ANALYTICS batch + FLEET_APPS_WH interactive)..."
+snow sql -c "$CONNECTION" -f "$SCRIPTS/warehouses.sql" >/tmp/ifa_warehouses.log 2>&1 \
+  && note "  warehouses ready" \
+  || note "  WARNING: warehouse setup reported errors -- see /tmp/ifa_warehouses.log"
+
 note "[1/8] resolving SPCS infra..."
 if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
    && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \

@@ -330,3 +330,53 @@ if [ -f "$VERB_GLOBALS_CHECK" ]; then
     exit 1
   }
 fi
+
+# 9. Warehouse DDL drift. Runs on EVERY commit with no staged-path filter: the
+# scan is fast, and a divergent spec can arrive in any .sql layer or .sh deploy
+# script. Seven files used to create ROUTING_ANALYTICS with three different
+# specs; because `CREATE ... IF NOT EXISTS` makes every later one a silent no-op,
+# the spec an account received was decided by install order, and no existing
+# gate could see it (they all verify objects were CREATED, not that they match
+# the source). Comments are stripped first, which matters because these files
+# quote the very DDL they must not diverge from.
+WAREHOUSE_DDL_CHECK="$SKILL_DIR/scripts/check_warehouse_ddl.py"
+if [ -f "$WAREHOUSE_DDL_CHECK" ]; then
+  echo "pre-commit: warehouse DDL single-owner check..."
+  python3 "$WAREHOUSE_DDL_CHECK" || {
+    echo "pre-commit FAILED: warehouse spec drift -- scripts/warehouses.sql is the single owner."
+    exit 1
+  }
+fi
+
+# 10. Client-side polling must use the visibility-guarded hook. Runs on EVERY
+# commit with no staged-path filter: the scan is ~139 files and finishes
+# instantly. DEFAULT-DENY by design - the obvious "flag setInterval whose body
+# contains fetch('/api/...')" version would have caught NONE of the six loops
+# this gate was written for, because every one of them called an indirect helper.
+# Opting out is possible via '// polling-gate: ui-only -- <reason>' and three
+# genuine UI timers use it. Server-side trees are deliberately out of scope.
+CLIENT_POLLING_CHECK="$SKILL_DIR/scripts/check_client_polling.py"
+if [ -f "$CLIENT_POLLING_CHECK" ]; then
+  echo "pre-commit: client polling visibility-guard check..."
+  python3 "$CLIENT_POLLING_CHECK" || {
+    echo "pre-commit FAILED: unguarded client polling holds a warehouse awake for a background tab."
+    exit 1
+  }
+fi
+
+# 11. Batch workloads must use the batch SQL transport, not the interactive one.
+# This is the gate that would have caught a real shipped defect: the two-warehouse
+# split LOOKED complete because both submitSqlAsync call sites were correct, while
+# nothing verified that callers of the SYNCHRONOUS transport had been classified.
+# Three subsystems were still interactive - the whole studio generation pipeline
+# (from ONE injected argument), all of instrumentation.ts, and six heavy routes.
+# A batch workload is invisible at the transport, so the check has to know which
+# entry points are batch BY NAME and assert they never receive `runSql`.
+BATCH_TRANSPORT_CHECK="$SKILL_DIR/scripts/check_batch_transport.py"
+if [ -f "$BATCH_TRANSPORT_CHECK" ]; then
+  echo "pre-commit: batch SQL transport routing check..."
+  python3 "$BATCH_TRANSPORT_CHECK" || {
+    echo "pre-commit FAILED: batch work on the interactive warehouse starves dashboard reads."
+    exit 1
+  }
+fi

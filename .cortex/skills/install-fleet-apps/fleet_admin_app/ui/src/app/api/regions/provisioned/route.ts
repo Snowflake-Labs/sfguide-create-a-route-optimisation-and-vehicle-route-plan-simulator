@@ -6,6 +6,11 @@ import { sanitizeIdentifier } from '@/server/lib/sanitize';
 import { orsServiceName } from '@/server/lib/region';
 import { getExpectedProfiles } from '@/server/lib/ors';
 import { regionCatalogMatch } from '@/server/lib/region-catalog-match';
+import {
+  ROUTABLE_BOUNDARY_FAST,
+  ROUTABLE_BOUNDARY_SOURCE_EXPR,
+  ensureRoutableBoundaryAsync,
+} from '@/server/lib/routable-boundary';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,12 +28,13 @@ export const GET = withLogging(async () => {
 
       let bbox = c.bbox as { min_lat?: number; max_lat?: number; min_lon?: number; max_lon?: number } | undefined;
       let boundaryGeoJson: string | null = null;
+      let boundarySource: 'routable' | 'extract' | null = null;
       const bboxInvalid = !bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null
         || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0);
       try {
         const safeRegion = sanitizeIdentifier(c.region as string);
         const m = regionCatalogMatch('', `'${safeRegion}'`);
-        const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE ${m.predicate} ORDER BY ${m.rank} LIMIT 1`);
+        const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(${ROUTABLE_BOUNDARY_FAST}) AS VARCHAR) AS BOUNDARY_GEOJSON, ${ROUTABLE_BOUNDARY_SOURCE_EXPR} AS BOUNDARY_SOURCE FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE ${m.predicate} ORDER BY ${m.rank} LIMIT 1`);
         const cat = catRows?.[0];
         if (cat) {
           const catBboxOk = cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
@@ -40,6 +46,13 @@ export const GET = withLogging(async () => {
             bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
           }
           if (cat.BOUNDARY_GEOJSON) boundaryGeoJson = cat.BOUNDARY_GEOJSON;
+          // 'extract' means this region still samples against the raw PBF cut
+          // line, which for coastal and continental regions contains open water.
+          // Kick off the land clip for next time; never await it.
+          if (cat.BOUNDARY_SOURCE === 'routable' || cat.BOUNDARY_SOURCE === 'extract') {
+            boundarySource = cat.BOUNDARY_SOURCE;
+          }
+          if (boundarySource === 'extract') ensureRoutableBoundaryAsync(c.region as string);
         }
       } catch {}
 
@@ -70,7 +83,7 @@ export const GET = withLogging(async () => {
           graphReadiness = { service_ready: false, error: (e as Error).message, profiles_loaded: [], expected_profiles: [], graphs: [] };
         }
       }
-      return { ...c, isDefault: c.is_default === true, bbox, boundaryGeoJson, serviceStatus, functionExists: true, graphReadiness };
+      return { ...c, isDefault: c.is_default === true, bbox, boundaryGeoJson, boundarySource, serviceStatus, functionExists: true, graphReadiness };
     }));
     return NextResponse.json({ regions: enriched });
   } catch (err) {

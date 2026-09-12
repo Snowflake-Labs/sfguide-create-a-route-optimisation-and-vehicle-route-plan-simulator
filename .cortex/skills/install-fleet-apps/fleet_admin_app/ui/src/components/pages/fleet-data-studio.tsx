@@ -199,7 +199,21 @@ export function FleetDataStudioPage() {
   };
 
   // Derived stats for header + dashboard panel.
+  //
+  // The three states below must stay distinguishable. Reducing an empty array
+  // gives 0, so before the API routes reported failures as failures, a stalled
+  // query, an unreachable warehouse and a genuinely empty dataset ALL rendered
+  // as "Total Points 0" - and a real incident (1,544,219 telemetry rows present,
+  // reads queueing behind a 6.5-hour provisioning statement) was read as missing
+  // seed data. Never present an unmeasured value as a measurement.
   const safeStats = Array.isArray(catalog.stats) ? catalog.stats : [];
+  const statsFailed = !!catalog.statsError;
+  const statsPending = !catalog.statsLoaded && !statsFailed;
+  const metricValue = (n: number): string => {
+    if (statsFailed) return 'error';
+    if (statsPending) return '...';
+    return n.toLocaleString();
+  };
   const totalPoints = safeStats.reduce((s: number, r: any) => s + Number(r.POINT_COUNT || 0), 0);
   const totalVehicles = safeStats.reduce((s: number, r: any) => s + Number(r.VEHICLES || 0), 0);
   const totalTrips = safeStats.reduce((s: number, r: any) => s + Number(r.TRIPS || 0), 0);
@@ -209,7 +223,16 @@ export function FleetDataStudioPage() {
     vehicleType: r.VEHICLE_TYPE,
   }));
 
-  const hasAnyData = (catalog.coverage || []).some((c) => c.TELEMETRY_ROWS > 0);
+  // `hasAnyData` gates the skill-readiness badges. A failed coverage fetch must
+  // NOT be read as "no data": that would paint every skill unready on a
+  // perfectly healthy deployment - the same "absence of a measurement presented
+  // as a measurement of zero" mistake as the metric tiles. When coverage could
+  // not be measured, fall back to the stats call (a non-empty stats result is
+  // independent evidence that telemetry exists) and only then give up.
+  const coverageFailed = !!catalog.coverageError;
+  const hasAnyData = coverageFailed
+    ? safeStats.some((r: any) => Number(r.POINT_COUNT || 0) > 0)
+    : (catalog.coverage || []).some((c) => c.TELEMETRY_ROWS > 0);
   const skillsReady = hasAnyData
     ? Object.keys(SKILL_MAP).reduce((acc, id) => ({ ...acc, [id]: true }), {} as Record<string, boolean>)
     : ({} as Record<string, boolean>);
@@ -219,10 +242,28 @@ export function FleetDataStudioPage() {
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Data Studio</h2>
       <p style={{ color: '#6E7681', fontSize: 13, marginBottom: 16 }}>Generate unified fleet telemetry and trip data for all movement-data skills</p>
 
+      {(catalog.statsError || catalog.coverageError) && (
+        <div
+          role="alert"
+          style={{
+            border: '1px solid #F5A623', background: 'rgba(245,166,35,0.08)',
+            borderRadius: 6, padding: '10px 12px', marginBottom: 12, fontSize: 13,
+          }}
+        >
+          <strong>Dataset stats unavailable.</strong>{' '}
+          {catalog.statsError || catalog.coverageError}
+          <div style={{ color: '#6E7681', marginTop: 4 }}>
+            The tiles below show &quot;error&quot; rather than 0, because these numbers could
+            not be measured. Generated data is not necessarily missing - check the warehouse
+            (FLEET_APPS_WH) and retry.
+          </div>
+        </div>
+      )}
+
       <div className="metric-grid">
-        <MetricCard label="Total Points" value={totalPoints.toLocaleString()} />
-        <MetricCard label="Total Trips" value={totalTrips.toLocaleString()} />
-        <MetricCard label="Vehicles" value={totalVehicles} />
+        <MetricCard label="Total Points" value={metricValue(totalPoints)} />
+        <MetricCard label="Total Trips" value={metricValue(totalTrips)} />
+        <MetricCard label="Vehicles" value={metricValue(totalVehicles)} />
         <MetricCard label="Jobs Run" value={jobsHook.jobHistory.length} />
       </div>
 

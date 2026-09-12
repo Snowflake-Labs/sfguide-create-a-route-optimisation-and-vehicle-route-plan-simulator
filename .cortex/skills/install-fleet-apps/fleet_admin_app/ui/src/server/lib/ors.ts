@@ -128,7 +128,20 @@ export async function getExpectedProfiles(region: string): Promise<string[]> {
   if (isDefaultRegion(region)) {
     if (cachedDefaultExpectedProfiles) return cachedDefaultExpectedProfiles;
     try {
-      const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))`);
+      // Read the whole YAML as ONE field via a NAMED file format.
+      //
+      // This previously passed an inline anonymous format:
+      //   (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))
+      // which does not compile - the stage table-function's FILE_FORMAT argument
+      // must be a constant naming an existing format, so every call returned
+      // "SQL compilation error: unexpected 'FIELD_DELIMITER'" (HTTP 422). The
+      // failure was invisible for two reasons: the catch below only logs, and
+      // DEFAULT_REGION_FALLBACK_PROFILES happens to equal the correct answer for
+      // the shipped config, so the function returned the right profiles for the
+      // wrong reason while 422-ing on every provisioning poll. It would have
+      // started returning WRONG profiles the moment the shipped config enabled a
+      // different set - a silent, config-dependent defect.
+      const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => '${SF_DATABASE}.CORE.RAW_TEXT_FF')`);
       const content = rows?.[0]?.CONTENT;
       if (content && typeof content === 'string') {
         // Each profile block is rendered as:

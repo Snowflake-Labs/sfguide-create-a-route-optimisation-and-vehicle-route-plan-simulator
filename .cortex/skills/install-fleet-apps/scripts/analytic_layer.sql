@@ -50,12 +50,16 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"analytic-layer"}}';
 
 -- Warehouse the analytic layer runs on (independent of the engine build).
+-- The spec MUST match scripts/warehouses.sql, the single owner; enforced by
+-- scripts/check_warehouse_ddl.py (pre-commit).
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   WAREHOUSE_SIZE = 'XSMALL'
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  MIN_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 3
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

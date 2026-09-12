@@ -120,6 +120,18 @@ function randomPointInBBox(bbox: BBox, rand: () => number, shrink = 0): [number,
 // Rejection sample inside the boundary polygon, falling back to bbox
 // after a maxAttempts cap (e.g. degenerate boundary, very thin region).
 const BOUNDARY_REJECT_MAX_ATTEMPTS = 50;
+
+// Count of bbox fallbacks taken during the current samplePoints() call.
+//
+// Exhausting the rejection cap used to be completely silent, which is how an
+// unusable sample looked like a normal one: the fallback returns a RAW bbox
+// point, and for a continental region the bbox is far larger than the polygon
+// (the US catalog bbox is -180..180 by 15.9..73), so the returned point can be
+// anywhere on the planet at those latitudes. Module-level rather than threaded
+// through eight sampler signatures; samplePoints() is synchronous, so the counter
+// cannot interleave between calls.
+let boundaryFallbacks = 0;
+
 function randomPointInBoundary(
   boundary: BoundaryGeoJson,
   bbox: BBox,
@@ -130,6 +142,7 @@ function randomPointInBoundary(
     const pt = randomPointInBBox(bbox, rand, shrink);
     if (pointInBoundary(pt[0], pt[1], boundary)) return pt;
   }
+  boundaryFallbacks++;
   return randomPointInBBox(bbox, rand, shrink);
 }
 
@@ -383,25 +396,36 @@ export function samplePoints(input: SamplePointsInput): SampledPoints | null {
   const maxSpan = Math.min(bboxWidthKm, bboxHeightKm) * 0.6;
   const constraints = getProfileConstraints(profile, maxSpan);
 
-  switch (fnName) {
-    case 'DIRECTIONS':
-      return sampleDirections(bbox, constraints, rand, roadPoints, boundary);
-    case 'ISOCHRONES':
-      return sampleIsochrones(bbox, rand, roadPoints, boundary);
-    case 'MATRIX':
-      return sampleMatrix(bbox, constraints, rand, roadPoints, boundary);
-    case 'MATRIX_TABULAR':
-      return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
-    case 'OPTIMIZATION':
-      return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
-    case 'SNAP_POINTS':
-      return sampleSnap(bbox, rand, roadPoints, boundary);
-    case 'MATCH':
-    case 'MATCH_PATH':
-      return sampleTrajectorySeed(bbox, constraints, rand, roadPoints, boundary);
-    default:
-      return null;
+  boundaryFallbacks = 0;
+  const sampled = ((): SampledPoints | null => {
+    switch (fnName) {
+      case 'DIRECTIONS':
+        return sampleDirections(bbox, constraints, rand, roadPoints, boundary);
+      case 'ISOCHRONES':
+        return sampleIsochrones(bbox, rand, roadPoints, boundary);
+      case 'MATRIX':
+        return sampleMatrix(bbox, constraints, rand, roadPoints, boundary);
+      case 'MATRIX_TABULAR':
+        return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
+      case 'OPTIMIZATION':
+        return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
+      case 'SNAP_POINTS':
+        return sampleSnap(bbox, rand, roadPoints, boundary);
+      case 'MATCH':
+      case 'MATCH_PATH':
+        return sampleTrajectorySeed(bbox, constraints, rand, roadPoints, boundary);
+      default:
+        return null;
+    }
+  })();
+
+  if (sampled && boundaryFallbacks > 0) {
+    const note = `${boundaryFallbacks} point(s) fell back to bbox sampling after `
+      + `${BOUNDARY_REJECT_MAX_ATTEMPTS} rejected attempts - they may be off the region `
+      + `or in water. Reshuffle, or edit the coordinates.`;
+    return { ...sampled, hint: sampled.hint ? `${sampled.hint} ${note}` : note };
   }
+  return sampled;
 }
 
 export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION', 'SNAP_POINTS', 'MATCH', 'MATCH_PATH'];

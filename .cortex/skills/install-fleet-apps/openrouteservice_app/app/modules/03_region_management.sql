@@ -111,6 +111,29 @@ EXCEPTION WHEN OTHER THEN NULL;
 END;
 $$;
 
+-- ROUTABLE_BOUNDARY_SIMPLE: the same land clip, decimated for the browser.
+--
+-- The exact clip is far too heavy to ship to a client. MEASURED for the US:
+-- BOUNDARY is 418 vertices but its land clip is 68,987, and as GeoJSON that is
+-- 3.24 MB - which the Function Tester would fetch for every region on page load
+-- purely to run point-in-polygon tests. Simplifying to 500 m leaves 3,511
+-- vertices and 165 KB while losing 0.04% of the area (10,146,511 -> 10,142,357
+-- km2), and still rejects the open-ocean coordinate the exact clip rejects.
+--
+-- Cached in a column rather than simplified per request: /api/regions/provisioned
+-- enriches EVERY provisioned region on page load, so an inline ST_SIMPLIFY over a
+-- 69k-vertex polygon would be paid per region per load.
+--
+-- SQL consumers (matrix pipeline, anchor sampling) must keep using the exact
+-- ROUTABLE_BOUNDARY. This column exists only to bound a network payload.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_SIMPLE GEOGRAPHY;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
 -- Compute + cache ROUTABLE_BOUNDARY for one region. Idempotent: returns
 -- immediately when already baked unless P_FORCE.
 --
@@ -139,10 +162,17 @@ DECLARE
     -- clipping at all.
     min_ratio     FLOAT DEFAULT 0.20;
 BEGIN
+    -- REGION_NAME is included in all three predicates below so this procedure
+    -- accepts exactly the same region spellings as every consumer (the canonical
+    -- resolver matches REGION_KEY, LOOKUP_NAME and REGION_NAME). Without it a
+    -- caller passing the display name would get SKIPPED and silently keep the
+    -- unclipped extract polygon.
     SELECT COUNT(*) INTO :match_count
     FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
     WHERE BOUNDARY IS NOT NULL
-      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+      AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+           OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+           OR UPPER(REGION_NAME) = UPPER(:P_REGION));
 
     IF (match_count = 0) THEN
         RETURN 'SKIPPED: no REGION_CATALOG row with a BOUNDARY matched ' || :P_REGION;
@@ -151,8 +181,15 @@ BEGIN
     IF (NOT :P_FORCE) THEN
         SELECT COUNT(*) INTO :already_baked
         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        -- Both columns must be present to count as baked. A region clipped by an
+        -- earlier version has ROUTABLE_BOUNDARY but a NULL ROUTABLE_BOUNDARY_SIMPLE;
+        -- treating that as CACHED would leave the browser copy missing forever,
+        -- since nothing else populates it.
         WHERE ROUTABLE_BOUNDARY IS NOT NULL
-          AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+          AND ROUTABLE_BOUNDARY_SIMPLE IS NOT NULL
+          AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+               OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+               OR UPPER(REGION_NAME) = UPPER(:P_REGION));
         IF (already_baked > 0) THEN
             RETURN 'CACHED: ROUTABLE_BOUNDARY already baked for ' || :P_REGION;
         END IF;
@@ -164,11 +201,28 @@ BEGIN
         -- scoped, so it is exempt from the object COMMENT requirement.
         CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP AS
         WITH src AS (
-            SELECT BOUNDARY AS B
+            SELECT BOUNDARY AS B, REGION_KEY AS RK
             FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
             WHERE BOUNDARY IS NOT NULL
-              AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION))
-            ORDER BY BOUNDARY_AREA_KM2 ASC
+              AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+                   OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+                   OR UPPER(REGION_NAME) = UPPER(:P_REGION))
+            -- Canonical resolution, mirroring server/lib/region-catalog-match.ts:
+            -- exact REGION_KEY first (unique, authoritative for any deployed
+            -- region), then LOOKUP_NAME, then REGION_NAME; within a tier prefer
+            -- the broader admin level and the LARGER polygon. The previous
+            -- 'BOUNDARY_AREA_KM2 ASC' picked the SMALLEST same-name polygon,
+            -- which is the exact heuristic that once rendered the country Mexico
+            -- as Estado de Mexico. Consumers resolve with the canonical ranking,
+            -- so clipping a different row would bake a mask onto a polygon
+            -- nobody reads.
+            ORDER BY CASE WHEN UPPER(REGION_KEY) = UPPER(:P_REGION) THEN 0
+                          WHEN UPPER(LOOKUP_NAME) = UPPER(:P_REGION) THEN 1
+                          ELSE 2 END,
+                     CASE LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+                                WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3
+                                ELSE 4 END,
+                     COALESCE(BOUNDARY_AREA_KM2, 0) DESC
             LIMIT 1
         ),
         land AS (
@@ -187,7 +241,8 @@ BEGIN
         SELECT
             ST_INTERSECTION(src.B, land.G) AS CLIPPED,
             ST_AREA(src.B) / 1e6          AS ORIG_KM2,
-            land.N                        AS LAND_POLYS
+            land.N                        AS LAND_POLYS,
+            src.RK                        AS REGION_KEY
         FROM src, land
         WHERE land.G IS NOT NULL;
 
@@ -214,14 +269,29 @@ BEGIN
                || ' wrong rather than the region as tiny; ROUTABLE_BOUNDARY left NULL.';
     END IF;
 
+    -- Join on the REGION_KEY the clip was actually computed from, not on the
+    -- name predicate again. REGION_KEY is unique, so this writes the mask to
+    -- exactly the polygon it was derived from. Re-running the name match here
+    -- would fan the single clipped geometry onto every same-name row, giving
+    -- sibling regions a mask cut to a different polygon.
+    --
+    -- Tolerance for the browser copy scales with region size instead of being a
+    -- constant: sqrt(area)/6 metres, floored at 25 m and capped at 500 m. A
+    -- continental region lands on the cap (US: sqrt(10.1M)/6 = 531 -> 500 m,
+    -- 69k vertices -> 3.5k), while a city-scale region stays near the floor so
+    -- its coastline is not straightened into water. A fixed 500 m would be
+    -- reasonable for the US and actively harmful for San Francisco Bay.
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_CATALOG t
     SET ROUTABLE_BOUNDARY = c.CLIPPED,
         ROUTABLE_BOUNDARY_AREA_KM2 = ROUND(:clip_area, 4),
         ROUTABLE_BOUNDARY_SOURCE = 'overture-division-area',
-        ROUTABLE_BOUNDARY_BAKED_AT = SYSDATE()
+        ROUTABLE_BOUNDARY_BAKED_AT = SYSDATE(),
+        ROUTABLE_BOUNDARY_SIMPLE = ST_SIMPLIFY(
+            c.CLIPPED,
+            LEAST(500, GREATEST(25, SQRT(GREATEST(:clip_area, 0)) / 6))
+        )
     FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP c
-    WHERE t.BOUNDARY IS NOT NULL
-      AND (UPPER(t.LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(t.REGION_KEY) = UPPER(:P_REGION));
+    WHERE t.REGION_KEY = c.REGION_KEY;
 
     RETURN 'BAKED: ' || :P_REGION || ' land-clipped from ' || ROUND(orig_area) || ' to '
            || ROUND(clip_area) || ' km2 (' || ROUND(ratio * 100, 1) || '% kept, '
@@ -1325,6 +1395,40 @@ BEGIN
                         MESSAGE='Region provisioned - ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
                         COMPLETED_AT=SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
+                    -- Bake ROUTABLE_BOUNDARY (BOUNDARY clipped to Overture land)
+                    -- so every consumer that samples or clips against the region
+                    -- gets land, not the PBF extract cut line. Geofabrik extracts
+                    -- run well out to sea: the US extract is 31.4M km2 against
+                    -- 10.1M km2 of land, so two thirds of "in-region" points are
+                    -- ocean and ORS answers with code 2010 PointNotFound.
+                    --
+                    -- Deliberately AFTER the COMPLETE update, not before it like
+                    -- the route-opt seed above: that update overwrites MESSAGE
+                    -- outright, so a tag appended earlier is discarded. Running
+                    -- here keeps the diagnostic. Best-effort by design - the clip
+                    -- needs the Overture divisions share, and a region without it
+                    -- must still provision, falling back to the unclipped
+                    -- BOUNDARY. The procedure is idempotent (returns CACHED: when
+                    -- already baked), so resumes and re-provisions cost nothing.
+                    BEGIN
+                        CALL OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(:P_REGION);
+                        -- ENSURE_ROUTABLE_BOUNDARY RETURNS its failure modes
+                        -- ('UNAVAILABLE: ...', 'REJECTED: ...', 'SKIPPED: ...')
+                        -- instead of raising, so an EXCEPTION handler alone would
+                        -- report a silent success on the exact deployments this
+                        -- diagnostic exists for - a missing Overture share being
+                        -- the common one. Inspect the returned string as well.
+                        LET rb_msg VARCHAR := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+                        IF (rb_msg NOT LIKE 'BAKED:%' AND rb_msg NOT LIKE 'CACHED:%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                            SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary: ' || COALESCE(:rb_msg, 'unknown') || ']'
+                            WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+                        WHERE JOB_ID = :P_JOB_ID;
+                    END;
                     -- Best-effort peak RSS for telemetry; NULL on failure.
                     -- Inlined here because SYSTEM$GET_SERVICE_STATUS requires a
                     -- constant argument and cannot be wrapped in a reusable UDF.
@@ -4459,6 +4563,25 @@ BEGIN
         COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :job_id;
 
+    -- Same land clip as the wrapper's success path. The rescue task is the OTHER
+    -- way a region reaches READY, so omitting it here would leave rescued regions
+    -- sampling against the raw PBF extract polygon. Best-effort; idempotent.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(:P_REGION);
+        -- See the wrapper's copy: this procedure reports failure by RETURN value,
+        -- not by raising, so the returned string has to be inspected too.
+        LET rb_msg VARCHAR := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        IF (rb_msg NOT LIKE 'BAKED:%' AND rb_msg NOT LIKE 'CACHED:%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary: ' || COALESCE(:rb_msg, 'unknown') || ']'
+            WHERE JOB_ID = :job_id;
+        END IF;
+    EXCEPTION WHEN OTHER THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+        WHERE JOB_ID = :job_id;
+    END;
+
     -- Update the matching ORS_BUILD_HISTORY row (most recent IN_PROGRESS or
     -- TIMEOUT for this region, which is the row the wrapper opened).
     BEGIN
@@ -5222,6 +5345,17 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
     SCHEDULE = 'USING CRON */2 * * * * UTC'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    -- A task's QUERY_TAG is a SESSION parameter, which is what makes it worth
+    -- setting: a session-level tag propagates into the body of every procedure
+    -- the task calls, so the CALL and all of its child statements land in
+    -- QUERY_HISTORY attributed. That propagation is measured, and it is the only
+    -- mechanism available here - a stored procedure cannot tag itself, because
+    -- both `ALTER SESSION SET query_tag` and the EXECUTE IMMEDIATE form of it
+    -- fail inside a procedure body with "Unsupported statement type
+    -- 'ALTER_SESSION'" (SQL and JavaScript alike). Without this line the task
+    -- and everything it drives is unattributed, which on this task means the
+    -- entire reconciler and provisioner-relaunch path.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
@@ -5684,6 +5818,13 @@ BEGIN
         -- job row RUNNING forever with nobody driving it. 12h gives the
         -- documented ceiling room to actually apply (max allowed is 24h).
         ' USER_TASK_TIMEOUT_MS = 43200000' ||
+        -- Session-level QUERY_TAG so the whole build is attributed. This is the
+        -- highest-value tag in the repo: PROVISION_REGION_WRAPPER runs for
+        -- hours and drives the download, config, graph-build and service-start
+        -- statements, none of which could be attributed before, because a
+        -- procedure cannot tag its own session (ALTER SESSION is rejected
+        -- inside a procedure body) and the task had no tag to inherit.
+        ' QUERY_TAG = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
         ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
         '''' || :job_id || ''', ' ||

@@ -26,6 +26,22 @@ Three classes of defect are checked:
      `query_tag` in the SAME invocation. Each `snow sql` call is a new session,
      so a tag set by an earlier call does not carry over - which is exactly how
      several installer steps ran untagged.
+  E. A `CREATE TASK` with no `QUERY_TAG` session parameter. This one is not
+     cosmetic: a task's QUERY_TAG is SESSION-level, and a session-level tag
+     propagates into the body of every procedure the task calls, whereas the
+     request-scoped tag the apps send over the SQL REST API stops at the CALL
+     (both measured). So an untagged task loses attribution for itself AND for
+     every statement of every procedure it drives - ~10,800 queries over 3 days
+     on the audited account. There is nowhere else to fix it, because a
+     procedure cannot tag its own session: `ALTER SESSION SET query_tag` and its
+     EXECUTE IMMEDIATE form both fail inside a procedure body with "Unsupported
+     statement type 'ALTER_SESSION'", in SQL and JavaScript alike. Rule A cannot
+     see this - it asserts a file-level ALTER SESSION, which tags the INSTALL
+     session that runs CREATE TASK, not any later run of the task.
+  F. A `CREATE <tracked type>` in application code (`.ts`/`.mts`/`.js`) with no
+     COMMENT tracking tag. The apps create objects at container boot from
+     TypeScript, and only `.sql`/`.sh` were scanned before, so ~90 CREATE sites
+     were correct by convention alone.
 
 Object COMMENTs are checked inside procedure bodies too, not just at top level.
 A `$$`-aware splitter alone would treat a `CREATE TABLE` nested in a procedure
@@ -54,7 +70,7 @@ ORIGIN = "sf_sit-is-fleet"
 # there is the generator's responsibility, not the file's.
 SKIP_DIR_PARTS = {
     "node_modules", ".next", "dist", "build", "__pycache__", ".git",
-    "archive", "_installed", "logs", "tmp", ".venv", "venv",
+    "archive", "_installed", "logs", "tmp", ".venv", "venv", ".snowflake",
 }
 
 # ── Object types that must carry a COMMENT tracking tag ─────────────────────
@@ -309,6 +325,211 @@ def check_sql_file(path: pathlib.Path, problems: list, stats: dict):
         )
 
 
+# ── E. a task must set a SESSION query_tag ─────────────────────────────────
+# A task's `QUERY_TAG = ...` is a SESSION parameter, and that distinction is the
+# whole reason this rule exists. Measured on this stack: a procedure called from
+# a task carrying a session-level tag has BOTH the CALL and its child statements
+# tagged, whereas the request-scoped tag the apps send over the SQL REST API
+# stops at the CALL. So an untagged task loses attribution not just for itself
+# but for every statement in every procedure it drives - which was ~10,800
+# queries over 3 days here, the largest untagged population in the account.
+#
+# It cannot be fixed anywhere else. A stored procedure cannot tag its own
+# session: both `ALTER SESSION SET query_tag` and its EXECUTE IMMEDIATE form
+# fail inside a procedure body with "Unsupported statement type 'ALTER_SESSION'",
+# in SQL and JavaScript procedures alike. The task definition is the only place.
+#
+# Rule A cannot catch this: it asserts a file-level ALTER SESSION, which tags the
+# INSTALL session that runs CREATE TASK, not any later run of the task.
+# Two things separate DDL from prose here, and both are needed. The name group
+# rejects a privileges table row ("| CREATE TASK | Schema (...) |"). The
+# `=`-bearing property below rejects a shell log line ("could not create task
+# $TASK_NAME"). The name class deliberately admits a quote, `$` and `{` so the
+# INTERPOLATED forms are covered too: the highest-value task in the repo is built
+# by string concatenation (`'CREATE OR REPLACE TASK ' || :task_name`) and the
+# eval tasks by shell expansion (`${EVAL_DB}.${EVAL_SCHEMA}.${TASK_NAME}`). A
+# stricter class silently skipped both - the rule reported 8 sites while 10
+# exist, so the two hardest to get right were the two it could not see.
+TASK_CREATE_RE = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?TASK\s+['\"$A-Za-z_{]",
+    re.IGNORECASE)
+
+TASK_PROPERTY_RE = re.compile(
+    r"(SCHEDULE|WAREHOUSE|USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE|"
+    r"USER_TASK_TIMEOUT_MS|ALLOW_OVERLAPPING_EXECUTION)\s*=",
+    re.IGNORECASE)
+
+
+def check_task_query_tag(path: pathlib.Path, problems: list, stats: dict):
+    raw = path.read_text(errors="replace")
+    text = strip_comments(raw) if path.suffix == ".sql" else raw
+    rel = path.relative_to(REPO_ROOT)
+    for m in TASK_CREATE_RE.finditer(text):
+        # The task header ends at its `AS` clause; QUERY_TAG must be before it.
+        window = text[m.start():m.start() + 2500]
+        end = re.search(r"\n\s*AS\b", window, re.IGNORECASE)
+        header = window[:end.start()] if end else window
+        # Skip prose: a real CREATE TASK header names the task and carries at
+        # least one property. A privilege table row or a sentence has neither.
+        if not TASK_PROPERTY_RE.search(header):
+            continue
+        stats["tasks"] += 1
+        if QUERY_TAG_RE.search(header):
+            continue
+        problems.append(
+            f"{rel}:{line_of(text, m.start())}: CREATE TASK has no QUERY_TAG "
+            f"session parameter. A task's QUERY_TAG is session-level, so it is "
+            f"the ONLY way to attribute the statements inside the procedures it "
+            f"calls - a procedure cannot tag itself (ALTER SESSION is rejected "
+            f"inside a procedure body)."
+        )
+
+
+# ── G. CREATE-has-COMMENT in application code ──────────────────────────────
+# The apps create Snowflake objects at container boot from TypeScript, and until
+# now only .sql and .sh were scanned for rule B. All 94 existing sites happen to
+# be tagged, so this rule locks in a correct state rather than fixing a defect -
+# but init.ts alone is 2,290 lines with 63 DDL sites, and an untagged object
+# still works, so the only symptom of a slip would be a survivor after
+# `routing-solution-cleanup` (an SPCS service or compute pool that keeps
+# billing).
+# Identifiers whose definition holds a tracking tag, collected repo-wide. Tags in
+# application code are hoisted to consts (and in synapse's case imported across
+# modules), so a COMMENT clause reads `COMMENT = '${TRACK}'` with the origin
+# literal nowhere near it. Matching only the literal reported every one of those
+# as untagged - which is what the first run of this rule did, on correct tags.
+TAG_CONST_RE = re.compile(
+    r"(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*"
+    r"[^;]{0,4000}?" + re.escape(ORIGIN),
+    re.DOTALL,
+)
+
+
+def _is_test_code(path: pathlib.Path) -> bool:
+    """Test and verification files assert on the SHAPE of generated SQL.
+
+    They never execute DDL against an account, so an untagged CREATE in a fixture
+    is correct - `ddl.test.ts` asserting the emitted `CREATE HYBRID TABLE
+    verb_claim` shape is not an object anybody has to clean up.
+    """
+    parts = set(path.parts)
+    return (
+        bool(parts & {"tests", "test", "__tests__"})
+        or path.name.endswith((".test.ts", ".test.mts", ".spec.ts"))
+        or path.name.startswith("verify_")
+    )
+
+
+def collect_tag_consts() -> set:
+    names = set()
+    for suffix in (".ts", ".mts", ".js"):
+        for path in iter_files(suffix):
+            if _is_test_code(path):
+                continue
+            raw = path.read_text(errors="replace")
+            if ORIGIN not in raw:
+                continue
+            for m in TAG_CONST_RE.finditer(raw):
+                names.add(m.group(1))
+    return names
+
+
+def has_code_comment_clause(stmt: str, tag_consts: set) -> bool:
+    """Rule-B test for code: a literal tag, or an interpolated tag const."""
+    if has_comment_clause(stmt):
+        return True
+    for m in re.finditer(
+        r"COMMENT\s*=\s*'?\$\{\s*([A-Za-z_$][\w$]*)", stmt, re.IGNORECASE
+    ):
+        if m.group(1) in tag_consts:
+            return True
+    return False
+
+
+def js_strip_comments(src: str) -> str:
+    """Blank // and /* */ comments outside string literals, preserving offsets.
+
+    Load-bearing: these files discuss the very DDL they must not be matched on
+    ("Idempotent CREATE TABLE IF NOT EXISTS for the FACT/DIM tables ..."), so
+    without stripping prose the rule reports phantom untagged objects. Backticks
+    are tracked as quotes because the SQL lives in template literals.
+    """
+    out = list(src)
+    i, n = 0, len(src)
+    quote = None
+    while i < n:
+        ch = src[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            continue
+        if src[i:i + 2] == "//":
+            while i < n and src[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if src[i:i + 2] == "/*":
+            while i < n and src[i:i + 2] != "*/":
+                if src[i] != "\n":
+                    out[i] = " "
+                i += 1
+            for j in range(i, min(i + 2, n)):
+                out[j] = " "
+            i += 2
+            continue
+        i += 1
+    return "".join(out)
+
+
+def check_code_file(path: pathlib.Path, problems: list, stats: dict, tag_consts: set):
+    raw = path.read_text(errors="replace")
+    if "CREATE" not in raw.upper():
+        return
+    text = js_strip_comments(raw)
+    rel = path.relative_to(REPO_ROOT)
+    altered = {
+        m.group(1).upper().strip('"')
+        for m in re.finditer(
+            r"ALTER\s+(?:\w+\s+){0,2}?(?:IF\s+EXISTS\s+)?"
+            r"([A-Za-z0-9_.$\"{}]+)\s*(?:\([^)]*\))?\s+SET\s+COMMENT",
+            text, re.IGNORECASE)
+    }
+    matches = list(CREATE_RE.finditer(text))
+    for idx, m in enumerate(matches):
+        otype = re.sub(r"\s+", " ", m.group(1).upper())
+        oname = (m.group(2) or "").strip('"')
+        stats["code_creates"] += 1
+        if otype in TYPE_EXCEPTIONS:
+            stats["exempt"] += 1
+            continue
+        # Window runs to the next CREATE so one statement's tag cannot cover the
+        # next one's miss.
+        stop = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        window = text[m.start():min(stop, m.start() + 6000)]
+        if next((True for fn, _ in STMT_EXCEPTIONS if fn(window)), False):
+            stats["exempt"] += 1
+            continue
+        if has_code_comment_clause(window, tag_consts):
+            continue
+        short = oname.split(".")[-1].upper()
+        if oname.upper() in altered or short in {a.split(".")[-1] for a in altered}:
+            continue
+        problems.append(
+            f"{rel}:{line_of(text, m.start())}: CREATE {otype} "
+            f"{oname or '<unnamed>'} in application code has no COMMENT "
+            f"tracking tag - an untagged object works, but survives "
+            f"routing-solution-cleanup and keeps billing."
+        )
+
+
 def check_tag_schema(path: pathlib.Path, problems: list, stats: dict):
     """Class C: every tracking tag parses and carries the required schema."""
     raw = path.read_text(errors="replace")
@@ -405,7 +626,8 @@ def check_shell_file(path: pathlib.Path, problems: list, stats: dict):
 
 def main() -> int:
     problems: list[str] = []
-    stats = {"sql_files": 0, "creates": 0, "exempt": 0, "tags": 0, "shell_q": 0}
+    stats = {"sql_files": 0, "creates": 0, "exempt": 0, "tags": 0, "shell_q": 0,
+             "tasks": 0, "code_creates": 0, "code_files": 0}
 
     for path in iter_files(".sql"):
         check_sql_file(path, problems, stats)
@@ -416,6 +638,20 @@ def main() -> int:
 
     for path in iter_files(".sh"):
         check_shell_file(path, problems, stats)
+
+    # E: tasks are created from .sql modules and from installer shell scripts.
+    for suffix in (".sql", ".sh", ".md"):
+        for path in iter_files(suffix):
+            check_task_query_tag(path, problems, stats)
+
+    # G: application code that creates Snowflake objects at runtime.
+    tag_consts = collect_tag_consts()
+    for suffix in (".ts", ".mts", ".js"):
+        for path in iter_files(suffix):
+            if _is_test_code(path):
+                continue
+            stats["code_files"] += 1
+            check_code_file(path, problems, stats, tag_consts)
 
     if problems:
         print("check_tracking_tags: FAIL")
@@ -428,7 +664,9 @@ def main() -> int:
         f"check_tracking_tags: OK ({stats['sql_files']} sql file(s) tagged, "
         f"{stats['creates']} CREATE(s) checked with {stats['exempt']} documented "
         f"platform exception(s), {stats['tags']} tag(s) schema-valid, "
-        f"{stats['shell_q']} shell -q payload(s) checked)"
+        f"{stats['shell_q']} shell -q payload(s) checked, "
+        f"{stats['tasks']} task(s) with a session QUERY_TAG, "
+        f"{stats['code_creates']} CREATE(s) in {stats['code_files']} code file(s))"
     )
     return 0
 
