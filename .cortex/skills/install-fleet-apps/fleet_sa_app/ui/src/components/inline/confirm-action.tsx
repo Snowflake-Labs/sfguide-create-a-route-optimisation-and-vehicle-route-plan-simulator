@@ -75,7 +75,9 @@ export function ConfirmAction({
   const [conflictCurrent, setConflictCurrent] = useState<Record<string, unknown> | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Countdown timer for undo window
+  // Countdown timer for undo window.
+  // polling-gate: ui-only -- decrements a local seconds counter for the undo
+  // window; issues no request and reads no server state.
   useEffect(() => {
     if (status !== 'done' || !undoToken) return;
     setUndoSecondsLeft(Math.ceil(UNDO_WINDOW_MS / 1000));

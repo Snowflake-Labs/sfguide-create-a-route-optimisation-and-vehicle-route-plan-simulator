@@ -228,6 +228,9 @@ export function ViewSliderArea({ areaConfig }: ViewSliderAreaProps) {
     const TICK_MS = 120;
     let lastAdvanceAt = Date.now();
 
+    // polling-gate: ui-only -- animation tick for slider playback, started only
+    // by an explicit user Play action and already gated on inflight === 0 so it
+    // cannot pile up requests. Not a background poll.
     const t = setInterval(() => {
       const since = Date.now() - lastAdvanceAt;
       if (since < minFrameMs) return;

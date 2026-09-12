@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CoverageEntry, Preset, ProfileTemplate } from '../helpers';
 import type { StudioStat } from '../types';
+import { safeFetchJson } from '@/utils/safeFetch';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 export function useStudioCatalog() {
   const [templates, setTemplates] = useState<ProfileTemplate[]>([]);
@@ -14,6 +16,13 @@ export function useStudioCatalog() {
   );
   const [stats, setStats] = useState<StudioStat[]>([]);
   const [coverage, setCoverage] = useState<CoverageEntry[]>([]);
+  // Distinguish "not loaded yet" and "failed" from "loaded, genuinely empty".
+  // Without this the page cannot tell them apart and renders 0 for all three,
+  // which is exactly how a warehouse-contention outage was read as missing seed
+  // data for hours.
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [coverageError, setCoverageError] = useState<string | null>(null);
+  const [statsLoaded, setStatsLoaded] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -46,25 +55,32 @@ export function useStudioCatalog() {
   }, []);
 
   const fetchStats = useCallback(async () => {
-    try {
-      const res = await fetch('/api/studio/stats');
-      if (!res.ok) return;
-      const data = await res.json();
-      setStats(Array.isArray(data) ? data : []);
-    } catch (e: any) {
-      console.error('Failed to fetch stats:', e);
+    // safeFetchJson (not raw fetch): the route now answers 503 with an { error }
+    // body on failure instead of a 200 with []. The previous `if (!res.ok)
+    // return` silently left the last-known stats in place and logged to a
+    // console nobody reads.
+    const res = await safeFetchJson<StudioStat[]>('/api/studio/stats');
+    setStatsLoaded(true);
+    if (res.aborted) return;
+    if (!res.ok) {
+      setStatsError(res.error || `HTTP ${res.status}`);
+      setStats([]);
+      return;
     }
+    setStatsError(null);
+    setStats(Array.isArray(res.data) ? res.data : []);
   }, []);
 
   const fetchCoverage = useCallback(async () => {
-    try {
-      const res = await fetch('/api/studio/coverage');
-      if (!res.ok) return;
-      const data = await res.json();
-      setCoverage(Array.isArray(data) ? data : []);
-    } catch (e: any) {
-      console.error('Failed to fetch coverage:', e);
+    const res = await safeFetchJson<CoverageEntry[]>('/api/studio/coverage');
+    if (res.aborted) return;
+    if (!res.ok) {
+      setCoverageError(res.error || `HTTP ${res.status}`);
+      setCoverage([]);
+      return;
     }
+    setCoverageError(null);
+    setCoverage(Array.isArray(res.data) ? res.data : []);
   }, []);
 
   useEffect(() => {
@@ -80,28 +96,15 @@ export function useStudioCatalog() {
   // 30s (mirrors ServiceManager) and re-fetch whenever the tab regains
   // focus / becomes visible. Picks up regions that finished provisioning
   // in the Region Builder while Data Studio was open.
-  useEffect(() => {
-    // Pause the 30s poll while the tab is hidden (Tier E cost hygiene); the
-    // visibility/focus handlers below re-fetch immediately on return.
-    const interval = setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      fetchAvailableRegions();
-    }, 30000);
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') fetchAvailableRegions();
-    };
-    const onFocus = () => fetchAvailableRegions();
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [fetchAvailableRegions]);
+  // Was a hand-rolled copy of useVisiblePolling (interval + visibilitychange +
+  // focus). Now that the hook owns the focus refetch too, use it: a shared hook
+  // plus a near-identical local reimplementation is what let six other polling
+  // sites skip the visibility guard entirely.
+  useVisiblePolling(fetchAvailableRegions, 30000);
 
   return {
     templates, presets, availableRegions, stats, coverage,
+    statsError, coverageError, statsLoaded,
     fetchTemplates, fetchPresets, fetchStats, fetchCoverage, fetchAvailableRegions,
   };
 }

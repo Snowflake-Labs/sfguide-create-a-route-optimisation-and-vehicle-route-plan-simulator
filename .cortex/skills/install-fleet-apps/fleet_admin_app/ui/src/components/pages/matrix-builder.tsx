@@ -12,6 +12,7 @@ import {
 import { PROFILE_LABELS } from '@/components/function-tester/helpers';
 import { useActivePreset } from '@/hooks/useActivePreset';
 import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 export function MatrixBuilderPage() {
   const preset = useActivePreset();
@@ -34,7 +35,6 @@ export function MatrixBuilderPage() {
   const [roadFilterReason, setRoadFilterReason] = useState<string>('');
   const [serverHexEstimate, setServerHexEstimate] = useState<Record<number, number>>({});
   const [estimateLoading, setEstimateLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const estimateGenRef = useRef(0);
 
   const fetchRegions = useCallback(async () => {
@@ -112,7 +112,6 @@ export function MatrixBuilderPage() {
         setRoadFilterEnabled(false);
       }
     });
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchRegions, fetchJobs, fetchInventory]);
 
   useEffect(() => {
@@ -183,19 +182,20 @@ export function MatrixBuilderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedProfile is sent for logging only; see comment above.
   }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedRes]);
 
+  // Poll while a matrix job is in flight, paused whenever the tab is hidden.
+  // A matrix build is a long job, so 10s loses nothing versus the previous 5s.
+  const hasActiveMatrixJob = jobs.some((j) => j.status === 'RUNNING' || j.status === 'PENDING');
+  const pollMatrix = useCallback(() => { fetchJobs(); fetchInventory(); }, [fetchJobs, fetchInventory]);
+  useVisiblePolling(pollMatrix, 10000, hasActiveMatrixJob);
+
+  // Preserve the original final refresh: the inventory is only correct once the
+  // last job has left RUNNING/PENDING, so fetch once on the active -> idle edge.
+  // Dropping this would leave the page showing pre-build inventory forever.
+  const wasActiveRef = useRef(false);
   useEffect(() => {
-    const hasActive = jobs.some((j) => j.status === 'RUNNING' || j.status === 'PENDING');
-    if (hasActive && !pollRef.current) {
-      pollRef.current = setInterval(() => {
-        fetchJobs();
-        fetchInventory();
-      }, 5000);
-    } else if (!hasActive && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-      fetchInventory();
-    }
-  }, [jobs, fetchJobs, fetchInventory]);
+    if (wasActiveRef.current && !hasActiveMatrixJob) fetchInventory();
+    wasActiveRef.current = hasActiveMatrixJob;
+  }, [hasActiveMatrixJob, fetchInventory]);
 
   const region = regions.find((r) => r.region === selectedRegion);
 

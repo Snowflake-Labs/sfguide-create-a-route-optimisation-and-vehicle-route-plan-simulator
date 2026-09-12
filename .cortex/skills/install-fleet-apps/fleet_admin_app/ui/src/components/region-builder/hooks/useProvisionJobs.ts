@@ -1,14 +1,22 @@
 'use client';
-// Provisioning jobs: list + 3s polling while any job is RUNNING/PENDING.
+// Provisioning jobs: list + polling while any job is RUNNING/PENDING.
 // Splits jobs into active vs finished so callers can render them in
 // separate sections.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProvisionJob } from '../helpers';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
+
+// A region build runs for minutes to HOURS, so a fast cadence buys no
+// responsiveness on a 2-row status table - it just keeps the interactive
+// warehouse awake. Measured on a real account: this loop plus useBuildProgress
+// were the reason FLEET_APPS_WH never reached its 60s idle during a build, and
+// warehouse credits are billed for hours-the-warehouse-is-up, not work done.
+// 10s matches the cadence region-builder.tsx already adopted, for this reason.
+const JOB_POLL_MS = 10000;
 
 export function useProvisionJobs() {
   const [jobs, setJobs] = useState<ProvisionJob[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchProvisionJobs = useCallback(async () => {
     try {
@@ -53,16 +61,10 @@ export function useProvisionJobs() {
 
   const hasActiveJobs = activeJobs.length > 0;
 
-  // Poll regions + jobs every 3s while anything is in flight. Mirrors the
-  // original RegionBuilder behaviour exactly, including the cleanup branch.
-  useEffect(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    if (!hasActiveJobs) return;
-    pollRef.current = setInterval(() => {
-      fetchProvisionJobs();
-    }, 3000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [hasActiveJobs, fetchProvisionJobs]);
+  // Poll while anything is in flight, PAUSED whenever the tab is hidden. The
+  // raw setInterval this replaces kept hitting GET_PROVISION_STATUS for the
+  // whole duration of a build even with the tab in the background.
+  useVisiblePolling(fetchProvisionJobs, JOB_POLL_MS, hasActiveJobs);
 
   const isRegionProvisioning = useCallback(
     (regionKey: string) =>

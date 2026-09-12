@@ -18,6 +18,7 @@ import {
 } from '@/components/function-tester/helpers';
 import { ResultMap } from '@/components/function-tester/ResultMap';
 import { useActivePreset } from '@/hooks/useActivePreset';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
 
 function sqlLiteral(s: string): string {
@@ -278,13 +279,13 @@ export function FunctionTesterPage() {
     })();
   }, [refreshRegions]);
 
-  useEffect(() => {
-    if (selectedRegion?.graphReadiness?.service_ready !== false) return;
-    const id = window.setInterval(() => {
-      void refreshRegions();
-    }, 15000);
-    return () => window.clearInterval(id);
-  }, [selectedRegion?.region, selectedRegion?.graphReadiness?.service_ready, refreshRegions]);
+  // Wait for the selected region's ORS service to come up, but only while the
+  // tab is visible - /api/regions/provisioned runs LIST_REGIONS plus an
+  // ORS_STATUS per region, so background ticks are among the more expensive
+  // no-ops in the app.
+  const awaitingService = selectedRegion?.graphReadiness?.service_ready === false;
+  const pollRegions = useCallback(() => { void refreshRegions(); }, [refreshRegions]);
+  useVisiblePolling(pollRegions, 15000, awaitingService);
 
   const expectedProfiles = useMemo(
     () => expectedProfilesForRegion(selectedRegion),
