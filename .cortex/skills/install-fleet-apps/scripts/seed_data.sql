@@ -27,12 +27,20 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-f
 --    create it, but BOTH run AFTER this data step), so the loader would abort on
 --    its very first statement and no UNIFIED tables (DIM_FLEET/FACT_TRIPS/...)
 --    would load. Ensure it here so the data step is self-sufficient. Idempotent.
+--
+--    The spec below MUST match scripts/warehouses.sql, which is the single owner
+--    of it; `scripts/check_warehouse_ddl.py` (pre-commit) enforces that. Seven
+--    files used to create this warehouse with three different specs, and because
+--    `IF NOT EXISTS` makes every later one a no-op, the spec an account got was
+--    decided by whichever step ran first -- silently, and differently per install.
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   WAREHOUSE_SIZE = 'XSMALL'
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  MIN_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 1
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 -- 1. Shared analytic schemas (also created by the routing engine when present).
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS

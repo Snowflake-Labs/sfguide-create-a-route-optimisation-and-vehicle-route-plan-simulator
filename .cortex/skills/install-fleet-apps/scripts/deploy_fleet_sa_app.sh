@@ -169,14 +169,18 @@ if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   # First-deploy bootstrap: the service schema + config/spec stage must exist
   # before any stage copy or CREATE SERVICE. Idempotent (IF NOT EXISTS).
   #
-  # The query warehouse is ensured here too. The service spec sets
-  # SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS and every app query runs on it, so if it
+  # The query warehouses are ensured here too. The service spec sets
+  # SNOWFLAKE_WAREHOUSE=FLEET_APPS_WH and every app query runs on it, so if it
   # does not exist the app deploys "successfully" and then fails every single
-  # query at runtime. The engine/seed/analytic scripts all create it, but they can
-  # be skipped (--no-engine, seed already present), so do not rely on ordering.
+  # query at runtime. The engine/seed/analytic scripts all create them, but they
+  # can be skipped (--no-engine, seed already present), so do not rely on
+  # ordering. scripts/warehouses.sql is the SINGLE owner of both specs -- do not
+  # inline a CREATE WAREHOUSE here again (this script used AUTO_SUSPEND = 600
+  # while three .sql layers used 60, and `IF NOT EXISTS` hid the disagreement).
+  snow sql -c "$CONNECTION" -f "$SKILL_DIR/scripts/warehouses.sql" >/tmp/fleet_sa_warehouses.log 2>&1 \
+    || { echo "ERROR: warehouse bootstrap failed"; tail -20 /tmp/fleet_sa_warehouses.log; exit 1; }
   snow sql -c "$CONNECTION" -q "
     ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
-    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"core\"}}';
     CREATE SCHEMA IF NOT EXISTS $SCHEMA_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE STAGE IF NOT EXISTS $STAGE_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_sa_bootstrap.log 2>&1 || { echo "ERROR: schema/stage bootstrap failed"; tail -20 /tmp/fleet_sa_bootstrap.log; exit 1; }

@@ -1,8 +1,9 @@
 // Shared Snowflake REST API client for Next.js app (used by workflow engine routes)
 // Dual-mode auth via getSnowflakeAuth(): SPCS OAuth (token file) or local PAT.
 import { getSnowflakeAuth } from './sf-auth';
+import { WAREHOUSE } from './warehouse';
 
-const warehouse = process.env.SNOWFLAKE_WAREHOUSE ?? 'COMPUTE_WH';
+const warehouse = WAREHOUSE;
 const role = process.env.SNOWFLAKE_ROLE ?? 'ACCOUNTADMIN';
 
 // Attribution tag (AGENTS.md): every statement this helper runs is tagged so the

@@ -8,7 +8,7 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../constants';
+import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, SF_BATCH_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../constants';
 import { getSpcsToken } from './sanitize';
 import { log } from '../diagnostics';
 
@@ -113,27 +113,74 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
   console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${SF_WAREHOUSE}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
   const sqlStart = Date.now();
   const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const submitMs = Date.now() - sqlStart;
   if (!res.ok) {
     const errBody = (await res.text()).slice(0, 500);
     log('ERROR', 'SQL', `API error ${res.status}: ${errBody.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
     throw new Error(`SQL API error ${res.status}: ${errBody}`);
   }
   let result: any = await res.json();
+  // Phase timings. Without these, a stall inside this transport is impossible to
+  // attribute: submit, polling and row fetch all disappear into one endpoint
+  // duration. The statement handle is logged so a container log line can be
+  // joined to QUERY_HISTORY.
+  log('DEBUG', 'SQL', 'submitted', {
+    durationMs: submitMs,
+    detail: {
+      handle: String(result?.statementHandle || '').slice(0, 20),
+      warehouse: SF_WAREHOUSE,
+    },
+  });
   if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
     const pollUrl = `https://${SNOWFLAKE_HOST}${result.statementStatusUrl}`;
     // Backoff poll instead of a flat 5s. Short statements (e.g. per-leg ORS
     // DIRECTIONS calls in Data Studio generation) usually finish in well under
     // a second, so a fixed 5s interval taxed every async-path route ~5s. Start
-    // at 300ms and ramp to a 3s cap for genuinely long statements. Overall
-    // bound stays ~10 min (matches the previous 120 x 5s ceiling).
-    const deadline = Date.now() + 600_000;
+    // at 300ms and ramp to a 3s cap for genuinely long statements.
+    //
+    // The deadline is derived from timeoutSecs. It used to be a hardcoded
+    // 600_000 ms no matter what the caller asked for, so a caller requesting a
+    // 60s bound still had its request held for TEN MINUTES.
+    //
+    // More importantly, exiting this loop by DEADLINE used to fall straight
+    // through to `if (!result.data) return []` at the end of this function -
+    // returning an EMPTY ARRAY for a statement that simply never finished, with
+    // no exception and nothing for a caller to distinguish from "no rows". That
+    // is the deepest layer of the "Total Points 0" defect: even after the API
+    // routes were fixed to report failures honestly, a poll-deadline exit here
+    // would still have handed them a clean, empty, successful-looking result.
+    // A timeout is now an error.
+    const pollBudgetMs = Math.max(5_000, timeoutSecs * 1000);
+    const deadline = Date.now() + pollBudgetMs;
     let delay = 300;
+    let polls = 0;
+    let completed = false;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, delay));
+      polls += 1;
       const pr = await fetch(pollUrl, { headers });
       result = await pr.json();
-      if (result.data || (result.code && result.code !== '333334')) break;
+      if (result.data || (result.code && result.code !== '333334')) { completed = true; break; }
       delay = Math.min(Math.floor(delay * 1.5), 3000);
+    }
+    log('DEBUG', 'SQL', completed ? 'poll complete' : 'poll deadline exceeded', {
+      durationMs: Date.now() - sqlStart,
+      detail: { polls, budgetMs: pollBudgetMs, warehouse: SF_WAREHOUSE },
+    });
+    if (!completed) {
+      const handle = String(result?.statementHandle || '').slice(0, 40);
+      // Best-effort cancel: an abandoned statement keeps running and keeps
+      // holding a concurrency slot, making the contention worse for whatever
+      // comes next.
+      cancelStatement(handle).catch(() => {});
+      log('ERROR', 'SQL', `Statement did not complete within ${timeoutSecs}s`, {
+        durationMs: Date.now() - sqlStart,
+        detail: { handle, warehouse: SF_WAREHOUSE },
+      });
+      throw new Error(
+        `SQL error: statement did not complete within ${timeoutSecs}s on warehouse `
+        + `${SF_WAREHOUSE} (handle ${handle}, cancelled). This is a timeout, not an empty result.`,
+      );
     }
   }
   if (result.message && !result.data) {
@@ -198,8 +245,13 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
   });
 }
 
-export async function runSql(sql: string, database?: string, schema?: string): Promise<any[]> {
-  if (IS_SPCS) return snowSqlSpcs(sql, database, schema);
+// `timeoutSecs` lets an INTERACTIVE caller opt into a short bound. The default
+// stays at the transport's 600s so no existing caller changes behaviour, but a
+// dashboard tile should pass something small: a stalled read that holds a
+// spinner for eight minutes and then renders 0 is worse than a fast, visible
+// failure.
+export async function runSql(sql: string, database?: string, schema?: string, timeoutSecs?: number): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs);
   return snowSqlLocal(sql, database, schema);
 }
 
@@ -225,7 +277,16 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     return handle;
   }
   const token = getSpcsToken();
-  const body = statementBody(sql, { timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE });
+  // BATCH warehouse, not the interactive one. This transport is the long-running
+  // path by construction (`timeout: 0` below), and its callers are region
+  // provisioning and matrix builds. `PROVISION_REGION_WRAPPER` runs here as a
+  // SINGLE statement for up to 23,600 seconds, and its poll loop issues
+  // `SELECT SYSTEM$WAIT(30)` hundreds of times, each holding a concurrency slot
+  // just to sleep. Sharing one X-Small (MAX_CONCURRENCY_LEVEL 8) with the app's
+  // dashboard reads is what made Data Studio render "Total Points 0" while the
+  // data was intact: reads queued past their timeout and the routes reported the
+  // failure as an empty array. Keep this on SF_BATCH_WAREHOUSE.
+  const body = statementBody(sql, { timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_BATCH_WAREHOUSE });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',

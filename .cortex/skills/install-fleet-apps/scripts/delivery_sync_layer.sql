@@ -82,12 +82,17 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-
 -- Warehouse the Dynamic Table refreshes on. analytic_layer.sql (installer step
 -- 3.5) already creates this, but declaring it here keeps this file self-sufficient
 -- so it still works when run standalone or with SKIP_ANALYTIC=1.
+-- The spec MUST match scripts/warehouses.sql, the single owner; enforced by
+-- scripts/check_warehouse_ddl.py (pre-commit). This block previously carried a
+-- different COMMENT and no cluster bounds, one of three disagreeing specs.
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   WAREHOUSE_SIZE = 'XSMALL'
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  MIN_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 1
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

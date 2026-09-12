@@ -73,10 +73,15 @@ snow sql -c "$CONN" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
 
 # ── 1. ensure OPENROUTESERVICE_APP engine infra (db/schemas/stages/repo) ──
 note "[1/6] ensuring OPENROUTESERVICE_APP engine infra..."
+# Warehouses come from the single owner, scripts/warehouses.sql. This script used
+# to run a bare `CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS` with no size
+# and no auto-suspend at all, so on an account where this step ran first the
+# warehouse silently took Snowflake's defaults instead of the spec the three
+# .sql layers declared.
+snow sql -c "$CONN" -f "$SCRIPTS/warehouses.sql" >/dev/null 2>&1 || true
+
 snow sql -c "$CONN" -q "
   $TAG_SQL
-  CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
-    COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   ALTER DATABASE OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
@@ -89,6 +94,13 @@ snow sql -c "$CONN" -q "
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
+    COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
+  CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.RAW_TEXT_FF
+    TYPE = CSV
+    FIELD_DELIMITER = NONE
+    RECORD_DELIMITER = NONE
+    SKIP_HEADER = 0
+    FIELD_OPTIONALLY_ENCLOSED_BY = NONE
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
