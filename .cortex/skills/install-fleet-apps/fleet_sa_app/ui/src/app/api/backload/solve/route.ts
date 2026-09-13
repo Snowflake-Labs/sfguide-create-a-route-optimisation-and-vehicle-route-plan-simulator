@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { queryBatch } from '@/lib/snowflake';
+import { runSolve } from '@/lib/solve-runner';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { requireUser } from '@/lib/ingress-identity';
@@ -65,10 +65,34 @@ async function handlePost(req: Request) {
     typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
   try {
-    const rows = await queryBatch(
+    // Submitted ASYNC with a 45s inline wait, not held open synchronously.
+    // Measured server-side, the DEFAULT 20-vehicle / 120-load solve takes 38.1s
+    // and 100 vehicles / 500 loads takes 168.6s, while the synchronous transport
+    // gives up at 60s and the statement is capped at 80s to stay under the ~90s
+    // SPCS ingress limit. This page's own BM_SOLVE_TIMEOUT_MS is 180s, so it was
+    // built to wait three times longer than the server could ever allow.
+    //
+    // The solve key is derived from the challenge itself, so a page reload or a
+    // second dispatcher opening the same plan collects the in-flight solve rather
+    // than starting another copy of a ~3-minute job.
+    const outcome = await runSolve(
+      'backload_dispatch',
       `SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP`,
       [challengeJson, region],
+      { challenge: challengeJson, region },
+      g.user ?? null,
     );
+    if (outcome.pending) {
+      return NextResponse.json(
+        {
+          pending: true,
+          solve_key: outcome.solveKey,
+          poll_url: `/api/solve-status?key=${encodeURIComponent(outcome.solveKey)}`,
+        },
+        { status: 202 },
+      );
+    }
+    const rows = (outcome.rows ?? []) as Record<string, unknown>[];
     const raw = rows[0] ? (Object.values(rows[0])[0] as unknown) : null;
     let result: unknown = raw;
     if (typeof raw === 'string') {

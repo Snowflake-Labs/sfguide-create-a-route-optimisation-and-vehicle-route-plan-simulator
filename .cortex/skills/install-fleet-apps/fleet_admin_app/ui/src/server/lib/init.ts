@@ -408,6 +408,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'OPENROUTESERVICE_APP', schema: 'CORE',
     },
     {
+      // SOLVE_RESULTS. Also in scripts/seed_data.sql for fresh installs; created
+      // here so an ALREADY-DEPLOYED account gets it on the next restart rather
+      // than needing a reinstall.
+      //
+      // Solves exceed what the SA app can wait for. Measured server-side
+      // (`ensemble`, SanFrancisco): the DEFAULT 20 vehicles / 120 loads takes
+      // 38.1s, 40/200 takes 54.8s, 100/500 takes 168.6s - against a transport
+      // that gives up at 60s and a statement capped at 80s to stay under the
+      // ~90s SPCS ingress limit. Slow solves are therefore submitted async and
+      // land here.
+      //
+      // Not reusable from the verb audit table: `verb_attempt` stores only a
+      // result_hash and an idempotent replay returns
+      // `{"replayed": true, "result_hash": "..."}` with no payload, so it cannot
+      // serve a result to a caller that reconnects.
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.SOLVE_RESULTS (
+        SOLVE_KEY        VARCHAR       NOT NULL PRIMARY KEY,
+        VERB             VARCHAR,
+        STATEMENT_HANDLE VARCHAR,
+        STATUS           VARCHAR       NOT NULL,
+        RESULT           VARIANT,
+        ERROR_MESSAGE    VARCHAR,
+        ACTOR            VARCHAR,
+        PARAMS_JSON      VARIANT,
+        SUBMITTED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        COMPLETED_AT     TIMESTAMP_NTZ
+      ) COMMENT = ${TRACK}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'CORE',
+    },
+    {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING COMMENT = ${TRACK}`,
       db: 'FLEET_INTELLIGENCE',
     },

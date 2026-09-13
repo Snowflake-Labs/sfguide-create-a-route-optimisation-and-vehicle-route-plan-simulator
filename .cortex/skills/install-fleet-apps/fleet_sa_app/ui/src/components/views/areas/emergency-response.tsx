@@ -16,6 +16,7 @@ import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
+import { postSolve } from '@/lib/solve-client';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { ViewProps, MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
@@ -170,11 +171,19 @@ async function apiQuery(sql: string, params?: Record<string, string | null>): Pr
 }
 
 async function apiTool(verb: string, args: unknown[]): Promise<Record<string, unknown>> {
-  const res = await fetch('/api/tool', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ verb, args }),
-  });
-  const body = await parseJsonOrThrow(res);
+  // postSolve, not a bare fetch. A solver verb (evac_seed / evac_solve) answers
+  // 202 { solve_key } when it outlives the route's 45s inline wait, and this
+  // polls /api/solve-status until it finishes.
+  //
+  // A bare fetch was actively dangerous here: 202 IS res.ok, so
+  // parseJsonOrThrow accepted it, `body.result` was undefined and this function
+  // returned {} - an empty evacuation plan presented as a successful solve. The
+  // retry loops below made that worse by re-solving on the empty result.
+  const res = await postSolve('/api/tool', { verb, args });
+  const body = res.body as { result?: unknown };
+  if (!res.ok) {
+    throw new Error(String((res.body as { error?: unknown })?.error ?? `${verb} failed (${res.status})`));
+  }
   // The synapse envelope nests the proc output under result.result; unwrap one
   // level when present so callers read { status, participants, ... } directly.
   const r = body.result as Record<string, unknown> | null;

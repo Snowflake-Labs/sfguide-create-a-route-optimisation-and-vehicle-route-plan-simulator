@@ -20,6 +20,7 @@ import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
+import { postSolve } from '@/lib/solve-client';
 import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
@@ -532,11 +533,19 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
       let ok = false;
       try {
-        const res = await fetch('/api/backload/solve', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ challenge, region: cfg.region }), signal: ac.signal,
-        });
-        body = await res.json();
+        // postSolve handles the deferred case: the route answers 202 with a
+        // solve_key when the solve outlives its 45s inline wait, and this polls
+        // /api/solve-status until it finishes. Measured, a 100-vehicle /
+        // 500-load solve takes 168.6s - well inside this page's 180s budget, but
+        // far beyond what a single held-open request can do (the statement is
+        // capped at 80s to stay under the ~90s SPCS ingress limit).
+        const res = await postSolve(
+          '/api/backload/solve',
+          { challenge, region: cfg.region },
+          ac.signal,
+          (sec) => setSolverLog(`Still solving on Snowflake (${sec}s)...`),
+        );
+        body = res.body as typeof body;
         ok = res.ok;
         // Suspended routing engine: server has triggered a resume. Show the
         // shared notice with a Retry instead of a raw solver error.

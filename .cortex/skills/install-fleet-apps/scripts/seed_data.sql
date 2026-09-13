@@ -57,6 +57,44 @@ ALTER DATABASE FLEET_INTELLIGENCE SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- 1z. SOLVE_RESULTS - durable results for long-running solver calls.
+--
+-- MEASURED PROBLEM (server-side TOTAL_ELAPSED_TIME, `ensemble`, SanFrancisco):
+--   20 vehicles / 120 loads (the DEFAULTS) ..  38.1s
+--   40 / 200 .............................. .  54.8s
+--   60 / 300 ...............................  78.8s
+--   100 / 300 ..............................  89.2s
+--   100 / 500 .............................. 168.6s
+-- The SA app can never wait that long: pollResult gives up at 30x2s = 60s, the
+-- statement carries `timeout: 80`, and that 80 exists to stay under the ~90s SPCS
+-- ingress limit. So the DEFAULT configuration already spends 63% of the budget and
+-- anything past ~40 vehicles / 200 loads cannot return synchronously at all.
+--
+-- Raising the bound cannot fix it (ingress caps it at ~90s < the measured 168.6s),
+-- so slow solves are submitted asynchronously and their outcome is recorded here.
+--
+-- WHY A TABLE AND NOT JUST A STATEMENT HANDLE: a handle is session state, so a
+-- reopened tab, a second dispatcher, or a later agent turn cannot collect a solve
+-- it did not start. Keying on the solve key makes the result addressable instead.
+--
+-- WHY NOT REUSE THE VERB AUDIT TABLE: `verb_attempt` deliberately stores only a
+-- `result_hash`, and an idempotent replay returns exactly
+-- `{"replayed": true, "result_hash": "..."}` - verified against a live account. It
+-- is a double-execution GUARD, not a result cache: it cannot return what a solve
+-- produced, so retrying a slow solve with the same key yields a hash and no routes.
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.SOLVE_RESULTS (
+  SOLVE_KEY        VARCHAR       NOT NULL PRIMARY KEY,
+  VERB             VARCHAR,
+  STATEMENT_HANDLE VARCHAR,
+  STATUS           VARCHAR       NOT NULL,
+  RESULT           VARIANT,
+  ERROR_MESSAGE    VARCHAR,
+  ACTOR            VARCHAR,
+  PARAMS_JSON      VARIANT,
+  SUBMITTED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+  COMPLETED_AT     TIMESTAMP_NTZ
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 1a. OPENROUTESERVICE_APP.CORE engine namespace + REGION_CATALOG stub.
 --     The canonical loader is engine-coupled: its FIRST table is
 --     `CREATE OR REPLACE TABLE OPENROUTESERVICE_APP.CORE.INTRO_TRIPS` and it later

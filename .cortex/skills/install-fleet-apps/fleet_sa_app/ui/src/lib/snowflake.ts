@@ -91,6 +91,110 @@ function rowToObject(row: string[], cols: Array<{ name: string; type: string }>)
 
 export type QueryRow = Record<string, unknown>;
 
+// ---------------------------------------------------------------------------
+// ASYNC transport. For solves that CANNOT finish inside the synchronous budget.
+//
+// The synchronous path has a hard ceiling built from three independent limits:
+// pollResult gives up at 30x2s = 60s, the statement carries `timeout: 80`, and
+// that 80 exists to stay under the ~90s SPCS ingress timeout. Measured solve
+// times, server-side, `ensemble` on SanFrancisco:
+//
+//   20 vehicles / 120 loads (the DEFAULTS) ...  38.1s   <- 63% of the budget
+//   40 / 200 ................................   54.8s   <- at the wall
+//   60 / 300 ................................   78.8s   <- past it
+//   100 / 300 ...............................   89.2s
+//   100 / 500 ...............................  168.6s   <- 2.8x the budget
+//
+// Raising the bound cannot fix this: ingress caps the request at ~90s, below the
+// measured 168.6s. `async: true` moves the wait OFF the request - Snowflake runs
+// the statement to completion server-side and we collect it by handle later, so
+// no single HTTP request has to outlive ingress.
+// ---------------------------------------------------------------------------
+
+/** Submit a statement without waiting. Returns the statement handle. */
+export async function submitAsync(sql: string, binds: (string | number | null)[] = [], wh: string = BATCH_WAREHOUSE): Promise<string> {
+  const auth = getSnowflakeAuth();
+  const bindings: Record<string, { type: string; value: string }> = {};
+  binds.forEach((v, i) => {
+    bindings[String(i + 1)] = {
+      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
+      value: v === null ? '' : String(v),
+    };
+  });
+  // NO `timeout` here. The 80s cap on the sync path is a deliberate ingress
+  // guard; applying it to an async submission would reintroduce the very ceiling
+  // this function exists to escape, and would kill a 168s solve server-side.
+  const body: Record<string, unknown> = {
+    statement: sql,
+    warehouse: wh,
+    role,
+    parameters: { QUERY_TAG },
+    async: true,
+  };
+  if (binds.length > 0) body.bindings = bindings;
+
+  const response = await fetch(`${auth.baseUrl}/api/v2/statements`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${auth.token}`,
+      'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Snowflake API ${response.status}: ${text}`);
+  const result: SnowflakeResponse = JSON.parse(text);
+  if (!result.statementHandle) {
+    throw new Error('async submit returned no statementHandle');
+  }
+  return result.statementHandle;
+}
+
+/**
+ * Collect an async statement by handle. `{ status: 'running' }` while in flight.
+ *
+ * 202, and the 333334 code, both mean "not finished" - checking only the HTTP
+ * status misses the second form and would report a running solve as an empty
+ * result, which is the failure shape this whole change exists to remove.
+ */
+export async function fetchByHandle<T = QueryRow>(handle: string): Promise<{ status: 'running' } | { rows: T[] }> {
+  if (!handle) throw new Error('handle required');
+  const auth = getSnowflakeAuth();
+  const r = await fetch(`${auth.baseUrl}/api/v2/statements/${handle}`, {
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+      Accept: 'application/json',
+      'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+    },
+  });
+  if (r.status === 202) return { status: 'running' };
+  const result: SnowflakeResponse = await r.json() as SnowflakeResponse;
+  if (result.code === '333334') return { status: 'running' };
+  if (result.message && !result.data && !result.resultSetMetaData) {
+    throw new Error(`SQL error: ${result.message}`);
+  }
+  const cols = result.resultSetMetaData?.rowType ?? [];
+  return { rows: (result.data ?? []).map((row) => rowToObject(row, cols) as T) };
+}
+
+/** Best-effort cancel, so an abandoned solve stops holding a warehouse slot. */
+export async function cancelHandle(handle: string): Promise<void> {
+  if (!handle) return;
+  const auth = getSnowflakeAuth();
+  try {
+    await fetch(`${auth.baseUrl}/api/v2/statements/${handle}/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: 'application/json',
+        'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+      },
+    });
+  } catch { /* best-effort */ }
+}
+
 export async function query<T = QueryRow>(sql: string, binds: (string | number | null)[] = []): Promise<T[]> {
   const bindings: Record<string, { type: string; value: string }> = {};
   binds.forEach((v, i) => {

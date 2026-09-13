@@ -3302,7 +3302,25 @@ try {
         degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
     };
 } catch (err) {
-    var em = (err && err.message) ? String(err.message) : 'unknown error';
+    // Never report 'unknown error'. Measured: max_loads >= ~600 on SanFrancisco
+    // failed here in 8.5s with error:'unknown error', reason:'ERROR' - an
+    // exception whose .message was falsy, so the ONE piece of information the
+    // caller needed was discarded. The agent is told max_loads is "clamped to
+    // 1000", i.e. it is actively invited into this failure and then given nothing
+    // to act on. Include code/state, and fall back to serialising the object.
+    var em = (function () {
+        if (!err) return 'unknown error (no exception object)';
+        var parts = [];
+        if (err.message) parts.push(String(err.message));
+        if (err.code) parts.push('code=' + String(err.code));
+        if (err.state) parts.push('state=' + String(err.state));
+        if (err.stackTraceTxt) parts.push('stack=' + String(err.stackTraceTxt).slice(0, 300));
+        if (!parts.length) {
+            try { parts.push('raw=' + JSON.stringify(err)); }
+            catch (e2) { parts.push('raw=' + String(err)); }
+        }
+        return parts.join(' | ');
+    })();
     if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(em)) {
         return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
                  vroom_service: vroomSvc,
@@ -3785,7 +3803,25 @@ try {
         chains: out
     };
 } catch (err) {
-    var em = (err && err.message) ? String(err.message) : 'unknown error';
+    // Never report 'unknown error'. Measured: max_loads >= ~600 on SanFrancisco
+    // failed here in 8.5s with error:'unknown error', reason:'ERROR' - an
+    // exception whose .message was falsy, so the ONE piece of information the
+    // caller needed was discarded. The agent is told max_loads is "clamped to
+    // 1000", i.e. it is actively invited into this failure and then given nothing
+    // to act on. Include code/state, and fall back to serialising the object.
+    var em = (function () {
+        if (!err) return 'unknown error (no exception object)';
+        var parts = [];
+        if (err.message) parts.push(String(err.message));
+        if (err.code) parts.push('code=' + String(err.code));
+        if (err.state) parts.push('state=' + String(err.state));
+        if (err.stackTraceTxt) parts.push('stack=' + String(err.stackTraceTxt).slice(0, 300));
+        if (!parts.length) {
+            try { parts.push('raw=' + JSON.stringify(err)); }
+            catch (e2) { parts.push('raw=' + String(err)); }
+        }
+        return parts.join(' | ');
+    })();
     return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
 }
 $$;

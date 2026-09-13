@@ -380,3 +380,35 @@ if [ -f "$BATCH_TRANSPORT_CHECK" ]; then
     exit 1
   }
 fi
+
+# 12. Solver verbs must use the ASYNC solve path. Measured, the DEFAULT
+# backload_solve parameters take 38.1s and 100 vehicles / 500 loads takes 168.6s,
+# against a synchronous transport that gives up at 60s (pollResult 30x2s) with the
+# statement capped at 80s to stay under the ~90s SPCS ingress limit. A solver route
+# that reverts to query/queryBatch still WORKS for small inputs and only breaks
+# past ~40 vehicles - as a timeout that reads like an infrastructure fault rather
+# than a regression, which is why this needs a gate.
+SOLVER_ASYNC_CHECK="$SKILL_DIR/scripts/check_solver_async.py"
+if [ -f "$SOLVER_ASYNC_CHECK" ]; then
+  echo "pre-commit: solver async path check..."
+  python3 "$SOLVER_ASYNC_CHECK" || {
+    echo "pre-commit FAILED: a synchronous solve cannot exceed ~60s."
+    exit 1
+  }
+fi
+
+# 13. JS-bearing SQL must deploy with --enable-templating NONE. `snow sql` defaults
+# to LEGACY templating (SnowSQL &var), where `&&` is the ESCAPE for a literal `&`,
+# so deploying a JavaScript procedure without the flag rewrites every LOGICAL AND
+# into a BITWISE AND. `&` does not short-circuit, so `a && a.b` becomes a null
+# dereference. Measured: deploy-agent.sql has 75 `&&`; the deployed
+# TOOL_BACKLOAD_SOLVE had 0 `&&` and 25 bare `&`, which is why max_loads >= ~600
+# returned "unknown error". 8 of 9 JS TOOL_* procs shipped corrupted on every install.
+JS_TEMPLATING_CHECK="$SKILL_DIR/scripts/check_js_proc_templating.py"
+if [ -f "$JS_TEMPLATING_CHECK" ]; then
+  echo "pre-commit: JS procedure templating check..."
+  python3 "$JS_TEMPLATING_CHECK" || {
+    echo "pre-commit FAILED: LEGACY templating corrupts && into bitwise & in JS procs."
+    exit 1
+  }
+fi

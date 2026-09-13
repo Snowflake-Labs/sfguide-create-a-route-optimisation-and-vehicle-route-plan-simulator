@@ -412,7 +412,23 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # set -e safe: capture the rc without aborting the whole install on a non-zero
     # exit (the assertion below downgrades to a WARN). A bare `cmd; RC=$?` would
     # abort here under `set -euo pipefail` before the rc is ever captured.
-    if snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1; then
+    #
+    # --enable-templating NONE is REQUIRED and this is NOT about prose ampersands.
+    # `snow sql` defaults to `LEGACY,STANDARD`, and LEGACY is SnowSQL `&var`
+    # substitution in which `&&` is the escape for a literal `&`. These procs are
+    # JavaScript, so every LOGICAL AND was silently rewritten to a BITWISE AND on
+    # deploy: this file holds 75 `&&` and the deployed proc had 0 `&&` and 25 bare
+    # `&`. Bitwise `&` does not short-circuit, so every null guard of the shape
+    # `a && a.b` evaluates `a.b` even when `a` is null.
+    #
+    # Measured consequence: `backload_solve` with max_loads >= ~600 returned
+    # `{"error":"unknown error","reason":"ERROR"}` after 8.5s, because
+    # `(resp && resp.routes && ...)` became `(resp & resp.routes & ...)` and threw
+    # "Cannot read properties of null (reading 'routes')" whenever the solver
+    # legitimately returned null. All 9 TOOL_* procs shipped with this corruption
+    # on every install. With the flag, max_loads 600 AND the documented maximum of
+    # 1000 both return SUCCESS.
+    if snow sql -c "$CONNECTION" --enable-templating NONE -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1; then
       ROUTING_TOOLS_RC=0
     else
       ROUTING_TOOLS_RC=$?
