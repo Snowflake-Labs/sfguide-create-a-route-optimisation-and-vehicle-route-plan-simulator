@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { temporal } from 'zundo';
 import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig, SolutionCatalogEntry } from './types';
 import { viewRegistry } from './view-registry';
+import { resolveViewParams, applyResolvedParams } from './view-params';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
 import { toCatalogEntry } from './use-case';
@@ -354,9 +355,49 @@ export const useAppStore = create<AppStore>()(
 
                 appendAssistantPart(assistantId, part);
 
-                if (part.type === 'tool_result' && part.toolName === 'show_view') {
-                  const output = part.output as { viewId?: string; state?: Record<string, unknown> };
-                  if (output.viewId) {
+                // show_view (synapse verb on ROUTING_MCP): navigate the panel as
+                // part of the answer, instead of asking the user to click a
+                // `view:` chip.
+                //
+                // The name is matched by SUFFIX. A tool reached through an MCP
+                // server does not arrive as the bare verb name - `toolName` is
+                // taken straight from the agent event's `name`, which carries the
+                // server's prefix (the sibling render_view branch below already
+                // allowed for that). An exact-equality check therefore never
+                // fires in a real deployment, which is a silent failure: the
+                // verb succeeds, the agent reports that it opened the view, and
+                // the panel does not move.
+                if (
+                  part.type === 'tool_result' &&
+                  (part.toolName === 'show_view' || part.toolName.endsWith('_show_view'))
+                ) {
+                  const output = part.output as {
+                    viewId?: string;
+                    params?: Record<string, unknown>;
+                    state?: Record<string, unknown>;
+                  };
+                  // Resolve through the SAME vocabulary as a deep link, so region
+                  // and asset mode land in `context` (where views read them) and
+                  // only a selection lands in `viewState`. Putting region in
+                  // viewState renders a correct page for the wrong region.
+                  const params = output.params;
+                  if (params) {
+                    const resolved = resolveViewParams((p) => {
+                      const v = params[p];
+                      return v == null ? null : String(v);
+                    });
+                    if (resolved.unknownView) {
+                      console.warn(
+                        `[show_view] unknown view id "${resolved.unknownView}" - applying context only`,
+                      );
+                    }
+                    applyResolvedParams(resolved, {
+                      setContext: get().setContext,
+                      showView: get().showView,
+                    });
+                  } else if (output.viewId) {
+                    // Older contract: an explicit viewId plus a raw viewState
+                    // patch, with no scoping params to split.
                     get().showView(output.viewId, output.state);
                   }
                 }
