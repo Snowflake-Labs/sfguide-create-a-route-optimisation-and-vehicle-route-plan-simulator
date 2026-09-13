@@ -183,7 +183,10 @@ SELECT
   COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
   COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
-  COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+  -- A location NAME or nothing. These *_CITY values become stop labels on the
+  -- backload map and place names in an agent's answer, so a placeholder reads as
+  -- a real place and cannot be told apart from one. NULL says "unknown" honestly.
+  d.NAME                                              AS DROPOFF_CITY,
   ld.DROPOFF_LON                                      AS DROPOFF_LON,
   ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
   ld.LAST_TRIP_END                                    AS ETA_TS,
@@ -221,6 +224,13 @@ WITH cls AS (
 -- proposals-schema.sql VW_TRAILERS_GEO), so a pool bunched into the next few
 -- hours would be reachable only by vehicles free today and would silently
 -- starve every later vehicle of candidates.
+--
+-- The spread is the CONSUMER's horizon, not the lead time. MEASURED with a
+-- 4-day spread: every pool row sat inside now..now+4d, and since a chain's
+-- hop-2 pickup must be at or after the hop-1 delivery ETA - which lands at the
+-- far end of that same window - VW_TRIANGLES was empty account-wide (9 of 10,990
+-- pairs cleared the geometry filters, all 9 missed the sequence check by 8-106
+-- hours). Uniform, not shifted later, so near-term single-hop candidates remain.
 p AS (
   SELECT
     COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
@@ -234,10 +244,11 @@ p AS (
 )
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
-  COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+  -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+  o.NAME                                                                      AS PICKUP_CITY,
   t.ORIGIN_LON                                                                AS PICKUP_LON,
   t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-  COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+  d.NAME                                                                      AS DROPOFF_CITY,
   t.DESTINATION_LON                                                           AS DROPOFF_LON,
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
   GREATEST(
@@ -420,10 +431,11 @@ SELECT
   'ANY'                                    AS VEHICLE_EQUIPMENT,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-  COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+  -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+  p.NAME                                   AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
-  COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+  d.NAME                                   AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
   f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,

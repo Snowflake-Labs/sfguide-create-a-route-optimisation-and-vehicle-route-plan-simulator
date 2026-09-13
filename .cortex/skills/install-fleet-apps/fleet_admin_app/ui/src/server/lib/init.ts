@@ -547,7 +547,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
           COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
-          COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+          -- A location NAME or nothing. These *_CITY values are read straight
+          -- into the agent's answer and onto the backload map as stop labels, so
+          -- a placeholder like 'Drop-off' or 'Origin' reads as a real place and
+          -- the reader cannot tell it apart from one. 16.2% of trips (2807 of
+          -- 17342) point at a POI id outside the ACTIVE dataset, so this fires
+          -- often and is a genuine gap, not a formatting nicety. NULL says
+          -- "unknown" honestly; consumers already fall back to blank.
+          d.NAME                                              AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
           ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
           ld.LAST_TRIP_END                                    AS ETA_TS,
@@ -629,10 +636,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
         -- consume rank slots and leave the pool under its target.
         deduped AS (
           SELECT
-            COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+            -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+            o.NAME                                                                      AS PICKUP_CITY,
             t.ORIGIN_LON                                                                AS PICKUP_LON,
             t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-            COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+            d.NAME                                                                      AS DROPOFF_CITY,
             t.DESTINATION_LON                                                           AS DROPOFF_LON,
             t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
             -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
@@ -809,10 +817,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-          COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above. LISTING_TEXT
+          -- keeps its own fallbacks, being one sentence that would go wholly NULL.
+          p2.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
-          COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+          d.NAME                                   AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
           f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
@@ -1665,7 +1675,13 @@ $$`,
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
-        SELECT p.*
+        -- NAME is normalised, not passed through. See projection_views.sql for
+        -- the full note: the Overture sampler landed NAMES:primary as its
+        -- VARIANT JSON form, so every POI name carries literal double quotes,
+        -- and those names are stop labels on the backload map and cities in the
+        -- agent's answer. The sampler is fixed; this TRIM repairs already-landed
+        -- data without a regenerate, and is idempotent on clean names.
+        SELECT p.* EXCLUDE NAME, TRIM(p.NAME, '"') AS NAME
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = p.JOB_ID
@@ -2001,9 +2017,10 @@ $$`,
           f.JOB_ID,
           f.SOURCE,
           f.PARTNER_ID,
-          COALESCE(p.NAME, 'Pickup')              AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+          p.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON, f.PICKUP_LAT, f.PICKUP_GEOM,
-          COALESCE(d.NAME, 'Dropoff')             AS DROPOFF_CITY,
+          d.NAME                                  AS DROPOFF_CITY,
           f.DROPOFF_LON, f.DROPOFF_LAT, f.DROPOFF_GEOM,
           f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
           f.WEIGHT_KG, f.PRODUCT, f.PRICE_USD, f.HAZMAT,

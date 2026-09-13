@@ -69,13 +69,25 @@ export const backload_solve = defineProc({
   returns: {
     result: t.object({}).describe(
       'On success: { status:"SUCCESS", region, vehicle_type, strategy, strategies_run, ' +
-      'counts, totals, weights, proposals[], solve_key }. On failure: { status:"FAILED", ' +
+      'counts, totals, weights, proposals[], solve_key, families_skipped[], degraded }. ' +
+      'On failure: { status:"FAILED", ' +
       'reason, error } where reason is OPTIMIZATION_UNAVAILABLE (routing suspended - resume ' +
       'and retry), NO_FEED (no vehicles or loads for the region), DATA_NOT_PROVISIONED, or ' +
       'BAD_STRATEGY. solve_key identifies this stored result: pass it to show_view as ' +
       'selection="solve_key=<key>" to put THIS plan on screen instead of making the page ' +
       'solve again. It is absent when the result could not be cached, in which case just open ' +
-      'the view without it.',
+      'the view without it. ' +
+      // strategies_run is the honest record of what actually solved, and it is NOT the
+      // strategy that was asked for: only 'vrp', 'fleet' and 'bpmp' touch the road graph,
+      // while 'baseline' is a great-circle scan. An "ensemble" run whose three road
+      // strategies all failed used to come back as a plain SUCCESS with no signal at all,
+      // so the agent presented straight-line estimates as a live road solve.
+      'READ degraded BEFORE PRESENTING: it is non-null whenever a strategy you asked for ' +
+      'produced nothing, and families_skipped names each one with the engine error that ' +
+      'stopped it. If degraded says no road-graph strategy produced a plan, the numbers are ' +
+      'GREAT-CIRCLE estimates from the baseline scan and you MUST say so rather than ' +
+      'describing them as solved on the road network. Cross-check strategies_run against ' +
+      'the strategy you requested; a status of SUCCESS does not mean the run was complete.',
     ),
   },
   execute: async (args, ctx) => {

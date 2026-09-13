@@ -61,7 +61,15 @@ JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-SELECT p.*
+-- NAME is normalised, not passed through. The Overture sampler in
+-- routability.ts read NAMES:primary without a ::STRING cast, so it landed the
+-- VARIANT's JSON form and every POI name carries literal double quotes
+-- (measured: 13738 of 13738). Those names surface as stop labels on the
+-- backload map and as cities in the agent's answer, so the quotes are
+-- user-visible in both. The sampler is fixed, but this TRIM is what makes
+-- already-landed data read correctly without a multi-hour dataset regenerate.
+-- It is idempotent: a name with no surrounding quotes is returned unchanged.
+SELECT p.* EXCLUDE NAME, TRIM(p.NAME, '"') AS NAME
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
 JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
   ON d.DATASET_ID = p.JOB_ID

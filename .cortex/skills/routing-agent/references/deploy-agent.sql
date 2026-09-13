@@ -2893,26 +2893,38 @@ try {
         if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { /* leave */ } }
         return raw;
     }
+    // Every no-result path carries a REASON. Previously they all returned a bare
+    // null and the family loop dropped the family silently, so an 'ensemble' run
+    // whose three road strategies all failed came back as status:'SUCCESS' with
+    // strategies_run:['baseline'] and degraded:null - a great-circle scan that
+    // reads as a live road-graph solve. The `!mm` branch was the worst of them:
+    // it threw away the engine's own error text, the one thing that explains why.
     function solveWithShear(vehicles, shipments) {
         var workV = vehicles, workS = shipments, dropped = {}, excluded = 0;
         for (var attempt = 0; attempt <= MAX_UNROUTABLE_RETRIES; attempt++) {
-            if (!workV.length || !workS.length) return { result: null, excluded: excluded };
+            if (!workV.length || !workS.length) {
+                return { result: null, excluded: excluded,
+                         reason: 'nothing left to solve after removing unroutable points' };
+            }
             var res = solveOnce(workV, workS);
-            if (!res) return { result: null, excluded: excluded };
-            if (!res.error) return { result: res, excluded: excluded };
+            if (!res) return { result: null, excluded: excluded, reason: 'the routing engine returned no response' };
+            if (!res.error) return { result: res, excluded: excluded, reason: null };
             var msg = (typeof res.message === 'string') ? res.message : String(res.error);
             // A suspended engine reaches us as a DNS/connection failure inside the
             // gateway. Record it so the caller gets a resume-able reason instead
             // of an empty plan that reads as "no backload exists".
             if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(msg)) {
                 suspendedSeen = msg;
-                return { result: null, excluded: excluded };
+                return { result: null, excluded: excluded, reason: 'routing engine unreachable: ' + msg };
             }
             var mm = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(msg);
-            if (!mm) return { result: null, excluded: excluded };
+            if (!mm) return { result: null, excluded: excluded, reason: msg };
             var bad = { lon: Number(mm[1]), lat: Number(mm[2]) };
             var bk = coordKey(bad.lon, bad.lat);
-            if (dropped[bk]) return { result: null, excluded: excluded };
+            if (dropped[bk]) {
+                return { result: null, excluded: excluded,
+                         reason: 'the same unroutable point was reported twice: ' + msg };
+            }
             dropped[bk] = true;
             var nv = [], ns = [];
             for (var vi = 0; vi < workV.length; vi++) {
@@ -2927,7 +2939,9 @@ try {
             excluded += (workV.length - nv.length) + (workS.length - ns.length);
             workV = nv; workS = ns;
         }
-        return { result: null, excluded: excluded };
+        return { result: null, excluded: excluded,
+                 reason: 'gave up after ' + MAX_UNROUTABLE_RETRIES
+                       + ' attempts to remove unroutable points' };
     }
 
     // ------------------------------------------------------- parse into rows
@@ -2999,20 +3013,54 @@ try {
 
     // -------------------------------------------------------------- run them
     var families = (strategy === 'ensemble') ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
-    var all = [], excludedTotal = 0, familiesRun = [];
+    // ROAD_FAMILIES are the ones that actually call the optimizer. 'baseline' is a
+    // great-circle scan, so a run that keeps only baseline has not touched the road
+    // graph at all and must not be reported as though it had.
+    var ROAD_FAMILIES = { vrp: true, fleet: true, bpmp: true };
+    var all = [], excludedTotal = 0, familiesRun = [], familiesSkipped = [];
+    function skip(fam, reason) { familiesSkipped.push({ family: fam, reason: reason }); }
     for (var fi = 0; fi < families.length; fi++) {
         var fam = families[fi];
         if (fam === 'baseline') {
             var bp = baselineProposals();
             if (bp.length) { familiesRun.push(fam); all = all.concat(bp); }
+            else skip(fam, 'no eligible pair survived the great-circle scan');
             continue;
         }
         var built = buildChallenge(fam, null);
-        if (!built.vehicles.length || !built.shipments.length) continue;
+        if (!built.vehicles.length || !built.shipments.length) {
+            skip(fam, 'no challenge to solve: ' + built.vehicles.length + ' vehicles, '
+                    + built.shipments.length + ' shipments after eligibility filtering');
+            continue;
+        }
         var solved = solveWithShear(built.vehicles, built.shipments);
         excludedTotal = Math.max(excludedTotal, solved.excluded);
         var parsed = parseSolve(solved.result, fam, built.idToTrailer, built.idToLoad);
         if (parsed.length) { familiesRun.push(fam); all = all.concat(parsed); }
+        else if (solved.reason) skip(fam, solved.reason);
+        else skip(fam, 'the optimizer returned a plan with no usable assignments');
+    }
+    // A road family that was ASKED FOR and produced nothing is the degradation the
+    // caller has to be told about, whether or not any family succeeded. Without
+    // this, 'ensemble' silently collapses to baseline and the answer presents
+    // great-circle estimates as a live solve.
+    var roadAsked = [], roadLost = [];
+    for (var rf = 0; rf < families.length; rf++) {
+        if (!ROAD_FAMILIES[families[rf]]) continue;
+        roadAsked.push(families[rf]);
+        if (familiesRun.indexOf(families[rf]) === -1) roadLost.push(families[rf]);
+    }
+    var degradedNote = null;
+    if (suspendedSeen) {
+        degradedNote = 'Some strategies could not solve: the routing engine was unreachable.';
+    } else if (roadAsked.length && roadLost.length === roadAsked.length) {
+        degradedNote = 'No road-graph strategy produced a plan (' + roadLost.join(', ')
+                     + '), so these figures are GREAT-CIRCLE estimates from the baseline scan, '
+                     + 'not a live road solve. First reason: '
+                     + ((familiesSkipped.length && familiesSkipped[familiesSkipped.length - 1].reason) || 'unknown') + '.';
+    } else if (roadLost.length) {
+        degradedNote = 'Ran without ' + roadLost.join(', ')
+                     + ': fewer strategies agreed on each pair than requested.';
     }
     if (!all.length) {
         if (suspendedSeen) {
@@ -3025,6 +3073,8 @@ try {
                  counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
                            proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
                  proposals: [], totals: {},
+                 strategies_run: familiesRun, families_skipped: familiesSkipped,
+                 degraded: degradedNote,
                  note: 'No proposals were produced. Every candidate pair was either ineligible or unroutable.' };
     }
 
@@ -3254,10 +3304,18 @@ try {
             },
             weights: WEIGHTS,
             pairs: pairRows,
-            degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
+            families_skipped: familiesSkipped,
+            degraded: degradedNote
         };
     }
 
+    // Vehicle granularity is the DISPATCHER answer: one row, the decision, and the
+    // numbers behind it. The seven per-dimension `scores` and the five `constraints`
+    // chips are deliberately NOT here - they belong to granularity 'pair', which
+    // exists precisely so a caller that re-ranks client-side gets them. Carrying
+    // them here roughly tripled the row for an answer that never reads them, and the
+    // only consumer of this shape, AgentProposal in ui/src/lib/backload-rehydrate.ts,
+    // declares neither. Keep detour_km and stops: that interface DOES read both.
     var outRows = [];
     for (var oi = 0; oi < Math.min(outLimit, perVehicle.length); oi++) {
         var o = perVehicle[oi];
@@ -3274,9 +3332,7 @@ try {
             stops: o.maxStopSeq,
             empty_city: o.emptyCity, pickup_city: o.pickupCity, delivery_city: o.deliveryCity,
             pickup_lon: o.pickupLon, pickup_lat: o.pickupLat,
-            delivery_lon: o.deliveryLon, delivery_lat: o.deliveryLat,
-            scores: o.scores,
-            constraints: chipsByPair[o.trailerId + '::' + o.loadId] || null
+            delivery_lon: o.deliveryLon, delivery_lat: o.deliveryLat
         });
     }
 
@@ -3298,8 +3354,11 @@ try {
         weights: WEIGHTS,
         proposals: outRows,
         // A partially-degraded run is still a SUCCESS, but the caller must be able
-        // to say so rather than presenting a thinner plan as complete.
-        degraded: suspendedSeen ? 'Some strategies could not solve: the routing engine was unreachable.' : null
+        // to say so rather than presenting a thinner plan as complete. families_skipped
+        // names each strategy that produced nothing and why, so "ensemble" quietly
+        // collapsing to a great-circle baseline is visible instead of implied.
+        families_skipped: familiesSkipped,
+        degraded: degradedNote
     };
 } catch (err) {
     // Never report 'unknown error'. Measured: max_loads >= ~600 on SanFrancisco
