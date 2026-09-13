@@ -10,6 +10,7 @@
 // is enforced separately by /api/query (dynamic:true -> owner's-rights
 // FLEET_APP_DYNAMIC_READER). Mirrors ParsedViewDef / AreaConfig from view-renderer.tsx.
 import { AREA_COMPONENT_NAMES } from '@/lib/area-components';
+import { validateMapLayers } from '@/lib/map-spec-schema';
 import type { ParsedViewDef } from '@/components/views/view-renderer';
 
 const ALLOWED_COMPONENTS = new Set<string>(AREA_COMPONENT_NAMES);
@@ -97,6 +98,19 @@ export function parseDynamicSpec(raw: unknown, id = '__dynamic__'): ParseResult 
         if ('tooltip' in config) config.tooltip = clampString(config.tooltip, MAX_TEXT_LEN);
         // Markdown area content (agent-emitted, untrusted): clamp to a sane cap.
         if ('content' in config) config.content = clampString(config.content, MAX_MARKDOWN_LEN);
+      }
+      // A Map area's layers were previously part of that permissive passthrough,
+      // so an unknown layer type or a layer with no query reached the deck.gl
+      // compiler and rendered a blank basemap with no error. Validate them here.
+      // viewState refs ARE allowed on this path: a rendered page owns a
+      // panel.viewState, unlike an inline chat map.
+      if (comp === 'Map') {
+        const before = errors.length;
+        validateMapLayers(config?.layers, errors, {
+          prefix: `area '${name}'`,
+          allowViewState: true,
+        });
+        if (errors.length > before) continue;
       }
       cleanAreas[name] = {
         component: comp,

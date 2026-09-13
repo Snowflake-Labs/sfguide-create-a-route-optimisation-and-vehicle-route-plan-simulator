@@ -103,6 +103,27 @@ export const RenderCodes = {
   UNKNOWN_COMPONENT: 'UNKNOWN_COMPONENT',
 } as const;
 
+// Error codes for the render_map verb (agent-emitted inline chat maps).
+export const MapRenderCodes = {
+  /** spec_json did not parse as JSON, or was not a JSON object. */
+  INVALID_MAP_SPEC_JSON: 'INVALID_MAP_SPEC_JSON',
+  /** layers is missing/empty/over the cap, or a layer has no data.query. */
+  INVALID_MAP_SPEC_SHAPE: 'INVALID_MAP_SPEC_SHAPE',
+  /** a layer declares a `type` the deck.gl compiler does not implement. */
+  UNKNOWN_LAYER_TYPE: 'UNKNOWN_LAYER_TYPE',
+} as const;
+
+// Layer types the SA app's deck.gl compiler implements. MUST stay in sync with
+// MAP_LAYER_TYPES in fleet_sa_app/ui/src/lib/map-spec-schema.ts (and the
+// LayerSpec union in packages/fleet-kit/src/map/layer-spec.ts). An unknown type
+// compiles to NOTHING and renders a blank basemap with no error, so this list
+// gives the agent a typed early failure instead of a silently empty map.
+export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] as const;
+
+/** Layers per inline map. Each layer is one independent warehouse query, so this
+ *  bounds cost as well as legibility. Mirrors MAX_MAP_LAYERS on the client. */
+export const MAX_MAP_LAYERS = 4;
+
 // Renderer area components an agent may emit. MUST stay in sync with
 // AREA_COMPONENTS in fleet_sa_app/ui/src/components/views/view-renderer.tsx.
 // The client-side zod validator (view-spec-schema.ts) is the authoritative
