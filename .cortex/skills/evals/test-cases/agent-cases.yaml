@@ -142,6 +142,32 @@ cases:
           at least one area that has a component and a data query), rather than
           only a plain-text answer or only a link to an existing view.
 
+  # --- render_map inline chat map (render_map IS a synapse verb) -------------
+  # No case anywhere emitted a Map before this one. The Map component was legal
+  # in both render_view validators and no fixture, sample or test ever exercised
+  # it, while its config.layers block was a permissive passthrough - so an agent
+  # could emit a structurally accepted map that rendered a blank basemap and
+  # nothing would have noticed. The judge assertion deliberately checks for
+  # LAYERS carrying their own queries, not just "a map was returned": an empty
+  # layers array is the failure this is here to catch.
+  - id: render-map-inline
+    prompt: >-
+      Map the top dwell hotspots for the active region as a density heatmap.
+      Draw it in your answer as a map; do not just link me to an existing page.
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: judge
+        text: >-
+          The assistant returned a map specification containing a non-empty
+          `layers` array, where each layer declares a `type` (one of
+          scatterplot, path, h3, geojson, arc) and a `data.query` that SELECTs
+          from the FLEET_APP contract. It must NOT be only a plain-text answer,
+          only a link to an existing view, and must not reference
+          SYNTHETIC_DATASETS, FLEET_INTELLIGENCE or OPENROUTESERVICE_APP in a
+          layer query.
+
   # --- deep_link regression -------------------------------------------------
   # deep_link failed 4 calls out of 4 on tib85385 with "URLSearchParams is not
   # defined": synapse compiles every verb into a LANGUAGE JAVASCRIPT procedure

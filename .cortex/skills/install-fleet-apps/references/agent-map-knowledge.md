@@ -87,12 +87,45 @@ Four traps apply to all contract calls: METHOD is the profile alone
 (`'driving-car'`); numeric coords need `::FLOAT`; provider must be
 `NULL::VARCHAR`; a bad call returns NULL geometry silently.
 
-**Mapping constraint**: `data_to_map` only accepts SQL/analyst tool results.
-An MCP result (`run_sql`, `get_directions`) is not a valid source. Live routing
-geometry is therefore not mappable in CoWork today - report figures and use
-`deep_link` for the drawn route.
+**Mapping constraint, by surface**: `data_to_map` (CoWork only) accepts SQL/analyst
+tool results and nothing else, so an MCP result (`run_sql`, `get_directions`) is not a
+valid source there - report figures and use `deep_link` for the drawn route.
 
-## 5. Authoring a map (render_view)
+**Inside the SA app the constraint does not apply.** `render_map` (section 5a) runs its
+own layer queries, so a query that calls the routing contract and projects
+`ST_ASGEOJSON(GEOJSON)::STRING` puts live drive-time rings and solved tours on an
+inline map. The blocker in CoWork is the tool_result_id contract, not the geometry.
+
+## 5a. Authoring an inline map (render_map, SA app)
+
+`render_map` takes a JSON spec `{title?, height?, layers:[...], legend?, emptyMessage?}`
+and draws it inline in the chat answer. Each layer is `{type, data:{query, params?},
+...encoding}` over the same `LayerSpec` DSL the authored dashboard maps use, compiled by
+the same shared compiler (`@fleet-kit/core/map`), so an agent-authored map inherits the
+colour DSL, `{COLUMN}` tooltip templating and geometry decimation.
+
+Rules the verb and the client both enforce, so a violation is a named failure rather
+than a blank map:
+
+- **1 to 4 layers.** Each layer is one independent warehouse query. Beyond four, UNION
+  into one layer with a category column and colour by it.
+- **Layer type** must be one of `scatterplot`, `path`, `h3`, `geojson`, `arc`. An unknown
+  type compiles to nothing, which is why it is rejected up front (`UNKNOWN_LAYER_TYPE`).
+- **Queries read the neutral `FLEET_APP` contract only**, and run through
+  `/api/query` with `dynamic:true`, i.e. as owner's-rights `FLEET_APP_DYNAMIC_READER`
+  behind the `FLEET_APP`/`SNOWFLAKE` allowlist. A query naming any other database is
+  refused at that boundary.
+- **Params bind `context.*` or a literal.** `viewState.*` is rejected: a chat message has
+  no view state, so the bind would go out as NULL and return zero rows. For the same
+  reason `visibleWhen`, `toggles`, `clickEmits` and `focusOn` are rejected - there is
+  nothing to toggle or click into.
+- **Simplify geometry**: `ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING`, filtered to a
+  region or band first. Rows are capped per layer and the cap is displayed as
+  "showing N of M features", so a truncated map is visible rather than silently partial.
+- **The camera fits once and locks.** A chat message must not re-frame itself when the
+  user later changes region on the dashboard beside it.
+
+## 5b. Authoring a page-level map (render_view)
 
 When emitting a `render_view` spec with a `Map` area, choose encodings that make
 the insight legible. Available layer types: scatterplot, path, h3, geojson, arc.

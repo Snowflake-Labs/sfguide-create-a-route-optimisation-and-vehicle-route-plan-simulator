@@ -202,6 +202,26 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_
 # its trip limit and produce absurd duty spans with no error.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_shift_overrun.mts
 
+# Regression test for the agent-emitted MAP spec validators (41 cases). Needs the
+# SA app's tsconfig for the `@/` alias, because view-spec-schema.ts imports
+# area-components at RUNTIME; map-spec-schema.ts itself is type-only imports.
+#
+# What it protects: every failure mode of a map is SILENT. An unknown layer
+# `type` compiles to nothing, a `viewState.*` param on an inline chat map binds
+# NULL, and an oversized geometry payload renders blank - in all three cases the
+# basemap paints, no error is raised, and the result is indistinguishable from
+# "the query legitimately matched no rows". `Map` was legal in both render_view
+# validators with `config` as a permissive passthrough, so a layer block reached
+# the deck.gl compiler entirely unchecked and no fixture, sample or test anywhere
+# in the repo ever emitted one. Negative-tested: weakening the type check and the
+# viewState check convicts 6 assertions, including through parseDynamicSpec.
+#
+# Both directions are asserted. `viewState.*` must stay LEGAL on the render_view
+# PAGE path (a rendered page owns a panel.viewState, unlike a chat message),
+# exactly MAX_MAP_LAYERS layers must still be accepted (off-by-one), and a
+# non-Map area must not be dragged into layer validation.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx --tsconfig ../../fleet_sa_app/ui/tsconfig.json verify_map_spec.mts
+
 # Validate that no bundled verb source uses a JavaScript global the Snowflake
 # LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
 # catches this: `tsc` accepts it (the repo pulls in DOM and @types/node for the
