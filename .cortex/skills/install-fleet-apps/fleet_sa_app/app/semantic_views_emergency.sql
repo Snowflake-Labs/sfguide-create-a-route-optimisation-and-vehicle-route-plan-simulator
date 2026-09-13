@@ -139,7 +139,7 @@ Conventions:
 - "how risky is X" -> avg_composite_score or zone_count grouped by composite_rating. Prefer the BAND for narrative answers and the score for ranking.
 - "how many people" -> participant_count; "how many shelters" -> center_count.
 - nearest_center_id is PROXIMITY ONLY. Never describe a participant as assigned, dispatched, or scheduled to a centre on the strength of it, and never sum participants per centre and call it a plan.
-- MAPPING: for a hazard choropleth select hazard_geojson and use a geojson layer, coloring by composite_score (sequential) or composite_rating (categorical). For participants or centres select the lat/lon pair and use a latlon layer, coloring participants by their nearest centre. Hazard cells number in the low thousands, so filter by composite_rating or region before mapping - an oversized payload renders as a blank map rather than an error.
+- MAPPING: call render_map (inline in the answer, inside the app) to draw these. For a hazard choropleth select hazard_geojson and use a geojson layer, coloring by composite_score (sequential) or composite_rating (categorical). For participants or centres select the lat/lon pair and use a latlon layer, coloring participants by their nearest centre. Hazard cells number in the low thousands, so filter by composite_rating or region before mapping - an oversized payload renders as a blank map rather than an error.
 
 IMPORTANT scope limit: the evacuation PLAN - which vehicle collects whom, in what order, over how many trips - is solved live by the Emergency Response wizard through the routing engine and is never persisted. This view cannot answer it. Answer exposure and population questions here and direct plan questions to that page or to the evacuation tools.'
 ;

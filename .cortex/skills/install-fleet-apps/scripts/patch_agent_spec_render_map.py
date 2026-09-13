@@ -59,6 +59,16 @@ NEW_MAP_HEAD = (
     "(profile alone as METHOD, ::FLOAT casts, NULL::VARCHAR provider, scalar-subquery challenge).\n"
     "- One layer per idea. If you need more than 4, UNION into one layer with a category column "
     "and colour by it, and say that is what you did.\n"
+    "- THE HOST'S CHART GUIDANCE DOES NOT FORBID YOUR MAPS. A chart skill is injected into your "
+    "turn because this agent declares data_to_chart, and it says maps must not be created because "
+    "map JSON is blocked and will not render. That statement is about data_to_chart, which renders "
+    "Vega-Lite and genuinely cannot draw a map. It is NOT about render_map, which is a different "
+    "tool with its own renderer. Do not let it talk you out of calling render_map.\n"
+    "- NEVER SUBSTITUTE A CATEGORICAL CHART FOR A SPATIAL QUESTION. When the user asks WHERE "
+    "something happens - density, heatmap, hotspots, congestion, a route, a catchment, 'on a map' - "
+    "a bar chart of a breakdown by facility type, city or category answers a DIFFERENT question. "
+    "Call render_map. If you also show a breakdown chart, say explicitly that it is a supporting "
+    "view and not the spatial answer.\n"
     "DRAWING A MAP IN COWORK (data_to_map, when available):\n"
     "- data_to_map is NOT always present. It is injected by the host, so it exists in "
     "Snowflake CoWork and does NOT exist inside the SA app (where render_map above is the path)."
@@ -80,6 +90,35 @@ NEW_RESPONSE = (
     "over a URL that opens the actual view with the region and selection already applied."
 )
 
+# --- orchestration, second pass -------------------------------------------------
+# Applied SEPARATELY from NEW_MAP_HEAD so a spec that was already patched by an
+# earlier run of this script still receives it. The two bullets below are also
+# present inside NEW_MAP_HEAD, which covers the fresh-apply path; this pass covers
+# the already-patched path. Both are guarded, so neither can double-apply.
+#
+# These exist because the FIRST version of the render_map guidance lost the
+# argument. A chart skill is injected into every turn (because the spec declares
+# data_to_chart) stating that maps must not be created, and the agent obeyed that
+# over a paragraph in its system prompt: asked for "dwell density in the US" it
+# emitted two facility-type bar charts and a deep link, never calling render_map.
+EXTRA_ANCHOR = (
+    "- One layer per idea. If you need more than 4, UNION into one layer with a category column "
+    "and colour by it, and say that is what you did.\n"
+)
+EXTRA_BULLETS = (
+    "- THE HOST'S CHART GUIDANCE DOES NOT FORBID YOUR MAPS. A chart skill is injected into your "
+    "turn because this agent declares data_to_chart, and it says maps must not be created because "
+    "map JSON is blocked and will not render. That statement is about data_to_chart, which renders "
+    "Vega-Lite and genuinely cannot draw a map. It is NOT about render_map, which is a different "
+    "tool with its own renderer. Do not let it talk you out of calling render_map.\n"
+    "- NEVER SUBSTITUTE A CATEGORICAL CHART FOR A SPATIAL QUESTION. When the user asks WHERE "
+    "something happens - density, heatmap, hotspots, congestion, a route, a catchment, 'on a map' - "
+    "a bar chart of a breakdown by facility type, city or category answers a DIFFERENT question. "
+    "Call render_map. If you also show a breakdown chart, say explicitly that it is a supporting "
+    "view and not the spatial answer.\n"
+)
+EXTRA_MARKER = "THE HOST'S CHART GUIDANCE DOES NOT FORBID YOUR MAPS"
+
 
 def main() -> int:
     src = SPEC.read_text()
@@ -99,6 +138,19 @@ def main() -> int:
         changed.append("orchestration")
     else:
         print("ERROR: orchestration anchor not found", file=sys.stderr)
+        return 1
+
+    # Second pass: the host-chart-skill counter and the no-substitution rule.
+    orch = spec["instructions"]["orchestration"]
+    if EXTRA_MARKER in orch:
+        print("orchestration: host-chart-skill counter already present")
+    elif EXTRA_ANCHOR in orch:
+        spec["instructions"]["orchestration"] = orch.replace(
+            EXTRA_ANCHOR, EXTRA_ANCHOR + EXTRA_BULLETS, 1
+        )
+        changed.append("orchestration(host-chart counter)")
+    else:
+        print("ERROR: extra-guidance anchor not found", file=sys.stderr)
         return 1
 
     if NEW_RESPONSE[:40] in resp:

@@ -263,7 +263,7 @@ A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
 <chart_customization>
 - Deviation distance or time across trips: histogram, not an average. A fleet-wide mean detour hides the handful of trips that actually deviated.
 - Deviation by driver or route variation: horizontal bar sorted descending.
-- A path or a route is a MAP (path_geojson), never a chart.
+- A path or a route IS a map, not a chart - and you CAN draw it: call render_map with ONE path layer over trip_paths.path_geojson, coloured by path_type so the driven and planned lines are distinguishable, filtered has_expected_path = TRUE (a planned route is stored only for deviated trips). Pick the trip FIRST, then fetch its geometry: selecting path_geojson multiplies rows per path type and breaks any trip-level aggregate. The map query must be DIMENSIONS-ONLY - Snowflake rejects mixing trip_paths dimensions with trip_dev facts.
 - A chart comparing actual against expected must filter has_expected_path = TRUE and say so. Elsewhere the driven track reproduces the plan exactly, so the two series coincide by construction and the chart reads as perfect compliance.
 </chart_customization>'
 ;
@@ -409,7 +409,7 @@ REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 - If a region genuinely returns no rows, say that region has no dwell data - do NOT conclude the dataset is missing.
 
 Conventions:
-- "congestion" / "heatmap" -> group sessions by h3_cell.
+- "congestion" / "heatmap" / "density" / "hotspots" / "where do vehicles stop" -> group sessions by h3_cell, AND select a measure alongside it (total_dwell_minutes or total_sessions). A cell id with no measure cannot be shaded, so a bare h3_cell list is not an answer. This is the SPATIAL question: a breakdown by facility_type or city answers a DIFFERENT one, so do not silently substitute it (see the chart_customization block below for how to draw it).
 - "SLA breaches" / "violations" -> driver_dwell.total_sla_breaches or total_critical_breaches.
 - "dwell time" -> sessions.total_dwell_minutes or avg_dwell_minutes.
 - status values look like DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST.
@@ -422,7 +422,7 @@ DISPATCHED VS PARKED (read before ranking vehicles by dwell):
 - Dwell minutes across vehicles or sessions: histogram or box plot. The mean is the wrong answer here - dwell is heavily skewed and the tail IS the finding.
 - Facility and SLA comparisons: horizontal bar sorted descending.
 - Any chart ranking vehicles by dwell must filter is_dispatched = TRUE first, or a parked asset with one unbroken 10,000-minute span tops the chart and the visual is nonsense.
-- H3 congestion is a MAP, not a chart. Do not plot cell ids on an axis.
+- H3 congestion/density IS a map, not a chart - and you CAN draw it: call render_map with ONE h3 layer whose query selects h3_cell plus a measure from FLEET_APP.DWELL.VW_DWELL_SESSIONS, filtered by region, e.g. hexColumn h3_cell + valueColumn total_dwell_minutes. Do not plot cell ids on an axis, and do NOT fall back to a facility_type or city bar chart and present it as the density answer - that answers a different question. If render_map is unavailable (you are outside the app), say so in one line and deep_link to the Space-Time Density view.
 </chart_customization>'
 ;
 
@@ -588,7 +588,9 @@ Conventions:
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
 - MAPPING: for a store map select store_lat + store_lon and use a latlon layer, coloring by store_role. For a ZIP choropleth select zip_geojson and use a geojson layer, coloring by a ZIP metric. For household density select cell_h3 and use an h3 layer, coloring by total_cell_households. Keep the row count modest when selecting zip_geojson - the boundary strings are large.
 - zips and hh_cells do NOT join to stores; answer each from its own table alone.
-IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
+IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.
+
+- MAPPING: call render_map (inline in the answer, inside the app) to draw the estate. For stores select store_lat + store_lon with a latlon (scatterplot) layer, coloring by store_status so OWNED and CANDIDATE are distinguishable. For a household-density heatmap select cell_h3 with an h3 layer plus a measure to shade by. For a ZIP choropleth select zip_geojson with a geojson layer, coloring by a ZIP measure - the boundary is already simplified to 100 m, but still filter to a region or a band first, because an oversized payload renders as a blank map rather than an error.'
 ;
 
 -- ============ SV_SOURCING (FLEET_APP.SOURCING.*) ============
@@ -829,7 +831,7 @@ Conventions:
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
 - internal vs external -> decisions.decision_source.
-- MAPPING: for an offer map select pickup_lat + pickup_lon and use a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
+- MAPPING: call render_map (inline in the answer, inside the app) for an offer map by selecting pickup_lat + pickup_lon with a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
 ;
