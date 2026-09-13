@@ -124,6 +124,15 @@ export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] a
  *  bounds cost as well as legibility. Mirrors MAX_MAP_LAYERS on the client. */
 export const MAX_MAP_LAYERS = 4;
 
+/** Map spec version this verb emits. Mirrors MAP_SPEC_VERSION on the client.
+ *
+ *  These three constants sit on opposite sides of a trust boundary - the verb
+ *  runs in Snowflake, the validator in the browser - and "MUST stay in sync" was
+ *  asserted by nothing but the comments above. verify_map_spec.mts now compares
+ *  both copies, so a drift fails a test instead of surfacing as a map the verb
+ *  accepted and the client rejected (or worse, the reverse). */
+export const MAP_SPEC_VERSION = 1;
+
 // Renderer area components an agent may emit. MUST stay in sync with
 // AREA_COMPONENTS in fleet_sa_app/ui/src/components/views/view-renderer.tsx.
 // The client-side zod validator (view-spec-schema.ts) is the authoritative

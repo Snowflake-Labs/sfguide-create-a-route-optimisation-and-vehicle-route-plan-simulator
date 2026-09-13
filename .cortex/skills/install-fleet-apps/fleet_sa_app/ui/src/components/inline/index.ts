@@ -6,9 +6,13 @@ import { ConfirmAction } from './confirm-action';
 import { ChoiceList } from './choice-list';
 import { InlinePicker } from './inline-picker';
 import { ProgressCard } from './progress-card';
-import { RouteMapInline } from './route-map-inline';
-import { RenderMapInline } from './render-map-inline';
 import { ChartInline } from './chart-inline';
+// The two inline MAPS load through a lazy boundary so deck.gl + maplibre-gl stay
+// out of the initial bundle; this module is imported eagerly by the chat tree.
+import {
+  RenderMapInlineDeferred,
+  RouteMapInlineDeferred,
+} from '../views/areas/map-deferred';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyComponent = ComponentType<any>;
@@ -27,7 +31,7 @@ export function registerInlineComponents() {
   // GeoJSON-scavenging RouteMapInline, whereas this one runs the spec's own
   // queries through the owner's-rights dynamic boundary and compiles them with
   // the shared layer compiler the dashboard maps use.
-  inlineRegistry.register({ toolName: 'render_map', component: RenderMapInline as AnyComponent });
+  inlineRegistry.register({ toolName: 'render_map', component: RenderMapInlineDeferred as AnyComponent });
   // render_chart: emitted by cortex-stream for the `response.chart` event
   // (Cortex data_to_chart). Unregistered until now, so a chart rendered as a
   // collapsed JSON blob.
@@ -39,7 +43,7 @@ export function registerInlineComponents() {
 // domain declares its own map-producing tools without editing this file.
 // Re-registration is overwrite-safe; safe to call again when config reloads.
 export function registerToolMaps(mapTools: string[]): void {
-  const routeMap = RouteMapInline as AnyComponent;
+  const routeMap = RouteMapInlineDeferred as AnyComponent;
   for (const toolName of mapTools) {
     inlineRegistry.register({ toolName, component: routeMap });
   }

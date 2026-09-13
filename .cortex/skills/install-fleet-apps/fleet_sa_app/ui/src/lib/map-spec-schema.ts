@@ -23,6 +23,20 @@ export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] a
  *  this is a cost bound as much as a legibility one. */
 export const MAX_MAP_LAYERS = 4;
 
+/** Current map spec version.
+ *
+ *  Unversioned until now, which is only survivable while there is exactly one
+ *  producer and one consumer in the same deployment. There are already two
+ *  producers (an authored Map area in app-views.json and the `render_map` verb),
+ *  and app-views.json is stage-mounted while the validator is compiled into the
+ *  image, so the two can be at different revisions on a live app - that is a
+ *  diagnosed defect in this repo, not a hypothetical.
+ *
+ *  Absent is treated as 1, so every existing spec stays valid: the field earns
+ *  its keep the first time the shape changes incompatibly, and only if it is
+ *  present from before that point. */
+export const MAP_SPEC_VERSION = 1;
+
 /** Inline map height bounds, in px. A chat message is a fixed-height card. */
 export const MIN_MAP_HEIGHT = 200;
 export const MAX_MAP_HEIGHT = 600;
@@ -38,6 +52,7 @@ const INTERACTIVE_KEYS = ['toggles', 'clickEmits', 'focusOn'] as const;
 
 /** A validated inline map spec, as consumed by RenderMapInline. */
 export interface InlineMapSpec {
+  version: number;
   title?: string;
   height: number;
   layers: LayerSpec[];
@@ -182,6 +197,20 @@ export function parseMapSpec(raw: unknown): MapParseResult {
     : obj;
 
   const errors: string[] = [];
+  // Rejected rather than ignored. A spec declaring a version this build does not
+  // implement is the one case where rendering anyway is worse than refusing: the
+  // fields it relies on would be silently dropped and the map would draw a
+  // partial picture that still looks like an answer.
+  if (body.version !== undefined) {
+    const v = Number(body.version);
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(`version must be a positive integer, got ${JSON.stringify(body.version)}`);
+    } else if (v > MAP_SPEC_VERSION) {
+      errors.push(
+        `map spec version ${v} is newer than this build supports (${MAP_SPEC_VERSION})`,
+      );
+    }
+  }
   for (const k of INTERACTIVE_KEYS) {
     if (body[k] !== undefined) {
       errors.push(`config.${k} is not supported on an inline map (a chat message has no view state)`);
@@ -204,6 +233,7 @@ export function parseMapSpec(raw: unknown): MapParseResult {
   return {
     ok: true,
     spec: {
+      version: body.version === undefined ? MAP_SPEC_VERSION : Number(body.version),
       title: clampString(body.title, MAX_TITLE_LEN),
       height,
       layers,

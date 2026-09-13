@@ -5,7 +5,9 @@
 // reusable map DSL Solution Accelerator lacked.
 import { ScatterplotLayer, PathLayer, GeoJsonLayer, ArcLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
-import { cellToBoundary } from 'h3-js';
+// Geometry reading lives in map-fit so the fit path and the compile path cannot
+// disagree about which coordinates count or which H3 cells are usable.
+import { coordsFromGeoJSON, coordsFromH3Cell, pushCoordPairs } from './geo-coords';
 import { decimateLineCoords, decimateGeometry, DEFAULT_MAX_PATH_POINTS } from './simplify';
 const num = (v) => Number(v);
 const has = (r, ...cols) => cols.every((c) => r[c] != null);
@@ -119,25 +121,18 @@ function fitFromPathData(data) {
             out.push([p[0], p[1]]);
     return out;
 }
-/** Recursively push finite [lng,lat] pairs from a nested coordinate array. */
-function pushCoords(c, out) {
-    if (!Array.isArray(c))
-        return;
-    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-        if (Number.isFinite(c[0]) && Number.isFinite(c[1]))
-            out.push([c[0], c[1]]);
-        return;
-    }
-    for (const inner of c)
-        pushCoords(inner, out);
-}
 /** Collect [lng,lat] coords from an already-parsed FeatureCollection (no re-parse). */
 function fitFromFeatures(fc) {
     const out = [];
     for (const f of fc.features) {
         const g = f?.geometry;
-        if (g?.coordinates)
-            pushCoords(g.coordinates, out);
+        if (g?.type === 'GeometryCollection') {
+            for (const inner of g.geometries ?? [])
+                pushCoordPairs(inner?.coordinates, out);
+        }
+        else if (g?.coordinates) {
+            pushCoordPairs(g.coordinates, out);
+        }
     }
     return out;
 }
@@ -309,32 +304,19 @@ export function layerFitCoords(spec, rows) {
     }
     else if (spec.type === 'geojson') {
         // Walk Polygon / MultiPolygon / Line coordinates so polygon layers (e.g. an
-        // isochrone ring) contribute their extent to the camera fit.
+        // isochrone ring) contribute their extent to the camera fit. coordsFromGeoJSON
+        // handles the string parse, Feature / FeatureCollection unwrapping and the
+        // recursive walk, so this branch no longer keeps its own copy of any of it -
+        // the previous local walker also silently dropped a FeatureCollection's
+        // GeometryCollection members by flattening features into a synthetic
+        // coordinates array.
         const s = spec;
-        const pushCoords = (c) => {
-            if (!Array.isArray(c))
-                return;
-            if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-                if (Number.isFinite(c[0]) && Number.isFinite(c[1]))
-                    out.push([c[0], c[1]]);
-                return;
-            }
-            for (const inner of c)
-                pushCoords(inner);
-        };
         for (const r of rows) {
             const raw = r[s.geojsonColumn];
             if (!raw)
                 continue;
-            try {
-                const geom = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                const g = geom?.type === 'Feature' ? geom.geometry
-                    : geom?.type === 'FeatureCollection' ? { type: 'GC', coordinates: (geom.features ?? []).map((f) => f?.geometry?.coordinates) }
-                        : geom;
-                if (g?.coordinates)
-                    pushCoords(g.coordinates);
-            }
-            catch { /* skip unparseable */ }
+            for (const c of coordsFromGeoJSON(raw))
+                out.push(c);
         }
     }
     else if (spec.type === 'h3') {
@@ -342,18 +324,8 @@ export function layerFitCoords(spec, rows) {
         const sample = 2000;
         const stride = rows.length > sample ? Math.ceil(rows.length / sample) : 1;
         for (let i = 0; i < rows.length; i += stride) {
-            const cell = rows[i]?.[s.hexColumn];
-            if (typeof cell !== 'string' || cell.length < 15)
-                continue;
-            try {
-                for (const v of cellToBoundary(cell)) {
-                    const lat = v[0];
-                    const lng = v[1];
-                    if (Number.isFinite(lat) && Number.isFinite(lng))
-                        out.push([lng, lat]);
-                }
-            }
-            catch { /* skip invalid cell */ }
+            for (const c of coordsFromH3Cell(rows[i]?.[s.hexColumn]))
+                out.push(c);
         }
     }
     return out;

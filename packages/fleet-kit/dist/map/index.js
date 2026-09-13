@@ -9,7 +9,10 @@
 // dedupes via next.config `transpilePackages: ['@fleet-kit/core']` + webpack
 // `resolve.symlinks = false`.
 export * from './layer-spec';
+// geo-coords is re-exported by map-fit; listing it here too would make every
+// shared binding an ambiguous star export.
 export * from './map-fit';
 export * from './simplify';
 export * from './layer-compiler';
+export * from './detect-geo';
 //# sourceMappingURL=index.js.map

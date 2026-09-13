@@ -7,12 +7,15 @@ import {
   ViewTableArea,
   ViewComboBoxArea,
   ViewFilterBarArea,
-  ViewMapArea,
   ViewSliderArea,
   ViewClickableTableArea,
   ViewCheckboxArea,
   MarkdownArea,
 } from './areas';
+// ViewMapArea is imported through a lazy boundary, NOT from the barrel: a static
+// barrel import would pull deck.gl + maplibre-gl back into the initial bundle
+// and undo the split (see map-deferred.tsx).
+import { ViewMapAreaDeferred } from './areas/map-deferred';
 import { EntityDetailArea } from './areas/entity-detail';
 import { DetailPanelArea } from './areas/detail-panel';
 import type { AreaComponentName } from '@/lib/area-components';
@@ -61,7 +64,7 @@ const AREA_COMPONENTS: Record<AreaComponentName, AnyAreaComponent> = {
   Table: ViewTableArea,
   ComboBox: ViewComboBoxArea,
   FilterBar: ViewFilterBarArea,
-  Map: ViewMapArea,
+  Map: ViewMapAreaDeferred,
   Slider: ViewSliderArea,
   ClickableTable: ViewClickableTableArea,
   Checkbox: ViewCheckboxArea,
