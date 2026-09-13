@@ -61,6 +61,47 @@ fi
 # The ops/admin specs MUST be in this trigger list: they are now inputs, so a
 # commit touching only ops-agent-spec.json would otherwise skip the check and
 # leave the super agent describing the old routing.
+# -- 2c. CoWork skills freshness + CoWork surface wiring -----------------------
+# The 26 SKILL.md folders and the 26-entry `skills` array in the agent spec are
+# GENERATED from the same useCase blocks as the view catalog, so a stale copy
+# means the agent advertises a workflow that no longer matches the view - or
+# points at a stage folder that no longer exists, which fails per request.
+COWORK_SKILLS_BUILD="$SKILL_DIR/scripts/build_cowork_skills.py"
+if [ -f "$COWORK_SKILLS_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/app-config.json" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/cowork_skills" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
+  "$SKILL_DIR/scripts/build_cowork_skills.py"; then
+  echo "pre-commit: CoWork skills freshness check..."
+  python3 "$COWORK_SKILLS_BUILD" --check || {
+    echo "pre-commit FAILED: CoWork skills are stale - run python3 $COWORK_SKILLS_BUILD"
+    exit 1
+  }
+fi
+
+# Every CoWork-facing failure in this class is SILENT: an agent with no sandbox
+# tool just cannot produce a file, a view with no verified query just regenerates
+# SQL, a broken vega_template is merged into every chart and reported nowhere.
+COWORK_CHECK="$SKILL_DIR/scripts/check_cowork_surfaces.py"
+if [ -f "$COWORK_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/cowork_skills" \
+  "$SKILL_DIR/scripts/verified_queries.py" \
+  "$SKILL_DIR/scripts/check_cowork_surfaces.py"; then
+  echo "pre-commit: CoWork surface wiring check..."
+  python3 "$COWORK_CHECK" || {
+    echo "pre-commit FAILED: see the rules above"
+    exit 1
+  }
+fi
+
 SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
 if [ -f "$SUPER_BUILD" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
@@ -73,6 +114,51 @@ if [ -f "$SUPER_BUILD" ] && staged_any \
     echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
     exit 1
   }
+fi
+
+# ── 1b2. data_to_chart must state what it accepts ───────────────────────────────
+# data_to_chart and data_to_map are HOST-INJECTED and accept only a SQL or Cortex
+# Analyst result as tool_result_id; an MCP verb result is rejected. The specs said
+# so for maps and nothing for charts, and the tool description ("tabular data
+# returned by the analytics tools") read as though any verb result would do.
+# Measured cost of that missing sentence: a turn that produced NO ANSWER. The agent
+# solved backload_solve, was pushed at a chart by the host's own "charts are
+# MANDATORY for 2+ numeric rows" guidance, had only an MCP tool_use_id to offer,
+# and ended the turn after 125 s and 3,979 output tokens with no prose at all.
+# Nothing catches this: the rule is prose inside a single-line JSON string that four
+# specs share, --check above proves the super spec is CURRENT and not CORRECT, and
+# deleting the sentence fails no build and raises no error. It produces silence.
+CHART_SOURCE_CHECK="$SKILL_DIR/scripts/check_chart_source_constraint.py"
+if [ -f "$CHART_SOURCE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/check_chart_source_constraint.py"; then
+  echo "pre-commit: data_to_chart source constraint check..."
+  python3 "$CHART_SOURCE_CHECK" || exit 1
+fi
+
+# ── 1b3. A forbidden map must name the tool that can draw one ───────────────────
+# render_map shipped fully working and the agent never called it: asked to show
+# dwell density it drew two facility-type bar charts and handed off to a link. Two
+# semantic views' chart_customization blocks were PROHIBITIONS WITH NO ALTERNATIVE
+# ("H3 congestion is a MAP, not a chart", "A path or a route is a MAP ... never a
+# chart") - each correctly refuses the chart and then stops. Alongside a
+# host-injected chart skill that says maps cannot be created at all, the agent's
+# most salient local instructions read "do not chart this, and maps do not work".
+# Naming the tool is what turns a dead end into a path. Same failure class as 1b2:
+# a missing sentence in prose no test reads, which produces a bar chart where a map
+# belongs. Also checks the trigger words that make the geometry get SELECTed at all
+# - "density" was absent, so the analyst never fetched h3_cell and no map was
+# possible however good the map guidance was.
+MAP_GUIDANCE_CHECK="$SKILL_DIR/scripts/check_map_guidance.py"
+if [ -f "$MAP_GUIDANCE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/scripts/check_map_guidance.py"; then
+  echo "pre-commit: map guidance check..."
+  python3 "$MAP_GUIDANCE_CHECK" || exit 1
 fi
 
 # ── 1c. Every synapse verb must be routed by the agents that can see it ────────

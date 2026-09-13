@@ -882,6 +882,21 @@ else
   step "5.6 sv-behaviour" SKIPPED
 fi
 
+# ── 5.7 CoWork agent skills ─────────────────────────
+# Upload the generated SKILL.md folders BEFORE the agents are created: an agent
+# whose spec references a skill path that does not exist fails that reference on
+# every request. Skills are read from the stage at request time, so a later
+# SKILL.md edit needs no agent redeploy - only a re-upload.
+if [ -f "$SCRIPTS/deploy_cowork_skills.sh" ]; then
+  note "[5.7/8] uploading CoWork agent skills..."
+  bash "$SCRIPTS/deploy_cowork_skills.sh" "$CONNECTION" \
+      >/tmp/ifa_cowork_skills.log 2>&1 \
+    && step "5.7 cowork-skills" OK \
+    || { note "  WARN: CoWork skill upload failed; the agents will list skills that cannot load. See /tmp/ifa_cowork_skills.log"; step "5.7 cowork-skills" FAILED; }
+else
+  step "5.7 cowork-skills" SKIPPED
+fi
+
 # ── 6. agents ───────────────────────────────────────────────────
 if [ "${SKIP_AGENTS:-0}" != "1" ]; then
   note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT + FLEET_SUPER_AGENT..."
