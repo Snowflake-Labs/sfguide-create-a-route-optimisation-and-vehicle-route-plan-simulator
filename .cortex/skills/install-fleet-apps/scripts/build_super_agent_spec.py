@@ -124,6 +124,14 @@ EXCLUDED_SECTIONS: dict[tuple[str, str], str] = {
     (ADMIN_SPEC, "SANDBOX (code_execution)"):
         "Byte-identical to the consumer copy, which the super spec inherits "
         "wholesale; inheriting both would duplicate it in the prompt.",
+    (OPS_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale. Duplicating a vega_template in one prompt would make the "
+        "merge engine apply the same block twice.",
+    (ADMIN_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale. Duplicating a vega_template in one prompt would make the "
+        "merge engine apply the same block twice.",
     (ADMIN_SPEC, "TOOL ROUTING"):
         "A bare label with no body - it only introduces the ADMIN verbs section, "
         "which is derived above under its own header.",
@@ -151,6 +159,10 @@ TWIN_OF: dict[tuple[str, str], tuple[str, str]] = {
         (CONSUMER_SPEC, "SANDBOX (code_execution)"),
     (ADMIN_SPEC, "SANDBOX (code_execution)"):
         (CONSUMER_SPEC, "SANDBOX (code_execution)"),
+    (OPS_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
+    (ADMIN_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
 }
 
 MCP_SERVERS = [

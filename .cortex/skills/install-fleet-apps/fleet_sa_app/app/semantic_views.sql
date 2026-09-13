@@ -142,7 +142,13 @@ Conventions:
 - "average speed" = trips.avg_speed_kmh (derived from distance/duration). There is no separate telemetry table here.
 - For detour rate use trips.detour_rate_pct; for raw counts use trips.detour_trip_count.
 - Group trip metrics by trips dimensions (region, vehicle_type, operator_id, status) or by the operators parent dimensions (shift_type, driver_profile).
-- origins does not join to trips/operators (origin-POI grained) - answer origin questions from the origins table alone.'
+- origins does not join to trips/operators (origin-POI grained) - answer origin questions from the origins table alone.
+<chart_customization>
+- Trips, distance or speed over time: line chart on the date dimension.
+- Operator, shift or profile comparisons: horizontal bar sorted descending, because the label is a name and reads badly rotated.
+- detour_rate_pct and any other _pct measure is ALREADY a percentage - format it with a percent suffix and do NOT multiply by 100 again.
+- Never chart a rollup that omits region: this view holds every loaded region, so an unfiltered series silently sums a European truck fleet onto San Francisco e-bikes. Filter first, or make region the colour series and say so.
+</chart_customization>'
 ;
 
 -- ============ SV_ROUTE_DEVIATION (FLEET_INTELLIGENCE.ROUTE_DEVIATION) ============
@@ -253,7 +259,13 @@ DRAWING A ROUTE (actual vs expected):
 A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
 - This view holds one row per TRIP. A vehicle that never ran a trip over the horizon is absent from it entirely - it has no actual path, no expected path, and no schedule row. That is a real operating state (the asset sat at its base all week), NOT a gap in the data.
 - So when a question arrives as "show me the path of <vehicle picked by some other metric>", check that the vehicle exists here FIRST. It very often will not, because the metric that selected it - highest dwell, most idle time - is exactly the metric a never-dispatched asset maximises. Use query_dwell''s `is_dispatched` dimension to tell the two apart.
-- If the vehicle is absent, say plainly that it made no trips over the period so there is no route to draw, and name the reason if you can (an idle-bound asset). Do NOT say its trips "were not included in the dataset", do NOT call it a coverage or dataset problem, and do NOT quietly answer about a different vehicle instead. Offer the highest-ranking DISPATCHED vehicle as the mappable alternative and let the user choose.'
+- If the vehicle is absent, say plainly that it made no trips over the period so there is no route to draw, and name the reason if you can (an idle-bound asset). Do NOT say its trips "were not included in the dataset", do NOT call it a coverage or dataset problem, and do NOT quietly answer about a different vehicle instead. Offer the highest-ranking DISPATCHED vehicle as the mappable alternative and let the user choose.
+<chart_customization>
+- Deviation distance or time across trips: histogram, not an average. A fleet-wide mean detour hides the handful of trips that actually deviated.
+- Deviation by driver or route variation: horizontal bar sorted descending.
+- A path or a route is a MAP (path_geojson), never a chart.
+- A chart comparing actual against expected must filter has_expected_path = TRUE and say so. Elsewhere the driven track reproduces the plan exactly, so the two series coincide by construction and the chart reads as perfect compliance.
+</chart_customization>'
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============
@@ -405,7 +417,13 @@ Conventions:
 DISPATCHED VS PARKED (read before ranking vehicles by dwell):
 - Some vehicles are never dispatched over the horizon. They sit at their base emitting idle pings only, so they have NO trip, NO schedule row and NO route - one unbroken idle span of days. `is_dispatched = FALSE` marks them.
 - Any "highest dwell", "worst dwell", "most idle time" style ranking must add `is_dispatched = TRUE`, otherwise a parked asset with a single ~10,000-minute span beats a busy vehicle with dozens of real stops. Measured: 5 of the top 7 Europe vehicles by total dwell were parked assets.
-- If the user then asks to see that vehicle''s route or path, the honest answer is that it never moved, so no actual or expected path exists. Do NOT report this as missing data, a dataset gap or a coverage problem, and do not silently substitute a different vehicle - say the vehicle was never dispatched, then offer the highest-dwell DISPATCHED vehicle as the mappable alternative.'
+- If the user then asks to see that vehicle''s route or path, the honest answer is that it never moved, so no actual or expected path exists. Do NOT report this as missing data, a dataset gap or a coverage problem, and do not silently substitute a different vehicle - say the vehicle was never dispatched, then offer the highest-dwell DISPATCHED vehicle as the mappable alternative.
+<chart_customization>
+- Dwell minutes across vehicles or sessions: histogram or box plot. The mean is the wrong answer here - dwell is heavily skewed and the tail IS the finding.
+- Facility and SLA comparisons: horizontal bar sorted descending.
+- Any chart ranking vehicles by dwell must filter is_dispatched = TRUE first, or a parked asset with one unbroken 10,000-minute span tops the chart and the visual is nonsense.
+- H3 congestion is a MAP, not a chart. Do not plot cell ids on an axis.
+</chart_customization>'
 ;
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============
@@ -1088,4 +1106,21 @@ CONVENTIONS
 
 WHAT IS SYNTHESIZED
 Hours, days worked, trips and distance are derived from real recorded trips. Contracted hours, hourly rate, team and supervisor do NOT exist in the source data and are generated deterministically from the operator id, so overtime COST is indicative and team structure is illustrative. Say so when quoting money. Hours themselves are not synthesized.'
+  -- SV_LABOR was the ONE fleet semantic view with no AI_* clause at all, which
+  -- is why it alone showed a blank `extension` in SHOW SEMANTIC VIEWS while the
+  -- other twelve showed ["AI"]. Cortex Analyst answered questions against it
+  -- regardless (measured), so this was never a broken tool - but it meant the
+  -- most numerically dangerous view in the deployment shipped with no custom
+  -- SQL-generation guidance and no charting guidance.
+  AI_SQL_GENERATION 'Labour and overtime. Read the view comment first - it carries the two-regime weight rule, the premium-vs-loaded cost distinction and the projection semantics, and every one of those changes the answer.
+- Always filter is_current_week = TRUE for "this week" questions and use projected_week_hours, not hours_to_date, for anything phrased as "will exceed".
+- Exclude is_partial_start and is_partial_end weeks from any week-over-week series: they are truncated by the dataset boundary, not by a real drop in work.
+- Group by (operator_id, region) rather than operator_id alone. Operator ids are reused across regions, so grouping on the bare id fuses two different people into one and both their hours land on one row.
+<chart_customization>
+- Paid hours or overtime hours across operators: histogram or box plot. An average is actively misleading here - a fleet averaging 24 hours can hold one operator at 85, and that person is the entire point of the question.
+- Team, depot or supervisor comparisons: horizontal bar sorted descending.
+- Hours over weeks: line chart, and stop the line at the last non-partial week.
+- Money axes: format with the currency and 0 decimals. NEVER plot est_ot_premium and est_ot_cost on one unlabelled axis - the loaded cost is roughly three times the premium at a 1.5x multiplier, so the pair reads as a trend when it is two different measures.
+- ot_pct_of_paid and ot_pct_of_straight are already percentages. Label which denominator the chart used in the title.
+</chart_customization>'
 ;
