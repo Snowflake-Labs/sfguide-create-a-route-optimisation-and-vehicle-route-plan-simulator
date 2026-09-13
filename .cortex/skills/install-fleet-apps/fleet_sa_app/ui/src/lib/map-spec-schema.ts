@@ -14,7 +14,7 @@
 // boundary is NOT here: it is /api/query with dynamic:true, which runs the query
 // as owner's-rights FLEET_APP_DYNAMIC_READER behind ALLOWED_DYNAMIC_DBS. This
 // file validates SHAPE and the param-binding contract.
-import type { LayerSpec, LegendItem, MapViewStateSpec } from '@/lib/map/layer-spec';
+import type { LayerSpec, LegendItem, MapViewStateSpec, ColorRGBA } from '@/lib/map/layer-spec';
 
 /** Layer types the deck.gl compiler implements. Anything else compiles to null. */
 export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] as const;
@@ -22,6 +22,9 @@ export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] a
 /** Layers per map. Each layer is one independent query against the warehouse, so
  *  this is a cost bound as much as a legibility one. */
 export const MAX_MAP_LAYERS = 4;
+
+/** Legend rows per card. A chat message has no room for a scrolling key. */
+export const MAX_LEGEND_ITEMS = 12;
 
 /** Current map spec version.
  *
@@ -78,6 +81,107 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 function clampString(v: unknown, max: number): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v.slice(0, max) : undefined;
+}
+
+/** Parse one legend swatch colour into the compiler's ColorRGBA 4-tuple.
+ *
+ *  Accepts what the DSL declares (`[r,g,b]` / `[r,g,b,a]`) AND a CSS hex string,
+ *  because an LLM writing a legend reaches for `#ffffcc` every time - and the
+ *  previous bare `as LegendItem[]` cast let that through to InlineLegend, which
+ *  indexes `c[0]` and so built `rgba(#, f, f, ...)`: invalid CSS, transparent
+ *  swatch, no error anywhere. Returns null when it is neither. */
+export function parseLegendColor(v: unknown): ColorRGBA | null {
+  if (typeof v === 'string') {
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v.trim());
+    if (!m) return null;
+    const hex = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
+    return [
+      parseInt(hex.slice(0, 2), 16),
+      parseInt(hex.slice(2, 4), 16),
+      parseInt(hex.slice(4, 6), 16),
+      255,
+    ];
+  }
+  if (Array.isArray(v) && (v.length === 3 || v.length === 4)) {
+    const nums = v.map((n) => Number(n));
+    if (nums.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return null;
+    return [nums[0], nums[1], nums[2], nums.length === 4 ? nums[3] : 255];
+  }
+  return null;
+}
+
+/** Validate one legend array, normalizing every colour to ColorRGBA.
+ *
+ *  An item with neither `color` nor `gradient` is REJECTED rather than dropped:
+ *  it renders as a labelled but invisible swatch, which reads as a rendering bug
+ *  in the map itself. */
+function validateLegend(raw: unknown, where: string, errors: string[]): LegendItem[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    errors.push(`${where} must be an array`);
+    return undefined;
+  }
+  if (raw.length > MAX_LEGEND_ITEMS) {
+    errors.push(`${where} has ${raw.length} items, max ${MAX_LEGEND_ITEMS}`);
+    return undefined;
+  }
+  const out: LegendItem[] = [];
+  raw.forEach((entry, i) => {
+    const at = `${where}[${i}]`;
+    if (!isObject(entry)) {
+      errors.push(`${at} must be an object`);
+      return;
+    }
+    const label = clampString(entry.label, MAX_TITLE_LEN);
+    if (!label) {
+      errors.push(`${at}.label is required`);
+      return;
+    }
+    const item: LegendItem = { label };
+    if (entry.color !== undefined) {
+      const c = parseLegendColor(entry.color);
+      if (!c) {
+        errors.push(
+          `${at}.color must be [r,g,b] / [r,g,b,a] with 0-255 values or a hex string like '#ffffcc', got ${JSON.stringify(entry.color)}`,
+        );
+        return;
+      }
+      item.color = c;
+    }
+    if (entry.gradient !== undefined) {
+      if (!Array.isArray(entry.gradient) || entry.gradient.length < 2) {
+        errors.push(`${at}.gradient must be an array of at least 2 colours`);
+        return;
+      }
+      const stops: ColorRGBA[] = [];
+      for (const g of entry.gradient) {
+        const c = parseLegendColor(g);
+        if (!c) {
+          errors.push(`${at}.gradient contains an unparseable colour ${JSON.stringify(g)}`);
+          return;
+        }
+        stops.push(c);
+      }
+      item.gradient = stops;
+      const min = clampString(entry.minLabel, MAX_TITLE_LEN);
+      const max = clampString(entry.maxLabel, MAX_TITLE_LEN);
+      if (min) item.minLabel = min;
+      if (max) item.maxLabel = max;
+    }
+    if (item.color === undefined && item.gradient === undefined) {
+      errors.push(`${at} needs a color or a gradient (an item with neither draws an invisible swatch)`);
+      return;
+    }
+    if (entry.shape !== undefined) {
+      if (entry.shape !== 'dot' && entry.shape !== 'line') {
+        errors.push(`${at}.shape must be 'dot' or 'line', got ${JSON.stringify(entry.shape)}`);
+        return;
+      }
+      item.shape = entry.shape;
+    }
+    out.push(item);
+  });
+  return out.length ? out : undefined;
 }
 
 function queryLooksReadOnly(q: string): boolean {
@@ -217,6 +321,10 @@ export function parseMapSpec(raw: unknown): MapParseResult {
     }
   }
   const layers = validateMapLayers(body.layers, errors, { allowViewState: false });
+  // Validated BEFORE the early return below, so a bad legend is reported by name
+  // alongside any layer errors instead of being cast through unchecked.
+  const legend = validateLegend(body.legend, 'legend', errors);
+  const categoryLegend = validateLegend(body.categoryLegend, 'categoryLegend', errors);
   if (errors.length > 0) return { ok: false, errors };
 
   let height = DEFAULT_MAP_HEIGHT;
@@ -224,11 +332,6 @@ export function parseMapSpec(raw: unknown): MapParseResult {
     const h = Number(body.height);
     if (Number.isFinite(h)) height = Math.min(MAX_MAP_HEIGHT, Math.max(MIN_MAP_HEIGHT, Math.round(h)));
   }
-
-  const legend = Array.isArray(body.legend) ? (body.legend as LegendItem[]) : undefined;
-  const categoryLegend = Array.isArray(body.categoryLegend)
-    ? (body.categoryLegend as LegendItem[])
-    : undefined;
 
   return {
     ok: true,

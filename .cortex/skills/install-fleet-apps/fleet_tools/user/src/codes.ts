@@ -111,6 +111,10 @@ export const MapRenderCodes = {
   INVALID_MAP_SPEC_SHAPE: 'INVALID_MAP_SPEC_SHAPE',
   /** a layer declares a `type` the deck.gl compiler does not implement. */
   UNKNOWN_LAYER_TYPE: 'UNKNOWN_LAYER_TYPE',
+  /** a layer's data.query does not compile: an unknown column or a syntax error.
+   *  Raised so a hallucinated column name fails IN-TURN, where the agent can fix
+   *  it, instead of surfacing later as "Some layers could not be drawn". */
+  INVALID_MAP_SPEC_SQL: 'INVALID_MAP_SPEC_SQL',
 } as const;
 
 // Layer types the SA app's deck.gl compiler implements. MUST stay in sync with

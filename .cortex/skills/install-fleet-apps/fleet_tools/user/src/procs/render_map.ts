@@ -29,9 +29,13 @@ export const render_map = defineProc({
     'TABLE(FLEET_APP.CORE.F_FACT_*_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ' +
     'or FLEET_APP.<DWELL|CATCHMENT|ROUTE_OPTIMIZATION|ROUTE_DEVIATION>.VW_*, and may bind only ' +
     'context.* params (region, vehicle_type, dataset_id, date_range_start, date_range_end) or literals. ' +
+    'Use the REAL column names - for an H3 dwell/congestion density map that is ' +
+    'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (the hex), DWELL_MINUTES (the measure) ' +
+    'and REGION (the filter); there is no h3_cell, dwell_duration_minutes or region_key column. ' +
     'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING and filter to a region or band first: ' +
     'an oversized payload renders a BLANK map with no error. ' +
-    'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, or UNKNOWN_LAYER_TYPE. ' +
+    'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, or ' +
+    'INVALID_MAP_SPEC_SQL (a layer query that does not compile - fix the column names and retry). ' +
     'Prefer an existing saved view (a view: link) when one matches, render_view when the map needs ' +
     'surrounding KPIs and tables on a page, and deep_link when the user needs toggles or click-through.',
   roles: ['user'],
@@ -131,6 +135,61 @@ export const render_map = defineProc({
             return;
           }
         }
+      }
+    }
+
+    // ---- compile each layer query -------------------------------------------
+    // The checks above validate SHAPE only, which is how a spec naming
+    // `h3_cell` / `dwell_duration_minutes` / `region_key` on
+    // FLEET_APP.DWELL.VW_DWELL_SESSIONS (really H3_CELL_R7 / DWELL_MINUTES /
+    // REGION) passed validation, echoed cleanly, and then died in the browser as
+    // "Some layers could not be drawn". EXPLAIN compiles the statement without
+    // reading a row, so the verb keeps its no-data property and the agent gets a
+    // typed failure it can correct in the same turn.
+    //
+    // DELIBERATELY NARROW: only an unknown column or a syntax error convicts.
+    // This proc runs EXECUTE AS OWNER, so an object the owner cannot see raises
+    // "does not exist or not authorized" - a message that cannot distinguish a
+    // wrong view name from a missing grant. Failing on it would reject VALID
+    // specs whenever grants drift, which is worse than the gap it closes. Object
+    // resolution stays with the runtime path, which runs as the reader role that
+    // actually matters (FLEET_APP_DYNAMIC_READER).
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i] as Record<string, unknown>;
+      const data = layer.data as Record<string, unknown>;
+      const query = data.query as string;
+      // Params are bound by the client at render time; here they only need to
+      // TYPE-CHECK, so each :name becomes an untyped NULL. Longest name first so
+      // `:region` cannot partially consume `:region_key`.
+      const names = Object.keys(
+        (typeof data.params === 'object' && data.params !== null && !Array.isArray(data.params)
+          ? data.params
+          : {}) as Record<string, unknown>,
+      ).sort((a, b) => b.length - a.length);
+      let probe = query;
+      for (const n of names) probe = probe.split(':' + n).join('NULL');
+      // Any remaining :name (a param the spec forgot to declare) would be an
+      // unbound bind at runtime; neutralize it so the compile error we report is
+      // about the agent's columns, not about our own probe.
+      probe = probe.replace(/:[A-Za-z_][A-Za-z0-9_]*/g, 'NULL');
+      try {
+        await ctx.conn.exec('EXPLAIN USING TEXT ' + probe);
+      } catch (e) {
+        const msg = (e as Error).message || String(e);
+        if (/invalid identifier|syntax error|unexpected/i.test(msg)) {
+          ctx.fail(
+            MapRenderCodes.INVALID_MAP_SPEC_SQL,
+            `layer ${i} data.query does not compile: ${msg} ` +
+              'Check the column names against the view you are querying - ' +
+              'FLEET_APP.DWELL.VW_DWELL_SESSIONS exposes H3_CELL_R7, DWELL_MINUTES, ' +
+              'DWELL_SECONDS, REGION, VEHICLE_TYPE, CITY, FACILITY_TYPE, LOCATION_NAME, ' +
+              'AVG_POINT (not h3_cell, dwell_duration_minutes or region_key). ' +
+              'Describe the view first if you are unsure.',
+          );
+          return;
+        }
+        // Anything else (privileges, warehouse, transient) is not the agent's
+        // error to fix: let the render path surface it in context.
       }
     }
   },

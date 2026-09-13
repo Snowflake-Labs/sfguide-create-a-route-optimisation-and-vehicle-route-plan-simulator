@@ -26,6 +26,7 @@ import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, LegendItem } from '@/lib/map/layer-spec';
 import { compileLayerWithFit } from '@/lib/map/layer-compiler';
 import { parseMapSpec, type InlineMapSpec } from '@/lib/map-spec-schema';
+import { unwrapVerbResult } from '@/lib/tool-names';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
@@ -283,9 +284,11 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
 }
 
 export function RenderMapInline(props: Record<string, unknown>) {
-  // The verb returns { result: <spec> }; tolerate a bare spec too.
-  const raw = props.result ?? props;
-  const parsed = useMemo(() => parseMapSpec(raw), [raw]);
+  // The verb returns { result: <spec> }, but it reaches the client DOUBLE-wrapped
+  // (the inner envelope arrives as a pretty-printed JSON string), so peel rather
+  // than reading `.result` once. A bare spec still works - unwrapVerbResult stops
+  // as soon as it sees `layers`.
+  const parsed = useMemo(() => parseMapSpec(unwrapVerbResult(props)), [props]);
 
   if (!parsed.ok) {
     // Named reasons, never a blank card: every other failure mode of a map is

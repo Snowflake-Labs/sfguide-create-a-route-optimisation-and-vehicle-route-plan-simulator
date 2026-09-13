@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { MessagePart } from '@/lib/types';
 import { inlineRegistry } from '@/lib/inline-registry';
+import { matchesTool } from '@/lib/tool-names';
 import { useAppStore } from '@/lib/store';
 import { ApprovalAction } from '@/components/inline/approval-action';
 import { ConfirmAction } from '@/components/inline/confirm-action';
@@ -12,14 +13,16 @@ import remarkGfm from 'remark-gfm';
 
 // Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
+// Matched with matchesTool so the MCP server prefix is tolerated (see
+// lib/tool-names.ts: the separator is one underscore, which this file had wrong).
 const SUPPRESS_RESULT_SUFFIXES = ['execute_workflow', 'resume_workflow', 'cortex_analyst_text_to_sql'];
 function isSuppressedTool(toolName: string): boolean {
-  return SUPPRESS_RESULT_SUFFIXES.some((s) => toolName === s || toolName.endsWith('__' + s));
+  return SUPPRESS_RESULT_SUFFIXES.some((s) => matchesTool(toolName, s));
 }
 
-// Matches propose_write from MCP (cdp_workflow_mcp__propose_write) or bare name.
+// Matches propose_write from MCP (cdp_workflow_mcp_propose_write) or bare name.
 function isMcpProposeWrite(toolName: string | undefined): boolean {
-  return !!toolName && (toolName === 'propose_write' || toolName.endsWith('__propose_write'));
+  return matchesTool(toolName, 'propose_write');
 }
 
 function useDebugMode(): boolean {
@@ -61,7 +64,7 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
   if ((part.type === 'tool_result') &&
       isSuppressedTool(part.toolName) &&
       part.toolName !== undefined &&
-      (part.toolName === 'execute_workflow' || part.toolName.endsWith('__execute_workflow'))) {
+      matchesTool(part.toolName, 'execute_workflow')) {
     const pa = (part.output as Record<string, unknown>)?.pending_approval as Record<string, unknown> | undefined;
     if (pa?.instance_id) {
       return (
