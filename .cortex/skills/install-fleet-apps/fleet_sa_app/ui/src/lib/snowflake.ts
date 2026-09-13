@@ -21,7 +21,61 @@ interface SnowflakeResponse {
   numRowsInserted?: number;
 }
 
-async function callSnowflake(sql: string, bindings?: Record<string, { type: string; value: string }>, wh: string = warehouse): Promise<SnowflakeResponse> {
+/**
+ * Positional bindings for the SQL REST API.
+ *
+ * A null argument MUST be sent as JSON `null`. The empty string is NOT SQL NULL:
+ * bound into a NUMBER parameter, Snowflake coerces it and fails with
+ * `Numeric value '' is not recognized` before the statement runs. That is what
+ * killed every Triangle Proposals load - it is the only caller that passes null
+ * into numeric verb args (`acceptance_score`, `max_per_vehicle` on
+ * backload_chain_solve), so the page could never render a chain on any region
+ * while backload_solve, which passes no nulls, looked healthy.
+ *
+ * One helper rather than a block per call site: this bug existed in four
+ * identical copies, and fixing three of them would have left the fourth to
+ * resurface the same error somewhere less obvious.
+ */
+type Binding = { type: string; value: string | null };
+
+function toBindings(binds: (string | number | null)[]): Record<string, Binding> {
+  const out: Record<string, Binding> = {};
+  binds.forEach((v, i) => {
+    out[String(i + 1)] = {
+      type: typeof v === 'number' ? 'FIXED' : 'TEXT',
+      value: v === null ? null : String(v),
+    };
+  });
+  return out;
+}
+
+/**
+ * Argument list for a `CALL proc(...)` plus its positional binds, emitting a
+ * LITERAL `NULL` for a null argument rather than binding one.
+ *
+ * A null is the ABSENCE of a value, so there is nothing for the caller to
+ * inject: `NULL` here is a keyword this function writes, never client data.
+ * Every real value still goes through a bind.
+ *
+ * Belt and braces with `toBindings` above. A bound JSON null is the documented
+ * shape, but the SQL REST API specifies bind values as strings and its handling
+ * of null is not stated, so the path that actually broke does not depend on it:
+ * an argument the caller omitted is simply not bound at all.
+ */
+export function buildCallArgs(
+  args: (string | number | null)[],
+): { placeholders: string; binds: (string | number)[] } {
+  const slots: string[] = [];
+  const binds: (string | number)[] = [];
+  for (const a of args) {
+    if (a === null) { slots.push('NULL'); continue; }
+    slots.push('?');
+    binds.push(a);
+  }
+  return { placeholders: slots.join(', '), binds };
+}
+
+async function callSnowflake(sql: string, bindings?: Record<string, Binding>, wh: string = warehouse): Promise<SnowflakeResponse> {
   const auth = getSnowflakeAuth();
   // 80s statement timeout: must stay under the 90s SPCS ingress connection
   // timeout so a slow-but-valid call (e.g. routing/isochrone ops while ORS is
@@ -106,21 +160,21 @@ export type QueryRow = Record<string, unknown>;
 //   100 / 500 ...............................  168.6s   <- 2.8x the budget
 //
 // Raising the bound cannot fix this: ingress caps the request at ~90s, below the
-// measured 168.6s. `async: true` moves the wait OFF the request - Snowflake runs
-// the statement to completion server-side and we collect it by handle later, so
-// no single HTTP request has to outlive ingress.
+// measured 168.6s. The `async=true` QUERY PARAMETER moves the wait OFF the
+// request - Snowflake runs the statement to completion server-side and we collect
+// it by handle later, so no single HTTP request has to outlive ingress.
+//
+// It is a URL query parameter, NOT a request-body field. The body accepts only
+// statement/timeout/database/schema/warehouse/role/bindings/parameters, and an
+// unknown key fails payload validation with `400 391917 Invalid parameter. async`
+// before the statement ever runs - which surfaces in the UI as a solve that
+// returned no assignments.
 // ---------------------------------------------------------------------------
 
 /** Submit a statement without waiting. Returns the statement handle. */
 export async function submitAsync(sql: string, binds: (string | number | null)[] = [], wh: string = BATCH_WAREHOUSE): Promise<string> {
   const auth = getSnowflakeAuth();
-  const bindings: Record<string, { type: string; value: string }> = {};
-  binds.forEach((v, i) => {
-    bindings[String(i + 1)] = {
-      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
-      value: v === null ? '' : String(v),
-    };
-  });
+  const bindings = toBindings(binds);
   // NO `timeout` here. The 80s cap on the sync path is a deliberate ingress
   // guard; applying it to an async submission would reintroduce the very ceiling
   // this function exists to escape, and would kill a 168s solve server-side.
@@ -129,11 +183,10 @@ export async function submitAsync(sql: string, binds: (string | number | null)[]
     warehouse: wh,
     role,
     parameters: { QUERY_TAG },
-    async: true,
   };
   if (binds.length > 0) body.bindings = bindings;
 
-  const response = await fetch(`${auth.baseUrl}/api/v2/statements`, {
+  const response = await fetch(`${auth.baseUrl}/api/v2/statements?async=true`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -144,7 +197,8 @@ export async function submitAsync(sql: string, binds: (string | number | null)[]
     body: JSON.stringify(body),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Snowflake API ${response.status}: ${text}`);
+  // Attribute a rejected submission to the SUBMISSION, not to an empty plan.
+  if (!response.ok) throw new Error(`async submit rejected - Snowflake API ${response.status}: ${text}`);
   const result: SnowflakeResponse = JSON.parse(text);
   if (!result.statementHandle) {
     throw new Error('async submit returned no statementHandle');
@@ -196,13 +250,7 @@ export async function cancelHandle(handle: string): Promise<void> {
 }
 
 export async function query<T = QueryRow>(sql: string, binds: (string | number | null)[] = []): Promise<T[]> {
-  const bindings: Record<string, { type: string; value: string }> = {};
-  binds.forEach((v, i) => {
-    bindings[String(i + 1)] = {
-      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
-      value: v === null ? '' : String(v),
-    };
-  });
+  const bindings = toBindings(binds);
   const result = await callSnowflake(sql, binds.length > 0 ? bindings : undefined);
   const cols = result.resultSetMetaData?.rowType ?? [];
   return (result.data ?? []).map((row) => rowToObject(row, cols) as T);
@@ -214,26 +262,14 @@ export async function query<T = QueryRow>(sql: string, binds: (string | number |
 // and the statement is capped at 80s to stay under the ~90s SPCS ingress limit,
 // so a solve needing longer cannot complete synchronously on either warehouse.
 export async function queryBatch<T = QueryRow>(sql: string, binds: (string | number | null)[] = []): Promise<T[]> {
-  const bindings: Record<string, { type: string; value: string }> = {};
-  binds.forEach((v, i) => {
-    bindings[String(i + 1)] = {
-      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
-      value: v === null ? '' : String(v),
-    };
-  });
+  const bindings = toBindings(binds);
   const result = await callSnowflake(sql, binds.length > 0 ? bindings : undefined, BATCH_WAREHOUSE);
   const cols = result.resultSetMetaData?.rowType ?? [];
   return (result.data ?? []).map((row) => rowToObject(row, cols) as T);
 }
 
 export async function run(sql: string, binds: (string | number | null)[] = []): Promise<number> {
-  const bindings: Record<string, { type: string; value: string }> = {};
-  binds.forEach((v, i) => {
-    bindings[String(i + 1)] = {
-      type: v === null ? 'TEXT' : typeof v === 'number' ? 'FIXED' : 'TEXT',
-      value: v === null ? '' : String(v),
-    };
-  });
+  const bindings = toBindings(binds);
   const result = await callSnowflake(sql, binds.length > 0 ? bindings : undefined);
   return result.numUpdatedRows ?? result.numRowsInserted ?? 0;
 }

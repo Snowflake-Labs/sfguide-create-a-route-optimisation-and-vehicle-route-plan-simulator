@@ -33,10 +33,20 @@ WHAT IT CHECKS
 1. Every verb in SOLVER_VERBS (app/api/tool/route.ts) is dispatched through
    `runSolve`, not `query`/`queryBatch`.
 2. The solver routes still import `runSolve`.
-3. `runSolve` / `collectSolve` remain exported, and `submitAsync` does NOT set a
-   `timeout` field - adding one reinstates the ceiling the async path exists to
-   escape.
+3. `runSolve` / `collectSolve` remain exported, and `submitAsync` POSTs to
+   `/api/v2/statements?async=true`, carries no `timeout` field, and does NOT put
+   `async` in the request BODY - a timeout reinstates the ceiling the async path
+   exists to escape, a body-level `async` is rejected outright with
+   `400 391917 Invalid parameter. async`, and omitting the query parameter
+   silently submits synchronously.
 4. /api/solve-status still exists, since every 202 the routes emit points at it.
+5. NULL arguments are never sent as the empty string. `''` is not SQL NULL: bound
+   into a numeric procedure parameter it fails with
+   `Numeric value '' is not recognized` before the statement runs, so a verb with
+   a nullable numeric arg (backload_chain_solve's acceptance_score /
+   max_per_vehicle) can NEVER be called. The verb dispatchers must also build
+   their CALL argument list with `buildCallArgs`, which emits a literal NULL
+   instead of binding one at all.
 
 Exit 0 clean, 1 on any finding. Read-only.
 """
@@ -93,13 +103,39 @@ def main() -> int:
         if not m:
             findings.append("lib/snowflake.ts: `submitAsync` not found - the async "
                             "submission path is gone.")
-        elif re.search(r"\btimeout\s*:", m.group(1)):
-            findings.append(
-                "lib/snowflake.ts: `submitAsync` sets a `timeout` field. That 80s cap "
-                "is an INGRESS guard for the synchronous path; applying it to an async "
-                "submission reinstates the ~60-80s ceiling and kills any solve past "
-                "~40 vehicles (measured: 100/500 needs 168.6s)."
-            )
+        else:
+            fnbody = m.group(1)
+            if re.search(r"\btimeout\s*:", fnbody):
+                findings.append(
+                    "lib/snowflake.ts: `submitAsync` sets a `timeout` field. That 80s cap "
+                    "is an INGRESS guard for the synchronous path; applying it to an async "
+                    "submission reinstates the ~60-80s ceiling and kills any solve past "
+                    "~40 vehicles (measured: 100/500 needs 168.6s)."
+                )
+            # `async` is a URL QUERY PARAMETER, not a body field. Putting it in the
+            # body fails payload validation with `400 391917 Invalid parameter.
+            # async` before the statement runs, so EVERY solve dies - including the
+            # small ones - and the page reports it as "returned no assignments".
+            if re.search(r"\basync\s*:", fnbody):
+                findings.append(
+                    "lib/snowflake.ts: `submitAsync` sets an `async` field in the request "
+                    "BODY. The SQL API body accepts only statement/timeout/database/schema/"
+                    "warehouse/role/bindings/parameters; an unknown key is rejected with "
+                    "`400 391917 Invalid parameter. async` and no statement ever runs. "
+                    "Pass it on the URL: POST /api/v2/statements?async=true"
+                )
+            # Both rules are needed. Dropping the body key WITHOUT adding the query
+            # param submits SYNCHRONOUSLY, which works for small inputs and silently
+            # restores the ceiling past ~40 vehicles - the exact class of regression
+            # this gate exists to catch.
+            if not re.search(r"/api/v2/statements\?[^`'\"]*async=true", fnbody):
+                findings.append(
+                    "lib/snowflake.ts: `submitAsync` does not POST to "
+                    "`/api/v2/statements?async=true`. Without the query parameter the "
+                    "statement is submitted SYNCHRONOUSLY, which succeeds for small "
+                    "inputs and reinstates the ~45s/ingress ceiling for real solves "
+                    "(measured: 100/500 needs 168.6s)."
+                )
 
     # --- 2. SOLVER_VERBS must be dispatched through runSolve ---
     if not TOOL_ROUTE.exists():
@@ -148,6 +184,53 @@ def main() -> int:
                 "`query`/`queryBatch` for the solve."
             )
 
+    # --- 4. a NULL argument must never be sent as the empty string ---
+    #
+    # This is not a style rule. The SQL API binds values as strings, and '' bound
+    # into a numeric parameter is COERCED, not treated as NULL: Snowflake fails
+    # the statement with `Numeric value '' is not recognized`. Measured against
+    # the live account - CALL ...BACKLOAD_CHAIN_SOLVE(region, basis, '', '', 200,
+    # 'raw', NULL) raises exactly that, while the same call with NULL literals
+    # returns SUCCESS. Triangle Proposals is the only page passing nulls into
+    # numeric verb args, so every load of it died while backload_solve, which
+    # passes none, looked healthy - i.e. this class of bug hides from the pages
+    # that do not happen to exercise it.
+    if TRANSPORT.exists():
+        tsrc = strip_comments(TRANSPORT.read_text(encoding="utf-8", errors="replace"))
+        for m in re.finditer(r"value\s*:[^\n]*null\s*\?\s*''", tsrc):
+            line = tsrc[: m.start()].count("\n") + 1
+            findings.append(
+                f"lib/snowflake.ts:{line}: a null bind is sent as the empty string "
+                f"(`{m.group(0).strip()}`). '' is not SQL NULL - bound into a numeric "
+                f"parameter it raises `Numeric value '' is not recognized` and the "
+                f"statement never runs. Emit JSON null: `value: v === null ? null : String(v)`."
+            )
+        if "function toBindings" not in tsrc:
+            findings.append(
+                "lib/snowflake.ts: the shared `toBindings` helper is gone. The bind "
+                "block existed in four identical copies and three of them were fixed "
+                "once already; keep it in one place so the next call site cannot "
+                "reintroduce the empty-string form."
+            )
+        if "export function buildCallArgs" not in tsrc:
+            findings.append(
+                "lib/snowflake.ts: `buildCallArgs` is gone. The verb dispatchers rely "
+                "on it to emit a literal NULL for an omitted argument, so the path "
+                "that broke does not depend on how the REST API handles a bound null."
+            )
+
+    for route in (TOOL_ROUTE, SA_SRC / "app" / "api" / "ops" / "route.ts"):
+        if not route.exists():
+            continue
+        rcode = strip_comments(route.read_text(encoding="utf-8", errors="replace"))
+        if "buildCallArgs" not in rcode:
+            findings.append(
+                f"app/api/{route.parent.name}/route.ts: builds its CALL placeholders "
+                f"without `buildCallArgs`, so a null argument is bound instead of "
+                f"written as a literal NULL. A verb with a nullable numeric parameter "
+                f"then fails with `Numeric value '' is not recognized`."
+            )
+
     if findings:
         print("FAIL: solver verbs are not on the async solve path\n")
         for f in findings:
@@ -157,7 +240,7 @@ def main() -> int:
         return 1
 
     print("PASS: solver verbs dispatch through runSolve; submitAsync carries no "
-          "statement timeout; /api/solve-status present")
+          "statement timeout; null args are not bound as ''; /api/solve-status present")
     return 0
 
 

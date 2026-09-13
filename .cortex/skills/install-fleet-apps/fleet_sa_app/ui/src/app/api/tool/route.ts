@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/snowflake';
+import { query, buildCallArgs } from '@/lib/snowflake';
 import { runSolve } from '@/lib/solve-runner';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
@@ -89,12 +89,14 @@ async function handlePost(req: Request) {
       ? body.idempotency_key.trim()
       : null;
 
-  // Build placeholders: business args + trailing idempotency key (bound, not literal).
-  const placeholders = [...args.map(() => '?'), '?'].join(', ');
-  const binds = [
+  // Placeholders + binds together, so a null argument becomes a literal NULL in
+  // the CALL instead of a bound empty string. Binding '' into a numeric verb
+  // parameter fails with `Numeric value '' is not recognized` before the
+  // procedure runs, which is what killed every Triangle Proposals load.
+  const { placeholders, binds } = buildCallArgs([
     ...args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a))),
     idemKey,
-  ];
+  ]);
 
   try {
     // Solver verbs run a full VRP inside the procedure. Two separate problems,
