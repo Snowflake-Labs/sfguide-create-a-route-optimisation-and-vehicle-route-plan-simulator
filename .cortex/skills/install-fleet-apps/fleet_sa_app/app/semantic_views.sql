@@ -149,6 +149,27 @@ Conventions:
 - detour_rate_pct and any other _pct measure is ALREADY a percentage - format it with a percent suffix and do NOT multiply by 100 again.
 - Never chart a rollup that omits region: this view holds every loaded region, so an unfiltered series silently sums a European truck fleet onto San Francisco e-bikes. Filter first, or make region the colour series and say so.
 </chart_customization>'
+  AI_VERIFIED_QUERIES (
+    top_origins_per_region AS (
+      QUESTION 'Which origins generate most of our work?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'WITH ranked_origins AS (
+  SELECT origin_region, origin_name, total_origin_trips,
+         RANK() OVER (PARTITION BY origin_region ORDER BY total_origin_trips DESC NULLS LAST) AS rnk
+  FROM SEMANTIC_VIEW(
+    FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
+    METRICS total_origin_trips
+    DIMENSIONS origins.origin_region, origins.origin_name
+  )
+)
+SELECT origin_region, origin_name, total_origin_trips, rnk
+FROM ranked_origins
+WHERE rnk <= 10
+ORDER BY origin_region, rnk NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_ROUTE_DEVIATION (FLEET_INTELLIGENCE.ROUTE_DEVIATION) ============
@@ -266,6 +287,22 @@ A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
 - A path or a route IS a map, not a chart - and you CAN draw it: call render_map with ONE path layer over trip_paths.path_geojson, coloured by path_type so the driven and planned lines are distinguishable, filtered has_expected_path = TRUE (a planned route is stored only for deviated trips). Pick the trip FIRST, then fetch its geometry: selecting path_geojson multiplies rows per path type and breaks any trip-level aggregate. The map query must be DIMENSIONS-ONLY - Snowflake rejects mixing trip_paths dimensions with trip_dev facts.
 - A chart comparing actual against expected must filter has_expected_path = TRUE and say so. Elsewhere the driven track reproduces the plan exactly, so the two series coincide by construction and the chart reads as perfect compliance.
 </chart_customization>'
+  AI_VERIFIED_QUERIES (
+    deviation_by_driver AS (
+      QUESTION 'How closely does execution match the plan, by driver?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+  METRICS deviation_rate_pct, avg_distance_deviation_pct
+  DIMENSIONS driver_id
+  WHERE is_route_deviation = TRUE
+)
+ORDER BY deviation_rate_pct DESC NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============
@@ -324,6 +361,22 @@ Conventions:
 - "how many coffee shops in X" -> total_pois filtered by basic_category and city.
 - "competition density" -> total_pois grouped by basic_category + city.
 - "how many addresses" / "address coverage per city" -> total_addresses grouped by addr_city.'
+  AI_VERIFIED_QUERIES (
+    poi_by_category_and_city AS (
+      QUESTION 'How many points of interest are there per category in each city?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+  METRICS total_pois
+  DIMENSIONS basic_category, city
+)
+ORDER BY total_pois DESC NULLS LAST
+LIMIT 15'
+    )
+  )
 ;
 
 -- ============ SV_DWELL_ANALYTICS (rebound onto FLEET_APP.DWELL.*) ============
@@ -424,6 +477,22 @@ DISPATCHED VS PARKED (read before ranking vehicles by dwell):
 - Any chart ranking vehicles by dwell must filter is_dispatched = TRUE first, or a parked asset with one unbroken 10,000-minute span tops the chart and the visual is nonsense.
 - H3 congestion/density IS a map, not a chart - and you CAN draw it: call render_map with ONE h3 layer whose query selects h3_cell plus a measure from FLEET_APP.DWELL.VW_DWELL_SESSIONS, filtered by region, e.g. hexColumn h3_cell + valueColumn total_dwell_minutes. Do not plot cell ids on an axis, and do NOT fall back to a facility_type or city bar chart and present it as the density answer - that answers a different question. If render_map is unavailable (you are outside the app), say so in one line and deep_link to the Space-Time Density view.
 </chart_customization>'
+  AI_VERIFIED_QUERIES (
+    worst_facilities_by_dwell AS (
+      QUESTION 'Which facilities cost us the most turnaround time?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+  METRICS total_dwell_minutes
+  DIMENSIONS sessions.location_name, sessions.facility_type, sessions.region
+)
+ORDER BY total_dwell_minutes DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============
@@ -496,6 +565,19 @@ Entities (two independent facts):
 Conventions:
 - "idle vehicles over N days" -> filter idle_days; "cost of idleness" -> total_cost_of_idleness; "savings" -> total_projected_savings.
 - "where to reposition" -> lane.total_net_outbound by terminal_name.'
+  AI_VERIFIED_QUERIES (
+    costliest_idle_vehicles AS (
+      QUESTION 'Which vehicles are sitting still, and what is that costing us?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT vehicle_id, last_location_name, idle_severity, idle_days, idle_hours,
+       cost_of_idleness_usd
+FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+ORDER BY cost_of_idleness_usd DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_LOCATION (FLEET_APP.LOCATION.*) ============
@@ -591,6 +673,18 @@ Conventions:
 IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.
 
 - MAPPING: call render_map (inline in the answer, inside the app) to draw the estate. For stores select store_lat + store_lon with a latlon (scatterplot) layer, coloring by store_status so OWNED and CANDIDATE are distinguishable. For a household-density heatmap select cell_h3 with an h3 layer plus a measure to shade by. For a ZIP choropleth select zip_geojson with a geojson layer, coloring by a ZIP measure - the boundary is already simplified to 100 m, but still filter to a region or a band first, because an oversized payload renders as a blank map rather than an error.'
+  AI_VERIFIED_QUERIES (
+    candidate_sites_by_household_base AS (
+      QUESTION 'Which candidate sites have the largest household base?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT poi_name AS store_name, store_id, reference_hh, annual_revenue
+FROM FLEET_APP.LOCATION.VW_STORE_FACTS
+WHERE store_role = ''CANDIDATE''
+ORDER BY reference_hh DESC NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_SOURCING (FLEET_APP.SOURCING.*) ============
@@ -642,6 +736,22 @@ Conventions:
 - "how many customers" -> customer_count; "total freight spend" -> total_current_annual_freight grouped by current_plant or product.
 - "which plant supplies the most customers" -> customer_count grouped by current_plant.
 IMPORTANT: the "location swap" analysis ("where would swapping the source plant reduce freight cost", "how much can we save") is computed LIVE in the Freight Sourcing Optimizer app page (ORS road distance via MATRIX_TABULAR), not in this view. Direct such questions to that page / the routing tools; this view answers current-estate composition and spend only.'
+  AI_VERIFIED_QUERIES (
+    costliest_customers_by_freight AS (
+      QUESTION 'Which customers cost us the most in annual freight, and which plant serves them?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT customer_id, customer_name, current_plant, product, region,
+       SUM(current_annual_freight) AS total_current_annual_freight,
+       SUM(annual_truckloads)      AS total_annual_truckloads,
+       AVG(current_distance_km)    AS avg_current_distance_km
+FROM FLEET_APP.SOURCING.VW_SOURCING_FACTS
+GROUP BY customer_id, customer_name, current_plant, product, region
+ORDER BY total_current_annual_freight DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_DELIVERY_SYNC (bound onto FLEET_APP.DELIVERY_SYNC.*) ============
@@ -715,6 +825,19 @@ IMPORTANT scope limits:
 - There is NO ETA, no predicted arrival and no "minutes out" column here. Forward-looking questions ("how far out is the vehicle", "which vehicles arrive in the next 15 minutes", "what is within the approach ring") are answered by LIVE routing calls on the Delivery Sync page; direct the user there instead of inventing a column.
 - Readiness (EXPECTED / IN_PROGRESS / READY) is evaluated at a chosen instant by the Delivery Sync page, not stored here. This view only holds the completed arrival/departure pair.
 - A vehicle that merely drove past a site is NOT present: a visit requires a genuine stationary period inside the geofence.'
+  AI_VERIFIED_QUERIES (
+    recent_site_visits AS (
+      QUESTION 'Has the delivery arrived and left, and how long was it on site?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT visit_id, site_name, site_id, vehicle_id, arrival_ts, departure_ts,
+       dwell_minutes, source_status_hint
+FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
+ORDER BY arrival_ts DESC NULLS LAST
+LIMIT 20'
+    )
+  )
 ;
 
 -- ============ SV_BACKLOAD_MATCHING (FLEET_APP.BACKLOAD_MATCHING.*) ============
@@ -834,6 +957,19 @@ Conventions:
 - MAPPING: call render_map (inline in the answer, inside the app) for an offer map by selecting pickup_lat + pickup_lon with a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
+  AI_VERIFIED_QUERIES (
+    richest_external_offers AS (
+      QUESTION 'Which external freight offers are worth the most, and where do they run?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT offer_id, pickup_city, dropoff_city, price_usd,
+       pickup_lat, pickup_lon, dropoff_lat, dropoff_lon
+FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+ORDER BY price_usd DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_LABOR (FLEET_APP.LABOR.*) ============
@@ -1125,4 +1261,17 @@ Hours, days worked, trips and distance are derived from real recorded trips. Con
 - Money axes: format with the currency and 0 decimals. NEVER plot est_ot_premium and est_ot_cost on one unlabelled axis - the loaded cost is roughly three times the premium at a 1.5x multiplier, so the pair reads as a trend when it is two different measures.
 - ot_pct_of_paid and ot_pct_of_straight are already percentages. Label which denominator the chart used in the title.
 </chart_customization>'
+  AI_VERIFIED_QUERIES (
+    projected_over_60_hours AS (
+      QUESTION 'Which drivers are projected to exceed 60 hours this week?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT operator_id, region, projected_week_hours, binding_constraint
+FROM FLEET_APP.LABOR.VW_LABOR_WEEK
+WHERE is_current_week = TRUE
+  AND projected_week_hours > 60
+ORDER BY projected_week_hours DESC NULLS LAST'
+    )
+  )
 ;

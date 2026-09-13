@@ -142,4 +142,18 @@ Conventions:
 - MAPPING: call render_map (inline in the answer, inside the app) to draw these. For a hazard choropleth select hazard_geojson and use a geojson layer, coloring by composite_score (sequential) or composite_rating (categorical). For participants or centres select the lat/lon pair and use a latlon layer, coloring participants by their nearest centre. Hazard cells number in the low thousands, so filter by composite_rating or region before mapping - an oversized payload renders as a blank map rather than an error.
 
 IMPORTANT scope limit: the evacuation PLAN - which vehicle collects whom, in what order, over how many trips - is solved live by the Emergency Response wizard through the routing engine and is never persisted. This view cannot answer it. Answer exposure and population questions here and direct plan questions to that page or to the evacuation tools.'
+  AI_VERIFIED_QUERIES (
+    participants_per_care_centre AS (
+      QUESTION 'How many participants are nearest to each care centre?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_EMERGENCY_RESPONSE
+  METRICS participant_count
+  DIMENSIONS participants.nearest_center_id
+)'
+    )
+  )
 ;
