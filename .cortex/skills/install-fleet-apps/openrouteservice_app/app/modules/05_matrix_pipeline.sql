@@ -1930,3 +1930,278 @@ EXCEPTION
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;
 $$;
+
+-- ============================================================================
+-- START_MATRIX_BUILD - launch a travel-matrix build ASYNCHRONOUSLY.
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- The whole matrix subsystem (16 admin-app routes) had no SQL entry point, so
+-- it was unreachable from a Cortex Agent and therefore from CoWork. Worse, no
+-- agent spec said so, which is the failure mode that matters: an agent asked to
+-- "build the travel matrix for Texas" had no verb to call and no instruction
+-- telling it to hand over, so it was free to invent an answer.
+--
+-- The launch has to live in SQL for the same reason START_REGION_PROVISION does
+-- (03_region_management.sql): a matrix build runs for minutes to hours and a
+-- stored procedure cannot fire-and-forget. The admin app gets away with an
+-- unawaited async IIFE because it is a long-lived Node process; a procedure has
+-- no equivalent, so this uses the same schedule-less TASK plus EXECUTE TASK.
+--
+-- DELIBERATE DIFFERENCES FROM THE APP'S OWN LAUNCH PATH
+-- ----------------------------------------------------
+-- 1. No bounding-box fallback. api/matrix/build/route.ts defaults bbox to San
+--    Francisco and only overwrites it if REGION_ORS_MAP has a row, inside a
+--    swallowed try/catch. For a human clicking a region in a picker that is
+--    merely untidy; for an agent it is a correctness hazard - "build the matrix
+--    for UsTexas" would silently tessellate San Francisco and report success.
+--    Here a missing REGION_ORS_MAP row is a refusal with the reason.
+-- 2. One resolution per call. The route accepts an array and launches N jobs;
+--    an agent naming several resolutions in one breath is far more likely to be
+--    guessing than choosing, and each resolution multiplies cost.
+-- 3. In-flight guard. Refuses when a job for the same region, profile and
+--    resolution is already PENDING or RUNNING, so a repeated agent call cannot
+--    stack duplicate builds over one set of target tables.
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.START_MATRIX_BUILD(
+    P_REGION      VARCHAR,
+    P_PROFILE     VARCHAR DEFAULT NULL,
+    P_RESOLUTION  INTEGER DEFAULT 7,
+    P_ROAD_FILTER BOOLEAN DEFAULT FALSE,
+    P_FORCE       BOOLEAN DEFAULT FALSE
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","action":"start-async"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    region_clean  VARCHAR;
+    profile_clean VARCHAR;
+    profile_upper VARCHAR;
+    res_int       INTEGER;
+    res_label     VARCHAR;
+    job_id        VARCHAR;
+    task_name     VARCHAR;
+    matrix_fn     VARCHAR;
+    min_lat       FLOAT DEFAULT NULL;
+    max_lat       FLOAT DEFAULT NULL;
+    min_lon       FLOAT DEFAULT NULL;
+    max_lon       FLOAT DEFAULT NULL;
+    found         INTEGER DEFAULT 0;
+    hex_count     INTEGER DEFAULT 0;
+    implied_pairs FLOAT DEFAULT 0;
+    list_table    VARCHAR;
+    est_note      VARCHAR DEFAULT 'Cell count not yet known: the hexagon list for this region, profile and resolution has not been built, so no pair estimate was possible before launch.';
+    rs            RESULTSET;
+    call_sql      VARCHAR;
+BEGIN
+    -- Region becomes part of a task identifier and of table names, so restrict
+    -- it to identifier-safe characters rather than quoting downstream.
+    region_clean := REGEXP_REPLACE(COALESCE(:P_REGION, ''), '[^A-Za-z0-9_]', '');
+    IF (region_clean = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region is required and must contain letters or digits')::STRING;
+    END IF;
+
+    profile_clean := LOWER(COALESCE(NULLIF(TRIM(:P_PROFILE), ''), 'driving-car'));
+    IF (profile_clean NOT IN ('driving-car', 'driving-hgv', 'cycling-electric',
+                              'cycling-regular', 'foot-walking')) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'profile must be one of driving-car, driving-hgv, cycling-electric, ' ||
+                     'cycling-regular, foot-walking (got "' || :profile_clean || '")')::STRING;
+    END IF;
+    profile_upper := UPPER(REPLACE(:profile_clean, '-', '_'));
+
+    res_int := COALESCE(:P_RESOLUTION, 7);
+    IF (res_int < 5 OR res_int > 10) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'resolution must be an H3 resolution between 5 and 10 (got ' ||
+                     :res_int || '). Each step finer multiplies the cell count by about 7.')::STRING;
+    END IF;
+    res_label := 'RES' || :res_int;
+
+    -- The bounding box is REQUIRED, never defaulted. See the header note.
+    rs := (
+        SELECT MIN_LAT AS A, MAX_LAT AS B, MIN_LON AS C, MAX_LON AS D
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE UPPER(REGION) = UPPER(:region_clean)
+        LIMIT 1
+    );
+    LET c1 CURSOR FOR rs;
+    FOR r IN c1 DO
+        min_lat := r.A; max_lat := r.B; min_lon := r.C; max_lon := r.D; found := 1;
+    END FOR;
+
+    IF (found = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has no bounding box in REGION_ORS_MAP, so ' ||
+                     'there is nothing to tessellate. A matrix can only be built for a region ' ||
+                     'that has been provisioned - check region_status first.')::STRING;
+    END IF;
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has an incomplete bounding box in REGION_ORS_MAP')::STRING;
+    END IF;
+
+    -- Refuse a duplicate build over the same target tables.
+    SELECT COUNT(*) INTO :found
+    FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    WHERE UPPER(REGION) = UPPER(:region_clean)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = :profile_upper
+      AND UPPER(RESOLUTION) = :res_label
+      AND STATUS IN ('PENDING', 'RUNNING');
+    IF (found > 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'a matrix build for ' || :region_clean || ' / ' || :profile_clean || ' / ' ||
+                     :res_label || ' is already PENDING or RUNNING. Poll it with MATRIX_PROGRESS() ' ||
+                     'instead of starting another.')::STRING;
+    END IF;
+
+    -- Best-effort cost preflight. The hexagon list is built BY the wrapper
+    -- (ENSURE_MATRIX_TABLES), so on a first build for this combination the
+    -- table legitimately does not exist yet and no estimate is possible. Say
+    -- that rather than implying the build is small.
+    list_table := 'OPENROUTESERVICE_APP.TRAVEL_MATRIX.' || UPPER(:region_clean) ||
+                  '_' || :profile_upper || '_LIST_' || :res_label;
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || :list_table);
+        LET c2 CURSOR FOR rs;
+        FOR r2 IN c2 DO hex_count := r2.CNT; END FOR;
+        implied_pairs := :hex_count::FLOAT * GREATEST(:hex_count - 1, 0)::FLOAT;
+        est_note := :hex_count || ' cells implies about ' ||
+                    TO_VARCHAR(ROUND(:implied_pairs / 1000000, 1)) || 'M origin-destination pairs.';
+    EXCEPTION WHEN OTHER THEN
+        hex_count := 0;
+        implied_pairs := 0;
+    END;
+
+    IF (implied_pairs > 10000000000 AND NOT COALESCE(:P_FORCE, FALSE)) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'refusing to launch: ' || :hex_count || ' cells at ' || :res_label ||
+                     ' implies about ' || TO_VARCHAR(ROUND(:implied_pairs / 1000000000, 1)) ||
+                     'B origin-destination pairs. Use a coarser resolution, split the region, ' ||
+                     'or pass force to override.',
+            'hexagons', :hex_count,
+            'implied_pairs', :implied_pairs,
+            'requires_force', TRUE)::STRING;
+    END IF;
+
+    -- MATRIX_TABULAR is the San Francisco / default-region form; every other
+    -- region routes through the region-aware _W overload. Mirrors the app.
+    matrix_fn := IFF(UPPER(:region_clean) IN ('DEFAULT', 'SANFRANCISCO'),
+                     'OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR',
+                     'OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR_W');
+
+    job_id    := UPPER(:region_clean) || '_' || :profile_upper || '_' || :res_label || '_' ||
+                 TO_VARCHAR(DATE_PART(EPOCH_MILLISECOND, SYSDATE()));
+    task_name := 'OPENROUTESERVICE_APP.CORE.MATRIX_LAUNCH_' || UPPER(:region_clean) ||
+                 '_' || :profile_upper || '_' || :res_label;
+
+    INSERT INTO OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        (JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE, ROAD_FILTER, MESSAGE)
+    VALUES
+        (:job_id, :region_clean, :profile_clean, :res_label, 'PENDING', 'NOT_STARTED',
+         COALESCE(:P_ROAD_FILTER, FALSE), 'Queued by START_MATRIX_BUILD; launching build task.');
+
+    -- Schedule-less task: never fires on its own, only via EXECUTE TASK below.
+    -- Numeric args are FLOATs read from REGION_ORS_MAP, not caller input; the
+    -- string args were regex-sanitized or clamped to a fixed allowlist above.
+    -- USER_TASK_TIMEOUT_MS defaults to ONE HOUR, which silently caps a long
+    -- build; the region provisioner learned this the hard way (a continental
+    -- build was cancelled at 91% of its download with the job row left RUNNING
+    -- forever). 12h here, same as the provisioner.
+    call_sql :=
+        'CREATE OR REPLACE TASK ' || :task_name ||
+        ' USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = ''XSMALL''' ||
+        ' USER_TASK_TIMEOUT_MS = 43200000' ||
+        ' QUERY_TAG = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","action":"launch-task"}}''' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","action":"launch-task"}}''' ||
+        ' AS CALL OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_JOB_WRAPPER(' ||
+        '''' || :job_id || ''', ' ||
+        '''' || :res_label || ''', ' ||
+        :min_lat || ', ' || :max_lat || ', ' || :min_lon || ', ' || :max_lon || ', ' ||
+        '''' || :matrix_fn || ''', ' ||
+        '''' || :region_clean || ''', ' ||
+        '''' || :profile_clean || ''', ' ||
+        IFF(COALESCE(:P_ROAD_FILTER, FALSE), 'TRUE', 'FALSE') || ')';
+    EXECUTE IMMEDIATE :call_sql;
+
+    -- EXECUTE TASK submits one run and returns; it does NOT wait for the build.
+    EXECUTE IMMEDIATE 'EXECUTE TASK ' || :task_name;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'launched',
+        'job_id', :job_id,
+        'region', :region_clean,
+        'profile', :profile_clean,
+        'resolution', :res_label,
+        'road_filter', COALESCE(:P_ROAD_FILTER, FALSE),
+        'hexagons', :hex_count,
+        'estimate', :est_note,
+        'note', 'Build started asynchronously and is NOT finished. A matrix build takes minutes ' ||
+                'to hours depending on cell count, and the matrix is unusable until it ' ||
+                'completes. Poll with MATRIX_PROGRESS() or the matrix_status verb.'
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        -- Do not leave a PENDING row behind for a launch that never happened:
+        -- it would block the next attempt on the in-flight guard above.
+        BEGIN
+            UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            SET STATUS = 'ERROR', STAGE = 'ERROR', COMPLETED_AT = SYSDATE(),
+                ERROR_MSG = 'launch failed: ' || :SQLERRM
+            WHERE JOB_ID = :job_id;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', :SQLERRM)::STRING;
+END;
+$$;
+
+-- ============================================================================
+-- MATRIX_INVENTORY - what matrices exist, and how big.
+-- Read-only. One row per (region, profile, resolution) that has a COMPLETE
+-- build, with the current row count of its materialized table.
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.MATRIX_INVENTORY()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","action":"inventory"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    result VARCHAR;
+    rs RESULTSET;
+BEGIN
+    rs := (
+        SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+                   'region', REGION,
+                   'profile', PROFILE,
+                   'resolution', RESOLUTION,
+                   'road_filter', COALESCE(ROAD_FILTER, FALSE),
+                   'hexagons', HEXAGONS,
+                   'matrix_rows', MATRIX_ROWS,
+                   'completed_at', TO_VARCHAR(COMPLETED_AT),
+                   'routability_note', COALESCE(ROUTABILITY_NOTE, ''),
+                   'filter_warning', COALESCE(FILTER_WARNING, '')
+               )) WITHIN GROUP (ORDER BY REGION, PROFILE, RESOLUTION),
+               ARRAY_CONSTRUCT())::VARCHAR AS OBJ
+        FROM (
+            SELECT *
+            FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE STATUS = 'COMPLETE'
+            -- Newest COMPLETE build wins per target, so a rebuild does not
+            -- show up as a second, stale inventory entry.
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY UPPER(REGION), UPPER(REPLACE(PROFILE, '-', '_')), UPPER(RESOLUTION)
+                ORDER BY COMPLETED_AT DESC NULLS LAST
+            ) = 1
+        )
+    );
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO result := row_val.OBJ; END FOR;
+    RETURN COALESCE(result, '[]');
+END;
+$$;

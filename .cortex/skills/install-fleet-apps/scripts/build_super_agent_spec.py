@@ -96,6 +96,10 @@ DERIVED_SECTIONS: list[tuple[str, str]] = [
     (OPS_SPEC, "DATASETS"),
     (OPS_SPEC, "COST AND SCALE"),
     (OPS_SPEC, "AUDIT TRAIL"),
+    (OPS_SPEC, "TRAVEL MATRIX"),
+    # True for the superuser too: these capabilities are app-only for EVERY
+    # agent, because no verb exists at any privilege level.
+    (OPS_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"),
     (OPS_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"),
 ]
 
@@ -132,6 +136,9 @@ EXCLUDED_SECTIONS: dict[tuple[str, str], str] = {
         "Byte-identical to the consumer copy, which the super spec inherits "
         "wholesale. Duplicating a vega_template in one prompt would make the "
         "merge engine apply the same block twice.",
+    (ADMIN_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"):
+        "Byte-identical to the ops copy, which is derived above; inheriting "
+        "both would duplicate the list in the prompt.",
     (ADMIN_SPEC, "TOOL ROUTING"):
         "A bare label with no body - it only introduces the ADMIN verbs section, "
         "which is derived above under its own header.",
@@ -163,6 +170,8 @@ TWIN_OF: dict[tuple[str, str], tuple[str, str]] = {
         (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
     (ADMIN_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
         (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
+    (ADMIN_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"):
+        (OPS_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"),
 }
 
 MCP_SERVERS = [
