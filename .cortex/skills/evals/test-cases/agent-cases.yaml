@@ -168,6 +168,37 @@ cases:
           SYNTHETIC_DATASETS, FLEET_INTELLIGENCE or OPENROUTESERVICE_APP in a
           layer query.
 
+  # --- render_map, UN-HINTED phrasing (the prompt that actually failed) -------
+  # The case above says "Draw it in your answer as a map", which pre-empts the
+  # decision the agent got wrong - it would have PASSED against the broken build.
+  # This is the user's literal wording, with no mention of a map, which is the only
+  # form that tests whether the agent recognises a spatial question by itself.
+  #
+  # What it failed on: three instructions stacked against the map. A host-injected
+  # chart skill said maps cannot be created (true of data_to_chart, false of
+  # render_map); the dwell view's chart_customization said "H3 congestion is a MAP,
+  # not a chart" and named no way to draw one; and "density" was not a trigger word,
+  # so h3_cell was never even SELECTed. The agent produced two facility-type bar
+  # charts and a deep link. Hence the assertions below check the SPATIAL grain, not
+  # just that a map appeared - a facility_type breakdown is a different question.
+  - id: render-map-density-unhinted
+    prompt: >-
+      show me dwell density in the us
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: judge
+        text: >-
+          The assistant drew a MAP of spatial density, not only a chart. Its map
+          specification must contain a layer whose data.query SELECTs an H3 cell
+          column together with a measure (dwell minutes or session count) from the
+          FLEET_APP contract, filtered to the US region. A bar chart or table
+          broken down by facility_type, city or category is NOT an acceptable
+          substitute for the spatial answer: if one is present it must be offered
+          as a supporting view alongside the map, not instead of it. The assistant
+          must NOT claim maps cannot be rendered.
+
   # --- deep_link regression -------------------------------------------------
   # deep_link failed 4 calls out of 4 on tib85385 with "URLSearchParams is not
   # defined": synapse compiles every verb into a LANGUAGE JAVASCRIPT procedure

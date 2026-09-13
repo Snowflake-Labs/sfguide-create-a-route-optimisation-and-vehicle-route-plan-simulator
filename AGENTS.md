@@ -202,6 +202,35 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_
 # its trip limit and produce absurd duty spans with no error.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_shift_overrun.mts
 
+# Validate that guidance which forbids a map also names the tool that can draw one.
+#
+# render_map shipped fully working - the verb validated specs, rejected bad ones with
+# typed codes, the client drew them - and the agent never called it. Asked "show me
+# dwell density in the us" it ran two aggregates grouped by city and facility_type,
+# drew two bar charts, and handed off to a deep link.
+#
+# Two of the three causes were PROHIBITIONS WITH NO ALTERNATIVE living in semantic
+# views' chart_customization blocks: "H3 congestion is a MAP, not a chart" and "A
+# path or a route is a MAP (path_geojson), never a chart". Each correctly refuses
+# the chart and then stops. Alongside a host-injected chart skill stating maps
+# cannot be created at all (true of data_to_chart, false of render_map), the
+# agent's most salient local instructions read "do not chart this, and maps do not
+# work" - so it did the only remaining thing. Naming the tool is what converts a
+# dead end into a path.
+#
+# The third cause is why RULE C exists: "density" was not a trigger word. The dwell
+# Conventions mapped only "congestion"/"heatmap" onto h3_cell, so the word the user
+# actually typed never produced map-ready data and no map was possible however good
+# the map guidance was. A bare h3_cell list cannot be shaded either, so a measure
+# alongside the cell id is required too.
+#
+# Negative-tested: restoring either original dead end convicts on RULE A *and*
+# RULE B, stripping render_map from SV_LOCATION convicts on RULE B, and removing
+# the density trigger convicts on RULE C. RULE A is scoped to the block, not the
+# file - a mention 400 lines away does not help an agent reading one view's
+# instructions.
+python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
+
 # Regression test for the agent-emitted MAP spec validators (41 cases). Needs the
 # SA app's tsconfig for the `@/` alias, because view-spec-schema.ts imports
 # area-components at RUNTIME; map-spec-schema.ts itself is type-only imports.
