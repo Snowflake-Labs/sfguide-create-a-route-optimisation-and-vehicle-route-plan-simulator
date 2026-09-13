@@ -338,5 +338,189 @@
         "name": "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP"
       }
     }
+  ],
+  "skills": [
+    {
+      "name": "asset-velocity",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/asset_velocity"
+      }
+    },
+    {
+      "name": "backload-matching",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/backload_matching"
+      }
+    },
+    {
+      "name": "backload-proposals",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/backload_proposals"
+      }
+    },
+    {
+      "name": "catchment",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/catchment"
+      }
+    },
+    {
+      "name": "closure-impact",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/closure_impact"
+      }
+    },
+    {
+      "name": "delivery-sync",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/delivery_sync"
+      }
+    },
+    {
+      "name": "dispatch-execution-board",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/dispatch_execution_board"
+      }
+    },
+    {
+      "name": "dwell-facilities",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/dwell_facilities"
+      }
+    },
+    {
+      "name": "dwell-overview",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/dwell_overview"
+      }
+    },
+    {
+      "name": "dwell-sla",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/dwell_sla"
+      }
+    },
+    {
+      "name": "emergency-response",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/emergency_response"
+      }
+    },
+    {
+      "name": "fleetops-origins",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/fleetops_origins"
+      }
+    },
+    {
+      "name": "journey-inspector",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/journey_inspector"
+      }
+    },
+    {
+      "name": "labor-overtime",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/labor_overtime"
+      }
+    },
+    {
+      "name": "live-asset-operations",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/live_asset_operations"
+      }
+    },
+    {
+      "name": "mix-sourcing",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/mix_sourcing"
+      }
+    },
+    {
+      "name": "ops-console",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/ops_console"
+      }
+    },
+    {
+      "name": "plan-vs-actual-performance",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/plan_vs_actual_performance"
+      }
+    },
+    {
+      "name": "responsible-party-performance",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/responsible_party_performance"
+      }
+    },
+    {
+      "name": "safety-risk-scorecard",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/safety_risk_scorecard"
+      }
+    },
+    {
+      "name": "sap-binding",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/sap_binding"
+      }
+    },
+    {
+      "name": "site-impact",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/site_impact"
+      }
+    },
+    {
+      "name": "sourcing-optimizer",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/sourcing_optimizer"
+      }
+    },
+    {
+      "name": "space-time-density",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/space_time_density"
+      }
+    },
+    {
+      "name": "triangle-proposals",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/triangle_proposals"
+      }
+    },
+    {
+      "name": "vrp-simulator",
+      "source": {
+        "type": "STAGE",
+        "path": "@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/vrp_simulator"
+      }
+    }
   ]
 }

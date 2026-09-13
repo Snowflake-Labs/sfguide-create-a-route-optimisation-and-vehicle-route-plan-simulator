@@ -408,6 +408,13 @@ def build(source: pathlib.Path) -> dict:
         "tool_resources": resources,
         "mcp_servers": [{"server_spec": {"name": n}} for n in MCP_SERVERS],
     }
+    # CoWork agent skills pass through from the consumer spec, where
+    # build_cowork_skills.py generates them from the same useCase blocks as the
+    # view catalog. A superuser must be able to run the same demo workflows as an
+    # end user; omitting them here would have made the super agent quietly worse
+    # at the thing the accelerator exists to show.
+    if spec.get("skills"):
+        out["skills"] = spec["skills"]
     return out
 
 

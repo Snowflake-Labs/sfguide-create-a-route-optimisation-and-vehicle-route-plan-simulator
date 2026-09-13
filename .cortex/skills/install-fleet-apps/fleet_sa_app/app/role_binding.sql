@@ -71,6 +71,24 @@ GRANT USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_APP_USER;
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
 GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
 GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
+
+-- CoWork agent SKILLS live on a stage and are READ AT REQUEST TIME by the
+-- caller's role, so USAGE on that stage is what makes them work. Without it the
+-- agent still lists 26 skills and every one of them fails to load - a
+-- per-request failure that looks like a broken agent, not a missing grant. The
+-- The privilege is READ, not USAGE: the skills documentation says USAGE, but
+-- that is the EXTERNAL-stage form, and an internal stage rejects it outright
+-- ("Cannot grant or revoke USAGE on an internal staging location; use READ
+-- and/or WRITE instead"). The wrong verb fails LOUDLY at install, which is the
+-- good case - but it was silent here until the exception handler was checked.
+-- stage is created by scripts/deploy_cowork_skills.sh, which runs before
+-- create_agents.sh, so this resolves on a fresh install; IF EXISTS keeps a
+-- --no-skills install from aborting the file.
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT READ ON STAGE FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS TO ROLE FLEET_APP_USER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped: ' || SQLERRM;
+END;$$;
 GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.DWELL_ANALYSIS TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL VIEWS  IN SCHEMA FLEET_INTELLIGENCE.DWELL_ANALYSIS TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.ROUTE_DEVIATION TO ROLE FLEET_APP_USER;
@@ -437,6 +455,11 @@ GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT TO ROLE F
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
 GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
 GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT READ ON STAGE FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS TO ROLE FLEET_APP_ADMIN;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped: ' || SQLERRM;
+END;$$;
 -- Same reasoning for the ops-only deployment-history view the super agent also
 -- attaches (query_deployment). ADMIN inherits OPS today, so this is belt-and-braces.
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
