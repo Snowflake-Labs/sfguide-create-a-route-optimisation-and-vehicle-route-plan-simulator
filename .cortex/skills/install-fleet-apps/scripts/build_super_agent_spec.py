@@ -100,6 +100,13 @@ DERIVED_SECTIONS: list[tuple[str, str]] = [
     # True for the superuser too: these capabilities are app-only for EVERY
     # agent, because no verb exists at any privilege level.
     (OPS_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"),
+    # NOT a twin of the consumer AUTOMATIONS section, and deliberately so: the
+    # ops copy carries the rule that a MUTATING action must never be scheduled,
+    # because an automation runs unattended and there is nobody to confirm with.
+    # The superuser holds the mutating verbs, so it needs both halves - the
+    # consumer section (inherited wholesale) says what is worth scheduling, this
+    # one says what must never be.
+    (OPS_SPEC, "AUTOMATIONS (scheduled recurring reports)"),
     (OPS_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"),
 ]
 

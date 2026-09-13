@@ -455,6 +455,26 @@ GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT TO ROLE F
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
 GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
 GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+
+-- CoWork AUTOMATIONS (scheduled recurring reports) work by granting
+-- EXECUTE AGENT TASK, which Snowflake grants to PUBLIC by default - so on most
+-- accounts this is already true and these statements are a no-op. They exist for
+-- the account where an administrator has revoked it from PUBLIC to restrict the
+-- feature: without the privilege the Automations tab still appears and still
+-- lets a user create one, then explains that access is disabled, so the failure
+-- surfaces to the user rather than to whoever configured the account.
+--
+-- Granting to the three app roles rather than back to PUBLIC keeps that
+-- administrator's decision intact for every other role in the account.
+-- Exception-wrapped because the grant needs ACCOUNTADMIN and this file may be
+-- run by a role that only owns the fleet objects.
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_USER;
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_OPS;
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_ADMIN;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped (needs ACCOUNTADMIN): ' || SQLERRM;
+END;$$;
 EXECUTE IMMEDIATE $$BEGIN
   GRANT READ ON STAGE FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS TO ROLE FLEET_APP_ADMIN;
   RETURN 'ok';
