@@ -605,7 +605,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT
             COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
             COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
-            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+            -- Spread pickups over the horizon the CONSUMERS filter on. See the
+            -- long note on PICKUP_FROM_TS below.
+            GREATEST(
+              COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+              COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+            )                                                                                         AS PICKUP_SPREAD_DAYS
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         ),
         -- Fleet population per region. Same basis as the FLEET_APP copy of this
@@ -629,22 +635,37 @@ export async function ensureBackloadAndAssetVelocityObjects(
             COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
             t.DESTINATION_LON                                                           AS DROPOFF_LON,
             t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-            -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
-            -- horizon rather than the next ~10 hours. Vehicle availability is now
-            -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
-            -- today would be reachable only by the handful of vehicles free today
-            -- and would silently starve every later vehicle of candidates.
+            -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
+            -- wider of PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - rather
+            -- than the next ~10 hours. Vehicle availability is now forward-looking
+            -- too (VW_TRAILERS_GEO), so a pickup pool bunched into today would be
+            -- reachable only by the handful of vehicles free today and would
+            -- silently starve every later vehicle of candidates.
+            --
+            -- The spread must be the CONSUMER's horizon, not the lead time.
+            -- MEASURED with a 4-day spread: all 1,100 pool rows sat inside
+            -- now..now+4d, and because VW_TRIANGLES requires a hop-2 pickup at or
+            -- after the hop-1 delivery ETA - which lands at the far end of that
+            -- same window after 500-1,000 km of loaded running - VW_TRIANGLES was
+            -- empty ACCOUNT-WIDE. On UnitedStatesOfAmerica, 9 of 10,990 pairs
+            -- cleared both geometry filters and all 9 missed the sequence check by
+            -- 8 to 106 hours. MAX_PICKUP_HORIZON_DAYS (7) is what VW_CANDIDATES
+            -- and VW_TRIANGLES already permit, so generate out to it.
+            --
+            -- Kept UNIFORM rather than shifted later, so ~4/7 of pickups still
+            -- fall inside the old window and near-term single-hop candidates are
+            -- not traded away for chains.
             GREATEST(
               t.TRIP_START,
               DATEADD('minute',
-                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
             )                                                                           AS PICKUP_FROM_TS,
             DATEADD(hour, 4,
               GREATEST(
                 t.TRIP_START,
                 DATEADD('minute',
-                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                   CURRENT_TIMESTAMP())
               )
             )                                                                           AS PICKUP_TO_TS,
@@ -749,7 +770,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
             ON vcp.VEHICLE_TYPE = rv.VEHICLE_TYPE
         ),
         p AS (
-          SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          -- Same spread as the internal pool: an external offer is a legitimate
+          -- hop-2 (cascade rungs 2 and 4), so rebasing every offer into the next
+          -- few days leaves it unable to follow a hop-1 delivery.
+          SELECT GREATEST(
+                   COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+                   COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+                 ) AS PICKUP_SPREAD_DAYS
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         ),
         -- Rebase each offer's pickup window onto the live planning horizon,
@@ -764,7 +791,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
             GREATEST(
               f.PICKUP_FROM_TS,
               DATEADD('minute',
-                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
             ) AS PICKUP_FROM_TS_ADJ,
             GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN

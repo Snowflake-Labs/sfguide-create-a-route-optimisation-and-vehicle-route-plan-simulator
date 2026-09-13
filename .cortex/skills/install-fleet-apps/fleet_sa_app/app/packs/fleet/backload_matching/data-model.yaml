@@ -222,7 +222,14 @@ entities:
         SELECT
           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
           COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
-          COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
+          COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+          -- Pickups spread over the horizon the CONSUMERS filter on, not over
+          -- PLANNING_LEAD_DAYS. See the note on PICKUP_FROM_TS below: the narrower
+          -- spread starved the two-hop chain layer completely.
+          GREATEST(
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+            COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+          )                                                                                        AS PICKUP_SPREAD_DAYS
         FROM {schema}.VW_MATCH_PARAMS
       ),
       -- Fleet population per region. Counted from the shared fleet dimension
@@ -245,17 +252,34 @@ entities:
           COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
           t.DESTINATION_LON                                                           AS DROPOFF_LON,
           t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+          -- Pickup window spread over PICKUP_SPREAD_DAYS = the wider of
+          -- PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS.
+          --
+          -- MEASURED: spreading over PLANNING_LEAD_DAYS alone (4d) put all 1,100
+          -- pool rows inside now..now+4d, while VW_TRIANGLES requires a hop-2
+          -- pickup at or after the hop-1 DELIVERY ETA - and hop 1 is 500-1,000 km
+          -- of loaded running, so its ETA lands at the far end of that same 4-day
+          -- window. Result: of 10,990 candidate pairs on UnitedStatesOfAmerica, 9
+          -- passed both geometry filters and every one of those 9 failed the
+          -- sequence check, by 8 to 106 hours. VW_TRIANGLES was empty ACCOUNT-WIDE.
+          -- The generator was simply narrower than the filter consuming it:
+          -- MAX_PICKUP_HORIZON_DAYS (7) is what VW_CANDIDATES and VW_TRIANGLES
+          -- already allow, so generate out to it.
+          --
+          -- The spread stays UNIFORM rather than shifting later, so ~4/7 of pickups
+          -- still fall inside the old 4-day window and near-term single-hop
+          -- candidates are not traded away for chains.
           GREATEST(
             t.TRIP_START,
             DATEADD('minute',
-              MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+              MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
               CURRENT_TIMESTAMP())
           )                                                                           AS PICKUP_FROM_TS,
           DATEADD(hour, 4,
             GREATEST(
               t.TRIP_START,
               DATEADD('minute',
-                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
             )
           )                                                                           AS PICKUP_TO_TS,
@@ -321,7 +345,14 @@ entities:
         QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY CREATED_AT DESC) = 1
       ),
       p AS (
-        SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+        -- Same spread as the internal pool, and for the same reason: an external
+        -- offer is a legitimate hop-2 of a chain (cascade rungs 2 and 4), so
+        -- rebasing every offer into the next 4 days leaves it unable to follow a
+        -- hop-1 delivery.
+        SELECT GREATEST(
+                 COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+                 COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+               ) AS PICKUP_SPREAD_DAYS
         FROM {schema}.VW_MATCH_PARAMS
       ),
       -- Rebase each offer's pickup window onto the live planning horizon while
@@ -336,7 +367,7 @@ entities:
           GREATEST(
             f.PICKUP_FROM_TS,
             DATEADD('minute',
-              MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+              MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
               CURRENT_TIMESTAMP())
           ) AS PICKUP_FROM_TS_ADJ,
           GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN

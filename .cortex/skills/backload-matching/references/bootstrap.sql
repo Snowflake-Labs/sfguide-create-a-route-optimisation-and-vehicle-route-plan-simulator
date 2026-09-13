@@ -212,7 +212,8 @@ WITH cls AS (
   FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 ),
--- Pickup windows spread across PLANNING_LEAD_DAYS, and the pool sized by
+-- Pickup windows spread across PICKUP_SPREAD_DAYS - the wider of
+-- PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - and the pool sized by
 -- INTERNAL_LOADS_PER_TRAILER x the active region's fleet (INTERNAL_POOL_CAP is
 -- now an absolute ceiling only). A flat cap made this count the CAP wherever the
 -- trip history was larger than it and the TRUE trip count everywhere else, so the
@@ -224,7 +225,11 @@ p AS (
   SELECT
     COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
     COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
-    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+    GREATEST(
+      COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+      COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+    )                                                                                          AS PICKUP_SPREAD_DAYS
   FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
 )
 SELECT
@@ -238,14 +243,14 @@ SELECT
   GREATEST(
     t.TRIP_START,
     DATEADD('minute',
-      MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+      MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
       CURRENT_TIMESTAMP())
   )                                                                           AS PICKUP_FROM_TS,
   DATEADD(hour, 4,
     GREATEST(
       t.TRIP_START,
       DATEADD('minute',
-        MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+        MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
         CURRENT_TIMESTAMP())
     )
   )                                                                           AS PICKUP_TO_TS,
@@ -375,7 +380,12 @@ WITH cls AS (
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 ),
 pp AS (
-  SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+  -- Same spread as the internal pool: an external offer is a legitimate hop-2 of
+  -- a chain (cascade rungs 2 and 4).
+  SELECT GREATEST(
+           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+           COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+         ) AS PICKUP_SPREAD_DAYS
   FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
 ),
 -- Rebase each offer's pickup window onto the live planning horizon while
@@ -389,7 +399,7 @@ shifted AS (
     GREATEST(
       f.PICKUP_FROM_TS,
       DATEADD('minute',
-        MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM pp) * 1440)::INT)) + 30,
+        MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM pp) * 1440)::INT)) + 30,
         CURRENT_TIMESTAMP())
     ) AS PICKUP_FROM_TS_ADJ,
     GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
