@@ -1,6 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
-import { callTool } from '../helpers.js';
+import { callTool, persistSolve } from '../helpers.js';
 
 // Internal-first backload matching, solved live. Wraps TOOL_BACKLOAD_SOLVE, which
 // is the SINGLE implementation of what the Backload Matching / Backload Proposals
@@ -69,12 +69,24 @@ export const backload_solve = defineProc({
   returns: {
     result: t.object({}).describe(
       'On success: { status:"SUCCESS", region, vehicle_type, strategy, strategies_run, ' +
-      'counts, totals, weights, proposals[] }. On failure: { status:"FAILED", reason, error } ' +
-      'where reason is OPTIMIZATION_UNAVAILABLE (routing suspended - resume and retry), ' +
-      'NO_FEED (no vehicles or loads for the region), DATA_NOT_PROVISIONED, or BAD_STRATEGY.',
+      'counts, totals, weights, proposals[], solve_key }. On failure: { status:"FAILED", ' +
+      'reason, error } where reason is OPTIMIZATION_UNAVAILABLE (routing suspended - resume ' +
+      'and retry), NO_FEED (no vehicles or loads for the region), DATA_NOT_PROVISIONED, or ' +
+      'BAD_STRATEGY. solve_key identifies this stored result: pass it to show_view as ' +
+      'selection="solve_key=<key>" to put THIS plan on screen instead of making the page ' +
+      'solve again. It is absent when the result could not be cached, in which case just open ' +
+      'the view without it.',
     ),
   },
   execute: async (args, ctx) => {
+    const params = {
+      strategy: args.strategy,
+      max_vehicles: args.max_vehicles,
+      max_loads: args.max_loads,
+      region: args.region,
+      limit: args.limit,
+      granularity: args.granularity,
+    };
     const result = await callTool(ctx.conn, Procs.backloadSolve, [
       args.strategy,
       args.max_vehicles,
@@ -83,6 +95,13 @@ export const backload_solve = defineProc({
       args.limit,
       args.granularity,
     ]);
+    // Cache successful solves so the app can REDRAW this exact plan rather than
+    // running a second, different one. Only on success: caching a failure would
+    // hand the agent a key that resolves to an error page.
+    if (String(result.status ?? '') === 'SUCCESS') {
+      const key = await persistSolve(ctx.conn, 'backload_solve', params, result);
+      if (key) result.solve_key = key;
+    }
     return { result };
   },
 });

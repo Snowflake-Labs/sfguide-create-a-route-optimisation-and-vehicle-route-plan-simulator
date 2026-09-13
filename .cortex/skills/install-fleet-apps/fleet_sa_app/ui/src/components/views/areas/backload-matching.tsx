@@ -21,6 +21,7 @@ import { useRegionCamera } from '@/hooks/use-region-camera';
 import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
 import { postSolve } from '@/lib/solve-client';
+import { collectAgentSolve, proposalsToAssignments } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
@@ -75,7 +76,7 @@ function clampPayload(v: number, i: number, e: number, budget: number): { v: num
   return { v: Math.max(1, Math.floor(v * scale)), i: Math.max(0, Math.floor(i * scale)), e: Math.max(0, Math.floor(e * scale)), clamped: true };
 }
 
-export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {}) {
+export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
   // Region bbox: frames the map on the active region immediately on a context
   // change, before any trailers/offers for that region have loaded.
@@ -136,6 +137,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [rationaleLoading, setRationaleLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
+  // Set when the plan on screen was collected from a solve the AGENT ran, rather
+  // than solved here. Surfaced so a dispatcher is never unsure whose numbers
+  // these are, and cleared the moment this page solves for itself.
+  const [rehydrateNote, setRehydrateNote] = useState<string | null>(null);
   const [solverLog, setSolverLog] = useState<string | null>(null);
   // How many vehicles the last solve actually submitted to VROOM. This is the
   // only honest denominator for "% dispatched assigned" - the idle pool is much
@@ -256,6 +261,86 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   useEffect(() => { refetch(); }, [refetch]);
 
   // -----------------------------------------------------------------
+  // Rehydrate a plan the agent already solved.
+  //
+  // `solve_key` arrives in viewState when the agent navigates here after running
+  // backload_solve (show_view with selection="solve_key=..."). Collecting it puts
+  // the agent's OWN plan on screen; solving again would run a second, different
+  // job and could contradict the numbers the agent just quoted in chat.
+  //
+  // Waits for the vehicle pool, because a proposal is matched to a vehicle by
+  // TRAILER_ID and an empty pool would silently drop every row.
+  // -----------------------------------------------------------------
+  const solveKeyParam = typeof viewState?.solve_key === 'string' ? viewState.solve_key : null;
+  const rehydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!solveKeyParam || !trailers.length) return;
+    // Once per key: this effect depends on the pool, which changes as data
+    // arrives, and re-collecting would keep resetting the dispatcher's selection.
+    if (rehydratedKeyRef.current === solveKeyParam) return;
+    let cancelled = false;
+    const ac = new AbortController();
+
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (cancelled) return;
+        const out = await collectAgentSolve(solveKeyParam, ac.signal);
+        if (cancelled) return;
+
+        if (out.state === 'pending') {
+          setRehydrateNote('The agent\u2019s solve is still running. Collecting it...');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        // Terminal in every remaining case: mark the key done so a dependency
+        // change cannot restart the poll loop.
+        rehydratedKeyRef.current = solveKeyParam;
+
+        if (out.state === 'expired') {
+          setRehydrateNote(
+            'That plan is no longer stored, so it cannot be shown. Press Solve Backloads to build a new one.',
+          );
+          return;
+        }
+        if (out.state === 'failed') {
+          setRehydrateNote(`The agent\u2019s plan could not be collected: ${out.error}. Press Solve Backloads to build a new one.`);
+          return;
+        }
+
+        const proposals = Array.isArray(out.solve.proposals) ? out.solve.proposals : [];
+        if (!proposals.length) {
+          setRehydrateNote(
+            'The agent\u2019s solve produced no assignments' +
+            (out.solve.note ? `: ${out.solve.note}` : '.'),
+          );
+          return;
+        }
+        const { assignments: rebuilt, skipped } = proposalsToAssignments(proposals, trailers);
+        if (!rebuilt.length) {
+          setRehydrateNote(
+            'The agent solved over a different set of vehicles, so none of its assignments apply to the ' +
+            'vehicles shown here. Press Solve Backloads to plan this pool.',
+          );
+          return;
+        }
+        setAssignments(rebuilt as unknown as Assignment[]);
+        setUnassigned([]);
+        setSelectedAssignment(rebuilt[0]?.ASSIGNMENT_ID ?? null);
+        const strat = out.solve.strategy ? ` (${out.solve.strategy})` : '';
+        setRehydrateNote(
+          `Showing the plan the agent solved${strat}: ${rebuilt.length} trip(s)` +
+          (skipped ? `, ${skipped} outside this vehicle pool` : '') +
+          '. Distances start as straight-line and refine to road distance.',
+        );
+        return;
+      }
+    })();
+
+    return () => { cancelled = true; ac.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKeyParam, trailers]);
+
+  // -----------------------------------------------------------------
   // Solve - every visible knob lands inside the OPTIMIZATION call.
   // -----------------------------------------------------------------
   const solve = useCallback(async () => {
@@ -267,6 +352,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({});
     setConfirmMsg(null); setSolverLog(null); setSolveError(null); setSelectedAssignment(null);
     setSolveStats(null);
+    // This page is now the author of the plan, so the "showing the agent's plan"
+    // notice must go - leaving it would attribute these numbers to the agent.
+    setRehydrateNote(null);
 
     const cls = vehicleClass;
     const profile = cls.ORS_PROFILE;
@@ -1178,6 +1266,12 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         <div style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{seedHint}</span>
           <button type="button" onClick={() => refetch()} style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}>Refresh</button>
+        </div>
+      )}
+
+      {rehydrateNote && (
+        <div style={{ background: 'rgba(41,181,232,0.10)', color: '#0e7490', border: '1px solid rgba(41,181,232,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+          {rehydrateNote}
         </div>
       )}
 

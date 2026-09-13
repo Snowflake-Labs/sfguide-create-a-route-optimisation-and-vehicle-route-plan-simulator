@@ -1,6 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
-import { callTool } from '../helpers.js';
+import { callTool, persistSolve } from '../helpers.js';
 
 // Two-hop (chained) return planning. Wraps TOOL_BACKLOAD_CHAIN_SOLVE, the same
 // computation the Triangle Proposals cockpit runs, so app and agent share one
@@ -77,6 +77,14 @@ export const backload_chain_solve = defineProc({
     ),
   },
   execute: async (args, ctx) => {
+    const params = {
+      region: args.region,
+      cost_basis: args.cost_basis,
+      acceptance_score: args.acceptance_score,
+      max_per_vehicle: args.max_per_vehicle,
+      limit: args.limit,
+      granularity: args.granularity,
+    };
     const result = await callTool(ctx.conn, Procs.backloadChainSolve, [
       args.region,
       args.cost_basis,
@@ -85,6 +93,11 @@ export const backload_chain_solve = defineProc({
       args.limit,
       args.granularity,
     ]);
+    // Cache so show_view can put THIS chain set on screen. See persistSolve.
+    if (String(result.status ?? '') === 'SUCCESS') {
+      const key = await persistSolve(ctx.conn, 'backload_chain_solve', params, result);
+      if (key) result.solve_key = key;
+    }
     return { result };
   },
 });

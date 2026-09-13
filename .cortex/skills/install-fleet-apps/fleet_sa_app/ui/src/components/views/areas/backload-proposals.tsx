@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { usePublishMapState } from '@/lib/agent-memo';
+import { collectAgentSolve } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import {
   rankByWeights, groupByTrailer, loadWeights, saveWeights,
@@ -104,7 +105,7 @@ async function fetchRouteCoords(profile: string, waypoints: [number, number][], 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
 
-export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}) {
+export function BackloadProposalsView({ viewState, onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
@@ -210,6 +211,78 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   }, [region]);
 
   useEffect(() => { load(); }, [load]);
+
+  // -----------------------------------------------------------------
+  // Rehydrate a solve the AGENT ran.
+  //
+  // `solve_key` arrives in viewState when the agent navigates here after calling
+  // backload_solve (show_view with selection="solve_key=..."). This page and that
+  // verb are the SAME code path - both call TOOL_BACKLOAD_SOLVE and both consume
+  // `pairs` - so the cached result drops straight into state with no conversion,
+  // and the weight sliders re-rank it exactly as they would a local solve.
+  //
+  // Collecting rather than re-running matters for more than time: a second solve
+  // is a genuinely different solve, so re-running would put numbers on screen
+  // that can disagree with the ones the agent just quoted in chat.
+  // -----------------------------------------------------------------
+  const solveKeyParam = typeof viewState?.solve_key === 'string' ? viewState.solve_key : null;
+  const rehydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!solveKeyParam) return;
+    if (rehydratedKeyRef.current === solveKeyParam) return;
+    let cancelled = false;
+    const ac = new AbortController();
+
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (cancelled) return;
+        const out = await collectAgentSolve(solveKeyParam, ac.signal);
+        if (cancelled) return;
+
+        if (out.state === 'pending') {
+          setBusy('Collecting the agent\u2019s solve\u2026');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        rehydratedKeyRef.current = solveKeyParam;
+        setBusy(null);
+
+        if (out.state === 'expired') {
+          setSolveError('That solve is no longer stored. Run a strategy to produce a new one.');
+          return;
+        }
+        if (out.state === 'failed') {
+          setSolveError(`The agent\u2019s solve could not be collected: ${out.error}`);
+          return;
+        }
+
+        // The agent may have asked for vehicle granularity, which returns
+        // `proposals` and no `pairs`. This cockpit ranks pairs, so say so plainly
+        // rather than rendering an empty grid.
+        const rows = (out.solve.pairs as ScoredPair[] | undefined) ?? [];
+        if (!rows.length) {
+          setSolveError(
+            'The agent\u2019s solve returned one proposal per vehicle rather than the graded pairs this ' +
+            'cockpit ranks. Run a strategy here to grade every candidate pair.',
+          );
+          return;
+        }
+        setPairs(rows);
+        setGradedCount(Number((out.solve.counts ?? {}).graded_pairs ?? rows.length));
+        setRanAt(Date.now());
+        const ran = out.solve.strategies_run ?? [];
+        setInfo(
+          `Showing the agent\u2019s solve` +
+          (ran.length > 1 ? ` - ${ran.length} strategies graded` : out.solve.strategy ? ` (${out.solve.strategy})` : '') +
+          '. Tune the scoring weights to re-rank it without re-solving.',
+        );
+        return;
+      }
+    })();
+
+    return () => { cancelled = true; ac.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKeyParam]);
 
   const trailerById = useMemo(() => {
     const m = new Map<string, Trailer>();
