@@ -375,13 +375,14 @@ fi
 # ── 4. Resolve endpoint URL ─────────────────────────────────────
 # While SPCS ingress is still coming up, `SHOW ENDPOINTS` returns the literal
 # text "Endpoints provisioning in progress... check back in a few minutes" in
-# the ingress_url column. Prefixing 'https://' to that made the placeholder
-# satisfy a bare `^https://` grep, so the deploy printed
-# `url: https://Endpoints provisioning in progress...` as if it were the app
-# URL - a value that is not a URL at all and cannot be opened. Filter the
-# placeholder out in SQL AND require a hostname shape (a dot, no whitespace)
-# in the grep, so an unresolved endpoint yields an EMPTY url and the line is
+# the ingress_url column, and prefixing 'https://' to that made the placeholder
+# satisfy a bare `^https://` grep - so the deploy printed
+# `url: https://Endpoints provisioning in progress...` as if it were the app URL.
+# The rule now lives in lib/endpoint_url.sh, shared with the admin deploy and the
+# installer's resolver, so all three enforce it identically. Rejected in SQL AND
+# in the grep, so an unresolved endpoint yields an EMPTY url and the line below is
 # suppressed rather than printing something false.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/endpoint_url.sh"
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   $TAG_SQL
@@ -389,10 +390,8 @@ URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
   WHERE \"name\" = 'fleet-sa-app'
-    AND \"ingress_url\" NOT ILIKE '%provisioning%'
-    AND \"ingress_url\" LIKE '%.%'
-    AND \"ingress_url\" NOT LIKE '% %';
-" 2>/dev/null | grep -E '^https://[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$' | head -1 || true)
+    AND $(endpoint_url_sql_guard);
+" 2>/dev/null | endpoint_url_filter)
 
 echo
 echo "================================================================"

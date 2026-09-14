@@ -27,6 +27,34 @@ This skill queries `INFORMATION_SCHEMA`, `SHOW` commands, and `ACCOUNT_USAGE` vi
 | TRACKING_TAG | `sf_sit-is-fleet` | Origin tag to search for in COMMENT fields |
 | SKILL_FILTER | (all) | Optional: filter to a specific skill tracking name |
 | DRY_RUN | `true` | When true, only generates DROP statements without executing |
+| KEEP_FLEET_ENGINE | `FALSE` | Session variable read by `references/drop-order.sql`. When TRUE, preserves the whole ORS/VROOM engine and wipes everything else - see below |
+
+## Fast re-test: preserve the routing engine (KEEP_FLEET_ENGINE)
+
+A full teardown drops `OPENROUTESERVICE_APP`, which is where the image repository
+lives, so every reinstall re-pushes four identical, version-pinned engine images.
+Two consecutive from-scratch cycles re-pushed the exact same digests. Setting
+`KEEP_FLEET_ENGINE = TRUE` leaves the engine entirely intact - the
+`OPENROUTESERVICE_APP` database (images, routing graphs, SQL modules, services),
+the ORS compute pools, and the `ORS_*` external access integrations - and wipes
+everything else. The reinstall then detects the engine and skips provisioning it,
+removing the image pushes (measured 29m40s), the stage upload, the module load and
+the graph build: roughly 45 min off a ~93 min install.
+
+```bash
+printf 'SET KEEP_FLEET_ENGINE = TRUE;\n' \
+  | cat - .cortex/skills/routing-solution-cleanup/references/drop-order.sql \
+  | snow sql -i -c <connection>
+```
+
+The `SET` must reach the SAME session as the script, which is why this pipes both
+through `snow sql -i` rather than using a separate `-q`.
+
+**The engine is NOT re-tested in this mode.** A from-scratch install exists partly
+to catch a stale image or a broken engine module, and this mode deliberately
+cannot. Use it while iterating on the analytics stack; never for a release check
+or to validate an engine change. The four affected phases each print whether they
+preserved or dropped, so the run's own output states which mode it took.
 
 ## Error Logging
 

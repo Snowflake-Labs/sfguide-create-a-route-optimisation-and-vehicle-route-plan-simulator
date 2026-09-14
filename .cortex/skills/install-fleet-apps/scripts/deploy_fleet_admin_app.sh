@@ -203,10 +203,12 @@ else
 fi
 
 # ── 3. Resolve endpoint URL ─────────────────────────────────────
-# See the matching note in deploy_fleet_sa_app.sh: an ingress that is still
-# provisioning returns prose in "ingress_url", and prefixing 'https://' made it
-# pass a bare `^https://` grep, printing a non-URL as the app URL. Reject the
-# placeholder in SQL and require a hostname shape in the grep.
+# See the note in deploy_fleet_sa_app.sh: an ingress that is still provisioning
+# returns prose in "ingress_url", and prefixing 'https://' made it pass a bare
+# `^https://` grep, printing a non-URL as the app URL. The rule is shared via
+# lib/endpoint_url.sh so this script, the SA deploy, and the installer's resolver
+# cannot drift apart again.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/endpoint_url.sh"
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   $TAG_SQL
@@ -214,10 +216,8 @@ URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
   WHERE \"name\" = 'fleet-admin-app'
-    AND \"ingress_url\" NOT ILIKE '%provisioning%'
-    AND \"ingress_url\" LIKE '%.%'
-    AND \"ingress_url\" NOT LIKE '% %';
-" 2>/dev/null | grep -E '^https://[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$' | head -1 || true)
+    AND $(endpoint_url_sql_guard);
+" 2>/dev/null | endpoint_url_filter)
 
 echo
 echo "================================================================"
