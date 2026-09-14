@@ -227,8 +227,12 @@ const AGENT_SUMMARY_REF_FIELDS = ['groupBy', 'label', 'detail'] as const;
  * `source` / `fillColor` / `agentSummary` are still the caller's objects - and
  * for an authored dashboard map that object belongs to the parsed, cached
  * app-views.json.
+ * Exported so the authored-views gate can assert the same rule instead of
+ * restating it - a second copy of the field list would drift, and the gate would
+ * then be checking a rule the app no longer follows. Mutates in place, so callers
+ * outside `validateMapLayers` must clone first.
  */
-function normalizeColumnRefs(layer: Record<string, unknown>): void {
+export function normalizeColumnRefs(layer: Record<string, unknown>): void {
   const lower = (v: unknown): unknown => (typeof v === 'string' ? v.toLowerCase() : v);
   for (const f of COLUMN_REF_FIELDS) {
     if (typeof layer[f] === 'string') layer[f] = lower(layer[f]);

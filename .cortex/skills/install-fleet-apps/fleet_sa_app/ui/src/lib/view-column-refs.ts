@@ -43,6 +43,21 @@
 //
 // Paths are relative to the area object `{data, config, emits}` and use `[]` for
 // "every element of this array". Only STRING leaves are touched.
+//
+// KNOWN LIMITATION: THIS LIST IS MANUAL AT FIELD LEVEL
+// ----------------------------------------------------
+// The test suite asserts every agent-authorable COMPONENT appears here or in
+// NO_COLUMN_REFS, so a new component cannot be forgotten. It does NOT assert that
+// every column-bearing FIELD of a listed component is covered. Add a `groupBy` to
+// ClickableTable's config, or a second `id_field` to DetailPanel, and it silently
+// misses normalization - the same blank-render-no-error failure as the original
+// defect, in a component that looks protected.
+//
+// So: when you add a prop that gets used to index a row (`row[x]`, `r[x]`,
+// `point[x]`), add its path here in the same commit. Closing this properly means
+// diffing each component's prop types against these paths, which is more
+// machinery than the current risk justifies - but it is the reason a passing test
+// run is not proof that a NEW field is normalized.
 
 /** Areas whose config/data carry no row-column reference at all.
  *

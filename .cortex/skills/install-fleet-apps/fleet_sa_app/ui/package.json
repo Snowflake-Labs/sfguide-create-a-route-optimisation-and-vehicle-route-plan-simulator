@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "verify:charts": "tsx scripts/verify-chart-spec.mts"
+    "verify:charts": "tsx scripts/verify-chart-spec.mts",
+    "verify:views": "tsx scripts/verify-app-views.mts"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "~9.2.11",

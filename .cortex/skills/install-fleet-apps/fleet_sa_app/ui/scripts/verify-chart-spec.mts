@@ -35,6 +35,7 @@ import { resolveChartCitations, stripCitationTags } from '../src/lib/chart-citat
 import { CHART_TOOL_NAME, CHART_TOOL_ALIASES, isChartTool } from '../src/lib/tool-names';
 import { parseCortexStream } from '../src/lib/cortex-stream';
 import { isSuppressedResult, attributeTool, collapseAttributedTools } from '../src/lib/tool-visibility';
+import { chartPlotDiagnostic, chartEncodingColumns } from '../src/lib/chart-encodings';
 import { DEFAULT_CHART_PALETTE } from '../src/lib/style-config';
 import type { MessagePart } from '../src/lib/types';
 
@@ -354,6 +355,51 @@ for (const c of fixtures.rejectCases) {
   // A tool name that legitimately contains a colon must not swallow its siblings.
   check('collapsing keys on the exact base name',
     collapseAttributedTools(['server_skillx', 'server_skill:a']).length === 2);
+}
+
+// ------------------------------------------------- why a chart drew nothing
+{
+  const rows = [{ facility: 'A', visits: 3 }, { facility: 'B', visits: 5 }];
+
+  check('a chart whose series column is present says nothing',
+    chartPlotDiagnostic({ xField: 'facility', valueFields: ['visits'], rows }) === '');
+  // The whole point: this is the case that used to draw empty axes in silence.
+  const wrong = chartPlotDiagnostic({ xField: 'facility', valueFields: ['VISITS'], rows });
+  check('a chart bound to a wrong-case column reports it', wrong !== '');
+  check('the report names the column it looked for', wrong.includes('VISITS'), wrong);
+  check('the report names the columns it actually got', wrong.includes('visits') && wrong.includes('facility'), wrong);
+  check('the report carries the row count, so it cannot read as "no data"', wrong.includes('2'), wrong);
+
+  // A notice that fires on a working chart is worse than no notice, so the
+  // partial cases are asserted to stay QUIET.
+  check('a chart missing only its x column still draws, so stays quiet',
+    chartPlotDiagnostic({ xField: 'FACILITY', valueFields: ['visits'], rows }) === '');
+  check('a chart with one good series among two stays quiet',
+    chartPlotDiagnostic({ xField: 'facility', valueFields: ['visits', 'nope'], rows }) === '');
+  check('no rows defers to the existing "No data" state',
+    chartPlotDiagnostic({ xField: 'facility', valueFields: ['visits'], rows: [] }) === '');
+  check('a chart declaring no series columns stays quiet',
+    chartPlotDiagnostic({ xField: 'facility', valueFields: [], rows }) === '');
+  // present-but-NULL is real data, not a naming error.
+  check('a present column holding NULL stays quiet',
+    chartPlotDiagnostic({ xField: 'facility', valueFields: ['visits'], rows: [{ facility: 'A', visits: null }] }) === '');
+
+  // Grouped charts: groupBy is a COLUMN, and losing it silently collapses every
+  // row into one blank category.
+  const grouped = [{ day: '1', kind: 'x', n: 2 }];
+  check('a grouped chart with all three columns stays quiet',
+    chartPlotDiagnostic({ xField: 'day', valueFields: ['n'], groupBy: 'kind', rows: grouped }) === '');
+  const badGroup = chartPlotDiagnostic({ xField: 'day', valueFields: ['n'], groupBy: 'KIND', rows: grouped });
+  check('a grouped chart missing its groupBy column reports it', badGroup !== '');
+  check('the grouped report names the groupBy column', badGroup.includes('KIND'), badGroup);
+
+  check('encoding columns list every column the chart reads',
+    chartEncodingColumns({ xField: 'day', valueFields: ['n'], groupBy: 'kind' }).join(',') === 'day,n,kind');
+  // Guards the "no usable value in ." defect the map legend had: an absent field
+  // must not reach the message as an empty or undefined entry.
+  check('encoding columns drop absent fields',
+    chartEncodingColumns({ xField: 'day', valueFields: ['', undefined as unknown as string], groupBy: undefined })
+      .join(',') === 'day');
 }
 
 // -------------------------------------------------------------------- report

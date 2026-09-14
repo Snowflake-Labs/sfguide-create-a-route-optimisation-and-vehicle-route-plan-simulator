@@ -120,6 +120,16 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
   fi
+  # Authored views bypass parseDynamicSpec, so nothing at runtime lowercases their
+  # column references or checks a map layer has its encoding. /api/query lowercases
+  # every row key it returns, so an uppercase ref here binds to nothing: the view
+  # draws an empty frame and reports no error. Static check, so it runs BEFORE the
+  # build - no point compiling for two minutes to ship a view that cannot bind.
+  if [ "${VIEWS_VERIFY:-1}" != "0" ]; then
+    echo "[1/7] Verify authored app-views.json column refs can bind..."
+    ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-app-views.mts ) \
+      || { echo "ERROR: authored view verification failed (see above)."; exit 1; }
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when

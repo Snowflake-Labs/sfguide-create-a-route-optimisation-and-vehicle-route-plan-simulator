@@ -24,6 +24,7 @@ import { useViewData } from '@/hooks/use-view-data';
 import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildChartMemo, useAgentMemo } from '@/lib/agent-memo';
+import { chartPlotDiagnostic } from '@/lib/chart-encodings';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface SeriesConfig {
@@ -112,6 +113,20 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
     return { data: points, categories: Array.from(categories) };
   }, [data, config]);
 
+  // Checked against the raw rows, not chartData/groupedData: a grouped chart's
+  // point keys are category values, so the derived shape cannot distinguish a
+  // missing column from an absent category. Must sit above the early returns to
+  // keep hook order stable.
+  const undrawable = useMemo(
+    () => chartPlotDiagnostic({
+      xField: config.xAxis.field,
+      valueFields: config.series.map((s) => s.field),
+      groupBy: config.series.find((s) => s.groupBy)?.groupBy,
+      rows: data?.rows ?? [],
+    }),
+    [config, data],
+  );
+
   // Agent grounding: a chart publishes no readable numbers anywhere else, and its
   // shape IS the finding ("which site is worst", "is this trending up"), so
   // summarize what is plotted. Chart-kind precedence mirrors the render branches
@@ -166,6 +181,17 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
 
   if (!chartData.length && !groupedData) {
     return <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
+  }
+
+  // Rows arrived but no series column is on them, so recharts would render axes
+  // with no marks and no explanation - indistinguishable from an empty filter.
+  // Say which column was looked for instead, the same way the maps now do.
+  if (undrawable) {
+    return (
+      <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>
+        This chart returned data it could not plot. {undrawable}
+      </div>
+    );
   }
 
   const hasBar = config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar');
