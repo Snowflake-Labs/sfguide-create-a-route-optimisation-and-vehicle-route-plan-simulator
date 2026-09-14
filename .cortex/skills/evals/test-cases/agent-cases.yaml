@@ -199,6 +199,37 @@ cases:
           as a supporting view alongside the map, not instead of it. The assistant
           must NOT claim maps cannot be rendered.
 
+  # --- data_to_chart, UN-HINTED phrasing -----------------------------------
+  # The counterpart to the render_map cases above, and the question that exposed
+  # the rendering bug: "show me Visits by Facility Type" produced a perfectly
+  # good Vega-Lite spec that the app then displayed as a collapsed JSON blob,
+  # because the inline registry knew `render_chart` while the result arrives as
+  # `data_to_chart`. Nothing failed - not a test, not a log line.
+  #
+  # Deliberately un-hinted: no "as a chart", no chart type named. A ranked
+  # breakdown is the canonical case the host's own guidance calls MANDATORY to
+  # chart, so an agent that answers with a bare markdown table has regressed.
+  # The assertion checks the SPEC, not just that a chart tool ran: an empty or
+  # field-less encoding is the failure mode that renders a blank card.
+  #
+  # NOTE this is a `judge` assertion and not a `verb` one - data_to_chart is
+  # HOST-injected, so it never appears in the synapse VERB_ATTEMPT audit.
+  - id: data-to-chart-ranked-breakdown
+    prompt: >-
+      show me visits by facility type in san francisco
+    assertions:
+      - type: judge
+        text: >-
+          The assistant called data_to_chart and its argument is a single-view
+          Vega-Lite specification whose `encoding` binds real result columns:
+          a quantitative channel for the visit measure and a nominal channel for
+          the facility type, with a `mark` (bar is expected for a ranked list).
+          It must NOT be a layered, faceted or concatenated spec, must NOT have
+          an empty or field-less encoding, and the answer must not consist of a
+          markdown table alone with no chart. The assistant must not claim it
+          cannot draw charts here, and must not deep-link to a view in place of
+          charting the figures it already retrieved.
+
   # --- deep_link regression -------------------------------------------------
   # deep_link failed 4 calls out of 4 on tib85385 with "URLSearchParams is not
   # defined": synapse compiles every verb into a LANGUAGE JAVASCRIPT procedure

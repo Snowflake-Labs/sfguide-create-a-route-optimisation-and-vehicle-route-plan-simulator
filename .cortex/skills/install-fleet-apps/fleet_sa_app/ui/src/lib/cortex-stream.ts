@@ -1,4 +1,5 @@
 import type { MessagePart } from './types';
+import { CHART_TOOL_NAME } from './tool-names';
 
 export interface CortexEvent {
   event: string;
@@ -71,6 +72,7 @@ export async function parseCortexStream(
               type: 'tool_pending',
               toolName: (toolUse.name as string) || (toolUse.type as string) || 'unknown',
               input: (toolUse.input as Record<string, unknown>) || {},
+              toolUseId: toolUseIdOf(toolUse),
             });
             break;
           }
@@ -84,6 +86,7 @@ export async function parseCortexStream(
               type: 'tool_result',
               toolName: toolResultName,
               output,
+              toolUseId: toolUseIdOf(toolResult),
             });
             break;
           }
@@ -122,10 +125,17 @@ export async function parseCortexStream(
 
           case 'response.chart': {
             flushText();
+            // Legacy/alternate host shape. The Cortex Agents API this app talks
+            // to does NOT emit this event - it sends data_to_chart through the
+            // ordinary `response.tool_result` path above, which is why the
+            // `render_chart` name registered for this branch had never once
+            // matched a real turn. Kept (and pointed at the SAME tool name the
+            // registry binds) so a host that does emit it still renders.
             callbacks.onPart({
               type: 'tool_result',
-              toolName: 'render_chart',
-              output: { chartSpec: event.data.chart_spec as string },
+              toolName: CHART_TOOL_NAME,
+              output: { charts: [event.data.chart_spec as string] },
+              toolUseId: toolUseIdOf(event.data),
             });
             break;
           }
@@ -171,6 +181,19 @@ export async function parseCortexStream(
   } finally {
     callbacks.onDone();
   }
+}
+
+/**
+ * The host's id for a tool call, read defensively.
+ *
+ * The Cortex Agents API uses `tool_use_id`; some payloads carry it as `id`.
+ * Read both rather than one, because the ONLY consumer is chart-citation
+ * placement, and a missing id degrades to positional rendering (chart before
+ * the prose) - never to a dropped chart.
+ */
+function toolUseIdOf(data: Record<string, unknown>): string | undefined {
+  const raw = data.tool_use_id ?? data.id;
+  return typeof raw === 'string' && raw !== '' ? raw : undefined;
 }
 
 function parseSSEChunk(chunk: string): CortexEvent | null {

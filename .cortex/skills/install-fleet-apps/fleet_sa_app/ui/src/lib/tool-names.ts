@@ -33,6 +33,33 @@ export function matchesTool(toolName: string | undefined, bare: string): boolean
   return toolName === bare || toolName.endsWith('_' + bare);
 }
 
+/**
+ * The name the CHART tool actually arrives under.
+ *
+ * MEASURED from a live turn: the host declares the tool as `data_to_chart` (see
+ * app/agent-spec.json `tools[].name`) and streams its result as a plain
+ * `response.tool_result` with `name: "data_to_chart"` and an output of
+ * `{ charts: [ "<vega-lite spec json>" ] }`.
+ *
+ * The inline registry only knew `render_chart`, a name produced solely by the
+ * `response.chart` SSE branch that this host never emits. `data_to_chart` is not
+ * a suffix of `render_chart` (or vice versa), so `matchesTool` could not bridge
+ * them and EVERY chart fell through to the collapsed JSON viewer - the same
+ * silent class of failure as the `routing_mcp_render_map` separator bug above.
+ * Exported as a constant so the stream, the registry and the citation resolver
+ * cannot drift apart again.
+ */
+export const CHART_TOOL_NAME = 'data_to_chart';
+
+/** Every name a chart result can arrive under: the real one plus the legacy
+ *  `response.chart` name, kept so an alternate host still renders. */
+export const CHART_TOOL_ALIASES = [CHART_TOOL_NAME, 'render_chart'] as const;
+
+/** True when a streamed tool name is a chart result under any known alias. */
+export function isChartTool(toolName: string | undefined): boolean {
+  return CHART_TOOL_ALIASES.some((n) => matchesTool(toolName, n));
+}
+
 /** Hops allowed when peeling a result envelope. Bounds a pathological or
  *  self-referential payload; 4 is well clear of the 2 levels observed. */
 const MAX_UNWRAP_HOPS = 4;

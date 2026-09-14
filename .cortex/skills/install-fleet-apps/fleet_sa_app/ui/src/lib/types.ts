@@ -11,10 +11,15 @@ export interface Message {
   metadata?: Record<string, unknown>;
 }
 
+// `toolUseId` is the host's own id for a tool call. It is what the agent cites
+// in its answer text (`<chart>tooluse_...</chart>`), so without it a chart can
+// only be rendered where its tool_result happened to land in the stream - which
+// is BEFORE the prose that explains it. Optional because not every host sends
+// one and a missing id must degrade to positional rendering, not to no chart.
 export type MessagePart =
   | { type: 'text'; content: string }
-  | { type: 'tool_pending'; toolName: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; toolName: string; output: Record<string, unknown> }
+  | { type: 'tool_pending'; toolName: string; input: Record<string, unknown>; toolUseId?: string }
+  | { type: 'tool_result'; toolName: string; output: Record<string, unknown>; toolUseId?: string }
   | { type: 'tool_error'; toolName: string; error: string }
   | { type: 'status'; status: string; message: string }
   | { type: 'metadata'; threadId?: number; assistantMessageId?: number; runId?: string };

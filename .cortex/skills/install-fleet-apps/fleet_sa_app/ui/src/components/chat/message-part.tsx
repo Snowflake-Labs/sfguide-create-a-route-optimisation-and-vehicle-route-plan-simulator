@@ -10,6 +10,7 @@ import { ConfirmAction } from '@/components/inline/confirm-action';
 import type { Operation } from '@/components/inline/confirm-action';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { stripCitationTags } from '@/lib/chart-citations';
 
 // Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
@@ -100,6 +101,12 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
 
 function TextPart({ content }: { content: string }) {
   const showView = useAppStore((s) => s.showView);
+  // Belt and braces: message-list already resolves `<chart>ID</chart>` citations
+  // into chart parts, but this is the component that actually renders markdown,
+  // and react-markdown carries no rehype-raw - so an unresolved tag would be
+  // dropped by the parser with no trace. Strip here too, so any text reaching
+  // the renderer through a path that skipped resolution cannot show a raw tag.
+  const text = stripCitationTags(content);
 
   return (
     <div className="markdown-body" style={{ fontSize: '14px', lineHeight: '1.6' }}>
@@ -137,7 +144,7 @@ function TextPart({ content }: { content: string }) {
           },
         }}
       >
-        {content}
+        {text}
       </ReactMarkdown>
     </div>
   );

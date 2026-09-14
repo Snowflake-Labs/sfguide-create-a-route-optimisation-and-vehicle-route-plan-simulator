@@ -139,6 +139,38 @@ if [ -f "$CHART_SOURCE_CHECK" ] && staged_any \
   python3 "$CHART_SOURCE_CHECK" || exit 1
 fi
 
+# ── 1b2b. The client must be able to RENDER the chart it just asked for ───────
+# The sibling of the rule above, one layer out. 1b2 guarantees the agent CALLS
+# data_to_chart correctly; this guarantees the SA app draws the result. It did
+# not, ever: the inline registry knew `render_chart` (a name only the unused
+# `response.chart` SSE branch produces) while the real result streams as
+# `data_to_chart`, and an unregistered tool is a LEGAL state that falls through
+# to the collapsed JSON viewer. So every bar, line and pie the agent produced
+# rendered as a tidy "> Tool result" blob and nothing failed - maps escaped only
+# because `render_map` happens to be registered under the name it arrives with.
+# Same silent class as the routing_mcp_render_map separator bug. Also pins the
+# payload key (charts is an ARRAY), the theme merge DIRECTION (spec must win over
+# the app theme, or the agent's sort and colours are quietly overridden), the
+# citation stripping (react-markdown has no rehype-raw, so <chart>ID</chart> is
+# swallowed without trace), and the lazy boundary that keeps vega out of the
+# initial bundle.
+CHART_RENDER_CHECK="$SKILL_DIR/scripts/check_chart_rendering.py"
+if [ -f "$CHART_RENDER_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/tool-names.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/chart-spec.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/vega-theme.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/chart-citations.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/cortex-stream.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/index.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/chart-inline.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/chart-deferred.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/chat/message-part.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/chat/message-list.tsx" \
+  "$SKILL_DIR/scripts/check_chart_rendering.py"; then
+  echo "pre-commit: inline chart rendering check..."
+  python3 "$CHART_RENDER_CHECK" || exit 1
+fi
+
 # ── 1b3. A forbidden map must name the tool that can draw one ───────────────────
 # render_map shipped fully working and the agent never called it: asked to show
 # dwell density it drew two facility-type bar charts and handed off to a link. Two

@@ -1,12 +1,15 @@
 import type { ComponentType } from 'react';
 import { inlineRegistry } from '@/lib/inline-registry';
+import { CHART_TOOL_ALIASES } from '@/lib/tool-names';
 import { StatCard } from './stat-card';
 import { DataTable } from './data-table';
 import { ConfirmAction } from './confirm-action';
 import { ChoiceList } from './choice-list';
 import { InlinePicker } from './inline-picker';
 import { ProgressCard } from './progress-card';
-import { ChartInline } from './chart-inline';
+// Charts load through a lazy boundary for the same reason the maps do: vega +
+// vega-lite must stay out of the initial bundle.
+import { ChartInlineDeferred } from './chart-deferred';
 // The two inline MAPS load through a lazy boundary so deck.gl + maplibre-gl stay
 // out of the initial bundle; this module is imported eagerly by the chat tree.
 import {
@@ -32,10 +35,17 @@ export function registerInlineComponents() {
   // queries through the owner's-rights dynamic boundary and compiles them with
   // the shared layer compiler the dashboard maps use.
   inlineRegistry.register({ toolName: 'render_map', component: RenderMapInlineDeferred as AnyComponent });
-  // render_chart: emitted by cortex-stream for the `response.chart` event
-  // (Cortex data_to_chart). Unregistered until now, so a chart rendered as a
-  // collapsed JSON blob.
-  inlineRegistry.register({ toolName: 'render_chart', component: ChartInline as AnyComponent });
+  // CHARTS. Registered under EVERY name a chart result can arrive as - which is
+  // the whole bug this closes. The registry only knew `render_chart`, a name
+  // produced solely by the `response.chart` SSE branch that this host never
+  // emits; the real result streams as `data_to_chart`, matched nothing, and fell
+  // through to the collapsed JSON viewer. So no chart had ever rendered, while
+  // maps worked purely because `render_map` happens to be registered under the
+  // name it actually arrives with. Names come from lib/tool-names.ts so the
+  // stream and the registry cannot drift apart again.
+  for (const toolName of CHART_TOOL_ALIASES) {
+    inlineRegistry.register({ toolName, component: ChartInlineDeferred as AnyComponent });
+  }
 }
 
 // Binds routing tool outputs to the inline deck.gl map. The tool names come
