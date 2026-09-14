@@ -156,6 +156,43 @@ export function buildTableMemo(input: TableMemoInput): string {
   return joinBounded([...head, `rows: ${sampleText}`], MEMO_MAX_LEN);
 }
 
+/** KPI strips run slightly longer than the shared cap: a tile is one short pair,
+ *  and the strip is the most quotable channel there is. Mirrors the 600 the
+ *  MetricCards memo used before this moved out of the component. */
+export const KPI_MEMO_MAX_LEN = 600;
+
+/** One KPI tile, already formatted for display by the caller. */
+export interface KpiMemoMetric {
+  /** Row column the tile reads. */
+  column: string;
+  /** Interpolated display label. */
+  label: string;
+  /** Rendered value INCLUDING any unit suffix. */
+  value: string;
+}
+
+/**
+ * Summarize a KPI strip for the agent.
+ *
+ * Metrics whose column is absent from the row are DROPPED, not reported. That is
+ * the grounding half of the column-case defect (lib/view-column-refs.ts): a tile
+ * whose `column` does not match the result set visibly renders '-', but a memo
+ * pair `Label=-` looks definite, and the agent quotes the dash back as the KPI. A
+ * column that IS present and holds NULL still reports '-', which is honest - that
+ * is real data. Callers therefore pass `column` so this can tell the two apart.
+ */
+export function buildKpiMemo(
+  row: Record<string, unknown> | null | undefined,
+  metrics: readonly KpiMemoMetric[],
+): string {
+  if (!row || metrics.length === 0) return '';
+  const pairs = metrics
+    .filter((m) => m.column in row)
+    .map((m) => `${m.label}=${m.value}`);
+  if (pairs.length === 0) return '';
+  return joinBounded(pairs, KPI_MEMO_MAX_LEN);
+}
+
 interface ChartMemoInput {
   /** Chart kind as configured: bar, pie, line, area, scatter. */
   chartType: string;
@@ -165,6 +202,10 @@ interface ChartMemoInput {
   points: Array<Record<string, unknown>>;
   /** Series names when the chart is grouped/stacked. */
   seriesNames?: string[];
+  /** Whether `yKey` names a COLUMN on the points (ungrouped) rather than a
+   *  category VALUE synthesized per group (grouped/stacked). Only a column can be
+   *  checked against the points; default true. */
+  yKeyIsColumn?: boolean;
   formatValue?: (value: unknown) => string;
 }
 
@@ -180,6 +221,19 @@ interface ChartMemoInput {
 export function buildChartMemo(input: ChartMemoInput): string {
   const { chartType, xKey, yKey, points, seriesNames, formatValue } = input;
   if (!points.length) return '';
+  // Publish NOTHING when the plotted columns are not on the points.
+  //
+  // This is the grounding half of the column-case defect (see
+  // lib/view-column-refs.ts). A chart whose `xAxis.field` / `series[].field` do
+  // not match the result set still has non-empty `points` - chartData copies every
+  // row verbatim - so the length guard above passes, the chart renders axes with no
+  // marks, and this function would go on to describe a series of NaNs and blanks:
+  // "0 total, min - (), max - ()". The agent reads that as the finding. An empty
+  // memo makes the chart silent instead of wrong, which is the only safe direction
+  // for a channel the user cannot see.
+  const first = points[0] as Record<string, unknown>;
+  if (!(xKey in first)) return '';
+  if ((input.yKeyIsColumn ?? true) && !(yKey in first)) return '';
   const fmt = formatValue ?? ((v: unknown) => (typeof v === 'number' ? v.toLocaleString() : String(v ?? '-')));
 
   const labelOf = (p: Record<string, unknown>) => memoScalar(p[xKey], 30);

@@ -49,10 +49,14 @@ import { inlineRegistry } from '../../fleet_sa_app/ui/src/lib/inline-registry';
 // header on why the compiler defaults are mirrored rather than imported.
 import {
   deriveInlineLegend, synthesizeTooltip, humanizeColumn, formatDomainValue,
-  COMPILER_DEFAULTS, type LayerFacts,
+  encodingColumns, COMPILER_DEFAULTS, type LayerFacts,
 } from '../../fleet_sa_app/ui/src/lib/map/inline-legend';
 import type { InlineComponentDef } from '../../fleet_sa_app/ui/src/lib/types';
 import { parseDynamicSpec } from '../../fleet_sa_app/ui/src/lib/view-spec-schema';
+// Pure memo builders: the grounding channel the user cannot see.
+import { buildKpiMemo, buildChartMemo } from '../../fleet_sa_app/ui/src/lib/agent-memo';
+// Column-reference normalization for the non-Map areas (default-deny by PATH).
+import { COLUMN_REF_PATHS, NO_COLUMN_REFS } from '../../fleet_sa_app/ui/src/lib/view-column-refs';
 // The verb-side copies of the shared constants, compared below. Aliased so a
 // reader cannot mistake one side for the other.
 import {
@@ -60,6 +64,7 @@ import {
   MAP_LAYER_TYPES as VERB_MAP_LAYER_TYPES,
   MAP_SPEC_VERSION as VERB_MAP_SPEC_VERSION,
   REQUIRED_LAYER_ENCODINGS as VERB_REQUIRED_ENCODINGS,
+  RENDER_COMPONENTS as VERB_RENDER_COMPONENTS,
 } from './src/codes';
 // Geometry, the padding clamp and detection carry REAL runtime imports (h3-js),
 // unlike the type-only validators above, so this package declares h3-js as a
@@ -850,6 +855,227 @@ for (const [type, fields] of Object.entries(VERB_REQUIRED_ENCODINGS)) {
   chk(`parity: the client also rejects a bare '${type}' (verb needs ${fields.join('+')})`,
     errs.length === 1, errs.join('; '));
 }
+
+// ---------------------------------------------------------------------------
+// encodingColumns: the columns named in the "returned rows but drew nothing"
+// notice.
+//
+// Untestable until now. It lived in the deck.gl layer compiler, which cannot be
+// imported under tsx (@luma.gl/shadertools), so the ONLY function whose output a
+// user reads while a map is failing had no coverage at all - and its binding
+// reached render-map-inline across a package boundary, which a stale webpack
+// cache reported as "not exported" (4 warnings, 0 on a clean build). Moved to
+// inline-legend.ts, which is pure by construction, and asserted here.
+chk('encoding cols: h3 names the hex AND the measure',
+  JSON.stringify(encodingColumns(
+    { type: 'h3', hexColumn: 'h3_cell', valueColumn: 'poi_count', data: { query: 'SELECT 1' } } as never,
+  )) === '["h3_cell","poi_count"]');
+chk('encoding cols: h3 without a measure names just the hex',
+  JSON.stringify(encodingColumns(
+    { type: 'h3', hexColumn: 'h3_cell', data: { query: 'SELECT 1' } } as never,
+  )) === '["h3_cell"]');
+chk('encoding cols: scatterplot names lng+lat',
+  JSON.stringify(encodingColumns(
+    { type: 'scatterplot', lng: 'lon', lat: 'lat', data: { query: 'SELECT 1' } } as never,
+  )) === '["lon","lat"]');
+chk('encoding cols: arc names all four',
+  encodingColumns(
+    { type: 'arc', source: { lng: 'a', lat: 'b' }, target: { lng: 'c', lat: 'd' }, data: { query: 'SELECT 1' } } as never,
+  ).length === 4);
+chk('encoding cols: a geojson path names the geometry column only',
+  JSON.stringify(encodingColumns(
+    { type: 'path', geojsonColumn: 'g', data: { query: 'SELECT 1' } } as never,
+  )) === '["g"]');
+chk('encoding cols: an endpoint path names its four coordinates',
+  JSON.stringify(encodingColumns(
+    { type: 'path', start: { lng: 'a', lat: 'b' }, end: { lng: 'c', lat: 'd' }, data: { query: 'SELECT 1' } } as never,
+  )) === '["a","b","c","d"]');
+// The notice interpolates `.join(', ')`, so a hole would print "a, , b" and read
+// as a rendering bug in the very message explaining a rendering problem.
+for (const [label, layer] of [
+  ['a path missing one endpoint coordinate', {
+    type: 'path', start: { lng: 'a' }, end: { lng: 'c', lat: 'd' }, data: { query: 'SELECT 1' },
+  }],
+  ['an h3 layer with no hexColumn (rejected upstream, but never crash here)', {
+    type: 'h3', data: { query: 'SELECT 1' },
+  }],
+] as [string, unknown][]) {
+  const cols = encodingColumns(layer as never);
+  chk(`encoding cols: no empty entries for ${label}`,
+    cols.every((c) => typeof c === 'string' && c.length > 0), JSON.stringify(cols));
+}
+// It must stay OUT of the compiler: putting it back reintroduces both the
+// cross-package binding in an error path and the coverage hole. Reuses the
+// compiler source the COMPILER_DEFAULTS drift check already read.
+chk('encoding cols: not re-exported from the deck.gl compiler',
+  !/^export function encodingColumns/m.test(compilerSrc));
+
+// ---------------------------------------------------------------------------
+// render_view column references: the same case defect as the map, in seven more
+// agent-authorable components.
+//
+// parseDynamicSpec copies `data` wholesale and `config` as a permissive
+// passthrough, so `mapping.metrics[].column`, `config.columns[].field`,
+// `config.rowKey` and friends were never validated OR normalized. An UPPERCASE
+// reference indexes a row key that /api/query has lowercased, so it matches
+// nothing - and MetricCards / Chart then publish that placeholder into the
+// agent's GROUNDING MEMO, which is worse than the blank map: the agent quotes a
+// dash as a real value.
+const area = (component: string, body: Record<string, unknown>) => {
+  const spec = parseDynamicSpec(JSON.stringify({
+    layout: { default: { grid: '"a"' } },
+    areas: { a: { component, ...body } },
+  }));
+  if (!spec.ok) return { ok: false as const, errors: spec.errors };
+  return { ok: true as const, area: spec.spec.areas.a as unknown as Record<string, any> };
+};
+
+const mc = area('MetricCards', {
+  data: { query: 'SELECT 1', mapping: { metrics: [{ column: 'DWELL_MINUTES', label: 'Dwell Minutes' }] } },
+});
+chk('view refs: MetricCards column is lowercased',
+  mc.ok && mc.area.data.mapping.metrics[0].column === 'dwell_minutes',
+  mc.ok ? JSON.stringify(mc.area.data.mapping) : mc.errors.join('; '));
+// The trap that dictated the whole design: `label` is a COLUMN name in
+// ComboBox/FilterBar and DISPLAY TEXT here. A walker keyed on the NAME `label`
+// would lowercase visible copy - trading a blank tile for corrupted wording.
+chk('view refs: a MetricCards display label is NOT lowercased',
+  mc.ok && mc.area.data.mapping.metrics[0].label === 'Dwell Minutes');
+
+const ch = area('Chart', {
+  data: { query: 'SELECT 1' },
+  config: { xAxis: { field: 'CITY', fieldType: 'category' }, series: [{ type: 'bar', field: 'TRIPS', label: 'Trips', groupBy: 'VEHICLE_TYPE' }] },
+});
+chk('view refs: Chart xAxis/series/groupBy are lowercased',
+  ch.ok && ch.area.config.xAxis.field === 'city'
+  && ch.area.config.series[0].field === 'trips'
+  && ch.area.config.series[0].groupBy === 'vehicle_type',
+  ch.ok ? JSON.stringify(ch.area.config) : ch.errors.join('; '));
+chk('view refs: a Chart series display label is NOT lowercased',
+  ch.ok && ch.area.config.series[0].label === 'Trips');
+
+const ct = area('ClickableTable', {
+  data: { query: 'SELECT 1' },
+  config: {
+    rowKey: 'TRAILER_ID',
+    columns: [{ field: 'TRAILER_ID', header: 'Trailer ID' }],
+    defaultSort: { column: 'SAVINGS_EUR', direction: 'desc' },
+    exceptionFirst: { column: 'STATUS', values: ['LATE'] },
+  },
+  emits: { selected_trailer: 'selection', selected_site: 'SITE_NAME' },
+});
+chk('view refs: ClickableTable rowKey + columns + sorts are lowercased',
+  ct.ok && ct.area.config.rowKey === 'trailer_id'
+  && ct.area.config.columns[0].field === 'trailer_id'
+  && ct.area.config.defaultSort.column === 'savings_eur'
+  && ct.area.config.exceptionFirst.column === 'status',
+  ct.ok ? JSON.stringify(ct.area.config) : ct.errors.join('; '));
+chk('view refs: a column HEADER is not lowercased', ct.ok && ct.area.config.columns[0].header === 'Trailer ID');
+chk('view refs: an emit source column is lowercased', ct.ok && ct.area.emits.selected_site === 'site_name');
+// 'selection'/'highlight' are sentinels resolved to config.rowKey, not columns.
+chk('view refs: the selection SENTINEL survives untouched', ct.ok && ct.area.emits.selected_trailer === 'selection');
+// exceptionFirst.values are row VALUES, not column names - lowercasing them would
+// silently stop matching the data.
+chk('view refs: exceptionFirst VALUES are untouched', ct.ok && ct.area.config.exceptionFirst.values[0] === 'LATE');
+
+const cb = area('ComboBox', { data: { query: 'SELECT 1', mapping: { value: 'REGION', label: 'REGION_LABEL' } } });
+chk('view refs: ComboBox mapping value AND label are lowercased (both ARE columns here)',
+  cb.ok && cb.area.data.mapping.value === 'region' && cb.area.data.mapping.label === 'region_label',
+  cb.ok ? JSON.stringify(cb.area.data.mapping) : cb.errors.join('; '));
+
+// Emit normalization is scoped to the components that actually resolve an emit
+// value against a ROW (ClickableTable). ComboBox and MetricCards read emit KEYS
+// and ignore the values, so touching them would be a guess about a string nobody
+// indexes a row with. Asserted so widening ROW_SOURCED_EMITS is a test failure
+// rather than an invisible change of scope - without this the scoping claim in
+// view-column-refs.ts is untestable, and a mutation that widened it passed.
+const mcEmit = area('MetricCards', {
+  data: { query: 'SELECT 1', mapping: { metrics: [{ column: 'TRIPS', label: 'Trips' }] } },
+  emits: { selected_metric: 'Trips_Total' },
+});
+chk('view refs: an emit value on a NON-row-sourced component is untouched',
+  mcEmit.ok && mcEmit.area.emits.selected_metric === 'Trips_Total',
+  mcEmit.ok ? JSON.stringify(mcEmit.area.emits) : mcEmit.errors.join('; '));
+
+const ed = area('EntityDetail', {
+  data: { query: 'SELECT 1' },
+  config: {
+    entity: 'Trailer',
+    pk_field: 'TRAILER_ID',
+    name_field: 'TRAILER_NAME',
+    parent_view: 'fleet',
+    status_field: 'STATUS',
+    subtitle_fields: ['CITY', 'DEPOT'],
+    properties: [{ field: 'SAVINGS_EUR', label: 'Savings', id_field: 'SITE_ID' }],
+    sections: [
+      { type: 'text', field: 'NOTES' },
+      { type: 'related_table', query: 'SELECT 1', columns: [{ field: 'LOAD_ID' }] },
+    ],
+    dependency_check: [{ field: 'SITE_ID', status_field: 'SITE_STATUS', name_field: 'SITE_NAME', version_field: 'SITE_VERSION', entity: 'Site', detail_view: 'site' }],
+  },
+});
+chk('view refs: EntityDetail pk/name/status/subtitles are lowercased',
+  ed.ok && ed.area.config.pk_field === 'trailer_id' && ed.area.config.name_field === 'trailer_name'
+  && ed.area.config.status_field === 'status'
+  && JSON.stringify(ed.area.config.subtitle_fields) === '["city","depot"]',
+  ed.ok ? JSON.stringify(ed.area.config) : ed.errors.join('; '));
+chk('view refs: EntityDetail properties + nested section columns are lowercased',
+  ed.ok && ed.area.config.properties[0].field === 'savings_eur'
+  && ed.area.config.properties[0].id_field === 'site_id'
+  && ed.area.config.sections[0].field === 'notes'
+  && ed.area.config.sections[1].columns[0].field === 'load_id');
+chk('view refs: the dependency field that feeds /api/write record_id is lowercased',
+  ed.ok && ed.area.config.dependency_check[0].field === 'site_id'
+  && ed.area.config.dependency_check[0].status_field === 'site_status');
+// `entity` is a manifest key and `parent_view`/`detail_view` are view ids - not
+// columns, and lowercasing them would break the write gate and the navigation.
+chk('view refs: the entity manifest key is NOT lowercased', ed.ok && ed.area.config.entity === 'Trailer');
+chk('view refs: a dependency entity/detail_view is NOT lowercased',
+  ed.ok && ed.area.config.dependency_check[0].entity === 'Site');
+
+// Every component the verb accepts must be a deliberate decision: either it has
+// paths or it is listed as having no column refs. Otherwise the next component
+// added inherits the silent-blank-cell behaviour by default.
+const classified = new Set<string>([...Object.keys(COLUMN_REF_PATHS), ...NO_COLUMN_REFS]);
+const unclassified = VERB_RENDER_COMPONENTS.filter((c) => !classified.has(c));
+chk('view refs: every agent-authorable component is classified',
+  unclassified.length === 0, `unclassified: ${unclassified.join(', ')}`);
+
+// ---------------------------------------------------------------------------
+// GROUNDING: a wrong column must publish NOTHING, not a placeholder.
+//
+// The rendering half of the case defect is visible - a dash on a tile, an empty
+// plot. The grounding half is not: MetricCards and Chart also publish to the
+// agent memo, so `Label=-` and a series of NaNs reach the model as if they were
+// measurements, and the agent quotes them. That is strictly worse than the blank
+// map, which at least looked broken. Both builders are pure so this is testable
+// without React; the guards were moved out of the components for exactly that.
+chk('memo: a KPI whose column is absent is DROPPED, not published as a dash',
+  buildKpiMemo({ trips: 42 }, [
+    { column: 'trips', label: 'Trips', value: '42' },
+    { column: 'DWELL_MINUTES', label: 'Dwell', value: '-' },
+  ]) === 'Trips=42');
+chk('memo: no matching columns at all means an EMPTY memo',
+  buildKpiMemo({ trips: 42 }, [{ column: 'DWELL_MINUTES', label: 'Dwell', value: '-' }]) === '');
+// A column that IS present and holds NULL is real data, and '-' is honest.
+chk('memo: a present-but-NULL column is still reported',
+  buildKpiMemo({ dwell: null }, [{ column: 'dwell', label: 'Dwell', value: '-' }]) === 'Dwell=-');
+chk('memo: an empty row publishes nothing', buildKpiMemo(null, [{ column: 'a', label: 'A', value: '1' }]) === '');
+
+const chartPoints = [{ city: 'SF', trips: 10 }, { city: 'LA', trips: 20 }];
+chk('memo: a chart with matching columns still summarizes',
+  buildChartMemo({ chartType: 'bar', xKey: 'city', yKey: 'trips', points: chartPoints }).includes('max'));
+chk('memo: NEG an unmatched yKey publishes nothing (empty plot, non-empty points)',
+  buildChartMemo({ chartType: 'bar', xKey: 'city', yKey: 'TRIPS', points: chartPoints }) === '');
+chk('memo: NEG an unmatched xKey publishes nothing',
+  buildChartMemo({ chartType: 'bar', xKey: 'CITY', yKey: 'trips', points: chartPoints }) === '');
+// A grouped chart's yKey is a category VALUE synthesized per group, so it is not
+// on the points by construction - checking it would silence every stacked chart.
+chk('memo: a grouped chart is NOT silenced by its category yKey',
+  buildChartMemo({
+    chartType: 'stacked bar', xKey: 'city', yKey: 'ebike',
+    points: [{ city: 'SF', ebike: 3 }], seriesNames: ['ebike'], yKeyIsColumn: false,
+  }) !== '');
 
 console.log(fails ? `\n${fails} FAILURE(S) of ${checks}` : `\nall ${checks} assertions passed`);
 process.exit(fails ? 1 : 0);

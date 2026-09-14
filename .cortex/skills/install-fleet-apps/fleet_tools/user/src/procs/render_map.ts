@@ -49,9 +49,8 @@ export const render_map = defineProc({
     'Do NOT redraw geometry a routing tool returned (get_directions, compute_isochrone, ' +
     'optimize_routes, find_poi, catchment): those draw their own result inline, so this would ' +
     'produce TWO maps of one answer. ' +
-    'Do NOT author a `legend`: the client DERIVES it from the colours each layer actually draws ' +
-    '(a continuous gradient with the real min/max for a valueColumn layer, one swatch per palette ' +
-    'entry otherwise), so a hand-written key would contradict the map. Set `legendLabel` on a layer ' +
+    'Do NOT author a `legend`: the client DERIVES it from the colours each layer actually draws, ' +
+    'so a hand-written key would contradict the map. Set `legendLabel` on a layer ' +
     'to name it, and a `tooltip` template like "<b>{H3_CELL_R7}</b><br/>{DWELL_MINUTES} min" to say ' +
     'what a hover shows - hovering is enabled for you, and a layer with no template gets one ' +
     'synthesized from its columns. ' +

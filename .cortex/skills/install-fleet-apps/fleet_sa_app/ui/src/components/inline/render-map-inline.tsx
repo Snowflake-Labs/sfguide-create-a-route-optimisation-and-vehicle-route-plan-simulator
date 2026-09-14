@@ -24,10 +24,11 @@ import type { Layer } from '@deck.gl/core';
 import MapView from '../views/areas/map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, LegendItem } from '@/lib/map/layer-spec';
-import { compileLayerWithFit, encodingColumns } from '@/lib/map/layer-compiler';
+import { compileLayerWithFit } from '@/lib/map/layer-compiler';
 import { parseMapSpec, type InlineMapSpec } from '@/lib/map-spec-schema';
 import {
-  deriveInlineLegend, synthesizeTooltip, type LayerFacts, type ValueDomain,
+  deriveInlineLegend, synthesizeTooltip, encodingColumns,
+  type LayerFacts, type ValueDomain,
 } from '@/lib/map/inline-legend';
 import { unwrapVerbResult } from '@/lib/tool-names';
 import { useViewData } from '@/hooks/use-view-data';

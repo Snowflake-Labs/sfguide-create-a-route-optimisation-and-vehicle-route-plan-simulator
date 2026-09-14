@@ -230,6 +230,64 @@ export function deriveInlineLegend(
   return out.slice(0, MAX_LEGEND_ITEMS);
 }
 
+/** Columns a layer reads to PLACE a feature, for a diagnostic message.
+ *
+ *  Lives here, next to tooltipExcludes, rather than in the deck.gl compiler
+ *  where it was first written. Two reasons, both measured:
+ *
+ *  1. It is a pure function of the spec - no rows, no deck.gl - and its only
+ *     callers are the "returned rows but drew nothing" notices in
+ *     render-map-inline. Reaching it through `@/lib/map/layer-compiler` ->
+ *     `export * from '@fleet-kit/core/map'` made the binding depend on webpack
+ *     tracing a symbol across a package boundary, in the one code path that runs
+ *     when a map is already failing. A stale webpack cache reported it as
+ *     "not exported" (4 warnings; 0 on a clean build), which was benign here but
+ *     is not a property worth relying on for an error handler.
+ *  2. Nothing could TEST it there: verify_map_spec.mts runs under tsx, where any
+ *     transitive @deck.gl import dies in @luma.gl/shadertools. `drawnCount`
+ *     stays in the compiler because it needs pathData / geoFeatures; this does
+ *     not need anything.
+ *
+ *  Deliberately NOT merged with tooltipExcludes, which answers a different
+ *  question: an h3 `hexColumn` is an encoding column AND worth showing on hover,
+ *  so it appears here but not there. Kept adjacent so the two stay comparable.
+ */
+export function encodingColumns(layer: LayerSpec): string[] {
+  // Every branch is filtered, because the caller interpolates the result with
+  // `.join(', ')` into a user-facing notice. A hole prints "lon, , lat" - or, for
+  // an h3 layer with no hexColumn at all, "no usable value in ." - which reads as
+  // a bug in the message explaining the bug. validateMapLayers now rejects a
+  // missing encoding up front, but this runs in an ERROR path reached from an
+  // authored app-views.json Map area too, so it must not assume that gate ran.
+  const cols = (() => {
+    switch (layer.type) {
+      case 'scatterplot': {
+        const s = layer as ScatterplotLayerSpec;
+        return [s.lng, s.lat];
+      }
+      case 'arc': {
+        const s = layer as ArcLayerSpec;
+        return [s.source?.lng, s.source?.lat, s.target?.lng, s.target?.lat];
+      }
+      case 'h3': {
+        const s = layer as H3HexagonLayerSpec;
+        return [s.hexColumn, s.valueColumn];
+      }
+      case 'path': {
+        const s = layer as PathLayerSpec;
+        return s.geojsonColumn
+          ? [s.geojsonColumn]
+          : [s.start?.lng, s.start?.lat, s.end?.lng, s.end?.lat];
+      }
+      case 'geojson':
+        return [(layer as GeoJsonLayerSpec).geojsonColumn];
+      default:
+        return [];
+    }
+  })();
+  return cols.filter((c): c is string => typeof c === 'string' && c.length > 0);
+}
+
 /** Columns that carry geometry or raw coordinates rather than something a reader
  *  wants in a tooltip. */
 function tooltipExcludes(layer: LayerSpec): Set<string> {

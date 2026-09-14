@@ -28,8 +28,12 @@ type Row = Record<string, any>;
  * about it.
  */
 export declare function drawnCount(spec: LayerSpec, rows: Row[]): number;
-/** Column names `spec` reads to place a feature, for a diagnostic message. */
-export declare function encodingColumns(spec: LayerSpec): string[];
+/** Column names `spec` reads to place a feature: see `encodingColumns` in the SA
+ *  app's lib/map/inline-legend.ts. It was here, but it needs nothing from this
+ *  module and nothing here can be imported under tsx (deck.gl dies in
+ *  @luma.gl/shadertools), so its only caller reached it across a package
+ *  boundary and no test could cover it. `drawnCount` stays because it needs
+ *  pathData / geoFeatures. */
 export declare function compileLayerWithFit(spec: LayerSpec, rows: Row[], viewState: Record<string, unknown>, index: number, hovered?: {
     layerId: string;
     value: unknown;

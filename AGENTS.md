@@ -251,6 +251,19 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
 # non-Map area must not be dragged into layer validation.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx --tsconfig ../../fleet_sa_app/ui/tsconfig.json verify_map_spec.mts
 
+# Assert every MCP tool description fits. The limit is 2500 characters PER TOOL and
+# it is enforced in exactly one place - `CREATE MCP SERVER`, at install time - with
+# an error that NAMES NO TOOL and fails the WHOLE bundle, so every verb in the
+# server disappears at once and the echoed spec is truncated. Adding ~440 characters
+# to `render_map` broke the entire user bundle install once, and finding the culprit
+# among 25 tools meant measuring by hand. `render_map` runs at ~95% of the cap, so
+# this fails at 2400 to leave the next edit somewhere to go. It IMPORTS the procs
+# rather than parsing them: a description concatenates literals and interpolates
+# constants (MAX_MAP_LAYERS, MAP_LAYER_TYPES, ALLOWED_DYNAMIC_DBS), and a regex that
+# re-implements that arithmetic is wrong by tens of characters exactly at the
+# boundary that matters.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_tool_descriptions.mts
+
 # Validate that no bundled verb source uses a JavaScript global the Snowflake
 # LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
 # catches this: `tsc` accepts it (the repo pulls in DOM and @types/node for the

@@ -11,6 +11,7 @@
 // FLEET_APP_DYNAMIC_READER). Mirrors ParsedViewDef / AreaConfig from view-renderer.tsx.
 import { AREA_COMPONENT_NAMES } from '@/lib/area-components';
 import { validateMapLayers } from '@/lib/map-spec-schema';
+import { normalizeAreaColumnRefs } from '@/lib/view-column-refs';
 import type { ParsedViewDef } from '@/components/views/view-renderer';
 
 const ALLOWED_COMPONENTS = new Set<string>(AREA_COMPONENT_NAMES);
@@ -112,12 +113,21 @@ export function parseDynamicSpec(raw: unknown, id = '__dynamic__'): ParseResult 
         });
         if (errors.length > before) continue;
       }
-      cleanAreas[name] = {
+      // Column references are lowercased to match the row keys /api/query
+      // produces (it lowercases every column name, always). Without this an
+      // agent writing `column: 'DWELL_MINUTES'` - which render_view's own
+      // description teaches, by naming objects in caps - indexes every row with a
+      // key that does not exist: '-' on every metric tile, blank cells under
+      // correct headers, an empty plot with axes. Two of those also publish the
+      // placeholder into the agent's grounding memo, so the agent quotes it as a
+      // real value. See lib/view-column-refs.ts for why this is default-deny by
+      // PATH rather than a walk over key names.
+      cleanAreas[name] = normalizeAreaColumnRefs(comp, {
         component: comp,
         data,
         ...(config ? { config } : {}),
         ...(isObject(areaRaw.emits) ? { emits: areaRaw.emits } : {}),
-      };
+      });
     }
   }
 

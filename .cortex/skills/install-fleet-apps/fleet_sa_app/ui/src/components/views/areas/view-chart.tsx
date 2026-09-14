@@ -130,12 +130,17 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
       };
       const points = groupedData ? groupedData.data : chartData;
       if (!points.length) return '';
+      // buildChartMemo drops the memo entirely when the plotted columns are not on
+      // the points - `points` is non-empty in that case (chartData copies every row
+      // verbatim), so an empty plot would otherwise be described as a real series.
+      // A grouped chart's yKey is a category VALUE, not a column, hence the flag.
       return buildChartMemo({
         chartType: kindOf(),
         xKey: config.xAxis.field,
         // A grouped chart has one value column per category, so report the first
         // category as the y key and name the rest as series.
         yKey: groupedData ? (groupedData.categories[0] ?? config.series[0].field) : config.series[0].field,
+        yKeyIsColumn: !groupedData,
         points,
         seriesNames: groupedData ? groupedData.categories : series.map((s) => s.label).filter(Boolean),
       });

@@ -112,25 +112,12 @@ export function drawnCount(spec: LayerSpec, rows: Row[]): number {
   }
 }
 
-/** Column names `spec` reads to place a feature, for a diagnostic message. */
-export function encodingColumns(spec: LayerSpec): string[] {
-  switch (spec.type) {
-    case 'scatterplot':
-      return [spec.lng, spec.lat];
-    case 'arc':
-      return [spec.source.lng, spec.source.lat, spec.target.lng, spec.target.lat];
-    case 'h3':
-      return spec.valueColumn ? [spec.hexColumn, spec.valueColumn] : [spec.hexColumn];
-    case 'path':
-      return spec.geojsonColumn
-        ? [spec.geojsonColumn]
-        : [spec.start?.lng, spec.start?.lat, spec.end?.lng, spec.end?.lat].filter((c): c is string => !!c);
-    case 'geojson':
-      return [spec.geojsonColumn];
-    default:
-      return [];
-  }
-}
+/** Column names `spec` reads to place a feature: see `encodingColumns` in the SA
+ *  app's lib/map/inline-legend.ts. It was here, but it needs nothing from this
+ *  module and nothing here can be imported under tsx (deck.gl dies in
+ *  @luma.gl/shadertools), so its only caller reached it across a package
+ *  boundary and no test could cover it. `drawnCount` stays because it needs
+ *  pathData / geoFeatures. */
 
 export function compileLayerWithFit(
   spec: LayerSpec,

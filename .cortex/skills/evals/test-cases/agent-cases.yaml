@@ -199,6 +199,59 @@ cases:
           as a supporting view alongside the map, not instead of it. The assistant
           must NOT claim maps cannot be rendered.
 
+  # --- render_map, travel-time-scoped density: ONE map, not two ---------------
+  # The prompt that produced two maps and two empty stubs, verbatim.
+  #
+  # The case above ("dwell density in the us") does NOT cover this. There the
+  # failure was drawing no map at all; here the agent drew a perfectly good
+  # 45-minute isochrone (automatically - compute_isochrone is a mapTool, so its
+  # geometry is drawn client-side with no instruction involved) and THEN called
+  # render_map for the H3 layer. Two maps, one question. The user wanted one
+  # picture: hexes clipped to the ring, shaded by POI count.
+  #
+  # The existing no-duplicate-map rule did not catch it, because the two are
+  # DIFFERENT geometry - it only forbids redrawing the SAME geometry. The fix
+  # names the composition (an ISOCHRONES layer + an h3 layer joined with
+  # ST_WITHIN), so the assertions check that the ring is a LAYER rather than a
+  # separate tool call.
+  #
+  # The absence assertion is the point of the case and cannot be expressed as a
+  # `verb` assertion (that type only proves a row EXISTS), so it is a `sql` one.
+  # Measured for reference: the h3 query returns 68 POIs in its top cell, so a
+  # correct answer has real numbers to quote.
+  - id: render-map-travel-time-density
+    prompt: >-
+      show me density of pois within 45 min ebike travel time around SF airport
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: sql
+        description: >-
+          compute_isochrone was NOT called - the ring belongs in a render_map layer,
+          and calling both is what drew two maps for one question
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'compute_isochrone'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: sql
+        description: exactly one render_map call, so the answer is one picture
+        text: >-
+          SELECT (COUNT(*) = 1) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'render_map' AND OUTCOME = 'ok'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant answered with a SINGLE map that combines two layers: a
+          drive-time / cycling-time ring around SFO obtained live from
+          ROUTING_PLATFORM.CONTRACT.ISOCHRONES, and an H3 hexagon layer over POIs
+          restricted to that ring (ST_WITHIN or an equivalent spatial predicate)
+          and shaded by a COUNT. It must NOT call compute_isochrone and then draw a
+          second map. The isochrone profile must be cycling-electric (the loaded
+          e-bike profile); cycling-regular is wrong and returns NULL geometry with
+          no error. Quoting POI counts per cell is good; a bar chart of POI
+          categories is acceptable only ALONGSIDE the map, never instead of it.
+
   # --- data_to_chart, UN-HINTED phrasing -----------------------------------
   # The counterpart to the render_map cases above, and the question that exposed
   # the rendering bug: "show me Visits by Facility Type" produced a perfectly

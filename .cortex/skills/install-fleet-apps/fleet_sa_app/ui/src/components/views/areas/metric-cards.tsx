@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
-import { useAgentMemo } from '@/lib/agent-memo';
+import { buildKpiMemo, useAgentMemo } from '@/lib/agent-memo';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -79,24 +79,17 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
   // view with more than one MetricCards area does not clobber a sibling's memo.
   const kpiMemo = useMemo(() => {
     const row = data?.rows?.[0];
-    if (!row || metrics.length === 0) return '';
-    const MAX_LEN = 600;
-    const pairs: string[] = [];
-    for (const m of metrics) {
-      const label = interpolateTokens(m.label, display);
+    // The absent-column rule and the length bound live in buildKpiMemo so they can
+    // be tested without React: a metric whose column is not on the row is dropped
+    // rather than published as `Label=-`, which the agent would quote as the KPI.
+    return buildKpiMemo(row, metrics.map((m) => {
       const suffix = unitSuffix(display, m.unit);
-      const val = formatValue(row[m.column], m.format) + (suffix ? suffix : '');
-      pairs.push(`${label}=${val}`);
-    }
-    let out = '';
-    let truncated = 0;
-    for (let i = 0; i < pairs.length; i++) {
-      const next = out ? `${out}; ${pairs[i]}` : pairs[i];
-      if (next.length > MAX_LEN) { truncated = pairs.length - i; break; }
-      out = next;
-    }
-    if (truncated > 0) out += `; (+${truncated} more)`;
-    return out;
+      return {
+        column: m.column,
+        label: interpolateTokens(m.label, display),
+        value: formatValue(row?.[m.column], m.format) + (suffix ? suffix : ''),
+      };
+    }));
   }, [data, metrics, display]);
 
   // Published through the shared gate rather than a local effect. The local one

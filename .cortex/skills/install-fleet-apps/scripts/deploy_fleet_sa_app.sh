@@ -77,6 +77,26 @@ fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  connection=$CONNECTION"
 
+# Say where the tag CAME FROM, and flag it when the file is not what HEAD says.
+# image-versions.env is a single shared line that several sessions edit, and this
+# script reads it exactly once at start. A deploy has already read a tag that had
+# been reverted underneath it moments earlier by a parallel commit, then built and
+# pushed under the OTHER session's tag - two different images now share it. The
+# tag itself looked perfectly normal in the log, so nothing suggested checking.
+if [ -n "${IMAGE_TAG_OVERRIDE:-}" ] || [ -n "${IMAGE_TAG:-}" ] && [ "${IMAGE_TAG}" != "${FLEET_SA_APP_TAG}" ]; then
+  echo "  tag source=IMAGE_TAG env override (image-versions.env says ${FLEET_SA_APP_TAG})"
+else
+  echo "  tag source=$VERSION_FILE"
+fi
+if git -C "$REPO_ROOT" diff --quiet -- "$VERSION_FILE" 2>/dev/null; then
+  : # committed, matches HEAD
+else
+  HEAD_TAG=$(git -C "$REPO_ROOT" show "HEAD:$(git -C "$REPO_ROOT" ls-files --full-name "$VERSION_FILE" 2>/dev/null)" 2>/dev/null \
+    | sed -n 's/^FLEET_SA_APP_TAG=//p')
+  echo "  NOTE: $(basename "$VERSION_FILE") is UNCOMMITTED (HEAD says '${HEAD_TAG:-unknown}', using '$IMAGE_TAG')."
+  echo "        On a shared working tree, confirm this tag is yours before pushing an image under it."
+fi
+
 # Resolve the image repo: an explicit env export (installer path) wins, else the
 # repo the live service already points at (so a redeploy never migrates repos),
 # else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
@@ -129,6 +149,31 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       exit 1
     fi
     echo "  OK: '$BUNDLE_VERIFY_TOKEN' present in built chunks."
+
+    # Second sentinel, from the APP's own code. The kit token above cannot prove
+    # the app code shipped: `cellToBoundary` predates every recent change, so it
+    # is satisfied by a bundle built from an OLD working tree. That is not
+    # hypothetical - a deploy once ran during a transient clean-tree window while
+    # a parallel session was committing, read a tag from an image-versions.env
+    # that had been reverted underneath it, built a tree that may not have
+    # contained the current diff, and reported success. Both sentinels passed.
+    #
+    # A user-facing string literal is used because literals survive minification
+    # while function and variable names do not. If the wording changes, this fails
+    # loudly and the token is meant to be updated with it - that is the contract,
+    # same as BUNDLE_VERIFY_TOKEN.
+    APP_VERIFY_TOKEN="${APP_VERIFY_TOKEN:-none could be drawn}"
+    echo "[1c/7] Verify app code landed in bundle (token=\"$APP_VERIFY_TOKEN\")..."
+    if ! grep -rqlF "$APP_VERIFY_TOKEN" "$CHUNK_DIR" 2>/dev/null; then
+      echo "ERROR: app bundle verification failed - \"$APP_VERIFY_TOKEN\" not found in $CHUNK_DIR"
+      echo "       The built bundle does NOT contain the current app code, so this"
+      echo "       image would ship an older UI than the working tree."
+      echo "       Either the wording changed (update APP_VERIFY_TOKEN) or the build"
+      echo "       ran against a stale cache / a different tree. Try:"
+      echo "         rm -rf '$UI_DIR/.next' && redeploy"
+      exit 1
+    fi
+    echo "  OK: app sentinel present in built chunks."
   fi
 
   echo "[2/7] Login to SPCS image registry..."
