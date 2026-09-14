@@ -475,6 +475,47 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
 # negative-tested (each rule in both its "wrong form" and "absent" shape).
 python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
 
+# A number a user reads must not carry more than two decimals. The defect arrives
+# from two directions at once, which is why one fix is never enough. In SQL: a
+# row-level view ROUNDs to 2dp and casts back to FLOAT, 2dp is not exactly
+# representable in binary, so SUM over a few hundred rows re-accumulates the error
+# and SV_LABOR returned 21289.670000000002 for TOTAL_OT_PREMIUM. Nothing failed -
+# the total was right to the cent - and the app's own declarative views already
+# wrapped the identical sums in ROUND, so only the Analyst / SV_* path was ugly.
+# In the client: every render site stringified rows verbatim (`String(row[k])`),
+# so even correct SQL prints whatever a verb or an agent-invented column hands it,
+# and MetricCards/tables publish to the agent memo, where a float artifact is
+# quoted back as fact.
+#
+# RULE C asserts the coordinate exemption BY NAME and asserts it is reachable from
+# decimalsFor(), not merely defined - 2dp of latitude is ~1 km, and an unused
+# predicate is the same as no predicate. RULE D is a vacuity counter: it caught
+# this gate's own REPO path being one level short, which had rules A and C
+# silently inspecting ZERO files while reporting nothing wrong. RULE B's own scan
+# then found three semantic-view files (behaviour, deployment, emergency) that a
+# hand inventory had missed.
+#
+# RULE E exists because the FIRST version of this gate, written for exactly this
+# defect class, PASSED while the render_map tooltip in
+# components/inline/render-map-inline.tsx held a verbatim copy of the view-map
+# bug - the hand-maintained FORMATTED_SITES simply did not list the file, so it
+# inspected 10 sites and found nothing. It also missed view-combo-box and
+# view-filter-bar, whose option TEXT is a query column. So rule E scans
+# components/inline and views/areas for any component that reads a row or feature
+# value by dynamic key AND emits it unformatted, and fails if it is in neither
+# list. Two details are load-bearing and were each proved by a false result:
+# RAW_CELL carries a negative lookbehind on `=` because a JSX `value={String(...)}`
+# ATTRIBUTE must stay raw (it is written into viewState and bound into dependent
+# queries, so formatting it changes the filter, not its presentation - negative
+# test 11 is the control that asserts the gate still allows it); and the
+# string-only review of route-map-inline pins the FEATURE properties read inside
+# getTooltip, not `props.*` anywhere in the file, which on the first run reported
+# three false positives from the component's own React props.
+#
+# Do NOT widen MAX_DECIMALS to make this pass.
+# 11 mutations negative-tested via scripts/check_number_formatting_negative.sh.
+python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
+
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
 # report OK / EMPTY / ERROR per area. This is the only check that answers "will the
 # pages have data?" - every other gate verifies objects were CREATED, not that they

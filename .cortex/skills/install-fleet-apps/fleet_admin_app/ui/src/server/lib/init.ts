@@ -1455,8 +1455,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
             -- against doing nothing; the direct-return baseline it is compared with is
             -- computed alongside the proposal, not here. Costed on the residual-
             -- inclusive empty distance for the reason given above.
-            (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
-              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+            ROUND((q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM, 2) AS NET_BENEFIT_USD,
             (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
             q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
             q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,

@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_BACKLOAD_MATCHING - Backload matching semantic view (neutral FLEET_APP contract)
 -- Source: FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS + VW_PROPOSAL_DECISIONS
 --         (backload_matching pack; rebuilt from SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT).
@@ -49,18 +62,18 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
 
   METRICS (
     offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
-    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
-    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
-    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
+    , offers.avg_price_usd AS ROUND(AVG(price_usd), 2) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS ROUND(SUM(price_usd), 2) COMMENT = 'Total offer price (USD)'
+    , offers.avg_weight_kg AS ROUND(AVG(weight_kg), 2) COMMENT = 'Average offer weight (kg)'
     , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
-    , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
-    , trailers.avg_max_payload_kg AS AVG(max_payload_kg) COMMENT = 'Average max payload (kg)'
+    , trailers.avg_eta_min AS ROUND(AVG(eta_min), 2) COMMENT = 'Average minutes to ETA'
+    , trailers.avg_max_payload_kg AS ROUND(AVG(max_payload_kg), 2) COMMENT = 'Average max payload (kg)'
     , decisions.total_decisions AS COUNT(DISTINCT DECISION_ID) WITH SYNONYMS ('number of decisions', 'matches') COMMENT = 'Distinct backload decisions'
-    , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
-    , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
-    , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
-    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
-    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
+    , decisions.avg_score AS ROUND(AVG(score), 2) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
+    , decisions.avg_empty_km AS ROUND(AVG(empty_km), 2) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
+    , decisions.total_empty_km AS ROUND(SUM(empty_km), 2) COMMENT = 'Total empty/deadhead km'
+    , decisions.total_net_benefit_usd AS ROUND(SUM(net_benefit_usd), 2) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS ROUND(AVG(net_benefit_usd), 2) COMMENT = 'Average net benefit USD'
   )
 
   COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'

@@ -18,6 +18,7 @@ import { useViewData } from '@/hooks/use-view-data';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { formatCellValue } from '@/lib/format-number';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import type { SuspendedInfo } from '@/lib/routing-suspend';
@@ -198,7 +199,11 @@ function renderTooltip(template: string, object: Record<string, any>): string {
     }
     // Escaped: this string is returned in a deck.gl tooltip `html` field
     // (rendered via innerHTML), and column values can be arbitrary free text.
-    return v == null ? '' : escapeHtml(v);
+    // Formatted first: a tooltip is the densest numeric surface on the map, and
+    // a raw FLOAT sum used to print all 17 digits of 21289.670000000002. The
+    // token name is the column, so {LATITUDE} keeps its 5dp exemption.
+    if (v == null) return '';
+    return escapeHtml(formatCellValue(v, { column: String(col), grouping: true, empty: '' }));
   });
 }
 

@@ -12,6 +12,14 @@ import type { Operation } from '@/components/inline/confirm-action';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { stripCitationTags } from '@/lib/chart-citations';
+import { roundForDisplay } from '@/lib/format-number';
+
+// Raw tool-result viewer: still a surface a user reads, so numbers are capped at
+// the display precision here too. Applied as a JSON replacer rather than a string
+// rewrite, so the payload keeps its shape and only the rendered precision changes.
+function roundJsonNumbers(key: string, value: unknown): unknown {
+  return typeof value === 'number' ? roundForDisplay(value, key) : value;
+}
 
 // Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
@@ -245,7 +253,7 @@ function JsonViewer({ data }: { data: Record<string, unknown> }) {
             maxHeight: '200px',
           }}
         >
-          {JSON.stringify(data, null, 2)}
+          {JSON.stringify(data, roundJsonNumbers, 2)}
         </pre>
       )}
     </div>

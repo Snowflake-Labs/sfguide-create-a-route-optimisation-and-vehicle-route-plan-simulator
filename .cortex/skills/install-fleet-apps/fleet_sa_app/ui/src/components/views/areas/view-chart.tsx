@@ -25,7 +25,17 @@ import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildChartMemo, useAgentMemo } from '@/lib/agent-memo';
 import { chartPlotDiagnostic } from '@/lib/chart-encodings';
+import { formatNumber, formatCellValue } from '@/lib/format-number';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+// Axis ticks and tooltips had NO formatter at all, so a FLOAT metric printed its
+// full binary expansion on hover. Both go through the shared decimal policy; the
+// tooltip passes the series name as the column so a coordinate axis keeps 5dp.
+const numericTick = (v: unknown) => formatNumber(v, { compact: true, grouping: true }) ?? String(v ?? '');
+const tooltipFormatter = (value: unknown, name: unknown): [string, string] => [
+  formatCellValue(value, { column: name == null ? undefined : String(name), grouping: true }),
+  String(name ?? ''),
+];
+
 
 interface SeriesConfig {
   type: string;
@@ -206,7 +216,7 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
       <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             <Pie data={chartData} dataKey={valueField} nameKey={config.xAxis.field} outerRadius="80%" label>
               {chartData.map((_, i) => (
@@ -225,9 +235,9 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
-            <XAxis type="number" dataKey={config.xAxis.field} name={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis type="number" dataKey={series[0].field} name={series[0].label} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <XAxis type="number" dataKey={config.xAxis.field} name={config.xAxis.field} fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis type="number" dataKey={series[0].field} name={series[0].label} fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             {series.map((s, i) => (
               <Scatter key={s.field} name={s.label} data={chartData} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -245,8 +255,8 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
           <AreaChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             {series.map((s, i) => (
               <Area
@@ -273,8 +283,8 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
           <BarChart data={groupedData.data}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             {groupedData.categories.map((cat, i) => (
               <Bar key={cat} dataKey={cat} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -292,8 +302,8 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
           <BarChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             {series.map((s, i) => (
               <Bar key={s.field} dataKey={s.field} name={s.label} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -310,11 +320,11 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
         <LineChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
           <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-          <YAxis yAxisId="left" fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+          <YAxis yAxisId="left" fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
           {config.series.some((s) => s.yAxis === 'right') && (
-            <YAxis yAxisId="right" orientation="right" fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis yAxisId="right" orientation="right" fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
           )}
-          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+          <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
           <Legend wrapperStyle={{ fontSize: '12px' }} />
           {series.map((s, i) => (
             <Line

@@ -108,15 +108,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_EMERGENCY_RESPONS
     hazard_zones.zone_count AS COUNT(*)
       WITH SYNONYMS ('number of hazard zones', 'zone count', 'cells')
       COMMENT = 'Count of hazard cells'
-    , hazard_zones.avg_composite_score AS AVG(composite_score)
+    , hazard_zones.avg_composite_score AS ROUND(AVG(composite_score), 2)
       WITH SYNONYMS ('average risk', 'mean hazard score')
       COMMENT = 'Average blended hazard score'
-    , hazard_zones.max_composite_score AS MAX(composite_score)
+    , hazard_zones.max_composite_score AS ROUND(MAX(composite_score), 2)
       WITH SYNONYMS ('worst risk')
       COMMENT = 'Worst blended hazard score'
-    , hazard_zones.avg_wildfire_level AS AVG(wildfire_level)
+    , hazard_zones.avg_wildfire_level AS ROUND(AVG(wildfire_level), 2)
       COMMENT = 'Average wildfire hazard level'
-    , hazard_zones.avg_flood_level AS AVG(flood_level)
+    , hazard_zones.avg_flood_level AS ROUND(AVG(flood_level), 2)
       COMMENT = 'Average flood hazard level'
     , care_centers.center_count AS COUNT(DISTINCT CENTER_ID)
       WITH SYNONYMS ('number of centres', 'number of shelters')

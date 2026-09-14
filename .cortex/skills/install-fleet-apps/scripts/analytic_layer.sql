@@ -1004,7 +1004,7 @@ BEGIN
          SQFT, RENT, SQFT * RENT                                     AS ANNUAL_RENT,
          RENT * 0.45                                                 AS RATES,
          IFF(is_comp OR SQFT * RENT = 0, NULL,
-             (REFHH * SPEND) / (SQFT * RENT))                        AS VALUE_PER_COST,
+             ROUND((REFHH * SPEND) / (SQFT * RENT), 4))              AS VALUE_PER_COST,
          ROUND(ATTR, 3)                                              AS ATTRACTIVENESS
   FROM comp;
 

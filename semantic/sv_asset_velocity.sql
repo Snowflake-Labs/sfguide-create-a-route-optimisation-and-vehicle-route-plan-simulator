@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_ASSET_VELOCITY - Route Optimization (asset velocity) semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS + VW_LANE_DEMAND
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
@@ -45,15 +58,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   METRICS (
     idle.idle_vehicle_count AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('number of idle vehicles', 'idle vehicles', 'idle trailers') COMMENT = 'Distinct idle vehicles'
-    , idle.total_cost_of_idleness AS SUM(cost_of_idleness_usd) WITH SYNONYMS ('total idle cost', 'cost of idleness') COMMENT = 'Total cost of idleness (USD)'
-    , idle.total_projected_savings AS SUM(projected_savings_usd) WITH SYNONYMS ('potential savings') COMMENT = 'Total projected savings (USD)'
-    , idle.avg_idle_hours AS AVG(idle_hours) COMMENT = 'Average idle hours'
-    , idle.avg_idle_days AS AVG(idle_days) COMMENT = 'Average idle days'
-    , idle.max_idle_days AS MAX(idle_days) WITH SYNONYMS ('longest idle') COMMENT = 'Maximum idle days'
-    , lane.total_outbound AS SUM(outbound) COMMENT = 'Total outbound trips'
-    , lane.total_inbound AS SUM(inbound) COMMENT = 'Total inbound trips'
-    , lane.total_net_outbound AS SUM(net_outbound_trips) WITH SYNONYMS ('net demand') COMMENT = 'Total net outbound trips'
-    , lane.avg_demand_score AS AVG(demand_score) COMMENT = 'Average demand score'
+    , idle.total_cost_of_idleness AS ROUND(SUM(cost_of_idleness_usd), 2) WITH SYNONYMS ('total idle cost', 'cost of idleness') COMMENT = 'Total cost of idleness (USD)'
+    , idle.total_projected_savings AS ROUND(SUM(projected_savings_usd), 2) WITH SYNONYMS ('potential savings') COMMENT = 'Total projected savings (USD)'
+    , idle.avg_idle_hours AS ROUND(AVG(idle_hours), 2) COMMENT = 'Average idle hours'
+    , idle.avg_idle_days AS ROUND(AVG(idle_days), 2) COMMENT = 'Average idle days'
+    , idle.max_idle_days AS ROUND(MAX(idle_days), 2) WITH SYNONYMS ('longest idle') COMMENT = 'Maximum idle days'
+    , lane.total_outbound AS ROUND(SUM(outbound), 2) COMMENT = 'Total outbound trips'
+    , lane.total_inbound AS ROUND(SUM(inbound), 2) COMMENT = 'Total inbound trips'
+    , lane.total_net_outbound AS ROUND(SUM(net_outbound_trips), 2) WITH SYNONYMS ('net demand') COMMENT = 'Total net outbound trips'
+    , lane.avg_demand_score AS ROUND(AVG(demand_score), 2) COMMENT = 'Average demand score'
   )
 
   COMMENT = 'Asset velocity (Route Optimization): idle vehicles with cost of idleness and projected savings, plus terminal lane demand for repositioning.'

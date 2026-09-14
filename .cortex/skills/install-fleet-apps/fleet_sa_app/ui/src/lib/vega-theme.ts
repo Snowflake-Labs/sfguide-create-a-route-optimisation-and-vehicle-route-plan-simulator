@@ -55,6 +55,21 @@ export function buildVegaTheme(palette: string[]): Record<string, unknown> {
     background: 'transparent',
     font: FONT,
     padding: 4,
+    // Decimal cap for every axis label, legend label, tooltip value and text mark
+    // that does not carry its own format. Vega's default prints a FLOAT verbatim,
+    // which is how 21289.670000000002 would reach an agent chart even with the SQL
+    // now rounded - a verb result or an agent-computed field never passes through
+    // a semantic view.
+    //
+    // `,.4~f` and not `,.2~f`, measured with d3-format: the trim flag drops
+    // insignificant zeros, so a 2dp money value still reads 21,289.67 and an
+    // integer reads 1,065, while the 4dp ratio metrics the SQL layer deliberately
+    // keeps survive. At `,.2~f` the utilization metric 0.9969 renders as "1" -
+    // the cap would destroy the very number the chart exists to show. The one
+    // deviation from lib/format-number is coordinates, which get 4dp rather than
+    // 5 (about 11 m); a chart axis is not a surface anyone reads a fix off.
+    numberFormat: ',.4~f',
+
     title: { font: FONT, fontSize: 13, fontWeight: 600, color: INK, anchor: 'start', offset: 8 },
     axis: {
       labelFont: FONT, titleFont: FONT,

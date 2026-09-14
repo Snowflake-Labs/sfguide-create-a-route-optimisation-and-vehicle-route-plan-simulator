@@ -551,3 +551,20 @@ if [ -f "$ROUTING_PROBE_CHECK" ]; then
     exit 1
   }
 fi
+
+# 15. Numbers a user reads must not carry more than two decimals.
+# A row-level view rounds to 2dp and casts back to FLOAT; 2dp is not exactly
+# representable in binary, so a SUM over a few hundred rows re-accumulates the
+# error and a semantic-view metric returned 21289.670000000002. Nothing failed -
+# the total was right to the cent - and every render site stringified rows
+# verbatim, so the artifact reached the screen and, through the agent memo, got
+# quoted back as fact. Both halves are needed: SQL rounding cannot survive a raw
+# String(v), and a client formatter never touches the agent's own prose.
+NUMBER_FORMAT_CHECK="$SKILL_DIR/scripts/check_number_formatting.py"
+if [ -f "$NUMBER_FORMAT_CHECK" ]; then
+  echo "pre-commit: number formatting / decimal cap check..."
+  python3 "$NUMBER_FORMAT_CHECK" || {
+    echo "pre-commit FAILED: an unrounded metric or an unformatted render site is on a user-facing path."
+    exit 1
+  }
+fi

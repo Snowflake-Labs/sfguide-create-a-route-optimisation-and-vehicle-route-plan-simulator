@@ -34,6 +34,7 @@ import { unwrapVerbResult } from '@/lib/tool-names';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { formatCellValue } from '@/lib/format-number';
 
 /** Rows kept per layer before the map is drawn from a truncated set. Bounds the
  *  GPU buffer and the parse cost; the overflow is reported on screen. */
@@ -96,7 +97,12 @@ function renderTooltip(template: string, object: Record<string, unknown>): strin
       }
       v = lower[col.toLowerCase()];
     }
-    return v == null ? '' : escapeHtml(v);
+    // Formatted before escaping, identical to view-map.tsx's renderTooltip so the
+    // two cannot drift: this was a verbatim copy of the same raw-stringify defect,
+    // on the render_map path that draws INSIDE a chat answer. The token name is
+    // the column, so {LATITUDE} keeps its 5dp exemption.
+    if (v == null) return '';
+    return escapeHtml(formatCellValue(v, { column: String(col), grouping: true, empty: '' }));
   });
 }
 

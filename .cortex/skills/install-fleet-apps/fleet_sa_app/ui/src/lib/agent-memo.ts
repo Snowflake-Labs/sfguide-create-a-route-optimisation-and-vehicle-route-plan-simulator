@@ -1,5 +1,7 @@
 'use client';
 
+import { formatCellValue } from '@/lib/format-number';
+
 /**
  * Agent grounding, Channel A: publishing what an area actually renders.
  *
@@ -112,8 +114,11 @@ interface TableMemoInput {
   totalRows?: number;
   sortKey?: string | null;
   sortDir?: 'asc' | 'desc';
-  /** Formatter the component uses for cells, so the memo matches the screen. */
-  formatCell: (value: unknown) => string;
+  /** Formatter the component uses for cells, so the memo matches the screen.
+   *  Receives the column key as well, because the decimal policy in
+   *  lib/format-number exempts coordinate columns from the 2dp cap - a memo that
+   *  dropped the column would quote a latitude back at the agent as 37.77. */
+  formatCell: (value: unknown, column?: string) => string;
   /** Label of the currently selected row, when the table drives a selection. */
   selectedLabel?: string | null;
   /** Extra ordering note, e.g. ClickableTable's exception-first pinning. */
@@ -147,7 +152,7 @@ export function buildTableMemo(input: TableMemoInput): string {
   // Sample rows are pipe-delimited inside brackets: compact, and unambiguous when
   // a value itself contains a comma (site names routinely do).
   const sample = rows.slice(0, MEMO_SAMPLE_ROWS).map((r) => {
-    const cells = columns.map((c) => memoScalar(formatCell(r[c.key]), 40));
+    const cells = columns.map((c) => memoScalar(formatCell(r[c.key], c.key), 40));
     return `[${cells.join(' | ')}]`;
   });
   const dropped = shown - sample.length;
@@ -206,7 +211,7 @@ interface ChartMemoInput {
    *  category VALUE synthesized per group (grouped/stacked). Only a column can be
    *  checked against the points; default true. */
   yKeyIsColumn?: boolean;
-  formatValue?: (value: unknown) => string;
+  formatValue?: (value: unknown, column?: string) => string;
 }
 
 /**
@@ -234,7 +239,11 @@ export function buildChartMemo(input: ChartMemoInput): string {
   const first = points[0] as Record<string, unknown>;
   if (!(xKey in first)) return '';
   if ((input.yKeyIsColumn ?? true) && !(yKey in first)) return '';
-  const fmt = formatValue ?? ((v: unknown) => (typeof v === 'number' ? v.toLocaleString() : String(v ?? '-')));
+  // Default carries the same 2dp cap as the screen: a memo is quoted as fact, so
+  // an unformatted 21289.670000000002 here is a wrong number in the answer.
+  const fmt =
+    formatValue ??
+    ((v: unknown, column?: string) => formatCellValue(v, { column, grouping: true }));
 
   const labelOf = (p: Record<string, unknown>) => memoScalar(p[xKey], 30);
   const numeric = points
@@ -248,9 +257,9 @@ export function buildChartMemo(input: ChartMemoInput): string {
     const total = numeric.reduce((s, p) => s + p.value, 0);
     const min = numeric.reduce((a, b) => (b.value < a.value ? b : a));
     const max = numeric.reduce((a, b) => (b.value > a.value ? b : a));
-    head.push(`total ${fmt(total)}`);
-    head.push(`min ${fmt(min.value)} (${min.label})`);
-    head.push(`max ${fmt(max.value)} (${max.label})`);
+    head.push(`total ${fmt(total, yKey)}`);
+    head.push(`min ${fmt(min.value, yKey)} (${min.label})`);
+    head.push(`max ${fmt(max.value, yKey)} (${max.label})`);
   }
 
   // Category charts: the ranked head is the finding. Series charts: the endpoints
@@ -260,12 +269,12 @@ export function buildChartMemo(input: ChartMemoInput): string {
     const first = points[0];
     const last = points[points.length - 1];
     head.push(`x range ${labelOf(first)}..${labelOf(last)}`);
-    head.push(`first ${fmt(first[yKey])}, last ${fmt(last[yKey])}`);
+    head.push(`first ${fmt(first[yKey], yKey)}, last ${fmt(last[yKey], yKey)}`);
   } else if (numeric.length) {
     const top = [...numeric]
       .sort((a, b) => b.value - a.value)
       .slice(0, MEMO_SAMPLE_CATEGORIES)
-      .map((p) => `${p.label} ${fmt(p.value)}`);
+      .map((p) => `${p.label} ${fmt(p.value, yKey)}`);
     const dropped = numeric.length - top.length;
     head.push(`top ${top.join(', ')}${dropped > 0 ? ` (+${dropped} more)` : ''}`);
   }

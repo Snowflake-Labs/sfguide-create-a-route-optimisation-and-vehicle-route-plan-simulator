@@ -1,7 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import { ChevronUp, ChevronDown } from 'lucide-react';
-import { fmtDec } from './format';
+import { formatCellValue } from '@/lib/format-number';
 
 interface DataTableProps {
   data: Record<string, any>[];
@@ -54,7 +54,7 @@ export default function DataTable({ data, columns: explicitColumns, maxRows = 10
           {sorted.map((row, i) => (
             <tr key={i}>
               {columns.map(col => (
-                <td key={col}>{row[col] != null ? ((() => { const v = row[col]; const n = Number(v); return v !== '' && !isNaN(n) && String(v).includes('.') ? fmtDec(v) : String(v); })()) : ''}</td>
+                <td key={col}>{formatCellValue(row[col], { column: col, grouping: true, empty: '' })}</td>
               ))}
             </tr>
           ))}
