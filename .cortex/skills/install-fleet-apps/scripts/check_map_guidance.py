@@ -49,6 +49,17 @@ RULE C  The dwell view's h3 trigger list must include the spatial words users
         actually type, and must require a measure alongside the cell id. A bare
         `h3_cell` list cannot be shaded, so it is not an answer.
 
+RULE D  the agent specs must carry the sentence that stops a DUPLICATE map, in the
+        same block as the instruction to call `render_map`, and it must name a
+        routing tool by name. Asked for a route the agent produced TWO maps: the
+        automatic one from `get_directions` (every tool in app-config `mapTools` is
+        bound to the inline map client-side, with no instruction involved) and a
+        second `render_map` that failed. Nothing in the spec said the first map
+        exists, so "show me on a map -> call render_map" was the only rule the
+        agent had. Like RULE A this is prose in a giant single-line JSON string that
+        no test reads: deleting it breaks no build and silently restores the double
+        map.
+
 Deliberately NOT checked: that every map-capable view has a chart_customization
 block. Several have none and are correct as-is; requiring one would add noise
 without preventing this defect.
@@ -58,12 +69,21 @@ Run with no arguments. Exits non-zero naming the view and what is missing.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
 
 APP_DIR = pathlib.Path(__file__).resolve().parent.parent / "fleet_sa_app" / "app"
 SV_FILES = ["semantic_views.sql", "semantic_views_emergency.sql"]
+AGENT_SPECS = ["agent-spec.json", "super-agent-spec.json"]
+
+# The block that instructs inline maps, and the sentence that must lead it.
+MAP_BLOCK_HEAD = "DRAWING A MAP INLINE"
+BLOCK_END_RE = re.compile(r"^(?!-)[^\n]*:$")
+ALREADY_DRAWN_RE = re.compile(r"already on a map", re.IGNORECASE)
+# At least one routing tool must be named, or the rule is abstract enough to ignore.
+ROUTING_TOOLS = ["get_directions", "compute_isochrone", "optimize_routes"]
 
 MAP_TOOL = "render_map"
 
@@ -207,8 +227,59 @@ def main() -> int:
                         f"be shaded, so it is not a density answer."
                     )
 
+    # --- RULE D: the specs must say a routing tool result is ALREADY drawn ---
+    specs_checked = 0
+    for sname in AGENT_SPECS:
+        spath = APP_DIR / sname
+        if not spath.exists():
+            problems.append(f"{sname}: expected agent spec is missing")
+            continue
+        specs_checked += 1
+        orch = json.loads(spath.read_text()).get("instructions", {}).get("orchestration", "")
+        lines = orch.split("\n")
+        start = next(
+            (i for i, ln in enumerate(lines) if ln.strip().startswith(MAP_BLOCK_HEAD)), None
+        )
+        if start is None:
+            problems.append(
+                f"{sname}: no {MAP_BLOCK_HEAD!r} block in instructions.orchestration, "
+                f"so nothing tells the agent how to draw an inline map at all."
+            )
+            continue
+        block_lines = [lines[start]]
+        for ln in lines[start + 1:]:
+            if BLOCK_END_RE.match(ln.strip()):
+                break
+            block_lines.append(ln)
+        block = "\n".join(block_lines)
+        # Scoped to the block on purpose: the same sentence 400 lines away does not
+        # reach an agent reading the map instructions, which is RULE A's lesson.
+        hit = ALREADY_DRAWN_RE.search(block)
+        if not hit:
+            problems.append(
+                f"{sname}: the {MAP_BLOCK_HEAD!r} block never says a routing tool result "
+                f"is already on a map. Without it the agent follows get_directions with "
+                f"{MAP_TOOL} and the user gets two maps of one answer."
+            )
+        else:
+            # The tool names must be in the SAME BULLET, not merely somewhere in the
+            # block. Block scope false-passed a mutation that reduced the rule to
+            # "drawn for you automatically": a neighbouring bullet mentioning
+            # get_directions satisfied it from several hundred characters away, which
+            # is exactly the adjacency failure this file already learned once.
+            bstart = block.rfind("\n-", 0, hit.start()) + 1
+            bend = block.find("\n-", hit.end())
+            bullet = block[bstart: bend if bend != -1 else len(block)]
+            if not any(t in bullet for t in ROUTING_TOOLS):
+                problems.append(
+                    f"{sname}: the no-duplicate-map rule names no routing tool "
+                    f"({', '.join(ROUTING_TOOLS)}) in its own bullet. An abstract "
+                    f"'drawn for you automatically' does not tell the agent which tools."
+                )
+
     print("Map guidance gate (a forbidden map must name render_map)\n")
     print(f"  semantic views scanned        {checked_views}")
+    print(f"  agent specs scanned           {specs_checked}")
     print(f"  chart_customization blocks    {blocks_checked}")
     print(f"  map-capable views             {len(map_capable)}"
           f"{' (' + ', '.join(map_capable) + ')' if map_capable else ''}")

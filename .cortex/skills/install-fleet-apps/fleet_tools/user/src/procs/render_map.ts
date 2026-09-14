@@ -1,5 +1,11 @@
 import { defineProc, t } from '@snowflake/synapse';
-import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS } from '../codes.js';
+import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS } from '../codes.js';
+
+// Any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
+// `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))`. Same expression
+// /api/query uses, so the two boundaries agree on what a database reference is.
+const QUALIFIED_NAME_RE =
+  /\b([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*/g;
 
 // render_map: the agent emits a declarative MAP spec (the same LayerSpec[] DSL
 // the SA app's authored map areas use) and this verb validates + echoes it back.
@@ -25,17 +31,23 @@ export const render_map = defineProc({
     'when no saved view already answers it. The spec is a JSON object with `layers` (1-' + MAX_MAP_LAYERS + ') ' +
     'and optional {title, height, legend, emptyMessage}. Each layer is ' +
     '{type, data:{query,params}, ...encoding}, where type is one of: ' + MAP_LAYER_TYPES.join(', ') + '. ' +
-    'Layer queries MUST read the neutral FLEET_APP contract, e.g. ' +
-    'TABLE(FLEET_APP.CORE.F_FACT_*_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ' +
-    'or FLEET_APP.<DWELL|CATCHMENT|ROUTE_OPTIMIZATION|ROUTE_DEVIATION>.VW_*, and may bind only ' +
+    'Layer queries may read ONLY: ' + ALLOWED_DYNAMIC_DBS.join(', ') + '. Normally the neutral ' +
+    'FLEET_APP contract, e.g. TABLE(FLEET_APP.CORE.F_FACT_*_SCOPED(CAST(:region AS VARCHAR), ' +
+    'CAST(:dataset_id AS VARCHAR))) or FLEET_APP.<DWELL|CATCHMENT|ROUTE_OPTIMIZATION|ROUTE_DEVIATION>.VW_*; ' +
+    'for LIVE geometry a layer may call TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS|ISOCHRONES|OPTIMIZATION(...)) ' +
+    'projecting ST_ASGEOJSON(GEOJSON)::STRING. Params may bind only ' +
     'context.* params (region, vehicle_type, dataset_id, date_range_start, date_range_end) or literals. ' +
     'Use the REAL column names - for an H3 dwell/congestion density map that is ' +
     'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (the hex), DWELL_MINUTES (the measure) ' +
     'and REGION (the filter); there is no h3_cell, dwell_duration_minutes or region_key column. ' +
     'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING and filter to a region or band first: ' +
     'an oversized payload renders a BLANK map with no error. ' +
-    'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, or ' +
+    'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, INVALID_MAP_SPEC_DB ' +
+    '(a layer query naming any other database), or ' +
     'INVALID_MAP_SPEC_SQL (a layer query that does not compile - fix the column names and retry). ' +
+    'Do NOT redraw geometry a routing tool returned (get_directions, compute_isochrone, ' +
+    'optimize_routes, find_poi, catchment): those draw their own result inline, so this would ' +
+    'produce TWO maps of one answer. ' +
     'Prefer an existing saved view (a view: link) when one matches, render_view when the map needs ' +
     'surrounding KPIs and tables on a page, and deep_link when the user needs toggles or click-through.',
   roles: ['user'],
@@ -118,6 +130,28 @@ export const render_map = defineProc({
           `layer ${i} data.query must be a SELECT/WITH statement.`,
         );
         return;
+      }
+      // Databases the dynamic read boundary allows. Checked HERE and not left to
+      // the EXPLAIN gate below, which cannot see this class of error at all: this
+      // proc runs EXECUTE AS OWNER, so a refused database raises "does not exist
+      // or not authorized" and that gate deliberately ignores it. An allowlist is
+      // a string comparison, so it convicts without inferring privileges.
+      QUALIFIED_NAME_RE.lastIndex = 0;
+      let qm: RegExpExecArray | null;
+      while ((qm = QUALIFIED_NAME_RE.exec(query)) !== null) {
+        const raw = qm[1] ?? '';
+        const db = raw.toUpperCase();
+        if (ALLOWED_DYNAMIC_DBS.indexOf(db as (typeof ALLOWED_DYNAMIC_DBS)[number]) === -1) {
+          ctx.fail(
+            MapRenderCodes.INVALID_MAP_SPEC_DB,
+            `layer ${i} data.query reads database '${raw}', which the dynamic read boundary refuses. ` +
+              `Allowed: ${ALLOWED_DYNAMIC_DBS.join(', ')}. Read the neutral FLEET_APP contract ` +
+              '(FLEET_APP.CORE.F_FACT_*_SCOPED, FLEET_APP.<DWELL|CATCHMENT|ROUTE_OPTIMIZATION>.VW_*), ' +
+              'or ROUTING_PLATFORM.CONTRACT.DIRECTIONS/ISOCHRONES/OPTIMIZATION for live geometry - ' +
+              'never SYNTHETIC_DATASETS, OPENROUTESERVICE_APP or FLEET_INTELLIGENCE.',
+          );
+          return;
+        }
       }
       // An inline map has no panel viewState, so a viewState.* param would bind
       // to NULL and return zero rows - a blank map with no error. Reject it here

@@ -229,6 +229,28 @@ GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET
 -- dynamic query asking "what is the overtime limit" reads it directly.
 GRANT SELECT ON ALL TABLES    IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT SELECT ON FUTURE TABLES IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
+-- ROUTING seam for agent-authored maps. `render_map` (and a render_view Map area)
+-- runs each layer query through QUERY_DYNAMIC as THIS role, and the agent specs
+-- tell the agent a layer may draw LIVE geometry from the routing contract
+-- (DIRECTIONS / ISOCHRONES / OPTIMIZATION each project a GEOJSON GEOGRAPHY
+-- column). That instruction was false in both directions until now: the
+-- api/query allowlist refused the database, and this role held NO grant on it -
+-- so a live-routing map surfaced in the browser as "Some layers could not be
+-- drawn" next to a correct map from the routing tool that had already answered.
+-- Mirrors the FLEET_APP_USER block above. The contract functions are
+-- owner's-rights wrappers, so USAGE is the whole grant: no OPENROUTESERVICE_APP
+-- or provider-table privilege travels with it. ADMIN.V_REGIONS is deliberately
+-- NOT granted - the reader needs the routing functions, not the region registry.
+-- FUTURE so a regenerated contract stays callable without re-granting (Tenet 8).
+--
+-- Consequence to state plainly: agent-authored SQL can now spend routing-engine
+-- time. It is bounded by MAX_MAP_LAYERS (4 queries per map) and the per-layer row
+-- cap. Keep in sync with ALLOWED_DYNAMIC_DBS in api/query/route.ts and codes.ts;
+-- asserted by scripts/check_dynamic_allowlist.py.
+GRANT USAGE ON DATABASE ROUTING_PLATFORM                                TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT                         TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON ALL FUNCTIONS    IN SCHEMA ROUTING_PLATFORM.CONTRACT     TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT     TO ROLE FLEET_APP_DYNAMIC_READER;
 
 -- Owner's-rights execution boundary for agent-emitted (dynamic:true) queries.
 -- The SQL API `role` override does NOT disable the caller's secondary roles, so a

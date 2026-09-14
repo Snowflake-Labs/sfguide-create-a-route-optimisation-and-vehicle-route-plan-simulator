@@ -115,7 +115,28 @@ export const MapRenderCodes = {
    *  Raised so a hallucinated column name fails IN-TURN, where the agent can fix
    *  it, instead of surfacing later as "Some layers could not be drawn". */
   INVALID_MAP_SPEC_SQL: 'INVALID_MAP_SPEC_SQL',
+  /** a layer's data.query names a database the dynamic read boundary refuses.
+   *
+   *  The EXPLAIN gate below CANNOT catch this: the verb runs EXECUTE AS OWNER, so
+   *  an unreachable database raises "does not exist or not authorized", which is
+   *  deliberately swallowed there because it cannot be told apart from a missing
+   *  grant. So a spec naming ROUTING_PLATFORM (which the agent specs told it to
+   *  use, while /api/query refused it) validated cleanly, echoed, and then died
+   *  in the browser as an EMPTY MAP beside a correct one. A database allowlist
+   *  needs no privilege inference, so it convicts here instead. */
+  INVALID_MAP_SPEC_DB: 'INVALID_MAP_SPEC_DB',
 } as const;
+
+/** Databases an agent-emitted layer query may reference.
+ *
+ *  MUST stay in sync with ALLOWED_DYNAMIC_DBS in
+ *  fleet_sa_app/ui/src/app/api/query/route.ts (the runtime pre-filter) and with
+ *  FLEET_APP_DYNAMIC_READER's grants in fleet_sa_app/app/role_binding.sql (the
+ *  authoritative boundary). All three drifted apart once already - the agent
+ *  specs promised live routing geometry that neither the filter nor the role
+ *  allowed - so scripts/check_dynamic_allowlist.py now asserts one set across
+ *  every place that encodes it, the prose included. */
+export const ALLOWED_DYNAMIC_DBS = ['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM'] as const;
 
 // Layer types the SA app's deck.gl compiler implements. MUST stay in sync with
 // MAP_LAYER_TYPES in fleet_sa_app/ui/src/lib/map-spec-schema.ts (and the

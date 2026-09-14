@@ -92,9 +92,40 @@ tool results and nothing else, so an MCP result (`run_sql`, `get_directions`) is
 valid source there - report figures and use `deep_link` for the drawn route.
 
 **Inside the SA app the constraint does not apply.** `render_map` (section 5a) runs its
-own layer queries, so a query that calls the routing contract and projects
-`ST_ASGEOJSON(GEOJSON)::STRING` puts live drive-time rings and solved tours on an
-inline map. The blocker in CoWork is the tool_result_id contract, not the geometry.
+own layer queries through the dynamic read boundary, and that boundary allows
+`ROUTING_PLATFORM` alongside `FLEET_APP` and `SNOWFLAKE`, so a query that calls the
+routing contract and projects `ST_ASGEOJSON(GEOJSON)::STRING` puts live drive-time rings
+and solved tours on an inline map. The blocker in CoWork is the tool_result_id contract,
+not the geometry.
+
+Two things to hold together here, because they were contradictory for a release and the
+contradiction shipped:
+
+- The allowlist is enforced in three places and they must agree: `ALLOWED_DYNAMIC_DBS` in
+  `api/query/route.ts` (fast pre-filter), the same constant in `fleet_tools/user/src/codes.ts`
+  (the verb rejects a bad database in-turn with `INVALID_MAP_SPEC_DB`), and
+  `FLEET_APP_DYNAMIC_READER`'s grants in `role_binding.sql` (authoritative - the reader
+  physically cannot reach an ungranted database). `scripts/check_dynamic_allowlist.py`
+  asserts one set across all three plus this prose. The verb's EXPLAIN gate CANNOT stand in
+  for that check: it runs `EXECUTE AS OWNER`, so a refused database raises "does not exist
+  or not authorized", which the gate deliberately ignores as unresolvable.
+- **Live geometry is for combining, not for a plain A-to-B.** A routing tool draws its own
+  map (section 3a), so re-drawing its route with `render_map` yields two maps of one answer.
+  Reach for a contract call in a layer when the geometry has to sit beside contract data,
+  be joined, or be aggregated.
+
+## 3a. A routing tool result is ALREADY on a map
+
+Every tool in `app-config.json` `tools.mapTools` - `get_directions`, `compute_isochrone`,
+`optimize_routes`, `find_poi`, `catchment`, `vrp_solve`, `snap_to_road`, `map_match`, the
+Overture place/address searches - is bound by the client's `registerToolMaps` to
+`RouteMapInline`, which deep-scans the tool payload for GeoJSON and draws it inline under
+the answer. No tool call, spec or instruction is needed for that map to appear.
+
+So do not follow one of those tools with `render_map` for the same geometry. It produces two
+maps of a single answer, and when the second one fails the user reads an error next to a
+correct map - which is exactly what "show me the route from SFO to Civic Center" did.
+Report the figures, say the route is shown on the map above, and stop.
 
 ## 5a. Authoring an inline map (render_map, SA app)
 
@@ -111,10 +142,10 @@ than a blank map:
   into one layer with a category column and colour by it.
 - **Layer type** must be one of `scatterplot`, `path`, `h3`, `geojson`, `arc`. An unknown
   type compiles to nothing, which is why it is rejected up front (`UNKNOWN_LAYER_TYPE`).
-- **Queries read the neutral `FLEET_APP` contract only**, and run through
+- **Queries read `FLEET_APP`, `ROUTING_PLATFORM` or `SNOWFLAKE` only**, and run through
   `/api/query` with `dynamic:true`, i.e. as owner's-rights `FLEET_APP_DYNAMIC_READER`
-  behind the `FLEET_APP`/`SNOWFLAKE` allowlist. A query naming any other database is
-  refused at that boundary.
+  behind that allowlist. A query naming any other database is refused by the verb with
+  `INVALID_MAP_SPEC_DB`, and again at that boundary.
 - **Params bind `context.*` or a literal.** `viewState.*` is rejected: a chat message has
   no view state, so the bind would go out as NULL and return zero rows. For the same
   reason `visibleWhen`, `toggles`, `clickEmits` and `focusOn` are rejected - there is
