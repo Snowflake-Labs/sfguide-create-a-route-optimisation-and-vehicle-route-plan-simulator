@@ -114,6 +114,16 @@ const NOT_READY_SIGNATURES = [
   /\bORS (?:request )?time(?:d)? ?out\b/i,
   /["']error["']\s*:\s*["']timeout["']/i,
   /\btimed out after\b/i,
+  // The SAME condition as the timeout above, arriving by a different route: when
+  // SPCS ingress cuts the connection it substitutes a PLAIN-TEXT body
+  // ('upstream request timeout'), the gateway's r.json() cannot parse it, and it
+  // returns this code instead of a JSON timeout. The gateway's own docstring
+  // names the cause - "the service ingress timing the request out before ORS
+  // answered ... an unroutable or very distant coordinate pair, or reduce the
+  // request size" - so classifying it as 'suspended' would tell the user to
+  // resume a region that is already running. Same remedy as the timeout, same
+  // bucket, for the reason recorded on that entry.
+  /non_json_response/i,
 ];
 
 // Signatures for coordinates the region's road graph does not cover. These are
