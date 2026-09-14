@@ -34,7 +34,7 @@ import { themeSpec, buildVegaTheme, mergeThemeUnder } from '../src/lib/vega-them
 import { resolveChartCitations, stripCitationTags } from '../src/lib/chart-citations';
 import { CHART_TOOL_NAME, CHART_TOOL_ALIASES, isChartTool } from '../src/lib/tool-names';
 import { parseCortexStream } from '../src/lib/cortex-stream';
-import { isSuppressedResult, attributeTool } from '../src/lib/tool-visibility';
+import { isSuppressedResult, attributeTool, collapseAttributedTools } from '../src/lib/tool-visibility';
 import { DEFAULT_CHART_PALETTE } from '../src/lib/style-config';
 import type { MessagePart } from '../src/lib/types';
 
@@ -338,6 +338,22 @@ for (const c of fixtures.rejectCases) {
   // Existing queries filter on the bare name, so the prefix must survive STARTSWITH.
   check('the attributed name still starts with the tool name',
     attributeTool('server_skill', { skill_name: 'a' }).startsWith('server_skill'));
+
+  // A tool is recorded TWICE per call - tool_pending, then tool_result - and only
+  // the result carries skill_name (a pending part has `input`, not `output`), so
+  // without collapsing, one fired skill lands in TOOLS_USED as both names.
+  check('one fired skill records exactly one entry',
+    collapseAttributedTools(['query_dwell', 'server_skill', 'server_skill:dwell-facilities'])
+      .join(',') === 'query_dwell,server_skill:dwell-facilities');
+  check('a skill that never returned a result keeps its bare name',
+    collapseAttributedTools(['server_skill']).join(',') === 'server_skill');
+  check('two different skills both survive',
+    collapseAttributedTools(['server_skill', 'server_skill:a', 'server_skill:b']).length === 2);
+  check('an unrelated tool is untouched',
+    collapseAttributedTools(['render_map', 'data_to_chart']).length === 2);
+  // A tool name that legitimately contains a colon must not swallow its siblings.
+  check('collapsing keys on the exact base name',
+    collapseAttributedTools(['server_skillx', 'server_skill:a']).length === 2);
 }
 
 // -------------------------------------------------------------------- report

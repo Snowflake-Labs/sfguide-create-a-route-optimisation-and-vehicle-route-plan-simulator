@@ -98,3 +98,26 @@ export function attributeTool(toolName: string, output?: unknown): string {
   // Bounded: this lands in an ARRAY column alongside up to MAX_TOOLS entries.
   return `${toolName}:${raw.trim().slice(0, 60)}`;
 }
+
+/**
+ * Collapse a recorded tool list so an attributed name replaces its bare form.
+ *
+ * A tool is recorded TWICE per call - once from `tool_pending`, once from
+ * `tool_result` - and only the RESULT carries `skill_name` (a pending part has
+ * `input`, not `output`, so it cannot be attributed at the point it is seen).
+ * Left alone, a fired skill lands in TOOLS_USED as BOTH `server_skill` and
+ * `server_skill:dwell-facilities`, which inflates the array and makes a distinct
+ * count double-count every skill.
+ *
+ * Only drops the bare name when an attributed variant is present, so a skill that
+ * errors before returning a result still records something.
+ */
+export function collapseAttributedTools(names: string[]): string[] {
+  const attributedBases = new Set<string>();
+  for (const n of names) {
+    const i = n.indexOf(':');
+    if (i > 0) attributedBases.add(n.slice(0, i));
+  }
+  if (attributedBases.size === 0) return names;
+  return names.filter((n) => !attributedBases.has(n));
+}
