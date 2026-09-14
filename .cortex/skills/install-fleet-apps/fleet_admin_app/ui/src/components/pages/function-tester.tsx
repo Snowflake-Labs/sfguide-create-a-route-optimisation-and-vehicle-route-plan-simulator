@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { samplePoints, COORD_FUNCTIONS, TRAJECTORY_FUNCTIONS, buildNoisyTrajectory, type BBox } from '@/components/function-tester/samplePoints';
+import { samplePoints, COORD_FUNCTIONS, TRAJECTORY_FUNCTIONS, buildNoisyTrajectory, getProfileBand, type BBox } from '@/components/function-tester/samplePoints';
 
 import {
   RegionOption,
@@ -23,6 +23,33 @@ import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
 
 function sqlLiteral(s: string): string {
   return String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+/**
+ * Fetch JSON, reading the body as text first.
+ *
+ * A bare `resp.json()` turns any non-JSON body into `Unexpected token 'u',
+ * "upstream r"...` - which is what a DIRECTIONS timeout looked like, because
+ * SPCS ingress cuts the connection at ~90s and substitutes a plain-text
+ * `upstream request timeout`. Reading text first lets the status and the actual
+ * body prefix reach the user. Mirrors parseJsonOrThrow in the SA app's
+ * emergency-response view.
+ */
+async function fetchJson(url: string, init?: RequestInit): Promise<any> {
+  const resp = await fetch(url, init);
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const body = text.trim().slice(0, 200) || '(empty body)';
+    if (/upstream|timeout|gateway/i.test(text)) {
+      throw new Error(
+        `Gateway timed out (HTTP ${resp.status}): ${body}. The request ran past the `
+        + `service ingress limit - usually an unroutable or very distant coordinate pair.`,
+      );
+    }
+    throw new Error(`Non-JSON response (HTTP ${resp.status}): ${body}`);
+  }
 }
 
 interface RoadPointsResult {
@@ -82,8 +109,7 @@ async function fetchRoadPoints(
     if (opts?.nocache) params.set('nocache', '1');
     if (opts?.region) params.set('region', opts.region);
     if (opts?.nonce != null) params.set('nonce', String(opts.nonce));
-    const resp = await fetch(`/api/sample-road-points?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`/api/sample-road-points?${params}`);
     const common = {
       anchorBBox: data.anchorBBox ?? undefined,
       boundarySource: data.boundarySource ?? undefined,
@@ -105,18 +131,38 @@ interface PoiPointsResult {
   points: [number, number][] | null;
   source?: string;
   reason?: string;
+  // True when the pool came from a single H3 cell rather than region-wide.
+  anchored?: boolean;
+  anchorBBox?: BBox;
 }
 
 // Region-scoped seed POIs are pre-validated routable, so they make the most
 // reliable coordinate pool for the Function Tester (no water/off-graph picks).
-async function fetchSeedPoiPoints(region: string, opts?: { limit?: number }): Promise<PoiPointsResult> {
+// The profile's separation band is sent so the server can anchor the pool on a
+// cell dense enough to populate it: a region-wide pool on a continental region
+// has no pair inside the band, which is what let a Maui/Boise DIRECTIONS pair
+// through and hung ORS until the SPCS ingress timeout.
+async function fetchSeedPoiPoints(
+  region: string,
+  profile: string,
+  opts?: { limit?: number },
+): Promise<PoiPointsResult> {
   try {
-    const params = new URLSearchParams({ region });
+    const band = getProfileBand(profile);
+    const params = new URLSearchParams({
+      region,
+      min_km: String(band.minKm),
+      max_km: String(band.maxKm),
+    });
     if (opts?.limit) params.set('limit', String(opts.limit));
-    const resp = await fetch(`/api/sample-poi-points?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`/api/sample-poi-points?${params}`);
     if (data.ok && data.points?.length > 0) {
-      return { points: data.points, source: data.source };
+      return {
+        points: data.points,
+        source: data.source,
+        anchored: data.anchored ?? undefined,
+        anchorBBox: data.anchorBBox ?? undefined,
+      };
     }
     return { points: null, reason: data.reason || 'no seed POIs' };
   } catch (e: any) {
@@ -148,12 +194,11 @@ async function fetchTrajectory(
   const [a, b] = seedPoints;
   const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON FROM TABLE(${p}.DIRECTIONS('${sqlLiteral(profile)}', ARRAY_CONSTRUCT(${a[0]}, ${a[1]}), ARRAY_CONSTRUCT(${b[0]}, ${b[1]}), '${sqlLiteral(region)}'))`;
   try {
-    const resp = await fetch('/api/query', {
+    const data = await fetchJson('/api/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql }),
     });
-    const data = await resp.json();
     if (data.error) return { coords: null, reason: data.error };
     const rows = Array.isArray(data.result) ? data.result : [];
     let routeCoords: [number, number][] = [];
@@ -226,8 +271,7 @@ export function FunctionTesterPage() {
   const selectedRegionKeyRef = useRef<string | null>(null);
 
   const refreshRegions = useCallback(async (): Promise<RegionOption[]> => {
-    const r = await fetch('/api/regions/provisioned');
-    const data = await r.json();
+    const data = await fetchJson('/api/regions/provisioned');
     if (data.error) setRegionsError(data.error);
     const regionList: RegionOption[] = (data.regions || []).map(mapProvisionedRegion);
     setRegions(regionList);
@@ -340,14 +384,20 @@ export function FunctionTesterPage() {
 
     (async () => {
       // 1. Prefer region-scoped seed POIs (pre-validated routable). Independent
-      //    of Overture availability. ORDER BY RANDOM() means each fetch (and
-      //    each Reshuffle) returns a fresh set.
-      const poi = await fetchSeedPoiPoints(region.region, { limit: 50 });
+      //    of Overture availability. The server anchors the pool on one H3 cell
+      //    sized to the profile's separation band, so each fetch (and each
+      //    Reshuffle) returns a fresh LOCAL set rather than points scattered
+      //    across the whole region.
+      const poi = await fetchSeedPoiPoints(region.region, profile, { limit: 200 });
       if (mySeq !== roadSeqRef.current) return;
       if (poi.points && poi.points.length > 0) {
         setRoadPoints(poi.points);
         setRoadPointsReason(null);
         setPoolSource('seed');
+        // The anchored window matters for more than the pool: samplePoints uses
+        // this bbox for maxSpan and for every geometric fallback, and the US
+        // catalog bbox is -180..180 by 15.9..73.
+        if (poi.anchorBBox) setAnchorBBox(poi.anchorBBox);
         return;
       }
       // 2. Fall back to Overture road segments. Anchored on the region's land
@@ -498,12 +548,11 @@ export function FunctionTesterPage() {
     setLastExecutedSql(sqlInput);
     const start = Date.now();
     try {
-      const resp = await fetch('/api/query', {
+      const data = await fetchJson('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql: sqlInput }),
       });
-      const data = await resp.json();
       setDuration(Date.now() - start);
       if (data.error) { setError(data.error); }
       else {
@@ -523,12 +572,11 @@ export function FunctionTesterPage() {
             const mpSql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON, MATCHED_EDGES `
               + `FROM TABLE(${p}.MATCH_PATH('${sqlLiteral(inv.profile)}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
             try {
-              const r2 = await fetch('/api/query', {
+              const mp = await fetchJson('/api/query', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sql: mpSql }),
               });
-              const mp = await r2.json();
               if (mySeq === matchSeqRef.current) {
                 const raw = Array.isArray(mp.result) ? mp.result[0] : null;
                 const gj = raw ? (raw.GEOJSON ?? raw.geojson) : null;
@@ -559,12 +607,11 @@ export function FunctionTesterPage() {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch('/api/query', {
+        const data = await fetchJson('/api/query', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sql: optionalFunctionProbeSql(sfDatabase) }),
         });
-        const data = await resp.json();
         if (cancelled) return;
         if (data.error || !Array.isArray(data.result)) {
           // Unknown - do not gate on a failed probe.
