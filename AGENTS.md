@@ -516,6 +516,32 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
 # 11 mutations negative-tested via scripts/check_number_formatting_negative.sh.
 python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
 
+# An optional semantic view that fails to deploy must not be REPORTED as a
+# fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
+# entry with its name and its source expression the wrong way round, so the RHS
+# named no column and the whole file aborted with `invalid identifier` - and the
+# view therefore existed in no account. What kept it invisible for so long was
+# not the typo but the reporting: the installer mapped EVERY non-zero exit of
+# semantic_views_marketplace.sql to "FLEET_INTELLIGENCE.MARKETPLACE not present
+# yet (expected on a fresh install)". That attribution was unconditional, so a
+# permanent defect and a genuine ordering skip produced byte-identical output on
+# every single run, and the deploy being best-effort meant nothing downstream
+# failed either - the view was simply absent, exactly as SV_BACKLOAD_MATCHING
+# once was. The verdict is now read from the log, and this test is what stops it
+# regressing to a constant: case 2 is that exact failure, and the pre-fix
+# unconditional form fails 4 of the 5 cases.
+#
+# A STATIC gate was written first and rejected by its own evidence. The rule was
+# "a bare-identifier RHS must not contain the dimension name", which is precisely
+# the SV_OFFERS shape - and it produced 7 false positives on the clean tree and
+# zero true ones. `sessions.h3_cell AS H3_CELL_R7` deploys and returns rows (the
+# output column is H3_CELL, the LHS), so a shorter invented name over a longer
+# real column is legal and containment in either direction is fine. Nothing
+# static separates the two; proving the RHS names a real column needs the live
+# table. So the deploy is the only sound oracle, and the thing worth gating is
+# whether the deploy tells the truth about what it found.
+bash .cortex/skills/install-fleet-apps/scripts/check_semantic_verdict_negative.sh
+
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
 # report OK / EMPTY / ERROR per area. This is the only check that answers "will the
 # pages have data?" - every other gate verifies objects were CREATED, not that they

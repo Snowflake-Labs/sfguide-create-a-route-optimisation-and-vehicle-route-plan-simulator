@@ -70,5 +70,5 @@ evals:
     sv_sql: |
       SELECT * FROM SEMANTIC_VIEW(
         FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
-        DIMENSIONS lane_history.vehicle_equipment METRICS lane_history.total_shipments
+        DIMENSIONS lane_history.lane_vehicle_equipment METRICS lane_history.total_shipments
       ) ORDER BY total_shipments DESC

@@ -74,7 +74,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
     , lane_history.partner_id AS PARTNER_ID COMMENT = 'Partner id (lane history)'
     , lane_history.origin_country AS ORIGIN_COUNTRY COMMENT = 'Lane origin country'
     , lane_history.dest_country AS DEST_COUNTRY COMMENT = 'Lane destination country'
-    , lane_history.vehicle_equipment AS LANE_VEHICLE_EQUIPMENT COMMENT = 'Lane vehicle equipment'
+    , lane_history.lane_vehicle_equipment AS VEHICLE_EQUIPMENT COMMENT = 'Lane vehicle equipment'
   )
 
   METRICS (

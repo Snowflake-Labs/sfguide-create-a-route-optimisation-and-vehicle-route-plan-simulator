@@ -568,3 +568,25 @@ if [ -f "$NUMBER_FORMAT_CHECK" ]; then
     exit 1
   }
 fi
+
+# 16. An optional semantic view that fails to deploy must not report as a
+# fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
+# entry with its name and its source expression the wrong way round - and the
+# view therefore existed in no account. Nothing surfaced it: the installer mapped
+# EVERY non-zero exit of semantic_views_marketplace.sql to "MARKETPLACE not
+# present yet (expected on a fresh install)", so a permanent defect and an
+# ordering skip produced byte-identical output on every run. The verdict is now
+# decided from the log; this test is what stops it regressing to a constant, and
+# its case 2 is that exact failure. A static gate was tried first and rejected by
+# its own evidence - `sessions.h3_cell AS H3_CELL_R7` deploys and returns rows,
+# so a shorter dimension name over a longer real column is legal and no static
+# rule separates it from the defect. The deploy is the only sound oracle here,
+# which is why the thing under test is how the deploy REPORTS.
+SEMANTIC_VERDICT_CHECK="$SKILL_DIR/scripts/check_semantic_verdict_negative.sh"
+if [ -f "$SEMANTIC_VERDICT_CHECK" ]; then
+  echo "pre-commit: semantic view deploy-verdict classification..."
+  bash "$SEMANTIC_VERDICT_CHECK" || {
+    echo "pre-commit FAILED: a failed optional semantic view would be reported as an expected skip."
+    exit 1
+  }
+fi

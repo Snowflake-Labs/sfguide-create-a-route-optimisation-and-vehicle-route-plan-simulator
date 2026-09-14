@@ -799,13 +799,36 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
     && step "4.5 semantic" OK \
     || { note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"; step "4.5 semantic" WARN; }
 
+  # The two single-view files below can fail for two very different reasons: their
+  # source layer is not built yet (EXPECTED on a fresh install), or the view
+  # DEFINITION is broken. Attributing every failure to the former is how a plain
+  # syntax error in SV_OFFERS survived indefinitely - an 'invalid identifier' on
+  # lane_history.vehicle_equipment reported as a benign SKIPPED on every single
+  # install. So decide the verdict from the LOG, not from the exit code alone:
+  # only a missing/unauthorized source object earns SKIPPED; anything else is a
+  # defect and is reported as FAILED (still best-effort, never aborts the install).
+  # Deliberately does NOT grep the log for 'error'/'invalid' to classify, since
+  # these files DEPLOY prose that contains such words; tail the log instead.
+  semantic_optional_verdict() {
+    local label="$1" log="$2" hint="$3"
+    if grep -qi 'does not exist or not authorized' "$log"; then
+      note "  NOTE: $label skipped - $hint"
+      step "$label" SKIPPED
+    else
+      note "  WARN: $label FAILED for a reason other than a missing source object - this is a DEFECT in the view definition, not a fresh-install skip. Last lines of $log:"
+      tail -20 "$log"
+      step "$label" FAILED
+    fi
+  }
+
   # SV_OFFERS: separate file, separate outcome. On a fresh install the
   # FLEET_INTELLIGENCE.MARKETPLACE views do not exist yet (admin app boot init /
   # freight-exchange skill create them), so a skip here is EXPECTED and is not a
   # defect. Re-run this one file once the marketplace layer is present.
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
     && step "4.5 semantic (marketplace)" OK \
-    || { note "  NOTE: SV_OFFERS skipped - FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."; step "4.5 semantic (marketplace)" SKIPPED; }
+    || semantic_optional_verdict "4.5 semantic (marketplace)" /tmp/ifa_semantic_mkt.log \
+         "FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."
 
   # SV_EMERGENCY_RESPONSE: same treatment, same reason. The emergency pack's source
   # views only exist once its dataset has been generated, so a skip here is EXPECTED
@@ -814,7 +837,8 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_EMERGENCY_SQL" --enable-templating NONE \
       >/tmp/ifa_semantic_emergency.log 2>&1 \
     && step "4.5 semantic (emergency)" OK \
-    || { note "  NOTE: SV_EMERGENCY_RESPONSE skipped - FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."; step "4.5 semantic (emergency)" SKIPPED; }
+    || semantic_optional_verdict "4.5 semantic (emergency)" /tmp/ifa_semantic_emergency.log \
+         "FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."
 else
   step "4.5 semantic" SKIPPED
   step "4.5 semantic (marketplace)" SKIPPED
