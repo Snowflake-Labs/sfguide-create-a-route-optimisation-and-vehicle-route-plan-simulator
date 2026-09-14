@@ -51,12 +51,30 @@ What it checks
    event (one turn records both). That was harmless while neither path rendered;
    with both names now bound to a working renderer it draws the chart TWICE.
    Nothing about a duplicated chart raises an error, so it is gate-only.
+7. RULE H - every tool the agent spec declares is HANDLED by the client: rendered
+   by a registered inline component, suppressed, or named in the allowlist below
+   as intentionally raw. This is the rule that generalises the other six. Four
+   separate instances of the same defect shipped before it existed:
+
+     data_to_chart      registered under the wrong name  -> JSON blob
+     query_* (x13)      suppressed by tool TYPE, never by NAME -> whole semantic
+                        model dumped into the transcript, every analytics turn
+     system_execute_sql neither registered nor suppressed -> JSON blob
+     server_skill       neither registered nor suppressed -> the skill's entire
+                        markdown body dumped as a JSON blob
+
+   Each was invisible: an unhandled tool result is a LEGAL state that renders as a
+   tidy collapsed row. The analyst tools are covered by PAYLOAD SHAPE rather than
+   by name (13 names in a list go stale the moment a semantic view is added), so
+   this rule also asserts that the shape test exists and keys on
+   ``semantic_model_key``.
 
 Run with no arguments; exits non-zero naming the rule and the file.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sys
@@ -64,6 +82,58 @@ import sys
 UI = pathlib.Path(__file__).resolve().parent.parent / "fleet_sa_app" / "ui" / "src"
 
 STREAM = UI / "lib" / "cortex-stream.ts"
+VISIBILITY = UI / "lib" / "tool-visibility.ts"
+AGENT_SPEC = pathlib.Path(__file__).resolve().parent.parent / "fleet_sa_app" / "app" / "agent-spec.json"
+APP_CONFIG = pathlib.Path(__file__).resolve().parent.parent / "fleet_sa_app" / "app" / "app-config.json"
+
+# Tool names OBSERVED reaching this client, which is NOT the same set as the tools
+# the agent spec declares - and the difference is why an earlier draft of RULE H was
+# nearly vacuous. The spec declares 17 tools (13 analyst, 2 search, data_to_chart,
+# code_execution); `system_execute_sql` and `server_skill` are HOST-INJECTED and
+# appear nowhere in it, so a rule reading only the spec could not see two of the
+# four defects it exists to catch.
+#
+# Ground truth is the turn record. Refresh with:
+#
+#   SELECT DISTINCT F.VALUE::STRING
+#   FROM FLEET_INTELLIGENCE.SEMANTIC_OPS.AGENT_TURN T,
+#        LATERAL FLATTEN(INPUT => T.TOOLS_USED) F;
+#
+# Add a name here when it shows up there. Adding one is cheap; the point is that an
+# unhandled name FAILS instead of quietly rendering as a blob.
+OBSERVED_HOST_TOOLS = {
+    "system_execute_sql",   # host SQL executor: {query_id, sql, result_set}
+    "server_skill",         # a fired agent skill: {skill_name, content}
+    "data_to_chart",        # host chart tool: {charts: [spec, ...]}
+    "render_table",         # client-side, emitted by cortex-stream
+    "render_chart",         # client-side, the duplicate response.chart event
+}
+
+# The two names the chart tool can arrive under, registered via CHART_TOOL_ALIASES
+# rather than spelled literally at the registration site.
+CHART_ALIAS_NAMES = {"data_to_chart", "render_chart"}
+
+# Declared tools whose raw JSON in the transcript is INTENTIONAL. Keep this short
+# and justified: every entry is a tool whose result a user is expected to read as
+# data. An entry here is a decision, not a default - the default is that an
+# unhandled tool is a bug.
+RAW_JSON_ALLOWLIST = {
+    # Handed to the browser as a navigation instruction / link, narrated by the
+    # agent's own prose; there is no payload worth drawing.
+    "deep_link",
+    "show_view",
+    # Read-only descriptors the agent quotes back in prose.
+    "describe_data",
+    "describe_deployment",
+    "search_solution_catalog",
+    "list_use_cases",
+    "search_sap_binding",
+    "introspect_sap",
+    "run_sql",
+    # Host tools with their own host-side rendering.
+    "data_to_map",
+    "code_execution",
+}
 TOOL_NAMES = UI / "lib" / "tool-names.ts"
 REGISTRY_SITE = UI / "components" / "inline" / "index.ts"
 CHART_COMPONENT = UI / "components" / "inline" / "chart-inline.tsx"
@@ -223,12 +293,117 @@ def main() -> int:
                 "RULE G: the response.chart branch no longer reads chart_spec. Emitting "
                 "{charts: [undefined]} trades a duplicated chart for a missing one.")
 
+    # ---- RULE H: every declared tool is handled somewhere ----
+    visibility_src = read(VISIBILITY, problems, "RULE H")
+
+    # Every check below reads CODE, not prose. The first draft of this rule searched
+    # the whole file for `isAnalystModelDump` and for `semantic_model_key`, and
+    # PASSED on a tree where the function had been renamed away and the key deleted -
+    # because both strings also appear in this module's own comments. Same mistake as
+    # the first version of RULE A/C, made twice in one gate.
+    dump_fn = re.search(
+        r"export function isAnalystModelDump\s*\([^)]*\)\s*:\s*boolean\s*\{(.*?)\n\}",
+        visibility_src, re.S)
+    if not dump_fn:
+        problems.append(
+            "RULE H: lib/tool-visibility.ts does not EXPORT a function "
+            "isAnalystModelDump. The 13 analyst tools are declared with query_* NAMES "
+            "while the old suppression keyed on the tool TYPE "
+            "(cortex_analyst_text_to_sql), so it never matched and every analytics "
+            "turn dumped its whole semantic model into the transcript.")
+    elif "semantic_model_key" not in dump_fn.group(1):
+        problems.append(
+            "RULE H: the BODY of isAnalystModelDump does not key on "
+            "semantic_model_key. Matching on tool names instead goes stale the moment "
+            "a semantic view is added - silently, which is the defect this prevents.")
+
+    # The suppression LIST, parsed - not a substring search of the module, where a
+    # name mentioned in a comment or in attributeTool() reads as suppressed.
+    suppress_block = re.search(
+        r"SUPPRESS_RESULT_SUFFIXES\s*=\s*\[(.*?)\]", visibility_src, re.S)
+    suppressed_names = set(re.findall(r"['\"]([\w.]+)['\"]", suppress_block.group(1))) \
+        if suppress_block else set()
+    if not suppressed_names:
+        problems.append(
+            "RULE H: SUPPRESS_RESULT_SUFFIXES is missing or empty in "
+            "lib/tool-visibility.ts")
+
+    # The component must hand the PAYLOAD to the suppressor, or the shape-based
+    # analyst check can never fire - the list would be back to name-only matching.
+    if not re.search(r"isSuppressedTool\(\s*part\.toolName\s*,", markdown_src):
+        problems.append(
+            "RULE H: message-part.tsx calls isSuppressedTool without the payload. The "
+            "analyst tools are recognised by SHAPE, so dropping the second argument "
+            "silently restores the name-only matching that never matched.")
+
+    # The inline registry registrations, parsed the same way.
+    registered_names = set(re.findall(r"toolName:\s*['\"]([\w.]+)['\"]", registry_src))
+
+    try:
+        spec = json.loads(AGENT_SPEC.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        problems.append(f"RULE H: cannot read {AGENT_SPEC.name} ({exc})")
+        spec = {}
+
+    declared: list[tuple[str, str]] = []
+    for tool in spec.get("tools", []):
+        ts = tool.get("tool_spec", {})
+        name, ttype = ts.get("name"), ts.get("type", "")
+        if isinstance(name, str) and name:
+            declared.append((name, ttype))
+    # Host-injected names are not in the spec but DO reach the client (measured -
+    # see OBSERVED_HOST_TOOLS). Without them this rule cannot see two of the four
+    # defects it exists for.
+    declared += [(n, "host") for n in sorted(OBSERVED_HOST_TOOLS)]
+
+    if not declared:
+        problems.append("RULE H: the agent spec declares no tools - cannot verify coverage")
+
+    # Verbs app-config binds to the inline deck.gl map (registerToolMaps).
+    map_tools: set[str] = set()
+    try:
+        app_cfg = json.loads(APP_CONFIG.read_text())
+        map_tools = set((app_cfg.get("tools") or {}).get("mapTools") or [])
+    except (OSError, json.JSONDecodeError) as exc:
+        problems.append(f"RULE H: cannot read {APP_CONFIG.name} ({exc})")
+
+    # A tool is handled when it is registered, name-suppressed, shape-suppressed, or
+    # explicitly allowlisted as intentionally raw.
+    shape_suppressed_types = {"cortex_analyst_text_to_sql"}
+    unhandled: list[str] = []
+    for name, ttype in declared:
+        if name in RAW_JSON_ALLOWLIST:
+            continue
+        if ttype in shape_suppressed_types:
+            continue  # covered by isAnalystModelDump, asserted above
+        registered = name in registered_names
+        # The chart names are registered by iterating CHART_TOOL_ALIASES rather
+        # than spelled literally, deliberately (one source of truth with the
+        # stream), so a literal search cannot see EITHER of them.
+        if not registered and name in CHART_ALIAS_NAMES and "CHART_TOOL_ALIASES" in registry_src:
+            registered = True
+        suppressed = name in suppressed_names or ttype in shape_suppressed_types
+        # An MCP verb counts as handled only when app-config actually binds it to
+        # the inline map. `type == generic` alone would auto-pass every verb and
+        # make this rule vacuous - the whole point is default-DENY, so a NEW verb
+        # has to be a deliberate decision (register it, suppress it, or allowlist
+        # it) rather than silently rendering as a blob.
+        mapped = name in map_tools and "registerToolMaps" in registry_src
+        if not (registered or suppressed or mapped):
+            unhandled.append(f"{name} (type {ttype or 'unknown'})")
+
+    if unhandled:
+        problems.append(
+            "RULE H: these declared tools are neither rendered by a registered inline "
+            "component, nor suppressed, nor in RAW_JSON_ALLOWLIST, so their results "
+            "render as a collapsed JSON blob - a legal, silent state that has already "
+            "shipped four times: " + ", ".join(sorted(unhandled)))
+
     if problems:
         print("FAIL: the SA app cannot reliably render an agent chart:")
         for p in problems:
             print(f"  - {p}")
         return 1
-
     print("OK: chart tool registered from a shared constant, charts[] read, theme "
           "merged under the spec, citations stripped, vega behind the lazy boundary, "
           "duplicate response.chart deduplicated")

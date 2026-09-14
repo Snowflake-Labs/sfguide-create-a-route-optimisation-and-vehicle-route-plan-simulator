@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { MessagePart } from '@/lib/types';
 import { inlineRegistry } from '@/lib/inline-registry';
 import { matchesTool } from '@/lib/tool-names';
+import { isSuppressedResult } from '@/lib/tool-visibility';
 import { useAppStore } from '@/lib/store';
 import { ApprovalAction } from '@/components/inline/approval-action';
 import { ConfirmAction } from '@/components/inline/confirm-action';
@@ -14,11 +15,15 @@ import { stripCitationTags } from '@/lib/chart-citations';
 
 // Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
-// Matched with matchesTool so the MCP server prefix is tolerated (see
-// lib/tool-names.ts: the separator is one underscore, which this file had wrong).
-const SUPPRESS_RESULT_SUFFIXES = ['execute_workflow', 'resume_workflow', 'cortex_analyst_text_to_sql'];
-function isSuppressedTool(toolName: string): boolean {
-  return SUPPRESS_RESULT_SUFFIXES.some((s) => matchesTool(toolName, s));
+//
+// The list and the payload-shape tests now live in lib/tool-visibility.ts, where
+// the harness can drive them. Moved because the version inlined here keyed the
+// analyst tools on their tool TYPE (`cortex_analyst_text_to_sql`) while the stream
+// sends their NAMES (`query_dwell`, ...13 of them), so it never suppressed
+// anything and every analytics turn dumped its whole semantic model into the
+// transcript.
+function isSuppressedTool(toolName: string, output?: unknown): boolean {
+  return isSuppressedResult(toolName, output);
 }
 
 // Matches propose_write from MCP (cdp_workflow_mcp_propose_write) or bare name.
@@ -80,8 +85,11 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
 
   // Suppress tool_result/tool_error for workflow and analytics tools whose results
   // the agent narrates directly - the agent text is the user-facing output.
+  // The PAYLOAD is passed too, because the analyst tools are recognised by shape
+  // (`semantic_model_key`) rather than by name - 13 names in a list would go stale
+  // the moment a semantic view is added. `?debug=1` still shows everything.
   if (!debug && (part.type === 'tool_result' || part.type === 'tool_error') &&
-      isSuppressedTool(part.toolName)) {
+      isSuppressedTool(part.toolName, part.type === 'tool_result' ? part.output : undefined)) {
     return null;
   }
 

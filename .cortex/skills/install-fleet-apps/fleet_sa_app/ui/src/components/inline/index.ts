@@ -10,6 +10,7 @@ import { ConfirmAction } from './confirm-action';
 import { ChoiceList } from './choice-list';
 import { InlinePicker } from './inline-picker';
 import { ProgressCard } from './progress-card';
+import { SkillChip } from './skill-chip';
 // Charts load through a lazy boundary for the same reason the maps do: vega +
 // vega-lite must stay out of the initial bundle.
 import { ChartInlineDeferred } from './chart-deferred';
@@ -51,6 +52,12 @@ export function registerInlineComponents() {
   for (const toolName of CHART_TOOL_ALIASES) {
     inlineRegistry.register({ toolName, component: ChartInlineDeferred as AnyComponent });
   }
+  // server_skill: a fired agent skill. Its payload is {skill_name, content} where
+  // `content` is the skill's whole markdown body - thousands of characters of
+  // model-facing instructions. Unregistered it rendered as a collapsed JSON blob
+  // hiding that wall of text. Shown as a chip naming the skill instead, because
+  // WHICH skill fired is the visible half of "did the agent pick the right one".
+  inlineRegistry.register({ toolName: 'server_skill', component: SkillChip as AnyComponent });
 }
 
 // Binds routing tool outputs to the inline deck.gl map. The tool names come

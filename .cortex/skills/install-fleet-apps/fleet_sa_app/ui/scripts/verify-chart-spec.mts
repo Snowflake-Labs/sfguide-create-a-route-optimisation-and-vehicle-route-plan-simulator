@@ -34,6 +34,7 @@ import { themeSpec, buildVegaTheme, mergeThemeUnder } from '../src/lib/vega-them
 import { resolveChartCitations, stripCitationTags } from '../src/lib/chart-citations';
 import { CHART_TOOL_NAME, CHART_TOOL_ALIASES, isChartTool } from '../src/lib/tool-names';
 import { parseCortexStream } from '../src/lib/cortex-stream';
+import { isSuppressedResult, attributeTool } from '../src/lib/tool-visibility';
 import { DEFAULT_CHART_PALETTE } from '../src/lib/style-config';
 import type { MessagePart } from '../src/lib/types';
 
@@ -280,6 +281,63 @@ for (const c of fixtures.rejectCases) {
   });
   check('response.chart alone still produces a chart',
     soloParts.filter((p) => p.type === 'tool_result' && isChartTool(p.toolName)).length === 1);
+}
+
+// ------------------------------------------------- tool visibility + attribution
+// The other three JSON blobs from the same turn. Each was an unhandled tool name:
+// a legal, silent state that renders as a tidy collapsed row.
+{
+  // An analyst result is recognised by SHAPE, so a NEW query_* tool is covered on
+  // the day it is added. A name list (13 today) would go stale silently, which is
+  // the defect being fixed - the old code keyed on the tool TYPE
+  // `cortex_analyst_text_to_sql` while the stream sends `query_dwell`.
+  check('an analyst tool is NOT suppressed by its name alone',
+    !isSuppressedResult('query_dwell', { rows: [] }));
+  check('an analyst semantic-model payload IS suppressed',
+    isSuppressedResult('query_dwell', {
+      semantic_model_key: 'query_dwell',
+      semantic_view_fqn: 'FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS',
+      sql_best_practices: '...', tables: [],
+    }));
+  check('a NEW analyst tool is covered with no code edit',
+    isSuppressedResult('query_something_new_2027', { semantic_model_key: 'x' }));
+  check('the tool TYPE still suppresses, for a host that sends it',
+    isSuppressedResult('cortex_analyst_text_to_sql', {}));
+
+  check('the host SQL executor envelope is suppressed',
+    isSuppressedResult('system_execute_sql', {
+      query_id: '01c7', sql: 'SELECT 1', result_set: { data: [] },
+    }));
+  // Shape alone is enough, so a renamed executor is still covered.
+  check('a SQL envelope is suppressed on shape alone',
+    isSuppressedResult('some_other_executor', { sql: 'SELECT 1', result_set: {} }));
+
+  // Not suppressed: server_skill renders as a chip, and an ordinary verb result
+  // must still be visible.
+  check('server_skill is NOT suppressed (it renders as a chip)',
+    !isSuppressedResult('server_skill', { skill_name: 'dwell-facilities', content: '# ...' }));
+  check('an ordinary verb result is not suppressed',
+    !isSuppressedResult('routing_mcp_get_directions', { distance: 12 }));
+  check('a chart result is not suppressed',
+    !isSuppressedResult('data_to_chart', { charts: ['{}'] }));
+
+  // Attribution: TOOLS_USED must say WHICH skill fired. Without this the turn
+  // record proves only that A skill fired, which is why "did the agent select the
+  // CoWork skill" could not be answered from SQL.
+  check('server_skill is attributed to its skill',
+    attributeTool('server_skill', { skill_name: 'dwell-facilities' })
+      === 'server_skill:dwell-facilities');
+  check('attribution tolerates the MCP prefix',
+    attributeTool('x_mcp_server_skill', { skill_name: 'a' }) === 'x_mcp_server_skill:a');
+  check('a skill with no name degrades to the bare tool name',
+    attributeTool('server_skill', { content: '# ...' }) === 'server_skill');
+  check('a non-skill tool is never rewritten',
+    attributeTool('query_dwell', { skill_name: 'nope' }) === 'query_dwell');
+  check('the attributed name stays bounded',
+    attributeTool('server_skill', { skill_name: 'z'.repeat(500) }).length <= 'server_skill:'.length + 60);
+  // Existing queries filter on the bare name, so the prefix must survive STARTSWITH.
+  check('the attributed name still starts with the tool name',
+    attributeTool('server_skill', { skill_name: 'a' }).startsWith('server_skill'));
 }
 
 // -------------------------------------------------------------------- report

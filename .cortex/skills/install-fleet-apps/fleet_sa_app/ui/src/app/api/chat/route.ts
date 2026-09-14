@@ -13,6 +13,9 @@ import {
 } from '@/lib/routing-suspend';
 import { resolveResumeRegion, triggerRegionResume } from '@/lib/routing-resume';
 import { recordAgentTurn, extractRequestId, type AgentTurnRecord } from '@/lib/agent-turn';
+// Attributes a `server_skill` result to the skill that actually fired, so
+// TOOLS_USED answers WHICH skill, not just that one did.
+import { attributeTool } from '@/lib/tool-visibility';
 import { getIngressUser } from '@/lib/ingress-identity';
 
 export async function POST(request: NextRequest) {
@@ -369,7 +372,7 @@ export async function POST(request: NextRequest) {
             if (firstPartMs === null) firstPartMs = Date.now() - turnStartedAt;
             if (part.type === 'text') answerChunks.push(part.content);
             else if (part.type === 'tool_pending') toolsUsed.push(part.toolName);
-            else if (part.type === 'tool_result') toolsUsed.push(part.toolName);
+            else if (part.type === 'tool_result') toolsUsed.push(attributeTool(part.toolName, part.output));
             else if (part.type === 'tool_error') {
               toolsUsed.push(part.toolName);
               toolErrors.push(`${part.toolName}: ${part.error}`);
