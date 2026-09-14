@@ -1120,7 +1120,11 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
-  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | tail -1)\`"
+  # `snow sql --format=CSV` emits a trailing BLANK line after the last result
+  # set, so `tail -1` returned the empty string and every friction log ever
+  # written recorded `account: ``` -- the one field that identifies which
+  # account the run landed in. Strip blank lines before taking the last.
+  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
   echo "- SA app:    $SA_URL_DISP"

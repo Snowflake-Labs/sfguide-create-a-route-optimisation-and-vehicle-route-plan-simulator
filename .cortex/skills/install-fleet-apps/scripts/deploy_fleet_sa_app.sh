@@ -278,14 +278,26 @@ else
 fi
 
 # ── 4. Resolve endpoint URL ─────────────────────────────────────
+# While SPCS ingress is still coming up, `SHOW ENDPOINTS` returns the literal
+# text "Endpoints provisioning in progress... check back in a few minutes" in
+# the ingress_url column. Prefixing 'https://' to that made the placeholder
+# satisfy a bare `^https://` grep, so the deploy printed
+# `url: https://Endpoints provisioning in progress...` as if it were the app
+# URL - a value that is not a URL at all and cannot be opened. Filter the
+# placeholder out in SQL AND require a hostname shape (a dot, no whitespace)
+# in the grep, so an unresolved endpoint yields an EMPTY url and the line is
+# suppressed rather than printing something false.
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   $TAG_SQL
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-  WHERE \"name\" = 'fleet-sa-app';
-" 2>/dev/null | grep -E '^https://' | head -1 || true)
+  WHERE \"name\" = 'fleet-sa-app'
+    AND \"ingress_url\" NOT ILIKE '%provisioning%'
+    AND \"ingress_url\" LIKE '%.%'
+    AND \"ingress_url\" NOT LIKE '% %';
+" 2>/dev/null | grep -E '^https://[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$' | head -1 || true)
 
 echo
 echo "================================================================"

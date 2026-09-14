@@ -182,6 +182,7 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CORE CASCADE;
 --     under `snow sql -f`, aborts the whole script -- stranding later drops.
 --     DROP WAREHOUSE suspends implicitly.
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+DROP WAREHOUSE IF EXISTS FLEET_APPS_WH;
 
 -- 19. Drop marketplace databases (no tracking tag - match by name and origin).
 --     install-fleet-apps acquires all six via CREATE DATABASE ... FROM LISTING.
@@ -271,7 +272,7 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 
 | Skill | Tracking Name | Key Objects |
 |-------|--------------|-------------|
-| install-fleet-apps | `oss-install-fleet-apps` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs (pre-Phase-C installs may carry the legacy `oss-build-routing-solution` tag) |
+| install-fleet-apps | `oss-install-fleet-apps` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS + FLEET_APPS_WH warehouses, seed data, EAIs (pre-Phase-C installs may carry the legacy `oss-build-routing-solution` tag) |
 | fleet-intelligence-car | `oss-fleet-intelligence-car` | FLEET_INTELLIGENCE_CAR schema, 10+ tables, views, CONFIG |
 | fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` | FLEET_INTELLIGENCE_EBIKE schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |

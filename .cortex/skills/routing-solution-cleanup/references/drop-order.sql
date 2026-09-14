@@ -112,9 +112,17 @@ $$;
 DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL;
 
 -- ============================================================================
--- PHASE 6: Warehouse (DROP does not require a prior SUSPEND; see header note)
+-- PHASE 6: Warehouses (DROP does not require a prior SUSPEND; see header note)
+--          `scripts/warehouses.sql` is the single creator and it makes TWO:
+--          ROUTING_ANALYTICS (batch) and FLEET_APPS_WH (interactive app reads).
+--          FLEET_APPS_WH was added by the warehouse split and never added here,
+--          so it survived every "full" teardown and a reinstall then inherited a
+--          pre-existing warehouse instead of creating it -- which is exactly the
+--          drift `check_warehouse_ddl.py` exists to prevent, only invisible
+--          because CREATE ... IF NOT EXISTS silently keeps the old parameters.
 -- ============================================================================
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+DROP WAREHOUSE IF EXISTS FLEET_APPS_WH;
 
 -- ============================================================================
 -- PHASE 7: External access integrations (ORS/FLEET only)
