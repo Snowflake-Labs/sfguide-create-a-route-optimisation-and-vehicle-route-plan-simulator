@@ -440,6 +440,14 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
     if (info?.object && clickEmits.object) {
       const src = info.object.properties && typeof info.object.properties === 'object'
         ? { ...info.object, ...info.object.properties } : info.object;
+      // DELIBERATELY case-tolerant, and deliberately NOT normalized upstream:
+      // objectColumn is the one clickEmits field that indexes a row, and this
+      // three-way probe already resolves any casing (the third arm lowercases,
+      // and /api/query lowercases every row key it returns, so that arm always
+      // matches). Adding it to the spec-level lowercasing pass would be dead
+      // code, and gating authored specs on its case would fail specs that work.
+      // Do not "simplify" this to src[col] - GeoJSON properties can arrive with
+      // the casing the source file used rather than the query's.
       const val = src[col] ?? src[col.toUpperCase()] ?? src[col.toLowerCase()];
       if (val != null) {
         const patch: Record<string, unknown> = { [clickEmits.object]: val };

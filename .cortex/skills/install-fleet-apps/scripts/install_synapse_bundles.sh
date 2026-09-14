@@ -155,6 +155,21 @@ BUNDLES=(
 # whichever ran first won silently. Do not inline a CREATE WAREHOUSE here again.
 snow sql -c "$CONNECTION" -f "$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/warehouses.sql" >/dev/null 2>&1 || true
 
+# Tool DESCRIPTION budget, once for all three bundles (the verifier imports procs
+# across user/ops/admin itself).
+#
+# Snowflake caps an MCP tool description at 2500 chars and enforces it only at
+# CREATE MCP SERVER - deep inside the bundle loop below, after materialize, where
+# it aborts the install and leaves a half-built account. Editing a description is
+# the single most common change to these verbs and the limit is invisible while
+# you do it, so the ceiling is checked here instead, before anything is created.
+if [ "${DESC_VERIFY:-1}" != "0" ] && [ -f "$TOOLS_DIR/user/verify_tool_descriptions.mts" ]; then
+  echo "[synapse] Verify MCP tool descriptions fit the 2500-char cap..."
+  ( cd "$TOOLS_DIR/user" && { [ -d node_modules ] || npm ci; } && npx tsx verify_tool_descriptions.mts ) \
+    || { echo "ERROR: tool description verification failed (see above)."; \
+         echo "       CREATE MCP SERVER would reject this mid-install."; exit 1; }
+fi
+
 for row in "${BUNDLES[@]}"; do
   IFS='|' read -r SRC INSTALLED DB SCHEMA MCP ROLEKEY ROLENAME <<< "$row"
   SRC_DIR="$TOOLS_DIR/$SRC"

@@ -120,15 +120,43 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
   fi
-  # Authored views bypass parseDynamicSpec, so nothing at runtime lowercases their
-  # column references or checks a map layer has its encoding. /api/query lowercases
-  # every row key it returns, so an uppercase ref here binds to nothing: the view
-  # draws an empty frame and reports no error. Static check, so it runs BEFORE the
-  # build - no point compiling for two minutes to ship a view that cannot bind.
+  # ---------------------------------------------------------------- static gates
+  # These four suites existed for months and were invoked by NOTHING - no CI, no
+  # script. That is not a theoretical gap: commit a6db148e made verify_map_spec
+  # import SA app source using the app's `@/*` alias, which fleet_tools/user had
+  # no paths mapping for, so the 200-assertion suite stopped STARTING
+  # (MODULE_NOT_FOUND) and stayed broken across a commit, a push and a deploy.
+  # A suite nobody runs is documentation, not a guard.
+  #
+  # All are pure static checks, so they run BEFORE the build: no point compiling
+  # for two minutes to ship a view that cannot bind or a spec that draws nothing.
+  # Each has its own opt-out, matching the BUNDLE_VERIFY convention.
+  #
+  # Authored views specifically bypass parseDynamicSpec, so nothing at runtime
+  # lowercases their column references or checks a map layer has its encoding -
+  # and /api/query lowercases every row key it returns, so an uppercase ref binds
+  # to nothing and the view draws an empty frame with no error.
   if [ "${VIEWS_VERIFY:-1}" != "0" ]; then
     echo "[1/7] Verify authored app-views.json column refs can bind..."
     ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-app-views.mts ) \
       || { echo "ERROR: authored view verification failed (see above)."; exit 1; }
+  fi
+  if [ "${CHART_VERIFY:-1}" != "0" ]; then
+    echo "[1/7] Verify chart specs extract, theme, compile with marks..."
+    ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-chart-spec.mts ) \
+      || { echo "ERROR: chart spec verification failed (see above)."; exit 1; }
+  fi
+  if [ "${MAP_SPEC_VERIFY:-1}" != "0" ]; then
+    # Lives in fleet_tools/user because it asserts the VERB's view of a map spec
+    # against the app's renderer, so it must run from there.
+    MAP_SPEC_DIR="$SKILL_DIR/fleet_tools/user"
+    if [ -f "$MAP_SPEC_DIR/verify_map_spec.mts" ]; then
+      echo "[1/7] Verify map specs compile and draw (verb + renderer agree)..."
+      ( cd "$MAP_SPEC_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx verify_map_spec.mts >/dev/null ) \
+        || { echo "ERROR: map spec verification failed. Re-run for detail:"; \
+             echo "         ( cd '$MAP_SPEC_DIR' && npx tsx verify_map_spec.mts )"; exit 1; }
+      echo "  OK: map spec assertions pass."
+    fi
   fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:

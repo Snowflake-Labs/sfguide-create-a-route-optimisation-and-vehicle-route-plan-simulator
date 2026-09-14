@@ -57,6 +57,7 @@ import { parseDynamicSpec } from '../../fleet_sa_app/ui/src/lib/view-spec-schema
 import { buildKpiMemo, buildChartMemo } from '../../fleet_sa_app/ui/src/lib/agent-memo';
 // Column-reference normalization for the non-Map areas (default-deny by PATH).
 import { COLUMN_REF_PATHS, NO_COLUMN_REFS } from '../../fleet_sa_app/ui/src/lib/view-column-refs';
+import { AREA_COMPONENT_NAMES } from '../../fleet_sa_app/ui/src/lib/area-components';
 // The verb-side copies of the shared constants, compared below. Aliased so a
 // reader cannot mistake one side for the other.
 import {
@@ -1040,6 +1041,30 @@ const classified = new Set<string>([...Object.keys(COLUMN_REF_PATHS), ...NO_COLU
 const unclassified = VERB_RENDER_COMPONENTS.filter((c) => !classified.has(c));
 chk('view refs: every agent-authorable component is classified',
   unclassified.length === 0, `unclassified: ${unclassified.join(', ')}`);
+
+// The two allowlists are NOT the same set and must not be asserted equal. The
+// verb list is what the AGENT may author; the client list is what the renderer
+// supports, and it is a deliberate SUPERSET - authored dashboards in
+// app-views.json use DetailPanel (6 areas) and Markdown (1), which the agent is
+// intentionally not allowed to create. Two directions are worth holding:
+//
+//   1. verb SUBSET-OF client. view-spec-schema builds ALLOWED_COMPONENTS from
+//      AREA_COMPONENT_NAMES, so a component the verb accepts but the client does
+//      not is rejected at parse time: the agent is invited to author something
+//      that always fails, and the error names an allowlist it cannot see.
+const clientAllowed = new Set<string>(AREA_COMPONENT_NAMES);
+const verbOnly = VERB_RENDER_COMPONENTS.filter((c) => !clientAllowed.has(c));
+chk('view refs: every verb-authorable component is renderable by the client',
+  verbOnly.length === 0, `verb-only (agent would author an unrenderable area): ${verbOnly.join(', ')}`);
+
+//   2. every CLIENT component is classified, not just the verb's. Authored views
+//      reach components the agent cannot author, and verify-app-views.mts holds
+//      them to the same classification rule, so a client-only component with no
+//      paths would fail that gate rather than this one - which is a confusing
+//      place to discover it.
+const clientUnclassified = AREA_COMPONENT_NAMES.filter((c) => !classified.has(c));
+chk('view refs: every client-renderable component is classified',
+  clientUnclassified.length === 0, `unclassified: ${clientUnclassified.join(', ')}`);
 
 // ---------------------------------------------------------------------------
 // GROUNDING: a wrong column must publish NOTHING, not a placeholder.

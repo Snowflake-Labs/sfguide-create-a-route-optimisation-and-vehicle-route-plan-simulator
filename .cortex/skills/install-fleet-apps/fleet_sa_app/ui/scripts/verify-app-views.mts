@@ -81,6 +81,31 @@ for (const [viewName, view] of Object.entries(raw)) {
 
     if (comp !== 'Map') continue;
 
+    // clickEmits shape. NOT a case check: objectColumn is resolved by a
+    // three-way case-tolerant probe in view-map.tsx, so gating its casing would
+    // fail specs that work. What IS silent is a shape the click handler cannot
+    // use - both branches of onClick are guarded, so a half-specified clickEmits
+    // renders a map that simply ignores clicks, with no error anywhere.
+    const cfg = area.config as Record<string, unknown> | undefined;
+    const emits = cfg?.clickEmits;
+    if (emits && typeof emits === 'object' && !Array.isArray(emits)) {
+      const ce = emits as Record<string, unknown>;
+      const str = (k: string): boolean => typeof ce[k] === 'string' && (ce[k] as string).length > 0;
+      // `if (info?.object && clickEmits.object)` - objectColumn alone is inert.
+      if (str('objectColumn') && !str('object')) {
+        fail(`${where}: clickEmits sets objectColumn but no 'object', so the feature-click`
+          + ` branch never fires and clicking a feature does nothing`);
+      }
+      // `if (coord && clickEmits.lng && clickEmits.lat)` - one without the other is inert.
+      if (str('lng') !== str('lat')) {
+        fail(`${where}: clickEmits sets only ${str('lng') ? 'lng' : 'lat'}, and the map-click`
+          + ` branch requires BOTH, so clicking the basemap does nothing`);
+      }
+      if (!str('object') && !str('lng') && !str('lat')) {
+        fail(`${where}: clickEmits is present but emits nothing the handler can use`);
+      }
+    }
+
     const layers = (area.config as Record<string, unknown> | undefined)?.layers;
     if (!Array.isArray(layers)) {
       fail(`${where}: a Map area has no config.layers array, so it can draw nothing`);
