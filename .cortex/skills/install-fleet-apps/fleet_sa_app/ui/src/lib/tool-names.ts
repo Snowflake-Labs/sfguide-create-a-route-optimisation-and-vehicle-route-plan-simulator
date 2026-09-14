@@ -36,23 +36,26 @@ export function matchesTool(toolName: string | undefined, bare: string): boolean
 /**
  * The name the CHART tool actually arrives under.
  *
- * MEASURED from a live turn: the host declares the tool as `data_to_chart` (see
- * app/agent-spec.json `tools[].name`) and streams its result as a plain
- * `response.tool_result` with `name: "data_to_chart"` and an output of
- * `{ charts: [ "<vega-lite spec json>" ] }`.
+ * MEASURED from live turns via `SEMANTIC_OPS.AGENT_TURN.TOOLS_USED`: the host
+ * declares the tool as `data_to_chart` (see app/agent-spec.json `tools[].name`)
+ * and streams its result as a `response.tool_result` with `name:
+ * "data_to_chart"` and an output of `{ charts: [ "<vega-lite spec json>" ] }`.
  *
- * The inline registry only knew `render_chart`, a name produced solely by the
- * `response.chart` SSE branch that this host never emits. `data_to_chart` is not
- * a suffix of `render_chart` (or vice versa), so `matchesTool` could not bridge
- * them and EVERY chart fell through to the collapsed JSON viewer - the same
- * silent class of failure as the `routing_mcp_render_map` separator bug above.
- * Exported as a constant so the stream, the registry and the citation resolver
- * cannot drift apart again.
+ * The inline registry only knew `render_chart`, so the `data_to_chart` result
+ * matched nothing and rendered as a collapsed JSON blob - an unregistered tool is
+ * a LEGAL state, so the miss was silent. Same class as the
+ * `routing_mcp_render_map` separator bug above.
+ *
+ * The host ALSO emits a duplicate `response.chart` event for the same chart, which
+ * cortex-stream used to map to `render_chart` - so that name did fire, and drew a
+ * broken recharts translation rather than nothing. TOOLS_USED for one turn records
+ * `data_to_chart` AND `render_chart`. Both names are therefore registered, and
+ * cortex-stream deduplicates on spec content so the chart is drawn once.
  */
 export const CHART_TOOL_NAME = 'data_to_chart';
 
-/** Every name a chart result can arrive under: the real one plus the legacy
- *  `response.chart` name, kept so an alternate host still renders. */
+/** Every name a chart result can arrive under: the tool_result name plus the name
+ *  the duplicate `response.chart` event was historically mapped to. */
 export const CHART_TOOL_ALIASES = [CHART_TOOL_NAME, 'render_chart'] as const;
 
 /** True when a streamed tool name is a chart result under any known alias. */

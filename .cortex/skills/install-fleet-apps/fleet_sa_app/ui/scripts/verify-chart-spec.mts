@@ -33,6 +33,7 @@ import { extractChartSpecs, sizeSpec, rowsOfSpec } from '../src/lib/chart-spec';
 import { themeSpec, buildVegaTheme, mergeThemeUnder } from '../src/lib/vega-theme';
 import { resolveChartCitations, stripCitationTags } from '../src/lib/chart-citations';
 import { CHART_TOOL_NAME, CHART_TOOL_ALIASES, isChartTool } from '../src/lib/tool-names';
+import { parseCortexStream } from '../src/lib/cortex-stream';
 import { DEFAULT_CHART_PALETTE } from '../src/lib/style-config';
 import type { MessagePart } from '../src/lib/types';
 
@@ -220,6 +221,65 @@ for (const c of fixtures.rejectCases) {
     stripCitationTags('a<map>x</map>b<table>y</table>c') === 'abc');
   check('stripCitationTags leaves ordinary prose alone',
     stripCitationTags('2 < 3 and 4 > 1') === '2 < 3 and 4 > 1');
+}
+
+// -------------------------------------------------------------- stream dedupe
+// The host sends the SAME chart twice: as a `data_to_chart` tool_result and as a
+// `response.chart` event. Measured in SEMANTIC_OPS.AGENT_TURN.TOOLS_USED, where
+// one turn records `data_to_chart, render_table, render_chart`. Harmless while
+// neither path rendered; now that both names are registered it would draw the
+// chart twice, and a duplicated chart raises no error anywhere.
+{
+  const spec = JSON.stringify({
+    mark: 'bar',
+    data: { values: [{ K: 'a', V: 1 }] },
+    encoding: { x: { field: 'V', type: 'quantitative' }, y: { field: 'K', type: 'nominal' } },
+  });
+  const sse = [
+    `event: response.tool_result\ndata: ${JSON.stringify({
+      name: 'data_to_chart', tool_use_id: 'tooluse_X',
+      content: [{ type: 'json', json: { charts: [spec] } }],
+    })}`,
+    `event: response.text.delta\ndata: ${JSON.stringify({ text: 'Prose <chart>tooluse_X</chart>.' })}`,
+    `event: response.chart\ndata: ${JSON.stringify({ chart_spec: spec })}`,
+    'event: response\ndata: {}',
+  ].join('\n\n') + '\n\n';
+
+  const body = new Response(new TextEncoder().encode(sse));
+  const parts: MessagePart[] = [];
+  await parseCortexStream(body, {
+    onPart: (p) => parts.push(p),
+    onStatus: () => {},
+    onMetadata: () => {},
+    onError: (e) => failures.push(`stream error: ${e}`),
+    onDone: () => {},
+  });
+
+  const chartParts = parts.filter(
+    (p) => p.type === 'tool_result' && isChartTool(p.toolName));
+  check('the duplicated chart is emitted ONCE', chartParts.length === 1,
+    `got ${chartParts.length}`);
+  check('the surviving chart part carries the tool_use_id',
+    chartParts[0]?.type === 'tool_result' && chartParts[0].toolUseId === 'tooluse_X',
+    String((chartParts[0] as { toolUseId?: string } | undefined)?.toolUseId));
+
+  // ...and it still resolves to the citation position, end to end.
+  const resolved = resolveChartCitations(parts);
+  const ci = resolved.findIndex((p) => p.type === 'tool_result');
+  const ti = resolved.findIndex((p) => p.type === 'text');
+  check('end to end: chart lands after its prose', ci > ti && ti >= 0, `chart@${ci} text@${ti}`);
+
+  // A host that sends ONLY response.chart must still render.
+  const only = new Response(new TextEncoder().encode(
+    `event: response.chart\ndata: ${JSON.stringify({ chart_spec: spec })}\n\n`));
+  const soloParts: MessagePart[] = [];
+  await parseCortexStream(only, {
+    onPart: (p) => soloParts.push(p),
+    onStatus: () => {}, onMetadata: () => {},
+    onError: (e) => failures.push(`solo stream error: ${e}`), onDone: () => {},
+  });
+  check('response.chart alone still produces a chart',
+    soloParts.filter((p) => p.type === 'tool_result' && isChartTool(p.toolName)).length === 1);
 }
 
 // -------------------------------------------------------------------- report

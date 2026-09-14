@@ -1,5 +1,5 @@
 import type { MessagePart } from './types';
-import { CHART_TOOL_NAME } from './tool-names';
+import { CHART_TOOL_NAME, isChartTool } from './tool-names';
 
 export interface CortexEvent {
   event: string;
@@ -28,6 +28,37 @@ export async function parseCortexStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let currentTextBuffer = '';
+
+  // Vega-Lite spec strings already emitted as a chart part in this response.
+  //
+  // MEASURED, and it invalidates the obvious assumption: this host sends the SAME
+  // chart TWICE - once as a `response.tool_result` named `data_to_chart` and again
+  // as a `response.chart` event. `SEMANTIC_OPS.AGENT_TURN.TOOLS_USED` for the turn
+  // "show me Visits by Facility Type" records both, in that order:
+  //
+  //   query_dwell, system_execute_sql, server_skill, data_to_chart, render_table,
+  //   render_chart
+  //
+  // Before this file rendered charts at all that was harmless (one path produced a
+  // JSON blob, the other a broken recharts translation). Now that BOTH names are
+  // registered to a working renderer, emitting both would draw the same chart
+  // twice. Deduplicated on the spec content, and since the tool_result arrives
+  // FIRST (per the order above) the winning part is the one carrying the
+  // tool_use_id that citation placement needs.
+  const seenChartSpecs = new Set<string>();
+
+  /** Register spec strings from a chart payload; returns false if all were seen. */
+  function claimChartSpecs(specs: unknown[]): boolean {
+    let fresh = false;
+    for (const s of specs) {
+      const key = typeof s === 'string' ? s : JSON.stringify(s ?? null);
+      if (!seenChartSpecs.has(key)) {
+        seenChartSpecs.add(key);
+        fresh = true;
+      }
+    }
+    return fresh;
+  }
 
   function flushText() {
     if (currentTextBuffer) {
@@ -82,6 +113,12 @@ export async function parseCortexStream(
             const content = toolResult.content as Array<{ type: string; json?: unknown; text?: string }> | undefined;
             const toolResultName = (toolResult.name as string) || (toolResult.type as string) || 'unknown';
             const output = extractToolOutput(content);
+            if (isChartTool(toolResultName)) {
+              // Claim the specs so the duplicate `response.chart` event that
+              // follows is dropped rather than drawn a second time.
+              const charts = Array.isArray(output.charts) ? output.charts : [output];
+              claimChartSpecs(charts);
+            }
             callbacks.onPart({
               type: 'tool_result',
               toolName: toolResultName,
@@ -125,16 +162,18 @@ export async function parseCortexStream(
 
           case 'response.chart': {
             flushText();
-            // Legacy/alternate host shape. The Cortex Agents API this app talks
-            // to does NOT emit this event - it sends data_to_chart through the
-            // ordinary `response.tool_result` path above, which is why the
-            // `render_chart` name registered for this branch had never once
-            // matched a real turn. Kept (and pointed at the SAME tool name the
-            // registry binds) so a host that does emit it still renders.
+            // The DUPLICATE of the data_to_chart tool_result above (measured -
+            // see seenChartSpecs). Kept because a host that sends only this event
+            // must still render, but skipped when the spec has already been
+            // drawn. The field name is read defensively and falls back to the
+            // whole event payload: sending `{charts: [undefined]}` here would
+            // trade a duplicate chart for a missing one.
+            const spec = event.data.chart_spec ?? event.data.chart ?? event.data.spec ?? event.data;
+            if (!claimChartSpecs([spec])) break;
             callbacks.onPart({
               type: 'tool_result',
               toolName: CHART_TOOL_NAME,
-              output: { charts: [event.data.chart_spec as string] },
+              output: { charts: [spec] },
               toolUseId: toolUseIdOf(event.data),
             });
             break;

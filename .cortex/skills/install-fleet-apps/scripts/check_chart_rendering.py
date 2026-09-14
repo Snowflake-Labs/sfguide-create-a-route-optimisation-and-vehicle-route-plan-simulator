@@ -45,6 +45,12 @@ What it checks
    so a direct import in the barrel puts all of it in the initial bundle of an
    app where most turns produce no chart. Cost, not correctness, and invisible in
    any functional test.
+6. RULE G - the stream DEDUPLICATES chart specs. Measured in
+   ``SEMANTIC_OPS.AGENT_TURN.TOOLS_USED``: this host sends the same chart twice,
+   once as a ``data_to_chart`` tool_result and again as a ``response.chart``
+   event (one turn records both). That was harmless while neither path rendered;
+   with both names now bound to a working renderer it draws the chart TWICE.
+   Nothing about a duplicated chart raises an error, so it is gate-only.
 
 Run with no arguments; exits non-zero naming the rule and the file.
 """
@@ -57,6 +63,7 @@ import sys
 
 UI = pathlib.Path(__file__).resolve().parent.parent / "fleet_sa_app" / "ui" / "src"
 
+STREAM = UI / "lib" / "cortex-stream.ts"
 TOOL_NAMES = UI / "lib" / "tool-names.ts"
 REGISTRY_SITE = UI / "components" / "inline" / "index.ts"
 CHART_COMPONENT = UI / "components" / "inline" / "chart-inline.tsx"
@@ -103,6 +110,7 @@ def main() -> int:
     citations_src = read(CITATIONS, problems, "RULE D")
     markdown_src = read(MARKDOWN_SITE, problems, "RULE D")
     deferred_src = read(CHART_DEFERRED, problems, "RULE E")
+    stream_src = read(STREAM, problems, "RULE G")
 
     # ---- RULE A: the host's real tool name is registered, from one source ----
     if not CHART_NAME_ASSIGN.search(names_src):
@@ -193,6 +201,28 @@ def main() -> int:
             "is Vega-Lite; a hand-rolled translation cannot express the pie, box plot, "
             "histogram and dual-axis charts the agent is instructed to produce.")
 
+    # ---- RULE G: the duplicate response.chart event is not drawn twice ----
+    if "seenChartSpecs" not in stream_src or "claimChartSpecs" not in stream_src:
+        problems.append(
+            "RULE G: cortex-stream.ts does not deduplicate chart specs. This host sends "
+            "the same chart twice - as a data_to_chart tool_result AND as a "
+            "response.chart event (measured in AGENT_TURN.TOOLS_USED, one turn records "
+            "both) - so with both names registered the chart is drawn TWICE. A "
+            "duplicated chart raises no error, so nothing else can catch it.")
+    else:
+        # The response.chart branch must CONSULT the dedupe, not merely populate it.
+        chart_branch = re.search(
+            r"case 'response\.chart':(.{0,900}?)break;", stream_src, re.S)
+        if not chart_branch or "claimChartSpecs" not in chart_branch.group(1):
+            problems.append(
+                "RULE G: the response.chart branch does not check claimChartSpecs "
+                "before emitting. Recording the spec without gating on it leaves the "
+                "duplicate in place.")
+        elif "chart_spec" not in chart_branch.group(1):
+            problems.append(
+                "RULE G: the response.chart branch no longer reads chart_spec. Emitting "
+                "{charts: [undefined]} trades a duplicated chart for a missing one.")
+
     if problems:
         print("FAIL: the SA app cannot reliably render an agent chart:")
         for p in problems:
@@ -200,7 +230,8 @@ def main() -> int:
         return 1
 
     print("OK: chart tool registered from a shared constant, charts[] read, theme "
-          "merged under the spec, citations stripped, vega behind the lazy boundary")
+          "merged under the spec, citations stripped, vega behind the lazy boundary, "
+          "duplicate response.chart deduplicated")
     return 0
 
 
