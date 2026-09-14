@@ -504,6 +504,21 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHA
 
 -- TOOL_SNAP: snap free-text coordinates/places to the nearest routable road edge
 -- (per-point nearest-edge snapping via ORS /snap, NOT trajectory map matching).
+--
+-- This procedure failed on EVERY call until 2026-09-14, with a raw SQL
+-- compilation error handed straight to the user, on two independent argument-type
+-- defects in ONE line. CORE.SNAP_POINTS is declared
+-- (VARCHAR, ARRAY, NUMBER, DEFAULT VARCHAR) and it was called with:
+--   * PARSE_JSON(?), which is VARIANT, not ARRAY -> needs ::ARRAY
+--   * a bare NULL for the region -> an untyped NULL does not match a VARCHAR
+--     parameter, so ::VARCHAR (or a real region) is required. This trap is
+--     already documented repo-wide for the routing contract's provider argument.
+-- Both are needed: ::ARRAY alone still fails on the NULL, and NULL::VARCHAR alone
+-- still fails on the VARIANT. Verified separately against a live SNAP_POINTS.
+--
+-- Nothing caught this because no eval case exercised snap_to_road at all, and
+-- "the tool errored" reads like an engine problem rather than a call that could
+-- never have compiled.
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(
     LOCATIONS_DESCRIPTION VARCHAR,
     RADIUS_METERS NUMBER DEFAULT 350,
@@ -526,6 +541,8 @@ DECLARE
     v_points VARIANT;
     v_unsnapped INT;
     v_total INT;
+    v_region VARCHAR;
+    v_region_lit VARCHAR;
 BEGIN
     v_radius := COALESCE(:RADIUS_METERS, 350)::INT;
     IF (v_radius <= 0) THEN
@@ -548,20 +565,11 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the default
-    -- region. Table-only lookup: the ORS_STATUS probe this replaced was a
-    -- service function call that could not be bounded from SQL and once stalled
-    -- a caller for 839.7 s (see the TOOL_DIRECTIONS header). Empty -> NULL ->
-    -- rename-only behaviour, matching what a failed probe used to give.
-    BEGIN
-        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
     -- Step 1: geocode the free-text description to a coords array [[lon,lat], ...].
+    -- Deliberately BEFORE profile resolution: the profiles that exist differ per
+    -- region (measured here, SanFrancisco carries no driving-hgv and
+    -- UnitedStatesOfAmerica carries no driving-car), so resolving against the
+    -- default region claims availability on a graph that may not have it.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -586,8 +594,27 @@ BEGIN
         RETURN OBJECT_CONSTRUCT('error', 'SNAP FAILED: Could not parse any coordinates from the description.', 'status', 'FAILED');
     END IF;
 
+    -- Resolve the ONE graph that covers every point, then resolve the profile
+    -- against THAT region's built profiles (table-only lookup - the ORS_STATUS
+    -- probe this replaced was a service call that could not be bounded from SQL
+    -- and once stalled a caller for 839.7 s; see the TOOL_DIRECTIONS header).
+    -- A NULL region is not fatal here: snapping is diagnostic, so it still runs
+    -- against the engine default, and the region actually used is reported back.
+    SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords):lookup_name::STRING INTO :v_region;
+    v_region_lit := IFF(:v_region IS NULL, 'NULL::VARCHAR', '''' || :v_region || '''');
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
     -- Step 2: snap each point to the nearest routable edge. v_radius is a validated
-    -- INT so it is safe to inline; coords are passed as a bound VARIANT parameter.
+    -- INT and v_region comes from the catalog, so both are safe to inline; coords
+    -- are passed as a bound parameter and cast ::ARRAY to match the declared
+    -- signature.
     LET snap_sql VARCHAR := 'SELECT
             ARRAY_AGG(OBJECT_CONSTRUCT_KEEP_NULL(
                 ''idx'', s.IDX,
@@ -600,7 +627,7 @@ BEGIN
             )) WITHIN GROUP (ORDER BY s.IDX),
             COUNT_IF(s.SNAPPED_GEOG IS NULL),
             COUNT(*)
-        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?), ' || v_radius || ', NULL)) s';
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?)::ARRAY, ' || v_radius || ', ' || v_region_lit || ')) s';
 
     LET v_coords_str VARCHAR := v_coords::STRING;
     res := (EXECUTE IMMEDIATE :snap_sql USING (v_coords_str));
@@ -620,6 +647,8 @@ BEGIN
         'points', v_points,
         'unsnapped_count', v_unsnapped,
         'total_points', v_total,
+        'region', v_region,
+        'available_profiles', v_available,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -633,6 +662,11 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(VARCHAR, NUMBER, VARC
 -- TOOL_MATCH: map-match a free-text/coordinate trajectory to the road network and
 -- return the matched road segments as GeoJSON (HMM map matching via ORS /match,
 -- geometry resolved via /export). This is trajectory map matching, unlike TOOL_SNAP.
+--
+-- Failed on EVERY call until 2026-09-14 for the same two reasons as TOOL_SNAP:
+-- CORE.MATCH_PATH is declared (VARCHAR, ARRAY, DEFAULT VARCHAR) and was called
+-- with a VARIANT PARSE_JSON(?) and a bare untyped NULL region. See the TOOL_SNAP
+-- header - both casts are required, and neither alone is sufficient.
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -654,6 +688,8 @@ DECLARE
     v_resp VARIANT;
     v_geojson VARIANT;
     v_matched_edges INT;
+    v_region VARCHAR;
+    v_region_lit VARCHAR;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     v_safe_profile := CASE UPPER(PROFILE)
@@ -670,17 +706,10 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Default-region profiles from the catalog, not a live ORS_STATUS probe
-    -- (see the TOOL_DIRECTIONS header for why that probe was unboundable).
-    BEGIN
-        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
     -- Step 1: geocode the free-text trajectory into an ORDERED coords array.
+    -- Before profile resolution, which needs the region the trajectory falls in:
+    -- the built profiles differ per region, so resolving against the default one
+    -- claims availability on a graph that may not have it.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -706,9 +735,23 @@ BEGIN
         RETURN OBJECT_CONSTRUCT('error', 'MATCH FAILED: A trajectory needs at least 2 ordered points; could not parse enough from the description.', 'status', 'FAILED');
     END IF;
 
+    -- Resolve the graph covering the whole trajectory, then the profile against
+    -- that region. Catalog-sourced, so safe to inline; NULL falls back to the
+    -- engine default and is reported back rather than hidden.
+    SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords):lookup_name::STRING INTO :v_region;
+    v_region_lit := IFF(:v_region IS NULL, 'NULL::VARCHAR', '''' || :v_region || '''');
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
     -- Step 2: map-match the trajectory and resolve matched edges to geometry.
     LET match_sql VARCHAR := 'SELECT mp.RESPONSE, ST_ASGEOJSON(mp.GEOJSON)::VARIANT, mp.MATCHED_EDGES
-        FROM TABLE(OPENROUTESERVICE_APP.CORE.MATCH_PATH(''' || v_used || ''', PARSE_JSON(?), NULL)) mp';
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.MATCH_PATH(''' || v_used || ''', PARSE_JSON(?)::ARRAY, ' || v_region_lit || ')) mp';
     LET v_coords_str VARCHAR := v_coords::STRING;
     res := (EXECUTE IMMEDIATE :match_sql USING (v_coords_str));
     LET c2 CURSOR FOR res;
@@ -731,6 +774,8 @@ BEGIN
         'matched_edges', v_matched_edges,
         'edge_ids', v_resp:edge_ids,
         'graph_timestamp', v_resp:graph_timestamp,
+        'region', v_region,
+        'available_profiles', v_available,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -762,6 +807,9 @@ DECLARE
     v_geometry VARIANT;
     v_ors_error VARIANT;
     v_detected_region OBJECT;
+    v_region VARCHAR;
+    v_lon FLOAT;
+    v_lat FLOAT;
     v_available ARRAY;
     v_res VARIANT;
     v_used VARCHAR;
@@ -785,18 +833,16 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the default
-    -- region, read from the catalog rather than probed (see the TOOL_DIRECTIONS
-    -- header). Surfaces requested vs used + a note when they differ.
-    BEGIN
-        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
-    -- First attempt: try with detected region (clips to region boundary).
+    -- Step 1: geocode and resolve the region the point falls in. This is a
+    -- SEPARATE statement from the isochrone call on purpose. Previously the
+    -- geocode, the region lookup and ISOCHRONES_CLIPPED were one statement, so
+    -- the profile had to be inlined BEFORE the region was known and was therefore
+    -- resolved against the DEFAULT region. Measured: the profiles built per region
+    -- are disjoint here (SanFrancisco has no driving-hgv, UnitedStatesOfAmerica
+    -- has no driving-car), so a Dallas isochrone requesting driving-car was told
+    -- the profile existed, clipped correctly to UnitedStatesOfAmerica, and got
+    -- ORS 3003 "Parameter 'profile' has incorrect value of 'unknown'" back. It
+    -- worked only inside the default region, which is where every test ran.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -804,45 +850,61 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 1000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
-        ),
-        validated AS (
-            -- Resolve LLM-extracted coord to a region; the isochrone is then
-            -- clipped to that region''s boundary so it doesn''t extend into
-            -- foreign territory or water.
-            SELECT geocoded_result,
-                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
-                     geocoded_result:longitude::FLOAT,
-                     geocoded_result:latitude::FLOAT) AS detected_region
-            FROM geocoded
-        ),
-        isochrone AS (
-            SELECT v.geocoded_result AS geo,
-                   v.detected_region,
-                   i.RESPONSE AS iso_result,
-                   i.GEOJSON AS clipped_geom
-            FROM validated v,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_used || ''',
-                     v.geocoded_result:longitude::FLOAT,
-                     v.geocoded_result:latitude::FLOAT,
-                     ?::NUMBER,
-                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
         )
         SELECT
-            geo AS center,
-            ?::NUMBER AS range_minutes,
-            ''' || v_used || ''' AS profile,
-            iso_result:features[0]:properties:area::FLOAT AS area_raw,
-            iso_result:features[0]:geometry AS geometry,
-            iso_result:error AS ors_error,
-            detected_region AS detected_region
-        FROM isochrone';
+            geocoded_result,
+            geocoded_result:longitude::FLOAT,
+            geocoded_result:latitude::FLOAT,
+            OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+              geocoded_result:longitude::FLOAT,
+              geocoded_result:latitude::FLOAT)
+        FROM geocoded';
 
-    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error, v_detected_region;
+    FETCH c INTO v_center, v_lon, v_lat, v_detected_region;
     CLOSE c;
+
+    IF (v_center IS NULL OR v_lon IS NULL OR v_lat IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
+    END IF;
+
+    v_region := v_detected_region:lookup_name::STRING;
+
+    -- Resolve the requested profile against the profiles built in THAT region,
+    -- read from the catalog rather than probed (see the TOOL_DIRECTIONS header).
+    -- Surfaces requested vs used + a note when they differ.
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: isochrone, clipped to the detected region's boundary so it does not
+    -- extend into foreign territory or water. Region is catalog-sourced, so it is
+    -- safe to inline; the coordinates and range are bound.
+    v_sql := 'SELECT
+            i.RESPONSE:features[0]:properties:area::FLOAT,
+            i.RESPONSE:features[0]:geometry,
+            i.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+            ''' || v_used || ''',
+            ?::FLOAT,
+            ?::FLOAT,
+            ?::NUMBER,
+            ''' || COALESCE(v_region, '') || ''')) i';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (v_lon, v_lat, RANGE_MINUTES));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_area_raw, v_geometry, v_ors_error;
+    CLOSE c2;
+
+    v_profile := v_used;
+    v_range_minutes := RANGE_MINUTES;
 
     -- If the gateway returned service_unreachable, the resolved region's ORS
     -- service is suspended or not provisioned. Surface an actionable error
@@ -864,12 +926,8 @@ BEGIN
         );
     END IF;
 
-    IF (v_center IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('ISOCHRONE FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('ISOCHRONE FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'region', v_region, 'profile', v_used, 'status', 'FAILED');
     END IF;
 
     IF (v_geometry IS NULL) THEN
@@ -902,6 +960,8 @@ BEGIN
         'area_km2', ROUND(DIV0(v_area_raw, 1000000), 2),
         'geometry', v_geometry,
         'detected_region', v_detected_region,
+        'region', v_region,
+        'available_profiles', v_available,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -939,6 +999,7 @@ DECLARE
     v_center_lat FLOAT;
     v_ors_error VARIANT;
     v_detected_region OBJECT;
+    v_region VARCHAR;
     v_pois VARIANT;
     v_poi_count NUMBER;
     v_available ARRAY;
@@ -964,18 +1025,11 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the default
-    -- region, read from the catalog rather than probed (see the TOOL_DIRECTIONS
-    -- header). Surfaces requested vs used + a note when they differ.
-    BEGIN
-        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
-    -- Step 1: Geocode + isochrone (clipped to detected region)
+    -- Step 1: geocode and resolve the region. Split from the isochrone call for
+    -- the same reason as TOOL_ISOCHRONE: the profile must be resolved against the
+    -- region that will serve the call, not the default one, or a request outside
+    -- the default region asks a graph for a profile it does not carry and gets
+    -- ORS 3003 back. See the TOOL_ISOCHRONE header.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -983,40 +1037,55 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 1000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
-        ),
-        validated AS (
-            SELECT geocoded_result,
-                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
-                     geocoded_result:longitude::FLOAT,
-                     geocoded_result:latitude::FLOAT) AS detected_region
-            FROM geocoded
-        ),
-        isochrone AS (
-            SELECT v.geocoded_result AS geo,
-                   v.detected_region,
-                   i.RESPONSE AS iso_result
-            FROM validated v,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_used || ''',
-                     v.geocoded_result:longitude::FLOAT,
-                     v.geocoded_result:latitude::FLOAT,
-                     ?::NUMBER,
-                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
         )
         SELECT
-            geo AS center,
-            ?::NUMBER AS range_minutes,
-            ''' || v_used || ''' AS profile,
-            iso_result:features[0]:geometry AS iso_geojson,
-            iso_result:error AS ors_error,
-            detected_region AS detected_region
-        FROM isochrone';
+            geocoded_result,
+            geocoded_result:longitude::FLOAT,
+            geocoded_result:latitude::FLOAT,
+            OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+              geocoded_result:longitude::FLOAT,
+              geocoded_result:latitude::FLOAT)
+        FROM geocoded';
 
-    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_iso_geojson, v_ors_error, v_detected_region;
+    FETCH c INTO v_center, v_center_lon, v_center_lat, v_detected_region;
     CLOSE c;
+
+    IF (v_center IS NULL OR v_center_lon IS NULL OR v_center_lat IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'POI SEARCH FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
+    END IF;
+
+    v_region := v_detected_region:lookup_name::STRING;
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: isochrone clipped to the detected region.
+    v_sql := 'SELECT
+            i.RESPONSE:features[0]:geometry,
+            i.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+            ''' || v_used || ''',
+            ?::FLOAT,
+            ?::FLOAT,
+            ?::NUMBER,
+            ''' || COALESCE(v_region, '') || ''')) i';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (v_center_lon, v_center_lat, RANGE_MINUTES));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_iso_geojson, v_ors_error;
+    CLOSE c2;
+
+    v_profile := v_used;
+    v_range_minutes := RANGE_MINUTES;
 
     -- If the gateway returned service_unreachable, the resolved region's ORS
     -- service is suspended or not provisioned. Surface an actionable error
@@ -1037,12 +1106,8 @@ BEGIN
         );
     END IF;
 
-    IF (v_center IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'POI SEARCH FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('POI SEARCH FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('POI SEARCH FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'region', v_region, 'profile', v_used, 'status', 'FAILED');
     END IF;
 
     IF (v_iso_geojson IS NULL) THEN
@@ -1064,11 +1129,10 @@ BEGIN
         );
     END IF;
 
-    -- Step 2: Find Overture POIs inside the isochrone polygon, matching category.
+    -- Step 3: Find Overture POIs inside the isochrone polygon, matching category.
     -- Match against BASIC_CATEGORY and CATEGORIES:primary (case-insensitive).
+    -- v_center_lon / v_center_lat were already resolved in step 1.
     v_category := LOWER(POI_CATEGORY);
-    v_center_lon := v_center:longitude::FLOAT;
-    v_center_lat := v_center:latitude::FLOAT;
     v_iso_geojson_str := v_iso_geojson::STRING;
     LET v_max_results NUMBER := COALESCE(MAX_RESULTS, 25);
     IF (v_max_results > 200) THEN
@@ -1130,6 +1194,8 @@ BEGIN
             'profile_note', v_res:note,
             'category', POI_CATEGORY,
             'detected_region', v_detected_region,
+            'region', v_region,
+            'available_profiles', v_available,
             'geometry', v_iso_geojson,
             'pois', ARRAY_CONSTRUCT(),
             'count', 0,
@@ -1148,6 +1214,8 @@ BEGIN
         'profile_note', v_res:note,
         'category', POI_CATEGORY,
         'detected_region', v_detected_region,
+        'region', v_region,
+        'available_profiles', v_available,
         'geometry', v_iso_geojson,
         'pois', v_pois,
         'count', v_poi_count,

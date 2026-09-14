@@ -248,6 +248,161 @@ def rule_e(module_sql: str) -> list[str]:
     return []
 
 
+def split_args(arglist: str) -> list[str]:
+    """Split a call's argument list on TOP-LEVEL commas only.
+
+    Nested calls carry their own commas - OBJECT_CONSTRUCT(...),
+    ARRAY_CONSTRUCT(...), a CASE, a scalar subquery - so a naive split reports
+    the wrong arity and then checks the wrong positions.
+    """
+    depth, parts, cur = 0, [], ""
+    for ch in arglist:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+def engine_signatures(module_sql: str) -> dict[str, list[list[str]]]:
+    """{FUNCTION_NAME: [[param types], ...]} for engine TABLE functions only.
+
+    Parsed rather than hardcoded so the gate cannot drift from the declarations
+    it checks against. Overloads are separate entries because arity is how a call
+    picks one.
+
+    Restricted to `RETURNS TABLE` on purpose, and the boundary is measured rather
+    than assumed. A SCALAR engine UDF coerces freely: CORE.MATRIX_TABULAR is
+    declared (VARCHAR, ARRAY, ARRAY, VARCHAR) and accepts a VARIANT PARSE_JSON
+    argument AND a bare untyped NULL region without complaint. The TABLE functions
+    CORE.SNAP_POINTS and CORE.MATCH_PATH, declared the same way, reject both. So a
+    rule applied to every engine function would flag two working calls in
+    TOOL_DIRECTIONS and TOOL_BACKLOAD_CHAIN_SOLVE - which is exactly what the
+    first version did.
+    """
+    sigs: dict[str, list[list[str]]] = {}
+    pat = re.compile(
+        r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+OPENROUTESERVICE_APP\.CORE\."
+        r"([A-Z0-9_]+)\s*\((.*?)\)\s*\n\s*RETURNS\s+(\w+)",
+        re.S | re.I,
+    )
+    for m in pat.finditer(module_sql):
+        if m.group(3).upper() != "TABLE":
+            continue
+        name = m.group(1).upper()
+        params = [p.strip() for p in split_args(m.group(2)) if p.strip()]
+        types = []
+        for p in params:
+            # "region VARCHAR DEFAULT NULL" -> VARCHAR ; "locations ARRAY" -> ARRAY
+            toks = p.replace("DEFAULT", " DEFAULT ").split()
+            types.append(toks[1].upper() if len(toks) > 1 else "")
+        sigs.setdefault(name, []).append(types)
+    return sigs
+
+
+def rule_f(sql: str) -> list[str]:
+    """A proc that resolves a region per point must resolve profiles for THAT
+    region, not for the default one.
+
+    RULE A cannot see this: it asks whether a probe exists, not whether the two
+    regions agree. Measured on the live deployment, the built profiles are
+    DISJOINT across regions (SanFrancisco has no driving-hgv,
+    UnitedStatesOfAmerica has no driving-car), so a proc that clips to a detected
+    region while resolving profiles against the default one asks a graph for a
+    profile it does not carry and gets ORS 3003 back. It works inside the default
+    region, which is where every test happened to run.
+    """
+    bad = []
+    for name, line, body in split_procs(sql):
+        resolves_region = bool(
+            re.search(r"\bREGION_FOR_POINT\s*\(|\bCOVERING_REGION_FOR_POINTS\s*\(", body)
+        )
+        if not resolves_region:
+            continue
+        if re.search(r"PROFILES_FOR_REGION\s*\(\s*NULL\s*\)", body, re.I):
+            bad.append(
+                f"RULE F: {name} (line ~{line}) resolves a region per point but calls "
+                f"PROFILES_FOR_REGION(NULL), i.e. it validates the profile against the "
+                f"DEFAULT region and then routes against the detected one. Profiles are "
+                f"not the same across regions, so this fails with ORS 3003 outside the "
+                f"default region only."
+            )
+    return bad
+
+
+def rule_g(sql: str, module_sql: str) -> list[str]:
+    """Engine calls must not pass a bare NULL, and an ARRAY parameter needs ::ARRAY.
+
+    Both halves shipped in ONE line of TOOL_SNAP and one of TOOL_MATCH, and made
+    snap_to_road and map_match fail on EVERY call with a raw SQL compilation
+    error handed to the user:
+        SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?), ' || v_radius || ', NULL)
+    PARSE_JSON is VARIANT where ARRAY is declared, and an untyped NULL matches no
+    VARCHAR parameter. Verified independently: ::ARRAY alone still fails on the
+    NULL, NULL::VARCHAR alone still fails on the VARIANT. Nothing else could see
+    it - a dynamic-SQL string compiles at EXECUTE IMMEDIATE time, so the install
+    is clean and no eval case covered either verb.
+
+    TABLE functions only (see engine_signatures) and interpolated arguments are
+    skipped: a `" + coords + "` fragment built by a JavaScript proc has no
+    statically knowable type, so flagging it would be a guess.
+    """
+    sigs = engine_signatures(module_sql)
+    if not sigs:
+        return ["RULE G: parsed no engine signatures - the check cannot run."]
+    bad = []
+    for name, line, body in split_procs(sql):
+        for m in re.finditer(
+            r"OPENROUTESERVICE_APP\.CORE\.([A-Z0-9_]+)\s*\(", body, re.I
+        ):
+            fname = m.group(1).upper()
+            if fname not in sigs:
+                continue
+            # Walk to the matching close paren.
+            depth, i = 0, m.end() - 1
+            while i < len(body):
+                if body[i] == "(":
+                    depth += 1
+                elif body[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            args = split_args(body[m.end():i])
+            hit_line = line + body.count("\n", 0, m.start())
+            for pos, arg in enumerate(args):
+                a = arg.strip()
+                if re.fullmatch(r"NULL", a, re.I):
+                    bad.append(
+                        f"RULE G: {name} (line ~{hit_line}) passes a bare NULL as argument "
+                        f"{pos + 1} of CORE.{fname}. An untyped NULL matches no typed "
+                        f"parameter - Snowflake rejects the call with 'Invalid argument "
+                        f"types'. Use NULL::VARCHAR or a real value."
+                    )
+                # Only convict when EVERY overload of this arity wants an ARRAY here,
+                # so an overload taking VARIANT at the same position is not flagged.
+                cands = [s for s in sigs[fname] if len(s) >= len(args) and pos < len(s)]
+                if cands and all(s[pos] == "ARRAY" for s in cands):
+                    interpolated = "||" in a or '" +' in a or "' +" in a
+                    if (
+                        not interpolated
+                        and "::ARRAY" not in a.upper()
+                        and not re.match(r"ARRAY_CONSTRUCT|ARRAY_AGG|\[", a, re.I)
+                    ):
+                        bad.append(
+                            f"RULE G: {name} (line ~{hit_line}) passes `{a[:48]}` as argument "
+                            f"{pos + 1} of CORE.{fname}, declared ARRAY. PARSE_JSON yields "
+                            f"VARIANT, which does not match - add ::ARRAY."
+                        )
+    return bad
+
+
 def main() -> int:
     problems: list[str] = []
     for path in (TOOLS_SQL, MODULE_SQL):
@@ -262,10 +417,14 @@ def main() -> int:
     problems += rule_c(tools)
     problems += rule_d(tools)
     problems += rule_e(module)
+    problems += rule_f(tools)
+    problems += rule_g(tools, module)
 
     n_procs = len(split_procs(tools))
+    n_sigs = sum(len(v) for v in engine_signatures(module).values())
     print(f"  scanned {n_procs} procedures/functions in {TOOLS_SQL.name}")
-    print(f"  scanned CORE.PROFILES_FOR_REGION in {MODULE_SQL.name}")
+    print(f"  scanned CORE.PROFILES_FOR_REGION + {n_sigs} engine TABLE-function "
+          f"signature(s) in {MODULE_SQL.name}")
 
     if problems:
         print()
@@ -273,8 +432,8 @@ def main() -> int:
             print("  " + p)
         print(f"\nFAILED: {len(problems)} routing-probe violation(s)")
         return 1
-    print("\nPASSED: no unboundable probe on a routing path, DIRECTIONS is "
-          "region-scoped, and the leg check can convict")
+    print("\nPASSED: no unboundable probe on a routing path, every engine call is "
+          "region-scoped and correctly typed, and the leg check can convict")
     return 0
 
 

@@ -48,6 +48,53 @@ cases:
           The assistant's answer describes a driving route and states both a
           distance and a travel time (duration).
 
+  # snap_to_road and map_match had NO eval coverage, and both failed on EVERY
+  # call from 2026-09-14 back to whenever they were written: each passed a VARIANT
+  # PARSE_JSON into an ARRAY parameter and a bare untyped NULL region, so
+  # CORE.SNAP_POINTS / CORE.MATCH_PATH rejected the call with "Invalid argument
+  # types" and the user read a raw SQL compilation error. A dynamic-SQL string
+  # compiles at EXECUTE IMMEDIATE time, so no install or static check could see it
+  # and the absence of a case is why it went unnoticed. Both assert the AUDIT row,
+  # not just prose - an agent can narrate a plausible answer over a failed verb.
+  - id: snap-sf
+    prompt: >-
+      Are these two San Francisco locations on the road network - Union Square
+      and the Ferry Building? Snap them to the nearest road.
+    assertions:
+      - type: verb
+        verbs: [snap_to_road]
+        description: snap_to_road verb was audited with outcome ok
+      - type: sql
+        description: the snap verb call succeeded (no error outcome)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'snap_to_road' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant reports that the locations were snapped to the road
+          network, and does NOT report a SQL error or an invalid-argument error.
+
+  - id: map-match-sf
+    prompt: >-
+      Map-match this track to the roads it drove on - Union Square San Francisco,
+      then Market Street, then the Ferry Building.
+    assertions:
+      - type: verb
+        verbs: [map_match]
+        description: map_match verb was audited with outcome ok
+      - type: sql
+        description: the map_match verb call succeeded (no error outcome)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'map_match' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant reports a road-following matched path for the trajectory
+          (e.g. a count of matched road segments), and does NOT report a SQL error
+          or an invalid-argument error.
+
   - id: isochrone-live
     prompt: >-
       Show me the area reachable within a 10 minute drive from Union Square
