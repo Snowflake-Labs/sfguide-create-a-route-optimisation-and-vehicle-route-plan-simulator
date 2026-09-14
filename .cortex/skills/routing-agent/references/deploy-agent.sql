@@ -119,10 +119,52 @@ AS $$
   return { requested: reqRaw, used: used, substituted: substituted, reason: reason, note: note, available: avail };
 $$;
 
+-- The 2-arg signature is dropped, not left alongside: TOOL_DIRECTIONS gained a
+-- REGION argument, and Snowflake keys procedures on full arity, so the old
+-- (VARCHAR, VARCHAR) body would otherwise survive a CREATE OR REPLACE and keep
+-- serving every 2-arg caller - including the synapse get_directions verb - with
+-- exactly the code this fix removes. It must be dropped BEFORE the CREATE, not
+-- after: with REGION defaulted, both signatures accept two arguments and
+-- Snowflake refuses the CREATE outright with 'Cannot overload PROCEDURE
+-- TOOL_DIRECTIONS as it would cause ambiguous PROCEDURE overloading'. Only
+-- OWNERSHIP is held on this procedure, so no grant is lost.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
+--
+-- Two defects fixed here on 2026-09-14, both found by decomposing one hung
+-- "show me the route from SF to LA" agent turn in QUERY_HISTORY:
+--
+-- 1. The proc opened with an ORS_STATUS(NULL) profile probe wrapped in
+--    EXCEPTION WHEN OTHER and described as "best-effort". EXCEPTION catches an
+--    ERROR, never a HANG, and ORS_STATUS is a service function the platform
+--    retries past the SPCS ingress cut-off. That statement ran 839.7 s and was
+--    killed with its parent, so the question spent its whole budget before
+--    DIRECTIONS was ever called. It is now a pure table read
+--    (CORE.PROFILES_FOR_REGION), and the probe lives in the explicitly-called
+--    CORE.REFRESH_REGION_PROFILES maintenance procedure instead.
+--
+-- 2. CORE.DIRECTIONS takes a region as its third argument and this proc never
+--    passed one, so the gateway resolved NULL to DEFAULT_REGION_NAME
+--    ('SanFrancisco') for EVERY call. The San Francisco graph spans
+--    lat 37.71-37.81 / lon -122.51--122.37, so Los Angeles is off-graph and the
+--    route could not have succeeded even had the probe returned. The region is
+--    now resolved from the geocoded coordinates.
+--
+-- Region resolution is deliberately NOT a loop over REGION_FOR_POINT: that
+-- returns the smallest region containing ONE point, so SF-to-LA resolves to
+-- {SanFrancisco, UnitedStatesOfAmerica}, reports zero out-of-region
+-- coordinates, and still names no graph that can route the pair. See
+-- CORE.COVERING_REGION_FOR_POINTS.
+--
+-- Only catalog-sourced region values are ever inlined into the dynamic SQL
+-- below: an explicit REGION argument is validated against REGION_ORS_MAP first
+-- and otherwise discarded, so the string cannot carry caller text (same reason
+-- PROFILE goes through the whitelist CASE).
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE SQL
@@ -134,7 +176,7 @@ DECLARE
     res RESULTSET;
     v_locations VARIANT;
     v_coords VARIANT;
-    v_profile VARCHAR;
+    v_coord_count INT;
     v_distance_raw FLOAT;
     v_duration_raw FLOAT;
     v_segments VARIANT;
@@ -146,6 +188,12 @@ DECLARE
     v_available ARRAY;
     v_res VARIANT;
     v_used VARCHAR;
+    v_region VARCHAR;
+    v_region_obj VARIANT;
+    v_region_requested VARCHAR;
+    v_region_source VARCHAR;
+    v_unroutable_legs INT;
+    v_first_bad_leg INT;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -167,17 +215,6 @@ BEGIN
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
         ELSE 'driving-car'
     END;
-
-    -- Resolve the requested profile against the profiles actually built in the
-    -- region (best-effort; ORS_STATUS failure -> NULL -> rename-only behavior).
-    -- DIRECTIONS uses the default region, so query the default region's profiles.
-    BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
 
     -- Step 1: Geocode. Pull locations + coords array out as bound variables
     -- so step 2 can pass them to DIRECTIONS without inlining a CTE-derived
@@ -202,15 +239,27 @@ BEGIN
     OPEN c;
     FETCH c INTO v_locations, v_coords;
     CLOSE c;
-    v_profile := v_safe_profile;
 
     IF (v_locations IS NULL OR v_coords IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
     END IF;
 
+    v_coord_count := ARRAY_SIZE(:v_coords);
+    IF (v_coord_count < 2) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', 'ROUTING FAILED: a route needs at least two places, but only '
+                     || COALESCE(v_coord_count::VARCHAR, '0')
+                     || ' was geocoded from the description. Name both an origin and a destination.',
+            'locations_requested', v_locations,
+            'status', 'FAILED'
+        );
+    END IF;
+
     -- Step 1b: Region validation (best-effort; non-fatal). Done as a
     -- separate, simple FLATTEN that calls REGION_FOR_POINT per coord.
-    -- Failures here just leave the region info NULL.
+    -- Failures here just leave the region info NULL. This is DIAGNOSTIC only -
+    -- it reports which region each point falls in individually, which is not
+    -- the same question as which single graph can route the whole sequence.
     BEGIN
         LET val_sql VARCHAR := 'WITH pts AS (
             SELECT
@@ -235,7 +284,154 @@ BEGIN
             v_total_coords := 0;
     END;
 
-    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter.
+    -- Step 1c: resolve the ONE graph to route on. An explicit REGION argument
+    -- wins, but only after it is confirmed DEPLOYED - honouring an unprovisioned
+    -- name would send the request to a service that is not there, and silently
+    -- dropping it would route somewhere the caller did not ask for.
+    v_region_requested := NULLIF(TRIM(COALESCE(REGION, '')), '');
+    IF (v_region_requested IS NOT NULL) THEN
+        SELECT REGION INTO :v_region
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE UPPER(REGION) = UPPER(:v_region_requested) AND STATUS = 'DEPLOYED'
+        LIMIT 1;
+        IF (v_region IS NULL) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', 'ROUTING FAILED: region ''' || v_region_requested
+                         || ''' is not provisioned. Provisioned regions: '
+                         || COALESCE((SELECT ARRAY_AGG(REGION)::VARCHAR FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE STATUS = 'DEPLOYED'), '[]')
+                         || '. Omit the region to have it resolved from the places themselves.',
+                'error_code', 'REGION_NOT_PROVISIONED',
+                'locations_requested', v_locations,
+                'status', 'FAILED'
+            );
+        END IF;
+        v_region_source := 'caller';
+    ELSE
+        SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords) INTO :v_region_obj;
+        v_region := v_region_obj:lookup_name::STRING;
+        v_region_source := 'covering_region';
+    END IF;
+
+    -- No single provisioned graph covers every point. Refuse with the per-point
+    -- detail rather than falling through to the default region: that fallback is
+    -- what silently sent a San Francisco-to-Los Angeles request at the
+    -- city-only San Francisco graph.
+    IF (v_region IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT(
+                'ROUTING FAILED: no single provisioned routing region covers all ',
+                v_coord_count::VARCHAR,
+                ' places in this route. Per-point regions: ',
+                COALESCE(v_detected_regions::VARCHAR, '[]'),
+                '. A route can only be computed inside ONE routing graph, so a wider region (for example the country) must be provisioned, or the LLM geocoded a place to the wrong city of the same name - try naming the country.'
+            ),
+            'error_code', 'NO_COVERING_REGION',
+            'locations_requested', v_locations,
+            'detected_regions', v_detected_regions,
+            'out_of_region_count', v_out_of_region_count,
+            'total_coords', v_total_coords,
+            'status', 'FAILED'
+        );
+    END IF;
+
+    -- Step 1d: resolve the requested profile against the profiles actually built
+    -- in the region that will serve this route. Table-only lookup (see
+    -- CORE.PROFILES_FOR_REGION) - no service call, so it cannot stall the
+    -- routing call the way the old ORS_STATUS probe did. An unknown region
+    -- yields NULL, which RESOLVE_PROFILE reads as "make no availability claim",
+    -- i.e. the pre-existing rename-only behaviour.
+    --
+    -- This is load-bearing, not cosmetic: measured on this deployment the
+    -- SanFrancisco graph has {driving-car, cycling-electric} and the
+    -- UnitedStatesOfAmerica graph has {driving-hgv} alone, so an intercity
+    -- request for 'driving-car' MUST be substituted to 'driving-hgv' or the
+    -- engine answers 2003 'profile unknown'. Resolving against the default
+    -- region (as before) would have claimed driving-car was available.
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1e: pre-flight every consecutive leg with ONE travel-matrix call.
+    -- An unroutable pair is the case that made this proc look like a hang even
+    -- once the region was right: DIRECTIONS searches for a path that does not
+    -- exist and burns the whole statement timeout (measured twice at exactly
+    -- 600 s for a Maui-to-Boise pair on the US graph, which no straight-line
+    -- distance cap can separate from a legitimate coast-to-coast route). The
+    -- same pair through MATRIX_TABULAR answers durations [[null]] in 5.8 s,
+    -- because the matrix algorithm reports "no path" instead of hunting for one.
+    -- So the matrix is the cheap oracle and it also snaps the points, which is
+    -- why this replaces a separate SNAP gate rather than adding to it.
+    --
+    -- Advisory by construction: a NULL duration convicts, but a matrix that
+    -- errors or is unavailable leaves v_unroutable_legs NULL and routing
+    -- proceeds. Skipped above 25 places, where n x n approaches the per-region
+    -- matrix pair ceiling and the pre-flight would cost more than it saves.
+    --
+    -- SECS is cast ::FLOAT deliberately. ORS writes an unroutable cell as a JSON
+    -- null, and a VARIANT JSON null is NOT SQL NULL - `R:durations[0][1] IS NULL`
+    -- returns FALSE for it. The first version of this gate used the uncast form,
+    -- ran on the very Maui-to-Boise pair it was written for, and reported zero
+    -- unroutable legs: a check that executes and cannot convict. The cast turns
+    -- the JSON null into a SQL NULL (verified: IS_NULL_VALUE TRUE, cast IS NULL
+    -- TRUE). DUR_ROWS separates "no route" from "no matrix" - without it a
+    -- failed matrix has no durations key at all, every cell reads NULL, and a
+    -- perfectly routable request would be refused.
+    IF (v_coord_count <= 25) THEN
+        BEGIN
+            LET pf_sql VARCHAR := 'WITH m AS (
+                SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+                    ''' || v_used || ''', PARSE_JSON(?), PARSE_JSON(?), ''' || v_region || ''') AS R
+            ),
+            legs AS (
+                SELECT s.INDEX AS LEG_IDX,
+                       m.R:durations[s.INDEX][s.INDEX + 1]::FLOAT AS SECS,
+                       COALESCE(ARRAY_SIZE(m.R:durations), 0) AS DUR_ROWS
+                FROM m, LATERAL FLATTEN(INPUT => PARSE_JSON(?)) s
+                WHERE s.INDEX < ARRAY_SIZE(PARSE_JSON(?)) - 1
+            )
+            SELECT IFF(MAX(DUR_ROWS) > 0, COUNT_IF(SECS IS NULL), NULL),
+                   IFF(MAX(DUR_ROWS) > 0, MIN(IFF(SECS IS NULL, LEG_IDX, NULL)), NULL)
+            FROM legs';
+            LET pf_coords VARCHAR := v_coords::STRING;
+            res := (EXECUTE IMMEDIATE :pf_sql USING (pf_coords, pf_coords, pf_coords, pf_coords));
+            LET cp CURSOR FOR res;
+            OPEN cp;
+            FETCH cp INTO v_unroutable_legs, v_first_bad_leg;
+            CLOSE cp;
+        EXCEPTION
+            WHEN OTHER THEN
+                v_unroutable_legs := NULL;
+        END;
+
+        IF (v_unroutable_legs IS NOT NULL AND v_unroutable_legs > 0) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: no road route exists between place ',
+                    (COALESCE(v_first_bad_leg, 0) + 1)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_bad_leg, 0)]:name::STRING, 'unknown'), ')',
+                    ' and place ', (COALESCE(v_first_bad_leg, 0) + 2)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_bad_leg, 0) + 1]:name::STRING, 'unknown'), ')',
+                    ' on the ', v_region, ' ', v_used, ' graph. ',
+                    v_unroutable_legs::VARCHAR, ' of ', (v_coord_count - 1)::VARCHAR,
+                    ' legs are unroutable - the places are usually separated by water or sit on a disconnected part of the road network.'
+                ),
+                'error_code', 'UNROUTABLE_LEG',
+                'locations_requested', v_locations,
+                'region', v_region,
+                'profile', v_used,
+                'unroutable_legs', v_unroutable_legs,
+                'first_unroutable_leg', v_first_bad_leg,
+                'status', 'FAILED'
+            );
+        END IF;
+    END IF;
+
+    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter, against
+    -- the resolved region.
     LET dir_sql VARCHAR := 'SELECT
             d.RESPONSE:features[0]:properties:summary:distance::FLOAT,
             d.RESPONSE:features[0]:properties:summary:duration::FLOAT,
@@ -244,7 +440,8 @@ BEGIN
             d.RESPONSE:error
         FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
             ''' || v_used || ''',
-            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT)) d';
+            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT,
+            ''' || v_region || ''')) d';
 
     LET v_coords_str2 VARCHAR := v_coords::STRING;
     res := (EXECUTE IMMEDIATE :dir_sql USING (v_coords_str2));
@@ -253,33 +450,26 @@ BEGIN
     FETCH c2 INTO v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
     CLOSE c2;
 
-    IF (v_locations IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('ROUTING FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'locations_requested', v_locations, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT('ROUTING FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR),
+            'locations_requested', v_locations,
+            'region', v_region,
+            'profile', v_used,
+            'status', 'FAILED'
+        );
     END IF;
 
     IF (v_distance_raw IS NULL OR v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error',
-              CASE
-                WHEN v_out_of_region_count > 0 THEN
-                  CONCAT(
-                    'ROUTING FAILED: ', v_out_of_region_count::VARCHAR, ' of ', v_total_coords::VARCHAR,
-                    ' geocoded coordinates fell outside every provisioned region (detected: ',
-                    COALESCE(v_detected_regions::VARCHAR, '[]'),
-                    '). The LLM may have geocoded to the wrong city of the same name, or the destination is not in any provisioned region. Try specifying the country or region in your prompt.'
-                  )
-                ELSE
-                  CONCAT(
-                    'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. Detected regions: ',
-                    COALESCE(v_detected_regions::VARCHAR, '[]'),
-                    '. The locations are inside known regions but no routing graph is loaded that covers them all. Provision the necessary region(s) and retry.'
-                  )
-              END,
+            'error', CONCAT(
+                'ROUTING FAILED: the ', v_region, ' routing graph accepted the request but returned no route for profile ',
+                v_used, '. Detected regions: ', COALESCE(v_detected_regions::VARCHAR, '[]'),
+                '. Confirm the region''s ORS service is RUNNING and that its graphs finished loading, then retry.'
+            ),
             'locations_requested', v_locations,
+            'region', v_region,
+            'profile', v_used,
             'detected_regions', v_detected_regions,
             'out_of_region_count', v_out_of_region_count,
             'total_coords', v_total_coords,
@@ -298,6 +488,9 @@ BEGIN
         'duration_mins', ROUND(DIV0(v_duration_raw, 60), 1),
         'segments', v_segments,
         'geometry', v_geometry,
+        'region', v_region,
+        'region_source', v_region_source,
+        'available_profiles', v_available,
         'detected_regions', v_detected_regions,
         'status', 'SUCCESS'
     );
@@ -307,7 +500,7 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_SNAP: snap free-text coordinates/places to the nearest routable road edge
 -- (per-point nearest-edge snapping via ORS /snap, NOT trajectory map matching).
@@ -355,10 +548,13 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles actually built in the
-    -- default region (best-effort; failure -> rename-only behavior).
+    -- Resolve the requested profile against the profiles built in the default
+    -- region. Table-only lookup: the ORS_STATUS probe this replaced was a
+    -- service function call that could not be bounded from SQL and once stalled
+    -- a caller for 839.7 s (see the TOOL_DIRECTIONS header). Empty -> NULL ->
+    -- rename-only behaviour, matching what a failed probe used to give.
     BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
     EXCEPTION WHEN OTHER THEN
         v_available := NULL;
     END;
@@ -474,8 +670,10 @@ BEGIN
         ELSE 'driving-car'
     END;
 
+    -- Default-region profiles from the catalog, not a live ORS_STATUS probe
+    -- (see the TOOL_DIRECTIONS header for why that probe was unboundable).
     BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
     EXCEPTION WHEN OTHER THEN
         v_available := NULL;
     END;
@@ -587,10 +785,11 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the region
-    -- (best-effort). Surfaces requested vs used + a note when they differ.
+    -- Resolve the requested profile against the profiles built in the default
+    -- region, read from the catalog rather than probed (see the TOOL_DIRECTIONS
+    -- header). Surfaces requested vs used + a note when they differ.
     BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
     EXCEPTION WHEN OTHER THEN
         v_available := NULL;
     END;
@@ -765,10 +964,11 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the region
-    -- (best-effort). Surfaces requested vs used + a note when they differ.
+    -- Resolve the requested profile against the profiles built in the default
+    -- region, read from the catalog rather than probed (see the TOOL_DIRECTIONS
+    -- header). Surfaces requested vs used + a note when they differ.
     BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(NULL) INTO :v_available;
     EXCEPTION WHEN OTHER THEN
         v_available := NULL;
     END;
@@ -1369,11 +1569,13 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             })
 
         # Resolve the requested profile against the profiles actually built in
-        # the target region (best-effort; ORS_STATUS failure -> [] -> rename-only
-        # behavior). The SQL UDF is the single resolver + substitution detector.
+        # the target region, read from the catalog rather than probed live: an
+        # ORS_STATUS probe here cannot be bounded and once stalled a caller for
+        # 839.7 s (see the TOOL_DIRECTIONS header). Empty -> [] -> rename-only
+        # behavior. The SQL UDF is the single resolver + substitution detector.
         try:
             avail_raw = session.sql(
-                "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) AS K",
+                "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?) AS K",
                 params=[region],
             ).collect()[0]['K']
             available = json.loads(avail_raw) if isinstance(avail_raw, str) else (avail_raw or [])
@@ -1527,7 +1729,7 @@ function resolveActiveRegion() {
 function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        var a = execScalar("SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", [region]);
         available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
     var res = {};
@@ -1733,12 +1935,14 @@ function resolveActiveRegion() {
     return 'SanFrancisco';
 }
 function resolveProfileFor(profile, region) {
-    // Best-effort: resolve the requested profile against the profiles actually
-    // built in the region. ORS_STATUS failure -> [] -> rename-only behavior.
+    // Resolve the requested profile against the profiles actually built in the
+    // region, read from the catalog rather than probed live: an ORS_STATUS probe
+    // here cannot be bounded and once stalled a caller for 839.7 s (see the
+    // TOOL_DIRECTIONS header). Empty -> [] -> rename-only behavior.
     var available = [];
     try {
         var avRs = snowflake.createStatement({
-            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", binds: [region]
+            sqlText: "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", binds: [region]
         }).execute();
         if (avRs.next()) { var a = avRs.getColumnValue(1); available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : []; }
     } catch(e) { available = []; }
@@ -1906,7 +2110,7 @@ function resolveActiveRegion() {
 function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        var a = execScalar("SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", [region]);
         available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
     var res = {};
@@ -2115,7 +2319,7 @@ try {
         var prs = snowflake.createStatement({ sqlText:
           "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(" +
           "  (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1)," +
-          "  (SELECT ARRAY_AGG(f.KEY) FROM LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) f)" +
+          "  OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)" +
           "):used::STRING", binds: [region] }).execute();
         if (prs.next()) { var p = prs.getColumnValue(1); if (p) profile = p; }
     } catch(eProf) { profile = 'driving-car'; }

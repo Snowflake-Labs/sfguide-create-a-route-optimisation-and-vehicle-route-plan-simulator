@@ -1429,6 +1429,30 @@ BEGIN
                         SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
                         WHERE JOB_ID = :P_JOB_ID;
                     END;
+                    -- Cache the profiles the freshly-built service actually
+                    -- serves. This is the ONE place a live ORS_STATUS probe
+                    -- belongs: the routing procs read the cached table instead,
+                    -- because a probe on the routing path cannot be bounded
+                    -- from SQL and once stalled a user's question for 839.7 s
+                    -- (see the TOOL_DIRECTIONS header in
+                    -- routing-agent/references/deploy-agent.sql). Best-effort:
+                    -- REFRESH_REGION_PROFILES reports failure by RETURN value
+                    -- rather than raising, so the string is inspected as well,
+                    -- and PROFILES_FOR_REGION falls back to this job's own
+                    -- PROFILES column when the cache stays empty.
+                    BEGIN
+                        LET rp_msg VARCHAR := '';
+                        CALL OPENROUTESERVICE_APP.CORE.REFRESH_REGION_PROFILES(:P_REGION) INTO :rp_msg;
+                        IF (:rp_msg NOT LIKE 'REFRESHED:%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                            SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles: ' || COALESCE(:rp_msg, 'unknown') || ']'
+                            WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+                        WHERE JOB_ID = :P_JOB_ID;
+                    END;
                     -- Best-effort peak RSS for telemetry; NULL on failure.
                     -- Inlined here because SYSTEM$GET_SERVICE_STATUS requires a
                     -- constant argument and cannot be wrapped in a reusable UDF.
@@ -4579,6 +4603,23 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+        WHERE JOB_ID = :job_id;
+    END;
+
+    -- Same profile-cache refresh as the wrapper's success path. The rescue task
+    -- is the OTHER way a region reaches READY, so omitting it here would leave a
+    -- rescued region resolving profiles from its provision job row alone.
+    BEGIN
+        LET rp_msg VARCHAR := '';
+        CALL OPENROUTESERVICE_APP.CORE.REFRESH_REGION_PROFILES(:P_REGION) INTO :rp_msg;
+        IF (:rp_msg NOT LIKE 'REFRESHED:%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles: ' || COALESCE(:rp_msg, 'unknown') || ']'
+            WHERE JOB_ID = :job_id;
+        END IF;
+    EXCEPTION WHEN OTHER THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
         WHERE JOB_ID = :job_id;
     END;
 

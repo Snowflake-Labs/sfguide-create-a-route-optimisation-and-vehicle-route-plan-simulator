@@ -530,3 +530,24 @@ if [ -f "$JS_TEMPLATING_CHECK" ]; then
     exit 1
   }
 fi
+
+# 14. Routing procs must not probe ORS on the routing path, and TOOL_DIRECTIONS
+# must scope DIRECTIONS to a region. Measured on 2026-09-14: one agent turn ran
+# 840.6 s and was killed, with 839.7 s of it inside a single
+# `ORS_STATUS(NULL):profiles` probe that never routed anything. Its own comment
+# called that probe "best-effort" - EXCEPTION WHEN OTHER catches an ERROR, never
+# a HANG, and a procedure cannot ALTER SESSION SET STATEMENT_TIMEOUT to bound a
+# service function. Underneath it, DIRECTIONS was called with no region, so the
+# gateway resolved NULL to DEFAULT_REGION_NAME and every route ran on the
+# city-only San Francisco graph regardless of where the places were. The gate
+# also fails an uncast matrix durations cell: ORS writes an unroutable cell as a
+# JSON null, `IS NULL` is FALSE for that, and the first version of the
+# unroutable-leg check therefore passed on the very pair it was written for.
+ROUTING_PROBE_CHECK="$SKILL_DIR/scripts/check_routing_probe.py"
+if [ -f "$ROUTING_PROBE_CHECK" ]; then
+  echo "pre-commit: routing probe / region-scope check..."
+  python3 "$ROUTING_PROBE_CHECK" || {
+    echo "pre-commit FAILED: an unboundable ORS probe or an unscoped DIRECTIONS call is on the routing path."
+    exit 1
+  }
+fi

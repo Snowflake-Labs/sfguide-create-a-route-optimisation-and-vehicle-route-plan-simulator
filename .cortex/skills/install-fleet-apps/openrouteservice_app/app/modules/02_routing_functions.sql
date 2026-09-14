@@ -573,6 +573,178 @@
      FALSE)
    $$;
 
+   -- =====================================================================
+   -- REGION_PROFILES: cached list of the routing profiles actually built per
+   -- region, so a caller can resolve a profile WITHOUT a network round trip.
+   --
+   -- Why this table exists: every ROUTING_TOOLS.TOOL_* proc used to open with
+   --   BEGIN
+   --     SELECT OBJECT_KEYS(CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+   --   EXCEPTION WHEN OTHER THEN v_available := NULL;
+   --   END;
+   -- described in-comment as "best-effort". It is not: EXCEPTION WHEN OTHER
+   -- catches an ERROR, never a HANG, and ORS_STATUS is a service function whose
+   -- call is retried by the platform past the SPCS ingress cut-off. Measured on
+   -- 2026-09-14 while the gateway was restarting, that single statement ran
+   -- 839.7 s and was killed with its parent - so a "show me the route from SF to
+   -- LA" question spent its entire statement budget on a decorative profile
+   -- probe and never reached DIRECTIONS at all. ORS_STATUS normally answers in
+   -- 0.3 s, which is exactly why this went unnoticed.
+   -- =====================================================================
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROFILES (
+       REGION      VARCHAR NOT NULL,
+       PROFILE     VARCHAR NOT NULL,
+       SOURCE      VARCHAR,
+       UPDATED_AT  TIMESTAMP_NTZ DEFAULT SYSDATE()
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"profile-cache"}}';
+
+   -- Profiles built for a region, resolved from TABLES ONLY (no service call, so
+   -- it cannot hang and cannot be slow). NULL / empty region means the default
+   -- region, matching the gateway's own DEFAULT_REGION_NAME fallback.
+   --
+   -- Three sources in priority order, because the two pre-existing tables
+   -- already record this for any region provisioned through the job path and a
+   -- fix that only worked after a fresh refresh would leave every live
+   -- deployment on the old behaviour:
+   --   1. REGION_PROFILES        - probed truth, written by REFRESH_REGION_PROFILES
+   --   2. REGION_PROVISION_JOBS  - the profiles the completed build REQUESTED
+   --   3. ORS_BUILD_HISTORY      - same, from the build telemetry row
+   -- Returns NULL when nothing is known, which RESOLVE_PROFILE treats as "make
+   -- no availability claim" - i.e. exactly today's behaviour when the probe
+   -- failed, so an unknown region is never made worse.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(P_REGION VARCHAR)
+   RETURNS ARRAY
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"profile-cache"}}'
+   AS
+   $$
+   WITH target AS (
+     SELECT COALESCE(
+              NULLIF(TRIM(COALESCE(P_REGION, '')), ''),
+              (SELECT REGION FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                WHERE IS_DEFAULT ORDER BY UPDATED_AT DESC LIMIT 1)
+            ) AS R
+   ),
+   cached AS (
+     SELECT ARRAY_AGG(DISTINCT LOWER(p.PROFILE)) AS PROFILES
+     FROM OPENROUTESERVICE_APP.CORE.REGION_PROFILES p, target t
+     WHERE UPPER(p.REGION) = UPPER(t.R)
+   ),
+   from_job AS (
+     SELECT ARRAY_AGG(DISTINCT LOWER(TRIM(s.VALUE::VARCHAR))) AS PROFILES
+     FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j, target t,
+          LATERAL SPLIT_TO_TABLE(j.PROFILES, ',') s
+     WHERE UPPER(j.REGION) = UPPER(t.R)
+       AND j.STATUS = 'COMPLETE'
+       AND j.PROFILES IS NOT NULL
+   ),
+   from_build AS (
+     SELECT ARRAY_AGG(DISTINCT LOWER(TRIM(s.VALUE::VARCHAR))) AS PROFILES
+     FROM OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY b, target t,
+          LATERAL SPLIT_TO_TABLE(b.PROFILES, ',') s
+     WHERE UPPER(b.REGION) = UPPER(t.R)
+       AND b.EXIT_STATUS = 'SUCCESS'
+       AND b.PROFILES IS NOT NULL
+   )
+   SELECT COALESCE(
+            (SELECT PROFILES FROM cached     WHERE ARRAY_SIZE(PROFILES) > 0),
+            (SELECT PROFILES FROM from_job   WHERE ARRAY_SIZE(PROFILES) > 0),
+            (SELECT PROFILES FROM from_build WHERE ARRAY_SIZE(PROFILES) > 0)
+          )
+   $$;
+
+   -- Smallest DEPLOYED region whose boundary covers EVERY coordinate in COORDS
+   -- ([[lon,lat], ...], the shape the TOOL_* geocoders produce).
+   --
+   -- This is deliberately NOT a loop over REGION_FOR_POINT. That function
+   -- returns the SMALLEST region containing ONE point, which is the right answer
+   -- for tagging a fact row and the wrong shape for a route: San Francisco to
+   -- Los Angeles resolves per-point to {SanFrancisco, UnitedStatesOfAmerica},
+   -- reports zero out-of-region coordinates, and still names no graph that can
+   -- route the pair. Every point must sit in ONE graph, and the smallest such
+   -- graph is the cheapest to query - hence ORDER BY area ASC.
+   --
+   -- Points are tested as a single MultiPoint via ST_COVERS rather than a
+   -- correlated FLATTEN, which a SQL UDF body cannot evaluate over its own
+   -- argument. TRY_TO_GEOGRAPHY so malformed coordinates return NULL (no match)
+   -- instead of raising inside a routing call.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(COORDS VARIANT)
+   RETURNS OBJECT
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"covering-region"}}'
+   AS
+   $$
+   SELECT OBJECT_CONSTRUCT(
+     'region_name',     rc.REGION_NAME,
+     'lookup_name',     rc.LOOKUP_NAME,
+     'region_key',      rc.REGION_KEY,
+     'iso_country_a2',  rc.ISO_COUNTRY_A2,
+     'level',           rc.LEVEL,
+     'area_km2',        rc.BOUNDARY_AREA_KM2
+   )
+   FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+   JOIN OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP rm
+     ON UPPER(rm.REGION) = UPPER(rc.LOOKUP_NAME)
+     OR UPPER(rm.REGION) = UPPER(rc.REGION_KEY)
+   WHERE rc.BOUNDARY IS NOT NULL
+     AND rm.STATUS = 'DEPLOYED'
+     AND ST_COVERS(
+           rc.BOUNDARY,
+           TRY_TO_GEOGRAPHY(OBJECT_CONSTRUCT('type', 'MultiPoint', 'coordinates', COORDS))
+         )
+   ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+   LIMIT 1
+   $$;
+
+   -- Refresh the cached profile list for one region by probing ORS ONCE.
+   -- The probe lives HERE, in an explicitly-called maintenance procedure, and
+   -- not on the routing path: a stall while provisioning or while an operator
+   -- refreshes costs that call, whereas the same stall inside TOOL_DIRECTIONS
+   -- cost the user's whole question. Returns a short status string rather than
+   -- raising, so a provisioning hook can record it without aborting a build.
+   CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_PROFILES(P_REGION VARCHAR)
+   RETURNS VARCHAR
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"profile-cache"}}'
+   AS
+   $$
+   DECLARE
+       v_region VARCHAR;
+       v_profiles ARRAY;
+   BEGIN
+       v_region := NULLIF(TRIM(COALESCE(P_REGION, '')), '');
+       IF (v_region IS NULL) THEN
+           SELECT REGION INTO :v_region
+           FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           WHERE IS_DEFAULT ORDER BY UPDATED_AT DESC LIMIT 1;
+       END IF;
+       IF (v_region IS NULL) THEN
+           RETURN 'SKIPPED: no region given and no default region in REGION_ORS_MAP';
+       END IF;
+
+       SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(:v_region):profiles)
+         INTO :v_profiles;
+
+       IF (v_profiles IS NULL OR ARRAY_SIZE(:v_profiles) = 0) THEN
+           RETURN 'UNAVAILABLE: ORS_STATUS reported no profiles for ' || v_region
+                  || ' (service suspended or graphs still loading) - cache left unchanged';
+       END IF;
+
+       DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_PROFILES
+        WHERE UPPER(REGION) = UPPER(:v_region);
+
+       INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_PROFILES (REGION, PROFILE, SOURCE, UPDATED_AT)
+       SELECT :v_region, LOWER(TRIM(p.VALUE::VARCHAR)), 'ors_status', SYSDATE()
+       FROM TABLE(FLATTEN(INPUT => :v_profiles)) p;
+
+       RETURN 'REFRESHED: ' || v_region || ' -> ' || ARRAY_TO_STRING(:v_profiles, ', ');
+   EXCEPTION
+       WHEN OTHER THEN
+           RETURN 'FAILED: ' || COALESCE(SQLERRM, 'unknown') || ' - cache left unchanged';
+   END;
+   $$;
+
    -- Filter MAP_CONFIG sample_addresses to those falling inside the region's
    -- BOUNDARY. Drops curated addresses that drifted out of region (different
    -- city of same name, edge-case admin moves). Falls through if no boundary.

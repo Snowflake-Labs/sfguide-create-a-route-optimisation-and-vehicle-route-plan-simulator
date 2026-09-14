@@ -415,6 +415,66 @@ bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connecti
 # shape of generated SQL and create nothing.
 python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
 
+# Validate that no routing TOOL_* procedure probes ORS on the routing path, that
+# TOOL_DIRECTIONS scopes CORE.DIRECTIONS to a region, and that the unroutable-leg
+# pre-flight can actually convict.
+#
+# All three were live, and all three are invisible from a passing install. Every
+# TOOL_* proc opened with `SELECT OBJECT_KEYS(CORE.ORS_STATUS(NULL):profiles)
+# INTO :v_available` wrapped in `EXCEPTION WHEN OTHER` and called "best-effort" in
+# its own comment. It is not: EXCEPTION catches an ERROR, never a HANG, and
+# ORS_STATUS is a service function whose call the platform retries past the SPCS
+# ingress cut-off - a procedure cannot even ALTER SESSION SET
+# STATEMENT_TIMEOUT_IN_SECONDS to bound it (unsupported statement type). Measured
+# 2026-09-14, one "route from SF to LA" agent turn ran 840.6 s and was killed with
+# 839.7 s of it inside that one statement, having never called DIRECTIONS.
+# ORS_STATUS normally answers in 0.3 s across ~900 calls, which is exactly why it
+# survived: harmless until the gateway restarts, then it eats the entire statement
+# budget of every routing question at once. The profile list is a table read now
+# (CORE.PROFILES_FOR_REGION, backed by REGION_PROFILES with a fallback to the
+# provision-job and build-history rows); the probe survives only in
+# CORE.REFRESH_REGION_PROFILES, called from the two provisioning success paths.
+#
+# Underneath it, CORE.DIRECTIONS(method, locations, region) had always taken a
+# region and TOOL_DIRECTIONS always omitted it, so the gateway resolved NULL to
+# DEFAULT_REGION_NAME and every route ran on the default region's graph - the
+# city-only San Francisco extract, spanning 0.10 deg of latitude. An SF-to-LA
+# request could not have succeeded even had the probe returned, and nothing failed
+# loudly: a 2-arg call compiles and the sibling TOOL_ISOCHRONE already resolved a
+# region, so the defect read as a distance limit. Region resolution is
+# deliberately NOT a loop over REGION_FOR_POINT, which returns the smallest region
+# containing ONE point: SF-to-LA resolves per-point to {SanFrancisco,
+# UnitedStatesOfAmerica}, reports zero out-of-region coordinates, and still names
+# no graph that can route the pair. CORE.COVERING_REGION_FOR_POINTS asks the
+# actual question - smallest DEPLOYED region covering EVERY point - as one
+# ST_COVERS against a MultiPoint, because a SQL UDF body cannot FLATTEN its own
+# argument.
+#
+# RULE C is the self-inflicted one, and it is why the rule exists rather than a
+# review note. The unroutable-leg pre-flight uses one MATRIX_TABULAR call as a
+# cheap oracle (measured: the Maui-to-Boise pair that made DIRECTIONS burn exactly
+# 600 s twice answers `durations [[null]]` in 5.8 s, because the matrix algorithm
+# reports "no path" instead of hunting for one - and no straight-line distance cap
+# can separate that pair from a legitimate coast-to-coast route). But ORS writes an
+# unroutable cell as a JSON null, and a VARIANT JSON null is NOT SQL NULL:
+# `R:durations[0][1] IS NULL` is FALSE for it. The first version ran on exactly
+# that pair and reported zero unroutable legs - a check that executes and cannot
+# convict, reported as a pass. `::FLOAT` is what makes it SQL NULL.
+#
+# RULE D covers ordering, not just presence: Snowflake keys procedures on full
+# arity, so the old 2-arg TOOL_DIRECTIONS survives CREATE OR REPLACE of the 3-arg
+# form and keeps serving the get_directions verb the exact code this removed - and
+# because REGION is defaulted, both signatures accept two arguments, so a DROP
+# placed AFTER the CREATE fails the install with "Cannot overload PROCEDURE ...
+# ambiguous PROCEDURE overloading" and `snow sql -f` abandons every statement
+# below. RULE E closes the obvious escape: a PROFILES_FOR_REGION that itself
+# probed ORS_STATUS would satisfy RULE A everywhere and put the hang back one
+# indirection down. Comment lines are blanked before matching, which is
+# load-bearing - this gate's own explanations name ORS_STATUS and quote the uncast
+# durations cell, so an unstripped scan convicts the fixed code. 8 mutations
+# negative-tested (each rule in both its "wrong form" and "absent" shape).
+python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
+
 # Execute EVERY SA app view's queries with the binds the runtime actually sends and
 # report OK / EMPTY / ERROR per area. This is the only check that answers "will the
 # pages have data?" - every other gate verifies objects were CREATED, not that they
