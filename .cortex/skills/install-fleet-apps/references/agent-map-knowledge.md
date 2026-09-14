@@ -155,6 +155,18 @@ than a blank map:
   "showing N of M features", so a truncated map is visible rather than silently partial.
 - **The camera fits once and locks.** A chat message must not re-frame itself when the
   user later changes region on the dashboard beside it.
+- **Do not author a legend.** The client derives it from the colours each layer actually
+  draws: a layer with a `valueColumn` gets a continuous gradient bar labelled with the real
+  min and max of the rows drawn, a layer with a colour palette gets one swatch per entry,
+  and a flat-coloured layer gets one swatch. An authored `legend` array is ignored except as
+  a source of wording, because an agent cannot know the compiler's default ramp or the
+  data's range - a three-bin yellow-to-red key over a blue hex map is the defect this
+  replaced. Name a layer with `legendLabel` instead.
+- **Tooltips are on.** Picking is forced for you, so give each layer a `tooltip` template of
+  `{COLUMN}` tokens (`"<b>{H3_CELL_R7}</b><br/>{DWELL_MINUTES} min"`); tokens resolve
+  case-insensitively against the query's output columns. A layer with no template gets one
+  synthesized from its columns, which is a fallback and not as good as naming the two or
+  three columns that matter.
 
 ## 5b. Authoring a page-level map (render_view)
 

@@ -270,6 +270,18 @@ export function validateMapLayers(
     }
     const clean: Record<string, unknown> = { ...layerRaw };
     if (typeof clean.tooltip === 'string') clean.tooltip = clean.tooltip.slice(0, MAX_TEXT_LEN);
+    if (typeof clean.legendLabel === 'string') clean.legendLabel = clean.legendLabel.slice(0, MAX_TITLE_LEN);
+    // Picking is not the agent's decision on an inline map. Every compiler branch
+    // defaults `pickable: spec.pickable ?? false`, so a spec that carries a
+    // `tooltip` but omits `pickable` - which is what the agent emits, because no
+    // guidance ever mentioned the field - renders a hover-dead map with a live
+    // template that can never fire. A chat map is read by hovering it, so the
+    // capability is forced here rather than left to the prompt to remember.
+    //
+    // Scoped to the inline caller: a `render_view` Map area is authored alongside
+    // the rest of a page and may legitimately want a layer excluded from picking
+    // (a wide context choropleth under the layer that matters).
+    if (!opts.allowViewState) clean.pickable = true;
     out.push(clean as unknown as LayerSpec);
   });
   return out;

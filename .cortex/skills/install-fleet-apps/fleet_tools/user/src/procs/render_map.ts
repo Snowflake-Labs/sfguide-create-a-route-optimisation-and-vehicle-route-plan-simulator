@@ -40,7 +40,7 @@ export const render_map = defineProc({
     'Use the REAL column names - for an H3 dwell/congestion density map that is ' +
     'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (the hex), DWELL_MINUTES (the measure) ' +
     'and REGION (the filter); there is no h3_cell, dwell_duration_minutes or region_key column. ' +
-    'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING and filter to a region or band first: ' +
+    'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING, filtered to a region or band: ' +
     'an oversized payload renders a BLANK map with no error. ' +
     'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, INVALID_MAP_SPEC_DB ' +
     '(a layer query naming any other database), or ' +
@@ -48,6 +48,12 @@ export const render_map = defineProc({
     'Do NOT redraw geometry a routing tool returned (get_directions, compute_isochrone, ' +
     'optimize_routes, find_poi, catchment): those draw their own result inline, so this would ' +
     'produce TWO maps of one answer. ' +
+    'Do NOT author a `legend`: the client DERIVES it from the colours each layer actually draws ' +
+    '(a continuous gradient with the real min/max for a valueColumn layer, one swatch per palette ' +
+    'entry otherwise), so a hand-written key would contradict the map. Set `legendLabel` on a layer ' +
+    'to name it, and a `tooltip` template like "<b>{H3_CELL_R7}</b><br/>{DWELL_MINUTES} min" to say ' +
+    'what a hover shows - hovering is enabled for you, and a layer with no template gets one ' +
+    'synthesized from its columns. ' +
     'Prefer an existing saved view (a view: link) when one matches, render_view when the map needs ' +
     'surrounding KPIs and tables on a page, and deep_link when the user needs toggles or click-through.',
   roles: ['user'],
@@ -56,8 +62,9 @@ export const render_map = defineProc({
       .string({ min: 2, max: 60000 })
       .describe(
         'The map spec as a JSON object string: {title?, height?, layers:[{type, data:{query,params?}, ' +
-        'lng?, lat?, geojsonColumn?, hexColumn?, source?, target?, fillColor?, color?, tooltip?}], ' +
-        'legend?:[{label,color,shape?}], emptyMessage?}.',
+        'lng?, lat?, geojsonColumn?, hexColumn?, valueColumn?, colorScale?, source?, target?, ' +
+        'fillColor?, color?, tooltip?, legendLabel?}], emptyMessage?}. The legend is derived by the ' +
+        'client from the layer encodings - do not author one.',
       ),
     title: t
       .string({ max: 200 })

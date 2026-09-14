@@ -1,16 +1,13 @@
 {
-  "_comment": "Positive render_map fixture: a 2-layer inline map (h3 dwell density + a scatterplot of the sites inside it). Doubles as the worked example for the render_map spec contract. Asserted valid by fleet_tools/user/verify_map_spec.mts; the negative counterparts live in that harness. Queries read the neutral FLEET_APP contract, bind only context.* params, and simplify nothing because neither layer carries line or polygon geometry.",
+  "_comment": "Positive render_map fixture: a 2-layer inline map (h3 dwell density + a scatterplot of the sites inside it). Doubles as the worked example for the render_map spec contract. Asserted valid by fleet_tools/user/verify_map_spec.mts; the negative counterparts live in that harness. Queries read the neutral FLEET_APP contract, bind only context.* params, and simplify nothing because neither layer carries line or polygon geometry. It carries NO legend on purpose: the client derives one from each layer's colours, so an authored key could only contradict the map - name a layer with legendLabel instead.",
   "title": "Dwell density and served sites",
   "height": 380,
   "emptyMessage": "No dwell sessions for the active region and date range.",
-  "legend": [
-    { "label": "Dwell density (H3)", "color": [41, 181, 232, 200], "shape": "dot" },
-    { "label": "Site", "color": [255, 171, 0, 220], "shape": "dot" }
-  ],
   "layers": [
     {
       "id": "dwell_density",
       "type": "h3",
+      "legendLabel": "Dwell minutes",
       "hexColumn": "h3_cell",
       "valueColumn": "dwell_minutes",
       "colorScale": [
@@ -29,6 +26,7 @@
     {
       "id": "sites",
       "type": "scatterplot",
+      "legendLabel": "Site",
       "lng": "site_lon",
       "lat": "site_lat",
       "fillColor": [255, 171, 0, 220],

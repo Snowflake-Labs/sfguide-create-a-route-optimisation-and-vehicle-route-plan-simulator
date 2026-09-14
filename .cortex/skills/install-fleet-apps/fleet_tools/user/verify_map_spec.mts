@@ -44,6 +44,13 @@ import {
 // The tool-name matcher and the result unwrapper. Pure TS, no runtime deps.
 import { matchesTool, unwrapVerbResult } from '../../fleet_sa_app/ui/src/lib/tool-names';
 import { inlineRegistry } from '../../fleet_sa_app/ui/src/lib/inline-registry';
+// Legend derivation + tooltip synthesis. Pure by construction (types only, no
+// deck.gl), which is what makes them testable here at all - see the module
+// header on why the compiler defaults are mirrored rather than imported.
+import {
+  deriveInlineLegend, synthesizeTooltip, humanizeColumn, formatDomainValue,
+  COMPILER_DEFAULTS, type LayerFacts,
+} from '../../fleet_sa_app/ui/src/lib/map/inline-legend';
 import type { InlineComponentDef } from '../../fleet_sa_app/ui/src/lib/types';
 import { parseDynamicSpec } from '../../fleet_sa_app/ui/src/lib/view-spec-schema';
 // The verb-side copies of the shared constants, compared below. Aliased so a
@@ -115,7 +122,8 @@ chk('2-layer h3 + scatterplot fixture is accepted', good.ok,
 if (good.ok) {
   chk('fixture keeps both layers', good.spec.layers.length === 2);
   chk('fixture height is honoured', good.spec.height === 380);
-  chk('fixture legend survives', (good.spec.legend?.length ?? 0) === 2);
+  // The fixture deliberately carries NO legend: it is derived from the layers.
+  chk('fixture authors no legend', good.spec.legend === undefined);
   chk('fixture emptyMessage survives', !!good.spec.emptyMessage);
 }
 
@@ -493,6 +501,210 @@ rejects('legend: over the item cap is rejected',
   'max');
 rejects('legend: categoryLegend is validated too, not just legend',
   { ...OBSERVED_SPEC, categoryLegend: [{ label: 'a', color: 'nope' }] }, 'categoryLegend');
+
+// ---------------------------------------------------------------------------
+// Picking, tooltips and the DERIVED legend.
+//
+// The user-visible defect: a blue H3 dwell-density map with no tooltip on hover,
+// sitting under a yellow / orange / dark-red key labelled "Low / Medium / High
+// dwell". OBSERVED_SPEC above is the payload that produced it, so every
+// assertion here runs against the exact spec that failed rather than a
+// reconstruction.
+//
+// Two causes, both silent. (1) The spec carries a `tooltip` but no `pickable`,
+// and every compiler branch defaults `pickable: spec.pickable ?? false`, so
+// deck.gl never picked and the live template could never fire. (2) The spec
+// carries no `colorScale`, so the compiler lerped its own default blue ramp while
+// the agent authored a colorbrewer key it had invented - nothing tied the legend
+// to the encoding.
+console.log('\n--- picking, tooltips and legend derivation ---');
+
+const observed = parseMapSpec(OBSERVED_SPEC);
+chk('pickable: the observed spec parses', observed.ok,
+  observed.ok ? undefined : observed.errors.join(' | '));
+if (observed.ok) {
+  chk('pickable: forced true on an inline layer that omitted it',
+    (observed.spec.layers[0] as { pickable?: unknown }).pickable === true);
+}
+// NEG: the pre-fix behaviour. If the field is merely passed through, the observed
+// spec keeps no pickable at all and this convicts.
+chk('pickable: NEG a passthrough would leave it undefined',
+  (OBSERVED_SPEC.layers[0] as { pickable?: unknown }).pickable === undefined);
+// An explicit false on a render_view page layer is the author's call and survives:
+// a wide context choropleth under the layer that matters must stay unpickable.
+const pagePickErrors: string[] = [];
+const pageLayers = validateMapLayers(
+  [{ ...layer(), pickable: false }], pagePickErrors, { allowViewState: true },
+);
+chk('pickable: an authored render_view layer keeps pickable false',
+  pagePickErrors.length === 0 && (pageLayers[0] as { pickable?: unknown }).pickable === false);
+// ...while the same layer on an inline map is forced on, because a chat map is
+// read by hovering it and the agent has no way to know that.
+const inlinePickErrors: string[] = [];
+const inlineLayers = validateMapLayers(
+  [{ ...layer(), pickable: false }], inlinePickErrors, { allowViewState: false },
+);
+chk('pickable: an inline layer is forced on even against an explicit false',
+  inlinePickErrors.length === 0 && (inlineLayers[0] as { pickable?: unknown }).pickable === true);
+
+// The mirrored compiler defaults are the colours the legend claims are drawn, so
+// they must equal the literals in the compiler. Read from SOURCE because
+// importing the compiler would pull @deck.gl and kill this harness under tsx.
+const compilerSrc = readFileSync(
+  new URL('../../../../../packages/fleet-kit/src/map/layer-compiler.ts', import.meta.url),
+  'utf8',
+).replace(/\s+/g, '');
+const mirrored: Array<[string, number[]]> = [
+  ['h3 ramp low', COMPILER_DEFAULTS.h3Scale[0]],
+  ['h3 ramp high', COMPILER_DEFAULTS.h3Scale[1]],
+  ['scatterplot fill', COMPILER_DEFAULTS.scatterplotFill],
+  ['path colour', COMPILER_DEFAULTS.pathColor],
+  ['geojson fill', COMPILER_DEFAULTS.geojsonFill],
+  ['arc source', COMPILER_DEFAULTS.arcSourceColor],
+  ['arc target', COMPILER_DEFAULTS.arcTargetColor],
+];
+for (const [name, c] of mirrored) {
+  chk(`defaults: the ${name} still matches the compiler source`,
+    compilerSrc.includes(`[${c.join(',')}]`), `[${c.join(',')}] not found in layer-compiler.ts`);
+}
+
+const observedFacts: Record<number, LayerFacts | undefined> = {
+  0: { domain: { min: 1, max: 1420 }, columns: ['HEX', 'DWELL_COUNT', 'AVG_DWELL_MIN'] },
+};
+const derived = deriveInlineLegend(
+  observed.ok ? observed.spec.layers : [], observedFacts, observed.ok ? observed.spec.legend : undefined,
+);
+chk('legend: a valueColumn layer derives exactly ONE item, not three bins',
+  derived.length === 1, JSON.stringify(derived));
+chk('legend: that item is a gradient over the compiler ramp',
+  JSON.stringify(derived[0]?.gradient) === JSON.stringify(COMPILER_DEFAULTS.h3Scale),
+  JSON.stringify(derived[0]));
+chk('legend: the gradient ends carry the REAL data range',
+  derived[0]?.minLabel === '1' && derived[0]?.maxLabel === '1420',
+  `${derived[0]?.minLabel} .. ${derived[0]?.maxLabel}`);
+chk('legend: the label falls back to the humanized value column',
+  derived[0]?.label === 'Dwell count', derived[0]?.label);
+// The convicting assertion: the invented colours must be GONE, not merely
+// reordered next to a gradient.
+const derivedJson = JSON.stringify(derived);
+chk('legend: NEG the agent-authored bin colours are not drawn',
+  !derivedJson.includes('255,255,204') && !derivedJson.includes('128,0,38'), derivedJson);
+chk('legend: NEG the invented bin labels are gone',
+  !derivedJson.includes('Low dwell') && !derivedJson.includes('High dwell'), derivedJson);
+
+// A layer's own colorScale is honoured - the legend describes THIS map, not the
+// default.
+const scaled = parseMapSpec({
+  ...OBSERVED_SPEC,
+  layers: [{ ...OBSERVED_SPEC.layers[0], colorScale: [[10, 20, 30, 40], [50, 60, 70, 80]], legendLabel: 'Dwell load' }],
+});
+const scaledLegend = scaled.ok ? deriveInlineLegend(scaled.spec.layers, observedFacts) : [];
+chk('legend: an authored colorScale drives the gradient',
+  JSON.stringify(scaledLegend[0]?.gradient) === JSON.stringify([[10, 20, 30, 40], [50, 60, 70, 80]]),
+  JSON.stringify(scaledLegend[0]));
+chk('legend: legendLabel wins over the column name', scaledLegend[0]?.label === 'Dwell load');
+// No usable numbers means no end labels. A bar with none is honest; an invented
+// 0-100 would not be.
+const noDomain = deriveInlineLegend(scaled.ok ? scaled.spec.layers : [], {});
+chk('legend: a missing domain leaves the gradient unlabelled',
+  !!noDomain[0]?.gradient && noDomain[0]?.minLabel === undefined);
+
+// Categorical layers become one swatch per palette entry, coloured from the
+// palette the compiler will look up.
+const categorical = deriveInlineLegend([
+  {
+    type: 'scatterplot', lng: 'lon', lat: 'lat', data: { query: 'SELECT 1' },
+    fillColor: { column: 'STATUS', palette: { IDLE: [1, 1, 1, 255], BUSY: [2, 2, 2, 255] } },
+  } as never,
+], {});
+chk('legend: a categorical layer derives one item per palette key',
+  categorical.length === 2 && categorical[0].label === 'IDLE'
+  && JSON.stringify(categorical[1].color) === JSON.stringify([2, 2, 2, 255]),
+  JSON.stringify(categorical));
+const choropleth = deriveInlineLegend([
+  {
+    type: 'geojson', geojsonColumn: 'g', colorColumn: 'BAND',
+    colorMap: { LOW: [3, 3, 3, 255] }, data: { query: 'SELECT 1' },
+  } as never,
+], {});
+chk('legend: a geojson colorMap derives from the map, not fillColor',
+  choropleth.length === 1 && JSON.stringify(choropleth[0].color) === JSON.stringify([3, 3, 3, 255]));
+// A path/arc layer must not show a dot; the swatch has to look like what is drawn.
+const lineLegend = deriveInlineLegend([
+  { type: 'path', geojsonColumn: 'g', id: 'driven_route', data: { query: 'SELECT 1' } } as never,
+], {});
+chk('legend: a path layer gets a line swatch in the compiler colour',
+  lineLegend[0]?.shape === 'line'
+  && JSON.stringify(lineLegend[0]?.color) === JSON.stringify(COMPILER_DEFAULTS.pathColor));
+chk('legend: a flat layer falls back to its humanized id',
+  lineLegend[0]?.label === 'Driven route', lineLegend[0]?.label);
+// Authored TEXT is still usable when it is unambiguous - one item for one layer.
+const borrowed = deriveInlineLegend(
+  [{ type: 'path', geojsonColumn: 'g', id: 'x', data: { query: 'SELECT 1' } } as never],
+  {},
+  [{ label: 'Planned route', color: [9, 9, 9, 255] }],
+);
+chk('legend: a single authored label is borrowed for a flat layer',
+  borrowed[0]?.label === 'Planned route'
+  // ...but its colour is NOT: the swatch stays the drawn colour.
+  && JSON.stringify(borrowed[0]?.color) === JSON.stringify(COMPILER_DEFAULTS.pathColor),
+  JSON.stringify(borrowed[0]));
+// A mismatched count is ambiguous, so nothing is borrowed rather than mislabelled.
+const notBorrowed = deriveInlineLegend(
+  [{ type: 'path', geojsonColumn: 'g', id: 'lane_a', data: { query: 'SELECT 1' } } as never],
+  {},
+  [{ label: 'one', color: [9, 9, 9, 255] }, { label: 'two', color: [8, 8, 8, 255] }],
+);
+chk('legend: NEG an ambiguous authored legend is not borrowed',
+  notBorrowed[0]?.label === 'Lane a', notBorrowed[0]?.label);
+chk('legend: the derived legend respects the item cap',
+  deriveInlineLegend([
+    {
+      type: 'scatterplot', lng: 'lon', lat: 'lat', data: { query: 'SELECT 1' },
+      fillColor: {
+        column: 'C',
+        palette: Object.fromEntries(
+          Array.from({ length: MAX_LEGEND_ITEMS + 5 }, (_, i) => [`k${i}`, [1, 2, 3, 255]]),
+        ),
+      },
+    } as never,
+  ], {}).length === MAX_LEGEND_ITEMS);
+
+// Exact up to 4 digits, then compact: a legend end label must stay readable
+// without inventing precision it does not have.
+chk('format: a compact domain label', formatDomainValue(1_420) === '1420'
+  && formatDomainValue(25_000) === '25k'
+  && formatDomainValue(2_300_000) === '2.3M' && formatDomainValue(0.5) === '0.5');
+chk('format: SNAKE_CASE humanizes', humanizeColumn('TOTAL_DWELL_MINUTES') === 'Total dwell minutes');
+
+// Tooltip synthesis. Forcing `pickable` alone fixes nothing for a spec that
+// omits `tooltip`: getTooltip returns null and the map stays hover-dead.
+const synth = synthesizeTooltip(
+  { type: 'h3', hexColumn: 'HEX', valueColumn: 'DWELL_COUNT', data: { query: 'SELECT 1' } } as never,
+  ['HEX', 'DWELL_COUNT', 'AVG_DWELL_MIN'],
+);
+chk('tooltip: synthesized from the row columns', !!synth && synth.includes('{DWELL_COUNT}'), synth);
+chk('tooltip: the coloured measure leads', !!synth && synth.indexOf('{DWELL_COUNT}') < synth.indexOf('{HEX}'), synth);
+chk('tooltip: no columns means no template (an empty black box is worse)',
+  synthesizeTooltip({ type: 'h3', hexColumn: 'HEX', data: { query: 'SELECT 1' } } as never, []) === undefined);
+// Geometry and raw coordinates are excluded: a tooltip full of WKT is unreadable.
+const geoSynth = synthesizeTooltip(
+  { type: 'geojson', geojsonColumn: 'ZIP_GEOJSON', colorColumn: 'BAND', data: { query: 'SELECT 1' } } as never,
+  ['ZIP_GEOJSON', 'BAND', 'ZIP'],
+);
+chk('tooltip: the geometry column is excluded',
+  !!geoSynth && !geoSynth.includes('{ZIP_GEOJSON}') && geoSynth.includes('{BAND}'), geoSynth);
+const pointSynth = synthesizeTooltip(
+  { type: 'scatterplot', lng: 'SITE_LON', lat: 'SITE_LAT', data: { query: 'SELECT 1' } } as never,
+  ['SITE_NAME', 'SITE_LON', 'SITE_LAT', 'VISITS'],
+);
+chk('tooltip: lng/lat are excluded from a scatterplot template',
+  !!pointSynth && !pointSynth.includes('{SITE_LON}') && pointSynth.includes('{SITE_NAME}'), pointSynth);
+chk('tooltip: at most 4 tokens are emitted',
+  (synthesizeTooltip(
+    { type: 'h3', hexColumn: 'H', data: { query: 'SELECT 1' } } as never,
+    ['H', 'A', 'B', 'C', 'D', 'E'],
+  ) ?? '').match(/\{/g)?.length === 4);
 
 console.log(fails ? `\n${fails} FAILURE(S) of ${checks}` : `\nall ${checks} assertions passed`);
 process.exit(fails ? 1 : 0);

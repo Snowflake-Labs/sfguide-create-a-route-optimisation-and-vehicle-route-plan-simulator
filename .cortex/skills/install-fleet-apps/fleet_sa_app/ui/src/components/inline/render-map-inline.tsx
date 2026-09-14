@@ -26,6 +26,9 @@ import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, LegendItem } from '@/lib/map/layer-spec';
 import { compileLayerWithFit } from '@/lib/map/layer-compiler';
 import { parseMapSpec, type InlineMapSpec } from '@/lib/map-spec-schema';
+import {
+  deriveInlineLegend, synthesizeTooltip, type LayerFacts, type ValueDomain,
+} from '@/lib/map/inline-legend';
 import { unwrapVerbResult } from '@/lib/tool-names';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
@@ -42,6 +45,35 @@ interface LayerResult {
   total: number;
   tooltip?: string;
   error?: string;
+  /** Range of the layer's valueColumn over the rows it was DRAWN from, so a
+   *  gradient legend labels the ramp the user is looking at rather than the
+   *  unclipped result set. */
+  domain?: ValueDomain;
+  /** Column names on the returned rows, for tooltip synthesis. */
+  columns?: string[];
+}
+
+/** Min/max of `column` over `rows`. Mirrors the compiler's h3 branch, which
+ *  derives the lerp bounds the same way - the legend has to describe that exact
+ *  ramp, so the two must agree on which values count. */
+function valueDomain(rows: Record<string, unknown>[], column: string | undefined): ValueDomain | undefined {
+  if (!column) return undefined;
+  let min = 0;
+  let max = 0;
+  let seen = false;
+  for (const r of rows) {
+    const v = Number(r[column] ?? r[column.toUpperCase()] ?? r[column.toLowerCase()]);
+    if (!Number.isFinite(v)) continue;
+    if (!seen) {
+      min = v;
+      max = v;
+      seen = true;
+    } else {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  return seen ? { min, max } : undefined;
 }
 
 /** Fill a `{COLUMN}` template from a picked feature. Case-insensitive so a
@@ -86,12 +118,18 @@ function InlineLayerFetcher({
     const total = data?.totalRows ?? all.length;
     const rows = all.length > MAX_INLINE_ROWS ? all.slice(0, MAX_INLINE_ROWS) : all;
     const { layer: compiled, fitCoords } = compileLayerWithFit(layer, rows, context, index, null);
+    const columns = rows.length ? Object.keys(rows[0]) : [];
     return {
       layer: compiled,
       fitCoords: fitCoords as LngLat[],
       count: rows.length,
       total: Math.max(total, all.length),
-      tooltip: layer.tooltip,
+      // A layer with no template still gets one: forcing `pickable` alone leaves
+      // getTooltip returning null, so the map stays hover-dead for exactly the
+      // specs the agent actually emits.
+      tooltip: layer.tooltip ?? synthesizeTooltip(layer, columns),
+      domain: valueDomain(rows, layer.type === 'h3' ? layer.valueColumn : undefined),
+      columns,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, error, index, layer, context]);
@@ -106,31 +144,56 @@ function InlineLayerFetcher({
 
 /** Compact legend row rendered under the map. Deliberately simpler than the
  *  dashboard's collapsible overlay card: a chat message is short-lived and has
- *  no room for a floating panel. */
+ *  no room for a floating panel.
+ *
+ *  Renders BOTH swatch kinds. The gradient branch is not cosmetic: validateLegend
+ *  accepts a gradient-only item (it has no `color` by design), and without this
+ *  branch `rgba(undefined)` returned 'transparent', so a continuous legend drew a
+ *  label beside an invisible box - the same silent-failure class as the rest of
+ *  the map. */
 function InlineLegend({ items }: { items: LegendItem[] }) {
   const rgba = (c: LegendItem['color']) =>
     c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})` : 'transparent';
   return (
     <div
       style={{
-        display: 'flex', flexWrap: 'wrap', gap: '10px', padding: '6px 8px',
+        display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: '10px', padding: '6px 8px',
         fontSize: '11px', color: 'var(--text-secondary, #6b7280)',
       }}
     >
-      {items.map((it, i) => (
-        <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-          <span
-            style={{
-              width: it.shape === 'line' ? '14px' : '9px',
-              height: it.shape === 'line' ? '3px' : '9px',
-              borderRadius: it.shape === 'line' ? '2px' : '50%',
-              background: rgba(it.color),
-              flex: '0 0 auto',
-            }}
-          />
-          {it.label}
-        </span>
-      ))}
+      {items.map((it, i) =>
+        it.gradient?.length ? (
+          <span key={i} style={{ display: 'inline-flex', flexDirection: 'column', gap: '2px' }}>
+            <span>{it.label}</span>
+            <span
+              style={{
+                width: '110px', height: '9px', borderRadius: '3px',
+                border: '1px solid rgba(15,23,42,0.15)',
+                background: `linear-gradient(to right, ${it.gradient.map((c) => rgba(c)).join(', ')})`,
+              }}
+            />
+            {it.minLabel || it.maxLabel ? (
+              <span style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', opacity: 0.85 }}>
+                <span>{it.minLabel ?? ''}</span>
+                <span>{it.maxLabel ?? ''}</span>
+              </span>
+            ) : null}
+          </span>
+        ) : (
+          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+            <span
+              style={{
+                width: it.shape === 'line' ? '14px' : '9px',
+                height: it.shape === 'line' ? '3px' : '9px',
+                borderRadius: it.shape === 'line' ? '2px' : '50%',
+                background: rgba(it.color),
+                flex: '0 0 auto',
+              }}
+            />
+            {it.label}
+          </span>
+        ),
+      )}
     </div>
   );
 }
@@ -228,6 +291,26 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
     .map((_, i) => results[i])
     .filter((r): r is LayerResult => !!r && r.total > r.count);
 
+  // The legend DESCRIBES the encoding, so it is derived from the layers plus what
+  // they actually drew - never taken from the spec's colours. An agent cannot know
+  // the compiler's default ramp or the data's range, which is how a blue hex map
+  // came to sit under a yellow-to-red "Low / Medium / High" key with no numbers.
+  // The authored legend survives as a source of TEXT only (see deriveInlineLegend),
+  // and is rendered verbatim only until the layers report.
+  const facts = useMemo<Record<number, LayerFacts | undefined>>(() => {
+    const out: Record<number, LayerFacts | undefined> = {};
+    spec.layers.forEach((_, i) => {
+      const r = results[i];
+      if (r) out[i] = { domain: r.domain, columns: r.columns };
+    });
+    return out;
+  }, [spec.layers, results]);
+
+  const legend = useMemo<LegendItem[]>(
+    () => (allReported ? deriveInlineLegend(spec.layers, facts, spec.legend) : (spec.legend ?? [])),
+    [allReported, spec.layers, spec.legend, facts],
+  );
+
   // A stable token for this geometry so the camera fits once it arrives. The
   // fit is then LOCKED: a chat message must not re-frame itself later when the
   // user changes region on the dashboard beside it.
@@ -271,7 +354,7 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
           </div>
         ) : null}
       </div>
-      {spec.legend?.length ? <InlineLegend items={spec.legend} /> : null}
+      {legend.length ? <InlineLegend items={legend} /> : null}
       {spec.categoryLegend?.length ? <InlineLegend items={spec.categoryLegend} /> : null}
       {truncated.length ? (
         <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>

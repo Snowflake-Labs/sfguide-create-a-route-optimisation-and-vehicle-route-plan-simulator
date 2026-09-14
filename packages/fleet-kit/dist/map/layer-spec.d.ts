@@ -36,6 +36,11 @@ interface LayerBase {
     pickable?: boolean;
     /** HTML tooltip template using `{COLUMN}` tokens, e.g. "<b>{COURIER_ID}</b>". */
     tooltip?: string;
+    /** Human label for this layer in a DERIVED legend (the inline chat map builds
+     *  its legend from the colour encoding rather than from authored swatches, so
+     *  this is the only place a layer's own wording can come from). Falls back to
+     *  the humanized value column or layer id. */
+    legendLabel?: string;
     /** Exclude this layer from selection-driven camera fit. Set on wide context
      *  layers (e.g. a full ZIP choropleth) so focusing a selection frames the
      *  selected object + its ring, not the entire context extent. */
