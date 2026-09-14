@@ -599,6 +599,67 @@
    )
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"profile-cache"}}';
 
+   -- ---------------------------------------------------------------------------
+   -- PRE-STUBS for PROFILES_FOR_REGION's two other source tables.
+   --
+   -- PROFILES_FOR_REGION (created just below) reads REGION_PROVISION_JOBS and
+   -- ORS_BUILD_HISTORY, but both are authored in module 03, which loads AFTER
+   -- this module. A LANGUAGE SQL UDF body resolves its object references at
+   -- CREATE time, so on a FRESH install (where module 03 has not run yet) the
+   -- function create failed with "REGION_PROVISION_JOBS does not exist". On a
+   -- reused engine the tables already existed, which is why this only surfaced
+   -- on a from-scratch install. These IF NOT EXISTS stubs mirror the exact
+   -- module-03 DDL (same pattern as REGION_CATALOG / REGION_ORS_MAP, which are
+   -- also declared in both modules); module 03's own CREATE ... IF NOT EXISTS
+   -- and ADD COLUMN migrations then run as no-ops.
+   -- ---------------------------------------------------------------------------
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
+       JOB_ID VARCHAR NOT NULL,
+       REGION VARCHAR NOT NULL,
+       DISPLAY_NAME VARCHAR,
+       PBF_URL VARCHAR,
+       PROFILES VARCHAR,
+       STATUS VARCHAR DEFAULT 'PENDING',
+       STAGE VARCHAR DEFAULT 'NOT_STARTED',
+       MESSAGE VARCHAR,
+       STATEMENT_HANDLE VARCHAR,
+       CREATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
+       STARTED_AT TIMESTAMP_NTZ,
+       COMPLETED_AT TIMESTAMP_NTZ,
+       ERROR_MSG VARCHAR,
+       DISMISSED BOOLEAN DEFAULT FALSE,
+       COMPUTE_SIZE VARCHAR,
+       INSTANCE_FAMILY VARCHAR,
+       PBF_SIZE_GIB FLOAT,
+       RESCUE_DOWNGRADES INTEGER DEFAULT 0,
+       HEARTBEAT_AT TIMESTAMP_NTZ,
+       PBF_URL_USED VARCHAR
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}';
+
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY (
+       BUILD_ID         VARCHAR DEFAULT UUID_STRING(),
+       JOB_ID           VARCHAR,
+       REGION           VARCHAR,
+       PBF_URL          VARCHAR,
+       PBF_SIZE_GIB     FLOAT,
+       OSM_TIMESTAMP    TIMESTAMP_NTZ,
+       ORS_VERSION      VARCHAR,
+       PROFILES         VARCHAR,
+       COMPUTE_SIZE     VARCHAR,
+       CONFIG_HASH      VARCHAR,
+       INSTANCE_FAMILY  VARCHAR,
+       JVM_XMX_GIB      NUMBER,
+       STARTED_AT       TIMESTAMP_NTZ,
+       FINISHED_AT      TIMESTAMP_NTZ,
+       ELAPSED_MINUTES  FLOAT,
+       EXIT_STATUS      VARCHAR,
+       PEAK_RSS_GIB     FLOAT,
+       OUTPUT_GRAPH_GIB FLOAT,
+       LOG_URI          VARCHAR
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"telemetry"}}';
+
    -- Profiles built for a region, resolved from TABLES ONLY (no service call, so
    -- it cannot hang and cannot be slow). NULL / empty region means the default
    -- region, matching the gateway's own DEFAULT_REGION_NAME fallback.
