@@ -304,6 +304,57 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
 # function list is parsed from the engine modules, so the gate cannot drift.
 python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards.py
 
+# Validate that a sampled coordinate pair is one a router can actually serve, and
+# that the pool it came from is anchored LOCAL to the profile's separation band.
+#
+# The Function Tester generated DIRECTIONS('driving-hgv', [-156.47031, 20.88982],
+# [-116.19779, 43.91467]) for the UnitedStatesOfAmerica region - Maui to Boise,
+# ~3,400 km apart with no road between them - against a band that asks for
+# 2-15 km. ORS searched the whole US graph, SPCS ingress cut the connection at
+# 90s, and the user saw `Unexpected token 'u', "upstream r"... is not valid JSON`.
+#
+# Two layers had to fail together. /api/sample-poi-points drew 50 POIs
+# REGION-WIDE: measured on the real region (9,892 POIs) that pool spans 8,165 km
+# and only 73% of POIs have ANY neighbour in the 2-15 km ring, so the ring filter
+# matched nothing; samplePointNear then fell back to "nearest pool point" with NO
+# ceiling, and the nearest POI to one on Maui was in Boise. The pool genuinely
+# contains Hawaii AND Alaska rows, so region-wide sampling crosses landmasses by
+# construction. The pool is now anchored on ONE H3 cell sized to the band, which
+# removes the cross-component pair without needing a connectivity probe - a cell
+# cannot span two landmasses. Worst sampled separation: 3,400 km -> 14.5 km.
+#
+# Distances are asserted with an INDEPENDENT real haversine, not the module's own
+# flat-earth haversineKm - an assertion built on that would agree with the bug.
+# Two traps this gate exists to hold: (1) the first fix REINTRODUCED the defect
+# via an unbounded padding path, caught only on foot-walking where the ceiling is
+# 6 km; (2) "a hint exists" is too weak an assertion - a mutation restoring the
+# unchecked final attempt PASSED it, because the misleading "Region is small"
+# text is still a hint. The gate now requires the hint to NAME the cause, and
+# carries a coverage counter so that assertion cannot pass vacuously.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_sample_points.mts
+
+# Validate that a non-JSON response body never reaches a JSON parser.
+#
+# get_ors_response and get_vroom_response both called r.json() unguarded, and
+# JSONDecodeError is NOT caught by their ConnectionError / Timeout handlers, so a
+# plain-text body became a Flask 500 and an opaque SQL failure. r.raise_for_status()
+# is never called either, so a 200 with a non-JSON body slips past status-code
+# checks - that case is asserted explicitly. The envelope MUST be a dict:
+# _annotate_engine_error subscripts the parsed response and VROOM's callers branch
+# on `'routes' in vroom_r`, so a string would just move the failure downstream.
+#
+# Also asserts the timeout ladder, which is what stops the failure happening at
+# all: ORS_TIMEOUT_DEFAULT must sit BELOW the ~60s ingress floor so directions
+# fails inside the gateway with its own worded envelope. Matrix was tuned that way
+# from the start and directions never was, which is why only directions produced
+# the unparseable error. VROOM is the deliberate exception - timeout=300 must NOT
+# be lowered to match, because a real backload solve measures 168.6s and the Cortex
+# Agent path completed at 270.1s uncut; a 55s ceiling would reject both. For VROOM
+# the parse guard IS the fix. Both VROOM parses (primary and the per-region
+# fallback) are negative-tested independently: guarding only the first call looks
+# complete and still raises.
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 verify_gateway_non_json.py
+
 # Assert a live deployment matches the mode it was installed in. Distinct from
 # validate_app_views.py: that asks "do the views return rows", this asks "are the
 # objects the app surfaces read actually there". Nothing asked the second question

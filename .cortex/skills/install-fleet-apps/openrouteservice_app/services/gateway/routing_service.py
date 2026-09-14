@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.14'
+GATEWAY_VERSION = 'v1.1.15'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -986,9 +986,21 @@ def get_vroom_response(payload, vroom_host=None):
     host = vroom_host or default_vroom_host
     downstream_url = f'http://{host}:{VROOM_PORT}'
     downstream_headers = {"Content-Type": "application/json"}
+    # timeout=300 is DELIBERATE and must not be lowered to match
+    # ORS_TIMEOUT_DEFAULT. The directions ceiling exists to fail before SPCS
+    # ingress; applying the same logic here would break working solves. Measured
+    # in this repo: a real backload solve takes 168.6s at 100/500, and the Cortex
+    # Agent path completed at 270.1s without being cut. A 55s ceiling would
+    # reject both. For VROOM the parse guard below IS the fix - a body that is
+    # not JSON is reported instead of raising, whatever produced it.
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
-        vroom_r = r.json()
+        try:
+            vroom_r = r.json()
+        except ValueError:
+            logger.error(f'Non-JSON response from VROOM at {host} (HTTP {r.status_code}): '
+                         f'{(r.text or "")[:200]!r}')
+            return _non_json_envelope(r, host, service='VROOM')
     except requests.exceptions.ConnectionError:
         # Per-region VROOM unreachable. Fall back to the default-region VROOM service.
         if host != default_vroom_host:
@@ -996,7 +1008,12 @@ def get_vroom_response(payload, vroom_host=None):
             try:
                 r = requests.post(url=f'http://{default_vroom_host}:{VROOM_PORT}',
                                   headers=downstream_headers, json=payload, timeout=300)
-                vroom_r = r.json()
+                try:
+                    vroom_r = r.json()
+                except ValueError:
+                    logger.error(f'Non-JSON response from fallback VROOM at {default_vroom_host} '
+                                 f'(HTTP {r.status_code}): {(r.text or "")[:200]!r}')
+                    return _non_json_envelope(r, default_vroom_host, service='VROOM')
             except requests.exceptions.ConnectionError:
                 logger.error(f'Cannot connect to VROOM at {default_vroom_host}:{VROOM_PORT} (fallback)')
                 return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {default_vroom_host}:{VROOM_PORT}'}
@@ -1128,6 +1145,41 @@ GUARDRAIL_ISOCHRONES_MAX_LOCATIONS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX
 GUARDRAIL_ISOCHRONES_MAX_INTERVALS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS', '10'))
 GUARDRAIL_ISOCHRONES_MAX_RANGE_S = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S', '18000'))
 GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS = int(os.getenv('ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS', '1000'))
+
+
+def _non_json_envelope(response, host, service='ORS', latency_ms=None):
+    """Structured failure for a response body that is not JSON.
+
+    Same envelope shape as the ORS engine errors and _guardrail_response below,
+    so SQL callers (which already special-case 'error') need no new schema. It
+    MUST be a dict: _annotate_engine_error subscripts the parsed response, and
+    get_vroom_response's callers branch on `'routes' in ...`, so a string here
+    would just move the failure a few lines down.
+
+    Why this exists: an unguarded r.json() raises JSONDecodeError, which is NOT
+    caught by the ConnectionError / Timeout handlers around either call site. A
+    plain-text body therefore became a Flask 500 and reached SQL callers as
+    "Unexpected token 'u', \"upstream r\"... is not valid JSON". The usual cause
+    is an infrastructure layer answering instead of the service: SPCS ingress
+    cuts the connection at ~60-90s and substitutes 'upstream request timeout'.
+    """
+    body = (getattr(response, 'text', '') or '').strip()
+    status = getattr(response, 'status_code', None)
+    env = {
+        'error': 'non_json_response',
+        'message': f'{host} returned a non-JSON body (HTTP {status})'
+                   + (f' after {latency_ms}ms' if latency_ms is not None else '')
+                   + f': {body[:200] or "(empty body)"}. '
+                   f'This is usually the service ingress timing the request out before '
+                   f'{service} answered - check for an unroutable or very distant '
+                   f'coordinate pair, or reduce the request size.',
+        'ors_host': host,
+        'status': status,
+        'body_prefix': body[:200],
+    }
+    if latency_ms is not None:
+        env['latency_ms'] = latency_ms
+    return env
 
 
 def _guardrail_response(endpoint, host, message, limits):
@@ -1362,7 +1414,21 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
             latency_ms = int((time.monotonic() - t0) * 1000)
             resp_bytes = len(r.content) if r.content is not None else None
-            resp = r.json()
+            try:
+                resp = r.json()
+            except ValueError:
+                # Returned rather than retried: the request already burned the
+                # full ingress budget, same reasoning as the Timeout branch.
+                # See _non_json_envelope for why this guard exists at all.
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                body = (r.text or '').strip()
+                logger.error(f'Non-JSON response from {host} (HTTP {r.status_code}) after '
+                             f'{latency_ms}ms: {body[:200]!r}')
+                _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
+                             error_code='non_json_response', caller=retried_caller,
+                             region=region_hint, request_id=req_id)
+                _breaker_on_failure(host, 'non_json_response')
+                return _non_json_envelope(r, host, service='ORS', latency_ms=latency_ms)
             logger.debug(resp)
             annotated = _annotate_engine_error(resp, host, payload)
             engine_err = annotated.get('error') if isinstance(annotated, dict) else None
