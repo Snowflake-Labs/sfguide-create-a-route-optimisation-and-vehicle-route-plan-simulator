@@ -14,9 +14,20 @@
 // It lives here rather than under fleet_sa_app/ui for the same practical reason
 // as verify_routing_suspend.mts: this package already carries tsx, while running
 // it from the SA app UI makes npx block on an interactive install prompt and then
-// re-download tsx on every invocation. map-spec-schema.ts imports ONLY types
-// (`import type`), which esbuild erases, so it has no runtime imports and a
-// relative import works despite the `@/` alias in its source.
+// re-download tsx on every invocation.
+//
+// REQUIRES THE SA APP'S node_modules, not just this package's. The header used to
+// claim map-spec-schema.ts imports only types and therefore has no runtime
+// imports; that is no longer true of the suite as a whole. It now reaches
+// agent-memo.ts (`react`) and map/layer-spec.ts (`@fleet-kit/core/map`), and node
+// resolves bare specifiers by walking up from the IMPORTING file - which lives
+// under fleet_sa_app/ui/src - so both come from the SA app's node_modules.
+// fleet_tools/user carries neither. Two consequences:
+//   - `tsconfig.json` here maps `@/*` to the SA app's src, because that source
+//     uses the app's own alias (without it this suite fails to START with
+//     MODULE_NOT_FOUND, which is not a failing assertion and reads like a crash);
+//   - running it needs `fleet_sa_app/ui/node_modules` present, which
+//     deploy_fleet_sa_app.sh ensures explicitly rather than by gate ordering.
 //
 // What it protects. Every failure mode of a map is SILENT. An unknown layer
 // `type` compiles to nothing, a `viewState.*` param on an inline map binds NULL,

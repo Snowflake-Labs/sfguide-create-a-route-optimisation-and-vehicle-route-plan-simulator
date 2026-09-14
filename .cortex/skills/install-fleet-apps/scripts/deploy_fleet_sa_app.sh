@@ -149,9 +149,21 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   if [ "${MAP_SPEC_VERIFY:-1}" != "0" ]; then
     # Lives in fleet_tools/user because it asserts the VERB's view of a map spec
     # against the app's renderer, so it must run from there.
+    #
+    # It imports SA app source, and node resolves bare specifiers by walking up
+    # from the IMPORTING file - which lives under fleet_sa_app/ui/src - so `react`
+    # (via agent-memo.ts) and `@fleet-kit/core/map` (via map/layer-spec.ts) come
+    # from the SA APP's node_modules, not this directory's. fleet_tools/user has
+    # neither. Both trees are therefore ensured here rather than relying on the
+    # gates above having run first: each gate has its own opt-out, which implies
+    # they are independent, and without this one is not. Disabling the other two
+    # on a fresh tree used to fail with "Cannot find module 'react'", which points
+    # at the wrong package entirely.
     MAP_SPEC_DIR="$SKILL_DIR/fleet_tools/user"
     if [ -f "$MAP_SPEC_DIR/verify_map_spec.mts" ]; then
       echo "[1/7] Verify map specs compile and draw (verb + renderer agree)..."
+      ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } ) \
+        || { echo "ERROR: could not install $UI_DIR deps (needed by the map spec suite)"; exit 1; }
       ( cd "$MAP_SPEC_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx verify_map_spec.mts >/dev/null ) \
         || { echo "ERROR: map spec verification failed. Re-run for detail:"; \
              echo "         ( cd '$MAP_SPEC_DIR' && npx tsx verify_map_spec.mts )"; exit 1; }
