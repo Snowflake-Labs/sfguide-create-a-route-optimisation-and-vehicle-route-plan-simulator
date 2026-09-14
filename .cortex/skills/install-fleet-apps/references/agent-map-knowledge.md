@@ -127,6 +127,39 @@ maps of a single answer, and when the second one fails the user reads an error n
 correct map - which is exactly what "show me the route from SFO to Civic Center" did.
 Report the figures, say the route is shown on the map above, and stop.
 
+Only the subset in `tools.geometryTools` is treated as geometry-MANDATORY (directions,
+isochrone, the solvers). For the rest, a payload with no GeoJSON falls back to showing the
+data: `find_poi` grouped by category is a legitimate answer, and it used to render as the
+stub "No map geometry in this result." instead of its rows - two content-free notices under
+one correct map, in the same answer as the density defect below.
+
+### A travel-time-scoped measure is ONE map, not two
+
+"Density of POIs within 45 min ebike travel time around SF airport" is a ring AND a measure
+inside it. That is different geometry, so the rule above does not forbid it - and it still
+must not be two tool calls, because the user is asking for one picture. Emit ONE
+`render_map`:
+
+1. a `geojson` layer projecting `ST_ASGEOJSON(GEOJSON)::STRING` from
+   `TABLE(ROUTING_PLATFORM.CONTRACT.ISOCHRONES(...))` for the ring, and
+2. an `h3` layer over the contract data joined to that same ring with `ST_WITHIN`, shaded by
+   a `COUNT`.
+
+```sql
+WITH iso AS (SELECT GEOJSON AS G FROM TABLE(ROUTING_PLATFORM.CONTRACT.ISOCHRONES(
+  'cycling-electric', -122.3790::FLOAT, 37.6213::FLOAT, 45, :region, NULL::VARCHAR)))
+SELECT H3_POINT_TO_CELL_STRING(p.GEOMETRY, 8) AS h3_cell, COUNT(*) AS poi_count
+FROM FLEET_APP.CATCHMENT.VW_POIS p, iso
+WHERE p.REGION = :region AND ST_WITHIN(p.GEOMETRY, iso.G) GROUP BY 1;
+-- 88283092bbfffff / 68 ...
+```
+
+**Only `driving-car`, `driving-hgv` and `cycling-electric` are loaded.** Map bike / ebike /
+cycle to `cycling-electric`. Any other name - `cycling-regular` is the one "ebike" invites -
+returns **NULL geometry and no exception**, with the reason buried in `RESPONSE`
+(`{"error":{"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'."}}`),
+so the layer draws nothing. The verb's EXPLAIN gate cannot see this: the statement compiles.
+
 ## 5a. Authoring an inline map (render_map, SA app)
 
 `render_map` takes a JSON spec `{title?, height?, layers:[...], legend?, emptyMessage?}`
@@ -146,6 +179,20 @@ than a blank map:
   `/api/query` with `dynamic:true`, i.e. as owner's-rights `FLEET_APP_DYNAMIC_READER`
   behind that allowlist. A query naming any other database is refused by the verb with
   `INVALID_MAP_SPEC_DB`, and again at that boundary.
+- **Every layer type needs its encoding**: `scatterplot` needs `lng` + `lat`, `h3` needs
+  `hexColumn` (plus `valueColumn` to shade), `geojson` needs `geojsonColumn`, `path` needs
+  `geojsonColumn` or `start` + `end`, `arc` needs `source` + `target`. A missing one is
+  refused with `INVALID_MAP_SPEC_ENCODING`, because the compiler filters its data on that
+  column and `undefined` removes every row - a blank basemap at world zoom, with no error.
+- **Column names match case-insensitively.** Name the columns your own query projects, in
+  whatever case reads best. `/api/query` lowercases every result column, so the spec's
+  references are lowercased to match; an UPPERCASE `hexColumn` used to draw nothing at all
+  while the legend still showed the correct value domain, which read as broken rendering
+  rather than a naming mismatch.
+- **A layer that returns rows and draws nothing says so.** The client compares rows fetched
+  against features placed and names the layer, its row count and the columns it read. A blank
+  map is now a sentence, not a guess - that covers a misspelled column, a column absent from
+  the result set, and NULL geometry from a live routing call.
 - **Params bind `context.*` or a literal.** `viewState.*` is rejected: a chat message has
   no view state, so the bind would go out as NULL and return zero rows. For the same
   reason `visibleWhen`, `toggles`, `clickEmits` and `focusOn` are rejected - there is

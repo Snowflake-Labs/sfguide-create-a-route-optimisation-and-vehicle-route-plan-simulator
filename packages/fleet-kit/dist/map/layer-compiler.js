@@ -69,21 +69,76 @@ function pathData(spec, rows) {
  * spec may carry heavy route GeoJSON - halving the parse is what keeps the
  * basemap responsive.
  */
+/**
+ * Rows of `rows` that carry every column `spec` needs to place a feature.
+ *
+ * Exists so a caller can tell "the query matched nothing" apart from "the query
+ * matched plenty and NONE of it could be drawn" - two states that looked
+ * identical (an empty basemap, no error) and have opposite fixes. The second is
+ * always a naming or a NULL-geometry problem: a misspelled `hexColumn`, a
+ * `valueColumn` that is not on the result set, or a live routing call that
+ * returned NULL geometry because its profile was wrong.
+ *
+ * Deliberately counts the SAME predicate each compile branch filters on, so the
+ * number describes what deck.gl was handed rather than an independent opinion
+ * about it.
+ */
+export function drawnCount(spec, rows) {
+    if (!rows?.length)
+        return 0;
+    switch (spec.type) {
+        case 'scatterplot':
+            return rows.filter((r) => has(r, spec.lng, spec.lat)).length;
+        case 'arc':
+            return rows.filter((r) => has(r, spec.source.lng, spec.source.lat, spec.target.lng, spec.target.lat)).length;
+        case 'h3':
+            return rows.filter((r) => has(r, spec.hexColumn)).length;
+        case 'path':
+            return pathData(spec, rows).length;
+        case 'geojson':
+            return geoFeatures(spec, rows).features.length;
+        default:
+            return 0;
+    }
+}
+/** Column names `spec` reads to place a feature, for a diagnostic message. */
+export function encodingColumns(spec) {
+    switch (spec.type) {
+        case 'scatterplot':
+            return [spec.lng, spec.lat];
+        case 'arc':
+            return [spec.source.lng, spec.source.lat, spec.target.lng, spec.target.lat];
+        case 'h3':
+            return spec.valueColumn ? [spec.hexColumn, spec.valueColumn] : [spec.hexColumn];
+        case 'path':
+            return spec.geojsonColumn
+                ? [spec.geojsonColumn]
+                : [spec.start?.lng, spec.start?.lat, spec.end?.lng, spec.end?.lat].filter((c) => !!c);
+        case 'geojson':
+            return [spec.geojsonColumn];
+        default:
+            return [];
+    }
+}
 export function compileLayerWithFit(spec, rows, viewState, index, hovered) {
     if (!rows || rows.length === 0)
-        return { layer: null, fitCoords: [] };
+        return { layer: null, fitCoords: [], drawn: 0 };
     const id = spec.id ?? `spec-layer-${index}`;
     if (spec.type === 'path') {
         const s = spec;
         const data = pathData(s, rows);
-        return { layer: buildPathLayer(s, id, data, hovered), fitCoords: fitFromPathData(data) };
+        return { layer: buildPathLayer(s, id, data, hovered), fitCoords: fitFromPathData(data), drawn: data.length };
     }
     if (spec.type === 'geojson') {
         const s = spec;
         const fc = geoFeatures(s, rows);
-        return { layer: buildGeoJsonLayer(s, id, fc), fitCoords: fitFromFeatures(fc) };
+        return { layer: buildGeoJsonLayer(s, id, fc), fitCoords: fitFromFeatures(fc), drawn: fc.features.length };
     }
-    return { layer: compileLayer(spec, rows, viewState, index, hovered), fitCoords: layerFitCoords(spec, rows) };
+    return {
+        layer: compileLayer(spec, rows, viewState, index, hovered),
+        fitCoords: layerFitCoords(spec, rows),
+        drawn: drawnCount(spec, rows),
+    };
 }
 /** Parse a column of GeoJSON strings into a FeatureCollection. Line geometries
  *  are stride-decimated to spec.maxPathPoints; polygon rings are left intact. */

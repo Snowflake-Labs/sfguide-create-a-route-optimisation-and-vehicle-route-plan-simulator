@@ -24,7 +24,7 @@ import type { Layer } from '@deck.gl/core';
 import MapView from '../views/areas/map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, LegendItem } from '@/lib/map/layer-spec';
-import { compileLayerWithFit } from '@/lib/map/layer-compiler';
+import { compileLayerWithFit, encodingColumns } from '@/lib/map/layer-compiler';
 import { parseMapSpec, type InlineMapSpec } from '@/lib/map-spec-schema';
 import {
   deriveInlineLegend, synthesizeTooltip, type LayerFacts, type ValueDomain,
@@ -43,6 +43,11 @@ interface LayerResult {
   fitCoords: LngLat[];
   count: number;
   total: number;
+  /** Rows that carried every column the layer needs to place a feature.
+   *  `count > 0 && drawn === 0` is the signature of a naming error, and it is
+   *  the one blank-map state that used to be completely silent - see the notice
+   *  in MapBody. */
+  drawn: number;
   tooltip?: string;
   error?: string;
   /** Range of the layer's valueColumn over the rows it was DRAWN from, so a
@@ -113,17 +118,18 @@ function InlineLayerFetcher({
   const { data, error } = useViewData(layer.data.query, layer.data.params, { forceDynamic: true });
 
   const result = useMemo<LayerResult>(() => {
-    if (error) return { layer: null, fitCoords: [], count: 0, total: 0, error };
+    if (error) return { layer: null, fitCoords: [], count: 0, total: 0, drawn: 0, error };
     const all = (data?.rows ?? []) as Record<string, unknown>[];
     const total = data?.totalRows ?? all.length;
     const rows = all.length > MAX_INLINE_ROWS ? all.slice(0, MAX_INLINE_ROWS) : all;
-    const { layer: compiled, fitCoords } = compileLayerWithFit(layer, rows, context, index, null);
+    const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(layer, rows, context, index, null);
     const columns = rows.length ? Object.keys(rows[0]) : [];
     return {
       layer: compiled,
       fitCoords: fitCoords as LngLat[],
       count: rows.length,
       total: Math.max(total, all.length),
+      drawn,
       // A layer with no template still gets one: forcing `pickable` alone leaves
       // getTooltip returning null, so the map stays hover-dead for exactly the
       // specs the agent actually emits.
@@ -283,7 +289,36 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
 
   const reported = Object.keys(results).length;
   const allReported = reported >= spec.layers.length;
-  const isEmpty = allReported && spec.layers.every((_, i) => (results[i]?.count ?? 0) === 0);
+  // "Nothing drawn" is measured on FEATURES, not on rows. Basing it on rows made
+  // the worst failure mode invisible: a layer whose encoding column did not match
+  // the result set returned plenty of rows, drew nothing, produced no camera-fit
+  // coords (so the map sat at world zoom) and reported no error - while the
+  // legend still showed the real value domain, because that lookup happens to be
+  // case-insensitive. The map read as broken rendering rather than a wrong name.
+  const isEmpty = allReported && spec.layers.every((_, i) => (results[i]?.drawn ?? 0) === 0);
+  const noRows = allReported && spec.layers.every((_, i) => (results[i]?.count ?? 0) === 0);
+  // Layers that returned data nobody could place. Named per layer with the
+  // columns it read, because that IS the fix - the column is misspelled, is not
+  // on the result set, or came back NULL (a live routing call with a profile the
+  // region does not have returns NULL geometry and no error).
+  const undrawable = spec.layers
+    .map((ls, i) => ({ ls, i, r: results[i] }))
+    .filter(({ r }) => !!r && !r.error && r.count > 0 && r.drawn === 0)
+    .map(({ ls, i, r }) =>
+      `layer ${i}${ls.id ? ` (${ls.id})` : ''}: ${r!.count} rows returned, none could be drawn - ` +
+      `no usable value in ${encodingColumns(ls).join(', ') || 'its encoding columns'}. ` +
+      `Columns present: ${(r!.columns ?? []).join(', ') || 'none'}.`,
+    );
+  // Drew features but produced no coordinates to frame: the values were present
+  // and unusable (e.g. a malformed H3 index), which leaves the camera at world
+  // zoom over a map that does have layers on it.
+  const unfittable = spec.layers
+    .map((ls, i) => ({ ls, i, r: results[i] }))
+    .filter(({ r }) => !!r && !r.error && r.drawn > 0 && r.fitCoords.length === 0)
+    .map(({ ls, i }) =>
+      `layer ${i}${ls.id ? ` (${ls.id})` : ''}: no valid coordinates to frame - ` +
+      `check the values in ${encodingColumns(ls).join(', ')}.`,
+    );
   const errors = spec.layers
     .map((_, i) => results[i]?.error)
     .filter((e): e is string => !!e);
@@ -339,7 +374,7 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
           fallbackViewState={spec.fallback}
           getTooltip={getTooltip}
         />
-        {isEmpty && errors.length === 0 ? (
+        {isEmpty && errors.length === 0 && undrawable.length === 0 ? (
           <div
             style={{
               position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
@@ -350,7 +385,9 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
               color: 'var(--text-secondary, #6b7280)',
             }}
           >
-            {spec.emptyMessage ?? 'No features matched this query.'}
+            {noRows
+              ? spec.emptyMessage ?? 'No features matched this query.'
+              : 'This map returned data that could not be drawn - see the note below.'}
           </div>
         ) : null}
       </div>
@@ -362,6 +399,12 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
         </div>
       ) : null}
       {errors.length ? <Notice title="Some layers could not be drawn" lines={errors} /> : null}
+      {undrawable.length ? (
+        <Notice title="This map returned rows but drew nothing" lines={undrawable} />
+      ) : null}
+      {unfittable.length ? (
+        <Notice title="This map could not frame its data" lines={unfittable} />
+      ) : null}
     </div>
   );
 }

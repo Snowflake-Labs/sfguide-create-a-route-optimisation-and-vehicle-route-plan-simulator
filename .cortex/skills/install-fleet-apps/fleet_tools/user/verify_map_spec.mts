@@ -59,6 +59,7 @@ import {
   MAX_MAP_LAYERS as VERB_MAX_MAP_LAYERS,
   MAP_LAYER_TYPES as VERB_MAP_LAYER_TYPES,
   MAP_SPEC_VERSION as VERB_MAP_SPEC_VERSION,
+  REQUIRED_LAYER_ENCODINGS as VERB_REQUIRED_ENCODINGS,
 } from './src/codes';
 // Geometry, the padding clamp and detection carry REAL runtime imports (h3-js),
 // unlike the type-only validators above, so this package declares h3-js as a
@@ -705,6 +706,150 @@ chk('tooltip: at most 4 tokens are emitted',
     { type: 'h3', hexColumn: 'H', data: { query: 'SELECT 1' } } as never,
     ['H', 'A', 'B', 'C', 'D', 'E'],
   ) ?? '').match(/\{/g)?.length === 4);
+
+// ---------------------------------------------------------------------------
+// Column-name CASE, and the encoding fields a layer type cannot draw without.
+//
+// The defect: "show me density of pois within 45 min ebike travel time around SF
+// airport" drew an EMPTY world-zoom map whose legend correctly read "POI Count
+// 1..68". The query was perfect - 68 is the real top cell. The spec said
+// `hexColumn: "H3_CELL"`, but /api/query builds every row key as
+// `col.name.toLowerCase()`, so the compiler's `has(row, 'H3_CELL')` matched
+// nothing: no hexagons, no camera-fit coords (hence world zoom), no error. The
+// legend still filled in because `valueDomain` is the ONE case-insensitive
+// lookup in the pipeline, which is precisely what made it look like a rendering
+// bug instead of a naming one. render_map's own tool description teaches those
+// names in caps, so the agent was following instructions.
+//
+// Two properties are asserted here: refs are lowercased (so either case works),
+// and a layer missing its encoding is rejected BY NAME rather than drawn blank.
+const upperErrs: string[] = [];
+const upperLayers = validateMapLayers(
+  [{
+    type: 'h3',
+    hexColumn: 'H3_CELL',
+    valueColumn: 'POI_COUNT',
+    tooltip: '{H3_CELL}: {POI_COUNT}',
+    data: { query: 'SELECT 1' },
+  }],
+  upperErrs,
+  { allowViewState: false },
+);
+chk('case: an UPPERCASE spec is accepted', upperErrs.length === 0, upperErrs.join('; '));
+chk('case: hexColumn is lowercased to match the row keys',
+  (upperLayers[0] as { hexColumn?: string }).hexColumn === 'h3_cell',
+  JSON.stringify(upperLayers[0]));
+chk('case: valueColumn is lowercased too',
+  (upperLayers[0] as { valueColumn?: string }).valueColumn === 'poi_count');
+// The tooltip is NOT lowercased: renderTooltip resolves its tokens
+// case-insensitively, and lowering the template would corrupt the visible label.
+chk('case: the tooltip template is left alone',
+  (upperLayers[0] as { tooltip?: string }).tooltip === '{H3_CELL}: {POI_COUNT}');
+
+const nestedLayers = validateMapLayers(
+  [{
+    type: 'arc',
+    source: { lng: 'ORIGIN_LON', lat: 'ORIGIN_LAT' },
+    target: { lng: 'DEST_LON', lat: 'DEST_LAT' },
+    data: { query: 'SELECT 1' },
+  }],
+  [],
+  { allowViewState: false },
+);
+const arcSpec = nestedLayers[0] as { source: { lng: string; lat: string }; target: { lng: string } };
+chk('case: nested source/target lng+lat are lowercased',
+  arcSpec.source.lng === 'origin_lon' && arcSpec.source.lat === 'origin_lat'
+  && arcSpec.target.lng === 'dest_lon');
+
+// Nested objects must be REPLACED, not mutated: an authored dashboard map hands
+// in objects that belong to the parsed, cached app-views.json.
+const shared = { lng: 'ORIGIN_LON', lat: 'ORIGIN_LAT' };
+validateMapLayers(
+  [{ type: 'arc', source: shared, target: { lng: 'A', lat: 'B' }, data: { query: 'SELECT 1' } }],
+  [], { allowViewState: false },
+);
+chk('case: the caller\'s nested object is not mutated', shared.lng === 'ORIGIN_LON', shared.lng);
+
+const catLayers = validateMapLayers(
+  [{
+    type: 'scatterplot',
+    lng: 'LON',
+    lat: 'LAT',
+    fillColor: { column: 'STATUS', palette: { idle: [1, 2, 3, 4] } },
+    data: { query: 'SELECT 1' },
+  }],
+  [], { allowViewState: false },
+);
+chk('case: a categorical colour column is lowercased',
+  ((catLayers[0] as { fillColor: { column: string } }).fillColor).column === 'status');
+chk('case: an [r,g,b,a] tuple survives the colour walk untouched',
+  JSON.stringify((validateMapLayers(
+    [{ type: 'h3', hexColumn: 'H', fillColor: [1, 2, 3, 4], data: { query: 'SELECT 1' } }],
+    [], { allowViewState: false },
+  )[0] as { fillColor: unknown }).fillColor) === '[1,2,3,4]');
+
+// Required encodings. Each of these previously validated cleanly and rendered a
+// blank basemap, because the compiler filters on the missing column.
+for (const [label, layer] of [
+  ['h3 with no hexColumn', { type: 'h3', valueColumn: 'poi_count', data: { query: 'SELECT 1' } }],
+  ['scatterplot with no lat', { type: 'scatterplot', lng: 'lon', data: { query: 'SELECT 1' } }],
+  ['geojson with no geojsonColumn', { type: 'geojson', data: { query: 'SELECT 1' } }],
+  ['arc with no target', { type: 'arc', source: { lng: 'a', lat: 'b' }, data: { query: 'SELECT 1' } }],
+  ['path with neither geometry nor endpoints', { type: 'path', data: { query: 'SELECT 1' } }],
+] as [string, unknown][]) {
+  const errs: string[] = [];
+  validateMapLayers([layer], errs, { allowViewState: false });
+  chk(`encoding: NEG ${label} is rejected`,
+    errs.length === 1 && errs[0].includes('missing'), errs.join('; '));
+}
+// And the legal shapes are NOT dragged in with them.
+for (const [label, layer] of [
+  ['path with a geojsonColumn', { type: 'path', geojsonColumn: 'g', data: { query: 'SELECT 1' } }],
+  ['path with start+end', {
+    type: 'path',
+    start: { lng: 'a', lat: 'b' },
+    end: { lng: 'c', lat: 'd' },
+    data: { query: 'SELECT 1' },
+  }],
+  ['h3 with no valueColumn (flat shade is legal)', { type: 'h3', hexColumn: 'h', data: { query: 'SELECT 1' } }],
+] as [string, unknown][]) {
+  const errs: string[] = [];
+  validateMapLayers([layer], errs, { allowViewState: false });
+  chk(`encoding: ${label} is accepted`, errs.length === 0, errs.join('; '));
+}
+// The page path enforces it too: a Map area with an encoding-less layer is the
+// same blank map, and `config` is a permissive passthrough without this.
+//
+// `grid` is a STRING here, and that detail is load-bearing. The first draft of
+// this assertion passed a nested array, which parseDynamicSpec rejects with
+// "layout.default.grid (string) is required" - so `!ok` was true whatever the
+// layers did, and the assertion survived a mutation that disabled the check it
+// exists to prove. Assert the SPECIFIC error, and keep a positive control beside
+// it so the fixture cannot rot into being rejected for an unrelated reason.
+const mapArea = (layer: unknown) => JSON.stringify({
+  layout: { default: { grid: '"m"' } },
+  areas: { m: { component: 'Map', config: { layers: [layer] } } },
+});
+const badArea = parseDynamicSpec(mapArea({ type: 'h3', data: { query: 'SELECT 1' } }));
+chk('encoding: NEG the render_view Map path rejects it as well',
+  !badArea.ok && badArea.errors.some((e) => e.includes('missing hexColumn')),
+  badArea.ok ? 'accepted' : badArea.errors.join('; '));
+const goodArea = parseDynamicSpec(mapArea({ type: 'h3', hexColumn: 'h', data: { query: 'SELECT 1' } }));
+chk('encoding: the same Map area with hexColumn is ACCEPTED (control)',
+  goodArea.ok, goodArea.ok ? '' : goodArea.errors.join('; '));
+
+// Verb/client parity. The verb fails IN-TURN so the agent can fix the spec; the
+// client is the backstop. Two lists mean two chances to drift.
+chk('parity: required-encoding tables agree',
+  JSON.stringify(Object.keys(VERB_REQUIRED_ENCODINGS).sort())
+  === JSON.stringify(['arc', 'geojson', 'h3', 'scatterplot']),
+  Object.keys(VERB_REQUIRED_ENCODINGS).join(','));
+for (const [type, fields] of Object.entries(VERB_REQUIRED_ENCODINGS)) {
+  const errs: string[] = [];
+  validateMapLayers([{ type, data: { query: 'SELECT 1' } }], errs, { allowViewState: false });
+  chk(`parity: the client also rejects a bare '${type}' (verb needs ${fields.join('+')})`,
+    errs.length === 1, errs.join('; '));
+}
 
 console.log(fails ? `\n${fails} FAILURE(S) of ${checks}` : `\nall ${checks} assertions passed`);
 process.exit(fails ? 1 : 0);

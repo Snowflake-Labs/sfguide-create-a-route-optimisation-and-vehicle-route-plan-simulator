@@ -232,6 +232,14 @@ export interface InlineComponentDef<TProps = Record<string, unknown>> {
   component: ComponentType<TProps>;
   skeleton?: ComponentType;
   maxHeight?: number;
+  /** Opt OUT of this component for a particular payload, falling back to the
+   *  default result renderer.
+   *
+   *  Registration is per TOOL, but whether a component suits the payload can be
+   *  a property of the payload: the routing map is bound to every mapTool and
+   *  scavenges GeoJSON, so a routing tool that answered with counts rather than
+   *  shapes rendered a content-free "no geometry" stub INSTEAD of its data. */
+  shouldRender?: (output: Record<string, unknown>) => boolean;
 }
 
 export interface ContextBarField {

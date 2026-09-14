@@ -14,41 +14,10 @@ import type { Layer } from '@deck.gl/core';
 import MapView from '../views/areas/map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { decimateGeometry } from '@/lib/map/layer-compiler';
-
-function looksLikeGeoJSONString(s: string): boolean {
-  const t = s.trim();
-  return t.startsWith('{') && (t.includes('"coordinates"') || t.includes('"FeatureCollection"') || t.includes('"geometry"'));
-}
-
-function collectFeatures(node: unknown, out: GeoJSON.Feature[], depth = 0): void {
-  if (node == null || depth > 8) return;
-  if (typeof node === 'string') {
-    if (looksLikeGeoJSONString(node)) {
-      try { collectFeatures(JSON.parse(node), out, depth + 1); } catch { /* not json */ }
-    }
-    return;
-  }
-  if (Array.isArray(node)) {
-    for (const item of node) collectFeatures(item, out, depth + 1);
-    return;
-  }
-  if (typeof node === 'object') {
-    const o = node as Record<string, unknown>;
-    if (o.type === 'FeatureCollection' && Array.isArray(o.features)) {
-      out.push(...(o.features as GeoJSON.Feature[]));
-      return;
-    }
-    if (o.type === 'Feature' && o.geometry) {
-      out.push(o as unknown as GeoJSON.Feature);
-      return;
-    }
-    if (typeof o.type === 'string' && o.coordinates) {
-      out.push({ type: 'Feature', geometry: o as unknown as GeoJSON.Geometry, properties: {} });
-      return;
-    }
-    for (const v of Object.values(o)) collectFeatures(v, out, depth + 1);
-  }
-}
+// The deep GeoJSON scan lives outside this module so the registry can ask
+// "does this payload have geometry?" without loading deck.gl - see
+// lib/map/scavenge-geojson.ts.
+import { collectFeatures } from '@/lib/map/scavenge-geojson';
 
 export function RouteMapInline(props: Record<string, unknown>) {
   // Optional container height (default 360) so callers can make the map fill a
@@ -147,9 +116,14 @@ export function RouteMapInline(props: Record<string, unknown>) {
   }, []);
 
   if (features.length === 0) {
+    // Only reached for tools whose output IS geometry (see registerToolMaps'
+    // geometryTools): for those, an empty scavenge is a real failure worth
+    // naming. Every other mapTool falls back to its own data before it gets
+    // here, because this message used to appear beside results that legitimately
+    // return counts rather than shapes - two content-free stubs under one map.
     return (
       <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-secondary, #6b7280)' }}>
-        No map geometry in this result.
+        This routing result carried no geometry to draw.
       </div>
     );
   }

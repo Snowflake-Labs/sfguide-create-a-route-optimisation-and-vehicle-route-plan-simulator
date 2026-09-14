@@ -61,7 +61,7 @@ export interface AppConfig {
   // (defaults to FLEET_APP for back-compat).
   dataLayer?: { database?: string };
   // Routing/tool config; mapTools render their output on the inline deck.gl map.
-  tools?: { mapTools?: string[] };
+  tools?: { mapTools?: string[]; geometryTools?: string[] };
   // Zero-code retargeting surface (labels/units/thresholds/statusEnums/icons/windows).
   display?: DisplayConfig;
   // Centralized view styling (row-height tokens, chart palette, table density).
@@ -203,7 +203,7 @@ export function AppShell() {
           registerViewsFromConfig(viewsConfig, disabledSchemas, appConfig.dataLayer?.database);
         }
         // Bind this domain's map-producing tools to the inline map (config-driven).
-        registerToolMaps(appConfig.tools?.mapTools ?? []);
+        registerToolMaps(appConfig.tools?.mapTools ?? [], appConfig.tools?.geometryTools ?? []);
         // Always-on role-evaluation view (works for any domain pack).
         registerRoleAccessView();
         // Config-driven domain-pack loader: register each configured pack's

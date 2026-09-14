@@ -63,6 +63,22 @@ run BADJSON   '{oops' INVALID_MAP_SPEC_JSON
 # ignores on purpose), so it is the allowlist check or nothing - and "nothing" is
 # what shipped an empty map beside a correct one.
 run BADDB     '{"layers":[{"type":"scatterplot","lng":"origin_lon","lat":"origin_lat","data":{"query":"SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.TRIPS"}}]}' INVALID_MAP_SPEC_DB
+# Missing encodings. Each of these used to validate cleanly, echo, and then draw
+# an EMPTY basemap at world zoom: the compiler filters its data on the column, so
+# `undefined` removes every row silently. NOHEX is the exact shape of the "45 min
+# ebike POI density" defect once the case fix made an UPPERCASE name legal.
+run NOHEX     '{"layers":[{"type":"h3","valueColumn":"poi_count","data":{"query":"SELECT 1"}}]}' INVALID_MAP_SPEC_ENCODING
+run NOLATLNG  '{"layers":[{"type":"scatterplot","lng":"lon","data":{"query":"SELECT 1"}}]}' INVALID_MAP_SPEC_ENCODING
+run NOGEOJSON '{"layers":[{"type":"geojson","data":{"query":"SELECT 1"}}]}' INVALID_MAP_SPEC_ENCODING
+run NOTARGET  '{"layers":[{"type":"arc","source":{"lng":"a","lat":"b"},"data":{"query":"SELECT 1"}}]}' INVALID_MAP_SPEC_ENCODING
+run NOPATH    '{"layers":[{"type":"path","data":{"query":"SELECT 1"}}]}' INVALID_MAP_SPEC_ENCODING
+# ... and the legal path shapes must NOT be dragged in with them.
+accept PATH_ENDS '{"layers":[{"type":"path","start":{"lng":"a","lat":"b"},"end":{"lng":"c","lat":"d"},"data":{"query":"SELECT 1 AS a, 2 AS b, 3 AS c, 4 AS d"}}]}'
+# An UPPERCASE encoding is ACCEPTED: the client lowercases spec column refs to
+# match /api/query's lowercased row keys, and this verb must not reject the very
+# names its own description teaches (H3_CELL_R7, DWELL_MINUTES).
+accept UPPERCASE '{"layers":[{"type":"h3","hexColumn":"H3_CELL_R7","valueColumn":"DWELL_MINUTES","data":{"query":"SELECT H3_CELL_R7, DWELL_MINUTES FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE REGION = :region","params":{"region":"context.region"}}}]}'
+
 # Live routing geometry in a layer: allowed, and the whole point of allowing
 # ROUTING_PLATFORM. If this is ever rejected the agent guidance is lying again.
 accept LIVE_ORS '{"layers":[{"type":"path","geojsonColumn":"g","data":{"query":"SELECT ST_ASGEOJSON(GEOJSON)::STRING AS g FROM TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS(:profile, ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(-122.3894::FLOAT, 37.6156::FLOAT), ARRAY_CONSTRUCT(-122.4177::FLOAT, 37.7793::FLOAT))::VARIANT, :region, NULL::VARCHAR))","params":{"region":"context.region","profile":"context.vehicle_type"}}}]}'

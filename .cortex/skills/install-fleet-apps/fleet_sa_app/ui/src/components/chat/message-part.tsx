@@ -178,7 +178,10 @@ function ToolPending({ toolName }: { toolName: string }) {
 
 function ToolResult({ toolName, output }: { toolName: string; output: Record<string, unknown> }) {
   const def = inlineRegistry.get(toolName);
-  if (!def) return <JsonViewer data={output} />;
+  // A registered component may still decline THIS payload (see
+  // InlineComponentDef.shouldRender), in which case the result is shown rather
+  // than replaced by a component that has nothing to draw.
+  if (!def || (def.shouldRender && !def.shouldRender(output))) return <JsonViewer data={output} />;
   const Component = def.component;
   return (
     <div style={{ maxHeight: def.maxHeight, overflow: def.maxHeight ? 'auto' : undefined }}>

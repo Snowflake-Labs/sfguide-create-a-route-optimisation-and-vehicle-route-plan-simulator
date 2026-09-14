@@ -85,6 +85,26 @@ ALREADY_DRAWN_RE = re.compile(r"already on a map", re.IGNORECASE)
 # At least one routing tool must be named, or the rule is abstract enough to ignore.
 ROUTING_TOOLS = ["get_directions", "compute_isochrone", "optimize_routes"]
 
+# RULE E. A travel-time-scoped measure ("POI density within 45 min ebike travel
+# time of SFO") is a ring AND a measure inside it. RULE D does not cover it: the
+# two are DIFFERENT geometry, so "do not redraw the same geometry" reads as
+# permission to make two calls - and that is what happened, giving one isochrone
+# map plus one H3 map where the user asked for one picture. The fix has to name
+# the composition (a contract ISOCHRONES layer + an h3 layer joined with
+# ST_WITHIN), because "combine several sources in one picture" was already in the
+# prose and was not concrete enough to be acted on.
+ONE_MAP_RE = re.compile(r"ONE MAP, NOT TWO", re.IGNORECASE)
+ONE_MAP_INGREDIENTS = ["ISOCHRONES", "ST_WITHIN"]
+
+# RULE F. Only driving-car, driving-hgv and cycling-electric are loaded. A live
+# ISOCHRONES layer with any other profile returns NULL geometry with the reason
+# buried in RESPONSE and NO exception, so the layer silently draws nothing - and
+# "ebike" is exactly the word that invites `cycling-regular`. Measured on
+# tib85385: 'cycling-regular' -> {"error":{"code":3003,...'profile' has incorrect
+# value of 'unknown'}} with GEOJSON NULL. The verb's EXPLAIN gate cannot catch it
+# because the statement compiles perfectly.
+LOADED_PROFILES = ["driving-car", "driving-hgv", "cycling-electric"]
+
 MAP_TOOL = "render_map"
 
 # Map-ready column shapes. A view carrying any of these can be drawn.
@@ -276,6 +296,46 @@ def main() -> int:
                     f"({', '.join(ROUTING_TOOLS)}) in its own bullet. An abstract "
                     f"'drawn for you automatically' does not tell the agent which tools."
                 )
+
+        # --- RULE E: a travel-time-scoped measure is ONE map ---
+        # Required in the SAME bullet as the already-drawn rule. As a separate
+        # bullet it can be read as an unrelated tip, and the two rules only make
+        # sense together: one says do not draw the same geometry twice, the other
+        # says different-but-related geometry still belongs in one call.
+        one_map = ONE_MAP_RE.search(block)
+        if not one_map:
+            problems.append(
+                f"{sname}: the {MAP_BLOCK_HEAD!r} block never says a travel-time-scoped "
+                f"measure is ONE map. Without it the agent calls compute_isochrone and "
+                f"then {MAP_TOOL}, and a density-within-N-minutes question draws two maps."
+            )
+        else:
+            estart = block.rfind("\n-", 0, one_map.start()) + 1
+            eend = block.find("\n-", one_map.end())
+            ebullet = block[estart: eend if eend != -1 else len(block)]
+            if hit and not (estart <= hit.start() < (eend if eend != -1 else len(block))):
+                problems.append(
+                    f"{sname}: the one-map rule is not in the same bullet as the "
+                    f"no-duplicate-map rule. Split apart, the agent can honour the first "
+                    f"and still make two calls for a ring plus a measure."
+                )
+            absent = [k for k in ONE_MAP_INGREDIENTS if k not in ebullet]
+            if absent:
+                problems.append(
+                    f"{sname}: the one-map rule does not say HOW to compose it - missing "
+                    f"{', '.join(absent)} in its bullet. 'Combine several sources in one "
+                    f"picture' was already there and was too abstract to act on."
+                )
+
+        # --- RULE F: name the profiles the engine actually has ---
+        missing_profiles = [p for p in LOADED_PROFILES if p not in block]
+        if missing_profiles:
+            problems.append(
+                f"{sname}: the {MAP_BLOCK_HEAD!r} block does not name the loaded routing "
+                f"profiles (missing {', '.join(missing_profiles)}). A live ISOCHRONES layer "
+                f"with an unloaded profile returns NULL geometry and no error, so the map "
+                f"is blank and nothing says why."
+            )
 
     print("Map guidance gate (a forbidden map must name render_map)\n")
     print(f"  semantic views scanned        {checked_views}")

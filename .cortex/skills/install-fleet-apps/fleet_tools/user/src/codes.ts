@@ -125,7 +125,30 @@ export const MapRenderCodes = {
    *  in the browser as an EMPTY MAP beside a correct one. A database allowlist
    *  needs no privilege inference, so it convicts here instead. */
   INVALID_MAP_SPEC_DB: 'INVALID_MAP_SPEC_DB',
+  /** a layer omits an encoding field its `type` cannot draw without (an `h3`
+   *  layer with no hexColumn, a scatterplot with no lng/lat, and so on).
+   *
+   *  Another member of the same silent family: the compiler filters its data
+   *  with `has(row, spec.hexColumn)`, so `undefined` removes every row and the
+   *  layer renders as an empty basemap at world zoom - no exception, no message,
+   *  and a legend that may still look populated. Shape validation accepted it
+   *  because the DSL's encoding fields were never required anywhere. */
+  INVALID_MAP_SPEC_ENCODING: 'INVALID_MAP_SPEC_ENCODING',
 } as const;
+
+/** Encoding fields each layer type needs to draw anything.
+ *
+ *  MUST stay in sync with REQUIRED_ENCODINGS / missingEncodings in
+ *  fleet_sa_app/ui/src/lib/map-spec-schema.ts, which enforces the same rule at
+ *  render time for BOTH producers (this verb and an authored Map area). `path`
+ *  is absent on purpose: it has two legal shapes (a GeoJSON column OR
+ *  start+end points), so it is checked in code rather than by a field list. */
+export const REQUIRED_LAYER_ENCODINGS: Record<string, readonly string[]> = {
+  scatterplot: ['lng', 'lat'],
+  h3: ['hexColumn'],
+  geojson: ['geojsonColumn'],
+  arc: ['source', 'target'],
+};
 
 /** Databases an agent-emitted layer query may reference.
  *

@@ -1,5 +1,5 @@
 import { defineProc, t } from '@snowflake/synapse';
-import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS } from '../codes.js';
+import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS, REQUIRED_LAYER_ENCODINGS } from '../codes.js';
 
 // Any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
 // `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))`. Same expression
@@ -37,13 +37,14 @@ export const render_map = defineProc({
     'for LIVE geometry a layer may call TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS|ISOCHRONES|OPTIMIZATION(...)) ' +
     'projecting ST_ASGEOJSON(GEOJSON)::STRING. Params may bind only ' +
     'context.* params (region, vehicle_type, dataset_id, date_range_start, date_range_end) or literals. ' +
-    'Use the REAL column names - for an H3 dwell/congestion density map that is ' +
-    'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (the hex), DWELL_MINUTES (the measure) ' +
-    'and REGION (the filter); there is no h3_cell, dwell_duration_minutes or region_key column. ' +
+    'Use the REAL column names - an H3 dwell/congestion density map is ' +
+    'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (hex), DWELL_MINUTES (measure), REGION ' +
+    '(filter). Column names are matched case-insensitively. ' +
     'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING, filtered to a region or band: ' +
     'an oversized payload renders a BLANK map with no error. ' +
     'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, INVALID_MAP_SPEC_DB ' +
-    '(a layer query naming any other database), or ' +
+    '(a layer query naming any other database), INVALID_MAP_SPEC_ENCODING (a layer missing the ' +
+    'encoding its type draws from, e.g. an h3 layer with no hexColumn), or ' +
     'INVALID_MAP_SPEC_SQL (a layer query that does not compile - fix the column names and retry). ' +
     'Do NOT redraw geometry a routing tool returned (get_directions, compute_isochrone, ' +
     'optimize_routes, find_poi, catchment): those draw their own result inline, so this would ' +
@@ -54,8 +55,8 @@ export const render_map = defineProc({
     'to name it, and a `tooltip` template like "<b>{H3_CELL_R7}</b><br/>{DWELL_MINUTES} min" to say ' +
     'what a hover shows - hovering is enabled for you, and a layer with no template gets one ' +
     'synthesized from its columns. ' +
-    'Prefer an existing saved view (a view: link) when one matches, render_view when the map needs ' +
-    'surrounding KPIs and tables on a page, and deep_link when the user needs toggles or click-through.',
+    'Prefer a saved view (a view: link) when one matches; render_view for a page with KPIs and ' +
+    'tables around the map; deep_link when the user needs toggles or click-through.',
   roles: ['user'],
   args: {
     spec_json: t
@@ -121,6 +122,42 @@ export const render_map = defineProc({
         ctx.fail(
           MapRenderCodes.UNKNOWN_LAYER_TYPE,
           `layer ${i} uses type '${String(type)}'. Allowed: ${MAP_LAYER_TYPES.join(', ')}.`,
+        );
+        return;
+      }
+      // Encoding fields, checked BEFORE the query: a layer that cannot be drawn
+      // is worth reporting even if its SQL is perfect. Missing encoding =>
+      // `has(row, undefined)` filters every row out at compile time, which
+      // renders an empty basemap at world zoom and says nothing.
+      const missing: string[] = [];
+      if (type === 'path') {
+        const hasGeo = typeof layer.geojsonColumn === 'string' && layer.geojsonColumn !== '';
+        const ends = ['start', 'end'].every((c) => {
+          const box = layer[c] as Record<string, unknown> | undefined;
+          return box != null && typeof box.lng === 'string' && typeof box.lat === 'string';
+        });
+        if (!hasGeo && !ends) missing.push('geojsonColumn (or start+end lng/lat)');
+      } else {
+        for (const f of REQUIRED_LAYER_ENCODINGS[type] ?? []) {
+          if (f === 'source' || f === 'target') {
+            const box = layer[f] as Record<string, unknown> | undefined;
+            if (box == null || typeof box.lng !== 'string' || typeof box.lat !== 'string') {
+              missing.push(`${f} {lng,lat}`);
+            }
+            continue;
+          }
+          const v = layer[f];
+          if (typeof v !== 'string' || v === '') missing.push(f);
+        }
+      }
+      if (missing.length > 0) {
+        ctx.fail(
+          MapRenderCodes.INVALID_MAP_SPEC_ENCODING,
+          `layer ${i} (type '${type}') is missing ${missing.join(', ')}. ` +
+          'Encodings per type: scatterplot needs lng + lat; h3 needs hexColumn (+ valueColumn to ' +
+          'shade); geojson needs geojsonColumn; path needs geojsonColumn or start+end lng/lat; ' +
+          'arc needs source {lng,lat} + target {lng,lat}. Name the columns your own query ' +
+          'projects - matching is case-insensitive.',
         );
         return;
       }

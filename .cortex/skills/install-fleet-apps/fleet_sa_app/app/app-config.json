@@ -100,6 +100,15 @@
       "vrp_solve",
       "query_overture_places",
       "query_overture_addresses"
+    ],
+    "geometryTools": [
+      "get_directions",
+      "compute_isochrone",
+      "optimize_routes",
+      "evac_solve",
+      "vrp_solve",
+      "delivery_optimization",
+      "network_optimization"
     ]
   },
   "ops": {

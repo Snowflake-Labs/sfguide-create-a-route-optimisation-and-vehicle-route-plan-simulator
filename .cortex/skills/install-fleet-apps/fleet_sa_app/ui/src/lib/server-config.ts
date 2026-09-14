@@ -23,6 +23,10 @@ export interface ToolsConfig {
   verbs?: Record<string, number>;
   // Tool names whose result geometry renders on an inline deck.gl map.
   mapTools?: string[];
+  // The subset of mapTools whose OUTPUT IS geometry, so an empty scavenge is a
+  // failure worth naming rather than a result to show as data. See
+  // registerToolMaps in components/inline/index.ts.
+  geometryTools?: string[];
 }
 
 export interface OpsConfig {

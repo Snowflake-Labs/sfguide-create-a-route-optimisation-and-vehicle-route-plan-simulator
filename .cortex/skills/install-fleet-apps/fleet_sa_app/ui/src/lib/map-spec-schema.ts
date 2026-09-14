@@ -189,6 +189,117 @@ function queryLooksReadOnly(q: string): boolean {
   return head.startsWith('SELECT') || head.startsWith('WITH');
 }
 
+/** Layer fields that name a COLUMN of the layer's own result set.
+ *
+ *  Split by shape because the DSL nests some of them: `lng`/`lat` are top-level
+ *  on a scatterplot but live under `source`/`target`/`start`/`end` elsewhere,
+ *  and the colour DSL carries its own column refs. `colorMap` / `palette` keys
+ *  are deliberately absent - those are column VALUES, not column names. */
+const COLUMN_REF_FIELDS = [
+  'hexColumn', 'valueColumn', 'lng', 'lat', 'geojsonColumn', 'colorColumn',
+] as const;
+const LNGLAT_CONTAINERS = ['source', 'target', 'start', 'end'] as const;
+const COLOR_REF_FIELDS = ['column', 'matchColumn', 'baseColumn'] as const;
+const AGENT_SUMMARY_REF_FIELDS = ['groupBy', 'label', 'detail'] as const;
+
+/**
+ * Lowercase every column reference in a layer.
+ *
+ * This is not a convenience: /api/query builds each row key as
+ * `col.name.toLowerCase()` (app/api/query/route.ts), unconditionally, for BOTH
+ * the trusted and the dynamic path. So a row key is ALWAYS lowercase, whatever
+ * the query aliased - Snowflake upper-cases an unquoted alias, and that route
+ * then lowers it. The compiler, by contrast, indexes rows with the spec's string
+ * verbatim (`has(r, s.hexColumn)`, `rows[i]?.[s.hexColumn]`), so an UPPERCASE
+ * encoding matched nothing at all.
+ *
+ * That failure was invisible, which is why this is normalized rather than
+ * rejected: an h3 layer with `hexColumn: 'H3_CELL'` drew zero hexagons AND
+ * contributed zero camera-fit coords (so the map sat at world zoom), while the
+ * legend still showed the real 1..68 domain - `valueDomain` in
+ * render-map-inline.tsx happens to be the one case-INSENSITIVE lookup in the
+ * pipeline. The map therefore looked like a rendering bug rather than a naming
+ * one. The agent also cannot reasonably guess the convention: render_map's own
+ * tool description teaches `H3_CELL_R7` / `DWELL_MINUTES`, in caps, because
+ * those ARE the real column names.
+ *
+ * Nested objects are REPLACED, never mutated: `clean` is a shallow copy, so its
+ * `source` / `fillColor` / `agentSummary` are still the caller's objects - and
+ * for an authored dashboard map that object belongs to the parsed, cached
+ * app-views.json.
+ */
+function normalizeColumnRefs(layer: Record<string, unknown>): void {
+  const lower = (v: unknown): unknown => (typeof v === 'string' ? v.toLowerCase() : v);
+  for (const f of COLUMN_REF_FIELDS) {
+    if (typeof layer[f] === 'string') layer[f] = lower(layer[f]);
+  }
+  for (const c of LNGLAT_CONTAINERS) {
+    const box = layer[c];
+    if (!isObject(box)) continue;
+    layer[c] = { ...box, lng: lower(box.lng), lat: lower(box.lat) };
+  }
+  // Only a ColorValue OBJECT carries column refs; an [r,g,b,a] tuple is an array.
+  for (const f of ['fillColor', 'color', 'lineColor'] as const) {
+    const col = layer[f];
+    if (!isObject(col)) continue;
+    const next: Record<string, unknown> = { ...col };
+    for (const k of COLOR_REF_FIELDS) {
+      if (typeof next[k] === 'string') next[k] = lower(next[k]);
+    }
+    layer[f] = next;
+  }
+  const summary = layer.agentSummary;
+  if (isObject(summary)) {
+    const next: Record<string, unknown> = { ...summary };
+    for (const k of AGENT_SUMMARY_REF_FIELDS) {
+      if (typeof next[k] === 'string') next[k] = lower(next[k]);
+    }
+    layer.agentSummary = next;
+  }
+}
+
+/**
+ * The encoding fields each layer type must carry to draw anything.
+ *
+ * Unvalidated before this: an `h3` layer with no `hexColumn` compiled to a layer
+ * whose every row failed the `has(r, undefined)` filter, i.e. the same blank
+ * basemap as a misnamed column, with nothing said. `path` is the one type with
+ * two legal shapes (a GeoJSON column OR start+end points), so it is checked
+ * separately below.
+ */
+const REQUIRED_ENCODINGS: Record<string, string[]> = {
+  scatterplot: ['lng', 'lat'],
+  h3: ['hexColumn'],
+  geojson: ['geojsonColumn'],
+  arc: ['source', 'target'],
+};
+
+/** Report the encoding fields `layer` is missing for its type, in spec order. */
+export function missingEncodings(layer: Record<string, unknown>): string[] {
+  const type = String(layer.type);
+  if (type === 'path') {
+    if (typeof layer.geojsonColumn === 'string' && layer.geojsonColumn !== '') return [];
+    const ends = LNGLAT_CONTAINERS.slice(2); // start, end
+    const bad = ends.filter((c) => {
+      const box = layer[c];
+      return !isObject(box) || typeof box.lng !== 'string' || typeof box.lat !== 'string';
+    });
+    return bad.length ? ['geojsonColumn (or start+end lng/lat)'] : [];
+  }
+  const out: string[] = [];
+  for (const f of REQUIRED_ENCODINGS[type] ?? []) {
+    const v = layer[f];
+    if (f === 'source' || f === 'target') {
+      if (!isObject(v) || typeof v.lng !== 'string' || typeof v.lat !== 'string') {
+        out.push(`${f} {lng,lat}`);
+      }
+      continue;
+    }
+    if (typeof v !== 'string' || v === '') out.push(f);
+  }
+  return out;
+}
+
 /**
  * Validate a `layers` array against the DSL the compiler actually implements.
  *
@@ -269,6 +380,16 @@ export function validateMapLayers(
       return;
     }
     const clean: Record<string, unknown> = { ...layerRaw };
+    // Column refs are lowercased BEFORE the required-encoding check so the check
+    // reports what is missing rather than what is miscased.
+    normalizeColumnRefs(clean);
+    const missing = missingEncodings(clean);
+    if (missing.length) {
+      errors.push(
+        `${where} (type '${type}') is missing ${missing.join(', ')} - without it the layer draws nothing`,
+      );
+      return;
+    }
     if (typeof clean.tooltip === 'string') clean.tooltip = clean.tooltip.slice(0, MAX_TEXT_LEN);
     if (typeof clean.legendLabel === 'string') clean.legendLabel = clean.legendLabel.slice(0, MAX_TITLE_LEN);
     // Picking is not the agent's decision on an inline map. Every compiler branch
