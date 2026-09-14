@@ -1,6 +1,6 @@
 ---
 name: vrp-simulator
-description: Turn a depot and a pile of stops into a solved, drivable multi-vehicle route plan in one click. Use for: What is the cheapest set of routes that covers all of today's stops with the vehicles we actually have? Covers the Route Optimization Simulator use case of the Fleet Intelligence accelerator.
+description: 'Turn a depot and a pile of stops into a solved, drivable multi-vehicle route plan in one click. Use for: What is the cheapest set of routes that covers all of today''s stops with the vehicles we actually have? Covers the Route Optimization Simulator use case of the Fleet Intelligence accelerator.'
 ---
 
 # Route Optimization Simulator

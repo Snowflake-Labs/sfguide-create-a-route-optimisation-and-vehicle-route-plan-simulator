@@ -1,6 +1,6 @@
 ---
 name: ops-console
-description: Operator controls for the platform behind the demos: service lifecycle, the active region, and health at a glance. Use for: Is the routing platform healthy, which region is active, and what do I resume before a demo or suspend after one? Covers the Ops Console use case of the Fleet Intelligence accelerator.
+description: 'Operator controls for the platform behind the demos: service lifecycle, the active region, and health at a glance. Use for: Is the routing platform healthy, which region is active, and what do I resume before a demo or suspend after one? Covers the Ops Console use case of the Fleet Intelligence accelerator.'
 ---
 
 # Ops Console

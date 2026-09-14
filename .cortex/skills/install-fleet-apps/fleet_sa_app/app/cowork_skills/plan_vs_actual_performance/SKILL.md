@@ -1,6 +1,6 @@
 ---
 name: plan-vs-actual-performance
-description: Which Trips left the plan, where they left it, and how much extra distance that cost. Use for: How closely does execution match the plan we priced, and where is the margin leaking? Covers the Plan-vs-Actual Performance use case of the Fleet Intelligence accelerator.
+description: 'Which Trips left the plan, where they left it, and how much extra distance that cost. Use for: How closely does execution match the plan we priced, and where is the margin leaking? Covers the Plan-vs-Actual Performance use case of the Fleet Intelligence accelerator.'
 ---
 
 # Plan-vs-Actual Performance

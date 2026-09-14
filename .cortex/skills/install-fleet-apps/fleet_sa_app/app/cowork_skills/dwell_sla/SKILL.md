@@ -1,6 +1,6 @@
 ---
 name: dwell-sla
-description: The breach queue: every dwell session that went over its SLA, by severity, with the site on a map. Use for: Which dwell breaches happened, how bad were they, and where should we intervene first? Covers the SLA Alerts use case of the Fleet Intelligence accelerator.
+description: 'The breach queue: every dwell session that went over its SLA, by severity, with the site on a map. Use for: Which dwell breaches happened, how bad were they, and where should we intervene first? Covers the SLA Alerts use case of the Fleet Intelligence accelerator.'
 ---
 
 # SLA Alerts

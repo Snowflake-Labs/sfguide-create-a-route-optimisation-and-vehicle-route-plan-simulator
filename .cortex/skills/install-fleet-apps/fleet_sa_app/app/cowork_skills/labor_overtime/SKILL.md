@@ -1,6 +1,6 @@
 ---
 name: labor-overtime
-description: See who is going to blow through an overtime threshold while there are still days left to do something about it. Use for: Which Drivers are projected to exceed a weekly hours limit, which rule actually binds them, what will it cost, and which depot is generating it? Covers the Labour and Overtime use case of the Fleet Intelligence accelerator.
+description: 'See who is going to blow through an overtime threshold while there are still days left to do something about it. Use for: Which Drivers are projected to exceed a weekly hours limit, which rule actually binds them, what will it cost, and which depot is generating it? Covers the Labour and Overtime use case of the Fleet Intelligence accelerator.'
 ---
 
 # Labour and Overtime

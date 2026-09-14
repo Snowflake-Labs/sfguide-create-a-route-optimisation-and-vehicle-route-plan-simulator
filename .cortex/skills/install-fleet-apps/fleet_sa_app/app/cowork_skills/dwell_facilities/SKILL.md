@@ -1,6 +1,6 @@
 ---
 name: dwell-facilities
-description: Which sites and site types absorb the fleet's standing time, ranked by load. Use for: Which facilities cost us the most turnaround time, and is the problem one site or a whole class of sites? Covers the Facility Utilization use case of the Fleet Intelligence accelerator.
+description: 'Which sites and site types absorb the fleet''s standing time, ranked by load. Use for: Which facilities cost us the most turnaround time, and is the problem one site or a whole class of sites? Covers the Facility Utilization use case of the Fleet Intelligence accelerator.'
 ---
 
 # Facility Utilization

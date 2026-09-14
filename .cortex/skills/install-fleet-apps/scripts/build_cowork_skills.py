@@ -39,6 +39,8 @@ import pathlib
 import shutil
 import sys
 
+import yaml
+
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -120,8 +122,24 @@ def skill_md(row: dict, visual: bool) -> str:
 
     lines: list[str] = [
         "---",
-        f"name: {view_id.replace('_', '-')}",
-        f"description: {desc}",
+        # Dumped by the YAML library, NOT hand-assembled. Every description here
+        # contains "Use for: ", and `: ` inside an unquoted plain scalar is
+        # illegal YAML - so the previous f-string form produced 26 SKILL.md files
+        # whose front matter raised `mapping values are not allowed here` on every
+        # one. That matters because the agent spec omits `description`, so
+        # Snowflake reads it from THIS file, and the orchestrator selects a skill
+        # on name and description alone. RULE F of check_cowork_surfaces.py only
+        # grepped for the string "description:", which is present in all 26
+        # broken files, so nothing caught it; that rule now parses.
+        # default_flow_style=False keeps it block style; the wide `width` stops
+        # PyYAML line-wrapping a long description into a continuation the reader
+        # has to reassemble.
+        yaml.safe_dump(
+            {"name": view_id.replace("_", "-"), "description": desc},
+            sort_keys=False,
+            allow_unicode=True,
+            width=10 ** 6,
+        ).rstrip("\n"),
         "---",
         "",
         f"# {label}",

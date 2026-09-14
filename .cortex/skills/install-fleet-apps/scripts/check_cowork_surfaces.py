@@ -27,9 +27,19 @@ RULE E  Every skill in the agent spec's `skills` array has a SKILL.md on disk at
         the path the array points at, and every SKILL.md on disk is referenced.
         A dangling reference fails per request; an unreferenced folder is dead
         weight nobody will notice.
-RULE F  Each SKILL.md has YAML front matter with a name and a description. The
+RULE F  Each SKILL.md has YAML front matter that PARSES, carrying a non-empty name
+        and description, with the name agreeing with the agent spec entry. The
         orchestrator matches on those two fields alone, so a skill missing either
         can never be selected.
+
+        This rule used to substring-grep for "description:" and passed 26 files
+        whose front matter did not parse at all: the generated description
+        contains "Use for: ", and `: ` in an unquoted plain scalar is illegal
+        YAML. The field name was spelled correctly in every broken file. Since
+        the agent spec omits `description`, Snowflake reads it from the file - so
+        the one signal the orchestrator selects on was unreadable for every
+        CoWork skill, and only the skill evals noticed, as an unexplained empty
+        `name`. Parse it; do not look for the word.
 
 Read-only, no Snowflake connection needed. Run from anywhere.
 """
@@ -40,6 +50,8 @@ import json
 import pathlib
 import re
 import sys
+
+import yaml
 
 SKILL = pathlib.Path(__file__).resolve().parents[1]
 APP = SKILL / "fleet_sa_app" / "app"
@@ -209,14 +221,56 @@ def check_skills(problems: list[str]) -> None:
                 f"but {md.relative_to(SKILL)} does not exist. A dangling skill "
                 f"reference fails only when a user picks it.")
             continue
-        head = md.read_text().split("---")
-        front = head[1] if len(head) > 2 else ""
-        for field in ("name:", "description:"):
-            if field not in front:
+        # Front matter is the FENCED block at the top of the file, matched as a
+        # fence rather than `text.split("---")` - a body containing a horizontal
+        # rule would otherwise silently shift which chunk is inspected.
+        fence = re.match(r"^---\n(.*?)\n---", md.read_text(), re.S)
+        if not fence:
+            problems.append(
+                f"RULE F {folder}: SKILL.md has no YAML front matter block. The "
+                f"orchestrator matches on name and description alone, so this "
+                f"skill can never be selected.")
+            continue
+        front = fence.group(1)
+        # PARSED, not grepped. This rule used to test `"description:" in front`,
+        # and it PASSED on 26 files whose front matter did not parse at all: the
+        # generated description contains "Use for: ", and `: ` in an unquoted
+        # plain scalar is illegal YAML. The field name was spelled correctly in
+        # every broken file, so the substring form could not see it. Only the
+        # skill evals noticed, as an unexplained empty `name`.
+        try:
+            fm = yaml.safe_load(front)
+        except yaml.YAMLError as exc:
+            first = str(exc).splitlines()[0]
+            problems.append(
+                f"RULE F {folder}: SKILL.md front matter is not valid YAML "
+                f"({first}). Snowflake reads the description from this file "
+                f"because the agent spec omits it, and the orchestrator selects "
+                f"on name and description alone - so an unparseable block makes "
+                f"the skill unselectable. A description containing ': ' must be "
+                f"quoted; emit front matter with yaml.safe_dump, never an "
+                f"f-string.")
+            continue
+        if not isinstance(fm, dict):
+            problems.append(
+                f"RULE F {folder}: SKILL.md front matter is not a YAML mapping "
+                f"(got {type(fm).__name__}).")
+            continue
+        for field in ("name", "description"):
+            value = fm.get(field)
+            if not isinstance(value, str) or not value.strip():
                 problems.append(
-                    f"RULE F {folder}: SKILL.md front matter has no {field} - "
-                    f"the orchestrator matches on name and description alone, "
-                    f"so this skill can never be selected.")
+                    f"RULE F {folder}: SKILL.md front matter has no usable "
+                    f"{field} - the orchestrator matches on name and "
+                    f"description alone, so this skill can never be selected.")
+        expected_name = entry.get("name")
+        actual_name = fm.get("name")
+        if isinstance(actual_name, str) and expected_name and actual_name != expected_name:
+            problems.append(
+                f"RULE F {folder}: SKILL.md name {actual_name!r} does not match "
+                f"the agent spec entry {expected_name!r}. The spec name is what "
+                f"a user picks from the CoWork '/' menu; a mismatch makes the "
+                f"two surfaces disagree about what the skill is called.")
 
     for orphan in sorted(on_disk - referenced):
         problems.append(

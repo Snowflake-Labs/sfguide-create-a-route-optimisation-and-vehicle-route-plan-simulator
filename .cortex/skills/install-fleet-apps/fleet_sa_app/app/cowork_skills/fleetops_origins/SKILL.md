@@ -1,6 +1,6 @@
 ---
 name: fleetops-origins
-description: Where Trips begin, ranked by volume, so network and depot decisions start from observed origins. Use for: Which origins generate most of our work, and is our network actually positioned against them? Covers the Top Origins use case of the Fleet Intelligence accelerator.
+description: 'Where Trips begin, ranked by volume, so network and depot decisions start from observed origins. Use for: Which origins generate most of our work, and is our network actually positioned against them? Covers the Top Origins use case of the Fleet Intelligence accelerator.'
 ---
 
 # Top Origins

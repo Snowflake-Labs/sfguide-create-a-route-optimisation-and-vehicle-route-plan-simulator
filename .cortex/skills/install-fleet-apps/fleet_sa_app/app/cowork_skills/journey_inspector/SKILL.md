@@ -1,6 +1,6 @@
 ---
 name: journey-inspector
-description: Reconstruct any single Trip end to end: the road it actually took, every stop, speed over time, and how far it drifted from plan. Use for: What actually happened on this Trip, and why did it take longer or cost more than planned? Covers the Trip Inspector use case of the Fleet Intelligence accelerator.
+description: 'Reconstruct any single Trip end to end: the road it actually took, every stop, speed over time, and how far it drifted from plan. Use for: What actually happened on this Trip, and why did it take longer or cost more than planned? Covers the Trip Inspector use case of the Fleet Intelligence accelerator.'
 ---
 
 # Trip Inspector

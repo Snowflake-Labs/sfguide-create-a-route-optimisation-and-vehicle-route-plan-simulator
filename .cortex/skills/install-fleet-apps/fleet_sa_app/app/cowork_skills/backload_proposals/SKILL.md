@@ -1,6 +1,6 @@
 ---
 name: backload-proposals
-description: Four backhaul strategies run side by side and fused into one graded recommendation per vehicle, with the reasons a load was rejected shown on the card. Use for: Which backhaul should this vehicle take, how confident are we, and why was the obvious-looking load actually ineligible? Covers the Backload Proposals use case of the Fleet Intelligence accelerator.
+description: 'Four backhaul strategies run side by side and fused into one graded recommendation per vehicle, with the reasons a load was rejected shown on the card. Use for: Which backhaul should this vehicle take, how confident are we, and why was the obvious-looking load actually ineligible? Covers the Backload Proposals use case of the Fleet Intelligence accelerator.'
 ---
 
 # Backload Proposals

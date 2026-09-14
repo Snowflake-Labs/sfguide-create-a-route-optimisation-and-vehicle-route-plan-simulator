@@ -1,6 +1,6 @@
 ---
 name: backload-matching
-description: Fill the empty return leg: match idle vehicles to waiting internal loads first, then to external freight offers, and price the result. Use for: Our vehicles run back empty. Which waiting loads could they carry instead, and what is that worth? Covers the Backload Matching use case of the Fleet Intelligence accelerator.
+description: 'Fill the empty return leg: match idle vehicles to waiting internal loads first, then to external freight offers, and price the result. Use for: Our vehicles run back empty. Which waiting loads could they carry instead, and what is that worth? Covers the Backload Matching use case of the Fleet Intelligence accelerator.'
 ---
 
 # Backload Matching

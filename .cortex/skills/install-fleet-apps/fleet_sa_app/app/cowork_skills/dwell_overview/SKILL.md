@@ -1,6 +1,6 @@
 ---
 name: dwell-overview
-description: How much of the day the fleet spends standing still, how that is trending, and how often it breaches the dwell SLA. Use for: How much paid time are we losing to standing still, and are we meeting our turnaround commitments? Covers the Dwell Overview use case of the Fleet Intelligence accelerator.
+description: 'How much of the day the fleet spends standing still, how that is trending, and how often it breaches the dwell SLA. Use for: How much paid time are we losing to standing still, and are we meeting our turnaround commitments? Covers the Dwell Overview use case of the Fleet Intelligence accelerator.'
 ---
 
 # Dwell Overview

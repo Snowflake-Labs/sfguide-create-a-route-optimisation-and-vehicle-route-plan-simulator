@@ -1,6 +1,6 @@
 ---
 name: emergency-response
-description: Plan the evacuation of people who cannot evacuate themselves: hazard exposure, who is inside the risk zone, and a solved multi-depot van plan. Use for: If this hazard escalates, who do we collect first, with which vehicles, and how many trips does it actually take? Covers the Emergency Response use case of the Fleet Intelligence accelerator.
+description: 'Plan the evacuation of people who cannot evacuate themselves: hazard exposure, who is inside the risk zone, and a solved multi-depot van plan. Use for: If this hazard escalates, who do we collect first, with which vehicles, and how many trips does it actually take? Covers the Emergency Response use case of the Fleet Intelligence accelerator.'
 ---
 
 # Emergency Response

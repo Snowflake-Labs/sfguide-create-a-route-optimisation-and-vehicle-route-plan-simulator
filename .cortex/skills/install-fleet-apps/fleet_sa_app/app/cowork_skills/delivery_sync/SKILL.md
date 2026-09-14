@@ -1,6 +1,6 @@
 ---
 name: delivery-sync
-description: Tell the receiving crew exactly when a load is on the floor, so they travel to site once and at the right time. Use for: Has the delivery actually arrived and left, so the crew that receives or installs it can be sent now rather than sent twice? Covers the Delivery Sync use case of the Fleet Intelligence accelerator.
+description: 'Tell the receiving crew exactly when a load is on the floor, so they travel to site once and at the right time. Use for: Has the delivery actually arrived and left, so the crew that receives or installs it can be sent now rather than sent twice? Covers the Delivery Sync use case of the Fleet Intelligence accelerator.'
 ---
 
 # Delivery Sync

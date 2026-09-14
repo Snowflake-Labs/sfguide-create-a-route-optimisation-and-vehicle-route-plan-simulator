@@ -1,6 +1,6 @@
 ---
 name: dispatch-execution-board
-description: Today's committed work against what is actually happening: the job list, the resource board, and adherence by day. Use for: Will we complete today's committed work, and which jobs are already late or missed? Covers the Dispatch Execution Board use case of the Fleet Intelligence accelerator.
+description: 'Today''s committed work against what is actually happening: the job list, the resource board, and adherence by day. Use for: Will we complete today''s committed work, and which jobs are already late or missed? Covers the Dispatch Execution Board use case of the Fleet Intelligence accelerator.'
 ---
 
 # Dispatch Execution Board

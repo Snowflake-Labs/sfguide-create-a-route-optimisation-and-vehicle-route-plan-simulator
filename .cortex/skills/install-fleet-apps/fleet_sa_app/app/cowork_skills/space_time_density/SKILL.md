@@ -1,6 +1,6 @@
 ---
 name: space-time-density
-description: Where and when activity concentrates: an H3 hexagon heatmap you can animate hour by hour. Use for: Where does our activity cluster, and at what times of day, so depots, shifts and capacity can be placed against real demand? Covers the Space-Time Density use case of the Fleet Intelligence accelerator.
+description: 'Where and when activity concentrates: an H3 hexagon heatmap you can animate hour by hour. Use for: Where does our activity cluster, and at what times of day, so depots, shifts and capacity can be placed against real demand? Covers the Space-Time Density use case of the Fleet Intelligence accelerator.'
 ---
 
 # Space-Time Density

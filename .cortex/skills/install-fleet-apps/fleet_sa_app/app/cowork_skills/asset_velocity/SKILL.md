@@ -1,6 +1,6 @@
 ---
 name: asset-velocity
-description: Find idle Vehicles, price what the idleness is costing, and get a live repositioning suggestion for each one. Use for: Which of our Vehicles are sitting still, what is that costing us, and where should they go next? Covers the Asset Velocity use case of the Fleet Intelligence accelerator.
+description: 'Find idle Vehicles, price what the idleness is costing, and get a live repositioning suggestion for each one. Use for: Which of our Vehicles are sitting still, what is that costing us, and where should they go next? Covers the Asset Velocity use case of the Fleet Intelligence accelerator.'
 ---
 
 # Asset Velocity

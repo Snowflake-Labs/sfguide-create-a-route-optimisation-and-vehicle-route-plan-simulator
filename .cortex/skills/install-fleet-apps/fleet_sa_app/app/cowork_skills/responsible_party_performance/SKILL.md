@@ -1,6 +1,6 @@
 ---
 name: responsible-party-performance
-description: League table of Drivers: who covers the most distance, who deviates from plan, and who accumulates the most risk events. Use for: Which Drivers need coaching, and which ones are our benchmark? Covers the Driver Performance use case of the Fleet Intelligence accelerator.
+description: 'League table of Drivers: who covers the most distance, who deviates from plan, and who accumulates the most risk events. Use for: Which Drivers need coaching, and which ones are our benchmark? Covers the Driver Performance use case of the Fleet Intelligence accelerator.'
 ---
 
 # Driver Performance

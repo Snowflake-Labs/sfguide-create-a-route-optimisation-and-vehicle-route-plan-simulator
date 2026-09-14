@@ -1,6 +1,6 @@
 ---
 name: closure-impact
-description: Closure what-if: when a site closes, which surviving sites inherit its customers and which revenue simply leaks away. Use for: If we close this site, how much revenue do we keep because a neighbour can still serve it, and how much do we lose outright? Covers the Closure Impact use case of the Fleet Intelligence accelerator.
+description: 'Closure what-if: when a site closes, which surviving sites inherit its customers and which revenue simply leaks away. Use for: If we close this site, how much revenue do we keep because a neighbour can still serve it, and how much do we lose outright? Covers the Closure Impact use case of the Fleet Intelligence accelerator.'
 ---
 
 # Closure Impact

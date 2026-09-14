@@ -1,6 +1,6 @@
 ---
 name: live-asset-operations
-description: One live picture of the whole fleet: where every Vehicle is right now, what state it is in, and whether the fleet is earning or idling. Use for: Where is every Vehicle right now, and how much of our movement is productive rather than empty? Covers the Live Vehicle Operations use case of the Fleet Intelligence accelerator.
+description: 'One live picture of the whole fleet: where every Vehicle is right now, what state it is in, and whether the fleet is earning or idling. Use for: Where is every Vehicle right now, and how much of our movement is productive rather than empty? Covers the Live Vehicle Operations use case of the Fleet Intelligence accelerator.'
 ---
 
 # Live Vehicle Operations

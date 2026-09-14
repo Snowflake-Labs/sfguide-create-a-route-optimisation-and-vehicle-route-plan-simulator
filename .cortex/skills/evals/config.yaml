@@ -1,4 +1,21 @@
 skills_root: ..
+
+# Paths whose SKILL.md files are GENERATED deployment artifacts, not authored
+# Cortex Code skills, and are excluded from discovery entirely (see
+# lib/discovery.py for the measured effect of not doing this: quality sat at
+# 19/44 permanently, with all 25 failures being artifacts, and xref/sql reported
+# 44/44 against a true population of 18).
+#
+# By PATH, not by name: `exclude_skills` below matches names, and 26 generated
+# names would go stale the moment a view is added.
+exclude_paths:
+  - "**/cowork_skills/**"   # build_cowork_skills.py output, read by Cortex Agents off a stage
+
+# Hard floor on discovered authored skills. An exclude_paths pattern that is too
+# broad would drop real skills and still print a green "N/N pass" - failing
+# green, which is worse than the noise this replaced. Raise this when skills are
+# added; if discovery drops below it, the run aborts.
+min_authored_skills: 23
 eval_types:
   - trigger
   - quality

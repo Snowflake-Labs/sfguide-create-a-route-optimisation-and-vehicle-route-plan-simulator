@@ -1,6 +1,6 @@
 ---
 name: sap-binding
-description: How to point these dashboards and the assistant at a customer's real SAP plus telematics data without rebuilding anything above the contract. Use for: Our asset master lives in SAP and our positions come from a telematics vendor. What does it take to run all of this on our own data? Covers the SAP Binding use case of the Fleet Intelligence accelerator.
+description: 'How to point these dashboards and the assistant at a customer''s real SAP plus telematics data without rebuilding anything above the contract. Use for: Our asset master lives in SAP and our positions come from a telematics vendor. What does it take to run all of this on our own data? Covers the SAP Binding use case of the Fleet Intelligence accelerator.'
 ---
 
 # SAP Binding

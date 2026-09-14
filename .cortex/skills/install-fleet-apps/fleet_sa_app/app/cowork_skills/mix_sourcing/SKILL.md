@@ -1,6 +1,6 @@
 ---
 name: mix-sourcing
-description: For a multi-product order, decide between shipping direct from several plants or consolidating into one truckload. Use for: For customers buying several products, is it cheaper to ship from each plant or to transfer everything into one hub and send a single load? Covers the Product Mix Sourcing use case of the Fleet Intelligence accelerator.
+description: 'For a multi-product order, decide between shipping direct from several plants or consolidating into one truckload. Use for: For customers buying several products, is it cheaper to ship from each plant or to transfer everything into one hub and send a single load? Covers the Product Mix Sourcing use case of the Fleet Intelligence accelerator.'
 ---
 
 # Product Mix Sourcing

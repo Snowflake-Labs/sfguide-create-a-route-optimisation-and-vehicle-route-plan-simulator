@@ -1,6 +1,6 @@
 ---
 name: catchment
-description: Live drive-time market analysis for any site: who and what is actually reachable in 5, 10 and 15 minutes by road. Use for: If we put a site here, how many people can reach it by road, and who is already competing for them? Covers the Catchment use case of the Fleet Intelligence accelerator.
+description: 'Live drive-time market analysis for any site: who and what is actually reachable in 5, 10 and 15 minutes by road. Use for: If we put a site here, how many people can reach it by road, and who is already competing for them? Covers the Catchment use case of the Fleet Intelligence accelerator.'
 ---
 
 # Catchment

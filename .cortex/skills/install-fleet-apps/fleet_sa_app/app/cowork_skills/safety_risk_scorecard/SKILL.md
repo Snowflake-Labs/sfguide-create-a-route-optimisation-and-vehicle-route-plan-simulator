@@ -1,6 +1,6 @@
 ---
 name: safety-risk-scorecard
-description: Operational risk on one screen: event volume by severity, the behaviour mix behind it, and where the hot spots are. Use for: Where is our risk concentrated, and what would we fix first to reduce claims? Covers the Safety / Risk Scorecard use case of the Fleet Intelligence accelerator.
+description: 'Operational risk on one screen: event volume by severity, the behaviour mix behind it, and where the hot spots are. Use for: Where is our risk concentrated, and what would we fix first to reduce claims? Covers the Safety / Risk Scorecard use case of the Fleet Intelligence accelerator.'
 ---
 
 # Safety / Risk Scorecard

@@ -1,6 +1,6 @@
 ---
 name: site-impact
-description: Cannibalisation what-if on a live gravity model: how much of a new site's revenue is genuinely new, and how much is simply moved off your own estate. Use for: If we open here, how much of the revenue is incremental, how much comes out of our existing stores, and does it pay back against the rent? Covers the Site Impact use case of the Fleet Intelligence accelerator.
+description: 'Cannibalisation what-if on a live gravity model: how much of a new site''s revenue is genuinely new, and how much is simply moved off your own estate. Use for: If we open here, how much of the revenue is incremental, how much comes out of our existing stores, and does it pay back against the rent? Covers the Site Impact use case of the Fleet Intelligence accelerator.'
 ---
 
 # Site Impact

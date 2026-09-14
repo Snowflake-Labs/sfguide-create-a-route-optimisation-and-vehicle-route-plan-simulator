@@ -1,6 +1,6 @@
 ---
 name: sourcing-optimizer
-description: Serve each customer from the cheapest plant that can actually make their product, priced on real road distance. Use for: Where are we shipping from the wrong plant, and what would re-sourcing save us in a year? Covers the Freight Sourcing Optimizer use case of the Fleet Intelligence accelerator.
+description: 'Serve each customer from the cheapest plant that can actually make their product, priced on real road distance. Use for: Where are we shipping from the wrong plant, and what would re-sourcing save us in a year? Covers the Freight Sourcing Optimizer use case of the Fleet Intelligence accelerator.'
 ---
 
 # Freight Sourcing Optimizer

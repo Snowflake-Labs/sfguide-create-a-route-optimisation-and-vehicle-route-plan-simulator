@@ -1,6 +1,6 @@
 ---
 name: triangle-proposals
-description: Recovers return trips that single-hop matching cannot see, by chaining two loads through an intermediate drop and pricing the chain against the cost of running home empty. Use for: There is no load from here back to where this vehicle is needed. Is there a pair of loads that gets it home via an intermediate stop, and is that chain actually better than running empty? Covers the Triangle Proposals use case of the Fleet Intelligence accelerator.
+description: 'Recovers return trips that single-hop matching cannot see, by chaining two loads through an intermediate drop and pricing the chain against the cost of running home empty. Use for: There is no load from here back to where this vehicle is needed. Is there a pair of loads that gets it home via an intermediate stop, and is that chain actually better than running empty? Covers the Triangle Proposals use case of the Fleet Intelligence accelerator.'
 ---
 
 # Triangle Proposals
