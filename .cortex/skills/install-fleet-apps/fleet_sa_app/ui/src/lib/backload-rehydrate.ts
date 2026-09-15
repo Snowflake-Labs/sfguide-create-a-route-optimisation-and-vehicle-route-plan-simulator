@@ -129,6 +129,8 @@ export interface RehydratedAssignment {
   TRAILER_ID: string;
   OFFER_ID: string;
   SOURCE: string;
+  /** Authoritative internal/external flag. See resolveChannel below. */
+  IS_INTERNAL: boolean;
   PICKUP_LON: number;
   PICKUP_LAT: number;
   DROPOFF_LON: number;
@@ -167,6 +169,34 @@ const n = (v: unknown): number => Number(v);
 const finite = (v: unknown): boolean => Number.isFinite(Number(v));
 
 /**
+ * Resolve the internal/external channel from a proposal.
+ *
+ * `is_internal` is the ONLY authoritative field, and `source` is a channel label
+ * that has carried the literal word INTERNAL on external offers - measured 75 of
+ * 300 rows still live in VW_LOADS, because the generator that produced them
+ * round-robined 'INTERNAL' through a list of external channel names. The
+ * generator has since been fixed, but that does not retire the rows already
+ * generated.
+ *
+ * So a label of INTERNAL on a row whose flag says external is not ambiguous, it
+ * is untrue: the load arrived from an external exchange. Deriving the badge from
+ * `source` (`is_internal ? 'INTERNAL' : source`) reproduced the untruth on the
+ * assignment card, in the stops list, and in the agent memo - and because
+ * `internalCount` in the page counts IS_INTERNAL while the badge showed SOURCE, a
+ * single plan could display INTERNAL and report 0 internal matches at once.
+ */
+export function resolveChannel(
+  isInternal: unknown, source: unknown,
+): { internal: boolean; label: string } {
+  const internal = isInternal === true;
+  const raw = String(source ?? '').trim();
+  if (internal) return { internal: true, label: 'INTERNAL' };
+  // Never echo an INTERNAL label back out for a row the flag calls external.
+  if (!raw || raw.toUpperCase() === 'INTERNAL') return { internal: false, label: 'EXTERNAL' };
+  return { internal: false, label: raw };
+}
+
+/**
  * Convert graded proposals into the page's assignment shape.
  *
  * A proposal whose vehicle is not in the page's current pool is DROPPED, not
@@ -196,13 +226,15 @@ export function proposalsToAssignments(
     const pickLat = n(p.pickup_lat);
     const dropLon = finite(p.delivery_lon) ? n(p.delivery_lon) : pickLon;
     const dropLat = finite(p.delivery_lat) ? n(p.delivery_lat) : pickLat;
-    const source = p.is_internal ? 'INTERNAL' : String(p.source ?? 'EXTERNAL');
+    const channel = resolveChannel(p.is_internal, p.source);
+    const source = channel.label;
 
     out.push({
       ASSIGNMENT_ID: `${p.vehicle_id}-${p.load_id}`,
       TRAILER_ID: String(p.vehicle_id),
       OFFER_ID: String(p.load_id),
       SOURCE: source,
+      IS_INTERNAL: channel.internal,
       PICKUP_LON: pickLon,
       PICKUP_LAT: pickLat,
       DROPOFF_LON: dropLon,

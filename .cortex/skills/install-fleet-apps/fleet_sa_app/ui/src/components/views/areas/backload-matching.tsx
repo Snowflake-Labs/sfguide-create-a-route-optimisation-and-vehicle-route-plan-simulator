@@ -42,6 +42,27 @@ import {
 // `<trailer>|<offer>` for the outbound leg and `<trailer>|<offer>|ret` for the
 // return reposition.
 type EmptyLegCacheEntry = { geo: unknown; km: number | null };
+// Cached loaded-tour result: geometry plus the road km that produced it. `km` is
+// null when fetchTourPath fell back to a straight line.
+type TourCacheEntry = { geo: unknown; km: number | null };
+
+/**
+ * Upgrade a COLLECTED plan's loaded distance to the road distance just measured.
+ *
+ * Only for rehydrated rows. On the solve path LOADED_KM and TOUR_KM come from
+ * VROOM, which routed the whole tour under the solver's own constraints, and
+ * overwriting those with a fresh DIRECTIONS number would make the card disagree
+ * with the plan that was actually optimised.
+ *
+ * A collected plan has neither: the procedure reports great-circle km. Leaving it
+ * put a straight-line 1,352 km beside a road polyline on the same card, under a
+ * note that promised road distances.
+ */
+function refineLoaded(a: Assignment, km: number | null): void {
+  if (!a.REHYDRATED || km === null || !Number.isFinite(km) || km <= 0) return;
+  a.LOADED_KM = km;
+  a.TOUR_KM = km;
+}
 
 // Default payload caps (editable via sliders). clampPayload enforces the matrix
 // budget on Solve so the precomputed ORS matrix stays under the location cap.
@@ -130,7 +151,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const emptyLegCacheRef = useRef<Map<string, EmptyLegCacheEntry>>(new Map());
   // Cached ORS loaded-tour polyline keyed by `<trailer>|<offer>|tour`.
-  const tourCacheRef = useRef<Map<string, unknown>>(new Map());
+  const tourCacheRef = useRef<Map<string, TourCacheEntry>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
@@ -261,6 +282,97 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   useEffect(() => { refetch(); }, [refetch]);
 
   // -----------------------------------------------------------------
+  // Geometry enrichment - the ONLY producer of the polylines the map draws.
+  //
+  // Lazily fetch the three polylines a tour needs through the live routing seam:
+  // the loaded path (first pickup -> last task stop), and both empty legs -
+  // outbound (idle location -> first pickup) and return (last task stop -> tour
+  // end). The loaded path is fetched here rather than taken from the solve
+  // response because the solve runs with VROOM geometry disabled to stay under
+  // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
+  // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
+  // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
+  //
+  // This is a standalone callback, not inline in `solve`, because a plan
+  // collected from an agent solve needs exactly the same pass. While it lived
+  // inside `solve` a rehydrated plan rendered its stops and its numbers but no
+  // route line at all - nothing threw, the assignment list looked complete, and
+  // only the map was wrong.
+  // -----------------------------------------------------------------
+  // Assignment ids whose geometry fetch has already been claimed, so the
+  // enrichment effect cannot loop on the state update it causes.
+  const enrichedKeysRef = useRef<Set<string>>(new Set());
+
+  const enrichGeometry = useCallback(async (
+    list: Assignment[], profile: string, regionName: string,
+  ): Promise<void> => {
+    await Promise.all(list.map(async (a) => {
+      const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
+      const retKey = `${outKey}|ret`;
+      const tourKey = `${outKey}|tour`;
+
+      const cachedTour = tourCacheRef.current.get(tourKey);
+      if (cachedTour) {
+        a.ROUTE_GEOJSON = cachedTour.geo;
+        refineLoaded(a, cachedTour.km);
+      } else {
+        const tour = await fetchTourPath(profile, a.STOPS, regionName);
+        if (tour) {
+          tourCacheRef.current.set(tourKey, tour);
+          a.ROUTE_GEOJSON = tour.geo;
+          refineLoaded(a, tour.km);
+        }
+      }
+      const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
+      if (cachedOut) {
+        a.EMPTY_GEOJSON = cachedOut.geo;
+        if (cachedOut.km !== null) a.EMPTY_OUT_KM = cachedOut.km;
+      } else {
+        const leg = await fetchEmptyLeg(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], regionName);
+        if (leg) {
+          emptyLegCacheRef.current.set(outKey, leg);
+          a.EMPTY_GEOJSON = leg.geo;
+          if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
+        }
+      }
+
+      const hasReturn = a.END_LON !== undefined && a.END_LAT !== undefined
+        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined
+        && (a.EMPTY_BACK_KM ?? 0) > 0;
+      if (hasReturn) {
+        const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
+        if (cachedRet) {
+          a.EMPTY_RETURN_GEOJSON = cachedRet.geo;
+          if (cachedRet.km !== null) a.EMPTY_BACK_KM = cachedRet.km;
+        } else {
+          const leg = await fetchEmptyLeg(
+            profile,
+            [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+            [a.END_LON as number, a.END_LAT as number],
+            regionName,
+          );
+          if (leg) {
+            emptyLegCacheRef.current.set(retKey, leg);
+            a.EMPTY_RETURN_GEOJSON = leg.geo;
+            if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
+          }
+        }
+      }
+
+      // Only re-derive the deadhead total from its legs when at least one leg is
+      // actually known. A rehydrated plan carries the procedure's own EMPTY_KM
+      // and no per-leg split, so summing two undefined legs would overwrite a
+      // real figure with 0 whenever DIRECTIONS is unavailable.
+      if (a.EMPTY_OUT_KM !== undefined || a.EMPTY_BACK_KM !== undefined) {
+        a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
+      }
+      if (a.BASELINE_EMPTY_KM !== undefined && a.BASELINE_SOURCE !== 'fixed-open') {
+        a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
+      }
+    }));
+  }, []);
+
+  // -----------------------------------------------------------------
   // Rehydrate a plan the agent already solved.
   //
   // `solve_key` arrives in viewState when the agent navigates here after running
@@ -323,14 +435,24 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           );
           return;
         }
+        // These are fresh objects with no polylines, so release any claim a
+        // previous collection made on the same assignment ids.
+        enrichedKeysRef.current.clear();
         setAssignments(rebuilt as unknown as Assignment[]);
         setUnassigned([]);
         setSelectedAssignment(rebuilt[0]?.ASSIGNMENT_ID ?? null);
         const strat = out.solve.strategy ? ` (${out.solve.strategy})` : '';
+        // Say only what the enrichment pass actually does. Empty and loaded km
+        // both refine now (the tour fetch returns its road distance), but the
+        // solver's revenue/cost breakdown is NOT recoverable from a proposal, so
+        // the card shows the solver's margin and no breakdown - claiming
+        // otherwise is how a 0 gets read as a measurement.
         setRehydrateNote(
           `Showing the plan the agent solved${strat}: ${rebuilt.length} trip(s)` +
           (skipped ? `, ${skipped} outside this vehicle pool` : '') +
-          '. Distances start as straight-line and refine to road distance.',
+          '. Drawing road routes; empty and loaded distances start as straight-line and ' +
+          'refine to road distance as each leg is measured. Margin is the solver\u2019s; ' +
+          'the revenue/cost breakdown is not part of a collected plan.',
         );
         return;
       }
@@ -339,6 +461,34 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     return () => { cancelled = true; ac.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [solveKeyParam, trailers]);
+
+  // -----------------------------------------------------------------
+  // Draw the road geometry for a rehydrated plan.
+  //
+  // A collected plan carries business keys and coordinates but no polylines: the
+  // procedure never asks the engine for geometry. Without this pass the map shows
+  // the stop markers and nothing joining them, which reads as a broken plan.
+  //
+  // Separate from the collection effect on purpose - the vehicle class (and so
+  // the ORS profile) can arrive after the pool does, and the plan should appear
+  // as soon as it is collected rather than waiting on the profile.
+  // -----------------------------------------------------------------
+  useEffect(() => {
+    if (!cfg || !vehicleClass) return;
+    const pending = assignments.filter(
+      (a) => a.REHYDRATED && !a.ROUTE_GEOJSON && !enrichedKeysRef.current.has(a.ASSIGNMENT_ID),
+    );
+    if (!pending.length) return;
+    // Claim before the await: this effect reruns on `assignments`, which the
+    // enrichment itself replaces, and an unclaimed rerun would refetch forever.
+    for (const a of pending) enrichedKeysRef.current.add(a.ASSIGNMENT_ID);
+    let cancelled = false;
+    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {
+      if (!cancelled) setAssignments((prev) => [...prev]);
+    });
+    return () => { cancelled = true; };
+  }, [assignments, cfg, vehicleClass, enrichGeometry]);
+
 
   // -----------------------------------------------------------------
   // Solve - every visible knob lands inside the OPTIMIZATION call.
@@ -866,70 +1016,9 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       setSolveError('Solver returned no routes. Try raising Detour budget or Allowed deviation, and confirm the region routing service is running.');
     }
 
-    // Lazily fetch the three polylines a tour needs through the live routing
-    // seam: the loaded path (first pickup -> last task stop), and both empty legs
-    // - outbound (idle location -> first pickup) and return (last task stop ->
-    // tour end). The loaded path is fetched here rather than taken from the solve
-    // response because the solve runs with VROOM geometry disabled to stay under
-    // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
-    // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
-    // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
-    Promise.all(newAssignments.map(async (a) => {
-      const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
-      const retKey = `${outKey}|ret`;
-      const tourKey = `${outKey}|tour`;
-
-      const cachedTour = tourCacheRef.current.get(tourKey);
-      if (cachedTour) {
-        a.ROUTE_GEOJSON = cachedTour;
-      } else {
-        const geo = await fetchTourPath(profile, a.STOPS, cfg.region);
-        if (geo) {
-          tourCacheRef.current.set(tourKey, geo);
-          a.ROUTE_GEOJSON = geo;
-        }
-      }
-      const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
-      if (cachedOut) {
-        a.EMPTY_GEOJSON = cachedOut.geo;
-        if (cachedOut.km !== null) a.EMPTY_OUT_KM = cachedOut.km;
-      } else {
-        const leg = await fetchEmptyLeg(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], cfg.region);
-        if (leg) {
-          emptyLegCacheRef.current.set(outKey, leg);
-          a.EMPTY_GEOJSON = leg.geo;
-          if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
-        }
-      }
-
-      const hasReturn = a.END_LON !== undefined && a.END_LAT !== undefined
-        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined
-        && (a.EMPTY_BACK_KM ?? 0) > 0;
-      if (hasReturn) {
-        const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
-        if (cachedRet) {
-          a.EMPTY_RETURN_GEOJSON = cachedRet.geo;
-          if (cachedRet.km !== null) a.EMPTY_BACK_KM = cachedRet.km;
-        } else {
-          const leg = await fetchEmptyLeg(
-            profile,
-            [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
-            [a.END_LON as number, a.END_LAT as number],
-            cfg.region,
-          );
-          if (leg) {
-            emptyLegCacheRef.current.set(retKey, leg);
-            a.EMPTY_RETURN_GEOJSON = leg.geo;
-            if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
-          }
-        }
-      }
-
-      a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
-      if (a.BASELINE_EMPTY_KM !== undefined && a.BASELINE_SOURCE !== 'fixed-open') {
-        a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
-      }
-    })).then(() => setAssignments([...newAssignments]));
+    // Fetch the tour + deadhead polylines (shared with the rehydrate path).
+    enrichGeometry(newAssignments, profile, cfg.region)
+      .then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
   }, [
@@ -938,7 +1027,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     internalFirstWeight, windowSlackHrs, endMode, sharedDestLon, sharedDestLat,
     costPerHourUsd, costPerKmUsd, fixedDispatchUsd, costPerDeliveryUsd, internalRatePerKm,
     enforceDriverBreak, breakAfterHrs, breakLengthMin, enforceShift, shiftLengthHrs,
-    useMultiDimCapacity, useMultiWindow,
+    useMultiDimCapacity, useMultiWindow, enrichGeometry,
   ]);
 
   // Auto-select the top assignment after a solve.

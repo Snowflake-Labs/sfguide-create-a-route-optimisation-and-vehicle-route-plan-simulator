@@ -170,6 +170,20 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       echo "  OK: map spec assertions pass."
     fi
   fi
+  if [ "${BACKLOAD_GEOM_VERIFY:-1}" != "0" ]; then
+    # The Backload map's road geometry has exactly one producer (an ORS
+    # DIRECTIONS pass, because the solve disables VROOM geometry). It used to
+    # live inside solve(), so a plan collected from an agent solve
+    # (?solve_key=..., which never runs solve) drew its stops and its numbers
+    # with no route line at all - correct data, no error, and a screen that reads
+    # as a failed plan. This asserts the pass stays SHARED by both entry points.
+    GEOM_GATE="$SKILL_DIR/scripts/check_backload_rehydrate_geometry.py"
+    if [ -f "$GEOM_GATE" ]; then
+      echo "[1/7] Verify a rehydrated backload plan gets road geometry..."
+      python3 "$GEOM_GATE" \
+        || { echo "ERROR: backload rehydrate geometry gate failed (see above)."; exit 1; }
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when

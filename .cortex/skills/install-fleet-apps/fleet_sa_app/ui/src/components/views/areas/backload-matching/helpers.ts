@@ -95,6 +95,10 @@ export interface Assignment {
   COST_USD?: number;
   REVENUE_USD?: number;
   NET_BENEFIT_USD?: number;
+  // Set when the plan was collected from a solve the AGENT ran (see
+  // lib/backload-rehydrate). Such a plan arrives with no polylines, so the page
+  // must run the same geometry-enrichment pass a local solve runs.
+  REHYDRATED?: boolean;
 }
 
 export interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
@@ -635,17 +639,24 @@ export async function fetchEmptyLegGeoJSON(
 // the deadheads, drawn separately from EMPTY_GEOJSON / EMPTY_RETURN_GEOJSON.
 // Falls back to a straight LineString through the same waypoints so the tour is
 // never silently missing from the map.
+//
+// Returns the road distance alongside the geometry. It used to return `geo` only
+// and drop the km that fetchDirections had already paid for, which left a
+// collected plan drawing a real road line beside a straight-line LOADED_KM - two
+// distance systems on one card, with a note promising the road one. `km` is null
+// when the straight-line fallback was used, so a caller can tell a real road
+// measurement from a substitute rather than treating them alike.
 export async function fetchTourPath(
   profile: string, stops: Stop[], region: string,
-): Promise<unknown | null> {
+): Promise<{ geo: unknown; km: number | null } | null> {
   const pts = cleanWaypoints(
     stops.filter((s) => s.kind !== 'start' && s.kind !== 'end')
       .map((s) => [Number(s.lon), Number(s.lat)] as [number, number]),
   );
   if (pts.length < 2) return null;
   const road = await fetchDirections(profile, pts, region);
-  if (road?.geo) return road.geo;
-  return { type: 'LineString', coordinates: pts };
+  if (road?.geo) return { geo: road.geo, km: road.km };
+  return { geo: { type: 'LineString', coordinates: pts }, km: null };
 }
 
 // Cut a tour polyline at the point closest to `at`, returning the leading

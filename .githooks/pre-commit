@@ -631,3 +631,20 @@ if [ -f "$BACKLOAD_BUDGET_CHECK" ]; then
     exit 1
   }
 fi
+
+# The road geometry on the Backload map has exactly ONE producer (an ORS
+# DIRECTIONS pass - the solve runs with VROOM geometry disabled), and it lived
+# inside solve(). A plan collected from an agent solve via ?solve_key= never runs
+# solve(), so it rendered its stop markers, its assignment card and its distances
+# with NOTHING joining the stops: every number right, no error, and a screen that
+# reads as a failed plan. The invariant is that the pass is SHARED between the
+# local solve and the rehydrate path - a gate on the fetch merely existing would
+# have passed for as long as the bug was live.
+BACKLOAD_GEOM_CHECK="$SKILL_DIR/scripts/check_backload_rehydrate_geometry.py"
+if [ -f "$BACKLOAD_GEOM_CHECK" ]; then
+  echo "pre-commit: backload rehydrated-plan geometry check..."
+  python3 "$BACKLOAD_GEOM_CHECK" || {
+    echo "pre-commit FAILED: a backload plan collected from an agent solve would render without route lines."
+    exit 1
+  }
+fi

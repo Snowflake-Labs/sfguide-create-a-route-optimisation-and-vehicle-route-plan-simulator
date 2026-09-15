@@ -576,6 +576,28 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_memo.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative.py
 
+# The Backload map's road geometry has exactly ONE producer: an ORS DIRECTIONS
+# pass run after the solve, because the solve itself sets VROOM options.g=false
+# to stay under the 20MB _OPTIMIZATION_RAW cap. That pass lived INSIDE solve(),
+# and a plan collected from an agent solve (`?solve_key=...`, via
+# lib/backload-rehydrate.ts) never runs solve() - so the deep link the agent
+# hands the user rendered the stop markers, the assignment card and every
+# distance correctly with NOTHING joining the stops. Nothing threw, no note said
+# a thing was missing, and the honest reading of that screen is that the route
+# failed to plan. The invariant is therefore not "geometry is fetched" but "the
+# fetch is SHARED": one producer at component scope, called by both the local
+# solve and a rehydrate-facing effect keyed on REHYDRATED assignments. A gate on
+# the fetch merely existing would have passed for the entire life of the bug -
+# which is why rule B checks the second call site is keyed off the collected
+# plan (negative test M4 is that control) and rule C forbids any second,
+# unshared geometry write (M5).
+# 8 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
+# one of which convicted this gate's own first draft: rule D checked that
+# REHYDRATED was MENTIONED in the rehydrate module, which commenting out the one
+# line that sets it survives untouched.
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS
