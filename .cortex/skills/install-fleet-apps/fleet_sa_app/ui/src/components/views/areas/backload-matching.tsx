@@ -18,7 +18,7 @@ import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
-import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
+import { describeDeckLayers, usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
 import { formatNumber } from '@/lib/format-number';
 import { postSolve } from '@/lib/solve-client';
@@ -1189,8 +1189,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
     const MAX_CHAIN_STOPS = 8;
-    const memo = visibleAssignments.length
-      ? visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
+    // Body left at its original indentation on purpose: this block has already
+    // been reverted once by a commit written from a stale copy of the file, and a
+    // whole-block reindent makes that far more likely to happen again. Only the
+    // head and the join below are ours.
+    const tripParts = visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
           // Derive from STOPS, never from the scalar PICKUP_CITY /
           // PROPOSAL_DROPOFF_CITY pair: those come from the first pickup only,
           // so on a chained tour they name hop 1 and the agent then reports the
@@ -1230,8 +1233,17 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
                 ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
                 : '');
           return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
-        }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
-      : null;
+        });
+    // Bound by CHARACTERS, not by row count. MAX_TRIPS caps rows, but 12 rows of
+    // tour prose measured 3,627 chars - over the consumer's whole-panel budget in
+    // app/api/chat/route.ts - and that consumer trims PANELS, so the entire list
+    // was deleted from the agent's context rather than shortened. joinBounded
+    // drops whole trips and says how many. The overflow note is a PART, so it is
+    // either included or itself counted in joinBounded's "(+N more)": either way
+    // the agent learns this is a top-N slice and never reads it as the whole plan.
+    const overflow = visibleAssignments.length - tripParts.length;
+    if (overflow > 0) tripParts.push(`(+${overflow} more trips, not listed)`);
+    const memo = tripParts.length ? joinBounded(tripParts, TRIP_MEMO_MAX_LEN) : null;
     return {
       view: 'backload_matching',
       region: cfg?.region ?? region ?? null,
