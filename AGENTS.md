@@ -758,6 +758,17 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 **MANDATORY:** After each logical change is completed and verified, create a new git commit on the user's single shared branch AND push it immediately. Do not batch unrelated changes into a single commit, and do not leave commits unpushed at the end of a turn.
 
+### End-of-task checkpoint (MANDATORY)
+Finishing a task means: verified, committed, pushed. A turn that ends with uncommitted or unpushed work is an unfinished turn - say so explicitly if you could not push and why.
+
+**Be granular, because this working tree is shared by parallel sessions.** Several Cortex Code chats (and the human via GitHub Desktop) edit the same files at the same time, so every minute your work sits uncommitted is a window in which another session's `git checkout`, "Discard changes", or stale-buffer write can silently revert it.
+
+- Commit at the smallest verified unit - do not wait for the whole task to finish. One file, one fix, one gate, one doc section is a valid commit.
+- Push after every commit. Uncommitted work is at risk; unpushed commits are not (they survive a discard).
+- Stage explicitly by path. Never `git add .` and never `git add -A` in this repo - another session's in-flight edits live in the same tree.
+- Before staging, run `git diff --stat` and confirm every listed file is yours. If a file contains BOTH your edit and another session's, do not `git add` it - see `/memories/shared-tree-selective-commit.md` for the reconstruct-and-`commit-tree` procedure.
+- If a hunk is not separable, hold it back and say which part of the work is uncommitted rather than committing someone else's lines.
+
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected - changes only land via merged PRs from `dev`.
 - **NEVER commit directly to `dev`.** `dev` is the integration branch - changes only land via merged PRs from per-user branches.
