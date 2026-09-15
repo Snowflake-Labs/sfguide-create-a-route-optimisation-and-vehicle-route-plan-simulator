@@ -191,6 +191,74 @@ export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: numb
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+// Tokens that are NOT place names. Pickup/dropoff cities fall back to these
+// literal strings when the underlying POI has no name, so "Destination" and
+// "Origin" are placeholders - never somewhere a vehicle actually goes. Mirrors
+// the PLACEHOLDERS set in TOOL_BACKLOAD_CHAIN_SOLVE, which already scrubs them
+// server-side. Anything published to the agent must scrub them too, or the
+// agent quotes "Destination" back to the user as a delivery point.
+export const PLACEHOLDER_PLACES = new Set([
+  'origin', 'destination', 'drop-off', 'dropoff', 'unknown', 'depot',
+]);
+
+// A city name if it is really a place, else null.
+export function realPlace(city?: string | null): string | null {
+  const t = (city ?? '').trim();
+  if (!t) return null;
+  return PLACEHOLDER_PLACES.has(t.toLowerCase()) ? null : t;
+}
+
+export interface TourChain {
+  // Ordered "pick X [LOAD] -> drop Y [LOAD]" text over the task stops.
+  chain: string;
+  // Every distinct load carried on this tour, in the order first touched. A
+  // tour with more than one entry is a CHAINED tour: the first dropoff is a
+  // handover, not the destination.
+  loadIds: string[];
+  firstPickup: string | null;
+  // The LAST dropoff. This is the tour's destination; the first dropoff is
+  // only hop 1. Falls back to the load id when the site is unnamed.
+  finalDropoff: string | null;
+  // Where the tour terminates (home depot / shared destination). Never a
+  // delivery.
+  endCity: string | null;
+  truncatedStops: number;
+}
+
+// Derive a chain-truthful description of a tour from its ordered STOPS array.
+// STOPS is the only complete record of a solved tour: the scalar OFFER_ID /
+// PICKUP_CITY / PROPOSAL_DROPOFF_CITY fields on Assignment come from the FIRST
+// pickup only, so reading them for a multi-load tour reports hop 1 as if it
+// were the whole workload.
+export function describeTourChain(stops: Stop[] | undefined, maxStops = 8): TourChain {
+  const list = Array.isArray(stops) ? stops : [];
+  const tasks = list.filter((s) => s.kind === 'pickup' || s.kind === 'dropoff');
+  const loadIds: string[] = [];
+  for (const s of tasks) {
+    if (s.offerId && !loadIds.includes(s.offerId)) loadIds.push(s.offerId);
+  }
+  const site = (s: Stop): string => {
+    const where = realPlace(s.city);
+    if (where) return where;
+    return s.offerId ? `unnamed site for ${s.offerId}` : 'unnamed site';
+  };
+  const shown = tasks.slice(0, maxStops);
+  const chain = shown
+    .map((s) => `${s.kind === 'pickup' ? 'pick' : 'drop'} ${site(s)}${s.offerId ? ` [${s.offerId}]` : ''}`)
+    .join(' -> ');
+  const drops = tasks.filter((s) => s.kind === 'dropoff');
+  const lastDrop = drops.length ? drops[drops.length - 1] : undefined;
+  const firstPick = tasks.find((s) => s.kind === 'pickup');
+  return {
+    chain,
+    loadIds,
+    firstPickup: firstPick ? site(firstPick) : null,
+    finalDropoff: lastDrop ? site(lastDrop) : null,
+    endCity: realPlace(list.find((s) => s.kind === 'end')?.city),
+    truncatedStops: Math.max(0, tasks.length - shown.length),
+  };
+}
+
 // Synthesize multi-dim capacity when source data only has kg.
 // Heuristic: 1 pallet ~ 750 kg, 1 m3 ~ 250 kg (typical mixed freight).
 export function synthPallets(kg: number): number { return Math.max(1, Math.round(kg / 750)); }

@@ -516,6 +516,31 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
 # 11 mutations negative-tested via scripts/check_number_formatting_negative.sh.
 python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
 
+# A backload trip published to the agent must name every load it carries, and its
+# destination must be the LAST dropoff. A user asked for one truck's workload and
+# the agent replied "final destination: RCA Trucking" for a tour that handed one
+# load over at RCA Trucking and carried a second onward - while the app's own
+# Stops panel showed the real 6-stop, 2-load chain beside it. The agent was not
+# hallucinating: __memo_backload_matching was built from Assignment's scalar
+# PICKUP_CITY / PROPOSAL_DROPOFF_CITY, and those are read from the FIRST pickup
+# only, so hop 1 was published as the entire workload and the second load id
+# appeared nowhere the agent could see. What made it durable is that nothing
+# failed - every number was correct, and the memo's own drop list was ALREADY
+# chain-correct, so the memo contradicted itself and the agent resolved that by
+# trusting the "A->B" summary. "Destination" compounded it: it is a placeholder
+# token for an unnamed site, scrubbed server-side by the chain solver but not on
+# the client path, so the agent quoted it back as a delivery point.
+#
+# Derive the published description from STOPS via describeTourChain, which is the
+# only complete record of a solved tour. Do NOT re-add the flat first-pickup
+# summary next to the chain text to make something else pass: that shape leaves
+# every keyword rule satisfied and only the explicit ban catches it (negative
+# test M7). Rule F insists the agent-spec sentence lives in the query_backload
+# bullet ITSELF, because a prose rule satisfiable from anywhere in a 35k-char
+# orchestration string has already false-passed in this repo (M8 is that control).
+# 10 mutations negative-tested via scripts/check_backload_memo_negative.sh.
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_memo.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS

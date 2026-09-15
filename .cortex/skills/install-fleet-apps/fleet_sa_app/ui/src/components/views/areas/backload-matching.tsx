@@ -33,7 +33,7 @@ import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
-  findUnroutablePoints, coordKey,
+  findUnroutablePoints, coordKey, describeTourChain, realPlace,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
 } from './backload-matching/helpers';
@@ -1021,13 +1021,30 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   // onStateChange loops (React #185).
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
+    const MAX_CHAIN_STOPS = 8;
     const memo = visibleAssignments.length
       ? visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
+          // Derive from STOPS, never from the scalar PICKUP_CITY /
+          // PROPOSAL_DROPOFF_CITY pair: those come from the first pickup only,
+          // so on a chained tour they name hop 1 and the agent then reports the
+          // handover point as the final destination.
+          const tour = describeTourChain(a.STOPS, MAX_CHAIN_STOPS);
           const drops = Array.isArray(a.STOPS)
-            ? a.STOPS.filter((s) => s.kind === 'dropoff').map((s) => s.city || s.label).filter(Boolean)
+            ? a.STOPS.filter((s) => s.kind === 'dropoff')
+                .map((s) => realPlace(s.city) ?? (s.offerId ? `unnamed site for ${s.offerId}` : null))
+                .filter(Boolean)
             : [];
-          const dropStr = drops.length ? drops.join(', ') : (a.PROPOSAL_DROPOFF_CITY || '?');
-          return `${a.TRAILER_ID} ${a.SOURCE} ${a.PICKUP_CITY || '?'}->${a.PROPOSAL_DROPOFF_CITY || '?'} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
+          const dropStr = drops.length ? drops.join(', ') : (realPlace(a.PROPOSAL_DROPOFF_CITY) || '?');
+          const loadStr = tour.loadIds.length > 1
+            ? `CHAINED tour, ${tour.loadIds.length} loads ${tour.loadIds.join(' then ')} | `
+            : (tour.loadIds.length === 1 ? `1 load ${tour.loadIds[0]} | ` : '');
+          const chainStr = tour.chain
+            ? ` | stops: ${tour.chain}${tour.truncatedStops ? ` (+${tour.truncatedStops} more stops)` : ''}`
+            : '';
+          const endStr = tour.endCity ? ` | tour ends at ${tour.endCity} (depot, not a delivery)` : '';
+          const origin = tour.firstPickup ?? realPlace(a.PICKUP_CITY) ?? '?';
+          const dest = tour.finalDropoff ?? realPlace(a.PROPOSAL_DROPOFF_CITY) ?? '?';
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
         }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
       : null;
     return {

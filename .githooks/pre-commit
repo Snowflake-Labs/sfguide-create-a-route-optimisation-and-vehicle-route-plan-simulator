@@ -590,3 +590,25 @@ if [ -f "$SEMANTIC_VERDICT_CHECK" ]; then
     exit 1
   }
 fi
+
+# 17. A backload trip published to the agent must name every load it carries and
+# must report its LAST dropoff as the destination. A user asked for one truck's
+# workload and the agent answered "final destination: RCA Trucking" for a tour
+# that handed one load over there and carried a second onward - while the app's
+# own Stops panel showed the real 6-stop, 2-load chain beside it. The agent was
+# faithful: __memo_backload_matching was built from Assignment's scalar
+# PICKUP_CITY / PROPOSAL_DROPOFF_CITY, which come from the FIRST pickup only, so
+# hop 1 was published as the whole workload and the second load id existed
+# nowhere the agent could read. Nothing threw, every number was right, and the
+# memo's own drop list was already chain-correct - so the memo contradicted
+# itself and the agent trusted the "A->B" half. Derive from STOPS instead, and
+# do not restore the flat summary alongside the chain text: that shape leaves
+# every keyword rule passing (negative test M7 is the control).
+BACKLOAD_MEMO_CHECK="$SKILL_DIR/scripts/check_backload_memo.py"
+if [ -f "$BACKLOAD_MEMO_CHECK" ]; then
+  echo "pre-commit: backload memo chain-truthfulness check..."
+  python3 "$BACKLOAD_MEMO_CHECK" || {
+    echo "pre-commit FAILED: a multi-load backload tour would be published to the agent as a single match."
+    exit 1
+  }
+fi
