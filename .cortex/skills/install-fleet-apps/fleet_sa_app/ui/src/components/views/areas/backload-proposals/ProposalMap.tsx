@@ -124,9 +124,14 @@ export default function ProposalMap({
     //     the caller supplied them.
     const kindOf = (legIdx: number): MapLegKind =>
       legKinds ? (legKinds[legIdx] ?? 'loaded') : (legIdx === 0 ? 'empty' : 'loaded');
+    // UNITS TRAP: getDashArray is [dash, gap] relative to the path width IN THE
+    // LAYER'S WIDTH UNITS. Without widthUnits: 'pixels' the default is metres,
+    // so the dash period is a world-space 16 m and the line reads as solid once
+    // zoomed out past ~1 px/km. widthMinPixels clamps the stroke, not the dash.
     const emptyStyle = {
-      getColor: [...COLOR_LEG_EMPTY, 220] as any, getWidth: 4, widthMinPixels: 3,
-      getDashArray: [10, 6] as any, dashJustified: true,
+      getColor: [...COLOR_LEG_EMPTY, 220] as any, getWidth: 4,
+      widthUnits: 'pixels' as const, widthMinPixels: 3,
+      getDashArray: [8, 5] as any, dashJustified: true,
       extensions: [new PathStyleExtension({ dash: true })],
       parameters: { depthTest: false },
     };

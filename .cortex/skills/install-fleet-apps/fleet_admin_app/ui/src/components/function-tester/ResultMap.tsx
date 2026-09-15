@@ -208,6 +208,10 @@ export function ResultMap({
       getPath: (d: any) => d.path,
       getColor: [148, 163, 184, 200],
       getWidth: 3,
+      // UNITS TRAP: getDashArray is relative to the path width in the layer's
+      // width units, which default to metres - a world-space dash period looks
+      // solid when zoomed out. Pin pixels so the dash is zoom-invariant.
+      widthUnits: 'pixels',
       widthMinPixels: 2,
       widthMaxPixels: 4,
       getDashArray: [6, 4],

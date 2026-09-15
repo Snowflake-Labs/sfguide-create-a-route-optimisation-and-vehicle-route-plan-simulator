@@ -40,6 +40,7 @@ import {
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
   type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
+import { COLOR_LEG_EMPTY, COLOR_LEG_BASELINE } from './backload-proposals/constants';
 
 // Cached ORS empty-leg result (geometry + real road km) keyed by
 // `<trailer>|<offer>` for the outbound leg and `<trailer>|<offer>|ret` for the
@@ -1396,8 +1397,8 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           id: 'baseline-path',
           data: [{ path, _baselineKm: baseline.km, _baselineEnd: baseline.endLabel }],
           getPath: (d: { path: LngLat[] }) => d.path,
-          getColor: [150, 150, 150, 200],
-          getWidth: 2, widthUnits: 'pixels', widthMinPixels: 1, widthMaxPixels: 3,
+          getColor: [...COLOR_LEG_BASELINE, 180],
+          getWidth: 2, widthUnits: 'pixels', widthMinPixels: 1, widthMaxPixels: 2,
           parameters: { depthTest: false }, pickable: true,
         }) as unknown as Layer);
       }
@@ -1433,9 +1434,18 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           }) as unknown as Layer);
         }
       }
+      // UNITS TRAP: getDashArray is [dash, gap] RELATIVE TO THE PATH WIDTH, in
+      // the layer's width units. GeoJsonLayer defaults lineWidthUnits to
+      // 'meters' with getLineWidth 1, so [10, 6] used to mean a 16 m period in
+      // WORLD space - far sub-pixel at country zoom, where the line rasterised
+      // as solid grey. lineWidthMinPixels clamps the stroke only, never the
+      // dash period. Pinning pixel units makes the period a constant 32 px on /
+      // 20 px off at every zoom level. Do not drop lineWidthUnits.
       const dashed = (id: string, data: unknown) => new GeoJsonLayer({
         id, data: data as GeoJSON.GeoJSON,
-        stroked: true, getLineColor: [110, 110, 110, 255], getDashArray: [10, 6], lineWidthMinPixels: 6,
+        stroked: true, getLineColor: [...COLOR_LEG_EMPTY, 255],
+        lineWidthUnits: 'pixels', getLineWidth: 4, lineWidthMinPixels: 4,
+        getDashArray: [8, 5], dashJustified: true,
         extensions: [new PathStyleExtension({ dash: true })], parameters: { depthTest: false },
       }) as unknown as Layer;
       if (selected.EMPTY_GEOJSON) result.push(dashed('empty-sel', selected.EMPTY_GEOJSON));
@@ -1747,11 +1757,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(200,200,200)', border: '1px solid rgb(120,120,120)', display: 'inline-block' }} />External offer</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />Internal volume</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(22,163,74)', border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.15)', display: 'inline-block' }} />Idle trailer</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />Empty leg (out + return)</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: `3px dashed rgb(${COLOR_LEG_EMPTY.join(',')})`, display: 'inline-block' }} />Empty leg (out + return)</span>
         {/* Matches the solid grey `baseline-path` PathLayer: thin and solid so it
             reads as a different kind of thing from the dashed empty legs, which
             are part of the plan. Drawn only for the selected vehicle. */}
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '2px solid rgb(150,150,150)', display: 'inline-block' }} />Baseline - no backload (selected vehicle)</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: `2px solid rgb(${COLOR_LEG_BASELINE.join(',')})`, display: 'inline-block' }} />Baseline - no backload (selected vehicle)</span>
       </div>
 
       {confirmMsg && (<div style={{ marginBottom: 12, fontSize: 13, padding: '8px 12px', background: 'rgba(22,163,74,0.10)', border: '1px solid rgba(22,163,74,0.4)', borderRadius: 4, color: '#065f46' }}>{confirmMsg}</div>)}
@@ -1775,7 +1785,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
               plan's own empty km so the comparison is on screen, not implied. */}
           {selectedTrailer && (
             <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 5, padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', boxShadow: '0 1px 3px rgba(0,0,0,0.12)', maxWidth: 320 }}>
-              <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: '2px solid rgb(150,150,150)', verticalAlign: 'middle', marginRight: 6 }} />
+              <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: `2px solid rgb(${COLOR_LEG_BASELINE.join(',')})`, verticalAlign: 'middle', marginRight: 6 }} />
               <b>{selectedTrailer}</b> baseline (no backload):{' '}
               {!baseline && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>routing...</span>}
               {baseline?.status === 'at-end' && <>0 km - already at {baseline.endLabel}</>}
