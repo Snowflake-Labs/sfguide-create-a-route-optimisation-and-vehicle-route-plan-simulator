@@ -64,6 +64,12 @@ export interface Stop {
 export interface Assignment {
   ASSIGNMENT_ID: string;
   TRAILER_ID: string; OFFER_ID: string; SOURCE: string;
+  // Provenance, carried STRUCTURALLY rather than inferred from SOURCE. SOURCE is
+  // a channel label, and one of its values used to be the literal 'INTERNAL' on
+  // rows that are external, which made the internal-first preference this whole
+  // page expresses unreadable from that column. Set at assignment build time
+  // from WHICH POOL the row came out of, so no label can flip it.
+  IS_INTERNAL: boolean;
   PICKUP_LON: number; PICKUP_LAT: number;
   DROPOFF_LON: number; DROPOFF_LAT: number;
   EMPTY_KM: number; LOADED_KM: number; SCORE: number;

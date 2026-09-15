@@ -48,7 +48,11 @@ export default function AssignmentList({
               <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c.join(',')})`, flexShrink: 0 }} />
               <b style={{ fontSize: 12 }}>{a.TRAILER_ID}</b>
               <span style={{ fontSize: 10, color: 'var(--text-secondary, #6b7280)' }}>&middot; {a.OFFER_ID}</span>
-              <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: a.SOURCE === 'INTERNAL' ? 'rgba(41,181,232,0.18)' : 'rgba(200,200,200,0.4)' }}>
+              {/* Badge colour keys off IS_INTERNAL (structural), not SOURCE: an
+                  external offer whose channel label read INTERNAL was painted
+                  with the internal colour. SOURCE is still the TEXT shown, since
+                  the channel is what the dispatcher wants to read. */}
+              <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: a.IS_INTERNAL ? 'rgba(41,181,232,0.18)' : 'rgba(200,200,200,0.4)' }}>
                 {a.SOURCE}
               </span>
               {net !== undefined && (

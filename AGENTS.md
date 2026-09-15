@@ -89,6 +89,16 @@ python3 .cortex/skills/evals/run_evals.py
 # loaders where a CONFIG read legitimately picks the region to INGEST, so failing
 # on them would gate nothing and block everything.
 python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping.py
+# RULE 5 extends the same class to JS STORED PROCEDURES, which every earlier glob
+# missed: TOOL_BACKLOAD_SOLVE took P_REGION, scoped all three feeds with it, then
+# resolved vehicle_type from the ONE-ROW CONFIG table - so a SanFrancisco solve
+# over 100 ebikes reported hgv, routed on driving-hgv and priced the objective at
+# 0.85/km. CONFIG as a FALLBACK is fine; what the rule enforces is ORDER, because
+# a co-presence check passes on the defect with a region read bolted on after.
+# RULE 6 keeps SOURCE a CHANNEL: its vocabulary held the literal 'INTERNAL' while
+# every row it labels is an external offer (IS_INTERNAL=FALSE), so 75 of 300 rows
+# claimed provenance they did not have.
+python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping_negative.py
 
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
 bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh

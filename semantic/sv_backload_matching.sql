@@ -16,7 +16,7 @@
 --         (backload_matching pack; rebuilt from SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT).
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC. Currency is USD (SF / USD dataset).
 -- Three independent facts; all coordinates exposed as LON/LAT floats (no GEOGRAPHY).
--- No vendor branding: SOURCE / LISTING_TEXT are neutral (MARKETPLACE / PARTNER_APP / INTERNAL / DISPATCH).
+-- No vendor branding: SOURCE / LISTING_TEXT are neutral (MARKETPLACE / PARTNER_APP / BROKER / DISPATCH).
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-backload-matching"}}';
 
@@ -43,7 +43,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
   )
 
   DIMENSIONS (
-    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    offers.source AS SOURCE WITH SYNONYMS ('channel', 'arrival channel') COMMENT = 'Arrival CHANNEL of the offer (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER). This is NOT provenance: every row in this entity is an external offer, so do not use it to answer internal-vs-external.'
     , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
     , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
     , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
@@ -55,7 +55,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
     , trailers.status AS STATUS COMMENT = 'Trailer status'
     , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
-    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision channel', 'internal or external') COMMENT = 'Provenance of the matched load. The value INTERNAL is RESERVED for the internal volume pool; every other value is an external offer channel. External offers can no longer carry the label INTERNAL, which is what makes this column answer internal-vs-external.'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
   )
@@ -87,5 +87,7 @@ Conventions:
 - "matches" / "decisions" -> decisions.total_decisions.
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
-- internal vs external -> decisions.decision_source.'
+- internal vs external -> decisions.decision_source, where the value INTERNAL means an own-fleet
+  volume and any other value is an external channel. Do NOT answer this from offers.source: that
+  entity holds only external offers and its values are arrival channels, not provenance.'
 ;

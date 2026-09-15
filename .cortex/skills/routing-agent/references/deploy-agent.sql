@@ -3040,11 +3040,55 @@ try {
     if (trailerId !== null && (trailerId === '' || trailerId.length > 64)) trailerId = null;
 
     // ------------------------------------------------------------ feed reads
-    var vehicleType = 'hgv';
+    // VEHICLE TYPE COMES FROM THE REGION BEING SOLVED, NOT FROM CONFIG.
+    // CONFIG holds exactly ONE row (measured: hgv / UnitedStatesOfAmerica), so
+    // reading it unconditionally described the WRONG FLEET for every other
+    // region: a SanFrancisco solve over 100 ebikes reported vehicle_type 'hgv',
+    // resolved profile 'driving-hgv' and priced the VROOM objective at 0.85/km
+    // instead of 0.08/km. Nothing threw - the class lookup succeeded, the solve
+    // returned, and every number was internally consistent with a fleet that
+    // was not there.
+    //
+    // VW_TRAILERS is the right source because it is the SAME scoped set the
+    // trailer feed below reads, so the reported profile can never describe a
+    // fleet this solve does not contain. Ordered by count then name so a MIXED
+    // fleet yields the dominant type deterministically rather than whichever
+    // row the engine returned first; FLEET_MIX reports the whole distribution
+    // so the collapse to a single mode is visible instead of silent.
+    //
+    // CONFIG survives only as a FALLBACK for the case where the region yields
+    // no trailer at all. It must stay AFTER the region read, and the basis is
+    // reported, so "which fleet was this costed as" is answerable from the
+    // response. Guarded by check_region_scoping.py RULE 5.
+    var vehicleType = null;
+    var vehicleTypeBasis = 'default';
+    var fleetMix = [];
     try {
-        var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
-        if (vr.next()) vehicleType = String(vr.getColumnValue(1) || 'hgv');
-    } catch (e) { /* default */ }
+        var fmRows = rowsOf(
+            "SELECT CURRENT_LOAD AS VEHICLE_TYPE, COUNT(*) AS N "
+          + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS "
+          + "WHERE REGION = ? AND CURRENT_LOAD IS NOT NULL "
+          + "GROUP BY 1 ORDER BY N DESC, VEHICLE_TYPE",
+            [region], ['VEHICLE_TYPE', 'N']);
+        for (var fmi = 0; fmi < fmRows.length; fmi++) {
+            fleetMix.push({ vehicle_type: String(fmRows[fmi].VEHICLE_TYPE),
+                            vehicles: num(fmRows[fmi].N) });
+        }
+        if (fleetMix.length) {
+            vehicleType = fleetMix[0].vehicle_type;
+            vehicleTypeBasis = 'region_fleet';
+        }
+    } catch (e) { /* fall through to CONFIG */ }
+    if (!vehicleType) {
+        try {
+            var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (vr.next()) {
+                var cfgVt = vr.getColumnValue(1);
+                if (cfgVt) { vehicleType = String(cfgVt); vehicleTypeBasis = 'config_fallback'; }
+            }
+        } catch (e) { /* default below */ }
+    }
+    if (!vehicleType) { vehicleType = 'hgv'; vehicleTypeBasis = 'default'; }
 
     // COST_PER_KM, not COST_EUR_PER_KM. The cockpit's VehicleClass interface
     // declares the latter and reads the view with SELECT *, so its per-km cost is
@@ -3078,7 +3122,49 @@ try {
     }
     var costEmpty  = param('COST_PER_EMPTY_KM', 1.2);
     var revLoaded  = param('REVENUE_PER_LOADED_KM', 1.10);
+    var econBasis  = 'match_params';
+    // PER-VEHICLE-CLASS ECONOMICS.
+    //
+    // margin_usd used BOTH of the params above for every vehicle type in every
+    // region. They are truck-scale (1.2 empty / 1.10 loaded), so an ebike fleet
+    // was costed as a fleet of trucks - a separate defect from the profile bug
+    // above, and one that survives fixing it, because the class per-km cost was
+    // only ever the VROOM objective and never reached the margin.
+    //
+    // The split is deliberate and is the one modelling choice here:
+    //   * EMPTY COST per km is a VEHICLE ATTRIBUTE, so it comes straight from
+    //     the class row (ebike 0.08, hgv 0.85).
+    //   * LOADED REVENUE per km is a MARKET rate, NOT a vehicle attribute, so
+    //     it cannot be read from the class table at all. It is scaled by the
+    //     class/hgv cost ratio, which keeps REVENUE_PER_LOADED_KM as the hgv
+    //     baseline it already is and keeps the margin SIGN meaningful across
+    //     vehicle types: a rate left at the truck value would make every ebike
+    //     proposal look wildly profitable purely because its costs are lower.
+    // HGV_BASELINE_COST_PER_KM is read from the same table rather than being
+    // hardcoded, so re-rating the fleet does not silently rescale revenue.
+    var hgvCostPerKm = 0.85;
+    try {
+        var hb = rowsOf(
+            "SELECT COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS "
+          + "WHERE VEHICLE_TYPE = 'hgv' LIMIT 1", [], ['COST_PER_KM']);
+        if (hb.length && num(hb[0].COST_PER_KM)) hgvCostPerKm = num(hb[0].COST_PER_KM);
+    } catch (e) { /* keep the literal baseline */ }
+    var classCostPerKm = num(cls.COST_PER_KM);
+    if (classCostPerKm && hgvCostPerKm > 0) {
+        costEmpty = classCostPerKm;
+        revLoaded = revLoaded * (classCostPerKm / hgvCostPerKm);
+        econBasis = 'vehicle_class';
+    }
     var maxEmptyKm = Math.max(1, param('MAX_EMPTY_KM', 100));
+    // Candidate-pair cap for the eligible read, PER TRAILER. A new key rather
+    // than reusing MAX_PROPOSALS_PER_TRAILER: that one caps OUTPUT per vehicle,
+    // this one caps how much of the candidate set is materialised, and
+    // overloading it would make one number answer two questions. Math.floor'd
+    // and bounded for the same reason as maxVehicles/maxLoads - it is
+    // concatenated into the feed SQL because a QUALIFY bound cannot be a bind,
+    // so integer-and-bounded is also the injection guarantee.
+    var maxPairsPerTrailer = Math.max(1, Math.min(2000,
+        Math.floor(param('MAX_CANDIDATE_PAIRS_PER_TRAILER', 50))));
     var maxStops   = Math.max(2, param('BPMP_MAX_STOPS', 4));
     var IDEAL_SLACK_HRS = 24;
 
@@ -3111,7 +3197,7 @@ try {
         // to look at the fleet instead of at the id they passed.
         if (trailerId && !trailers.length) {
             return { status: 'FAILED', reason: 'VEHICLE_NOT_FOUND', region: region,
-                     vehicle_type: vehicleType, trailer_id: trailerId,
+                     vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, trailer_id: trailerId,
                      error: 'No vehicle ' + trailerId + ' among the idle vehicles for region ' + region
                           + '. Check the id and the region: a vehicle is only in this feed when it is '
                           + 'idle or has a future free time, and it is scoped to one region.' };
@@ -3148,16 +3234,39 @@ try {
         // account - measured 29,047 rows across two regions - and pulled another region's
         // eligibility chips into this plan's baseline scan. The trailer and load feeds
         // above were already scoped, so this one read was the leak.
+        //
+        // CAPPED PER TRAILER, and the cap is per trailer ON PURPOSE. This was the
+        // only uncapped feed (the trailer and load reads have carried LIMITs for
+        // some time): measured 28,716 rows for SanFrancisco, ~12s of the run just
+        // to materialise them into this proc. A GLOBAL limit would let one vehicle
+        // eat it - measured max 404 pairs for a single trailer against an average
+        // of 287 - which is the same starvation failure the internal pool has a
+        // comment about. Ranked by GREAT_CIRCLE_KM ASC because that is exactly what
+        // baselineProposals() minimises, so a truncated tail can only ever drop
+        // pairs the baseline scan would never have selected; IS_INTERNAL DESC first
+        // keeps internal-first parity with the loads feed above.
+        //
+        // NOTE the window function is NOT redundant with the QUALIFY. COUNT(*) OVER
+        // is evaluated BEFORE the cap, so every surviving row still carries its
+        // trailer's TRUE pair count and the uncapped total is recoverable exactly,
+        // with no second query and no second scan of the view. That matters because
+        // counts.eligible_pairs is a REPORTED number: capping it silently would give
+        // one field two meanings depending on how big the region happened to be.
         eligible = rowsOf(
             "WITH scoped_t AS ("
           + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
-          + "SELECT c.TRAILER_ID, c.LOAD_ID, c.DIST_CHECK, c.TIME_CHECK, c.HORIZON_CHECK, c.CAP_CHECK, c.HAZMAT_CHECK "
+          + "SELECT c.TRAILER_ID, c.LOAD_ID, c.DIST_CHECK, c.TIME_CHECK, c.HORIZON_CHECK, c.CAP_CHECK, c.HAZMAT_CHECK, "
+          + "       COUNT(*) OVER (PARTITION BY c.TRAILER_ID) AS TRAILER_PAIRS_TOTAL "
           + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
           + "JOIN scoped_t s ON s.TRAILER_ID = c.TRAILER_ID "
           + "WHERE c.ELIGIBLE = TRUE "
-          + (trailerId ? "AND c.TRAILER_ID = ? " : ""),
+          + (trailerId ? "AND c.TRAILER_ID = ? " : "")
+          + "QUALIFY ROW_NUMBER() OVER (PARTITION BY c.TRAILER_ID "
+          + "                           ORDER BY c.IS_INTERNAL DESC, c.GREAT_CIRCLE_KM ASC NULLS LAST) <= "
+          + maxPairsPerTrailer,
             trailerId ? [region, trailerId] : [region],
-            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK']);
+            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK',
+             'TRAILER_PAIRS_TOTAL']);
     } catch (e) {
         var m = e && e.message ? String(e.message) : 'unknown error';
         if (/does not exist or not authorized/i.test(m)) {
@@ -3168,7 +3277,7 @@ try {
         throw e;
     }
     if (!trailers.length || !loads.length) {
-        return { status: 'FAILED', reason: 'NO_FEED', region: region, vehicle_type: vehicleType,
+        return { status: 'FAILED', reason: 'NO_FEED', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix,
                  vehicles: trailers.length, loads: loads.length,
                  trailer_id: trailerId,
                  error: trailerId
@@ -3179,15 +3288,37 @@ try {
     }
 
     var eligibleSet = {}, chipsByPair = {};
+    // Uncapped total, recovered from the pre-QUALIFY window count carried on
+    // each surviving row. Every trailer with at least one eligible pair returns
+    // at least one row (the cap is >= 1), so summing one value per DISTINCT
+    // trailer reproduces the true total exactly rather than estimating it.
+    var pairsTotalByTrailer = {};
     for (var ei = 0; ei < eligible.length; ei++) {
         var ec = eligible[ei];
         var ekey = String(ec.TRAILER_ID) + '::' + String(ec.LOAD_ID);
         eligibleSet[ekey] = true;
+        pairsTotalByTrailer[String(ec.TRAILER_ID)] = num(ec.TRAILER_PAIRS_TOTAL) || 0;
         chipsByPair[ekey] = { distance: ec.DIST_CHECK === true, pickup_time: ec.TIME_CHECK === true,
                               horizon: ec.HORIZON_CHECK === true, capacity: ec.CAP_CHECK === true,
                               hazmat: ec.HAZMAT_CHECK === true };
     }
-    var eligibleCount = Object.keys(eligibleSet).length;
+    // eligible_pairs keeps meaning "how many pairs passed every constraint" -
+    // unchanged by the cap - and eligible_pairs_used reports how many of them
+    // this run actually considered. Reporting only one of the two is what would
+    // make the figure ambiguous.
+    var eligibleUsed = Object.keys(eligibleSet).length;
+    var eligibleCount = 0;
+    for (var tk in pairsTotalByTrailer) {
+        if (Object.prototype.hasOwnProperty.call(pairsTotalByTrailer, tk)) eligibleCount += pairsTotalByTrailer[tk];
+    }
+    var eligibleCapped = eligibleCount > eligibleUsed;
+    // FEED COST, REPORTED SEPARATELY. P_TIME_BUDGET_S bounds optimizer calls
+    // only: the first budgetExhausted() check happens after every read above, so
+    // a feed that takes longer than the whole budget cannot be interrupted and
+    // does not show up as budget pressure - measured 25.8s of feed against a 15s
+    // budget at 200 vehicles / 1000 loads. Folding it into elapsed_s hides it, so
+    // it is timed here, where the reads are provably finished.
+    var feedElapsedS = elapsedS();
 
     // ------------------------------------------------ challenge construction
     // A shipment is TWO VROOM tasks (pickup + delivery), so max_tasks is the
@@ -3373,7 +3504,11 @@ try {
             var t = trailers[i], best = null;
             for (var j = 0; j < loads.length; j++) {
                 var l = loads[j];
-                if (eligibleCount && !eligibleSet[String(t.TRAILER_ID) + '::' + String(l.LOAD_ID)]) continue;
+                // eligibleUsed, NOT eligibleCount: this gate asks "is the set
+                // populated", so it must be sized on the SET that is actually in
+                // memory. eligibleCount is now the pre-cap total and would claim
+                // membership could be checked against pairs never fetched.
+                if (eligibleUsed && !eligibleSet[String(t.TRAILER_ID) + '::' + String(l.LOAD_ID)]) continue;
                 var km = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
                 if (!best || km < best.km) best = { l: l, km: km };
             }
@@ -3530,16 +3665,17 @@ try {
         // caller no backload exists for a plan that was never actually attempted.
         if (budgetHit) {
             return { status: 'FAILED', reason: 'TIME_BUDGET_EXCEEDED', region: region,
-                     vehicle_type: vehicleType, trailer_id: trailerId,
-                     time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
+                     vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, trailer_id: trailerId,
+                     time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
                      strategies_run: familiesRun, families_skipped: familiesSkipped,
                      error: 'Nothing finished inside the ' + timeBudgetS + 's budget (' + elapsedS() + 's elapsed). '
                           + 'This is a size problem, not a data problem: scope to one vehicle with trailer_id, '
                           + 'ask for a single strategy instead of the ensemble, lower max_vehicles/max_loads, '
                           + 'or raise time_budget_s.' };
         }
-        return { status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
-                 counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+        return { status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
+                 counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
                            proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
                  proposals: [], totals: {},
                  strategies_run: familiesRun, families_skipped: familiesSkipped,
@@ -3763,12 +3899,13 @@ try {
             });
         }
         return {
-            status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
             granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
             strategies_run: familiesRun,
-            trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
+            trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
             counts: {
-                vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+                vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
                 graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
                 pairs_returned: pairRows.length, excluded_unroutable: excludedTotal
             },
@@ -3797,7 +3934,11 @@ try {
             empty_km: (o.emptyKm === null) ? null : Math.round(o.emptyKm * 10) / 10,
             loaded_km: (econLoaded(o) === null) ? null : Math.round(econLoaded(o) * 10) / 10,
             detour_km: (o.detourKm === null) ? null : Math.round(o.detourKm * 10) / 10,
-            margin_usd: (econMargin(o) === null) ? null : Math.round(econMargin(o)),
+            // 2dp, not integer. Whole dollars were adequate while every margin
+            // was priced at truck rates; on ebike rates a real 0.28 USD margin
+            // rounds to 0 and the column reads as though the economics were
+            // switched off. The repo's display convention is 2dp anyway.
+            margin_usd: (econMargin(o) === null) ? null : Math.round(econMargin(o) * 100) / 100,
             idle_hours: (o.idleHours === null) ? null : Math.round(o.idleHours * 10) / 10,
             stops: o.maxStopSeq,
             empty_city: o.emptyCity, pickup_city: o.pickupCity, delivery_city: o.deliveryCity,
@@ -3807,22 +3948,30 @@ try {
     }
 
     return {
-        status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
         granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
         strategies_run: familiesRun,
         // Echoed so the caller can see the run was scoped and how much of the
         // budget it used. elapsed_s next to time_budget_s is what makes a
         // truncated run legible without reading families_skipped.
-        trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
+        trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
         counts: {
-            vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
+            vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
             graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
             proposals_returned: outRows.length, excluded_unroutable: excludedTotal
         },
         totals: {
             internal_matched: internalMatched,
-            total_empty_km: Math.round(totalEmpty),
-            total_margin_usd: Math.round(totalMargin),
+            total_empty_km: Math.round(totalEmpty * 10) / 10,
+            total_margin_usd: Math.round(totalMargin * 100) / 100,
+            // A headline number whose BASIS can change must report that basis,
+            // or one tile carries two meanings across runs (the same lesson
+            // INTERNAL_POOL_CAP is commented with). The two rates are echoed
+            // because they are what makes total_margin_usd reproducible.
+            econ_basis: econBasis,
+            cost_per_empty_km: costEmpty,
+            revenue_per_loaded_km: Math.round(revLoaded * 10000) / 10000,
             avg_composite: perVehicle.length ? Math.round(compositeSum / perVehicle.length) : null
         },
         weights: WEIGHTS,
@@ -4004,14 +4153,49 @@ try {
     var outLimit = finite(P_LIMIT) && Number(P_LIMIT) > 0 ? Math.min(200, Math.floor(Number(P_LIMIT))) : 25;
 
     // --------------------------------------------------------- class + params
-    var vehicleType = 'hgv', profile = 'driving-car';
+    // Region-resolved, for the same reason as TOOL_BACKLOAD_SOLVE: CONFIG is a
+    // ONE-ROW table, so reading it unconditionally resolved an hgv profile for
+    // an ebike region and every chain leg was routed as a truck. VW_TRAILERS is
+    // the scoped set this proc already reads its chains against, so the profile
+    // cannot describe a fleet that is not in the solve. CONFIG stays as a
+    // fallback only, and must stay AFTER the region read
+    // (check_region_scoping.py RULE 5).
+    var vehicleType = null, profile = 'driving-car';
+    var vehicleTypeBasis = 'default';
+    var fleetMix = [];
     try {
-        var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
-        if (vr.next()) vehicleType = String(vr.getColumnValue(1) || 'hgv');
-    } catch (e) { /* default */ }
-    var pr = q("SELECT ORS_PROFILE FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
+        var fm = q("SELECT CURRENT_LOAD AS VEHICLE_TYPE, COUNT(*) AS N "
+                 + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS "
+                 + "WHERE REGION = ? AND CURRENT_LOAD IS NOT NULL "
+                 + "GROUP BY 1 ORDER BY N DESC, VEHICLE_TYPE", [region]);
+        while (fm.next()) {
+            fleetMix.push({ vehicle_type: String(fm.getColumnValue(1)),
+                            vehicles: Number(fm.getColumnValue(2)) });
+        }
+        if (fleetMix.length) { vehicleType = fleetMix[0].vehicle_type; vehicleTypeBasis = 'region_fleet'; }
+    } catch (e) { /* fall through to CONFIG */ }
+    if (!vehicleType) {
+        try {
+            var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (vr.next()) {
+                var cfgVt = vr.getColumnValue(1);
+                if (cfgVt) { vehicleType = String(cfgVt); vehicleTypeBasis = 'config_fallback'; }
+            }
+        } catch (e) { /* default below */ }
+    }
+    if (!vehicleType) { vehicleType = 'hgv'; vehicleTypeBasis = 'default'; }
+    var pr = q("SELECT ORS_PROFILE, COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
                [vehicleType]);
-    if (pr.next()) profile = String(pr.getColumnValue(1) || 'driving-car');
+    var classCostPerKm = 0;
+    if (pr.next()) {
+        profile = String(pr.getColumnValue(1) || 'driving-car');
+        classCostPerKm = Number(pr.getColumnValue(2)) || 0;
+    }
+    var hgvCostPerKm = 0.85;
+    try {
+        var hb = q("SELECT COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = 'hgv' LIMIT 1");
+        if (hb.next() && Number(hb.getColumnValue(1))) hgvCostPerKm = Number(hb.getColumnValue(1));
+    } catch (e) { /* keep the literal baseline */ }
 
     var params = {};
     try {
@@ -4074,6 +4258,17 @@ try {
     }
     var costPerEmptyKm = rate(Number(params['COST_PER_EMPTY_KM']), num(chains[0].COST_PER_EMPTY_KM), 1.2);
     var revPerLoadedKm = rate(Number(params['REVENUE_PER_LOADED_KM']), num(chains[0].REV_PER_LOADED_KM), 1.1);
+    // Same per-class re-rating as TOOL_BACKLOAD_SOLVE, applied for the same
+    // reason and by the same rule (empty cost is a vehicle attribute, loaded
+    // revenue is a market rate scaled by the class/hgv cost ratio). It has to
+    // be here too: a chain and a single-leg answer for the SAME region priced
+    // on two different bases would disagree about whether a chain is worth it.
+    var econBasis = 'match_params';
+    if (classCostPerKm > 0 && hgvCostPerKm > 0) {
+        costPerEmptyKm = classCostPerKm;
+        revPerLoadedKm = revPerLoadedKm * (classCostPerKm / hgvCostPerKm);
+        econBasis = 'vehicle_class';
+    }
 
     function chainKey(c) { return c.TRAILER_ID + '::' + c.LEG1_LOAD_ID + '::' + c.LEG2_LOAD_ID; }
 
@@ -4251,11 +4446,11 @@ try {
             });
         }
         return {
-            status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, profile: profile,
             cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
             counts: { skeletons: chains.length, graded: graded.length, returned: rawRows.length,
                       costed_on_road: costed, deferred_over_matrix_limit: deferred },
-            economics: { cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: revPerLoadedKm },
+            economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
             envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
                         max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
             raw: rawRows
@@ -4321,7 +4516,7 @@ try {
     }
 
     return {
-        status: 'SUCCESS', region: region, vehicle_type: vehicleType, profile: profile,
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, profile: profile,
         cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
         cascade: { rung_reached: rungReached, label: rungReached ? RUNG_LABEL[rungReached] : null,
                    note: cascadeNote },
@@ -4330,7 +4525,7 @@ try {
                   costed_on_road: costed, deferred_over_matrix_limit: deferred },
         totals: { chains_beating_baseline: beats, chains_saving_empty_km: savingEmpty,
                   total_empty_saved_km: Math.round(sumSaved), total_net_usd: Math.round(sumNet) },
-        economics: { cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: revPerLoadedKm },
+        economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
         envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
                     max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
         chains: out

@@ -363,7 +363,16 @@ entities:
       -- with no error anywhere.
       shifted AS (
         SELECT
-          f.*,
+          f.* EXCLUDE (SOURCE),
+          -- CHANNEL REMAP, idempotent. Already-generated rows carry
+          -- SOURCE='INTERNAL' from a four-label round robin (measured 75 of 300
+          -- external offers), and every row in this view is EXTERNAL - it
+          -- reaches VW_LOADS with IS_INTERNAL=FALSE. So the literal made
+          -- internal-vs-external unreadable from SOURCE while looking entirely
+          -- well-formed. The generator no longer emits it; this remap repairs
+          -- the rows already on disk so no dataset has to be regenerated, and
+          -- LISTING_TEXT below is derived from the remapped value.
+          IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
           GREATEST(
             f.PICKUP_FROM_TS,
             DATEADD('minute',
@@ -378,11 +387,12 @@ entities:
         f.SOURCE,
         f.REGION                                 AS REGION,
         FLEET_APP.CORE.REGION_LABEL(f.REGION)    AS REGION_LABEL,
-        -- SOURCE is a CHANNEL label whose values mix internal and external
-        -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer
-        -- "did this come from outside". SOURCE_SYSTEM is the system identity: a
-        -- real integration replaces the literal with its own system key, and no
-        -- consumer changes. Deliberately vendor-free.
+        -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP /
+        -- BROKER), so it cannot answer "did this come from outside" - every row
+        -- here is external regardless of channel. IS_INTERNAL is the structural
+        -- answer and SOURCE_SYSTEM is the system identity: a real integration
+        -- replaces the literal with its own system key, and no consumer
+        -- changes. Vendor-free, and no longer containing the word INTERNAL.
         'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
         COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
         COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,

@@ -880,7 +880,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
   )
 
   DIMENSIONS (
-    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    offers.source AS SOURCE WITH SYNONYMS ('channel', 'arrival channel') COMMENT = 'Arrival CHANNEL of the offer (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER). This is NOT provenance: every row in this entity is an external offer, so do not use it to answer internal-vs-external.'
     , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
     , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
     , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
@@ -914,7 +914,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , trailers.home_lon AS HOME_LON WITH SYNONYMS ('home longitude', 'depot longitude') COMMENT = 'Trailer home depot longitude. Map-ready: use with home_lat as a latlon layer.'
     , trailers.current_lat AS DROPOFF_LAT WITH SYNONYMS ('current latitude', 'trailer latitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - latitude. Map-ready with current_lon.'
     , trailers.current_lon AS DROPOFF_LON WITH SYNONYMS ('current longitude', 'trailer longitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - longitude. Map-ready with current_lat.'
-    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision channel', 'internal or external') COMMENT = 'Provenance of the matched load. The value INTERNAL is RESERVED for the internal volume pool; every other value is an external offer channel. External offers can no longer carry the label INTERNAL, which is what makes this column answer internal-vs-external.'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
   )
@@ -953,7 +953,9 @@ Conventions:
 - "matches" / "decisions" -> decisions.total_decisions.
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
-- internal vs external -> decisions.decision_source.
+- internal vs external -> decisions.decision_source, where the value INTERNAL means an own-fleet
+  volume and any other value is an external channel. Do NOT answer this from offers.source: that
+  entity holds only external offers and its values are arrival channels, not provenance.
 - MAPPING: call render_map (inline in the answer, inside the app) for an offer map by selecting pickup_lat + pickup_lon with a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve. Give each layer a legendLabel and a {COLUMN} tooltip, and do NOT author a legend array - the client derives the legend from the layer''s own colours.
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'

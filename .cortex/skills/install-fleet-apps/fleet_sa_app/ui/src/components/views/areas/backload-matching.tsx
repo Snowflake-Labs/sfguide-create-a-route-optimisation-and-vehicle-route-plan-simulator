@@ -609,7 +609,12 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       return veh;
     });
 
-    const offerById = new Map<number, { kind: 'INTERNAL' | string; row: Volume | Offer }>();
+    // `internal` is the STRUCTURAL provenance flag: it records which pool the
+    // row came out of, and nothing downstream may re-derive that from `kind`.
+    // `kind` is a display/channel label, and one of its legal external values
+    // used to be the literal 'INTERNAL', so a `kind === 'INTERNAL'` test both
+    // over-counted internal volumes and coloured external offers as internal.
+    const offerById = new Map<number, { kind: 'INTERNAL' | string; internal: boolean; row: Volume | Offer }>();
     let nextId = 1000;
     const vrpShipments: Record<string, unknown>[] = [];
     const widenSec = Math.round(windowSlackHrs * 3600);
@@ -626,7 +631,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
 
     for (const v of internalSubset) {
       const id = nextId++;
-      offerById.set(id, { kind: 'INTERNAL', row: v });
+      offerById.set(id, { kind: 'INTERNAL', internal: true, row: v });
       const kg = Math.min(Number(v.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity ? [kg, Number(v.PALLETS) || synthPallets(kg), Number(v.VOLUME_M3) || synthVolumeM3(kg)] : [kg];
       vrpShipments.push({
@@ -637,7 +642,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     }
     for (const o of externalSubset) {
       const id = nextId++;
-      offerById.set(id, { kind: o.SOURCE, row: o });
+      offerById.set(id, { kind: o.SOURCE, internal: false, row: o });
       const kg = Math.min(Number(o.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity ? [kg, Number(o.PALLETS) || synthPallets(kg), Number(o.VOLUME_M3) || synthVolumeM3(kg)] : [kg];
       vrpShipments.push({
@@ -983,7 +988,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         if (!je) continue;
         const jr = je.row as Offer;
         const segLoadedKm = haversineKm(Number(jr.PICKUP_LON), Number(jr.PICKUP_LAT), Number(jr.DROPOFF_LON), Number(jr.DROPOFF_LAT));
-        if (je.kind === 'INTERNAL') revenue += segLoadedKm * internalRatePerKm;
+        if (je.internal) revenue += segLoadedKm * internalRatePerKm;
         else revenue += Number(jr.PRICE_USD) || segLoadedKm * internalRatePerKm;
       }
       const cost = fixedDispatchUsd + tourHrs * costPerHourUsd + tourKmReal * costPerKmUsd + nDeliv * costPerDeliveryUsd;
@@ -991,6 +996,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       newAssignments.push({
         ASSIGNMENT_ID: `${t.TRAILER_ID}|${offerIdFirst}`,
         TRAILER_ID: t.TRAILER_ID, OFFER_ID: offerIdFirst, SOURCE: ent.kind,
+        IS_INTERNAL: ent.internal,
         PICKUP_LON: Number(row.PICKUP_LON), PICKUP_LAT: Number(row.PICKUP_LAT),
         DROPOFF_LON: Number(row.DROPOFF_LON), DROPOFF_LAT: Number(row.DROPOFF_LAT),
         TRAILER_DROPOFF_LON: Number(t.DROPOFF_LON), TRAILER_DROPOFF_LAT: Number(t.DROPOFF_LAT),
@@ -1100,7 +1106,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   }, [assignments, hideUnprofitable]);
 
   const totalNetBenefit = useMemo(() => Math.round(visibleAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0)), [visibleAssignments]);
-  const internalCount = useMemo(() => visibleAssignments.filter((a) => a.SOURCE === 'INTERNAL').length, [visibleAssignments]);
+  // Counted on IS_INTERNAL, never on SOURCE. This number is published to the
+  // agent memo (internal_matched below) and therefore gets quoted as fact, and
+  // SOURCE carried the literal 'INTERNAL' on external offers - measured 75 rows
+  // - so the SOURCE form over-counted internal matches by exactly those rows.
+  const internalCount = useMemo(() => visibleAssignments.filter((a) => a.IS_INTERNAL === true).length, [visibleAssignments]);
   const internalPct = visibleAssignments.length ? Math.round((internalCount / visibleAssignments.length) * 100) : 0;
   // Denominator = vehicles actually submitted to the last solve; before the first
   // solve fall back to the idle pool. Clamped at 100 defensively - if the clamp

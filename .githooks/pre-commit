@@ -411,11 +411,32 @@ fi
 #     renders a full page while returning every loaded region; the Backload
 #     Matching page then posted 29 San Francisco coordinates to the Europe road
 #     graph, which refused the matrix in 5 ms with ORS 6010 "out of bounds".
+#   RULE 5 - RULES 1-4 all glob view/function bodies and app reads, so a JS
+#     STORED PROCEDURE was outside every one of them. That is where the class
+#     survived longest: TOOL_BACKLOAD_SOLVE accepted P_REGION, scoped all three
+#     of its feeds with it, and then resolved vehicle_type from the ONE-ROW
+#     CONFIG table - so a SanFrancisco solve over 100 ebikes reported hgv,
+#     resolved the driving-hgv profile and priced its objective at 0.85/km
+#     instead of 0.08/km, with nothing thrown anywhere. CONFIG as a documented
+#     FALLBACK is legitimate, so the rule enforces ORDER, not absence.
+#   RULE 6 - SOURCE is a CHANNEL label and its vocabulary contained the literal
+#     'INTERNAL', while every row it labels is an EXTERNAL offer
+#     (IS_INTERNAL=FALSE). 75 of 300 rows therefore claimed provenance they did
+#     not have, which coloured badges wrong and over-counted the
+#     internal_matched figure published to the agent memo.
 REGION_SCOPE_CHECK="$SKILL_DIR/scripts/check_region_scoping.py"
 if [ -f "$REGION_SCOPE_CHECK" ]; then
   echo "pre-commit: region scoping check..."
   python3 "$REGION_SCOPE_CHECK" || {
-    echo "pre-commit FAILED: a view is pinned to one region, or a semantic view cannot be filtered by region."
+    echo "pre-commit FAILED: a view is pinned to one region, a semantic view cannot be filtered by region, or a region-aware proc resolves its vehicle class from the CONFIG singleton."
+    exit 1
+  }
+fi
+REGION_SCOPE_NEG="$SKILL_DIR/scripts/check_region_scoping_negative.py"
+if [ -f "$REGION_SCOPE_NEG" ]; then
+  echo "pre-commit: region scoping negative tests..."
+  python3 "$REGION_SCOPE_NEG" >/dev/null || {
+    echo "pre-commit FAILED: the region-scoping gate no longer catches its own mutations (run it directly for the list)."
     exit 1
   }
 fi

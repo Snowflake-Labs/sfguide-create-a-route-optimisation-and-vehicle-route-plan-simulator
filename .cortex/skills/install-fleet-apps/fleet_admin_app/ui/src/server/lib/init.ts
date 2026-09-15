@@ -795,7 +795,21 @@ export async function ensureBackloadAndAssetVelocityObjects(
         -- the external half of the pool without any error.
         shifted AS (
           SELECT
-            f.*,
+            f.* EXCLUDE (SOURCE, LISTING_TEXT),
+            -- CHANNEL REMAP, idempotent. Already-generated rows carry
+            -- SOURCE='INTERNAL' from a four-label round robin (measured 75 of
+            -- 300 external offers), and EVERY row in this view is external - it
+            -- reaches VW_LOADS with IS_INTERNAL=FALSE. The literal therefore
+            -- made internal-vs-external unreadable from SOURCE while looking
+            -- perfectly well-formed. The generator no longer emits it; this
+            -- repairs rows already on disk so no dataset needs regenerating.
+            -- LISTING_TEXT is a STORED string here (not derived), and it is fed
+            -- to AISQL and quoted in agent prose, so its leading channel token
+            -- is rewritten too.
+            IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
+            IFF(LEFT(f.LISTING_TEXT, 9) = 'INTERNAL ',
+                'BROKER' || SUBSTR(f.LISTING_TEXT, 9),
+                f.LISTING_TEXT) AS LISTING_TEXT,
             GREATEST(
               f.PICKUP_FROM_TS,
               DATEADD('minute',
@@ -809,10 +823,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.OFFER_ID,
           f.SOURCE,
           -- SOURCE is a CHANNEL label whose values mix internal and external
-          -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot
-          -- answer "did this come from outside". SOURCE_SYSTEM is the system
-          -- identity: a real integration replaces the literal with its own
-          -- system key and no consumer changes. Deliberately vendor-free.
+          -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP /
+          -- BROKER), so it cannot answer "did this come from outside" - every
+          -- row here is external regardless of channel. IS_INTERNAL is the
+          -- structural answer; SOURCE_SYSTEM is the system identity: a real
+          -- integration replaces the literal with its own system key and no
+          -- consumer changes. Vendor-free, and no longer containing the word
+          -- INTERNAL.
           'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
           COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
@@ -959,6 +976,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
           ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
           ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+          ('MAX_CANDIDATE_PAIRS_PER_TRAILER', '50', 'number', 'core',   TRUE,  'How many eligible (vehicle, load) candidate pairs the solver materialises PER VEHICLE, nearest pickup first. Bounds the candidate read, which is not covered by the solver time budget. Distinct from MAX_PROPOSALS_PER_TRAILER, which caps OUTPUT per vehicle.'),
           ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
           ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
           ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
