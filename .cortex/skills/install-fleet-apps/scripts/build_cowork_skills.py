@@ -76,6 +76,32 @@ VERB_TOOLS = {
     "search_sap_binding",
 }
 
+# Per-verb usage notes appended to step 1.
+#
+# These live HERE, in the generator, because they were previously hand-appended
+# to the GENERATED SKILL.md files - which meant the next regeneration by anyone
+# silently deleted them, and nothing would have reported the loss: the files
+# still parse, still describe the use case, and only the hard-won operational
+# detail is gone. Anything a skill must say about calling a verb belongs in this
+# map, never in the artifact.
+TOOL_NOTES = {
+    "backload_solve": (
+        " If the question is about ONE NAMED VEHICLE, pass `trailer_id` (e.g. "
+        "`V-DRI-00033`) - never `max_vehicles=1`, which returns the longest-idle "
+        "vehicle and quietly answers about a different truck. `VEHICLE_NOT_FOUND` "
+        "means that id is not among the region's idle vehicles: report the id, do "
+        "not substitute another vehicle. `TIME_BUDGET_EXCEEDED` means the solve ran "
+        "out of wall clock, which is a size problem - offer `trailer_id`, a single "
+        "strategy, or a higher `time_budget_s`, and never report it as \"no "
+        "backloads exist\". A `trailer_id` result is an ISOLATED optimum: it "
+        "optimises that one vehicle, while the regional plan optimises across the "
+        "fleet and can give the same vehicle a worse load (measured: 46.4 empty km "
+        "/ $1,432 alone versus 895.2 empty km / $824 in the 20-vehicle regional "
+        "plan). Present it as the best case for that truck in isolation, not as the "
+        "dispatch decision."
+    ),
+}
+
 
 def bullets(items: list[str], indent: str = "- ") -> str:
     return "\n".join(f"{indent}{i}" for i in items if str(i).strip())
@@ -163,7 +189,8 @@ def skill_md(row: dict, visual: bool) -> str:
         lines += [
             f"1. Call the `{tool}` tool. Its result is an MCP tool result, so it "
             "CANNOT be charted: `data_to_chart` accepts only a Cortex Analyst or "
-            "`run_sql` result. Present the figures as a markdown table instead.",
+            "`run_sql` result. Present the figures as a markdown table instead."
+            + TOOL_NOTES.get(tool, ""),
         ]
     else:
         lines += [
