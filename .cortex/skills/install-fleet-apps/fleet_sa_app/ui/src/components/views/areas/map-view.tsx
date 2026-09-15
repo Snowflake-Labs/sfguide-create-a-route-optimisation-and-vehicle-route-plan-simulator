@@ -32,6 +32,14 @@ interface FitToOptions {
   // change so it lands on the new (narrowed) coords, not the stale set still
   // showing during an in-flight refetch.
   focusKey?: string;
+  // Soften the focusKey fit: still wait for the narrowed coords, but leave the
+  // camera alone when those coords are ALREADY fully in view. Opt-in, because
+  // the default (always re-frame) is what a table-row-to-map gesture wants. Set
+  // it where a selection is one of many on a map the user is reading as a whole
+  // - re-framing there feels like the map jumping away from what they were
+  // looking at, even though the newly selected object was on screen the whole
+  // time. An off-screen selection still forces the fit.
+  focusOnlyIfOffscreen?: boolean;
   // Fit once on load (plus a short settle window while the remaining layers
   // report their coords), then stop auto-fitting entirely: selections, layer
   // toggles and periodic refetches never move the camera. A regionKey change
@@ -151,6 +159,7 @@ export default function MapView({
   const fitMaxZoom = fitTo?.maxZoom;
   const fitRegionKey = fitTo?.regionKey;
   const fitFocusKey = fitTo?.focusKey;
+  const fitFocusOnlyIfOffscreen = fitTo?.focusOnlyIfOffscreen ?? false;
   const fitLocked = fitTo?.lockAfterFirstFit ?? false;
   const focusPoint = fitTo?.focusPoint ?? null;
   const regionCoords = fitTo?.regionCoords ?? null;
@@ -219,6 +228,19 @@ export default function MapView({
       return;
     }
     const forcedByFocus = focusPendingRef.current && fitSig !== focusBaselineSigRef.current;
+    // focusOnlyIfOffscreen: the narrowed coords have arrived, but they are all
+    // already on screen, so there is nothing to reveal - disarm and leave the
+    // camera exactly where the user had it. Disarming matters: leaving the flag
+    // set would fire this fit later, on some unrelated coords change.
+    if (
+      forcedByFocus &&
+      fitFocusOnlyIfOffscreen &&
+      !explicitRecenter &&
+      coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)
+    ) {
+      focusPendingRef.current = false;
+      return;
+    }
     const forcedByRegion = regionPendingRef.current && fitSig !== regionBaselineSigRef.current;
     const firstFit = !hasFittedRef.current || explicitRecenter || forcedByFocus || forcedByRegion;
     if (!firstFit) {
@@ -248,7 +270,7 @@ export default function MapView({
       if (forcedByRegion) regionPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitLocked, fallbackViewState, fitTo, recenterTick, regionCoords]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitFocusOnlyIfOffscreen, fitLocked, fallbackViewState, fitTo, recenterTick, regionCoords]);
 
   // Provisional region framing. Declared AFTER the data fit on purpose: in the
   // commit where the region changed, the data fit above still sees the previous
