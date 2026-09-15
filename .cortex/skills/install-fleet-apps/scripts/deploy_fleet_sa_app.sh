@@ -184,6 +184,20 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload rehydrate geometry gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${DASH_UNITS_VERIFY:-1}" != "0" ]; then
+    # deck.gl's getDashArray is [dash, gap] relative to the path width IN THE
+    # LAYER'S WIDTH UNITS, which default to METRES. The Backload empty legs
+    # therefore had a 16 m dash period in world space: dashed when zoomed in,
+    # one solid grey stroke at country zoom - and the layer carried
+    # lineWidthMinPixels, which clamps the stroke and not the dash, so the units
+    # looked handled. Three layers across two apps shared the defect.
+    DASH_GATE="$SKILL_DIR/scripts/check_dash_units.py"
+    if [ -f "$DASH_GATE" ]; then
+      echo "[1/7] Verify dashed map layers pin their dash period to pixels..."
+      python3 "$DASH_GATE" \
+        || { echo "ERROR: dash units gate failed (see above)."; exit 1; }
+    fi
+  fi
   if [ "${BACKLOAD_MEMO_VERIFY:-1}" != "0" ]; then
     # What the agent can see of a solved plan is one bounded string per panel, and
     # the chat route trims by WHOLE PANEL. A memo that outgrows the budget is

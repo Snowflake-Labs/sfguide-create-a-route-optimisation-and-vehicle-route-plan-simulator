@@ -669,3 +669,19 @@ if [ -f "$BACKLOAD_GEOM_CHECK" ]; then
     exit 1
   }
 fi
+
+# deck.gl's getDashArray is [dash, gap] relative to the path width in the LAYER'S
+# WIDTH UNITS, which default to metres - so a dashed empty leg had a 16 m dash
+# period in world space and rendered as one solid stroke at country zoom, while
+# looking correct zoomed in. lineWidthMinPixels clamps the stroke width and does
+# nothing to the dash period, which is why the units looked handled. The gate
+# also holds the empty-leg and baseline greys apart: at 110 vs 150 they were the
+# same line whenever a dash gap was off screen.
+DASH_UNITS_CHECK="$SKILL_DIR/scripts/check_dash_units.py"
+if [ -f "$DASH_UNITS_CHECK" ]; then
+  echo "pre-commit: dashed map layer units check..."
+  python3 "$DASH_UNITS_CHECK" || {
+    echo "pre-commit FAILED: a dashed map layer would render solid when zoomed out."
+    exit 1
+  }
+fi

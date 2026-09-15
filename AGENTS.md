@@ -619,6 +619,23 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
 
+# A dashed deck.gl layer must stay dashed at every zoom. `getDashArray` is
+# [dash, gap] RELATIVE TO THE PATH WIDTH, in the layer's width units, and those
+# default to METRES (`widthUnits` on PathLayer, `lineWidthUnits` on GeoJsonLayer).
+# The Backload empty legs therefore had a 16 m dash period in WORLD space: dashed
+# when zoomed in, a single solid grey stroke at country zoom, where it was also
+# indistinguishable from the 150-grey no-backload baseline. `lineWidthMinPixels:
+# 6` was present and clamps the STROKE WIDTH only - it has no effect on the dash
+# period - which is exactly why the units looked handled. Three layers across two
+# apps shared the defect, so the gate DISCOVERS dash sites by scanning instead of
+# listing them, and asserts the units on the SAME layer literal found by brace
+# matching: an earlier proximity draft was satisfied by a neighbouring layer that
+# happened to set pixels. Rules also strip comments first - rule C false-passed on
+# the very comment that documents this trap, because the prose contains the words
+# `getDashArray` and `widthUnits`. 8 mutations negative-tested.
+python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS
