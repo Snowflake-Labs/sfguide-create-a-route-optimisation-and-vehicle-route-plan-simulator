@@ -768,6 +768,7 @@ Finishing a task means: verified, committed, pushed. A turn that ends with uncom
 - Stage explicitly by path. Never `git add .` and never `git add -A` in this repo - another session's in-flight edits live in the same tree.
 - Before staging, run `git diff --stat` and confirm every listed file is yours. If a file contains BOTH your edit and another session's, do not `git add` it - see `/memories/shared-tree-selective-commit.md` for the reconstruct-and-`commit-tree` procedure.
 - If a hunk is not separable, hold it back and say which part of the work is uncommitted rather than committing someone else's lines.
+- **If you reconstruct a file to isolate your work, assert `HEAD` did not move between reading the blob and committing.** Reading with `git show HEAD:<file>` and later parenting the commit on whatever `HEAD` has become produces the newer tree plus older blobs, which silently REVERTS anything another session committed in that window. Measured here: 96 seconds was enough, and the revert survived two further commits. It compiles, `tsc` is clean, and the deletions hide in hunks that also contain real additions - so **re-run the full gate suite AFTER committing** as well as before, and read a gate that was green before your commit and red after as a revert, not a flake.
 
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected - changes only land via merged PRs from `dev`.
