@@ -50,12 +50,16 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"analytic-layer"}}';
 
 -- Warehouse the analytic layer runs on (independent of the engine build).
+-- The spec MUST match scripts/warehouses.sql, the single owner; enforced by
+-- scripts/check_warehouse_ddl.py (pre-commit).
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
   WAREHOUSE_SIZE = 'XSMALL'
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  MIN_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 3
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"batch"}}';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -418,6 +422,7 @@ MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS tgt USING (
     ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line.'),
     ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
     ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+    ('MAX_CANDIDATE_PAIRS_PER_TRAILER', '50', 'number', 'core',   TRUE,  'How many eligible (vehicle, load) candidate pairs the solver materialises PER VEHICLE, nearest pickup first. Bounds the candidate read, which is not covered by the solver time budget. Distinct from MAX_PROPOSALS_PER_TRAILER, which caps OUTPUT per vehicle.'),
     ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
     ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
     ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -1000,7 +1005,7 @@ BEGIN
          SQFT, RENT, SQFT * RENT                                     AS ANNUAL_RENT,
          RENT * 0.45                                                 AS RATES,
          IFF(is_comp OR SQFT * RENT = 0, NULL,
-             (REFHH * SPEND) / (SQFT * RENT))                        AS VALUE_PER_COST,
+             ROUND((REFHH * SPEND) / (SQFT * RENT), 4))              AS VALUE_PER_COST,
          ROUND(ATTR, 3)                                              AS ATTRACTIVENESS
   FROM comp;
 

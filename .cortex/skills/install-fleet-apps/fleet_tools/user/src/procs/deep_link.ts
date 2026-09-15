@@ -20,10 +20,44 @@ import { DataCodes } from '../codes.js';
  *
  * The view id is validated against VIEW_CATALOG, so a link can only ever point
  * at a view this deployment actually has.
+ *
+ * TWO APPS, ONE VERB
+ * ------------------
+ * This used to be pinned to the SA app, and it is a `user` verb, so the ADMIN
+ * agent had no deep link at all: an operational answer about a region build or a
+ * matrix could only end in prose, with no way to hand over the page that does
+ * the work. Since the whole point of the verb is "do not invent a URL", the
+ * absence of an admin target made inventing one the only option. `app` selects
+ * the target and the verb is published to all three bundles.
+ *
+ * The admin app takes no view parameters, so an admin link is host-only plus an
+ * optional `page` hint. Passing a view id at an admin target is a refusal rather
+ * than a silently ignored argument.
  */
 
-const APP_SERVICE_FQN = 'FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP';
-const APP_ENDPOINT_NAME = 'fleet-sa-app';
+const TARGETS: Record<string, { service: string; endpoint: string }> = {
+  sa: {
+    service: 'FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP',
+    endpoint: 'fleet-sa-app',
+  },
+  admin: {
+    service: 'FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP',
+    endpoint: 'fleet-admin-app',
+  },
+};
+
+// Admin pages an agent may hand over. An allowlist rather than free text: the
+// value lands in a URL, and a wrong guess sends the user to a 404 that looks
+// like a broken deployment.
+const ADMIN_PAGES = [
+  'regions',
+  'services',
+  'matrix',
+  'studio',
+  'observability',
+  'diagnostics',
+  'cost',
+];
 
 export const deep_link = defineProc({
   name: 'deep_link',
@@ -34,12 +68,38 @@ export const deep_link = defineProc({
     'the app: answer with the figures you can retrieve, then offer this link so the user can see ' +
     'the actual map. Never describe a map as if you had rendered it, and never construct an app ' +
     'URL by hand - the hostname is deployment-specific and is resolved here. The view id must be ' +
-    'one from the solution catalog (search_solution_catalog or list_use_cases).',
+    'one from the solution catalog (search_solution_catalog or list_use_cases). Set app to ' +
+    '"admin" instead to hand over the Fleet ADMIN app, which is where region builds, matrix ' +
+    'builds, dataset generation, service control and diagnostics are done - use that whenever the ' +
+    'user asks for an operation this deployment only exposes in the admin app.',
+  // Stays a USER-bundle verb. `roles` only decides GRANT USAGE, not which
+  // bundle publishes the procedure, and each agent attaches ONE MCP server - so
+  // widening it to ops/admin grants a privilege on a procedure those agents
+  // still cannot see as a tool, and the framework then rejects the bundle for a
+  // missing role binding. The ops and admin agents get open_admin_app instead.
   roles: ['user'],
   args: {
+    app: t
+      .string({ max: 10 })
+      .nullable()
+      .describe(
+        'Which app to open: "sa" (default) for the analytics dashboards, or "admin" for the ' +
+          'operator console (region builds, matrix builds, Data Studio, diagnostics).',
+      ),
+    page: t
+      .string({ max: 40 })
+      .nullable()
+      .describe(
+        'Admin app only. One of regions, services, matrix, studio, observability, diagnostics, ' +
+          'cost. Omit for the admin home page.',
+      ),
     view_id: t
       .string({ min: 1, max: 120 })
-      .describe('View to open, e.g. "delivery_sync" or "catchment". Must exist in the catalog.'),
+      .nullable()
+      .describe(
+        'SA app only. View to open, e.g. "delivery_sync" or "catchment". Must exist in the ' +
+          'catalog. Required when app is "sa".',
+      ),
     region: t.string({ max: 80 }).nullable().describe('Optional region to preselect.'),
     vehicle_type: t
       .string({ max: 80 })
@@ -61,7 +121,38 @@ export const deep_link = defineProc({
     note: t.string().describe('Caveat to pass on to the user, if any.'),
   },
   validate: async (args, ctx) => {
+    const app = (args.app ?? 'sa').trim().toLowerCase() || 'sa';
+    if (!(app in TARGETS)) {
+      ctx.fail(DataCodes.INVALID_OBJECT_NAME, `app must be "sa" or "admin" (got "${app}")`);
+      return;
+    }
+
+    if (app === 'admin') {
+      const page = (args.page ?? '').trim().toLowerCase();
+      if (page !== '' && !ADMIN_PAGES.includes(page)) {
+        ctx.fail(
+          DataCodes.INVALID_OBJECT_NAME,
+          `page must be one of ${ADMIN_PAGES.join(', ')} (got "${page}")`,
+        );
+      }
+      // A view id at an admin target is a category error, not a spare argument:
+      // silently dropping it would return a link that does not do what the
+      // agent just told the user it does.
+      if ((args.view_id ?? '').trim() !== '') {
+        ctx.fail(
+          DataCodes.INVALID_OBJECT_NAME,
+          'view_id applies to the SA app only. The admin app has no dashboard views - pass page ' +
+            'instead, or set app to "sa".',
+        );
+      }
+      return;
+    }
+
     const id = (args.view_id ?? '').trim();
+    if (id === '') {
+      ctx.fail(DataCodes.INVALID_OBJECT_NAME, 'view_id is required when app is "sa"');
+      return;
+    }
     // Reject anything that is not a bare view id up front: the value goes into a
     // URL, and a catalog lookup on a crafted string is not a substitute for
     // knowing the shape is safe.
@@ -95,27 +186,31 @@ export const deep_link = defineProc({
     }
   },
   execute: async (args, ctx) => {
-    const viewId = args.view_id.trim();
+    const app = (args.app ?? 'sa').trim().toLowerCase() || 'sa';
+    const target = TARGETS[app] ?? TARGETS.sa!;
+    const viewId = (args.view_id ?? '').trim();
 
-    let label = viewId;
-    try {
-      const got = await ctx.conn.execScalar<string>(
-        `SELECT LABEL FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG WHERE VIEW_ID = ? LIMIT 1`,
-        [viewId],
-      );
-      if (got) label = String(got);
-    } catch {
-      // Keep the id as the label.
+    let label = app === 'admin' ? 'Fleet Admin app' : viewId;
+    if (app === 'sa') {
+      try {
+        const got = await ctx.conn.execScalar<string>(
+          `SELECT LABEL FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG WHERE VIEW_ID = ? LIMIT 1`,
+          [viewId],
+        );
+        if (got) label = String(got);
+      } catch {
+        // Keep the id as the label.
+      }
     }
 
     // Resolve the ingress host from the live service.
     let host = '';
     try {
       const rows = await ctx.conn.exec<Record<string, unknown>>(
-        `SHOW ENDPOINTS IN SERVICE ${APP_SERVICE_FQN}`,
+        `SHOW ENDPOINTS IN SERVICE ${target.service}`,
       );
       const row = (rows ?? []).find(
-        (r) => String(r.name ?? r.NAME ?? '').toLowerCase() === APP_ENDPOINT_NAME,
+        (r) => String(r.name ?? r.NAME ?? '').toLowerCase() === target.endpoint,
       );
       const ingress = row ? String(row.ingress_url ?? row.INGRESS_URL ?? '').trim() : '';
       if (ingress && ingress.toLowerCase() !== 'null') host = ingress;
@@ -132,6 +227,19 @@ export const deep_link = defineProc({
           'The app URL could not be resolved: the app service may not be deployed, or its public ' +
           'endpoint may not be provisioned yet. Tell the user the view name and that they can ' +
           `open it from the app nav ("${label}") rather than giving them a guessed link.`,
+      };
+    }
+
+    if (app === 'admin') {
+      const page = (args.page ?? '').trim().toLowerCase();
+      return {
+        url: page === '' ? `https://${host}/` : `https://${host}/${page}`,
+        view_id: '',
+        label: page === '' ? 'Fleet Admin app' : `Fleet Admin app: ${page}`,
+        note:
+          'The admin app requires an operator or admin role. It is where region builds, matrix ' +
+          'builds, Data Studio generation, service control and diagnostics are done - say which ' +
+          'page to open and what to do there, rather than implying the task is impossible.',
       };
     }
 

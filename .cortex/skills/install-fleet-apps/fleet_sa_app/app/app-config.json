@@ -84,7 +84,7 @@
       "evac_seed": 4,
       "evac_solve": 2,
       "vrp_solve": 2,
-      "backload_solve": 6,
+      "backload_solve": 8,
       "backload_chain_solve": 6
     },
     "mapTools": [
@@ -100,6 +100,15 @@
       "vrp_solve",
       "query_overture_places",
       "query_overture_addresses"
+    ],
+    "geometryTools": [
+      "get_directions",
+      "compute_isochrone",
+      "optimize_routes",
+      "evac_solve",
+      "vrp_solve",
+      "delivery_optimization",
+      "network_optimization"
     ]
   },
   "ops": {

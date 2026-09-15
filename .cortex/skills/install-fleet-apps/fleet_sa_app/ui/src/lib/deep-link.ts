@@ -1,4 +1,4 @@
-import { viewRegistry } from './view-registry';
+import { resolveViewParams, applyResolvedParams } from './view-params';
 
 /**
  * Deep-link bootstrap: apply URL search params to the store on first load.
@@ -13,15 +13,8 @@ import { viewRegistry } from './view-registry';
  * with the numbers and hand over a link that opens the real map, already scoped.
  *
  * WHAT IT ACCEPTS
- *   view      - a registered view id (e.g. delivery_sync)
- *   region    - context.region
- *   vehicle   - context.vehicle_type
- *   dataset   - context.dataset_id
- *   as_of     - context.as_of_minute (playback clocks)
- *   from / to - context.date_range_start / date_range_end
- *   select    - a viewState patch, either `key=value` pairs (comma-separated) or
- *               a bare value which is applied to the view's declared selection
- *               key when it has exactly one obvious candidate
+ * The vocabulary lives in ./view-params, because the in-app `show_view` tool
+ * result resolves the SAME names through the same code. See VIEW_PARAM_NAMES.
  *
  * ORDERING IS LOAD-BEARING
  * Must run AFTER view registration (or `view` resolves to nothing and the deep
@@ -37,48 +30,11 @@ import { viewRegistry } from './view-registry';
  * away does not snap them back to the linked view.
  */
 
-// Search param -> context key. Only these are accepted; anything else is
-// ignored, so a link cannot set arbitrary context.
-const CONTEXT_PARAMS: Record<string, string> = {
-  region: 'region',
-  vehicle: 'vehicle_type',
-  vehicle_type: 'vehicle_type',
-  dataset: 'dataset_id',
-  dataset_id: 'dataset_id',
-  as_of: 'as_of_minute',
-  from: 'date_range_start',
-  to: 'date_range_end',
-};
-
 export interface DeepLinkResult {
   applied: boolean;
   viewId: string | null;
   context: Record<string, string>;
   viewState: Record<string, string>;
-}
-
-/** Parse `select` into a viewState patch. Supports `k=v,k2=v2` or a bare value. */
-function parseSelect(raw: string, viewId: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (raw.includes('=')) {
-    for (const pair of raw.split(',')) {
-      const eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      const k = pair.slice(0, eq).trim();
-      const v = pair.slice(eq + 1).trim();
-      if (k && v) out[k] = v;
-    }
-    return out;
-  }
-
-  // Bare value: only usable when the view declares exactly one selection key, so
-  // guessing is impossible. A view with several would need explicit k=v.
-  const def = viewId ? viewRegistry.get(viewId) : null;
-  const emits = (def as { clickEmits?: Record<string, string> } | null)?.clickEmits;
-  const keys = emits ? Object.values(emits).filter((v) => typeof v === 'string') : [];
-  const unique = Array.from(new Set(keys));
-  if (unique.length === 1 && unique[0]) out[unique[0]] = raw.trim();
-  return out;
 }
 
 /**
@@ -102,32 +58,14 @@ export function applyDeepLink(opts: {
   }
   if (Array.from(params.keys()).length === 0) return empty;
 
-  const context: Record<string, string> = {};
-  for (const [param, key] of Object.entries(CONTEXT_PARAMS)) {
-    const v = params.get(param);
-    if (v != null && v.trim() !== '') context[key] = v.trim();
+  const resolved = resolveViewParams((p) => params.get(p));
+  if (resolved.unknownView) {
+    console.warn(
+      `[deep-link] unknown view id "${resolved.unknownView}" - ignoring the view parameter`,
+    );
   }
 
-  // Resolve the view BEFORE applying anything, so an unknown id degrades to a
-  // context-only deep link rather than being silently dropped along with it.
-  const requested = (params.get('view') ?? '').trim();
-  let viewId: string | null = null;
-  if (requested !== '') {
-    viewId = viewRegistry.get(requested) ? requested : null;
-    if (viewId === null) {
-      console.warn(`[deep-link] unknown view id "${requested}" - ignoring the view parameter`);
-    }
-  }
-
-  const selectRaw = (params.get('select') ?? '').trim();
-  const viewState = selectRaw !== '' ? parseSelect(selectRaw, viewId) : {};
-
-  // Context first: the view's areas read context on mount, so setting it after
-  // showView would make the first fetch run against the wrong region.
-  for (const [k, v] of Object.entries(context)) opts.setContext(k, v);
-  if (viewId) opts.showView(viewId, viewState);
-
-  const applied = viewId !== null || Object.keys(context).length > 0;
+  const applied = applyResolvedParams(resolved, opts);
 
   // Consume the params so a later render or a back/forward does not reapply them
   // and yank the user back to the linked view. replaceState keeps history clean.
@@ -139,5 +77,10 @@ export function applyDeepLink(opts: {
     }
   }
 
-  return { applied, viewId, context, viewState };
+  return {
+    applied,
+    viewId: resolved.viewId,
+    context: resolved.context,
+    viewState: resolved.viewState,
+  };
 }

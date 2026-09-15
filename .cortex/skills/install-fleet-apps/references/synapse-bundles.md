@@ -179,6 +179,31 @@ response`. Both were root-caused 2026-06-25.
    patch - upstream fixed the identical bug in `dc8827c3` - so a re-sync will not lose
    it. Verify it anyway after any re-vendor.
 
+1b. **ADDING OR REMOVING A VERB ARGUMENT needs the OLD signature dropped by hand,
+   BEFORE the redeploy.** The generator emits `CREATE OR REPLACE PROCEDURE`, and
+   Snowflake keys procedures on FULL ARITY, so the previous signature is not
+   replaced - it survives alongside. Worse, it does not merely linger: because
+   every verb ends in `IDEMPOTENCY_KEY STRING DEFAULT NULL` (see 1 above), the old
+   N-arg and new N+1-arg forms BOTH accept N arguments, so the deploy aborts with
+
+       000949 (42723): SQL compilation error:
+       Cannot overload PROCEDURE 'GET_DIRECTIONS' as it would cause ambiguous
+       PROCEDURE overloading.
+
+   The error names the verb but not the remedy, and `install_synapse_bundles.sh`
+   stops there, so the bundle is left half-deployed. Measured 2026-09-14 when
+   `get_directions` gained a `region` argument. Fix:
+
+       DROP PROCEDURE IF EXISTS OPENROUTESERVICE_APP.ROUTING.GET_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR);
+       -- then re-run install_synapse_bundles.sh <connection>
+
+   Read the stale signature off `INFORMATION_SCHEMA.PROCEDURES.ARGUMENT_SIGNATURE`
+   rather than guessing it. Only OWNERSHIP is normally held on these wrappers, so
+   dropping loses no grant. The same trap exists one layer down on the
+   `ROUTING_TOOLS.TOOL_*` procedures the verbs call, where the DROP is checked into
+   `deploy-agent.sql` and must sit BEFORE the CREATE (enforced by RULE D of
+   `scripts/check_routing_probe.py`).
+
 2. **Recreate the agents AFTER (re)deploying the bundles.** `npx synapse deploy`
    does `CREATE OR REPLACE MCP SERVER`, which replaces `ROUTING_MCP` /
    `FLEET_OPS_MCP` / `FLEET_ADMIN_MCP`. The agents bind to the MCP server at

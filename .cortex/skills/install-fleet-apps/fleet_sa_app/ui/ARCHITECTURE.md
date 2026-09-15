@@ -291,6 +291,20 @@ These ship with the framework; apps register additional ones:
 | `render_choices` | `<ChoiceList />` | Agent presents 2-5 options for user to pick |
 | `render_picker` | `<InlinePicker />` | Searchable combo box for selecting from a list (e.g., pick an account, database, warehouse) |
 | `render_progress` | `<ProgressCard />` | Multi-step progress (e.g., during pipeline deploy) |
+| `data_to_chart` | `<ChartInlineDeferred />` | The HOST's chart tool. Renders its Vega-Lite spec with vega-lite + vega, behind a lazy chunk (`chart-deferred.tsx`), themed from the app palette by `lib/vega-theme.ts`. Registered under every name in `CHART_TOOL_ALIASES`, including the legacy `render_chart`. |
+
+**Charts, and why the tool name matters.** `data_to_chart` is host-injected, so
+its result arrives as an ordinary `response.tool_result` named `data_to_chart`
+with an output of `{charts: [ "<vega-lite spec>" ]}`. The registry previously knew
+only `render_chart` - a name produced solely by the `response.chart` SSE branch
+that this host never emits - so every chart fell through to the collapsed JSON
+viewer, silently, because an unregistered tool is a legal state. Names now come
+from `lib/tool-names.ts` and are pinned by
+`scripts/check_chart_rendering.py`. The agent cites charts inline as
+`<chart>tool_use_id</chart>`; `lib/chart-citations.ts` places each chart at its
+citation point and strips the tags (react-markdown has no `rehype-raw`, so an
+unhandled tag is dropped without trace). Verify with
+`npx tsx scripts/verify-chart-spec.mts` from `ui/`.
 
 ### Design constraints (from plan.md)
 

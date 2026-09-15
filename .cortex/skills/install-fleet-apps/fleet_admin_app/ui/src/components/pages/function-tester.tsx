@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { samplePoints, COORD_FUNCTIONS, TRAJECTORY_FUNCTIONS, buildNoisyTrajectory, type BBox } from '@/components/function-tester/samplePoints';
+import { samplePoints, COORD_FUNCTIONS, TRAJECTORY_FUNCTIONS, buildNoisyTrajectory, getProfileBand, type BBox } from '@/components/function-tester/samplePoints';
 
 import {
   RegionOption,
@@ -18,16 +18,54 @@ import {
 } from '@/components/function-tester/helpers';
 import { ResultMap } from '@/components/function-tester/ResultMap';
 import { useActivePreset } from '@/hooks/useActivePreset';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 import PresetRoutingControls from '@/components/shared/PresetRoutingControls';
 
 function sqlLiteral(s: string): string {
   return String(s).replace(/\\/g, '\\\\').replace(/'/g, "''");
 }
 
+/**
+ * Fetch JSON, reading the body as text first.
+ *
+ * A bare `resp.json()` turns any non-JSON body into `Unexpected token 'u',
+ * "upstream r"...` - which is what a DIRECTIONS timeout looked like, because
+ * SPCS ingress cuts the connection at ~90s and substitutes a plain-text
+ * `upstream request timeout`. Reading text first lets the status and the actual
+ * body prefix reach the user. Mirrors parseJsonOrThrow in the SA app's
+ * emergency-response view.
+ */
+async function fetchJson(url: string, init?: RequestInit): Promise<any> {
+  const resp = await fetch(url, init);
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const body = text.trim().slice(0, 200) || '(empty body)';
+    if (/upstream|timeout|gateway/i.test(text)) {
+      throw new Error(
+        `Gateway timed out (HTTP ${resp.status}): ${body}. The request ran past the `
+        + `service ingress limit - usually an unroutable or very distant coordinate pair.`,
+      );
+    }
+    throw new Error(`Non-JSON response (HTTP ${resp.status}): ${body}`);
+  }
+}
+
 interface RoadPointsResult {
   points: [number, number][] | null;
   reason?: string;
   cached?: boolean;
+  /**
+   * The land window the pool was drawn from. For a continental region this is
+   * the ONLY usable sampling bbox: the catalog bbox for the US is -180..180 by
+   * 15.9..73, so rejection sampling and the distance clamps operate over a
+   * mostly-oceanic rectangle spanning the planet.
+   */
+  anchorBBox?: BBox;
+  boundarySource?: 'routable' | 'extract';
+  anchorSparse?: boolean;
+  anchorWidened?: boolean;
 }
 
 function mapProvisionedRegion(reg: any): RegionOption {
@@ -47,28 +85,43 @@ function mapProvisionedRegion(reg: any): RegionOption {
   return {
     ...reg,
     boundaryGeoJson,
+    boundarySource: reg?.boundarySource ?? null,
     graphReadiness: reg?.graphReadiness ?? null,
   };
 }
 
-async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean; region?: string }): Promise<RoadPointsResult> {
+// Anchored pool: pass the region and let the server pick a land window. The bbox
+// is sent only when there is a usable one, for the explicit-bbox callers; in
+// anchored mode the server ignores it.
+async function fetchRoadPoints(
+  bbox: BBox | null,
+  profile: string,
+  opts?: { nocache?: boolean; region?: string; nonce?: number },
+): Promise<RoadPointsResult> {
   try {
-    const params = new URLSearchParams({
-      min_lat: bbox.min_lat.toString(),
-      max_lat: bbox.max_lat.toString(),
-      min_lon: bbox.min_lon.toString(),
-      max_lon: bbox.max_lon.toString(),
-      limit: '50',
-      profile,
-    });
+    const params = new URLSearchParams({ limit: '50', profile });
+    if (bbox) {
+      params.set('min_lat', bbox.min_lat.toString());
+      params.set('max_lat', bbox.max_lat.toString());
+      params.set('min_lon', bbox.min_lon.toString());
+      params.set('max_lon', bbox.max_lon.toString());
+    }
     if (opts?.nocache) params.set('nocache', '1');
     if (opts?.region) params.set('region', opts.region);
-    const resp = await fetch(`/api/sample-road-points?${params}`);
-    const data = await resp.json();
+    if (opts?.nonce != null) params.set('nonce', String(opts.nonce));
+    const data = await fetchJson(`/api/sample-road-points?${params}`);
+    const common = {
+      anchorBBox: data.anchorBBox ?? undefined,
+      boundarySource: data.boundarySource ?? undefined,
+      anchorSparse: data.anchorSparse ?? undefined,
+      anchorWidened: data.anchorWidened ?? undefined,
+    };
     if (data.ok && data.points?.length > 0) {
-      return { points: data.points, cached: data.cached };
+      return { points: data.points, cached: data.cached, ...common };
     }
-    return { points: null, reason: data.reason || 'no road points returned' };
+    // Keep anchorBBox even on failure: a land window with no roads in it is still
+    // a far better geometric sampling target than the region bbox.
+    return { points: null, reason: data.reason || 'no road points returned', ...common };
   } catch (e: any) {
     return { points: null, reason: e?.message || 'network error' };
   }
@@ -78,18 +131,38 @@ interface PoiPointsResult {
   points: [number, number][] | null;
   source?: string;
   reason?: string;
+  // True when the pool came from a single H3 cell rather than region-wide.
+  anchored?: boolean;
+  anchorBBox?: BBox;
 }
 
 // Region-scoped seed POIs are pre-validated routable, so they make the most
 // reliable coordinate pool for the Function Tester (no water/off-graph picks).
-async function fetchSeedPoiPoints(region: string, opts?: { limit?: number }): Promise<PoiPointsResult> {
+// The profile's separation band is sent so the server can anchor the pool on a
+// cell dense enough to populate it: a region-wide pool on a continental region
+// has no pair inside the band, which is what let a Maui/Boise DIRECTIONS pair
+// through and hung ORS until the SPCS ingress timeout.
+async function fetchSeedPoiPoints(
+  region: string,
+  profile: string,
+  opts?: { limit?: number },
+): Promise<PoiPointsResult> {
   try {
-    const params = new URLSearchParams({ region });
+    const band = getProfileBand(profile);
+    const params = new URLSearchParams({
+      region,
+      min_km: String(band.minKm),
+      max_km: String(band.maxKm),
+    });
     if (opts?.limit) params.set('limit', String(opts.limit));
-    const resp = await fetch(`/api/sample-poi-points?${params}`);
-    const data = await resp.json();
+    const data = await fetchJson(`/api/sample-poi-points?${params}`);
     if (data.ok && data.points?.length > 0) {
-      return { points: data.points, source: data.source };
+      return {
+        points: data.points,
+        source: data.source,
+        anchored: data.anchored ?? undefined,
+        anchorBBox: data.anchorBBox ?? undefined,
+      };
     }
     return { points: null, reason: data.reason || 'no seed POIs' };
   } catch (e: any) {
@@ -121,12 +194,11 @@ async function fetchTrajectory(
   const [a, b] = seedPoints;
   const sql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON FROM TABLE(${p}.DIRECTIONS('${sqlLiteral(profile)}', ARRAY_CONSTRUCT(${a[0]}, ${a[1]}), ARRAY_CONSTRUCT(${b[0]}, ${b[1]}), '${sqlLiteral(region)}'))`;
   try {
-    const resp = await fetch('/api/query', {
+    const data = await fetchJson('/api/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql }),
     });
-    const data = await resp.json();
     if (data.error) return { coords: null, reason: data.error };
     const rows = Array.isArray(data.result) ? data.result : [];
     let routeCoords: [number, number][] = [];
@@ -174,6 +246,11 @@ export function FunctionTesterPage() {
   // 'overture' (road segments), or null (boundary/bbox sampling fallback).
   const [poolSource, setPoolSource] = useState<'seed' | 'overture' | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
+  // Land window the pool came from, and which mask produced it. Both are needed
+  // by the sampler: anchorBBox replaces the region bbox, and boundarySource tells
+  // the user whether points are being drawn from land or from the raw PBF extract.
+  const [anchorBBox, setAnchorBBox] = useState<BBox | null>(null);
+  const [boundarySource, setBoundarySource] = useState<'routable' | 'extract' | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const [trajectory, setTrajectory] = useState<[number, number][] | null>(null);
   // null until probed; then the subset of OPTIONAL_FUNCTIONS actually installed.
@@ -194,8 +271,7 @@ export function FunctionTesterPage() {
   const selectedRegionKeyRef = useRef<string | null>(null);
 
   const refreshRegions = useCallback(async (): Promise<RegionOption[]> => {
-    const r = await fetch('/api/regions/provisioned');
-    const data = await r.json();
+    const data = await fetchJson('/api/regions/provisioned');
     if (data.error) setRegionsError(data.error);
     const regionList: RegionOption[] = (data.regions || []).map(mapProvisionedRegion);
     setRegions(regionList);
@@ -247,13 +323,13 @@ export function FunctionTesterPage() {
     })();
   }, [refreshRegions]);
 
-  useEffect(() => {
-    if (selectedRegion?.graphReadiness?.service_ready !== false) return;
-    const id = window.setInterval(() => {
-      void refreshRegions();
-    }, 15000);
-    return () => window.clearInterval(id);
-  }, [selectedRegion?.region, selectedRegion?.graphReadiness?.service_ready, refreshRegions]);
+  // Wait for the selected region's ORS service to come up, but only while the
+  // tab is visible - /api/regions/provisioned runs LIST_REGIONS plus an
+  // ORS_STATUS per region, so background ticks are among the more expensive
+  // no-ops in the app.
+  const awaitingService = selectedRegion?.graphReadiness?.service_ready === false;
+  const pollRegions = useCallback(() => { void refreshRegions(); }, [refreshRegions]);
+  useVisiblePolling(pollRegions, 15000, awaitingService);
 
   const expectedProfiles = useMemo(
     () => expectedProfilesForRegion(selectedRegion),
@@ -291,12 +367,16 @@ export function FunctionTesterPage() {
       setRoadPoints(null);
       setRoadPointsReason(null);
       setPoolSource(null);
+      setAnchorBBox(null);
+      setBoundarySource(null);
       return;
     }
 
     setRoadPoints(null);
     setRoadPointsReason(null);
     setPoolSource(null);
+    setAnchorBBox(null);
+    setBoundarySource(region.boundarySource ?? null);
 
     const mySeq = ++roadSeqRef.current;
     const nocache = nocacheNextRef.current;
@@ -304,23 +384,39 @@ export function FunctionTesterPage() {
 
     (async () => {
       // 1. Prefer region-scoped seed POIs (pre-validated routable). Independent
-      //    of Overture availability. ORDER BY RANDOM() means each fetch (and
-      //    each Reshuffle) returns a fresh set.
-      const poi = await fetchSeedPoiPoints(region.region, { limit: 50 });
+      //    of Overture availability. The server anchors the pool on one H3 cell
+      //    sized to the profile's separation band, so each fetch (and each
+      //    Reshuffle) returns a fresh LOCAL set rather than points scattered
+      //    across the whole region.
+      const poi = await fetchSeedPoiPoints(region.region, profile, { limit: 200 });
       if (mySeq !== roadSeqRef.current) return;
       if (poi.points && poi.points.length > 0) {
         setRoadPoints(poi.points);
         setRoadPointsReason(null);
         setPoolSource('seed');
+        // The anchored window matters for more than the pool: samplePoints uses
+        // this bbox for maxSpan and for every geometric fallback, and the US
+        // catalog bbox is -180..180 by 15.9..73.
+        if (poi.anchorBBox) setAnchorBBox(poi.anchorBBox);
         return;
       }
-      // 2. Fall back to Overture road segments (needs bbox + Overture share).
-      if (overtureAvailable === true && bbox) {
-        const rp = await fetchRoadPoints(bbox, profile, { region: region.region, nocache });
+      // 2. Fall back to Overture road segments. Anchored on the region's land
+      //    mask, so a bbox is NOT required - and for a continental region the
+      //    bbox is actively harmful: the old call prefiltered SEGMENT on
+      //    -180..180, which scanned the planet and returned points ~800 km apart,
+      //    further than any separation band the sampler asks for.
+      if (overtureAvailable === true) {
+        const rp = await fetchRoadPoints(bbox ?? null, profile, {
+          region: region.region, nocache, nonce: roadNonce,
+        });
         if (mySeq !== roadSeqRef.current) return;
         setRoadPoints(rp.points);
         setRoadPointsReason(rp.points ? null : (rp.reason || 'no road points'));
         setPoolSource(rp.points ? 'overture' : null);
+        // Keep the land window even when the pool is empty - geometric sampling
+        // inside a 50 km land cell beats sampling inside the region bbox.
+        if (rp.anchorBBox) setAnchorBBox(rp.anchorBBox);
+        if (rp.boundarySource) setBoundarySource(rp.boundarySource);
         return;
       }
       // 3. No pool - samplePoints falls back to boundary/bbox sampling.
@@ -346,8 +442,17 @@ export function FunctionTesterPage() {
       return;
     }
 
-    const bbox = region?.bbox;
-    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
+    // Prefer the land window the pool was drawn from. The region bbox is only a
+    // fallback, and for a continental region it is a bad one: sampling ranges,
+    // the profile maxSpan cap and the distance clamps in samplePoints all treat
+    // this rectangle as "the region", and for the US it is -180..180 by 15.9..73.
+    // The region bbox stays in use for the map camera, which does want it.
+    const regionBBox = region?.bbox;
+    const regionBBoxUsable = !!regionBBox
+      && !(regionBBox.min_lat === 0 && regionBBox.max_lat === 0
+           && regionBBox.min_lon === 0 && regionBBox.max_lon === 0);
+    const bbox = anchorBBox ?? (regionBBoxUsable ? regionBBox : null);
+    if (!bbox) {
       setSampleHint(null);
       setTrajectory(null);
       setSqlInput(generateSql(fnName, region, profile, db, null));
@@ -387,7 +492,7 @@ export function FunctionTesterPage() {
         setSampleHint(`Could not build a road trajectory (${traj.reason || 'unknown'}) - using a straight line between sample points, which may not match.`);
       }
     })();
-  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, sampleNonce]);
+  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, anchorBBox, sampleNonce]);
 
   const onRegionChange = useCallback((regionKey: string) => {
     const r = regions.find((c) => c.region === regionKey) || null;
@@ -443,12 +548,11 @@ export function FunctionTesterPage() {
     setLastExecutedSql(sqlInput);
     const start = Date.now();
     try {
-      const resp = await fetch('/api/query', {
+      const data = await fetchJson('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql: sqlInput }),
       });
-      const data = await resp.json();
       setDuration(Date.now() - start);
       if (data.error) { setError(data.error); }
       else {
@@ -468,12 +572,11 @@ export function FunctionTesterPage() {
             const mpSql = `SELECT ST_ASGEOJSON(GEOJSON)::STRING AS GEOJSON, MATCHED_EDGES `
               + `FROM TABLE(${p}.MATCH_PATH('${sqlLiteral(inv.profile)}', ARRAY_CONSTRUCT(${coords}), ${rg}))`;
             try {
-              const r2 = await fetch('/api/query', {
+              const mp = await fetchJson('/api/query', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sql: mpSql }),
               });
-              const mp = await r2.json();
               if (mySeq === matchSeqRef.current) {
                 const raw = Array.isArray(mp.result) ? mp.result[0] : null;
                 const gj = raw ? (raw.GEOJSON ?? raw.geojson) : null;
@@ -504,12 +607,11 @@ export function FunctionTesterPage() {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch('/api/query', {
+        const data = await fetchJson('/api/query', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sql: optionalFunctionProbeSql(sfDatabase) }),
         });
-        const data = await resp.json();
         if (cancelled) return;
         if (data.error || !Array.isArray(data.result)) {
           // Unknown - do not gate on a failed probe.
@@ -635,12 +737,23 @@ export function FunctionTesterPage() {
       )}
       {COORD_FUNCTIONS.includes(selectedFn) && poolSource === 'overture' && roadPoints && roadPoints.length > 0 && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0' }}>
-          Snapped to {roadPoints.length} Overture road point{roadPoints.length === 1 ? '' : 's'} for region.
+          Snapped to {roadPoints.length} Overture road point{roadPoints.length === 1 ? '' : 's'}
+          {anchorBBox ? ' in one land window of the region' : ' for region'}.
         </p>
       )}
       {COORD_FUNCTIONS.includes(selectedFn) && poolSource === null && (!roadPoints || roadPoints.length === 0) && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
-          No seed POIs or Overture roads for this region - using boundary sampling (points may be off-road).
+          {anchorBBox
+            ? 'No seed POIs or Overture roads here - sampling geometrically inside a land window (points may be off-road).'
+            : 'No seed POIs or Overture roads for this region - using boundary sampling (points may be off-road).'}
+        </p>
+      )}
+      {COORD_FUNCTIONS.includes(selectedFn) && boundarySource === 'extract' && (
+        <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
+          Region has no land clip yet, so points are drawn against the raw PBF extract
+          polygon - which for coastal and continental regions contains open water, and
+          ORS will answer <code>code 2010</code> for a point at sea. The clip is being
+          computed in the background; reshuffle again shortly.
         </p>
       )}
       <div className="action-row">

@@ -149,6 +149,27 @@ BUNDLES=(
   "admin|fleet-admin-tools|FLEET_INTELLIGENCE|SYNAPSE_ADMIN|FLEET_ADMIN_MCP|admin|FLEET_APP_ADMIN"
 )
 
+# Warehouses once, before the bundle loop, from the single owner
+# (scripts/warehouses.sql). This script used to create ROUTING_ANALYTICS inline
+# with AUTO_SUSPEND = 600 while three .sql layers used 60; `IF NOT EXISTS` meant
+# whichever ran first won silently. Do not inline a CREATE WAREHOUSE here again.
+snow sql -c "$CONNECTION" -f "$REPO_ROOT/.cortex/skills/install-fleet-apps/scripts/warehouses.sql" >/dev/null 2>&1 || true
+
+# Tool DESCRIPTION budget, once for all three bundles (the verifier imports procs
+# across user/ops/admin itself).
+#
+# Snowflake caps an MCP tool description at 2500 chars and enforces it only at
+# CREATE MCP SERVER - deep inside the bundle loop below, after materialize, where
+# it aborts the install and leaves a half-built account. Editing a description is
+# the single most common change to these verbs and the limit is invisible while
+# you do it, so the ceiling is checked here instead, before anything is created.
+if [ "${DESC_VERIFY:-1}" != "0" ] && [ -f "$TOOLS_DIR/user/verify_tool_descriptions.mts" ]; then
+  echo "[synapse] Verify MCP tool descriptions fit the 2500-char cap..."
+  ( cd "$TOOLS_DIR/user" && { [ -d node_modules ] || npm ci; } && npx tsx verify_tool_descriptions.mts ) \
+    || { echo "ERROR: tool description verification failed (see above)."; \
+         echo "       CREATE MCP SERVER would reject this mid-install."; exit 1; }
+fi
+
 for row in "${BUNDLES[@]}"; do
   IFS='|' read -r SRC INSTALLED DB SCHEMA MCP ROLEKEY ROLENAME <<< "$row"
   SRC_DIR="$TOOLS_DIR/$SRC"
@@ -162,7 +183,7 @@ for row in "${BUNDLES[@]}"; do
   # On a fresh install the target schema may not exist yet (e.g.
   # OPENROUTESERVICE_APP.ROUTING - the routing-verb home - or the SYNAPSE_OPS /
   # SYNAPSE_ADMIN bundle schemas), so ensure it first. Idempotent.
-  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\",\"component\":\"core\"}}'; CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
+  snow sql -c "$CONNECTION" -q "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}'; CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
     || { echo "ERROR: could not ensure schema $DB.$SCHEMA"; tail -20 /tmp/synapse_${SRC}_schema.log; exit 1; }
 
   # Per-account install.json (binds connection + logical->actual role).
@@ -209,6 +230,32 @@ JSON
 
   ( cd "$SRC_DIR" && npx synapse materialize --install "$TARGET" >/tmp/synapse_${SRC}_mat.log 2>&1 ) \
     || { echo "ERROR: synapse materialize failed for $SRC"; tail -30 /tmp/synapse_${SRC}_mat.log; exit 1; }
+
+  # Drop wrapper signatures left behind by an EARLIER arity of the same verb.
+  #
+  # The generated wrapper ends in `IDEMPOTENCY_KEY VARCHAR DEFAULT NULL`, so an
+  # N-business-arg verb produces a procedure callable with N or N+1 arguments.
+  # CREATE OR REPLACE only replaces an identical signature, so adding a business
+  # argument leaves the OLD wrapper in place next to the new one. Two problems
+  # follow: if the accepted-arity ranges overlap, Snowflake rejects the new
+  # procedure with "ambiguous PROCEDURE overloading" and takes the whole bundle
+  # deploy down half-way; and if they do not overlap, the stale wrapper stays
+  # silently CALLABLE, so anything still passing the old argument count reaches
+  # the previous implementation and nobody is told.
+  #
+  # Scoped to verbs whose arity has actually changed, listed explicitly rather
+  # than derived, because dropping a signature is not something to do by pattern
+  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s).
+  if [ "$SRC" = "user" ]; then
+    snow sql -c "$CONNECTION" -q "
+      $TAG_SQL
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+    " >/tmp/synapse_${SRC}_dropstale.log 2>&1 \
+      || { echo "ERROR: could not drop stale BACKLOAD_SOLVE wrapper signatures"; \
+           tail -20 /tmp/synapse_${SRC}_dropstale.log; exit 1; }
+  fi
+
   # --no-publish is REQUIRED. As of the vendored SHA, `synapse deploy` runs the
   # Cortex Extension publish step by DEFAULT: it PUTs the materialized plugin into
   # the workspace `SYNAPSE.COCO.PLUGINS` and creates `SYNAPSE.COCO.EXT_<APP>`.

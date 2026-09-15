@@ -1026,7 +1026,7 @@ $$
     p.IS_CUR                                           AS IS_CURRENT_WEEK,
     p.IS_PARTIAL_S                                     AS IS_PARTIAL_START,
     p.IS_PARTIAL_E                                     AS IS_PARTIAL_END,
-    p.PROJ_HOURS::FLOAT                                AS PROJECTED_WEEK_HOURS,
+    ROUND(p.PROJ_HOURS, 2)::FLOAT                      AS PROJECTED_WEEK_HOURS,
     o.CONTRACTED_HOURS_PER_WEEK,
     ROUND(LEAST(p.HOURS_TO_DATE, p.T1), 2)::FLOAT      AS STRAIGHT_HOURS,
     ROUND(GREATEST(0, p.HOURS_TO_DATE - p.T1), 2)::FLOAT AS OT_HOURS,

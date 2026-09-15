@@ -138,14 +138,18 @@ obj_exists() {
 # helper: resolve a public SPCS endpoint URL, retrying while it provisions.
 # SPCS ingress endpoints take ~1-3 min after service RESUME to become public;
 # a query right after deploy often returns "provisioning in progress" (no URL).
+# The accept/reject rule is shared with both app deploy scripts via
+# lib/endpoint_url.sh - this resolver had the correct guard while the two deploy
+# scripts had a naive one, which is how they came to print the placeholder as a URL.
 # args: <fully-qualified-service> <endpoint-name>  -> echoes https://... or "".
+source "$SCRIPTS/lib/endpoint_url.sh"
 resolve_endpoint() {
   local svc="$1" ep="$2" tries="${3:-10}" url="" i=0
   local waits=(3 5 8 12 18 18 18 18 30 30)
   for i in $(seq 0 $((tries-1))); do
     url=$(snow sql -c "$CONNECTION" --format=CSV \
-      -q "$TAG_SQL SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep';" \
-      2>/dev/null | grep -E '^https://[a-z0-9-]+\.' | grep -viE 'provisioning|in progress' | head -1 || true)
+      -q "$TAG_SQL SHOW ENDPOINTS IN SERVICE $svc; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='$ep' AND $(endpoint_url_sql_guard);" \
+      2>/dev/null | endpoint_url_filter)
     [ -n "$url" ] && { echo "$url"; return 0; }
     sleep "${waits[$i]:-18}"
   done
@@ -184,6 +188,18 @@ snow sql -c "$CONNECTION" -q "
 # it must NOT leave COMPUTE_POOL unset (that previously crashed the admin-app
 # deploy with "COMPUTE_POOL: unbound variable" under set -u).
 export IMAGE_REPO_SQL_NAME COMPUTE_POOL CARTO_EAI OSM_EAI SPEC_STAGE_NAME
+
+# Warehouses FIRST, before any step that runs a query. scripts/warehouses.sql is
+# the single owner of both specs (see the header there): seven files used to
+# create ROUTING_ANALYTICS with three different specs, and `IF NOT EXISTS` meant
+# whichever step ran first silently decided what the account got. Running it
+# here makes the spec deterministic regardless of which later steps are skipped,
+# and its ALTER ... SET converges an account an earlier install already drifted.
+note "[0/8] canonical warehouses (ROUTING_ANALYTICS batch + FLEET_APPS_WH interactive)..."
+snow sql -c "$CONNECTION" -f "$SCRIPTS/warehouses.sql" >/tmp/ifa_warehouses.log 2>&1 \
+  && note "  warehouses ready" \
+  || note "  WARNING: warehouse setup reported errors -- see /tmp/ifa_warehouses.log"
+
 note "[1/8] resolving SPCS infra..."
 if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
    && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
@@ -210,6 +226,51 @@ else
 fi
 note "  infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
 step "1 infra" OK
+
+# ── 1.5 fork the engine IMAGE phase so it overlaps the seed upload ───────────
+# The 4 engine images and the ~204 MB seed parquet have no dependency on each
+# other, yet ran back to back: measured 29m40s of images AFTER ~7m20s of seed, on
+# a ~93m install. Starting the images here and collecting them at step 3 hides the
+# seed phase inside the image phase entirely.
+#
+# Only phases 1-3 of provision_engine.sh are forked (ONLY_IMAGES=1). Its later
+# phases MUST stay in the foreground: seed_data.sql pre-creates a stub
+# OPENROUTESERVICE_APP.CORE + empty REGION_CATALOG, and the region bootstrap
+# writes that same namespace, so overlapping those two is a real collision. The
+# image phase, by contrast, touches only the image repository and registry.
+#
+# Requires the infra step above (the image repository must exist before a push),
+# which is why this sits after step 1 rather than at the top of the script.
+#
+# Disable with OVERLAP_ENGINE_IMAGES=0 to fall back to the fully serial ordering.
+ENGINE_IMAGES_PID=""
+ENGINE_IMAGES_DONE=0
+# One cleanup for EVERY background job this script forks (engine images at 1.5,
+# view verification at 9). Registered UNCONDITIONALLY and exactly once: a second
+# `trap ... EXIT` REPLACES the first rather than adding to it, so per-fork traps
+# would silently disarm each other and leave an orphan running against a dead run.
+# A job already collected has been reaped, so `kill -0` fails and this is a no-op.
+VERIFY_VIEWS_PID=""
+_bg_cleanup() {
+  local p
+  for p in "${ENGINE_IMAGES_PID:-}" "${VERIFY_VIEWS_PID:-}"; do
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      echo "[install-fleet-apps] stopping backgrounded job (pid $p)"
+      kill "$p" 2>/dev/null || true
+    fi
+  done
+}
+trap _bg_cleanup EXIT
+
+if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
+   && [ "${OVERLAP_ENGINE_IMAGES:-1}" = "1" ] \
+   && ! obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
+  note "[1.5/8] engine images -> BACKGROUND (overlaps the seed upload; log: /tmp/ifa_engine_images.log)"
+  ONLY_IMAGES=1 bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
+    >/tmp/ifa_engine_images.log 2>&1 &
+  ENGINE_IMAGES_PID=$!
+  note "  engine image phase pid=$ENGINE_IMAGES_PID"
+fi
 
 # ── 2. data (reuse rows else seed the agnostic SF/ebike preset) ──
 if [ "${SKIP_DATA:-0}" != "1" ]; then
@@ -371,8 +432,27 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     note "  ORS engine detected -> routing verbs LIVE"
     DEPLOYMENT_MODE="engine"
   elif [ "$WITH_ENGINE" = "1" ]; then
+    # Collect the image phase forked at step 1.5, if any. This is a per-PID wait
+    # with an explicit status check: a backgrounded failure cannot abort this
+    # script on its own, and treating it as success would surface minutes later
+    # as an inscrutable CREATE SERVICE error against a missing image.
+    if [ -n "$ENGINE_IMAGES_PID" ]; then
+      note "  collecting the backgrounded engine image phase (pid $ENGINE_IMAGES_PID)..."
+      if wait "$ENGINE_IMAGES_PID"; then
+        note "  engine images ready (built while the seed uploaded)"
+        ENGINE_IMAGES_DONE=1
+      else
+        echo "ERROR: backgrounded engine image phase FAILED (see /tmp/ifa_engine_images.log)"
+        tail -40 /tmp/ifa_engine_images.log 2>/dev/null || true
+        step "3 routing" FAILED; exit 1
+      fi
+      ENGINE_IMAGES_PID=""
+    fi
     note "  ORS engine ABSENT -> provisioning natively by default (heavy)..."
-    bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
+    # SKIP_IMAGES=1 only when the forked phase actually completed above; otherwise
+    # this call builds them itself, so the serial path stays intact.
+    SKIP_IMAGES="$([ "$ENGINE_IMAGES_DONE" = "1" ] && echo 1 || echo "${SKIP_IMAGES:-0}")" \
+      bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
       || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
     note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
     DEPLOYMENT_MODE="engine"
@@ -400,7 +480,23 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # set -e safe: capture the rc without aborting the whole install on a non-zero
     # exit (the assertion below downgrades to a WARN). A bare `cmd; RC=$?` would
     # abort here under `set -euo pipefail` before the rc is ever captured.
-    if snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1; then
+    #
+    # --enable-templating NONE is REQUIRED and this is NOT about prose ampersands.
+    # `snow sql` defaults to `LEGACY,STANDARD`, and LEGACY is SnowSQL `&var`
+    # substitution in which `&&` is the escape for a literal `&`. These procs are
+    # JavaScript, so every LOGICAL AND was silently rewritten to a BITWISE AND on
+    # deploy: this file holds 75 `&&` and the deployed proc had 0 `&&` and 25 bare
+    # `&`. Bitwise `&` does not short-circuit, so every null guard of the shape
+    # `a && a.b` evaluates `a.b` even when `a` is null.
+    #
+    # Measured consequence: `backload_solve` with max_loads >= ~600 returned
+    # `{"error":"unknown error","reason":"ERROR"}` after 8.5s, because
+    # `(resp && resp.routes && ...)` became `(resp & resp.routes & ...)` and threw
+    # "Cannot read properties of null (reading 'routes')" whenever the solver
+    # legitimately returned null. All 9 TOOL_* procs shipped with this corruption
+    # on every install. With the flag, max_loads 600 AND the documented maximum of
+    # 1000 both return SUCCESS.
+    if snow sql -c "$CONNECTION" --enable-templating NONE -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1; then
       ROUTING_TOOLS_RC=0
     else
       ROUTING_TOOLS_RC=$?
@@ -703,13 +799,39 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
     && step "4.5 semantic" OK \
     || { note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"; step "4.5 semantic" WARN; }
 
+  # The two single-view files below can fail for two very different reasons: their
+  # source layer is not built yet (EXPECTED on a fresh install), or the view
+  # DEFINITION is broken. Attributing every failure to the former is how a plain
+  # syntax error in SV_OFFERS survived indefinitely - an 'invalid identifier' on
+  # lane_history.vehicle_equipment reported as a benign SKIPPED on every single
+  # install. So decide the verdict from the LOG, not from the exit code alone:
+  # only a missing/unauthorized source object earns SKIPPED; anything else is a
+  # defect and is reported as FAILED (still best-effort, never aborts the install).
+  # Deliberately does NOT grep the log for 'error'/'invalid' to classify, since
+  # these files DEPLOY prose that contains such words; tail the log instead.
+  semantic_optional_verdict() {
+    local label="$1" log="$2" hint="$3"
+    # snow sql wraps errors in box-drawing chars (│) that split "does not exist
+    # or not authorized" across lines, so grep -qi misses it. Strip box-drawing,
+    # rejoin lines, and collapse whitespace before matching.
+    if tr -d '│' < "$log" | tr '\n' ' ' | tr -s ' ' | grep -qi 'does not exist or not authorized'; then
+      note "  NOTE: $label skipped - $hint"
+      step "$label" SKIPPED
+    else
+      note "  WARN: $label FAILED for a reason other than a missing source object - this is a DEFECT in the view definition, not a fresh-install skip. Last lines of $log:"
+      tail -20 "$log"
+      step "$label" FAILED
+    fi
+  }
+
   # SV_OFFERS: separate file, separate outcome. On a fresh install the
   # FLEET_INTELLIGENCE.MARKETPLACE views do not exist yet (admin app boot init /
   # freight-exchange skill create them), so a skip here is EXPECTED and is not a
   # defect. Re-run this one file once the marketplace layer is present.
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
     && step "4.5 semantic (marketplace)" OK \
-    || { note "  NOTE: SV_OFFERS skipped - FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."; step "4.5 semantic (marketplace)" SKIPPED; }
+    || semantic_optional_verdict "4.5 semantic (marketplace)" /tmp/ifa_semantic_mkt.log \
+         "FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."
 
   # SV_EMERGENCY_RESPONSE: same treatment, same reason. The emergency pack's source
   # views only exist once its dataset has been generated, so a skip here is EXPECTED
@@ -718,7 +840,8 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_EMERGENCY_SQL" --enable-templating NONE \
       >/tmp/ifa_semantic_emergency.log 2>&1 \
     && step "4.5 semantic (emergency)" OK \
-    || { note "  NOTE: SV_EMERGENCY_RESPONSE skipped - FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."; step "4.5 semantic (emergency)" SKIPPED; }
+    || semantic_optional_verdict "4.5 semantic (emergency)" /tmp/ifa_semantic_emergency.log \
+         "FLEET_APP.EMERGENCY_RESPONSE not present yet (expected until the emergency dataset is generated). Re-run semantic_views_emergency.sql afterwards."
 else
   step "4.5 semantic" SKIPPED
   step "4.5 semantic (marketplace)" SKIPPED
@@ -852,6 +975,21 @@ if [ -f "$SEMANTIC_VIEWS_BEHAVIOUR_SQL" ]; then
     || { note "  WARN: SV_AGENT_BEHAVIOUR failed; see /tmp/ifa_semantic_behaviour.log"; step "5.6 sv-behaviour" FAILED; }
 else
   step "5.6 sv-behaviour" SKIPPED
+fi
+
+# ── 5.7 CoWork agent skills ─────────────────────────
+# Upload the generated SKILL.md folders BEFORE the agents are created: an agent
+# whose spec references a skill path that does not exist fails that reference on
+# every request. Skills are read from the stage at request time, so a later
+# SKILL.md edit needs no agent redeploy - only a re-upload.
+if [ -f "$SCRIPTS/deploy_cowork_skills.sh" ]; then
+  note "[5.7/8] uploading CoWork agent skills..."
+  bash "$SCRIPTS/deploy_cowork_skills.sh" "$CONNECTION" \
+      >/tmp/ifa_cowork_skills.log 2>&1 \
+    && step "5.7 cowork-skills" OK \
+    || { note "  WARN: CoWork skill upload failed; the agents will list skills that cannot load. See /tmp/ifa_cowork_skills.log"; step "5.7 cowork-skills" FAILED; }
+else
+  step "5.7 cowork-skills" SKIPPED
 fi
 
 # ── 6. agents ───────────────────────────────────────────────────
@@ -996,6 +1134,31 @@ fi
 # contradicts its own declared mode, which is a real defect rather than a
 # thin-data warning. Exit 2 (degraded) is the expected analytics-only result and
 # is recorded as WARN. Skip with SKIP_VERIFY_DEPLOYMENT=1.
+#
+# ── first, fork step 9 so the two verifications overlap ──────────
+# Steps 8.5 and 9 are both READ-ONLY verifications of a deployment that is already
+# fully built and serving: 8.5 (~9 min) checks object/mode coherence, 9 (~7 min)
+# executes every view's queries. They share no state, write to different logs, and
+# neither creates anything, so running them back to back added ~7 min of pure tail
+# latency AFTER both apps were already RUNNING. Forking 9 here bounds the pair at
+# the slower of the two.
+#
+# 9 is launched FIRST but reported SECOND: `step` appends to STEP_STATUS, so the
+# collection further down runs after 8.5 has recorded itself and the friction log
+# keeps its 8.5-then-9 ordering.
+#
+# Force the old sequential behaviour with SERIAL_VERIFY=1 (matching SERIAL_APPS).
+VERIFY_VIEWS_FORKED=0
+if [ "${SKIP_VERIFY:-0}" != "1" ] && [ "${SERIAL_VERIFY:-0}" != "1" ] \
+   && python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
+  note "[8.4/9] view verification -> BACKGROUND (overlaps the 8.5 coherence verify)"
+  python3 "$SCRIPTS/validate_app_views.py" -c "$CONNECTION" \
+    --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1 &
+  VERIFY_VIEWS_PID=$!
+  VERIFY_VIEWS_FORKED=1
+  note "  view verification pid=$VERIFY_VIEWS_PID"
+fi
+
 if [ "${SKIP_VERIFY_DEPLOYMENT:-0}" != "1" ]; then
   note "[8.5/9] verifying deployment coherence (mode=$DEPLOYMENT_MODE)..."
   if [ "$DEPLOYMENT_MODE" = "engine" ]; then
@@ -1034,7 +1197,16 @@ fi
 # install, and it needs every layer present. Skip with SKIP_VERIFY=1.
 if [ "${SKIP_VERIFY:-0}" != "1" ]; then
   note "[9/9] verifying app views return data (non-blocking)..."
-  if python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
+  if [ "$VERIFY_VIEWS_FORKED" = "1" ]; then
+    # Collect the job forked at 8.4. `wait` yields the child's exit status, so the
+    # OK/WARN branches below are driven by exactly the same rc the serial path
+    # produced - the classification is unchanged, only the scheduling moved.
+    note "  collecting the backgrounded view verification (pid $VERIFY_VIEWS_PID)..."
+    VERIFY_RC=0
+    wait "$VERIFY_VIEWS_PID" || VERIFY_RC=$?
+    VERIFY_VIEWS_PID=""
+    VERIFY_READY=1
+  elif python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
     # set -e safe: capture the rc without aborting the install. A bare
     # `cmd; RC=$?` dies at `cmd` under `set -euo pipefail` before the rc is ever
     # read - which made this "non-blocking" step the most blocking one in the
@@ -1045,6 +1217,14 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
     VERIFY_RC=0
     python3 "$SCRIPTS/validate_app_views.py" -c "$CONNECTION" \
       --report /tmp/ifa_view_report.json >/tmp/ifa_verify.log 2>&1 || VERIFY_RC=$?
+    VERIFY_READY=1
+  else
+    VERIFY_READY=0
+  fi
+  if [ "$VERIFY_READY" = "1" ]; then
+    # The tally line is the LAST unindented line starting with one of these
+    # statuses. validate_app_views.py prints an INDENTED per-view membership
+    # breakdown after it, which this anchored grep deliberately does not match.
     VERIFY_TALLY=$(grep -E "^(OK|EMPTY|ERROR|BY_DESIGN)" /tmp/ifa_verify.log | tail -1)
     if [ "$VERIFY_RC" = "0" ]; then
       note "  all views returned data or are declared empty ($VERIFY_TALLY)"
@@ -1077,7 +1257,11 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
-  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | tail -1)\`"
+  # `snow sql --format=CSV` emits a trailing BLANK line after the last result
+  # set, so `tail -1` returned the empty string and every friction log ever
+  # written recorded `account: ``` -- the one field that identifies which
+  # account the run landed in. Strip blank lines before taking the last.
+  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
   echo "- SA app:    $SA_URL_DISP"

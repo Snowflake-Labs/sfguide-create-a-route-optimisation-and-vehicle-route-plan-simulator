@@ -3,8 +3,9 @@
 import { useMemo } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
-import { useAgentMemo } from '@/lib/agent-memo';
+import { buildKpiMemo, useAgentMemo } from '@/lib/agent-memo';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
+import { formatNumber, MAX_DECIMALS } from '@/lib/format-number';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface MetricMapping {
@@ -37,30 +38,25 @@ interface MetricCardsAreaProps {
   areaName?: string;
 }
 
-function formatValue(value: unknown, format?: string): string {
+// Decimal caps come from lib/format-number so a KPI tile and the table beneath it
+// cannot disagree. Compaction (K/M) is kept on, since a tile has one line to work
+// with. `column` is threaded through for the coordinate exemption.
+function formatValue(value: unknown, format?: string, column?: string): string {
   if (value === null || value === undefined) return '-';
-  const num = Number(value);
-  if (isNaN(num)) return String(value);
 
   switch (format) {
     case 'currency':
-      return num >= 1_000_000
-        ? `$${(num / 1_000_000).toFixed(2)}M`
-        : num >= 1_000
-          ? `$${(num / 1_000).toFixed(1)}K`
-          : `$${num.toFixed(2)}`;
+      return formatNumber(value, { format: 'currency', compact: true, grouping: true }) ?? String(value);
     case 'percent':
-      return `${(num * 100).toFixed(2)}%`;
+      return formatNumber(value, { format: 'percent' }) ?? String(value);
     case 'number':
-      return num >= 1_000_000
-        ? `${(num / 1_000_000).toFixed(2)}M`
-        : num >= 1_000
-          ? `${(num / 1_000).toFixed(1)}K`
-          : num.toLocaleString();
-    case 'number_2dp':
-      return num.toFixed(2);
+      return formatNumber(value, { compact: true, grouping: true }) ?? String(value);
+    case 'number_2dp': {
+      const num = Number(value);
+      return isNaN(num) ? String(value) : num.toFixed(MAX_DECIMALS);
+    }
     default:
-      return typeof value === 'number' ? num.toLocaleString() : String(value);
+      return formatNumber(value, { column, grouping: true }) ?? String(value);
   }
 }
 
@@ -79,24 +75,17 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
   // view with more than one MetricCards area does not clobber a sibling's memo.
   const kpiMemo = useMemo(() => {
     const row = data?.rows?.[0];
-    if (!row || metrics.length === 0) return '';
-    const MAX_LEN = 600;
-    const pairs: string[] = [];
-    for (const m of metrics) {
-      const label = interpolateTokens(m.label, display);
+    // The absent-column rule and the length bound live in buildKpiMemo so they can
+    // be tested without React: a metric whose column is not on the row is dropped
+    // rather than published as `Label=-`, which the agent would quote as the KPI.
+    return buildKpiMemo(row, metrics.map((m) => {
       const suffix = unitSuffix(display, m.unit);
-      const val = formatValue(row[m.column], m.format) + (suffix ? suffix : '');
-      pairs.push(`${label}=${val}`);
-    }
-    let out = '';
-    let truncated = 0;
-    for (let i = 0; i < pairs.length; i++) {
-      const next = out ? `${out}; ${pairs[i]}` : pairs[i];
-      if (next.length > MAX_LEN) { truncated = pairs.length - i; break; }
-      out = next;
-    }
-    if (truncated > 0) out += `; (+${truncated} more)`;
-    return out;
+      return {
+        column: m.column,
+        label: interpolateTokens(m.label, display),
+        value: formatValue(row?.[m.column], m.format, m.column) + (suffix ? suffix : ''),
+      };
+    }));
   }, [data, metrics, display]);
 
   // Published through the shared gate rather than a local effect. The local one
@@ -151,7 +140,7 @@ export function MetricCardsArea({ areaConfig, areaName }: MetricCardsAreaProps) 
               {interpolateTokens(m.label, display)}
             </div>
             <div style={{ fontSize: '18px', fontWeight: 700, color: color ?? 'var(--text-primary, #111827)' }}>
-              {formatValue(raw, m.format)}{suffix ? <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary, #6b7280)', marginLeft: '4px' }}>{suffix}</span> : null}
+              {formatValue(raw, m.format, m.column)}{suffix ? <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary, #6b7280)', marginLeft: '4px' }}>{suffix}</span> : null}
             </div>
           </div>
         );

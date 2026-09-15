@@ -77,6 +77,26 @@ fi
 
 echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  connection=$CONNECTION"
 
+# Say where the tag CAME FROM, and flag it when the file is not what HEAD says.
+# image-versions.env is a single shared line that several sessions edit, and this
+# script reads it exactly once at start. A deploy has already read a tag that had
+# been reverted underneath it moments earlier by a parallel commit, then built and
+# pushed under the OTHER session's tag - two different images now share it. The
+# tag itself looked perfectly normal in the log, so nothing suggested checking.
+if [ -n "${IMAGE_TAG_OVERRIDE:-}" ] || [ -n "${IMAGE_TAG:-}" ] && [ "${IMAGE_TAG}" != "${FLEET_SA_APP_TAG}" ]; then
+  echo "  tag source=IMAGE_TAG env override (image-versions.env says ${FLEET_SA_APP_TAG})"
+else
+  echo "  tag source=$VERSION_FILE"
+fi
+if git -C "$REPO_ROOT" diff --quiet -- "$VERSION_FILE" 2>/dev/null; then
+  : # committed, matches HEAD
+else
+  HEAD_TAG=$(git -C "$REPO_ROOT" show "HEAD:$(git -C "$REPO_ROOT" ls-files --full-name "$VERSION_FILE" 2>/dev/null)" 2>/dev/null \
+    | sed -n 's/^FLEET_SA_APP_TAG=//p')
+  echo "  NOTE: $(basename "$VERSION_FILE") is UNCOMMITTED (HEAD says '${HEAD_TAG:-unknown}', using '$IMAGE_TAG')."
+  echo "        On a shared working tree, confirm this tag is yours before pushing an image under it."
+fi
+
 # Resolve the image repo: an explicit env export (installer path) wins, else the
 # repo the live service already points at (so a redeploy never migrates repos),
 # else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
@@ -99,6 +119,99 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   if [ -d "$KIT_NM" ]; then
     echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
+  fi
+  # ---------------------------------------------------------------- static gates
+  # These four suites existed for months and were invoked by NOTHING - no CI, no
+  # script. That is not a theoretical gap: commit a6db148e made verify_map_spec
+  # import SA app source using the app's `@/*` alias, which fleet_tools/user had
+  # no paths mapping for, so the 200-assertion suite stopped STARTING
+  # (MODULE_NOT_FOUND) and stayed broken across a commit, a push and a deploy.
+  # A suite nobody runs is documentation, not a guard.
+  #
+  # All are pure static checks, so they run BEFORE the build: no point compiling
+  # for two minutes to ship a view that cannot bind or a spec that draws nothing.
+  # Each has its own opt-out, matching the BUNDLE_VERIFY convention.
+  #
+  # Authored views specifically bypass parseDynamicSpec, so nothing at runtime
+  # lowercases their column references or checks a map layer has its encoding -
+  # and /api/query lowercases every row key it returns, so an uppercase ref binds
+  # to nothing and the view draws an empty frame with no error.
+  if [ "${VIEWS_VERIFY:-1}" != "0" ]; then
+    echo "[1/7] Verify authored app-views.json column refs can bind..."
+    ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-app-views.mts ) \
+      || { echo "ERROR: authored view verification failed (see above)."; exit 1; }
+  fi
+  if [ "${CHART_VERIFY:-1}" != "0" ]; then
+    echo "[1/7] Verify chart specs extract, theme, compile with marks..."
+    ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-chart-spec.mts ) \
+      || { echo "ERROR: chart spec verification failed (see above)."; exit 1; }
+  fi
+  if [ "${MAP_SPEC_VERIFY:-1}" != "0" ]; then
+    # Lives in fleet_tools/user because it asserts the VERB's view of a map spec
+    # against the app's renderer, so it must run from there.
+    #
+    # It imports SA app source, and node resolves bare specifiers by walking up
+    # from the IMPORTING file - which lives under fleet_sa_app/ui/src - so `react`
+    # (via agent-memo.ts) and `@fleet-kit/core/map` (via map/layer-spec.ts) come
+    # from the SA APP's node_modules, not this directory's. fleet_tools/user has
+    # neither. Both trees are therefore ensured here rather than relying on the
+    # gates above having run first: each gate has its own opt-out, which implies
+    # they are independent, and without this one is not. Disabling the other two
+    # on a fresh tree used to fail with "Cannot find module 'react'", which points
+    # at the wrong package entirely.
+    MAP_SPEC_DIR="$SKILL_DIR/fleet_tools/user"
+    if [ -f "$MAP_SPEC_DIR/verify_map_spec.mts" ]; then
+      echo "[1/7] Verify map specs compile and draw (verb + renderer agree)..."
+      ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } ) \
+        || { echo "ERROR: could not install $UI_DIR deps (needed by the map spec suite)"; exit 1; }
+      ( cd "$MAP_SPEC_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx verify_map_spec.mts >/dev/null ) \
+        || { echo "ERROR: map spec verification failed. Re-run for detail:"; \
+             echo "         ( cd '$MAP_SPEC_DIR' && npx tsx verify_map_spec.mts )"; exit 1; }
+      echo "  OK: map spec assertions pass."
+    fi
+  fi
+  if [ "${BACKLOAD_GEOM_VERIFY:-1}" != "0" ]; then
+    # The Backload map's road geometry has exactly one producer (an ORS
+    # DIRECTIONS pass, because the solve disables VROOM geometry). It used to
+    # live inside solve(), so a plan collected from an agent solve
+    # (?solve_key=..., which never runs solve) drew its stops and its numbers
+    # with no route line at all - correct data, no error, and a screen that reads
+    # as a failed plan. This asserts the pass stays SHARED by both entry points.
+    GEOM_GATE="$SKILL_DIR/scripts/check_backload_rehydrate_geometry.py"
+    if [ -f "$GEOM_GATE" ]; then
+      echo "[1/7] Verify a rehydrated backload plan gets road geometry..."
+      python3 "$GEOM_GATE" \
+        || { echo "ERROR: backload rehydrate geometry gate failed (see above)."; exit 1; }
+    fi
+  fi
+  if [ "${DASH_UNITS_VERIFY:-1}" != "0" ]; then
+    # deck.gl's getDashArray is [dash, gap] relative to the path width IN THE
+    # LAYER'S WIDTH UNITS, which default to METRES. The Backload empty legs
+    # therefore had a 16 m dash period in world space: dashed when zoomed in,
+    # one solid grey stroke at country zoom - and the layer carried
+    # lineWidthMinPixels, which clamps the stroke and not the dash, so the units
+    # looked handled. Three layers across two apps shared the defect.
+    DASH_GATE="$SKILL_DIR/scripts/check_dash_units.py"
+    if [ -f "$DASH_GATE" ]; then
+      echo "[1/7] Verify dashed map layers pin their dash period to pixels..."
+      python3 "$DASH_GATE" \
+        || { echo "ERROR: dash units gate failed (see above)."; exit 1; }
+    fi
+  fi
+  if [ "${BACKLOAD_MEMO_VERIFY:-1}" != "0" ]; then
+    # What the agent can see of a solved plan is one bounded string per panel, and
+    # the chat route trims by WHOLE PANEL. A memo that outgrows the budget is
+    # therefore deleted rather than shortened: the 21-trip assignments list
+    # vanished while its KPI scalars survived, so the agent totalled a plan it
+    # could not name one trip in, and no surface reported anything. Wired here
+    # because .githooks/pre-commit does not run (core.hooksPath is unset), which
+    # makes the deploy the only place that can actually stop a regression.
+    MEMO_GATE="$SKILL_DIR/scripts/check_backload_memo.py"
+    if [ -f "$MEMO_GATE" ]; then
+      echo "[1/7] Verify the backload memos fit the agent context budget..."
+      python3 "$MEMO_GATE" \
+        || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
+    fi
   fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
@@ -129,6 +242,31 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       exit 1
     fi
     echo "  OK: '$BUNDLE_VERIFY_TOKEN' present in built chunks."
+
+    # Second sentinel, from the APP's own code. The kit token above cannot prove
+    # the app code shipped: `cellToBoundary` predates every recent change, so it
+    # is satisfied by a bundle built from an OLD working tree. That is not
+    # hypothetical - a deploy once ran during a transient clean-tree window while
+    # a parallel session was committing, read a tag from an image-versions.env
+    # that had been reverted underneath it, built a tree that may not have
+    # contained the current diff, and reported success. Both sentinels passed.
+    #
+    # A user-facing string literal is used because literals survive minification
+    # while function and variable names do not. If the wording changes, this fails
+    # loudly and the token is meant to be updated with it - that is the contract,
+    # same as BUNDLE_VERIFY_TOKEN.
+    APP_VERIFY_TOKEN="${APP_VERIFY_TOKEN:-none could be drawn}"
+    echo "[1c/7] Verify app code landed in bundle (token=\"$APP_VERIFY_TOKEN\")..."
+    if ! grep -rqlF "$APP_VERIFY_TOKEN" "$CHUNK_DIR" 2>/dev/null; then
+      echo "ERROR: app bundle verification failed - \"$APP_VERIFY_TOKEN\" not found in $CHUNK_DIR"
+      echo "       The built bundle does NOT contain the current app code, so this"
+      echo "       image would ship an older UI than the working tree."
+      echo "       Either the wording changed (update APP_VERIFY_TOKEN) or the build"
+      echo "       ran against a stale cache / a different tree. Try:"
+      echo "         rm -rf '$UI_DIR/.next' && redeploy"
+      exit 1
+    fi
+    echo "  OK: app sentinel present in built chunks."
   fi
 
   echo "[2/7] Login to SPCS image registry..."
@@ -169,14 +307,18 @@ if [ "${SKIP_CONFIG:-0}" != "1" ]; then
   # First-deploy bootstrap: the service schema + config/spec stage must exist
   # before any stage copy or CREATE SERVICE. Idempotent (IF NOT EXISTS).
   #
-  # The query warehouse is ensured here too. The service spec sets
-  # SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS and every app query runs on it, so if it
+  # The query warehouses are ensured here too. The service spec sets
+  # SNOWFLAKE_WAREHOUSE=FLEET_APPS_WH and every app query runs on it, so if it
   # does not exist the app deploys "successfully" and then fails every single
-  # query at runtime. The engine/seed/analytic scripts all create it, but they can
-  # be skipped (--no-engine, seed already present), so do not rely on ordering.
+  # query at runtime. The engine/seed/analytic scripts all create them, but they
+  # can be skipped (--no-engine, seed already present), so do not rely on
+  # ordering. scripts/warehouses.sql is the SINGLE owner of both specs -- do not
+  # inline a CREATE WAREHOUSE here again (this script used AUTO_SUSPEND = 600
+  # while three .sql layers used 60, and `IF NOT EXISTS` hid the disagreement).
+  snow sql -c "$CONNECTION" -f "$SKILL_DIR/scripts/warehouses.sql" >/tmp/fleet_sa_warehouses.log 2>&1 \
+    || { echo "ERROR: warehouse bootstrap failed"; tail -20 /tmp/fleet_sa_warehouses.log; exit 1; }
   snow sql -c "$CONNECTION" -q "
     ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
-    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 600 AUTO_RESUME = TRUE COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"core\"}}';
     CREATE SCHEMA IF NOT EXISTS $SCHEMA_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
     CREATE STAGE IF NOT EXISTS $STAGE_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_sa_bootstrap.log 2>&1 || { echo "ERROR: schema/stage bootstrap failed"; tail -20 /tmp/fleet_sa_bootstrap.log; exit 1; }
@@ -274,14 +416,25 @@ else
 fi
 
 # ── 4. Resolve endpoint URL ─────────────────────────────────────
+# While SPCS ingress is still coming up, `SHOW ENDPOINTS` returns the literal
+# text "Endpoints provisioning in progress... check back in a few minutes" in
+# the ingress_url column, and prefixing 'https://' to that made the placeholder
+# satisfy a bare `^https://` grep - so the deploy printed
+# `url: https://Endpoints provisioning in progress...` as if it were the app URL.
+# The rule now lives in lib/endpoint_url.sh, shared with the admin deploy and the
+# installer's resolver, so all three enforce it identically. Rejected in SQL AND
+# in the grep, so an unresolved endpoint yields an EMPTY url and the line below is
+# suppressed rather than printing something false.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/endpoint_url.sh"
 echo "[7/7] Resolve endpoint URL..."
 URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   $TAG_SQL
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-  WHERE \"name\" = 'fleet-sa-app';
-" 2>/dev/null | grep -E '^https://' | head -1 || true)
+  WHERE \"name\" = 'fleet-sa-app'
+    AND $(endpoint_url_sql_guard);
+" 2>/dev/null | endpoint_url_filter)
 
 echo
 echo "================================================================"

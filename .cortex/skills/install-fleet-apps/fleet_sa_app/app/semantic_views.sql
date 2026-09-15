@@ -101,28 +101,28 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     , trips.total_operators AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'active operators', 'drivers')
       COMMENT = 'Distinct count of operators. Keyed on (region, vehicle_type, operator_id) because operator ids are index-derived per dataset and repeat across regions, so counting the bare id merges different people whenever more than one region is in scope.'
-    , trips.total_distance_km AS SUM(distance_km)
+    , trips.total_distance_km AS ROUND(SUM(distance_km), 2)
       WITH SYNONYMS ('total km driven', 'total distance')
       COMMENT = 'Total actual distance driven (km)'
-    , trips.avg_distance_km AS AVG(distance_km)
+    , trips.avg_distance_km AS ROUND(AVG(distance_km), 2)
       COMMENT = 'Average actual trip distance (km)'
-    , trips.total_duration_min AS SUM(duration_minutes)
+    , trips.total_duration_min AS ROUND(SUM(duration_minutes), 2)
       COMMENT = 'Total actual trip duration (minutes)'
-    , trips.avg_duration_min AS AVG(duration_minutes)
+    , trips.avg_duration_min AS ROUND(AVG(duration_minutes), 2)
       COMMENT = 'Average actual trip duration (minutes)'
-    , trips.avg_speed_kmh AS AVG(DIV0(distance_km, duration_minutes) * 60)
+    , trips.avg_speed_kmh AS ROUND(AVG(DIV0(distance_km, duration_minutes) * 60), 2)
       WITH SYNONYMS ('average speed', 'mean speed')
       COMMENT = 'Average trip speed (km/h), derived from distance and duration'
     , trips.detour_trip_count AS COUNT_IF(IS_DETOUR)
       WITH SYNONYMS ('number of detours', 'detour trips')
       COMMENT = 'Count of trips flagged as detours'
-    , trips.detour_rate_pct AS DIV0(COUNT_IF(IS_DETOUR), COUNT(*)) * 100
+    , trips.detour_rate_pct AS ROUND(DIV0(COUNT_IF(IS_DETOUR), COUNT(*)) * 100, 2)
       WITH SYNONYMS ('detour percentage')
       COMMENT = 'Percent of trips flagged as detours'
     , origins.total_origins AS COUNT(DISTINCT ORIGIN_POI_ID)
       WITH SYNONYMS ('number of origins', 'origin locations')
       COMMENT = 'Distinct count of origin POIs'
-    , origins.total_origin_trips AS SUM(origin_total_trips)
+    , origins.total_origin_trips AS ROUND(SUM(origin_total_trips), 2)
       WITH SYNONYMS ('trips from origins')
       COMMENT = 'Total trips departing from origins'
   )
@@ -142,7 +142,34 @@ Conventions:
 - "average speed" = trips.avg_speed_kmh (derived from distance/duration). There is no separate telemetry table here.
 - For detour rate use trips.detour_rate_pct; for raw counts use trips.detour_trip_count.
 - Group trip metrics by trips dimensions (region, vehicle_type, operator_id, status) or by the operators parent dimensions (shift_type, driver_profile).
-- origins does not join to trips/operators (origin-POI grained) - answer origin questions from the origins table alone.'
+- origins does not join to trips/operators (origin-POI grained) - answer origin questions from the origins table alone.
+<chart_customization>
+- Trips, distance or speed over time: line chart on the date dimension.
+- Operator, shift or profile comparisons: horizontal bar sorted descending, because the label is a name and reads badly rotated.
+- detour_rate_pct and any other _pct measure is ALREADY a percentage - format it with a percent suffix and do NOT multiply by 100 again.
+- Never chart a rollup that omits region: this view holds every loaded region, so an unfiltered series silently sums a European truck fleet onto San Francisco e-bikes. Filter first, or make region the colour series and say so.
+</chart_customization>'
+  AI_VERIFIED_QUERIES (
+    top_origins_per_region AS (
+      QUESTION 'Which origins generate most of our work?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'WITH ranked_origins AS (
+  SELECT origin_region, origin_name, total_origin_trips,
+         RANK() OVER (PARTITION BY origin_region ORDER BY total_origin_trips DESC NULLS LAST) AS rnk
+  FROM SEMANTIC_VIEW(
+    FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
+    METRICS total_origin_trips
+    DIMENSIONS origins.origin_region, origins.origin_name
+  )
+)
+SELECT origin_region, origin_name, total_origin_trips, rnk
+FROM ranked_origins
+WHERE rnk <= 10
+ORDER BY origin_region, rnk NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_ROUTE_DEVIATION (FLEET_INTELLIGENCE.ROUTE_DEVIATION) ============
@@ -219,12 +246,12 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
   METRICS (
     trip_dev.total_trips AS COUNT(DISTINCT TRIP_ID) WITH SYNONYMS ('number of trips', 'trip count') COMMENT = 'Distinct trips analyzed'
     , trip_dev.deviation_trips AS COUNT_IF(IS_ROUTE_DEVIATION) WITH SYNONYMS ('deviated trips', 'number of deviations') COMMENT = 'Trips flagged as route deviations'
-    , trip_dev.deviation_rate_pct AS DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100 WITH SYNONYMS ('deviation rate', 'percent deviated') COMMENT = 'Percent of trips that deviated'
-    , trip_dev.total_excess_km AS SUM(distance_deviation_km) WITH SYNONYMS ('total excess distance') COMMENT = 'Total excess km from deviations'
-    , trip_dev.avg_distance_deviation_pct AS AVG(distance_deviation_pct) COMMENT = 'Average distance deviation percent'
-    , trip_dev.total_time_lost_min AS SUM(duration_deviation_min) WITH SYNONYMS ('time lost', 'total delay') COMMENT = 'Total excess minutes from deviations'
-    , trip_dev.avg_duration_deviation_pct AS AVG(duration_deviation_pct) COMMENT = 'Average duration deviation percent'
-    , trip_dev.avg_route_deviation_factor AS AVG(route_deviation_factor) COMMENT = 'Average actual/expected route factor'
+    , trip_dev.deviation_rate_pct AS ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2) WITH SYNONYMS ('deviation rate', 'percent deviated') COMMENT = 'Percent of trips that deviated'
+    , trip_dev.total_excess_km AS ROUND(SUM(distance_deviation_km), 2) WITH SYNONYMS ('total excess distance') COMMENT = 'Total excess km from deviations'
+    , trip_dev.avg_distance_deviation_pct AS ROUND(AVG(distance_deviation_pct), 2) COMMENT = 'Average distance deviation percent'
+    , trip_dev.total_time_lost_min AS ROUND(SUM(duration_deviation_min), 2) WITH SYNONYMS ('time lost', 'total delay') COMMENT = 'Total excess minutes from deviations'
+    , trip_dev.avg_duration_deviation_pct AS ROUND(AVG(duration_deviation_pct), 2) COMMENT = 'Average duration deviation percent'
+    , trip_dev.avg_route_deviation_factor AS ROUND(AVG(route_deviation_factor), 4) COMMENT = 'Average actual/expected route factor'
   )
 
   COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable). MAPPING: to draw a trip route select path_geojson with a geojson layer and color by path_type (categorical) - that puts the driven and the planned line on one layer. Filter to a single trip_id or a handful: rows reach 31 KB and an oversized payload renders a blank map rather than an error. A planned route is stored only for deviated trips, so filter has_expected_path (or is_route_deviation) before promising a comparison; on any other trip the driven track reproduces the plan exactly and the two lines coincide.'
@@ -253,7 +280,29 @@ DRAWING A ROUTE (actual vs expected):
 A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
 - This view holds one row per TRIP. A vehicle that never ran a trip over the horizon is absent from it entirely - it has no actual path, no expected path, and no schedule row. That is a real operating state (the asset sat at its base all week), NOT a gap in the data.
 - So when a question arrives as "show me the path of <vehicle picked by some other metric>", check that the vehicle exists here FIRST. It very often will not, because the metric that selected it - highest dwell, most idle time - is exactly the metric a never-dispatched asset maximises. Use query_dwell''s `is_dispatched` dimension to tell the two apart.
-- If the vehicle is absent, say plainly that it made no trips over the period so there is no route to draw, and name the reason if you can (an idle-bound asset). Do NOT say its trips "were not included in the dataset", do NOT call it a coverage or dataset problem, and do NOT quietly answer about a different vehicle instead. Offer the highest-ranking DISPATCHED vehicle as the mappable alternative and let the user choose.'
+- If the vehicle is absent, say plainly that it made no trips over the period so there is no route to draw, and name the reason if you can (an idle-bound asset). Do NOT say its trips "were not included in the dataset", do NOT call it a coverage or dataset problem, and do NOT quietly answer about a different vehicle instead. Offer the highest-ranking DISPATCHED vehicle as the mappable alternative and let the user choose.
+<chart_customization>
+- Deviation distance or time across trips: histogram, not an average. A fleet-wide mean detour hides the handful of trips that actually deviated.
+- Deviation by driver or route variation: horizontal bar sorted descending.
+- A path or a route IS a map, not a chart - and you CAN draw it: call render_map with ONE path layer over trip_paths.path_geojson, coloured by path_type so the driven and planned lines are distinguishable, filtered has_expected_path = TRUE (a planned route is stored only for deviated trips). Pick the trip FIRST, then fetch its geometry: selecting path_geojson multiplies rows per path type and breaks any trip-level aggregate. The map query must be DIMENSIONS-ONLY - Snowflake rejects mixing trip_paths dimensions with trip_dev facts. Give the layer a legendLabel and a {COLUMN} tooltip, and do NOT author a legend array - the client derives the legend from the layer''s own colours.
+- A chart comparing actual against expected must filter has_expected_path = TRUE and say so. Elsewhere the driven track reproduces the plan exactly, so the two series coincide by construction and the chart reads as perfect compliance.
+</chart_customization>'
+  AI_VERIFIED_QUERIES (
+    deviation_by_driver AS (
+      QUESTION 'How closely does execution match the plan, by driver?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+  METRICS deviation_rate_pct, avg_distance_deviation_pct
+  DIMENSIONS driver_id
+  WHERE is_route_deviation = TRUE
+)
+ORDER BY deviation_rate_pct DESC NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_CATCHMENT (FLEET_INTELLIGENCE.CATCHMENT) ============
@@ -297,7 +346,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
     pois.total_pois AS COUNT(DISTINCT POI_ID) WITH SYNONYMS ('number of pois', 'poi count', 'locations') COMMENT = 'Distinct POI count'
     , pois.unique_cities AS COUNT(DISTINCT CITY) WITH SYNONYMS ('number of cities') COMMENT = 'Distinct cities'
     , pois.unique_categories AS COUNT(DISTINCT BASIC_CATEGORY) WITH SYNONYMS ('number of categories') COMMENT = 'Distinct POI categories'
-    , cities.total_city_pois AS SUM(city_poi_count) WITH SYNONYMS ('total pois by city') COMMENT = 'Total POIs across cities (precomputed)'
+    , cities.total_city_pois AS ROUND(SUM(city_poi_count), 2) WITH SYNONYMS ('total pois by city') COMMENT = 'Total POIs across cities (precomputed)'
     , addresses.total_addresses AS COUNT(DISTINCT ID) WITH SYNONYMS ('number of addresses', 'address count', 'address coverage') COMMENT = 'Distinct Overture street-address count (density / coverage)'
   )
 
@@ -312,6 +361,22 @@ Conventions:
 - "how many coffee shops in X" -> total_pois filtered by basic_category and city.
 - "competition density" -> total_pois grouped by basic_category + city.
 - "how many addresses" / "address coverage per city" -> total_addresses grouped by addr_city.'
+  AI_VERIFIED_QUERIES (
+    poi_by_category_and_city AS (
+      QUESTION 'How many points of interest are there per category in each city?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+  METRICS total_pois
+  DIMENSIONS basic_category, city
+)
+ORDER BY total_pois DESC NULLS LAST
+LIMIT 15'
+    )
+  )
 ;
 
 -- ============ SV_DWELL_ANALYTICS (rebound onto FLEET_APP.DWELL.*) ============
@@ -370,16 +435,16 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
 
   METRICS (
     sessions.total_sessions AS COUNT(*) WITH SYNONYMS ('dwell sessions', 'number of dwells') COMMENT = 'Total dwell sessions'
-    , sessions.total_dwell_minutes AS SUM(dwell_minutes) WITH SYNONYMS ('total dwell time') COMMENT = 'Total dwell minutes'
-    , sessions.total_dwell_hours AS SUM(dwell_minutes) / 60.0 COMMENT = 'Total dwell hours'
-    , sessions.avg_dwell_minutes AS AVG(dwell_minutes) WITH SYNONYMS ('average dwell time') COMMENT = 'Average dwell minutes per session'
-    , sessions.max_dwell_minutes AS MAX(dwell_minutes) COMMENT = 'Longest dwell session in minutes'
+    , sessions.total_dwell_minutes AS ROUND(SUM(dwell_minutes), 2) WITH SYNONYMS ('total dwell time') COMMENT = 'Total dwell minutes'
+    , sessions.total_dwell_hours AS ROUND(SUM(dwell_minutes) / 60.0, 2) COMMENT = 'Total dwell hours'
+    , sessions.avg_dwell_minutes AS ROUND(AVG(dwell_minutes), 2) WITH SYNONYMS ('average dwell time') COMMENT = 'Average dwell minutes per session'
+    , sessions.max_dwell_minutes AS ROUND(MAX(dwell_minutes), 2) COMMENT = 'Longest dwell session in minutes'
     , sessions.unique_vehicles AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('vehicles dwelling') COMMENT = 'Distinct vehicles with dwells'
     , sessions.unique_dwell_locations AS COUNT(DISTINCT LOCATION_ID) WITH SYNONYMS ('locations') COMMENT = 'Distinct dwell locations'
-    , driver_dwell.total_sla_breaches AS SUM(d_sla_breach_count) WITH SYNONYMS ('SLA breaches', 'sla violations') COMMENT = 'Total SLA breaches across drivers'
-    , driver_dwell.total_critical_breaches AS SUM(d_critical_breach_count) WITH SYNONYMS ('critical breaches') COMMENT = 'Total critical SLA breaches'
-    , driver_dwell.driver_total_dwell_hours AS SUM(d_total_dwell_hours) COMMENT = 'Total dwell hours (driver summary)'
-    , driver_dwell.avg_driver_session_min AS AVG(d_avg_session_min) COMMENT = 'Average per-driver session minutes'
+    , driver_dwell.total_sla_breaches AS ROUND(SUM(d_sla_breach_count), 2) WITH SYNONYMS ('SLA breaches', 'sla violations') COMMENT = 'Total SLA breaches across drivers'
+    , driver_dwell.total_critical_breaches AS ROUND(SUM(d_critical_breach_count), 2) WITH SYNONYMS ('critical breaches') COMMENT = 'Total critical SLA breaches'
+    , driver_dwell.driver_total_dwell_hours AS ROUND(SUM(d_total_dwell_hours), 2) COMMENT = 'Total dwell hours (driver summary)'
+    , driver_dwell.avg_driver_session_min AS ROUND(AVG(d_avg_session_min), 2) COMMENT = 'Average per-driver session minutes'
   )
 
   COMMENT = 'Dwell analysis: vehicle dwell sessions (where/how long vehicles stop), facility utilization, H3 congestion, and per-driver SLA breaches. Covers EVERY loaded region and asset mode - filter by region (key) or city (label).'
@@ -397,7 +462,7 @@ REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 - If a region genuinely returns no rows, say that region has no dwell data - do NOT conclude the dataset is missing.
 
 Conventions:
-- "congestion" / "heatmap" -> group sessions by h3_cell.
+- "congestion" / "heatmap" / "density" / "hotspots" / "where do vehicles stop" -> group sessions by h3_cell, AND select a measure alongside it (total_dwell_minutes or total_sessions). A cell id with no measure cannot be shaded, so a bare h3_cell list is not an answer. This is the SPATIAL question: a breakdown by facility_type or city answers a DIFFERENT one, so do not silently substitute it (see the chart_customization block below for how to draw it).
 - "SLA breaches" / "violations" -> driver_dwell.total_sla_breaches or total_critical_breaches.
 - "dwell time" -> sessions.total_dwell_minutes or avg_dwell_minutes.
 - status values look like DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST.
@@ -405,7 +470,29 @@ Conventions:
 DISPATCHED VS PARKED (read before ranking vehicles by dwell):
 - Some vehicles are never dispatched over the horizon. They sit at their base emitting idle pings only, so they have NO trip, NO schedule row and NO route - one unbroken idle span of days. `is_dispatched = FALSE` marks them.
 - Any "highest dwell", "worst dwell", "most idle time" style ranking must add `is_dispatched = TRUE`, otherwise a parked asset with a single ~10,000-minute span beats a busy vehicle with dozens of real stops. Measured: 5 of the top 7 Europe vehicles by total dwell were parked assets.
-- If the user then asks to see that vehicle''s route or path, the honest answer is that it never moved, so no actual or expected path exists. Do NOT report this as missing data, a dataset gap or a coverage problem, and do not silently substitute a different vehicle - say the vehicle was never dispatched, then offer the highest-dwell DISPATCHED vehicle as the mappable alternative.'
+- If the user then asks to see that vehicle''s route or path, the honest answer is that it never moved, so no actual or expected path exists. Do NOT report this as missing data, a dataset gap or a coverage problem, and do not silently substitute a different vehicle - say the vehicle was never dispatched, then offer the highest-dwell DISPATCHED vehicle as the mappable alternative.
+<chart_customization>
+- Dwell minutes across vehicles or sessions: histogram or box plot. The mean is the wrong answer here - dwell is heavily skewed and the tail IS the finding.
+- Facility and SLA comparisons: horizontal bar sorted descending.
+- Any chart ranking vehicles by dwell must filter is_dispatched = TRUE first, or a parked asset with one unbroken 10,000-minute span tops the chart and the visual is nonsense.
+- H3 congestion/density IS a map, not a chart - and you CAN draw it: call render_map with ONE h3 layer whose query selects h3_cell plus a measure from FLEET_APP.DWELL.VW_DWELL_SESSIONS, filtered by region, e.g. hexColumn h3_cell + valueColumn total_dwell_minutes. Do not plot cell ids on an axis, and do NOT fall back to a facility_type or city bar chart and present it as the density answer - that answers a different question. If render_map is unavailable (you are outside the app), say so in one line and deep_link to the Space-Time Density view. Give the layer a legendLabel and a {COLUMN} tooltip, and do NOT author a legend array - the client derives a gradient legend with the real min/max from the layer''s own colour ramp.
+</chart_customization>'
+  AI_VERIFIED_QUERIES (
+    worst_facilities_by_dwell AS (
+      QUESTION 'Which facilities cost us the most turnaround time?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT *
+FROM SEMANTIC_VIEW(
+  FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+  METRICS total_dwell_minutes
+  DIMENSIONS sessions.location_name, sessions.facility_type, sessions.region
+)
+ORDER BY total_dwell_minutes DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_ASSET_VELOCITY (rebound onto FLEET_APP.ROUTE_OPTIMIZATION.*) ============
@@ -458,15 +545,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY
 
   METRICS (
     idle.idle_vehicle_count AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('number of idle vehicles', 'idle vehicles', 'idle trailers') COMMENT = 'Distinct idle vehicles'
-    , idle.total_cost_of_idleness AS SUM(cost_of_idleness_usd) WITH SYNONYMS ('total idle cost', 'cost of idleness') COMMENT = 'Total cost of idleness (USD)'
-    , idle.total_projected_savings AS SUM(projected_savings_usd) WITH SYNONYMS ('potential savings') COMMENT = 'Total projected savings (USD)'
-    , idle.avg_idle_hours AS AVG(idle_hours) COMMENT = 'Average idle hours'
-    , idle.avg_idle_days AS AVG(idle_days) COMMENT = 'Average idle days'
-    , idle.max_idle_days AS MAX(idle_days) WITH SYNONYMS ('longest idle') COMMENT = 'Maximum idle days'
-    , lane.total_outbound AS SUM(outbound) COMMENT = 'Total outbound trips'
-    , lane.total_inbound AS SUM(inbound) COMMENT = 'Total inbound trips'
-    , lane.total_net_outbound AS SUM(net_outbound_trips) WITH SYNONYMS ('net demand') COMMENT = 'Total net outbound trips'
-    , lane.avg_demand_score AS AVG(demand_score) COMMENT = 'Average demand score'
+    , idle.total_cost_of_idleness AS ROUND(SUM(cost_of_idleness_usd), 2) WITH SYNONYMS ('total idle cost', 'cost of idleness') COMMENT = 'Total cost of idleness (USD)'
+    , idle.total_projected_savings AS ROUND(SUM(projected_savings_usd), 2) WITH SYNONYMS ('potential savings') COMMENT = 'Total projected savings (USD)'
+    , idle.avg_idle_hours AS ROUND(AVG(idle_hours), 2) COMMENT = 'Average idle hours'
+    , idle.avg_idle_days AS ROUND(AVG(idle_days), 2) COMMENT = 'Average idle days'
+    , idle.max_idle_days AS ROUND(MAX(idle_days), 2) WITH SYNONYMS ('longest idle') COMMENT = 'Maximum idle days'
+    , lane.total_outbound AS ROUND(SUM(outbound), 2) COMMENT = 'Total outbound trips'
+    , lane.total_inbound AS ROUND(SUM(inbound), 2) COMMENT = 'Total inbound trips'
+    , lane.total_net_outbound AS ROUND(SUM(net_outbound_trips), 2) WITH SYNONYMS ('net demand') COMMENT = 'Total net outbound trips'
+    , lane.avg_demand_score AS ROUND(AVG(demand_score), 2) COMMENT = 'Average demand score'
   )
 
   COMMENT = 'Asset velocity (Route Optimization): idle vehicles with cost of idleness and projected savings, plus terminal lane demand for repositioning.'
@@ -478,6 +565,19 @@ Entities (two independent facts):
 Conventions:
 - "idle vehicles over N days" -> filter idle_days; "cost of idleness" -> total_cost_of_idleness; "savings" -> total_projected_savings.
 - "where to reposition" -> lane.total_net_outbound by terminal_name.'
+  AI_VERIFIED_QUERIES (
+    costliest_idle_vehicles AS (
+      QUESTION 'Which vehicles are sitting still, and what is that costing us?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT vehicle_id, last_location_name, idle_severity, idle_days, idle_hours,
+       cost_of_idleness_usd
+FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
+ORDER BY cost_of_idleness_usd DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_LOCATION (FLEET_APP.LOCATION.*) ============
@@ -547,15 +647,15 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
 
   METRICS (
     stores.store_count AS COUNT(DISTINCT STORE_ID) WITH SYNONYMS ('number of stores', 'store count') COMMENT = 'Distinct stores'
-    , stores.total_revenue AS SUM(annual_revenue) WITH SYNONYMS ('total revenue') COMMENT = 'Total synthetic annual revenue'
-    , stores.total_ebitda AS SUM(annual_ebitda) WITH SYNONYMS ('total ebitda') COMMENT = 'Total synthetic annual EBITDA'
-    , stores.total_households AS SUM(reference_hh) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total household base across the estate'
-    , stores.avg_value_per_cost AS AVG(value_per_cost) WITH SYNONYMS ('value for money', 'revenue per rent') COMMENT = 'Average revenue per unit of rent'
+    , stores.total_revenue AS ROUND(SUM(annual_revenue), 2) WITH SYNONYMS ('total revenue') COMMENT = 'Total synthetic annual revenue'
+    , stores.total_ebitda AS ROUND(SUM(annual_ebitda), 2) WITH SYNONYMS ('total ebitda') COMMENT = 'Total synthetic annual EBITDA'
+    , stores.total_households AS ROUND(SUM(reference_hh), 2) WITH SYNONYMS ('total households', 'catchment households') COMMENT = 'Total household base across the estate'
+    , stores.avg_value_per_cost AS ROUND(AVG(value_per_cost), 4) WITH SYNONYMS ('value for money', 'revenue per rent') COMMENT = 'Average revenue per unit of rent'
     , zips.zip_count AS COUNT(DISTINCT ZIP) WITH SYNONYMS ('number of zips') COMMENT = 'Distinct ZIP areas'
-    , zips.total_zip_population AS SUM(zip_population) WITH SYNONYMS ('population') COMMENT = 'Total resident population across ZIPs'
-    , zips.total_zip_households AS SUM(zip_households) COMMENT = 'Total households across ZIPs'
-    , zips.avg_zip_median_income AS AVG(zip_median_income) WITH SYNONYMS ('average income') COMMENT = 'Average ZIP median household income'
-    , hh_cells.total_cell_households AS SUM(cell_households) WITH SYNONYMS ('households by cell') COMMENT = 'Households summed across H3 cells'
+    , zips.total_zip_population AS ROUND(SUM(zip_population), 2) WITH SYNONYMS ('population') COMMENT = 'Total resident population across ZIPs'
+    , zips.total_zip_households AS ROUND(SUM(zip_households), 2) COMMENT = 'Total households across ZIPs'
+    , zips.avg_zip_median_income AS ROUND(AVG(zip_median_income), 2) WITH SYNONYMS ('average income') COMMENT = 'Average ZIP median household income'
+    , hh_cells.total_cell_households AS ROUND(SUM(cell_households), 2) WITH SYNONYMS ('households by cell') COMMENT = 'Households summed across H3 cells'
     , hh_cells.cell_count AS COUNT(DISTINCT H3) COMMENT = 'Distinct H3 cells'
   )
 
@@ -570,7 +670,21 @@ Conventions:
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
 - MAPPING: for a store map select store_lat + store_lon and use a latlon layer, coloring by store_role. For a ZIP choropleth select zip_geojson and use a geojson layer, coloring by a ZIP metric. For household density select cell_h3 and use an h3 layer, coloring by total_cell_households. Keep the row count modest when selecting zip_geojson - the boundary strings are large.
 - zips and hh_cells do NOT join to stores; answer each from its own table alone.
-IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.'
+IMPORTANT: cannibalisation ("how much would a new site take from the estate") and closure ("who inherits a closed store") are computed LIVE in the Site Impact / Closure Impact app pages (ORS drive-time), not in this view. Direct such questions to those pages / the routing tools; this view answers estate composition only.
+
+- MAPPING: call render_map (inline in the answer, inside the app) to draw the estate. For stores select store_lat + store_lon with a latlon (scatterplot) layer, coloring by store_status so OWNED and CANDIDATE are distinguishable. For a household-density heatmap select cell_h3 with an h3 layer plus a measure to shade by. For a ZIP choropleth select zip_geojson with a geojson layer, coloring by a ZIP measure - the boundary is already simplified to 100 m, but still filter to a region or a band first, because an oversized payload renders as a blank map rather than an error. Give each layer a legendLabel and a {COLUMN} tooltip, and do NOT author a legend array - the client derives the legend from the layer''s own colours.'
+  AI_VERIFIED_QUERIES (
+    candidate_sites_by_household_base AS (
+      QUESTION 'Which candidate sites have the largest household base?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT poi_name AS store_name, store_id, reference_hh, annual_revenue
+FROM FLEET_APP.LOCATION.VW_STORE_FACTS
+WHERE store_role = ''CANDIDATE''
+ORDER BY reference_hh DESC NULLS LAST'
+    )
+  )
 ;
 
 -- ============ SV_SOURCING (FLEET_APP.SOURCING.*) ============
@@ -609,9 +723,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_SOURCING
 
   METRICS (
     sourcing.customer_count AS COUNT(DISTINCT CUSTOMER_ID) WITH SYNONYMS ('number of customers', 'customer count') COMMENT = 'Distinct customers'
-    , sourcing.total_annual_truckloads AS SUM(annual_truckloads) WITH SYNONYMS ('total truckloads', 'total shipments') COMMENT = 'Total annual truckloads'
-    , sourcing.total_current_annual_freight AS SUM(current_annual_freight) WITH SYNONYMS ('total freight spend', 'current freight cost') COMMENT = 'Total estimated current annual freight spend'
-    , sourcing.avg_current_distance_km AS AVG(current_distance_km) WITH SYNONYMS ('average distance', 'avg haul') COMMENT = 'Average straight-line haul distance from current source'
+    , sourcing.total_annual_truckloads AS ROUND(SUM(annual_truckloads), 2) WITH SYNONYMS ('total truckloads', 'total shipments') COMMENT = 'Total annual truckloads'
+    , sourcing.total_current_annual_freight AS ROUND(SUM(current_annual_freight), 2) WITH SYNONYMS ('total freight spend', 'current freight cost') COMMENT = 'Total estimated current annual freight spend'
+    , sourcing.avg_current_distance_km AS ROUND(AVG(current_distance_km), 2) WITH SYNONYMS ('average distance', 'avg haul') COMMENT = 'Average straight-line haul distance from current source'
   )
 
   COMMENT = 'Freight sourcing estate: customers with product demand, current source plant, and a data-only current annual freight estimate. The cheapest-source location swap and savings are computed live in-app (ORS road distance), not modeled here.'
@@ -622,6 +736,22 @@ Conventions:
 - "how many customers" -> customer_count; "total freight spend" -> total_current_annual_freight grouped by current_plant or product.
 - "which plant supplies the most customers" -> customer_count grouped by current_plant.
 IMPORTANT: the "location swap" analysis ("where would swapping the source plant reduce freight cost", "how much can we save") is computed LIVE in the Freight Sourcing Optimizer app page (ORS road distance via MATRIX_TABULAR), not in this view. Direct such questions to that page / the routing tools; this view answers current-estate composition and spend only.'
+  AI_VERIFIED_QUERIES (
+    costliest_customers_by_freight AS (
+      QUESTION 'Which customers cost us the most in annual freight, and which plant serves them?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT customer_id, customer_name, current_plant, product, region,
+       SUM(current_annual_freight) AS total_current_annual_freight,
+       SUM(annual_truckloads)      AS total_annual_truckloads,
+       AVG(current_distance_km)    AS avg_current_distance_km
+FROM FLEET_APP.SOURCING.VW_SOURCING_FACTS
+GROUP BY customer_id, customer_name, current_plant, product, region
+ORDER BY total_current_annual_freight DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_DELIVERY_SYNC (bound onto FLEET_APP.DELIVERY_SYNC.*) ============
@@ -673,9 +803,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERY_SYNC
 
   METRICS (
     visits.total_visits AS COUNT(*) WITH SYNONYMS ('visits', 'stops', 'deliveries') COMMENT = 'Total detected site visits'
-    , visits.avg_time_on_site AS AVG(dwell_minutes) WITH SYNONYMS ('average unload time', 'average time on site') COMMENT = 'Average minutes on site'
-    , visits.total_time_on_site AS SUM(dwell_minutes) COMMENT = 'Total minutes spent on site'
-    , visits.max_time_on_site AS MAX(dwell_minutes) WITH SYNONYMS ('longest stop') COMMENT = 'Longest time on site in minutes'
+    , visits.avg_time_on_site AS ROUND(AVG(dwell_minutes), 2) WITH SYNONYMS ('average unload time', 'average time on site') COMMENT = 'Average minutes on site'
+    , visits.total_time_on_site AS ROUND(SUM(dwell_minutes), 2) COMMENT = 'Total minutes spent on site'
+    , visits.max_time_on_site AS ROUND(MAX(dwell_minutes), 2) WITH SYNONYMS ('longest stop') COMMENT = 'Longest time on site in minutes'
     , visits.unique_sites AS COUNT(DISTINCT SITE_ID) WITH SYNONYMS ('sites served', 'accounts served') COMMENT = 'Distinct sites visited'
     , visits.unique_vehicles AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('vehicles delivering') COMMENT = 'Distinct vehicles that made visits'
   )
@@ -695,6 +825,19 @@ IMPORTANT scope limits:
 - There is NO ETA, no predicted arrival and no "minutes out" column here. Forward-looking questions ("how far out is the vehicle", "which vehicles arrive in the next 15 minutes", "what is within the approach ring") are answered by LIVE routing calls on the Delivery Sync page; direct the user there instead of inventing a column.
 - Readiness (EXPECTED / IN_PROGRESS / READY) is evaluated at a chosen instant by the Delivery Sync page, not stored here. This view only holds the completed arrival/departure pair.
 - A vehicle that merely drove past a site is NOT present: a visit requires a genuine stationary period inside the geofence.'
+  AI_VERIFIED_QUERIES (
+    recent_site_visits AS (
+      QUESTION 'Has the delivery arrived and left, and how long was it on site?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT visit_id, site_name, site_id, vehicle_id, arrival_ts, departure_ts,
+       dwell_minutes, source_status_hint
+FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
+ORDER BY arrival_ts DESC NULLS LAST
+LIMIT 20'
+    )
+  )
 ;
 
 -- ============ SV_BACKLOAD_MATCHING (FLEET_APP.BACKLOAD_MATCHING.*) ============
@@ -737,7 +880,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
   )
 
   DIMENSIONS (
-    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    offers.source AS SOURCE WITH SYNONYMS ('channel', 'arrival channel') COMMENT = 'Arrival CHANNEL of the offer (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER). This is NOT provenance: every row in this entity is an external offer, so do not use it to answer internal-vs-external.'
     , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
     , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
     , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
@@ -771,25 +914,25 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , trailers.home_lon AS HOME_LON WITH SYNONYMS ('home longitude', 'depot longitude') COMMENT = 'Trailer home depot longitude. Map-ready: use with home_lat as a latlon layer.'
     , trailers.current_lat AS DROPOFF_LAT WITH SYNONYMS ('current latitude', 'trailer latitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - latitude. Map-ready with current_lon.'
     , trailers.current_lon AS DROPOFF_LON WITH SYNONYMS ('current longitude', 'trailer longitude') COMMENT = 'Where the trailer becomes free (its current dropoff) - longitude. Map-ready with current_lat.'
-    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision channel', 'internal or external') COMMENT = 'Provenance of the matched load. The value INTERNAL is RESERVED for the internal volume pool; every other value is an external offer channel. External offers can no longer carry the label INTERNAL, which is what makes this column answer internal-vs-external.'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
   )
 
   METRICS (
     offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
-    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
-    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
-    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
+    , offers.avg_price_usd AS ROUND(AVG(price_usd), 2) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS ROUND(SUM(price_usd), 2) COMMENT = 'Total offer price (USD)'
+    , offers.avg_weight_kg AS ROUND(AVG(weight_kg), 2) COMMENT = 'Average offer weight (kg)'
     , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
-    , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
-    , trailers.avg_max_payload_kg AS AVG(max_payload_kg) COMMENT = 'Average max payload (kg)'
+    , trailers.avg_eta_min AS ROUND(AVG(eta_min), 2) COMMENT = 'Average minutes to ETA'
+    , trailers.avg_max_payload_kg AS ROUND(AVG(max_payload_kg), 2) COMMENT = 'Average max payload (kg)'
     , decisions.total_decisions AS COUNT(DISTINCT DECISION_ID) WITH SYNONYMS ('number of decisions', 'matches') COMMENT = 'Distinct backload decisions'
-    , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
-    , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
-    , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
-    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
-    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
+    , decisions.avg_score AS ROUND(AVG(score), 2) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
+    , decisions.avg_empty_km AS ROUND(AVG(empty_km), 2) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
+    , decisions.total_empty_km AS ROUND(SUM(empty_km), 2) COMMENT = 'Total empty/deadhead km'
+    , decisions.total_net_benefit_usd AS ROUND(SUM(net_benefit_usd), 2) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS ROUND(AVG(net_benefit_usd), 2) COMMENT = 'Average net benefit USD'
   )
 
   COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page. Covers EVERY loaded region - filter by region (key) or region_label (readable).'
@@ -810,10 +953,25 @@ Conventions:
 - "matches" / "decisions" -> decisions.total_decisions.
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
-- internal vs external -> decisions.decision_source.
-- MAPPING: for an offer map select pickup_lat + pickup_lon and use a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve.
+- internal vs external -> decisions.decision_source, where the value INTERNAL means an own-fleet
+  volume and any other value is an external channel. Do NOT answer this from offers.source: that
+  entity holds only external offers and its values are arrival channels, not provenance.
+- MAPPING: call render_map (inline in the answer, inside the app) for an offer map by selecting pickup_lat + pickup_lon with a latlon layer, coloring by source or product. For a trailer map select home_lat + home_lon (depot) or current_lat + current_lon (where it becomes free), coloring by status. For lanes select lane_geojson and use a geojson layer - but lane_geojson is a STRAIGHT LINE between pickup and dropoff, so describe it as a lane, never as a route, road distance or deadhead. Routed geometry only exists in a live solve. Give each layer a legendLabel and a {COLUMN} tooltip, and do NOT author a legend array - the client derives the legend from the layer''s own colours.
 IMPORTANT scope limit:
 - This view holds the backload INPUTS and the ACCEPTED decisions written back by the app. It does NOT hold a solved plan: the Backload Matching and Backload Proposals pages compute their plan live per click and never persist it. Questions about "the current plan", its per-trip assignments, its empty km or its margin are answered from those pages, not from this view. Use this view for what is available to match and for the decision history.'
+  AI_VERIFIED_QUERIES (
+    richest_external_offers AS (
+      QUESTION 'Which external freight offers are worth the most, and where do they run?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT offer_id, pickup_city, dropoff_city, price_usd,
+       pickup_lat, pickup_lon, dropoff_lat, dropoff_lon
+FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+ORDER BY price_usd DESC NULLS LAST
+LIMIT 10'
+    )
+  )
 ;
 
 -- ============ SV_LABOR (FLEET_APP.LABOR.*) ============
@@ -999,45 +1157,45 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LABOR
     labor_week.total_operators AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'headcount', 'operator count')
       COMMENT = 'Distinct operators with recorded hours. Keyed on (region, vehicle_type, operator_id) because operator ids are index-derived per dataset and repeat across regions, so counting the bare id understates headcount whenever more than one region is in scope.'
-    , labor_week.total_paid_hours AS SUM(HOURS_TO_DATE)
+    , labor_week.total_paid_hours AS ROUND(SUM(HOURS_TO_DATE), 2)
       WITH SYNONYMS ('total hours', 'hours paid', 'labour hours')
       COMMENT = 'Total paid hours'
-    , labor_week.total_ot_hours AS SUM(OT_HOURS)
+    , labor_week.total_ot_hours AS ROUND(SUM(OT_HOURS), 2)
       WITH SYNONYMS ('overtime hours', 'total overtime')
       COMMENT = 'Total overtime hours accrued'
-    , labor_week.total_projected_ot_hours AS SUM(PROJECTED_OT_HOURS)
+    , labor_week.total_projected_ot_hours AS ROUND(SUM(PROJECTED_OT_HOURS), 2)
       COMMENT = 'Total overtime hours projected to week end'
-    , labor_week.total_ot_cost AS SUM(EST_OT_COST)
+    , labor_week.total_ot_cost AS ROUND(SUM(EST_OT_COST), 2)
       WITH SYNONYMS ('overtime cost', 'overtime spend', 'cost of overtime')
       COMMENT = 'Total FULLY LOADED cost of projected overtime. For "what could we save" use total_ot_premium instead; this figure includes straight time that would be paid regardless.'
-    , labor_week.total_ot_premium AS SUM(EST_OT_PREMIUM)
+    , labor_week.total_ot_premium AS ROUND(SUM(EST_OT_PREMIUM), 2)
       WITH SYNONYMS ('avoidable overtime cost', 'overtime premium', 'what could we save')
       COMMENT = 'Total AVOIDABLE overtime cost (the premium above straight time). The correct figure for a savings opportunity. Rates are synthesized, so treat as indicative.'
-    , labor_week.fleet_fte AS SUM(FTE_EQUIVALENT)
+    , labor_week.fleet_fte AS ROUND(SUM(FTE_EQUIVALENT), 2)
       WITH SYNONYMS ('fte', 'full time equivalents')
       COMMENT = 'Fleet FTE. Compare against total_operators (headcount): a growing gap is structural understaffing.'
     , labor_week.operators_at_risk AS COUNT(DISTINCT CASE WHEN OT_BAND IN ('AT_RISK', 'BREACH') THEN OPERATOR_ID END)
       WITH SYNONYMS ('at risk operators', 'how many at risk', 'approaching the limit')
       COMMENT = 'Distinct operators projected to reach the at-risk threshold or beyond. Filter is_current_week = TRUE for the actionable count.'
-    , labor_week.avg_projected_hours AS AVG(PROJECTED_WEEK_HOURS)
+    , labor_week.avg_projected_hours AS ROUND(AVG(PROJECTED_WEEK_HOURS), 2)
       WITH SYNONYMS ('average projected hours')
       COMMENT = 'Mean projected week-end hours per operator'
-    , labor_week.avg_paid_hours AS AVG(HOURS_TO_DATE)
+    , labor_week.avg_paid_hours AS ROUND(AVG(HOURS_TO_DATE), 2)
       COMMENT = 'Mean paid hours per operator per week'
-    , labor_week.avg_utilization AS AVG(DRIVE_SHARE_OF_PAID)
+    , labor_week.avg_utilization AS ROUND(AVG(DRIVE_SHARE_OF_PAID), 4)
       WITH SYNONYMS ('utilization', 'paid hour utilisation')
       COMMENT = 'Mean share of paid hours spent driving (0-1)'
-    , labor_week.avg_km_per_paid_hour AS AVG(KM_PER_PAID_HOUR)
+    , labor_week.avg_km_per_paid_hour AS ROUND(AVG(KM_PER_PAID_HOUR), 4)
       COMMENT = 'Mean km per paid hour'
-    , labor_week.avg_stops_per_paid_hour AS AVG(STOPS_PER_PAID_HOUR)
+    , labor_week.avg_stops_per_paid_hour AS ROUND(AVG(STOPS_PER_PAID_HOUR), 4)
       COMMENT = 'Mean stops per paid hour'
     , duty.total_duty_periods AS COUNT(DISTINCT DUTY_ID)
       WITH SYNONYMS ('number of shifts', 'duty periods', 'shifts worked')
       COMMENT = 'Distinct duty periods (continuous stretches of work)'
-    , duty.avg_duty_hours AS AVG(PAID_HOURS)
+    , duty.avg_duty_hours AS ROUND(AVG(PAID_HOURS), 2)
       WITH SYNONYMS ('average shift length', 'typical shift length')
       COMMENT = 'Mean duty-period length in hours'
-    , duty.max_duty_hours AS MAX(PAID_HOURS)
+    , duty.max_duty_hours AS ROUND(MAX(PAID_HOURS), 2)
       WITH SYNONYMS ('longest shift')
       COMMENT = 'Longest duty period in hours'
   )
@@ -1088,4 +1246,34 @@ CONVENTIONS
 
 WHAT IS SYNTHESIZED
 Hours, days worked, trips and distance are derived from real recorded trips. Contracted hours, hourly rate, team and supervisor do NOT exist in the source data and are generated deterministically from the operator id, so overtime COST is indicative and team structure is illustrative. Say so when quoting money. Hours themselves are not synthesized.'
+  -- SV_LABOR was the ONE fleet semantic view with no AI_* clause at all, which
+  -- is why it alone showed a blank `extension` in SHOW SEMANTIC VIEWS while the
+  -- other twelve showed ["AI"]. Cortex Analyst answered questions against it
+  -- regardless (measured), so this was never a broken tool - but it meant the
+  -- most numerically dangerous view in the deployment shipped with no custom
+  -- SQL-generation guidance and no charting guidance.
+  AI_SQL_GENERATION 'Labour and overtime. Read the view comment first - it carries the two-regime weight rule, the premium-vs-loaded cost distinction and the projection semantics, and every one of those changes the answer.
+- Always filter is_current_week = TRUE for "this week" questions and use projected_week_hours, not hours_to_date, for anything phrased as "will exceed".
+- Exclude is_partial_start and is_partial_end weeks from any week-over-week series: they are truncated by the dataset boundary, not by a real drop in work.
+- Group by (operator_id, region) rather than operator_id alone. Operator ids are reused across regions, so grouping on the bare id fuses two different people into one and both their hours land on one row.
+<chart_customization>
+- Paid hours or overtime hours across operators: histogram or box plot. An average is actively misleading here - a fleet averaging 24 hours can hold one operator at 85, and that person is the entire point of the question.
+- Team, depot or supervisor comparisons: horizontal bar sorted descending.
+- Hours over weeks: line chart, and stop the line at the last non-partial week.
+- Money axes: format with the currency and 0 decimals. NEVER plot est_ot_premium and est_ot_cost on one unlabelled axis - the loaded cost is roughly three times the premium at a 1.5x multiplier, so the pair reads as a trend when it is two different measures.
+- ot_pct_of_paid and ot_pct_of_straight are already percentages. Label which denominator the chart used in the title.
+</chart_customization>'
+  AI_VERIFIED_QUERIES (
+    projected_over_60_hours AS (
+      QUESTION 'Which drivers are projected to exceed 60 hours this week?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT operator_id, region, projected_week_hours, binding_constraint
+FROM FLEET_APP.LABOR.VW_LABOR_WEEK
+WHERE is_current_week = TRUE
+  AND projected_week_hours > 60
+ORDER BY projected_week_hours DESC NULLS LAST'
+    )
+  )
 ;

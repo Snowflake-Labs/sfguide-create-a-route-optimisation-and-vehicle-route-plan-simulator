@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
-import { runSql } from '@/server/lib/sql';
+import { runSqlBatch } from '@/server/lib/sql';
 import { requireOps } from '@/lib/ingress-identity';
 
 export const runtime = 'nodejs';
@@ -13,7 +13,8 @@ export const POST = withLogging(async (req) => {
   const gate = await requireOps(req);
   if (!gate.ok) return NextResponse.json({ error: gate.reason || 'Forbidden' }, { status: gate.status });
   try {
-    const rows = await runSql('CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(5)');
+    // Bulk metric ingest over the request log -> batch.
+    const rows = await runSqlBatch('CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(5)');
     const raw = rows?.[0]?.[Object.keys(rows[0] || {})[0]] ?? '{}';
     try {
       return NextResponse.json(typeof raw === 'string' ? JSON.parse(raw) : raw);

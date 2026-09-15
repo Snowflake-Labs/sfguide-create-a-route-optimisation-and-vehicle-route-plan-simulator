@@ -457,6 +457,11 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_TASK
     SCHEDULE = '60 MINUTE'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    -- Session-level, so AUTO_HIBERNATE_IF_IDLE's body (and the
+    -- RECONCILE_AUTO_SUSPEND call nested inside it) is attributed too. A
+    -- procedure cannot set this for itself: ALTER SESSION is rejected inside a
+    -- procedure body, so the task definition is the only place it can go.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"auto-hibernate-task"}}'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"lifecycle","action":"auto-hibernate-task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.AUTO_HIBERNATE_IF_IDLE();

@@ -1,5 +1,7 @@
 'use client';
 
+import { formatCellValue } from '@/lib/format-number';
+
 /**
  * Agent grounding, Channel A: publishing what an area actually renders.
  *
@@ -38,6 +40,13 @@ import type { MapLayerDescriptor, MapStateDescriptor } from '@/lib/types';
  * `route.ts` has to fit all of them into one prompt alongside the map block.
  */
 export const MEMO_MAX_LEN = 500;
+
+/**
+ * Budgets live in `lib/memo-budget.ts` (a server-safe module, since the chat
+ * route enforces MEMO_TOTAL_MAX and cannot import this `'use client'` file) and
+ * are re-exported here so components have one import for memo work.
+ */
+export { MEMO_TOTAL_MAX, TRIP_MEMO_MAX_LEN } from '@/lib/memo-budget';
 
 /** Rows sampled into a table memo. The agent gets a top-of-sort window, not the table. */
 export const MEMO_SAMPLE_ROWS = 5;
@@ -112,8 +121,11 @@ interface TableMemoInput {
   totalRows?: number;
   sortKey?: string | null;
   sortDir?: 'asc' | 'desc';
-  /** Formatter the component uses for cells, so the memo matches the screen. */
-  formatCell: (value: unknown) => string;
+  /** Formatter the component uses for cells, so the memo matches the screen.
+   *  Receives the column key as well, because the decimal policy in
+   *  lib/format-number exempts coordinate columns from the 2dp cap - a memo that
+   *  dropped the column would quote a latitude back at the agent as 37.77. */
+  formatCell: (value: unknown, column?: string) => string;
   /** Label of the currently selected row, when the table drives a selection. */
   selectedLabel?: string | null;
   /** Extra ordering note, e.g. ClickableTable's exception-first pinning. */
@@ -147,13 +159,50 @@ export function buildTableMemo(input: TableMemoInput): string {
   // Sample rows are pipe-delimited inside brackets: compact, and unambiguous when
   // a value itself contains a comma (site names routinely do).
   const sample = rows.slice(0, MEMO_SAMPLE_ROWS).map((r) => {
-    const cells = columns.map((c) => memoScalar(formatCell(r[c.key]), 40));
+    const cells = columns.map((c) => memoScalar(formatCell(r[c.key], c.key), 40));
     return `[${cells.join(' | ')}]`;
   });
   const dropped = shown - sample.length;
   const sampleText = sample.join(' ') + (dropped > 0 ? ` (+${dropped} more rows)` : '');
 
   return joinBounded([...head, `rows: ${sampleText}`], MEMO_MAX_LEN);
+}
+
+/** KPI strips run slightly longer than the shared cap: a tile is one short pair,
+ *  and the strip is the most quotable channel there is. Mirrors the 600 the
+ *  MetricCards memo used before this moved out of the component. */
+export const KPI_MEMO_MAX_LEN = 600;
+
+/** One KPI tile, already formatted for display by the caller. */
+export interface KpiMemoMetric {
+  /** Row column the tile reads. */
+  column: string;
+  /** Interpolated display label. */
+  label: string;
+  /** Rendered value INCLUDING any unit suffix. */
+  value: string;
+}
+
+/**
+ * Summarize a KPI strip for the agent.
+ *
+ * Metrics whose column is absent from the row are DROPPED, not reported. That is
+ * the grounding half of the column-case defect (lib/view-column-refs.ts): a tile
+ * whose `column` does not match the result set visibly renders '-', but a memo
+ * pair `Label=-` looks definite, and the agent quotes the dash back as the KPI. A
+ * column that IS present and holds NULL still reports '-', which is honest - that
+ * is real data. Callers therefore pass `column` so this can tell the two apart.
+ */
+export function buildKpiMemo(
+  row: Record<string, unknown> | null | undefined,
+  metrics: readonly KpiMemoMetric[],
+): string {
+  if (!row || metrics.length === 0) return '';
+  const pairs = metrics
+    .filter((m) => m.column in row)
+    .map((m) => `${m.label}=${m.value}`);
+  if (pairs.length === 0) return '';
+  return joinBounded(pairs, KPI_MEMO_MAX_LEN);
 }
 
 interface ChartMemoInput {
@@ -165,7 +214,11 @@ interface ChartMemoInput {
   points: Array<Record<string, unknown>>;
   /** Series names when the chart is grouped/stacked. */
   seriesNames?: string[];
-  formatValue?: (value: unknown) => string;
+  /** Whether `yKey` names a COLUMN on the points (ungrouped) rather than a
+   *  category VALUE synthesized per group (grouped/stacked). Only a column can be
+   *  checked against the points; default true. */
+  yKeyIsColumn?: boolean;
+  formatValue?: (value: unknown, column?: string) => string;
 }
 
 /**
@@ -180,7 +233,24 @@ interface ChartMemoInput {
 export function buildChartMemo(input: ChartMemoInput): string {
   const { chartType, xKey, yKey, points, seriesNames, formatValue } = input;
   if (!points.length) return '';
-  const fmt = formatValue ?? ((v: unknown) => (typeof v === 'number' ? v.toLocaleString() : String(v ?? '-')));
+  // Publish NOTHING when the plotted columns are not on the points.
+  //
+  // This is the grounding half of the column-case defect (see
+  // lib/view-column-refs.ts). A chart whose `xAxis.field` / `series[].field` do
+  // not match the result set still has non-empty `points` - chartData copies every
+  // row verbatim - so the length guard above passes, the chart renders axes with no
+  // marks, and this function would go on to describe a series of NaNs and blanks:
+  // "0 total, min - (), max - ()". The agent reads that as the finding. An empty
+  // memo makes the chart silent instead of wrong, which is the only safe direction
+  // for a channel the user cannot see.
+  const first = points[0] as Record<string, unknown>;
+  if (!(xKey in first)) return '';
+  if ((input.yKeyIsColumn ?? true) && !(yKey in first)) return '';
+  // Default carries the same 2dp cap as the screen: a memo is quoted as fact, so
+  // an unformatted 21289.670000000002 here is a wrong number in the answer.
+  const fmt =
+    formatValue ??
+    ((v: unknown, column?: string) => formatCellValue(v, { column, grouping: true }));
 
   const labelOf = (p: Record<string, unknown>) => memoScalar(p[xKey], 30);
   const numeric = points
@@ -194,9 +264,9 @@ export function buildChartMemo(input: ChartMemoInput): string {
     const total = numeric.reduce((s, p) => s + p.value, 0);
     const min = numeric.reduce((a, b) => (b.value < a.value ? b : a));
     const max = numeric.reduce((a, b) => (b.value > a.value ? b : a));
-    head.push(`total ${fmt(total)}`);
-    head.push(`min ${fmt(min.value)} (${min.label})`);
-    head.push(`max ${fmt(max.value)} (${max.label})`);
+    head.push(`total ${fmt(total, yKey)}`);
+    head.push(`min ${fmt(min.value, yKey)} (${min.label})`);
+    head.push(`max ${fmt(max.value, yKey)} (${max.label})`);
   }
 
   // Category charts: the ranked head is the finding. Series charts: the endpoints
@@ -206,12 +276,12 @@ export function buildChartMemo(input: ChartMemoInput): string {
     const first = points[0];
     const last = points[points.length - 1];
     head.push(`x range ${labelOf(first)}..${labelOf(last)}`);
-    head.push(`first ${fmt(first[yKey])}, last ${fmt(last[yKey])}`);
+    head.push(`first ${fmt(first[yKey], yKey)}, last ${fmt(last[yKey], yKey)}`);
   } else if (numeric.length) {
     const top = [...numeric]
       .sort((a, b) => b.value - a.value)
       .slice(0, MEMO_SAMPLE_CATEGORIES)
-      .map((p) => `${p.label} ${fmt(p.value)}`);
+      .map((p) => `${p.label} ${fmt(p.value, yKey)}`);
     const dropped = numeric.length - top.length;
     head.push(`top ${top.join(', ')}${dropped > 0 ? ` (+${dropped} more)` : ''}`);
   }

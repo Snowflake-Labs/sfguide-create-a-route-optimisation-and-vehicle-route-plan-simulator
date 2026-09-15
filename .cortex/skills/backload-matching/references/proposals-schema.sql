@@ -74,6 +74,7 @@ MERGE INTO MATCH_PARAMS tgt USING (
     ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance (needs the region graph); great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
     ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100), so road detours are not pruned before ORS refinement.'),
     ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+    ('MAX_CANDIDATE_PAIRS_PER_TRAILER', '50', 'number', 'core',   TRUE,  'How many eligible (vehicle, load) candidate pairs the solver materialises PER VEHICLE, nearest pickup first. Bounds the candidate read, which is not covered by the solver time budget. Distinct from MAX_PROPOSALS_PER_TRAILER, which caps OUTPUT per vehicle.'),
     ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads. Higher = internal-first.'),
     ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
     ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -654,8 +655,8 @@ enriched AS (
     -- against doing nothing; the direct-return baseline it is compared with is
     -- computed alongside the proposal, not here. Costed on the residual-
     -- inclusive empty distance for the reason given above.
-    (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
-      - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+    ROUND((q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+      - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM, 2) AS NET_BENEFIT_USD,
     (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
     q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
     q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,

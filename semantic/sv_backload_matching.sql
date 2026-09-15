@@ -1,9 +1,22 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_BACKLOAD_MATCHING - Backload matching semantic view (neutral FLEET_APP contract)
 -- Source: FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS + VW_PROPOSAL_DECISIONS
 --         (backload_matching pack; rebuilt from SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT).
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC. Currency is USD (SF / USD dataset).
 -- Three independent facts; all coordinates exposed as LON/LAT floats (no GEOGRAPHY).
--- No vendor branding: SOURCE / LISTING_TEXT are neutral (MARKETPLACE / PARTNER_APP / INTERNAL / DISPATCH).
+-- No vendor branding: SOURCE / LISTING_TEXT are neutral (MARKETPLACE / PARTNER_APP / BROKER / DISPATCH).
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"sv-backload-matching"}}';
 
@@ -30,7 +43,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
   )
 
   DIMENSIONS (
-    offers.source AS SOURCE WITH SYNONYMS ('exchange') COMMENT = 'External exchange source'
+    offers.source AS SOURCE WITH SYNONYMS ('channel', 'arrival channel') COMMENT = 'Arrival CHANNEL of the offer (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER). This is NOT provenance: every row in this entity is an external offer, so do not use it to answer internal-vs-external.'
     , offers.pickup_country AS PICKUP_COUNTRY COMMENT = 'Pickup country'
     , offers.dropoff_country AS DROPOFF_COUNTRY COMMENT = 'Dropoff country'
     , offers.pickup_city AS PICKUP_CITY WITH SYNONYMS ('origin city') COMMENT = 'Pickup city'
@@ -42,25 +55,25 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
     , trailers.current_load AS CURRENT_LOAD COMMENT = 'Current load / vehicle type'
     , trailers.status AS STATUS COMMENT = 'Trailer status'
     , trailers.hazmat_cert AS HAZMAT_CERT COMMENT = 'Hazmat certified'
-    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision exchange') COMMENT = 'Source of the matched offer (INTERNAL / external exchange)'
+    , decisions.decision_source AS SOURCE WITH SYNONYMS ('decision channel', 'internal or external') COMMENT = 'Provenance of the matched load. The value INTERNAL is RESERVED for the internal volume pool; every other value is an external offer channel. External offers can no longer carry the label INTERNAL, which is what makes this column answer internal-vs-external.'
     , decisions.decided_by AS DECIDED_BY WITH SYNONYMS ('dispatcher', 'decided by') COMMENT = 'User/dispatcher who decided'
     , decisions.decided_at AS DECIDED_AT WITH SYNONYMS ('decision time') COMMENT = 'When the decision was made'
   )
 
   METRICS (
     offers.total_offers AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of offers') COMMENT = 'Distinct external offers'
-    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
-    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total offer price (USD)'
-    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average offer weight (kg)'
+    , offers.avg_price_usd AS ROUND(AVG(price_usd), 2) WITH SYNONYMS ('average price') COMMENT = 'Average offer price (USD)'
+    , offers.total_price_usd AS ROUND(SUM(price_usd), 2) COMMENT = 'Total offer price (USD)'
+    , offers.avg_weight_kg AS ROUND(AVG(weight_kg), 2) COMMENT = 'Average offer weight (kg)'
     , trailers.total_trailers AS COUNT(DISTINCT TRAILER_ID) WITH SYNONYMS ('number of trailers') COMMENT = 'Distinct trailers'
-    , trailers.avg_eta_min AS AVG(eta_min) COMMENT = 'Average minutes to ETA'
-    , trailers.avg_max_payload_kg AS AVG(max_payload_kg) COMMENT = 'Average max payload (kg)'
+    , trailers.avg_eta_min AS ROUND(AVG(eta_min), 2) COMMENT = 'Average minutes to ETA'
+    , trailers.avg_max_payload_kg AS ROUND(AVG(max_payload_kg), 2) COMMENT = 'Average max payload (kg)'
     , decisions.total_decisions AS COUNT(DISTINCT DECISION_ID) WITH SYNONYMS ('number of decisions', 'matches') COMMENT = 'Distinct backload decisions'
-    , decisions.avg_score AS AVG(score) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
-    , decisions.avg_empty_km AS AVG(empty_km) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
-    , decisions.total_empty_km AS SUM(empty_km) COMMENT = 'Total empty/deadhead km'
-    , decisions.total_net_benefit_usd AS SUM(net_benefit_usd) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
-    , decisions.avg_net_benefit_usd AS AVG(net_benefit_usd) COMMENT = 'Average net benefit USD'
+    , decisions.avg_score AS ROUND(AVG(score), 2) WITH SYNONYMS ('average match score') COMMENT = 'Average match score'
+    , decisions.avg_empty_km AS ROUND(AVG(empty_km), 2) WITH SYNONYMS ('average deadhead') COMMENT = 'Average empty/deadhead km'
+    , decisions.total_empty_km AS ROUND(SUM(empty_km), 2) COMMENT = 'Total empty/deadhead km'
+    , decisions.total_net_benefit_usd AS ROUND(SUM(net_benefit_usd), 2) WITH SYNONYMS ('total net benefit') COMMENT = 'Total net benefit USD'
+    , decisions.avg_net_benefit_usd AS ROUND(AVG(net_benefit_usd), 2) COMMENT = 'Average net benefit USD'
   )
 
   COMMENT = 'Backload matching: external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit USD). Neutral, industry-agnostic. Decisions are written by the Backload Matching page.'
@@ -74,5 +87,7 @@ Conventions:
 - "matches" / "decisions" -> decisions.total_decisions.
 - "empty km" / "deadhead" -> decisions.avg_empty_km or total_empty_km.
 - "net benefit" / "savings from matching" -> decisions.total_net_benefit_usd.
-- internal vs external -> decisions.decision_source.'
+- internal vs external -> decisions.decision_source, where the value INTERNAL means an own-fleet
+  volume and any other value is an external channel. Do NOT answer this from offers.source: that
+  entity holds only external offers and its values are arrival channels, not provenance.'
 ;

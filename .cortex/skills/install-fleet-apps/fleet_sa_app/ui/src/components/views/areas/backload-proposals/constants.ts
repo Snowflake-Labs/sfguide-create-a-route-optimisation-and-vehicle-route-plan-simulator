@@ -17,12 +17,17 @@ export const COLOR_VEHICLE_STROKE: [number, number, number] = [255, 255, 255];
 export const COLOR_EXTERNAL_STROKE: [number, number, number] = [120, 120, 120];
 
 // Per-leg route colours for the selected proposal on the map:
-//   empty -> pickup    = dashed grey (repositioning, no revenue)
+//   empty -> pickup    = dashed dark slate (repositioning, no revenue)
 //   pickup -> delivery = green (loaded, revenue leg)
 //   delivery -> next    = blue  (onward to the vehicle's next start)
-export const COLOR_LEG_EMPTY: [number, number, number] = [110, 110, 110];
+// COLOR_LEG_EMPTY is deliberately much darker than COLOR_LEG_BASELINE: the two
+// used to be 110 vs 150 grey, indistinguishable once a dash gap fell offscreen.
+// It stays neutral so it can never be mistaken for one of the 12 ROUTE_COLORS.
+export const COLOR_LEG_EMPTY: [number, number, number] = [51, 65, 85];
 export const COLOR_LEG_LOADED: [number, number, number] = [22, 127, 55];
 export const COLOR_LEG_NEXT: [number, number, number] = [37, 99, 235];
+// The no-backload reference line: palest and thinnest of the three, solid.
+export const COLOR_LEG_BASELINE: [number, number, number] = [190, 190, 190];
 
 // Selected-row / selected-card accent (Snowflake green).
 export const SELECT_RING = '#0DB048';

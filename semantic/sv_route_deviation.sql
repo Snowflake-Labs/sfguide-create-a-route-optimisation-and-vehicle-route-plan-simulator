@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_ROUTE_DEVIATION - route deviation analysis semantic view
 -- Source: FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS (per trip)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
@@ -40,12 +53,12 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
   METRICS (
     trip_dev.total_trips AS COUNT(DISTINCT TRIP_ID) WITH SYNONYMS ('number of trips', 'trip count') COMMENT = 'Distinct trips analyzed'
     , trip_dev.deviation_trips AS COUNT_IF(IS_ROUTE_DEVIATION) WITH SYNONYMS ('deviated trips', 'number of deviations') COMMENT = 'Trips flagged as route deviations'
-    , trip_dev.deviation_rate_pct AS DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100 WITH SYNONYMS ('deviation rate', 'percent deviated') COMMENT = 'Percent of trips that deviated'
-    , trip_dev.total_excess_km AS SUM(distance_deviation_km) WITH SYNONYMS ('total excess distance') COMMENT = 'Total excess km from deviations'
-    , trip_dev.avg_distance_deviation_pct AS AVG(distance_deviation_pct) COMMENT = 'Average distance deviation percent'
-    , trip_dev.total_time_lost_min AS SUM(duration_deviation_min) WITH SYNONYMS ('time lost', 'total delay') COMMENT = 'Total excess minutes from deviations'
-    , trip_dev.avg_duration_deviation_pct AS AVG(duration_deviation_pct) COMMENT = 'Average duration deviation percent'
-    , trip_dev.avg_route_deviation_factor AS AVG(route_deviation_factor) COMMENT = 'Average actual/expected route factor'
+    , trip_dev.deviation_rate_pct AS ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2) WITH SYNONYMS ('deviation rate', 'percent deviated') COMMENT = 'Percent of trips that deviated'
+    , trip_dev.total_excess_km AS ROUND(SUM(distance_deviation_km), 2) WITH SYNONYMS ('total excess distance') COMMENT = 'Total excess km from deviations'
+    , trip_dev.avg_distance_deviation_pct AS ROUND(AVG(distance_deviation_pct), 2) COMMENT = 'Average distance deviation percent'
+    , trip_dev.total_time_lost_min AS ROUND(SUM(duration_deviation_min), 2) WITH SYNONYMS ('time lost', 'total delay') COMMENT = 'Total excess minutes from deviations'
+    , trip_dev.avg_duration_deviation_pct AS ROUND(AVG(duration_deviation_pct), 2) COMMENT = 'Average duration deviation percent'
+    , trip_dev.avg_route_deviation_factor AS ROUND(AVG(route_deviation_factor), 4) COMMENT = 'Average actual/expected route factor'
   )
 
   COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination.'

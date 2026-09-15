@@ -181,7 +181,7 @@ def main() -> int:
             "Replace a vendor name with the capability ('external freight exchange',\n"
             "'load board'), and use the neutral source vocabulary when the repo\n"
             "AUTHORS a value:\n"
-            "  DISPATCH | MARKETPLACE | PARTNER_APP | INTERNAL\n"
+            "  DISPATCH | MARKETPLACE | PARTNER_APP | BROKER\n"
             "carrying any originating-system identity in SOURCE_SYSTEM instead.\n"
             "\n"
             "Brand names arriving through third-party map DATA are fine and are out\n"

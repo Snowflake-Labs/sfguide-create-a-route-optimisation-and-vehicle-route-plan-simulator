@@ -8,6 +8,7 @@
 
 import { useViewData } from '@/hooks/use-view-data';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { formatNumber, formatCellValue } from '@/lib/format-number';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // ── Shared config types ─────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ export interface ColumnDef {
 export interface PropertyDef {
   field: string;
   label: string;
-  format?: 'number' | 'currency' | 'datetime' | 'date' | 'text';
+  format?: 'number' | 'currency' | 'percent' | 'datetime' | 'date' | 'text';
   link_view?: string;   // navigate to this view on click
   id_field?: string;    // which row field provides the ID for link_view
   conditional?: boolean; // hide row when field is null/empty
@@ -35,17 +36,23 @@ export type SectionDef =
 
 // ── Value formatting ────────────────────────────────────────────────────────
 
-export function fmtValue(val: unknown, format?: string): string {
+export function fmtValue(val: unknown, format?: string, column?: string): string {
   if (val === null || val === undefined || val === '') return '-';
   const s = String(val);
-  if (!format || format === 'text') return s;
+  if (!format || format === 'text') {
+    // No declared format still means a number gets the 2dp cap: a detail row is
+    // the surface where a raw FLOAT artifact is most visible, and this is also
+    // what the drawer's related tables fall back to.
+    return formatCellValue(val, { column, grouping: true });
+  }
   if (format === 'number') {
-    const n = Number(val);
-    return isNaN(n) ? s : n.toLocaleString();
+    return formatNumber(val, { column, grouping: true }) ?? s;
   }
   if (format === 'currency') {
-    const n = Number(val);
-    return isNaN(n) ? s : '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return formatNumber(val, { format: 'currency', grouping: true }) ?? s;
+  }
+  if (format === 'percent') {
+    return formatNumber(val, { format: 'percent' }) ?? s;
   }
   if (format === 'datetime' || format === 'date') {
     try {
@@ -116,7 +123,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
             <tr key={i} style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
               {columns.map(col => (
                 <td key={col.field} style={{ padding: '6px 12px', whiteSpace: 'nowrap', color: 'var(--text-primary, #111827)' }}>
-                  {fmtValue(row[col.field], col.format)}
+                  {fmtValue(row[col.field], col.format, col.field)}
                 </td>
               ))}
             </tr>

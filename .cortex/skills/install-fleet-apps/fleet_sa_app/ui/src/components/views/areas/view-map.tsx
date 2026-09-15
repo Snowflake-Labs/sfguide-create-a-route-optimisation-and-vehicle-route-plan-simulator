@@ -11,10 +11,14 @@ import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
+// Pure spec helper (no deck.gl): names the columns a layer reads, for the
+// 'returned rows but drew nothing' notice.
+import { encodingColumns } from '@/lib/map/inline-legend';
 import { useViewData } from '@/hooks/use-view-data';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { formatCellValue } from '@/lib/format-number';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 import type { SuspendedInfo } from '@/lib/routing-suspend';
@@ -48,6 +52,10 @@ interface LayerFetcherProps {
     fitSel: LngLat[],
     template: string | undefined,
     count: number,
+    /** Rows that carried every column the layer needs to place a feature.
+     *  `count > 0 && drawn === 0` is a naming error, not an empty result - see
+     *  the notice in the parent. */
+    drawn: number,
   ) => void;
   // Report a suspended routing engine (or null when clear) so the parent can
   // overlay a single friendly notice for the whole map.
@@ -141,18 +149,18 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
   }, [index, rows, visible, summarySpec, layer.id, onSummary]);
   useEffect(() => {
     if (!visible) {
-      onResult(index, null, [], [], undefined, 0);
+      onResult(index, null, [], [], undefined, 0, 0);
       return;
     }
     let cancelled = false;
     const run = () => {
       if (cancelled) return;
       // Single parse: layer data + full fit coords derived from one pass.
-      const { layer: compiled, fitCoords } = compileLayerWithFit(layer, rows, viewState, index, hovered);
+      const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(layer, rows, viewState, index, hovered);
       const fitFull = fitCoords as LngLat[];
       const fitSel = selectionFit(layer, rows, viewState, selectionKeys, fitFull);
       startTransition(() => {
-        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length);
+        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length, drawn);
       });
     };
     const ric = (typeof window !== 'undefined'
@@ -191,7 +199,11 @@ function renderTooltip(template: string, object: Record<string, any>): string {
     }
     // Escaped: this string is returned in a deck.gl tooltip `html` field
     // (rendered via innerHTML), and column values can be arbitrary free text.
-    return v == null ? '' : escapeHtml(v);
+    // Formatted first: a tooltip is the densest numeric surface on the map, and
+    // a raw FLOAT sum used to print all 17 digits of 21289.670000000002. The
+    // token name is the column, so {LATITUDE} keeps its 5dp exemption.
+    if (v == null) return '';
+    return escapeHtml(formatCellValue(v, { column: String(col), grouping: true, empty: '' }));
   });
 }
 
@@ -388,6 +400,10 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
 
   const [layers, setLayers] = useState<Record<number, Layer | null>>({});
   const [counts, setCounts] = useState<Record<number, number>>({});
+  // Rows that could actually be PLACED, per layer. Distinct from `counts`, which
+  // is rows fetched: the gap between them is a column-name error, and it used to
+  // be completely silent (see the parallel notice in RenderMapInline).
+  const [drawnCounts, setDrawnCounts] = useState<Record<number, number>>({});
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
   const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
@@ -429,6 +445,14 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
     if (info?.object && clickEmits.object) {
       const src = info.object.properties && typeof info.object.properties === 'object'
         ? { ...info.object, ...info.object.properties } : info.object;
+      // DELIBERATELY case-tolerant, and deliberately NOT normalized upstream:
+      // objectColumn is the one clickEmits field that indexes a row, and this
+      // three-way probe already resolves any casing (the third arm lowercases,
+      // and /api/query lowercases every row key it returns, so that arm always
+      // matches). Adding it to the spec-level lowercasing pass would be dead
+      // code, and gating authored specs on its case would fail specs that work.
+      // Do not "simplify" this to src[col] - GeoJSON properties can arrive with
+      // the casing the source file used rather than the query's.
       const val = src[col] ?? src[col.toUpperCase()] ?? src[col.toLowerCase()];
       if (val != null) {
         const patch: Record<string, unknown> = { [clickEmits.object]: val };
@@ -451,9 +475,10 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
   }, [clickEmits, updateViewState]);
 
   const onResult = useCallback(
-    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined, count: number) => {
+    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined, count: number, drawn: number) => {
       setLayers((prev) => ({ ...prev, [index]: layer }));
       setCounts((prev) => (prev[index] === count ? prev : { ...prev, [index]: count }));
+      setDrawnCounts((prev) => (prev[index] === drawn ? prev : { ...prev, [index]: drawn }));
       setFitsFull((prev) => ({ ...prev, [index]: fitFull }));
       setFitsSel((prev) => ({ ...prev, [index]: fitSel }));
       if (template) {
@@ -515,8 +540,25 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
   const isEmpty = useMemo(() => {
     if (!specs.length) return false;
     if (Object.keys(counts).length < specs.length) return false;
-    return specs.every((_, i) => (counts[i] ?? 0) === 0);
-  }, [specs, counts]);
+    // Measured on FEATURES, not rows. A layer whose encoding column does not match
+    // the result set returns rows and draws nothing, so a row-based test reported
+    // "not empty" over a blank basemap - the exact silence this message exists to
+    // break. `undrawable` below then says WHY, since "no features match your
+    // filter" would be a wrong explanation for a naming error.
+    return specs.every((_, i) => (drawnCounts[i] ?? 0) === 0);
+  }, [specs, counts, drawnCounts]);
+
+  // Layers that returned data nobody could place. Named with the columns they
+  // read, because that IS the fix.
+  const undrawable = useMemo(
+    () => specs
+      .map((ls, i) => ({ ls, i }))
+      .filter(({ i }) => (counts[i] ?? 0) > 0 && (drawnCounts[i] ?? 0) === 0)
+      .map(({ ls, i }) =>
+        `${ls.id ?? `layer ${i}`}: ${counts[i]} rows, none drawable`
+        + ` (checked ${encodingColumns(ls).join(', ') || 'its encoding columns'})`),
+    [specs, counts, drawnCounts],
+  );
 
   const orderedLayers = useMemo<Layer[]>(
     () => specs.map((_, i) => layers[i]).filter((l): l is Layer => !!l),
@@ -747,7 +789,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
             pointerEvents: 'none',
           }}
         >
-          {interpolateTokens(config.emptyMessage ?? 'No features match the current selection.', display)}
+          {undrawable.length
+            ? `This map returned data it could not draw. ${undrawable.join('; ')}`
+            : interpolateTokens(config.emptyMessage ?? 'No features match the current selection.', display)}
         </div>
       ) : null}
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}

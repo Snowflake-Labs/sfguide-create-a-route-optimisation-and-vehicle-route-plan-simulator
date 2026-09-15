@@ -75,6 +75,7 @@ APP_DIR = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app"
 SOURCE = APP_DIR / "agent-spec.json"
 OUT = APP_DIR / "super-agent-spec.json"
 
+CONSUMER_SPEC = "agent-spec.json"
 OPS_SPEC = "ops-agent-spec.json"
 ADMIN_SPEC = "admin-agent-spec.json"
 
@@ -95,6 +96,17 @@ DERIVED_SECTIONS: list[tuple[str, str]] = [
     (OPS_SPEC, "DATASETS"),
     (OPS_SPEC, "COST AND SCALE"),
     (OPS_SPEC, "AUDIT TRAIL"),
+    (OPS_SPEC, "TRAVEL MATRIX"),
+    # True for the superuser too: these capabilities are app-only for EVERY
+    # agent, because no verb exists at any privilege level.
+    (OPS_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"),
+    # NOT a twin of the consumer AUTOMATIONS section, and deliberately so: the
+    # ops copy carries the rule that a MUTATING action must never be scheduled,
+    # because an automation runs unattended and there is nobody to confirm with.
+    # The superuser holds the mutating verbs, so it needs both halves - the
+    # consumer section (inherited wholesale) says what is worth scheduling, this
+    # one says what must never be.
+    (OPS_SPEC, "AUTOMATIONS (scheduled recurring reports)"),
     (OPS_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"),
 ]
 
@@ -117,6 +129,23 @@ EXCLUDED_SECTIONS: dict[tuple[str, str], str] = {
     (ADMIN_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"):
         "Byte-identical to the ops copy, which is derived above; inheriting both "
         "would duplicate it in the prompt.",
+    (OPS_SPEC, "SANDBOX (code_execution)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale; inheriting both would duplicate it in the prompt.",
+    (ADMIN_SPEC, "SANDBOX (code_execution)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale; inheriting both would duplicate it in the prompt.",
+    (OPS_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale. Duplicating a vega_template in one prompt would make the "
+        "merge engine apply the same block twice.",
+    (ADMIN_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        "Byte-identical to the consumer copy, which the super spec inherits "
+        "wholesale. Duplicating a vega_template in one prompt would make the "
+        "merge engine apply the same block twice.",
+    (ADMIN_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"):
+        "Byte-identical to the ops copy, which is derived above; inheriting "
+        "both would duplicate the list in the prompt.",
     (ADMIN_SPEC, "TOOL ROUTING"):
         "A bare label with no body - it only introduces the ADMIN verbs section, "
         "which is derived above under its own header.",
@@ -131,6 +160,25 @@ EXCLUDED_SECTIONS: dict[tuple[str, str], str] = {
         "describe_data is routed by the DATA ACCESS ROUTING section below, which "
         "can state it unconditionally - the admin wording hedges with 'if it is "
         "available to you' because the admin bundle may lack the verb.",
+}
+
+# Exclusions justified by "byte-identical to <other copy>". The claim used to be
+# unasserted, so the two copies could silently drift and the super agent would
+# inherit one of them while a role agent read the other. Each entry maps the
+# EXCLUDED section to the copy it must equal.
+TWIN_OF: dict[tuple[str, str], tuple[str, str]] = {
+    (ADMIN_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"):
+        (OPS_SPEC, "DEPLOYMENT HISTORY (Cortex Analyst over SV_FLEET_DEPLOYMENT)"),
+    (OPS_SPEC, "SANDBOX (code_execution)"):
+        (CONSUMER_SPEC, "SANDBOX (code_execution)"),
+    (ADMIN_SPEC, "SANDBOX (code_execution)"):
+        (CONSUMER_SPEC, "SANDBOX (code_execution)"),
+    (OPS_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
+    (ADMIN_SPEC, "CHART CUSTOMIZATION (how a chart should look)"):
+        (CONSUMER_SPEC, "CHART CUSTOMIZATION (how a chart should look)"),
+    (ADMIN_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"):
+        (OPS_SPEC, "APP-ONLY CAPABILITIES (say so, do not improvise)"),
 }
 
 MCP_SERVERS = [
@@ -269,7 +317,7 @@ def derive_sections(app_dir: pathlib.Path) -> str:
             .get("instructions", {})
             .get("orchestration", "")
         )
-        for name in (OPS_SPEC, ADMIN_SPEC)
+        for name in (CONSUMER_SPEC, OPS_SPEC, ADMIN_SPEC)
     }
 
     problems: list[str] = []
@@ -279,6 +327,8 @@ def derive_sections(app_dir: pathlib.Path) -> str:
     # spec would be silently dropped from the super agent - the exact failure the
     # hand-written copy had.
     for name, sections in parsed.items():
+        if name == CONSUMER_SPEC:
+            continue  # inherited wholesale; nothing to classify
         for key in sections:
             derived = (name, key) in DERIVED_SECTIONS
             excluded = (name, key) in EXCLUDED_SECTIONS
@@ -308,6 +358,26 @@ def derive_sections(app_dir: pathlib.Path) -> str:
             problems.append(
                 f"{name}: EXCLUDED_SECTIONS names section {key!r}, which no "
                 f"longer exists - drop the stale exclusion.")
+
+    # Assert every "byte-identical" exclusion actually is. Without this the
+    # reason recorded above is just a comment, and the two copies drift apart
+    # the first time somebody edits one of them.
+    for (name, key), (twin_name, twin_key) in TWIN_OF.items():
+        if (name, key) not in EXCLUDED_SECTIONS:
+            problems.append(
+                f"{name}: TWIN_OF names section {key!r}, which is not excluded")
+            continue
+        mine = parsed.get(name, {}).get(key)
+        theirs = parsed.get(twin_name, {}).get(twin_key)
+        if mine is None or theirs is None:
+            problems.append(
+                f"{name}: TWIN_OF pairs {key!r} with {twin_name} {twin_key!r}, "
+                f"and one of them does not exist")
+        elif mine != theirs:
+            problems.append(
+                f"{name}: section {key!r} is excluded because it is "
+                f"byte-identical to {twin_name} {twin_key!r}, but the two have "
+                f"DIVERGED. Edit both, or reclassify the section.")
 
     if problems:
         raise SystemExit(
@@ -345,6 +415,13 @@ def build(source: pathlib.Path) -> dict:
         "tool_resources": resources,
         "mcp_servers": [{"server_spec": {"name": n}} for n in MCP_SERVERS],
     }
+    # CoWork agent skills pass through from the consumer spec, where
+    # build_cowork_skills.py generates them from the same useCase blocks as the
+    # view catalog. A superuser must be able to run the same demo workflows as an
+    # end user; omitting them here would have made the super agent quietly worse
+    # at the thing the accelerator exists to show.
+    if spec.get("skills"):
+        out["skills"] = spec["skills"]
     return out
 
 

@@ -3,10 +3,12 @@ import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getManifest } from '@/lib/entity-manifest';
 import type { EntityDef } from '@/lib/entity-manifest';
+// Warehouse comes from lib/warehouse.ts (single owner). Do not reintroduce a
+// `|| 'COMPUTE_WH'` fallback: that named a warehouse this stack never creates.
+import { WAREHOUSE } from '@/lib/warehouse';
 
 const ACCOUNT_URL = process.env.SNOWFLAKE_ACCOUNT_URL?.replace(/\/+$/, '') || '';
 const PAT = process.env.SNOWFLAKE_PAT || '';
-const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
 
 // Attribution tag (AGENTS.md): entity CRUD (INSERT/UPDATE) issued by the consumer

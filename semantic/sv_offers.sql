@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_OFFERS - vehicle-agnostic offers marketplace semantic view
 -- Source: FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED (offers, denormalized)
 --         FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY      (partner-lane reliability)
@@ -52,29 +65,29 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
     , lane_history.partner_id AS PARTNER_ID COMMENT = 'Partner id (lane history)'
     , lane_history.origin_country AS ORIGIN_COUNTRY COMMENT = 'Lane origin country'
     , lane_history.dest_country AS DEST_COUNTRY COMMENT = 'Lane destination country'
-    , lane_history.vehicle_equipment AS LANE_VEHICLE_EQUIPMENT COMMENT = 'Lane vehicle equipment'
+    , lane_history.lane_vehicle_equipment AS VEHICLE_EQUIPMENT COMMENT = 'Lane vehicle equipment'
   )
 
   METRICS (
     offers.total_deliveries AS COUNT(DISTINCT OFFER_ID) WITH SYNONYMS ('number of deliveries', 'delivery count') COMMENT = 'Distinct delivery count'
-    , offers.total_price_usd AS SUM(price_usd) COMMENT = 'Total delivery price (USD)'
-    , offers.avg_price_usd AS AVG(price_usd) WITH SYNONYMS ('average price') COMMENT = 'Average delivery price (USD)'
-    , offers.avg_price_per_km AS AVG(price_per_km_usd) COMMENT = 'Average price per km (USD)'
-    , offers.avg_weight_kg AS AVG(weight_kg) COMMENT = 'Average delivery weight (kg)'
-    , offers.total_weight_kg AS SUM(weight_kg) COMMENT = 'Total delivery weight (kg)'
-    , offers.avg_distance_km AS AVG(distance_km) COMMENT = 'Average straight-line distance (km)'
-    , offers.avg_road_km AS AVG(road_km) COMMENT = 'Average routed road distance (km)'
-    , offers.avg_price_delta_pct AS AVG(price_delta_pct) WITH SYNONYMS ('average market delta') COMMENT = 'Average percent deviation from market median'
+    , offers.total_price_usd AS ROUND(SUM(price_usd), 2) COMMENT = 'Total delivery price (USD)'
+    , offers.avg_price_usd AS ROUND(AVG(price_usd), 2) WITH SYNONYMS ('average price') COMMENT = 'Average delivery price (USD)'
+    , offers.avg_price_per_km AS ROUND(AVG(price_per_km_usd), 4) COMMENT = 'Average price per km (USD)'
+    , offers.avg_weight_kg AS ROUND(AVG(weight_kg), 2) COMMENT = 'Average delivery weight (kg)'
+    , offers.total_weight_kg AS ROUND(SUM(weight_kg), 2) COMMENT = 'Total delivery weight (kg)'
+    , offers.avg_distance_km AS ROUND(AVG(distance_km), 2) COMMENT = 'Average straight-line distance (km)'
+    , offers.avg_road_km AS ROUND(AVG(road_km), 2) COMMENT = 'Average routed road distance (km)'
+    , offers.avg_price_delta_pct AS ROUND(AVG(price_delta_pct), 2) WITH SYNONYMS ('average market delta') COMMENT = 'Average percent deviation from market median'
     , offers.below_market_deliveries AS COUNT_IF(MARKET_BADGE = 'BELOW_MARKET') COMMENT = 'Deliveries priced below market'
     , offers.above_market_deliveries AS COUNT_IF(MARKET_BADGE = 'ABOVE_MARKET') COMMENT = 'Deliveries priced above market'
     , offers.green_trust_deliveries AS COUNT_IF(TRUST_BADGE = 'GREEN') COMMENT = 'Deliveries from green-trust partners'
-    , offers.avg_partner_credit_score AS AVG(partner_credit_score) COMMENT = 'Average partner credit score'
-    , lane_history.total_shipments AS SUM(shipments) WITH SYNONYMS ('shipments') COMMENT = 'Total historical deliveries'
-    , lane_history.total_on_time AS SUM(on_time) COMMENT = 'Total on-time deliveries'
-    , lane_history.total_late AS SUM(late_cnt) COMMENT = 'Total late deliveries'
-    , lane_history.total_damaged AS SUM(damaged_cnt) COMMENT = 'Total damaged deliveries'
-    , lane_history.on_time_rate_pct AS DIV0(SUM(on_time), SUM(shipments)) * 100 WITH SYNONYMS ('on time rate', 'reliability') COMMENT = 'Percent of deliveries completed on time'
-    , lane_history.avg_lane_cost_per_km AS AVG(avg_cost_per_km) COMMENT = 'Average cost per km across lanes'
+    , offers.avg_partner_credit_score AS ROUND(AVG(partner_credit_score), 2) COMMENT = 'Average partner credit score'
+    , lane_history.total_shipments AS ROUND(SUM(shipments), 2) WITH SYNONYMS ('shipments') COMMENT = 'Total historical deliveries'
+    , lane_history.total_on_time AS ROUND(SUM(on_time), 2) COMMENT = 'Total on-time deliveries'
+    , lane_history.total_late AS ROUND(SUM(late_cnt), 2) COMMENT = 'Total late deliveries'
+    , lane_history.total_damaged AS ROUND(SUM(damaged_cnt), 2) COMMENT = 'Total damaged deliveries'
+    , lane_history.on_time_rate_pct AS ROUND(DIV0(SUM(on_time), SUM(shipments)) * 100, 2) WITH SYNONYMS ('on time rate', 'reliability') COMMENT = 'Percent of deliveries completed on time'
+    , lane_history.avg_lane_cost_per_km AS ROUND(AVG(avg_cost_per_km), 4) COMMENT = 'Average cost per km across lanes'
   )
 
   COMMENT = 'Deliveries marketplace analytics: vehicle-agnostic delivery offers with market-rate benchmarking, partner trust, and routed distances; plus historical partner-lane reliability.'

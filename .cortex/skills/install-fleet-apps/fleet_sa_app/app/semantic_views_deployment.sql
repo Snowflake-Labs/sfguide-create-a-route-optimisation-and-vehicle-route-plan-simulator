@@ -327,21 +327,21 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_FLEET_DEPLOYM
     , requests.error_requests AS COUNT_IF(IS_ERROR)
       WITH SYNONYMS ('failed calls', 'errors')
       COMMENT = 'Count of routing calls that failed'
-    , requests.error_rate_pct AS DIV0(COUNT_IF(IS_ERROR), COUNT(*)) * 100
+    , requests.error_rate_pct AS ROUND(DIV0(COUNT_IF(IS_ERROR), COUNT(*)) * 100, 2)
       WITH SYNONYMS ('failure rate')
       COMMENT = 'Percent of routing calls that failed'
-    , requests.avg_latency_ms AS AVG(latency_ms)
+    , requests.avg_latency_ms AS ROUND(AVG(latency_ms), 2)
       WITH SYNONYMS ('average latency', 'mean response time')
       COMMENT = 'Average gateway latency in milliseconds'
-    , requests.p50_latency_ms AS MEDIAN(latency_ms)
+    , requests.p50_latency_ms AS ROUND(MEDIAN(latency_ms), 2)
       WITH SYNONYMS ('median latency')
       COMMENT = 'Median gateway latency in milliseconds'
-    , requests.p95_latency_ms AS APPROX_PERCENTILE(latency_ms, 0.95)
+    , requests.p95_latency_ms AS ROUND(APPROX_PERCENTILE(latency_ms, 0.95), 2)
       WITH SYNONYMS ('95th percentile latency', 'tail latency')
       COMMENT = 'p95 gateway latency in milliseconds'
-    , requests.max_latency_ms AS MAX(latency_ms)
+    , requests.max_latency_ms AS ROUND(MAX(latency_ms), 2)
       COMMENT = 'Slowest routing call in milliseconds'
-    , requests.total_response_bytes AS SUM(response_bytes)
+    , requests.total_response_bytes AS ROUND(SUM(response_bytes), 2)
       COMMENT = 'Total bytes returned by the routing engine'
     , jobs.total_jobs AS COUNT(*)
       WITH SYNONYMS ('number of builds', 'build count')
@@ -349,10 +349,10 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_FLEET_DEPLOYM
     , jobs.failed_jobs AS COUNT_IF(JOB_STATUS = 'ERROR')
       WITH SYNONYMS ('failed builds')
       COMMENT = 'Count of build jobs that errored'
-    , jobs.avg_duration_seconds AS AVG(duration_seconds)
+    , jobs.avg_duration_seconds AS ROUND(AVG(duration_seconds), 2)
       WITH SYNONYMS ('average build time')
       COMMENT = 'Average build duration in seconds'
-    , jobs.max_duration_seconds AS MAX(duration_seconds)
+    , jobs.max_duration_seconds AS ROUND(MAX(duration_seconds), 2)
       WITH SYNONYMS ('longest build')
       COMMENT = 'Longest build duration in seconds'
     , verb_attempts.total_attempts AS COUNT(*)
@@ -361,7 +361,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_FLEET_DEPLOYM
     , verb_attempts.failed_attempts AS COUNT_IF(OUTCOME = 'error')
       WITH SYNONYMS ('verb errors', 'failed tool calls')
       COMMENT = 'Count of verb attempts that errored'
-    , verb_attempts.attempt_error_rate_pct AS DIV0(COUNT_IF(OUTCOME = 'error'), COUNT(*)) * 100
+    , verb_attempts.attempt_error_rate_pct AS ROUND(DIV0(COUNT_IF(OUTCOME = 'error'), COUNT(*)) * 100, 2)
       COMMENT = 'Percent of verb attempts that errored'
     , verb_attempts.distinct_actors AS COUNT(DISTINCT ACTOR)
       WITH SYNONYMS ('number of users')

@@ -18,8 +18,11 @@ import MapView from './map-view';
 import { coordsFromGeoJSON, type LngLat } from '@/lib/map/map-fit';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
-import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
+import { describeDeckLayers, usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
+import { formatNumber } from '@/lib/format-number';
+import { postSolve } from '@/lib/solve-client';
+import { collectAgentSolve, proposalsToAssignments } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import AssignmentList from './backload-matching/AssignmentList';
 import StopsPanel from './backload-matching/StopsPanel';
@@ -31,15 +34,40 @@ import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
-  findUnroutablePoints, coordKey,
+  findUnroutablePoints, coordKey, describeTourChain, realPlace, placeLabel,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
+  baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
+  deriveSavedKm, applyBaseline, samePlace, backfillFromLoadPool,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
+  type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
+import { COLOR_LEG_EMPTY, COLOR_LEG_BASELINE } from './backload-proposals/constants';
 
 // Cached ORS empty-leg result (geometry + real road km) keyed by
 // `<trailer>|<offer>` for the outbound leg and `<trailer>|<offer>|ret` for the
 // return reposition.
 type EmptyLegCacheEntry = { geo: unknown; km: number | null };
+// Cached loaded-tour result: geometry plus the road km that produced it. `km` is
+// null when fetchTourPath fell back to a straight line.
+type TourCacheEntry = { geo: unknown; km: number | null };
+
+/**
+ * Upgrade a COLLECTED plan's loaded distance to the road distance just measured.
+ *
+ * Only for rehydrated rows. On the solve path LOADED_KM and TOUR_KM come from
+ * VROOM, which routed the whole tour under the solver's own constraints, and
+ * overwriting those with a fresh DIRECTIONS number would make the card disagree
+ * with the plan that was actually optimised.
+ *
+ * A collected plan has neither: the procedure reports great-circle km. Leaving it
+ * put a straight-line 1,352 km beside a road polyline on the same card, under a
+ * note that promised road distances.
+ */
+function refineLoaded(a: Assignment, km: number | null): void {
+  if (!a.REHYDRATED || km === null || !Number.isFinite(km) || km <= 0) return;
+  a.LOADED_KM = km;
+  a.TOUR_KM = km;
+}
 
 // Default payload caps (editable via sliders). clampPayload enforces the matrix
 // budget on Solve so the precomputed ORS matrix stays under the location cap.
@@ -65,8 +93,6 @@ function locMatchesCoord(loc: unknown, lon: number, lat: number): boolean {
   return Array.isArray(loc) && coordNear(Number(loc[0]), lon) && coordNear(Number(loc[1]), lat);
 }
 
-type EndMode = 'home' | 'shared' | 'open';
-
 function clampPayload(v: number, i: number, e: number, budget: number): { v: number; i: number; e: number; clamped: boolean } {
   const used = 2 * v + 2 * i + 2 * e;
   if (used <= budget) return { v, i, e, clamped: false };
@@ -74,7 +100,7 @@ function clampPayload(v: number, i: number, e: number, budget: number): { v: num
   return { v: Math.max(1, Math.floor(v * scale)), i: Math.max(0, Math.floor(i * scale)), e: Math.max(0, Math.floor(e * scale)), clamped: true };
 }
 
-export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {}) {
+export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
   // Region bbox: frames the map on the active region immediately on a context
   // change, before any trailers/offers for that region have loaded.
@@ -128,13 +154,28 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const emptyLegCacheRef = useRef<Map<string, EmptyLegCacheEntry>>(new Map());
   // Cached ORS loaded-tour polyline keyed by `<trailer>|<offer>|tour`.
-  const tourCacheRef = useRef<Map<string, unknown>>(new Map());
+  const tourCacheRef = useRef<Map<string, TourCacheEntry>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
+  // Selected VEHICLE, independent of any assignment. Set by clicking a trailer
+  // dot on the map and kept in sync with selectedAssignment below. This exists
+  // separately because the baseline (no-backload) line must be answerable BEFORE
+  // a solve, when there are no assignments at all to select.
+  const [selectedTrailer, setSelectedTrailer] = useState<string | null>(null);
+  // Baseline reposition line for selectedTrailer, fetched lazily. Cache key is
+  // `<trailer>|<endLon>,<endLat>`: the endpoint MUST be in the key because
+  // endMode and the shared destination are editable at runtime, and a
+  // trailer-only key would keep serving the line drawn to the old endpoint.
+  const baselineCacheRef = useRef<Map<string, BaselineGeom>>(new Map());
+  const [baseline, setBaseline] = useState<BaselineGeom | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
   const [rationaleLoading, setRationaleLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
+  // Set when the plan on screen was collected from a solve the AGENT ran, rather
+  // than solved here. Surfaced so a dispatcher is never unsure whose numbers
+  // these are, and cleared the moment this page solves for itself.
+  const [rehydrateNote, setRehydrateNote] = useState<string | null>(null);
   const [solverLog, setSolverLog] = useState<string | null>(null);
   // How many vehicles the last solve actually submitted to VROOM. This is the
   // only honest denominator for "% dispatched assigned" - the idle pool is much
@@ -225,6 +266,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       // dispatch stats together so the KPI denominator can never be paired with
       // assignments from a different preset / region.
       setAssignments([]); setUnassigned([]); setSelectedAssignment(null);
+      autoSelectedForRef.current = null; retriedGeomRef.current.clear();
       setSolveStats(null); setSolverLog(null);
 
       let cls: VehicleClass | null = null;
@@ -255,6 +297,391 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   useEffect(() => { refetch(); }, [refetch]);
 
   // -----------------------------------------------------------------
+  // Geometry enrichment - the ONLY producer of the polylines the map draws.
+  //
+  // Lazily fetch the three polylines a tour needs through the live routing seam:
+  // the loaded path (first pickup -> last task stop), and both empty legs -
+  // outbound (idle location -> first pickup) and return (last task stop -> tour
+  // end). The loaded path is fetched here rather than taken from the solve
+  // response because the solve runs with VROOM geometry disabled to stay under
+  // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
+  // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
+  // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
+  //
+  // This is a standalone callback, not inline in `solve`, because a plan
+  // collected from an agent solve needs exactly the same pass. While it lived
+  // inside `solve` a rehydrated plan rendered its stops and its numbers but no
+  // route line at all - nothing threw, the assignment list looked complete, and
+  // only the map was wrong.
+  // -----------------------------------------------------------------
+  // Assignment ids whose geometry fetch has already been claimed, so the
+  // enrichment effect cannot loop on the state update it causes.
+  const enrichedKeysRef = useRef<Set<string>>(new Set());
+
+  // Plan (set of assignment ids) the top card was last auto-selected for. See
+  // the auto-select effect below. Reset to null wherever the plan is cleared, so
+  // a re-solve that happens to place the same assignments still auto-selects.
+  const autoSelectedForRef = useRef<string | null>(null);
+
+  const enrichGeometry = useCallback(async (
+    list: Assignment[], profile: string, regionName: string,
+  ): Promise<void> => {
+    await Promise.all(list.map(async (a) => {
+      const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
+      const retKey = `${outKey}|ret`;
+      const tourKey = `${outKey}|tour`;
+
+      const cachedTour = tourCacheRef.current.get(tourKey);
+      if (cachedTour) {
+        a.ROUTE_GEOJSON = cachedTour.geo;
+        refineLoaded(a, cachedTour.km);
+      } else {
+        const tour = await fetchTourPath(profile, a.STOPS, regionName);
+        if (tour) {
+          tourCacheRef.current.set(tourKey, tour);
+          a.ROUTE_GEOJSON = tour.geo;
+          refineLoaded(a, tour.km);
+        }
+      }
+      const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
+      if (cachedOut) {
+        a.EMPTY_GEOJSON = cachedOut.geo;
+        if (cachedOut.km !== null) a.EMPTY_OUT_KM = cachedOut.km;
+      } else {
+        const leg = await fetchEmptyLeg(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], regionName);
+        if (leg) {
+          emptyLegCacheRef.current.set(outKey, leg);
+          a.EMPTY_GEOJSON = leg.geo;
+          if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
+        } else {
+          // DIRECTIONS refused this pair (transient seam error, unroutable, or
+          // over the waypoint cap). Draw the straight link rather than nothing:
+          // an absent dashed leg is indistinguishable from a plan that has no
+          // deadhead. NOT cached, so a later selection retries the road call,
+          // and no km is taken from it - EMPTY_OUT_KM keeps the solver's figure.
+          a.EMPTY_GEOJSON = straightLineGeoJSON(
+            [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT],
+          ) ?? undefined;
+        }
+      }
+
+      // A return leg exists when the tour's last task and its end point are
+      // different places. `(EMPTY_BACK_KM ?? 0) > 0` is the SOLVER's own
+      // statement that this tour repositions, and it stays authoritative on the
+      // solve path. A COLLECTED plan makes no such statement - the procedure's
+      // empty_km is the approach only (haversine idle -> pickup), so that test
+      // was false for every rehydrated row: the return leg was never fetched, the
+      // card could never show the "(out + back)" split, and the collected plan
+      // counted less deadhead than the same tour solved on this page. The
+      // endpoints are compared with samePlace because a zero-length leg is what
+      // DIRECTIONS rejects, and 39% of this pool is parked at its own depot.
+      const endsKnown = a.END_LON !== undefined && a.END_LAT !== undefined
+        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined;
+      const endsDiffer = endsKnown && !samePlace(
+        [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+        [a.END_LON as number, a.END_LAT as number],
+      );
+      const hasReturn = endsKnown
+        && (a.REHYDRATED ? endsDiffer : (a.EMPTY_BACK_KM ?? 0) > 0);
+      if (hasReturn) {
+        const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
+        if (cachedRet) {
+          a.EMPTY_RETURN_GEOJSON = cachedRet.geo;
+          if (cachedRet.km !== null) a.EMPTY_BACK_KM = cachedRet.km;
+        } else {
+          const leg = await fetchEmptyLeg(
+            profile,
+            [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+            [a.END_LON as number, a.END_LAT as number],
+            regionName,
+          );
+          if (leg) {
+            emptyLegCacheRef.current.set(retKey, leg);
+            a.EMPTY_RETURN_GEOJSON = leg.geo;
+            if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
+          } else {
+            // Same fallback as the outbound leg above, same reasoning.
+            a.EMPTY_RETURN_GEOJSON = straightLineGeoJSON(
+              [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+              [a.END_LON as number, a.END_LAT as number],
+            ) ?? undefined;
+          }
+        }
+      }
+
+      // Only re-derive the deadhead total from its legs when at least one leg is
+      // actually known. A rehydrated plan carries the procedure's own EMPTY_KM
+      // and no per-leg split, so summing two undefined legs would overwrite a
+      // real figure with 0 whenever DIRECTIONS is unavailable.
+      if (a.EMPTY_OUT_KM !== undefined || a.EMPTY_BACK_KM !== undefined) {
+        a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
+      }
+      // Shared rule (helpers.deriveSavedKm), not a local copy: the empty km this
+      // subtracts from has just changed, and the collected-plan baseline pass
+      // below derives the same figure.
+      deriveSavedKm(a);
+    }));
+  }, []);
+
+  // -----------------------------------------------------------------
+  // Reposition baselines for a set of vehicles.
+  //
+  // Component scope, and called by BOTH the solve and the collected-plan effect
+  // below, for the same reason enrichGeometry sits out here: while this lived
+  // inside `solve` a rehydrated plan had no BASELINE_EMPTY_KM at all, so every
+  // card silently lost "deadhead avoided ~X km" and the baseline tooltip while
+  // looking otherwise complete. The one caller-visible behaviour is that a
+  // failure yields an EMPTY map rather than throwing - a plan with no baseline is
+  // still a plan.
+  // -----------------------------------------------------------------
+  const computeBaselines = useCallback(async (
+    rows: Trailer[], profile: string, end: (t: Trailer) => [number, number] | null,
+    regionName: string | null | undefined,
+    opts: { kmh: number; homeRangeKm: number; signal?: AbortSignal },
+  ): Promise<Map<Trailer, EmptyLegBaseline>> => {
+    try {
+      return await computeEmptyLegBaselines(profile, rows, end, regionName, opts);
+    } catch {
+      return new Map();
+    }
+  }, []);
+
+  // -----------------------------------------------------------------
+  // Rehydrate a plan the agent already solved.
+  //
+  // `solve_key` arrives in viewState when the agent navigates here after running
+  // backload_solve (show_view with selection="solve_key=..."). Collecting it puts
+  // the agent's OWN plan on screen; solving again would run a second, different
+  // job and could contradict the numbers the agent just quoted in chat.
+  //
+  // Waits for the vehicle pool, because a proposal is matched to a vehicle by
+  // TRAILER_ID and an empty pool would silently drop every row.
+  // -----------------------------------------------------------------
+  const solveKeyParam = typeof viewState?.solve_key === 'string' ? viewState.solve_key : null;
+  const rehydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!solveKeyParam || !trailers.length) return;
+    // Once per key: this effect depends on the pool, which changes as data
+    // arrives, and re-collecting would keep resetting the dispatcher's selection.
+    if (rehydratedKeyRef.current === solveKeyParam) return;
+    let cancelled = false;
+    const ac = new AbortController();
+
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (cancelled) return;
+        const out = await collectAgentSolve(solveKeyParam, ac.signal);
+        if (cancelled) return;
+
+        if (out.state === 'pending') {
+          setRehydrateNote('The agent\u2019s solve is still running. Collecting it...');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        // Terminal in every remaining case: mark the key done so a dependency
+        // change cannot restart the poll loop.
+        rehydratedKeyRef.current = solveKeyParam;
+
+        if (out.state === 'expired') {
+          setRehydrateNote(
+            'That plan is no longer stored, so it cannot be shown. Press Solve Backloads to build a new one.',
+          );
+          return;
+        }
+        if (out.state === 'failed') {
+          setRehydrateNote(`The agent\u2019s plan could not be collected: ${out.error}. Press Solve Backloads to build a new one.`);
+          return;
+        }
+
+        const proposals = Array.isArray(out.solve.proposals) ? out.solve.proposals : [];
+        if (!proposals.length) {
+          setRehydrateNote(
+            'The agent\u2019s solve produced no assignments' +
+            (out.solve.note ? `: ${out.solve.note}` : '.'),
+          );
+          return;
+        }
+        const { assignments: rebuilt, skipped } = proposalsToAssignments(proposals, trailers);
+        if (!rebuilt.length) {
+          setRehydrateNote(
+            'The agent solved over a different set of vehicles, so none of its assignments apply to the ' +
+            'vehicles shown here. Press Solve Backloads to plan this pool.',
+          );
+          return;
+        }
+        // These are fresh objects with no polylines, so release any claim a
+        // previous collection made on the same assignment ids.
+        enrichedKeysRef.current.clear();
+        setAssignments(rebuilt as unknown as Assignment[]);
+        setUnassigned([]);
+        setSelectedAssignment(rebuilt[0]?.ASSIGNMENT_ID ?? null);
+        const strat = out.solve.strategy ? ` (${out.solve.strategy})` : '';
+        // Say only what the enrichment pass actually does. Empty and loaded km
+        // both refine now (the tour fetch returns its road distance), but the
+        // solver's revenue/cost breakdown is NOT recoverable from a proposal, so
+        // the card shows the solver's margin and no breakdown - claiming
+        // otherwise is how a 0 gets read as a measurement.
+        //
+        // The empty km also GROWS, and silently: the procedure counts the approach
+        // to the pickup only, while this page adds the reposition from the last
+        // drop to the end point. A dispatcher comparing the card against the
+        // number the agent quoted in chat must be told that, or the two disagree
+        // with no explanation on screen.
+        setRehydrateNote(
+          `Showing the plan the agent solved${strat}: ${rebuilt.length} trip(s)` +
+          (skipped ? `, ${skipped} outside this vehicle pool` : '') +
+          '. Drawing road routes; empty and loaded distances start as straight-line and ' +
+          'refine to road distance as each leg is measured. Empty km then covers BOTH ' +
+          'deadhead legs (approach + reposition to the end point), so it exceeds the ' +
+          'approach-only figure the agent quoted. Margin is the solver\u2019s; ' +
+          'the revenue/cost breakdown is not part of a collected plan.',
+        );
+        return;
+      }
+    })();
+
+    return () => { cancelled = true; ac.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKeyParam, trailers]);
+
+  // -----------------------------------------------------------------
+  // Draw the road geometry for a rehydrated plan.
+  //
+  // A collected plan carries business keys and coordinates but no polylines: the
+  // procedure never asks the engine for geometry. Without this pass the map shows
+  // the stop markers and nothing joining them, which reads as a broken plan.
+  //
+  // Separate from the collection effect on purpose - the vehicle class (and so
+  // the ORS profile) can arrive after the pool does, and the plan should appear
+  // as soon as it is collected rather than waiting on the profile.
+  // -----------------------------------------------------------------
+  useEffect(() => {
+    if (!cfg || !vehicleClass) return;
+    const pending = assignments.filter(
+      (a) => a.REHYDRATED && !a.ROUTE_GEOJSON && !enrichedKeysRef.current.has(a.ASSIGNMENT_ID),
+    );
+    if (!pending.length) return;
+    // Claim before the await: this effect reruns on `assignments`, which the
+    // enrichment itself replaces, and an unclaimed rerun would refetch forever.
+    for (const a of pending) enrichedKeysRef.current.add(a.ASSIGNMENT_ID);
+    let cancelled = false;
+    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {
+      if (!cancelled) setAssignments((prev) => [...prev]);
+    });
+    return () => { cancelled = true; };
+  }, [assignments, cfg, vehicleClass, enrichGeometry]);
+
+  // Where a tour is required to finish, per the End radio group. Component scope
+  // so the solve, the collected-plan baseline pass and the map's baseline line all
+  // measure the leg to the SAME point - a baseline km computed against one end
+  // point and a line drawn to another is two answers on one screen.
+  const trailerEndFor = useCallback((t: Trailer): [number, number] | null => {
+    if (endMode === 'open') return null;
+    const firstTrailer = trailers[0];
+    const effSharedLon = sharedDestLon ?? (firstTrailer ? Number(firstTrailer.HOME_LON) : null);
+    const effSharedLat = sharedDestLat ?? (firstTrailer ? Number(firstTrailer.HOME_LAT) : null);
+    if (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null) {
+      return [effSharedLon, effSharedLat];
+    }
+    return [Number(t.HOME_LON), Number(t.HOME_LAT)];
+  }, [endMode, sharedDestLon, sharedDestLat, trailers]);
+
+  // -----------------------------------------------------------------
+  // Reposition baselines for a plan collected from the agent.
+  //
+  // The procedure returns no baseline, so without this pass every collected card
+  // lost "deadhead avoided ~X km" and the baseline tooltip - present after a local
+  // solve, absent after arriving from CoWork, with nothing on screen saying why.
+  //
+  // Keyed on REHYDRATED and claimed before the await, exactly like the geometry
+  // pass: this effect writes `assignments`, which it also depends on.
+  // -----------------------------------------------------------------
+  const baselinedKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!cfg || !vehicleClass) return;
+    const pending = assignments.filter(
+      (a) => a.REHYDRATED && a.BASELINE_EMPTY_KM === undefined
+        && !baselinedKeysRef.current.has(a.ASSIGNMENT_ID),
+    );
+    if (!pending.length) return;
+    for (const a of pending) baselinedKeysRef.current.add(a.ASSIGNMENT_ID);
+    const rows = pending
+      .map((a) => trailers.find((t) => t.TRAILER_ID === a.TRAILER_ID))
+      .filter((t): t is Trailer => !!t);
+    if (!rows.length) return;
+    let cancelled = false;
+    computeBaselines(rows, vehicleClass.ORS_PROFILE, trailerEndFor, cfg.region, {
+      kmh: vehicleClass.AVG_SPEED_KMH || KMH_DEFAULT,
+      homeRangeKm: vehicleClass.HOME_RANGE_KM || 50,
+    }).then((baselines) => {
+      if (cancelled) return;
+      for (const a of pending) {
+        const row = trailers.find((t) => t.TRAILER_ID === a.TRAILER_ID);
+        applyBaseline(a, row ? baselines.get(row) : undefined);
+      }
+      setAssignments((prev) => [...prev]);
+    });
+    return () => { cancelled = true; };
+  }, [assignments, cfg, vehicleClass, trailers, trailerEndFor, computeBaselines]);
+
+  // -----------------------------------------------------------------
+  // Fill the fields a proposal does not carry (product, and any place name the
+  // procedure resolved to blank) from the load pool already on this page.
+  //
+  // No claim ref: `backfillFromLoadPool` reports whether it changed anything, and
+  // the state update is skipped when it did not, so this cannot loop on its own
+  // write. Runs for collected plans only - a local solve reads these fields
+  // straight off the pool row when it builds the assignment.
+  // -----------------------------------------------------------------
+  useEffect(() => {
+    const targets = assignments.filter((a) => a.REHYDRATED);
+    if (!targets.length || (!internal.length && !external.length)) return;
+    const pool = new Map<string, Volume | Offer>();
+    for (const v of internal) pool.set(String(v.ID), v);
+    for (const o of external) pool.set(String(o.OFFER_ID), o);
+    let changed = false;
+    for (const a of targets) {
+      if (backfillFromLoadPool(a, pool)) changed = true;
+    }
+    if (changed) setAssignments((prev) => [...prev]);
+  }, [assignments, internal, external]);
+
+  // -----------------------------------------------------------------
+  // Retry the geometry for the assignment the dispatcher just clicked.
+  //
+  // Every polyline here comes from ORS DIRECTIONS, and `fetchDirections` returns
+  // null on ANY failure - a transient seam error, an unroutable pair, or more
+  // than MAX_DIRECTIONS_WAYPOINTS stops. The post-solve pass runs once, so a
+  // single null left that card with no route line for the rest of the session:
+  // the card rendered complete, nothing threw, and clicking it again could not
+  // fix it because there was no second attempt anywhere. Selecting a card is
+  // exactly the moment its geometry is worth paying for again.
+  //
+  // Uses the SAME enrichGeometry as the solve and rehydrate paths - one fetch
+  // path, so a fix or a cache hit benefits all three.
+  // -----------------------------------------------------------------
+  const retriedGeomRef = useRef<Set<string>>(new Set());
+  const [geomRetrying, setGeomRetrying] = useState(false);
+  useEffect(() => {
+    if (!cfg || !vehicleClass || !selectedAssignment) return;
+    const target = assignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment);
+    if (!target || target.ROUTE_GEOJSON) return;
+    // Claim before the await, for the same reason as the rehydrate pass: this
+    // effect reruns on `assignments`, which the enrichment itself replaces.
+    if (retriedGeomRef.current.has(selectedAssignment)) return;
+    retriedGeomRef.current.add(selectedAssignment);
+    let cancelled = false;
+    setGeomRetrying(true);
+    enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {
+      if (cancelled) return;
+      setGeomRetrying(false);
+      setAssignments((prev) => [...prev]);
+    }).catch(() => { if (!cancelled) setGeomRetrying(false); });
+    return () => { cancelled = true; };
+  }, [selectedAssignment, assignments, cfg, vehicleClass, enrichGeometry]);
+
+
+  // -----------------------------------------------------------------
   // Solve - every visible knob lands inside the OPTIMIZATION call.
   // -----------------------------------------------------------------
   const solve = useCallback(async () => {
@@ -265,7 +692,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     }
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({});
     setConfirmMsg(null); setSolverLog(null); setSolveError(null); setSelectedAssignment(null);
+    autoSelectedForRef.current = null; retriedGeomRef.current.clear();
     setSolveStats(null);
+    // This page is now the author of the plan, so the "showing the agent's plan"
+    // notice must go - leaving it would attribute these numbers to the agent.
+    setRehydrateNote(null);
 
     const cls = vehicleClass;
     const profile = cls.ORS_PROFILE;
@@ -279,11 +710,8 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     const effSharedLon = sharedDestLon ?? fallbackLon;
     const effSharedLat = sharedDestLat ?? fallbackLat;
     const trailerById = new Map<number, Trailer>();
-    const trailerEnd = (t: Trailer): [number, number] | null => {
-      if (endMode === 'open') return null;
-      if (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null) return [effSharedLon, effSharedLat];
-      return [Number(t.HOME_LON), Number(t.HOME_LAT)];
-    };
+    // Shared with the collected-plan baseline pass and the map's baseline line.
+    const trailerEnd = trailerEndFor;
     // Fold per-hour cost into per-km via avg speed (deployed VROOM honours per_km).
     const effPerKmUsd = costPerKmUsd + costPerHourUsd / speedKmh;
 
@@ -320,10 +748,10 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     // Per-vehicle empty-leg baselines (real ORS via CONTRACT.MATRIX, haversine
     // fallback) so Detour budget / Allowed deviation sliders bite per-vehicle.
     setSolverLog('Computing empty-leg baselines...');
-    let baselines: Map<Trailer, EmptyLegBaseline>;
-    try {
-      baselines = await computeEmptyLegBaselines(profile, trailers.slice(0, effMaxVehicles), trailerEnd, cfg.region, { kmh: speedKmh, homeRangeKm });
-    } catch { baselines = new Map(); }
+    const baselines = await computeBaselines(
+      trailers.slice(0, effMaxVehicles), profile, trailerEnd, cfg.region,
+      { kmh: speedKmh, homeRangeKm },
+    );
     const FALLBACK_BASELINE: EmptyLegBaseline = { durSec: Math.round((homeRangeKm / speedKmh) * 3600), distMeters: homeRangeKm * 1000, source: 'fixed-open' };
 
     const vrpVehicles = trailers.slice(0, effMaxVehicles).map((t, i) => {
@@ -358,7 +786,12 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       return veh;
     });
 
-    const offerById = new Map<number, { kind: 'INTERNAL' | string; row: Volume | Offer }>();
+    // `internal` is the STRUCTURAL provenance flag: it records which pool the
+    // row came out of, and nothing downstream may re-derive that from `kind`.
+    // `kind` is a display/channel label, and one of its legal external values
+    // used to be the literal 'INTERNAL', so a `kind === 'INTERNAL'` test both
+    // over-counted internal volumes and coloured external offers as internal.
+    const offerById = new Map<number, { kind: 'INTERNAL' | string; internal: boolean; row: Volume | Offer }>();
     let nextId = 1000;
     const vrpShipments: Record<string, unknown>[] = [];
     const widenSec = Math.round(windowSlackHrs * 3600);
@@ -375,7 +808,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
     for (const v of internalSubset) {
       const id = nextId++;
-      offerById.set(id, { kind: 'INTERNAL', row: v });
+      offerById.set(id, { kind: 'INTERNAL', internal: true, row: v });
       const kg = Math.min(Number(v.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity ? [kg, Number(v.PALLETS) || synthPallets(kg), Number(v.VOLUME_M3) || synthVolumeM3(kg)] : [kg];
       vrpShipments.push({
@@ -386,7 +819,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     }
     for (const o of externalSubset) {
       const id = nextId++;
-      offerById.set(id, { kind: o.SOURCE, row: o });
+      offerById.set(id, { kind: o.SOURCE, internal: false, row: o });
       const kg = Math.min(Number(o.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity ? [kg, Number(o.PALLETS) || synthPallets(kg), Number(o.VOLUME_M3) || synthVolumeM3(kg)] : [kg];
       vrpShipments.push({
@@ -532,11 +965,19 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
       let ok = false;
       try {
-        const res = await fetch('/api/backload/solve', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ challenge, region: cfg.region }), signal: ac.signal,
-        });
-        body = await res.json();
+        // postSolve handles the deferred case: the route answers 202 with a
+        // solve_key when the solve outlives its 45s inline wait, and this polls
+        // /api/solve-status until it finishes. Measured, a 100-vehicle /
+        // 500-load solve takes 168.6s - well inside this page's 180s budget, but
+        // far beyond what a single held-open request can do (the statement is
+        // capped at 80s to stay under the ~90s SPCS ingress limit).
+        const res = await postSolve(
+          '/api/backload/solve',
+          { challenge, region: cfg.region },
+          ac.signal,
+          (sec) => setSolverLog(`Still solving on Snowflake (${sec}s)...`),
+        );
+        body = res.body as typeof body;
         ok = res.ok;
         // Suspended routing engine: server has triggered a resume. Show the
         // shared notice with a Retry instead of a raw solver error.
@@ -724,7 +1165,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         if (!je) continue;
         const jr = je.row as Offer;
         const segLoadedKm = haversineKm(Number(jr.PICKUP_LON), Number(jr.PICKUP_LAT), Number(jr.DROPOFF_LON), Number(jr.DROPOFF_LAT));
-        if (je.kind === 'INTERNAL') revenue += segLoadedKm * internalRatePerKm;
+        if (je.internal) revenue += segLoadedKm * internalRatePerKm;
         else revenue += Number(jr.PRICE_USD) || segLoadedKm * internalRatePerKm;
       }
       const cost = fixedDispatchUsd + tourHrs * costPerHourUsd + tourKmReal * costPerKmUsd + nDeliv * costPerDeliveryUsd;
@@ -732,6 +1173,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       newAssignments.push({
         ASSIGNMENT_ID: `${t.TRAILER_ID}|${offerIdFirst}`,
         TRAILER_ID: t.TRAILER_ID, OFFER_ID: offerIdFirst, SOURCE: ent.kind,
+        IS_INTERNAL: ent.internal,
         PICKUP_LON: Number(row.PICKUP_LON), PICKUP_LAT: Number(row.PICKUP_LAT),
         DROPOFF_LON: Number(row.DROPOFF_LON), DROPOFF_LAT: Number(row.DROPOFF_LAT),
         TRAILER_DROPOFF_LON: Number(t.DROPOFF_LON), TRAILER_DROPOFF_LAT: Number(t.DROPOFF_LAT),
@@ -769,70 +1211,9 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       setSolveError('Solver returned no routes. Try raising Detour budget or Allowed deviation, and confirm the region routing service is running.');
     }
 
-    // Lazily fetch the three polylines a tour needs through the live routing
-    // seam: the loaded path (first pickup -> last task stop), and both empty legs
-    // - outbound (idle location -> first pickup) and return (last task stop ->
-    // tour end). The loaded path is fetched here rather than taken from the solve
-    // response because the solve runs with VROOM geometry disabled to stay under
-    // the 20MB _OPTIMIZATION_RAW cap. The real road distance that comes back
-    // replaces the haversine seed for EMPTY_OUT_KM / EMPTY_BACK_KM, so EMPTY_KM,
-    // SAVED_KM, and DETOUR_KM all end up in the same distance system as TOUR_KM.
-    Promise.all(newAssignments.map(async (a) => {
-      const outKey = `${a.TRAILER_ID}|${a.OFFER_ID}`;
-      const retKey = `${outKey}|ret`;
-      const tourKey = `${outKey}|tour`;
-
-      const cachedTour = tourCacheRef.current.get(tourKey);
-      if (cachedTour) {
-        a.ROUTE_GEOJSON = cachedTour;
-      } else {
-        const geo = await fetchTourPath(profile, a.STOPS, cfg.region);
-        if (geo) {
-          tourCacheRef.current.set(tourKey, geo);
-          a.ROUTE_GEOJSON = geo;
-        }
-      }
-      const cachedOut = emptyLegCacheRef.current.get(outKey) as EmptyLegCacheEntry | undefined;
-      if (cachedOut) {
-        a.EMPTY_GEOJSON = cachedOut.geo;
-        if (cachedOut.km !== null) a.EMPTY_OUT_KM = cachedOut.km;
-      } else {
-        const leg = await fetchEmptyLeg(profile, [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT], cfg.region);
-        if (leg) {
-          emptyLegCacheRef.current.set(outKey, leg);
-          a.EMPTY_GEOJSON = leg.geo;
-          if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
-        }
-      }
-
-      const hasReturn = a.END_LON !== undefined && a.END_LAT !== undefined
-        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined
-        && (a.EMPTY_BACK_KM ?? 0) > 0;
-      if (hasReturn) {
-        const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
-        if (cachedRet) {
-          a.EMPTY_RETURN_GEOJSON = cachedRet.geo;
-          if (cachedRet.km !== null) a.EMPTY_BACK_KM = cachedRet.km;
-        } else {
-          const leg = await fetchEmptyLeg(
-            profile,
-            [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
-            [a.END_LON as number, a.END_LAT as number],
-            cfg.region,
-          );
-          if (leg) {
-            emptyLegCacheRef.current.set(retKey, leg);
-            a.EMPTY_RETURN_GEOJSON = leg.geo;
-            if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
-          }
-        }
-      }
-
-      a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
-      if (a.BASELINE_EMPTY_KM !== undefined && a.BASELINE_SOURCE !== 'fixed-open') {
-        a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
-      }
-    })).then(() => setAssignments([...newAssignments]));
+    // Fetch the tour + deadhead polylines (shared with the rehydrate path).
+    enrichGeometry(newAssignments, profile, cfg.region)
+      .then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
   }, [
@@ -841,16 +1222,8 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     internalFirstWeight, windowSlackHrs, endMode, sharedDestLon, sharedDestLat,
     costPerHourUsd, costPerKmUsd, fixedDispatchUsd, costPerDeliveryUsd, internalRatePerKm,
     enforceDriverBreak, breakAfterHrs, breakLengthMin, enforceShift, shiftLengthHrs,
-    useMultiDimCapacity, useMultiWindow,
+    useMultiDimCapacity, useMultiWindow, enrichGeometry,
   ]);
-
-  // Auto-select the top assignment after a solve.
-  useEffect(() => {
-    if (!assignments.length) return;
-    if (!selectedAssignment || !assignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment)) {
-      setSelectedAssignment(assignments[0].ASSIGNMENT_ID);
-    }
-  }, [assignments, selectedAssignment]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -901,8 +1274,43 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     return [...base].sort((a, b) => (b.NET_BENEFIT_USD ?? -Infinity) - (a.NET_BENEFIT_USD ?? -Infinity));
   }, [assignments, hideUnprofitable]);
 
+  // Auto-select the top assignment when a NEW plan arrives, and repair a
+  // selection that no longer exists in the list.
+  //
+  // Reads `visibleAssignments`, NOT `assignments`, and must therefore be declared
+  // after that memo. The old form selected `assignments[0]` - the solver's
+  // emission order - while the list renders `visibleAssignments`, which is
+  // net-desc sorted and `hideUnprofitable`-filtered. So the highlighted card was
+  // usually not the first card on screen, and when the filter hid that row the
+  // selection resolved to null and the page looked unselected after a solve.
+  //
+  // Keyed on the SET OF VISIBLE IDS, not on `selectedAssignment` and not on the
+  // array identity. The old form re-ran on the selection change itself, so
+  // toggling the selected card off set it to null and this effect immediately
+  // put it back on the first one - clicking a card twice silently selected the
+  // top one and there was no way to select nothing. The array identity is no
+  // good either: `visibleAssignments` is a fresh array on every render and
+  // geometry enrichment replaces `assignments` with the same plan in it, which
+  // would yank the selection back to the top on every enrichment tick.
+  useEffect(() => {
+    if (!visibleAssignments.length) return;
+    const planKey = visibleAssignments.map((a) => a.ASSIGNMENT_ID).join('|');
+    const isNewPlan = autoSelectedForRef.current !== planKey;
+    autoSelectedForRef.current = planKey;
+    const stale = !!selectedAssignment && !visibleAssignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment);
+    // A selection that is still on screen survives a list change, so toggling
+    // `hideUnprofitable` does not yank the dispatcher back to the top card.
+    if (stale || (isNewPlan && !selectedAssignment)) {
+      setSelectedAssignment(visibleAssignments[0].ASSIGNMENT_ID);
+    }
+  }, [visibleAssignments, selectedAssignment]);
+
   const totalNetBenefit = useMemo(() => Math.round(visibleAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0)), [visibleAssignments]);
-  const internalCount = useMemo(() => visibleAssignments.filter((a) => a.SOURCE === 'INTERNAL').length, [visibleAssignments]);
+  // Counted on IS_INTERNAL, never on SOURCE. This number is published to the
+  // agent memo (internal_matched below) and therefore gets quoted as fact, and
+  // SOURCE carried the literal 'INTERNAL' on external offers - measured 75 rows
+  // - so the SOURCE form over-counted internal matches by exactly those rows.
+  const internalCount = useMemo(() => visibleAssignments.filter((a) => a.IS_INTERNAL === true).length, [visibleAssignments]);
   const internalPct = visibleAssignments.length ? Math.round((internalCount / visibleAssignments.length) * 100) : 0;
   // Denominator = vehicles actually submitted to the last solve; before the first
   // solve fall back to the idle pool. Clamped at 100 defensively - if the clamp
@@ -914,6 +1322,62 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
 
   const selected = visibleAssignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment) || null;
   const stopsPanelRef = useRef<HTMLDivElement | null>(null);
+  const selectedTrailerRow = useMemo(
+    () => trailers.find((t) => t.TRAILER_ID === selectedTrailer) || null,
+    [trailers, selectedTrailer],
+  );
+
+  // Keep the two selections in one story: selecting an assignment (from the list
+  // or from the post-solve auto-select) also selects its vehicle, so the
+  // baseline on screen always belongs to the plan on screen. Clearing the
+  // assignment does NOT clear the vehicle - the dispatcher is then looking at a
+  // bare baseline, which is exactly the pre-solve view.
+  useEffect(() => {
+    if (selected) setSelectedTrailer(selected.TRAILER_ID);
+  }, [selected]);
+
+  // Map click: the trailers layer is the only pickable vehicle surface. Clicking
+  // a dot toggles it; clicking an offer, a stop marker, or empty space leaves the
+  // selection alone, because a stray background click clearing the map is worse
+  // than an extra click to dismiss.
+  const onMapClick = useCallback((info: { object?: Record<string, unknown> } | null) => {
+    const id = info?.object?.TRAILER_ID;
+    if (typeof id !== 'string' || !id) return;
+    setSelectedTrailer((prev) => (prev === id ? null : id));
+    // If that vehicle has an assignment on screen, select it too so the stops
+    // panel and the coloured route follow the click.
+    const owned = visibleAssignments.find((a) => a.TRAILER_ID === id);
+    setSelectedAssignment(owned ? owned.ASSIGNMENT_ID : null);
+  }, [visibleAssignments]);
+
+  // Lazy baseline fetch for the selected vehicle. Same live routing seam every
+  // other polyline here uses. The key check before setBaseline discards a slow
+  // response for a vehicle/endpoint that is no longer selected - without it,
+  // clicking two vehicles quickly can paint the first one's baseline under the
+  // second one's plan.
+  useEffect(() => {
+    const t = selectedTrailerRow;
+    const profile = vehicleClass?.ORS_PROFILE;
+    const regionName = cfg?.region;
+    if (!t || !profile || !regionName) { setBaseline(null); return; }
+    const from = [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)] as [number, number];
+    const end = baselineEndpointFor(t, endMode, sharedDestLon, sharedDestLat);
+    if (!end || !Number.isFinite(from[0]) || !Number.isFinite(from[1])) { setBaseline(null); return; }
+    const key = `${t.TRAILER_ID}|${end.pt[0].toFixed(5)},${end.pt[1].toFixed(5)}`;
+    const cached = baselineCacheRef.current.get(key);
+    if (cached) { setBaseline(cached); return; }
+    let live = true;
+    setBaseline(null);
+    fetchBaselineLeg(profile, from, end.pt, regionName, end.label).then((res) => {
+      baselineCacheRef.current.set(key, res);
+      if (live) setBaseline(res);
+    }).catch(() => {
+      // Never leave the readout on "routing...": a failed leg is a stated
+      // outcome, not an in-flight one.
+      if (live) setBaseline({ geo: null, km: null, endLabel: end.label, status: 'failed' });
+    });
+    return () => { live = false; };
+  }, [selectedTrailerRow, vehicleClass, cfg?.region, endMode, sharedDestLon, sharedDestLat]);
 
   // ---- agent grounding (Channel A; ref-guarded publish on change only) ----
   // Custom views keep results in local state, so the left-panel Cortex agent is
@@ -924,15 +1388,65 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
   // onStateChange loops (React #185).
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
-    const memo = visibleAssignments.length
-      ? visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
+    const MAX_CHAIN_STOPS = 8;
+    // Body left at its original indentation on purpose: this block has already
+    // been reverted once by a commit written from a stale copy of the file, and a
+    // whole-block reindent makes that far more likely to happen again. Only the
+    // head and the join below are ours.
+    const tripParts = visibleAssignments.slice(0, MAX_TRIPS).map((a) => {
+          // Derive from STOPS, never from the scalar PICKUP_CITY /
+          // PROPOSAL_DROPOFF_CITY pair: those come from the first pickup only,
+          // so on a chained tour they name hop 1 and the agent then reports the
+          // handover point as the final destination.
+          const tour = describeTourChain(a.STOPS, MAX_CHAIN_STOPS);
           const drops = Array.isArray(a.STOPS)
-            ? a.STOPS.filter((s) => s.kind === 'dropoff').map((s) => s.city || s.label).filter(Boolean)
+            ? a.STOPS.filter((s) => s.kind === 'dropoff')
+                .map((s) => realPlace(s.city) ?? (s.offerId ? `unnamed site for ${s.offerId}` : null))
+                .filter(Boolean)
             : [];
-          const dropStr = drops.length ? drops.join(', ') : (a.PROPOSAL_DROPOFF_CITY || '?');
-          return `${a.TRAILER_ID} ${a.SOURCE} ${a.PICKUP_CITY || '?'}->${a.PROPOSAL_DROPOFF_CITY || '?'} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
-        }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
-      : null;
+          // placeLabel, not '?': the memo is what the agent quotes, and a bare
+          // question mark invites it to guess or to omit the leg. "unnamed site
+          // (INT-00404)" says which load has no named site.
+          const dropStr = drops.length ? drops.join(', ') : placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID);
+          const loadStr = tour.loadIds.length > 1
+            ? `CHAINED tour, ${tour.loadIds.length} loads ${tour.loadIds.join(' then ')} | `
+            : (tour.loadIds.length === 1 ? `1 load ${tour.loadIds[0]} | ` : '');
+          const chainStr = tour.chain
+            ? ` | stops: ${tour.chain}${tour.truncatedStops ? ` (+${tour.truncatedStops} more stops)` : ''}`
+            : '';
+          const endStr = tour.endCity ? ` | tour ends at ${tour.endCity} (depot, not a delivery)` : '';
+          const origin = tour.firstPickup ?? placeLabel(a.PICKUP_CITY, a.OFFER_ID);
+          const dest = tour.finalDropoff ?? placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID);
+          // Economics: publish the revenue/cost breakdown ONLY when both terms
+          // exist. A collected plan (REHYDRATED) carries the procedure's margin
+          // and no breakdown - the proposal has no per-offer price, so revenue
+          // cannot be derived for an external offer at all - and `|| 0` turned
+          // that into "rev $0 cost $0 net +$1432". Every number there was
+          // individually defensible and the line as a whole did not add up, which
+          // is precisely the shape the agent quotes as fact. An unbacked breakdown
+          // is worse than no breakdown.
+          //
+          // Restored after a concurrent commit reverted it. `check_backload_rehydrate_geometry.py`
+          // rule E is what named the regression, and mutations M9/M10 are its
+          // controls - if this block goes missing again, that gate goes red.
+          const hasBreakdown = a.REVENUE_USD !== undefined && a.COST_USD !== undefined;
+          const econ = hasBreakdown
+            ? `, rev $${Math.round(a.REVENUE_USD as number)} cost $${Math.round(a.COST_USD as number)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`
+            : (a.NET_BENEFIT_USD !== undefined
+                ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
+                : '');
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
+        });
+    // Bound by CHARACTERS, not by row count. MAX_TRIPS caps rows, but 12 rows of
+    // tour prose measured 3,627 chars - over the consumer's whole-panel budget in
+    // app/api/chat/route.ts - and that consumer trims PANELS, so the entire list
+    // was deleted from the agent's context rather than shortened. joinBounded
+    // drops whole trips and says how many. The overflow note is a PART, so it is
+    // either included or itself counted in joinBounded's "(+N more)": either way
+    // the agent learns this is a top-N slice and never reads it as the whole plan.
+    const overflow = visibleAssignments.length - tripParts.length;
+    if (overflow > 0) tripParts.push(`(+${overflow} more trips, not listed)`);
+    const memo = tripParts.length ? joinBounded(tripParts, TRIP_MEMO_MAX_LEN) : null;
     return {
       view: 'backload_matching',
       region: cfg?.region ?? region ?? null,
@@ -986,43 +1500,80 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       result.push(new ScatterplotLayer({
         id: 'trailers', data: trailers, getPosition: (d: Trailer) => [Number(d.DROPOFF_LON), Number(d.DROPOFF_LAT)],
         getFillColor: [22, 163, 74, 240], getLineColor: [255, 255, 255, 255],
-        stroked: true, lineWidthMinPixels: 1, getRadius: 1200, radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
+        stroked: true, lineWidthMinPixels: 1,
+        getRadius: (d: Trailer) => (d.TRAILER_ID === selectedTrailer ? 2000 : 1200),
+        radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
+        updateTriggers: { getRadius: [selectedTrailer] },
       }) as unknown as Layer);
     }
-    const hasSel = !!selectedAssignment;
-    // The lazily fetched tour path already ends at the last task stop, so this
-    // trim is normally a no-op. It stays because a geometry-bearing solve
-    // response would cover the return reposition too, and that tail must not be
-    // painted as if the vehicle were still carrying freight - the dashed
-    // empty-leg layer owns it.
-    const loadedPaths = visibleAssignments.map((a, i) => ({ a, i }))
-      .filter(({ a }) => !!a.ROUTE_GEOJSON)
-      .map(({ a, i }) => {
-        const full = coordsFromGeoJSON(a.ROUTE_GEOJSON);
-        const path = a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined && (a.EMPTY_BACK_KM ?? 0) > 0
-          ? trimPathAt(full, [a.LAST_TASK_LON, a.LAST_TASK_LAT])
+    // Baseline: what the selected vehicle would have driven with NO backload -
+    // its idle drop-off straight to the reposition endpoint. Pushed BEFORE the
+    // route layers so the optimised plan always draws on top of it, and thin +
+    // solid so it reads as a different kind of thing from the dashed empty legs
+    // (which are part of the plan) and the coloured loaded path. Deliberately
+    // NOT dimmed when an assignment is selected: the whole point is to compare
+    // it against the plan, side by side.
+    if (baseline?.geo) {
+      const path = coordsFromGeoJSON(baseline.geo);
+      if (path.length >= 2) {
+        result.push(new PathLayer({
+          id: 'baseline-path',
+          data: [{ path, _baselineKm: baseline.km, _baselineEnd: baseline.endLabel }],
+          getPath: (d: { path: LngLat[] }) => d.path,
+          getColor: [...COLOR_LEG_BASELINE, 180],
+          getWidth: 2, widthUnits: 'pixels', widthMinPixels: 1, widthMaxPixels: 2,
+          parameters: { depthTest: false }, pickable: true,
+        }) as unknown as Layer);
+      }
+    }
+    // Route geometry is drawn for the SELECTED card only - loaded path and both
+    // dashed empty legs. Drawing every assignment (previously done at reduced
+    // alpha/width) put 16 coloured paths and up to 32 dashed legs on one map:
+    // the dimming did not read as "context", it read as a plan nobody chose,
+    // and it hid the one tour the stops panel and the KPI readout describe.
+    // Nothing selected therefore means no route lines, which is the pre-solve
+    // view plus - if a vehicle is selected - its bare grey baseline above.
+    if (selected) {
+      // The lazily fetched tour path already ends at the last task stop, so this
+      // trim is normally a no-op. It stays because a geometry-bearing solve
+      // response would cover the return reposition too, and that tail must not be
+      // painted as if the vehicle were still carrying freight - the dashed
+      // empty-leg layer owns it.
+      if (selected.ROUTE_GEOJSON) {
+        // Colour index is the card's position in the RENDERED list, not 0, so the
+        // line keeps the same colour as its card swatch when the selection moves.
+        const idx = visibleAssignments.findIndex((a) => a.ASSIGNMENT_ID === selected.ASSIGNMENT_ID);
+        const c = ROUTE_COLORS[(idx < 0 ? 0 : idx) % ROUTE_COLORS.length];
+        const full = coordsFromGeoJSON(selected.ROUTE_GEOJSON);
+        const path = selected.LAST_TASK_LON !== undefined && selected.LAST_TASK_LAT !== undefined && (selected.EMPTY_BACK_KM ?? 0) > 0
+          ? trimPathAt(full, [selected.LAST_TASK_LON, selected.LAST_TASK_LAT])
           : full;
-        return { idx: i, path, isSel: a.ASSIGNMENT_ID === selectedAssignment };
-      });
-    result.push(new PathLayer({
-      id: 'loaded-routes', data: loadedPaths, getPath: (d: { path: LngLat[] }) => d.path,
-      getColor: (d: { idx: number; isSel: boolean }) => { const c = ROUTE_COLORS[d.idx % ROUTE_COLORS.length]; const a = d.isSel ? 255 : (hasSel ? 80 : 110); return [c[0], c[1], c[2], a]; },
-      getWidth: (d: { isSel: boolean }) => (d.isSel ? 6 : (hasSel ? 2 : 3)),
-      widthUnits: 'pixels', widthMinPixels: 2, parameters: { depthTest: false }, pickable: true,
-      updateTriggers: { getColor: [selectedAssignment, hasSel], getWidth: [selectedAssignment, hasSel] },
-    }) as unknown as Layer);
-    visibleAssignments.forEach((a, i) => {
-      const isSel = a.ASSIGNMENT_ID === selectedAssignment;
-      const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
-      const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
+        if (path.length >= 2) {
+          result.push(new PathLayer({
+            id: 'loaded-routes', data: [{ path }], getPath: (d: { path: LngLat[] }) => d.path,
+            getColor: [c[0], c[1], c[2], 255], getWidth: 6,
+            widthUnits: 'pixels', widthMinPixels: 2, parameters: { depthTest: false }, pickable: true,
+            updateTriggers: { getColor: [selectedAssignment] },
+          }) as unknown as Layer);
+        }
+      }
+      // UNITS TRAP: getDashArray is [dash, gap] RELATIVE TO THE PATH WIDTH, in
+      // the layer's width units. GeoJsonLayer defaults lineWidthUnits to
+      // 'meters' with getLineWidth 1, so [10, 6] used to mean a 16 m period in
+      // WORLD space - far sub-pixel at country zoom, where the line rasterised
+      // as solid grey. lineWidthMinPixels clamps the stroke only, never the
+      // dash period. Pinning pixel units makes the period a constant 32 px on /
+      // 20 px off at every zoom level. Do not drop lineWidthUnits.
       const dashed = (id: string, data: unknown) => new GeoJsonLayer({
         id, data: data as GeoJSON.GeoJSON,
-        stroked: true, getLineColor: [110, 110, 110, emptyAlpha], getDashArray: [10, 6], lineWidthMinPixels: emptyW,
+        stroked: true, getLineColor: [...COLOR_LEG_EMPTY, 255],
+        lineWidthUnits: 'pixels', getLineWidth: 4, lineWidthMinPixels: 4,
+        getDashArray: [8, 5], dashJustified: true,
         extensions: [new PathStyleExtension({ dash: true })], parameters: { depthTest: false },
       }) as unknown as Layer;
-      if (a.EMPTY_GEOJSON) result.push(dashed(`empty-${i}`, a.EMPTY_GEOJSON));
-      if (a.EMPTY_RETURN_GEOJSON) result.push(dashed(`empty-ret-${i}`, a.EMPTY_RETURN_GEOJSON));
-    });
+      if (selected.EMPTY_GEOJSON) result.push(dashed('empty-sel', selected.EMPTY_GEOJSON));
+      if (selected.EMPTY_RETURN_GEOJSON) result.push(dashed('empty-ret-sel', selected.EMPTY_RETURN_GEOJSON));
+    }
     if (selected && Array.isArray(selected.STOPS) && selected.STOPS.length) {
       const palette: Record<Stop['kind'], { ring: [number, number, number]; halo: [number, number, number, number] }> = {
         start: { ring: [156, 163, 175], halo: [156, 163, 175, 60] },
@@ -1062,7 +1613,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
       }) as unknown as Layer);
     }
     return result;
-  }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected]);
+  }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected, selectedTrailer, baseline]);
 
   // Agent grounding, Channel B: this page builds deck.gl layers itself, so nothing
   // publishes map state for it and the agent could not answer "what is on the map"
@@ -1073,15 +1624,29 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     useMemo(
       () =>
         describeDeckLayers(layers, {
-          selection: { selected_trailer: selected?.TRAILER_ID ?? null },
+          selection: {
+            selected_trailer: selected?.TRAILER_ID ?? selectedTrailer ?? null,
+            baseline_km: baseline?.km ?? null,
+            baseline_end: baseline?.endLabel ?? null,
+            baseline_status: baseline?.status ?? null,
+          },
           ready: trailers.length > 0 || internal.length > 0 || external.length > 0,
         }),
-      [layers, selected, trailers.length, internal.length, external.length],
+      [layers, selected, selectedTrailer, baseline, trailers.length, internal.length, external.length],
     ),
   );
 
-  // Fit-to coords: selected route (+empty leg) when selected, else the estate.
+  // Fit-to coords: selected route (+empty leg, +baseline) when an assignment is
+  // selected; else the whole estate.
+  //
+  // Selecting a VEHICLE deliberately contributes nothing here. It used to narrow
+  // the coords to that trailer plus its baseline, which - paired with a `tr:`
+  // focusKey - forced a zoom onto one vehicle every time the user clicked one.
+  // Clicking a vehicle is a "show me its baseline line" gesture, not a "take me
+  // there" one, so the coords set stays byte-identical to the unselected estate
+  // view and MapView performs no fit at all.
   const fitCoords = useMemo<LngLat[]>(() => {
+    const baseCoords = coordsFromGeoJSON(baseline?.geo);
     if (selected) {
       const out: LngLat[] = [
         [selected.TRAILER_DROPOFF_LON, selected.TRAILER_DROPOFF_LAT],
@@ -1090,6 +1655,7 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         ...coordsFromGeoJSON(selected.ROUTE_GEOJSON),
         ...coordsFromGeoJSON(selected.EMPTY_GEOJSON),
         ...coordsFromGeoJSON(selected.EMPTY_RETURN_GEOJSON),
+        ...baseCoords,
       ];
       return out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
     }
@@ -1098,12 +1664,16 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
     for (const i of internal) if (Number.isFinite(Number(i.PICKUP_LON))) out.push([Number(i.PICKUP_LON), Number(i.PICKUP_LAT)]);
     for (const e of external) if (Number.isFinite(Number(e.PICKUP_LON))) out.push([Number(e.PICKUP_LON), Number(e.PICKUP_LAT)]);
     return out;
-  }, [selected, trailers, internal, external]);
+  }, [selected, baseline, trailers, internal, external]);
 
   const getTooltip = useCallback((info: { object?: Record<string, unknown> }) => {
     const object = info?.object;
     if (!object) return null;
     const style = { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' };
+    if (object._baselineEnd !== undefined) {
+      const km = formatNumber(object._baselineKm, { column: 'km' });
+      return { html: `<b>Baseline - no backload</b><br/>Reposition to ${escapeHtml(object._baselineEnd)}${km ? `<br/>${escapeHtml(km)} km empty` : ''}`, style };
+    }
     if (object._idx && ['start', 'pickup', 'dropoff', 'end', 'break'].includes(object.kind as string)) {
       const labelMap: Record<string, string> = { start: 'START', pickup: 'PICKUP', dropoff: 'DROPOFF', end: 'END', break: 'BREAK' };
       const members = (Array.isArray(object._members) && object._members.length ? object._members : [object]) as Record<string, unknown>[];
@@ -1169,6 +1739,12 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         <div style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{seedHint}</span>
           <button type="button" onClick={() => refetch()} style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}>Refresh</button>
+        </div>
+      )}
+
+      {rehydrateNote && (
+        <div style={{ background: 'rgba(41,181,232,0.10)', color: '#0e7490', border: '1px solid rgba(41,181,232,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+          {rehydrateNote}
         </div>
       )}
 
@@ -1304,7 +1880,11 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(200,200,200)', border: '1px solid rgb(120,120,120)', display: 'inline-block' }} />External offer</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />Internal volume</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(22,163,74)', border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.15)', display: 'inline-block' }} />Idle trailer</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />Empty leg (out + return)</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: `3px dashed rgb(${COLOR_LEG_EMPTY.join(',')})`, display: 'inline-block' }} />Empty leg (out + return)</span>
+        {/* Matches the solid grey `baseline-path` PathLayer: thin and solid so it
+            reads as a different kind of thing from the dashed empty legs, which
+            are part of the plan. Drawn only for the selected vehicle. */}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: `2px solid rgb(${COLOR_LEG_BASELINE.join(',')})`, display: 'inline-block' }} />Baseline - no backload (selected vehicle)</span>
       </div>
 
       {confirmMsg && (<div style={{ marginBottom: 12, fontSize: 13, padding: '8px 12px', background: 'rgba(22,163,74,0.10)', border: '1px solid rgba(22,163,74,0.4)', borderRadius: 4, color: '#065f46' }}>{confirmMsg}</div>)}
@@ -1322,13 +1902,57 @@ export function BackloadMatchingView({ onStateChange }: Partial<ViewProps> = {})
               <button type="button" onClick={() => solveAbortRef.current?.abort()} style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>Cancel</button>
             </div>
           )}
-          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', focusOnlyIfOffscreen: true, regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onClick={onMapClick} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          {/* Baseline readout. Pre-solve this is the whole answer ("what would
+              this vehicle have driven anyway"); post-solve it sits beside the
+              plan's own empty km so the comparison is on screen, not implied. */}
+          {selectedTrailer && (
+            <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 5, padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', boxShadow: '0 1px 3px rgba(0,0,0,0.12)', maxWidth: 320 }}>
+              <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: `2px solid rgb(${COLOR_LEG_BASELINE.join(',')})`, verticalAlign: 'middle', marginRight: 6 }} />
+              <b>{selectedTrailer}</b> baseline (no backload):{' '}
+              {!baseline && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>routing...</span>}
+              {/* Why there is no grey line. 35 of 89 vehicles in the live USA pool
+                  are parked at their own end point, and they carry the highest
+                  margins, so this is the state the top card of a collected plan is
+                  usually in - saying "0 km" alone left the missing line unexplained. */}
+              {baseline?.status === 'at-end' && (
+                <>0 km - already at {baseline.endLabel}, so there is no reposition to
+                  draw and a backload here adds empty km rather than avoiding any</>
+              )}
+              {baseline?.status === 'failed' && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>no routable leg to {baseline.endLabel}</span>}
+              {baseline?.status === 'ok' && <>{formatNumber(baseline.km, { column: 'km' }) ?? '-'} km empty to {baseline.endLabel}</>}
+              {selected && (
+                <> - plan drives {formatNumber(selected.EMPTY_KM, { column: 'km' }) ?? '-'} km empty
+                  {(selected.SAVED_KM ?? 0) > 0 ? `, saving ${formatNumber(selected.SAVED_KM, { column: 'km' })} km` : ''}</>
+              )}
+              <button type="button" onClick={() => { setSelectedTrailer(null); setSelectedAssignment(null); }} style={{ marginLeft: 8, padding: '0 4px', fontSize: 11, borderRadius: 3, border: '1px solid var(--border-default, #e5e7eb)', background: 'transparent', color: 'var(--text-secondary, #6b7280)', cursor: 'pointer' }}>clear</button>
+            </div>
+          )}
           <button type="button" onClick={() => recenterRef.current?.()} style={{ position: 'absolute', top: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Recenter</button>
+          {/* A selected card with no loaded polyline is otherwise a silently blank
+              map: the stops and every number are right, nothing joins them, and
+              no error is raised anywhere. Say which of the two states it is. */}
+          {selected && !selected.ROUTE_GEOJSON && (
+            <div style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid rgba(245,158,11,0.45)', background: 'rgba(255,255,255,0.94)', color: '#92400e', boxShadow: '0 1px 3px rgba(0,0,0,0.12)', maxWidth: 300 }}>
+              {geomRetrying
+                ? 'Fetching road geometry for this tour...'
+                : 'No routable road geometry for this tour - showing stops only. Reselect the card to retry.'}
+            </div>
+          )}
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ position: 'absolute', top: 12, right: 108, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Stops &darr;</button>
           )}
         </div>
-        <AssignmentList assignments={visibleAssignments} unassigned={unassigned} selectedAssignment={selectedAssignment} onSelect={(id) => setSelectedAssignment(selectedAssignment === id ? null : id)} rationale={rationale} rationaleLoading={rationaleLoading} onAskRationale={askRationale} />
+        <AssignmentList assignments={visibleAssignments} unassigned={unassigned} selectedAssignment={selectedAssignment} onSelect={(id) => {
+          if (selectedAssignment === id) {
+            // Deselecting drops the geometry claim, so reselecting the card is a
+            // real second attempt - which is what the no-geometry notice says.
+            retriedGeomRef.current.delete(id);
+            setSelectedAssignment(null);
+          } else {
+            setSelectedAssignment(id);
+          }
+        }} rationale={rationale} rationaleLoading={rationaleLoading} onAskRationale={askRationale} />
       </div>
 
       {selected && (

@@ -659,6 +659,37 @@ def main() -> int:
         print("\n" + "=" * 60)
         print("  ".join("%s=%d" % (k, tally[k]) for k in sorted(tally)))
 
+        # Per-view composition of the two SOFT buckets.
+        #
+        # Why this exists: two installs of identical source reported
+        # `BY_DESIGN=20 OK=225` and `BY_DESIGN=19 OK=226`. The total was stable at
+        # 245, so exactly one area moved between the buckets - and the aggregate
+        # could not say which. That movement is EXPECTED rather than a defect: an
+        # area declared `may_be_empty` is classified OK when it happens to return
+        # rows and BY_DESIGN when it returns none (see the ordering above: the
+        # `rows` check precedes the `allowed` check), so anything whose emptiness
+        # depends on run conditions - a live-ORS call against a cold graph, say -
+        # will legitimately land in a different bucket on a different run.
+        #
+        # What was actually wrong is that this was unattributable, and BY_DESIGN is
+        # the bucket that SUPPRESSES a failure. A view silently sliding into it for
+        # the wrong reason looks identical to a healthy run in the tally. Printing
+        # the membership makes two runs diffable and keeps the suppression visible.
+        #
+        # The lines are INDENTED on purpose: install_fleet_apps.sh scrapes the
+        # tally with `grep -E "^(OK|EMPTY|ERROR|BY_DESIGN)" | tail -1`, so an
+        # unindented line starting with one of those tokens would be picked up as
+        # the tally and misreport the whole step.
+        for bucket in ("BY_DESIGN", "SELECTION_IDLE"):
+            members = [r for r in results if r["status"] == bucket]
+            if not members:
+                continue
+            print("  %s membership (%d):" % (bucket, len(members)))
+            for r in sorted(members, key=lambda x: (x["region"], x["view"], x["area"])):
+                detail = (" - %s" % r["detail"]) if r.get("detail") else ""
+                print("    %s / %s / %s [%s]%s"
+                      % (r["region"], r["view"], r["area"], r.get("pass", "?"), detail))
+
         if args.report:
             pathlib.Path(args.report).write_text(json.dumps(results, indent=1))
             print("report -> %s" % args.report)

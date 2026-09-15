@@ -23,6 +23,7 @@ import { useAppStore } from '@/lib/store';
 import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
+import { formatCellValue } from '@/lib/format-number';
 import { FreshnessBadge } from './freshness-badge';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
@@ -186,7 +187,7 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
           totalRows: data?.totalRows,
           sortKey,
           sortDir,
-          formatCell: (v) => String(v ?? '-'),
+          formatCell: (v, column) => formatCellValue(v, { column, grouping: true }),
           selectedLabel: selected != null && selected !== '' ? String(selected) : null,
           orderNote: config?.exceptionFirst ? `exceptions first by ${config.exceptionFirst.column}` : undefined,
         }),
@@ -255,7 +256,7 @@ export function ViewClickableTableArea({ areaConfig, areaName }: ViewClickableTa
               >
                 {columns.map((c) => (
                   <td key={c.field} style={{ padding: '8px 12px', color: 'var(--text-primary, #111827)' }}>
-                    {String(row[c.field] ?? '')}
+                    {formatCellValue(row[c.field], { column: c.field, grouping: true, empty: '' })}
                   </td>
                 ))}
               </tr>

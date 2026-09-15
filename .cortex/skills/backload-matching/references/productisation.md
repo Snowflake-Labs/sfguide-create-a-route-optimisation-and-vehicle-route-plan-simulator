@@ -59,6 +59,12 @@ $$;
 CREATE OR REPLACE TASK TASK_BACKLOAD_RESCAN
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
+  -- QUERY_TAG here is a SESSION parameter, so it also attributes every
+  -- statement inside SP_SOLVE_REGION_BACKLOAD. The procedure cannot set it
+  -- itself (ALTER SESSION is rejected inside a procedure body), so leaving it
+  -- off the task means the whole solve is unattributed.
+  QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 INSERT INTO BACKLOAD_PLAN_HISTORY (REGION, VEHICLE, STEPS, DURATION)
 SELECT 'California', VEHICLE, STEPS, DURATION
@@ -107,7 +113,7 @@ For a typical operator:
 ## 8. Onboarding another operator
 
 The whole skill is **vendor-neutral by construction**. To onboard another carrier:
-1. Keep `EXTERNAL_OFFERS.SOURCE` on the neutral channel vocabulary (`DISPATCH`, `MARKETPLACE`, `PARTNER_APP`, `INTERNAL`) and carry the originating system in `SOURCE_SYSTEM` instead, so no consumer hardcodes a provider.
+1. Keep `EXTERNAL_OFFERS.SOURCE` on the neutral channel vocabulary (`DISPATCH`, `MARKETPLACE`, `PARTNER_APP`, `BROKER`) and carry the originating system in `SOURCE_SYSTEM` instead, so no consumer hardcodes a provider.
 2. Regenerate the synthetic dataset for the target region via Data Studio.
 3. Switch `useRegion()` to the customer's provisioned ORS region.
 4. Adjust `CONFIG.HOME_LAT/LON` to the customer's home depot anchor.

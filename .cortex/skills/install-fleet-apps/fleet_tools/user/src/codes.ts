@@ -103,6 +103,84 @@ export const RenderCodes = {
   UNKNOWN_COMPONENT: 'UNKNOWN_COMPONENT',
 } as const;
 
+// Error codes for the render_map verb (agent-emitted inline chat maps).
+export const MapRenderCodes = {
+  /** spec_json did not parse as JSON, or was not a JSON object. */
+  INVALID_MAP_SPEC_JSON: 'INVALID_MAP_SPEC_JSON',
+  /** layers is missing/empty/over the cap, or a layer has no data.query. */
+  INVALID_MAP_SPEC_SHAPE: 'INVALID_MAP_SPEC_SHAPE',
+  /** a layer declares a `type` the deck.gl compiler does not implement. */
+  UNKNOWN_LAYER_TYPE: 'UNKNOWN_LAYER_TYPE',
+  /** a layer's data.query does not compile: an unknown column or a syntax error.
+   *  Raised so a hallucinated column name fails IN-TURN, where the agent can fix
+   *  it, instead of surfacing later as "Some layers could not be drawn". */
+  INVALID_MAP_SPEC_SQL: 'INVALID_MAP_SPEC_SQL',
+  /** a layer's data.query names a database the dynamic read boundary refuses.
+   *
+   *  The EXPLAIN gate below CANNOT catch this: the verb runs EXECUTE AS OWNER, so
+   *  an unreachable database raises "does not exist or not authorized", which is
+   *  deliberately swallowed there because it cannot be told apart from a missing
+   *  grant. So a spec naming ROUTING_PLATFORM (which the agent specs told it to
+   *  use, while /api/query refused it) validated cleanly, echoed, and then died
+   *  in the browser as an EMPTY MAP beside a correct one. A database allowlist
+   *  needs no privilege inference, so it convicts here instead. */
+  INVALID_MAP_SPEC_DB: 'INVALID_MAP_SPEC_DB',
+  /** a layer omits an encoding field its `type` cannot draw without (an `h3`
+   *  layer with no hexColumn, a scatterplot with no lng/lat, and so on).
+   *
+   *  Another member of the same silent family: the compiler filters its data
+   *  with `has(row, spec.hexColumn)`, so `undefined` removes every row and the
+   *  layer renders as an empty basemap at world zoom - no exception, no message,
+   *  and a legend that may still look populated. Shape validation accepted it
+   *  because the DSL's encoding fields were never required anywhere. */
+  INVALID_MAP_SPEC_ENCODING: 'INVALID_MAP_SPEC_ENCODING',
+} as const;
+
+/** Encoding fields each layer type needs to draw anything.
+ *
+ *  MUST stay in sync with REQUIRED_ENCODINGS / missingEncodings in
+ *  fleet_sa_app/ui/src/lib/map-spec-schema.ts, which enforces the same rule at
+ *  render time for BOTH producers (this verb and an authored Map area). `path`
+ *  is absent on purpose: it has two legal shapes (a GeoJSON column OR
+ *  start+end points), so it is checked in code rather than by a field list. */
+export const REQUIRED_LAYER_ENCODINGS: Record<string, readonly string[]> = {
+  scatterplot: ['lng', 'lat'],
+  h3: ['hexColumn'],
+  geojson: ['geojsonColumn'],
+  arc: ['source', 'target'],
+};
+
+/** Databases an agent-emitted layer query may reference.
+ *
+ *  MUST stay in sync with ALLOWED_DYNAMIC_DBS in
+ *  fleet_sa_app/ui/src/app/api/query/route.ts (the runtime pre-filter) and with
+ *  FLEET_APP_DYNAMIC_READER's grants in fleet_sa_app/app/role_binding.sql (the
+ *  authoritative boundary). All three drifted apart once already - the agent
+ *  specs promised live routing geometry that neither the filter nor the role
+ *  allowed - so scripts/check_dynamic_allowlist.py now asserts one set across
+ *  every place that encodes it, the prose included. */
+export const ALLOWED_DYNAMIC_DBS = ['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM'] as const;
+
+// Layer types the SA app's deck.gl compiler implements. MUST stay in sync with
+// MAP_LAYER_TYPES in fleet_sa_app/ui/src/lib/map-spec-schema.ts (and the
+// LayerSpec union in packages/fleet-kit/src/map/layer-spec.ts). An unknown type
+// compiles to NOTHING and renders a blank basemap with no error, so this list
+// gives the agent a typed early failure instead of a silently empty map.
+export const MAP_LAYER_TYPES = ['scatterplot', 'path', 'h3', 'geojson', 'arc'] as const;
+
+/** Layers per inline map. Each layer is one independent warehouse query, so this
+ *  bounds cost as well as legibility. Mirrors MAX_MAP_LAYERS on the client. */
+export const MAX_MAP_LAYERS = 4;
+
+/** Map spec version this verb emits. Mirrors MAP_SPEC_VERSION on the client.
+ *
+ *  These three constants sit on opposite sides of a trust boundary - the verb
+ *  runs in Snowflake, the validator in the browser - and "MUST stay in sync" was
+ *  asserted by nothing but the comments above. verify_map_spec.mts now compares
+ *  both copies, so a drift fails a test instead of surfacing as a map the verb
+ *  accepted and the client rejected (or worse, the reverse). */
+export const MAP_SPEC_VERSION = 1;
+
 // Renderer area components an agent may emit. MUST stay in sync with
 // AREA_COMPONENTS in fleet_sa_app/ui/src/components/views/view-renderer.tsx.
 // The client-side zod validator (view-spec-schema.ts) is the authoritative

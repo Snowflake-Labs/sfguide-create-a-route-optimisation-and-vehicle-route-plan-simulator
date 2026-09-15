@@ -221,6 +221,11 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK
     WAREHOUSE = ROUTING_ANALYTICS
     SCHEDULE = '5 MINUTE'
+    -- Session-level tag: propagates into INGEST_ORS_METRICS's body, which is
+    -- where the actual work (GET_SERVICE_LOGS parsing plus the INSERT into
+    -- ORS_REQUEST_LOG) happens. A procedure cannot tag itself - ALTER SESSION
+    -- is rejected inside a procedure body - so this is the only place it fits.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
     CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(6);
@@ -234,6 +239,7 @@ ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK SUSPEND;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK
     WAREHOUSE = ROUTING_ANALYTICS
     SCHEDULE = 'USING CRON 0 4 * * * UTC'
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","feature":"retention"}}'
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","feature":"retention"}}'
 AS
     DELETE FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG

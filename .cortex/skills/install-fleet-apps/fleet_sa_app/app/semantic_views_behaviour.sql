@@ -443,24 +443,24 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC_OPS.SV_AGENT_BEHAVIO
     turns.total_turns AS COUNT(*)
       WITH SYNONYMS ('number of questions', 'conversations', 'turn count')
       COMMENT = 'Count of agent turns'
-    , turns.avg_turn_ms AS AVG(total_ms)
+    , turns.avg_turn_ms AS ROUND(AVG(total_ms), 2)
       WITH SYNONYMS ('average response time')
       COMMENT = 'Average turn duration in milliseconds'
-    , turns.p95_turn_ms AS APPROX_PERCENTILE(total_ms, 0.95)
+    , turns.p95_turn_ms AS ROUND(APPROX_PERCENTILE(total_ms, 0.95), 2)
       COMMENT = 'p95 turn duration in milliseconds'
-    , turns.total_credits AS SUM(token_credits)
+    , turns.total_credits AS ROUND(SUM(token_credits), 2)
       WITH SYNONYMS ('cost', 'spend')
       COMMENT = 'Total credits consumed by agent turns'
-    , turns.avg_credits_per_turn AS AVG(token_credits)
+    , turns.avg_credits_per_turn AS ROUND(AVG(token_credits), 4)
       COMMENT = 'Average credits per turn'
-    , turns.avg_tools_per_turn AS AVG(tool_count)
+    , turns.avg_tools_per_turn AS ROUND(AVG(tool_count), 4)
       COMMENT = 'Average number of tools invoked per turn (app turns only)'
     , verb_calls.total_attempts AS COUNT(*)
       WITH SYNONYMS ('verb calls', 'tool calls')
       COMMENT = 'Count of audited verb attempts'
     , verb_calls.failed_attempts AS COUNT_IF(OUTCOME = 'error')
       COMMENT = 'Count of verb attempts that errored'
-    , verb_calls.attempt_error_rate_pct AS DIV0(COUNT_IF(OUTCOME = 'error'), COUNT(*)) * 100
+    , verb_calls.attempt_error_rate_pct AS ROUND(DIV0(COUNT_IF(OUTCOME = 'error'), COUNT(*)) * 100, 2)
       COMMENT = 'Percent of verb attempts that errored'
     , verb_coverage.declared_verbs AS COUNT(*)
       COMMENT = 'Count of declared verbs'

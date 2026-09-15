@@ -32,6 +32,10 @@
  */
 import { run } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
+// A tool is recorded twice per call (tool_pending, then tool_result) and only the
+// RESULT can be attributed to a skill, so the bare name is collapsed here - the
+// single choke point every caller passes through.
+import { collapseAttributedTools } from '@/lib/tool-visibility';
 
 /** Cap on stored text. Questions and answers are unbounded in principle. */
 const MAX_TEXT = 8000;
@@ -109,7 +113,9 @@ export async function recordAgentTurn(rec: AgentTurnRecord): Promise<void> {
       `SELECT ?, ?, TO_TIMESTAMP_TZ(?::NUMBER, 3), TO_TIMESTAMP_TZ(?::NUMBER, 3), ?, ?, ?, ` +
       ` ?, ?, PARSE_JSON(?)::ARRAY, PARSE_JSON(?)::ARRAY, ?, ?, ?, ?, ?, ?, ?, ?`;
 
-    const tools = Array.from(new Set(rec.toolsUsed)).slice(0, MAX_TOOLS);
+    const tools = collapseAttributedTools(
+      Array.from(new Set(rec.toolsUsed)),
+    ).slice(0, MAX_TOOLS);
     const errors = rec.toolErrors.slice(0, MAX_TOOLS).map((e) => clip(e, 500) ?? '');
 
     await run(sql, [

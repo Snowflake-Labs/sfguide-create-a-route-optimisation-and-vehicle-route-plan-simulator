@@ -377,9 +377,9 @@ export function EntityDetailArea({ areaConfig, areaName }: EntityDetailAreaProps
                   onClick={() => showView(prop.link_view!, { id: String(row[prop.id_field ?? prop.field] ?? '') })}
                   style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-accent, #2563eb)', fontSize: '13px', textDecoration: 'underline' }}
                 >
-                  {fmtValue(val, prop.format)}
+                  {fmtValue(val, prop.format, prop.field)}
                 </button>
-              ) : fmtValue(val, prop.format);
+              ) : fmtValue(val, prop.format, prop.field);
               return <KVRow key={prop.field} label={prop.label} value={display} />;
             })}
           </div>

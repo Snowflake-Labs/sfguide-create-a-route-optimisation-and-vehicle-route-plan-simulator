@@ -205,7 +205,7 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 
 ## References
 
-- `references/cowork-map-recipes.md` - drawing SA-style maps in Snowflake CoWork with `data_to_map`: the contract (host-injected, SI-only, ONE layer per map), which semantic dimensions feed which layer type, measured payload budgets, tested live-ORS ring and VRP-tour SQL, the composite single-layer UNION pattern, and the four silent-failure traps.
+- `references/cowork-integration.md` - the full Snowflake CoWork contract, surface by surface: which surfaces are wired (Analyst, MCP verbs, `data_to_chart` with `<chart_customization>`, the `code_execution` sandbox, 26 agent skills, 11 verified queries, automations), which are deliberately NOT (Deep Research, file upload, mobile - each with the reason), and the `data_to_map` section it grew out of: the contract (host-injected, SI-only, ONE layer per map), which semantic dimensions feed which layer type, measured payload budgets, tested live-ORS ring and VRP-tour SQL, the composite single-layer UNION pattern, and the four silent-failure traps.
 - `references/conventions.md` - query_tag + COMMENT tracking literals.
 - `references/infra.sql` - detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` - agnostic seed-data probe + load path.

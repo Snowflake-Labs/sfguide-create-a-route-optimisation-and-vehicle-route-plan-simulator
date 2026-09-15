@@ -93,7 +93,13 @@ SELECT
   -- vendor brands straight into demo data, listing text, and anything the agent
   -- read. The vocabulary is region-independent: a channel label does not vary by
   -- geography, so the region conditional went with the brands.
-  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'INTERNAL') AS SOURCE,
+  --
+  -- 'INTERNAL' is NOT in this vocabulary, and must not be re-added: every row
+  -- here is an EXTERNAL offer (IS_INTERNAL=FALSE in VW_LOADS), so stamping a
+  -- quarter of them INTERNAL made internal-vs-external - the one distinction
+  -- this feature turns on - unanswerable from SOURCE. 'BROKER' is the channel
+  -- that label was standing in for.
+  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'BROKER') AS SOURCE,
   P_ID                                                                                           AS PICKUP_POI_ID,
   P_LAT                                                                                          AS PICKUP_LAT,
   P_LON                                                                                          AS PICKUP_LON,
@@ -109,7 +115,7 @@ SELECT
                     3,'Beverages', 4,'Furniture', 5,'Bulk paper')                                 AS PRODUCT,
   (400 + MOD(ABS(HASH(Q_ID || P_ID)), 4000))::NUMBER                                              AS PRICE_USD,
   MOD(S, 13) = 0                                                                                  AS HAZMAT,
-  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'INTERNAL')
+  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'BROKER')
     || ' load: ' || P_NAME || ' -> ' || Q_NAME                                                    AS LISTING_TEXT,
   CURRENT_TIMESTAMP()                                                                             AS POSTED_AT,
   JOB_ID
