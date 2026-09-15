@@ -34,9 +34,10 @@ import {
   BM, COST_SCALE, USD_PER_LOADED_KM, KMH_DEFAULT, ROUTE_COLORS,
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
-  findUnroutablePoints, coordKey, describeTourChain, realPlace,
+  findUnroutablePoints, coordKey, describeTourChain, realPlace, placeLabel,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
+  deriveSavedKm, applyBaseline, samePlace, backfillFromLoadPool,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
   type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
@@ -364,9 +365,24 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         }
       }
 
-      const hasReturn = a.END_LON !== undefined && a.END_LAT !== undefined
-        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined
-        && (a.EMPTY_BACK_KM ?? 0) > 0;
+      // A return leg exists when the tour's last task and its end point are
+      // different places. `(EMPTY_BACK_KM ?? 0) > 0` is the SOLVER's own
+      // statement that this tour repositions, and it stays authoritative on the
+      // solve path. A COLLECTED plan makes no such statement - the procedure's
+      // empty_km is the approach only (haversine idle -> pickup), so that test
+      // was false for every rehydrated row: the return leg was never fetched, the
+      // card could never show the "(out + back)" split, and the collected plan
+      // counted less deadhead than the same tour solved on this page. The
+      // endpoints are compared with samePlace because a zero-length leg is what
+      // DIRECTIONS rejects, and 39% of this pool is parked at its own depot.
+      const endsKnown = a.END_LON !== undefined && a.END_LAT !== undefined
+        && a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined;
+      const endsDiffer = endsKnown && !samePlace(
+        [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+        [a.END_LON as number, a.END_LAT as number],
+      );
+      const hasReturn = endsKnown
+        && (a.REHYDRATED ? endsDiffer : (a.EMPTY_BACK_KM ?? 0) > 0);
       if (hasReturn) {
         const cachedRet = emptyLegCacheRef.current.get(retKey) as EmptyLegCacheEntry | undefined;
         if (cachedRet) {
@@ -400,10 +416,34 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       if (a.EMPTY_OUT_KM !== undefined || a.EMPTY_BACK_KM !== undefined) {
         a.EMPTY_KM = (a.EMPTY_OUT_KM ?? 0) + (a.EMPTY_BACK_KM ?? 0);
       }
-      if (a.BASELINE_EMPTY_KM !== undefined && a.BASELINE_SOURCE !== 'fixed-open') {
-        a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
-      }
+      // Shared rule (helpers.deriveSavedKm), not a local copy: the empty km this
+      // subtracts from has just changed, and the collected-plan baseline pass
+      // below derives the same figure.
+      deriveSavedKm(a);
     }));
+  }, []);
+
+  // -----------------------------------------------------------------
+  // Reposition baselines for a set of vehicles.
+  //
+  // Component scope, and called by BOTH the solve and the collected-plan effect
+  // below, for the same reason enrichGeometry sits out here: while this lived
+  // inside `solve` a rehydrated plan had no BASELINE_EMPTY_KM at all, so every
+  // card silently lost "deadhead avoided ~X km" and the baseline tooltip while
+  // looking otherwise complete. The one caller-visible behaviour is that a
+  // failure yields an EMPTY map rather than throwing - a plan with no baseline is
+  // still a plan.
+  // -----------------------------------------------------------------
+  const computeBaselines = useCallback(async (
+    rows: Trailer[], profile: string, end: (t: Trailer) => [number, number] | null,
+    regionName: string | null | undefined,
+    opts: { kmh: number; homeRangeKm: number; signal?: AbortSignal },
+  ): Promise<Map<Trailer, EmptyLegBaseline>> => {
+    try {
+      return await computeEmptyLegBaselines(profile, rows, end, regionName, opts);
+    } catch {
+      return new Map();
+    }
   }, []);
 
   // -----------------------------------------------------------------
@@ -481,11 +521,19 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         // solver's revenue/cost breakdown is NOT recoverable from a proposal, so
         // the card shows the solver's margin and no breakdown - claiming
         // otherwise is how a 0 gets read as a measurement.
+        //
+        // The empty km also GROWS, and silently: the procedure counts the approach
+        // to the pickup only, while this page adds the reposition from the last
+        // drop to the end point. A dispatcher comparing the card against the
+        // number the agent quoted in chat must be told that, or the two disagree
+        // with no explanation on screen.
         setRehydrateNote(
           `Showing the plan the agent solved${strat}: ${rebuilt.length} trip(s)` +
           (skipped ? `, ${skipped} outside this vehicle pool` : '') +
           '. Drawing road routes; empty and loaded distances start as straight-line and ' +
-          'refine to road distance as each leg is measured. Margin is the solver\u2019s; ' +
+          'refine to road distance as each leg is measured. Empty km then covers BOTH ' +
+          'deadhead legs (approach + reposition to the end point), so it exceeds the ' +
+          'approach-only figure the agent quoted. Margin is the solver\u2019s; ' +
           'the revenue/cost breakdown is not part of a collected plan.',
         );
         return;
@@ -522,6 +570,81 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     });
     return () => { cancelled = true; };
   }, [assignments, cfg, vehicleClass, enrichGeometry]);
+
+  // Where a tour is required to finish, per the End radio group. Component scope
+  // so the solve, the collected-plan baseline pass and the map's baseline line all
+  // measure the leg to the SAME point - a baseline km computed against one end
+  // point and a line drawn to another is two answers on one screen.
+  const trailerEndFor = useCallback((t: Trailer): [number, number] | null => {
+    if (endMode === 'open') return null;
+    const firstTrailer = trailers[0];
+    const effSharedLon = sharedDestLon ?? (firstTrailer ? Number(firstTrailer.HOME_LON) : null);
+    const effSharedLat = sharedDestLat ?? (firstTrailer ? Number(firstTrailer.HOME_LAT) : null);
+    if (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null) {
+      return [effSharedLon, effSharedLat];
+    }
+    return [Number(t.HOME_LON), Number(t.HOME_LAT)];
+  }, [endMode, sharedDestLon, sharedDestLat, trailers]);
+
+  // -----------------------------------------------------------------
+  // Reposition baselines for a plan collected from the agent.
+  //
+  // The procedure returns no baseline, so without this pass every collected card
+  // lost "deadhead avoided ~X km" and the baseline tooltip - present after a local
+  // solve, absent after arriving from CoWork, with nothing on screen saying why.
+  //
+  // Keyed on REHYDRATED and claimed before the await, exactly like the geometry
+  // pass: this effect writes `assignments`, which it also depends on.
+  // -----------------------------------------------------------------
+  const baselinedKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!cfg || !vehicleClass) return;
+    const pending = assignments.filter(
+      (a) => a.REHYDRATED && a.BASELINE_EMPTY_KM === undefined
+        && !baselinedKeysRef.current.has(a.ASSIGNMENT_ID),
+    );
+    if (!pending.length) return;
+    for (const a of pending) baselinedKeysRef.current.add(a.ASSIGNMENT_ID);
+    const rows = pending
+      .map((a) => trailers.find((t) => t.TRAILER_ID === a.TRAILER_ID))
+      .filter((t): t is Trailer => !!t);
+    if (!rows.length) return;
+    let cancelled = false;
+    computeBaselines(rows, vehicleClass.ORS_PROFILE, trailerEndFor, cfg.region, {
+      kmh: vehicleClass.AVG_SPEED_KMH || KMH_DEFAULT,
+      homeRangeKm: vehicleClass.HOME_RANGE_KM || 50,
+    }).then((baselines) => {
+      if (cancelled) return;
+      for (const a of pending) {
+        const row = trailers.find((t) => t.TRAILER_ID === a.TRAILER_ID);
+        applyBaseline(a, row ? baselines.get(row) : undefined);
+      }
+      setAssignments((prev) => [...prev]);
+    });
+    return () => { cancelled = true; };
+  }, [assignments, cfg, vehicleClass, trailers, trailerEndFor, computeBaselines]);
+
+  // -----------------------------------------------------------------
+  // Fill the fields a proposal does not carry (product, and any place name the
+  // procedure resolved to blank) from the load pool already on this page.
+  //
+  // No claim ref: `backfillFromLoadPool` reports whether it changed anything, and
+  // the state update is skipped when it did not, so this cannot loop on its own
+  // write. Runs for collected plans only - a local solve reads these fields
+  // straight off the pool row when it builds the assignment.
+  // -----------------------------------------------------------------
+  useEffect(() => {
+    const targets = assignments.filter((a) => a.REHYDRATED);
+    if (!targets.length || (!internal.length && !external.length)) return;
+    const pool = new Map<string, Volume | Offer>();
+    for (const v of internal) pool.set(String(v.ID), v);
+    for (const o of external) pool.set(String(o.OFFER_ID), o);
+    let changed = false;
+    for (const a of targets) {
+      if (backfillFromLoadPool(a, pool)) changed = true;
+    }
+    if (changed) setAssignments((prev) => [...prev]);
+  }, [assignments, internal, external]);
 
   // -----------------------------------------------------------------
   // Retry the geometry for the assignment the dispatcher just clicked.
@@ -587,11 +710,8 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     const effSharedLon = sharedDestLon ?? fallbackLon;
     const effSharedLat = sharedDestLat ?? fallbackLat;
     const trailerById = new Map<number, Trailer>();
-    const trailerEnd = (t: Trailer): [number, number] | null => {
-      if (endMode === 'open') return null;
-      if (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null) return [effSharedLon, effSharedLat];
-      return [Number(t.HOME_LON), Number(t.HOME_LAT)];
-    };
+    // Shared with the collected-plan baseline pass and the map's baseline line.
+    const trailerEnd = trailerEndFor;
     // Fold per-hour cost into per-km via avg speed (deployed VROOM honours per_km).
     const effPerKmUsd = costPerKmUsd + costPerHourUsd / speedKmh;
 
@@ -628,10 +748,10 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // Per-vehicle empty-leg baselines (real ORS via CONTRACT.MATRIX, haversine
     // fallback) so Detour budget / Allowed deviation sliders bite per-vehicle.
     setSolverLog('Computing empty-leg baselines...');
-    let baselines: Map<Trailer, EmptyLegBaseline>;
-    try {
-      baselines = await computeEmptyLegBaselines(profile, trailers.slice(0, effMaxVehicles), trailerEnd, cfg.region, { kmh: speedKmh, homeRangeKm });
-    } catch { baselines = new Map(); }
+    const baselines = await computeBaselines(
+      trailers.slice(0, effMaxVehicles), profile, trailerEnd, cfg.region,
+      { kmh: speedKmh, homeRangeKm },
+    );
     const FALLBACK_BASELINE: EmptyLegBaseline = { durSec: Math.round((homeRangeKm / speedKmh) * 3600), distMeters: homeRangeKm * 1000, source: 'fixed-open' };
 
     const vrpVehicles = trailers.slice(0, effMaxVehicles).map((t, i) => {
@@ -1284,7 +1404,10 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
                 .map((s) => realPlace(s.city) ?? (s.offerId ? `unnamed site for ${s.offerId}` : null))
                 .filter(Boolean)
             : [];
-          const dropStr = drops.length ? drops.join(', ') : (realPlace(a.PROPOSAL_DROPOFF_CITY) || '?');
+          // placeLabel, not '?': the memo is what the agent quotes, and a bare
+          // question mark invites it to guess or to omit the leg. "unnamed site
+          // (INT-00404)" says which load has no named site.
+          const dropStr = drops.length ? drops.join(', ') : placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID);
           const loadStr = tour.loadIds.length > 1
             ? `CHAINED tour, ${tour.loadIds.length} loads ${tour.loadIds.join(' then ')} | `
             : (tour.loadIds.length === 1 ? `1 load ${tour.loadIds[0]} | ` : '');
@@ -1292,8 +1415,8 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
             ? ` | stops: ${tour.chain}${tour.truncatedStops ? ` (+${tour.truncatedStops} more stops)` : ''}`
             : '';
           const endStr = tour.endCity ? ` | tour ends at ${tour.endCity} (depot, not a delivery)` : '';
-          const origin = tour.firstPickup ?? realPlace(a.PICKUP_CITY) ?? '?';
-          const dest = tour.finalDropoff ?? realPlace(a.PROPOSAL_DROPOFF_CITY) ?? '?';
+          const origin = tour.firstPickup ?? placeLabel(a.PICKUP_CITY, a.OFFER_ID);
+          const dest = tour.finalDropoff ?? placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID);
           // Economics: publish the revenue/cost breakdown ONLY when both terms
           // exist. A collected plan (REHYDRATED) carries the procedure's margin
           // and no breakdown - the proposal has no per-offer price, so revenue
@@ -1788,7 +1911,14 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
               <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: `2px solid rgb(${COLOR_LEG_BASELINE.join(',')})`, verticalAlign: 'middle', marginRight: 6 }} />
               <b>{selectedTrailer}</b> baseline (no backload):{' '}
               {!baseline && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>routing...</span>}
-              {baseline?.status === 'at-end' && <>0 km - already at {baseline.endLabel}</>}
+              {/* Why there is no grey line. 35 of 89 vehicles in the live USA pool
+                  are parked at their own end point, and they carry the highest
+                  margins, so this is the state the top card of a collected plan is
+                  usually in - saying "0 km" alone left the missing line unexplained. */}
+              {baseline?.status === 'at-end' && (
+                <>0 km - already at {baseline.endLabel}, so there is no reposition to
+                  draw and a backload here adds empty km rather than avoiding any</>
+              )}
               {baseline?.status === 'failed' && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>no routable leg to {baseline.endLabel}</span>}
               {baseline?.status === 'ok' && <>{formatNumber(baseline.km, { column: 'km' }) ?? '-'} km empty to {baseline.endLabel}</>}
               {selected && (

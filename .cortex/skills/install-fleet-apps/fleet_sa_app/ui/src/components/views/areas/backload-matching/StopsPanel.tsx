@@ -1,6 +1,6 @@
 'use client';
 
-import { Assignment, Stop } from './helpers';
+import { Assignment, Stop, realPlace } from './helpers';
 
 interface Props {
   assignment: Assignment | null;
@@ -63,8 +63,12 @@ export default function StopsPanel({ assignment, showWaitTimes = true }: Props) 
               </div>
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: ks.fg }}>{ks.label}</span>
               <div style={{ fontSize: 12 }}>
-                <b>{s.city || s.label}</b>
-                {s.city && s.label && s.label !== s.city && <span style={{ color: 'var(--text-secondary, #6b7280)', marginLeft: 6, fontSize: 11 }}>{s.label}</span>}
+                {/* realPlace, not the raw column: `s.city` can be blank (the POI
+                    has no name) or a placeholder token like 'Destination', and
+                    both used to render as though they named a real site. The
+                    label ("INTERNAL INT-00404") is the honest fallback. */}
+                <b>{realPlace(s.city) ?? s.label}</b>
+                {realPlace(s.city) && s.label && s.label !== s.city && <span style={{ color: 'var(--text-secondary, #6b7280)', marginLeft: 6, fontSize: 11 }}>{s.label}</span>}
                 {s.kind === 'break' && s.serviceSec && (
                   <span style={{ color: ks.fg, marginLeft: 6, fontSize: 11 }}>&middot; {Math.round(s.serviceSec / 60)} min</span>
                 )}

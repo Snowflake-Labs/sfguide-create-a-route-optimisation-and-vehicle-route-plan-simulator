@@ -48,6 +48,7 @@ export interface AgentProposal {
   detour_km?: number | null;
   margin_usd?: number | null;
   stops?: number | null;
+  product?: string | null;
   empty_city?: string | null;
   pickup_city?: string | null;
   delivery_city?: string | null;
@@ -158,6 +159,7 @@ export interface RehydratedAssignment {
     lat: number;
     offerId?: string;
     source?: string;
+    product?: string;
   }[];
   N_DELIVERIES?: number;
   NET_BENEFIT_USD?: number;
@@ -245,7 +247,10 @@ export function proposalsToAssignments(
       // the closest honest equivalent it has.
       SCORE: finite(p.composite) ? n(p.composite) : 0,
       ...(finite(p.detour_km) ? { DETOUR_KM: n(p.detour_km) } : {}),
-      PRODUCT: '',
+      // The proposal now carries the load's product (TOOL_BACKLOAD_SOLVE
+      // outRows). Blank when an older cached solve is collected, which the
+      // page then backfills from its own load pool.
+      PRODUCT: String(p.product ?? ''),
       PICKUP_CITY: String(p.pickup_city ?? ''),
       PROPOSAL_DROPOFF_CITY: String(p.delivery_city ?? ''),
       HOME_LON: finite(v.HOME_LON) ? n(v.HOME_LON) : idleLon,
@@ -272,6 +277,7 @@ export function proposalsToAssignments(
           lat: pickLat,
           offerId: String(p.load_id),
           source,
+          ...(p.product ? { product: String(p.product) } : {}),
         },
         {
           kind: 'dropoff',
@@ -281,6 +287,7 @@ export function proposalsToAssignments(
           lat: dropLat,
           offerId: String(p.load_id),
           source,
+          ...(p.product ? { product: String(p.product) } : {}),
         },
       ],
       N_DELIVERIES: 1,

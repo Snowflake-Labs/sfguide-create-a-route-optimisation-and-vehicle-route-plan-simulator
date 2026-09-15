@@ -218,6 +218,27 @@ export function realPlace(city?: string | null): string | null {
   return PLACEHOLDER_PLACES.has(t.toLowerCase()) ? null : t;
 }
 
+/**
+ * What to SHOW where a place name is expected.
+ *
+ * MEASURED on the live pool: 316 of 800 internal loads have no DELIVERY_CITY and
+ * 235 have no PICKUP_CITY, because 2,621 trip destination POI ids (and 2,497
+ * origins) exist in neither V_DIM_POIS_CURRENT nor the base DIM_POIS - the name
+ * is genuinely unknown, not merely unjoined. Rendering that as an empty span gave
+ * cards reading "Cowen Warehouse Services ->" and, when both ends were unknown, a
+ * bare "->": a data gap that looks exactly like a broken renderer, on a card whose
+ * every number is right.
+ *
+ * `ref` is a load or vehicle id to name the site by when there is no place name,
+ * which is more use to a dispatcher than the word "unknown" alone.
+ */
+export function placeLabel(city?: string | null, ref?: string | null): string {
+  const p = realPlace(city);
+  if (p) return p;
+  const r = (ref ?? '').trim();
+  return r ? `unnamed site (${r})` : 'location unknown';
+}
+
 export interface TourChain {
   // Ordered "pick X [LOAD] -> drop Y [LOAD]" text over the task stops.
   chain: string;
@@ -432,6 +453,104 @@ export async function computeEmptyLegBaselines(
   return out;
 }
 
+/**
+ * Deadhead avoided, from the baseline already on the assignment.
+ *
+ * ONE rule for the whole page, because there are now two producers of
+ * BASELINE_EMPTY_KM (the solve and the collected-plan pass) and a second copy of
+ * this arithmetic would be free to disagree with the first. 'fixed-open' is
+ * excluded deliberately: that baseline is a fixed envelope, not a measurement of
+ * this vehicle, so subtracting the tour's empty km from it invents a saving.
+ */
+export function deriveSavedKm(a: Assignment): void {
+  if (a.BASELINE_EMPTY_KM === undefined || a.BASELINE_SOURCE === 'fixed-open') return;
+  a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
+}
+
+/**
+ * Attach one vehicle's reposition baseline to an assignment.
+ *
+ * DETOUR_KM is deliberately NOT touched. On the solve path it is derived from
+ * the real tour km; on a collected plan the procedure computed its own and the
+ * card must keep the number the agent quoted rather than switch to a locally
+ * recomputed one halfway through a session.
+ */
+export function applyBaseline(a: Assignment, base: EmptyLegBaseline | undefined): void {
+  if (!base) return;
+  a.BASELINE_EMPTY_KM = base.distMeters / 1000;
+  a.BASELINE_SOURCE = base.source;
+  deriveSavedKm(a);
+}
+
+/**
+ * The vehicle is already standing at the point it would have repositioned to, so
+ * its no-backload baseline is zero and there is no line to draw.
+ *
+ * MEASURED on the live USA pool: 35 of 89 vehicles report idle == home, and
+ * because a zero approach is cheap those vehicles carry the HIGHEST margins - so
+ * the top card of a collected plan is very often one of them. Without an
+ * explicit state the map simply shows no grey line and the page reads as broken
+ * on arrival. Threshold matches `samePlace`, the same tolerance fetchBaselineLeg
+ * uses to decide it has nothing to route.
+ */
+export function isAtEndBaseline(a: Assignment): boolean {
+  if (a.END_LON === undefined || a.END_LAT === undefined) return false;
+  return samePlace(
+    [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],
+    [Number(a.END_LON), Number(a.END_LAT)],
+  );
+}
+
+/**
+ * Fill the fields a graded PROPOSAL does not carry from the load pool this page
+ * already holds.
+ *
+ * A collected plan arrives with `PRODUCT: ''` (the procedure's proposal rows have
+ * no product at all), so the card rendered "loaded 1221 km \u00b7" with nothing
+ * after the separator, and the same tour solved locally showed "B2B pallets".
+ * The load rows are already in memory for the map, so this needs no query.
+ *
+ * Only ever fills a BLANK field. A value the solver resolved stays, because the
+ * pool row is a different read of the same load and overwriting would let the
+ * card disagree with the plan it is describing. `realPlace` is applied so a
+ * placeholder ('Origin', 'Drop-off') is not laundered into a real-looking name.
+ *
+ * Returns true when it changed something, so the caller can skip a state update
+ * it does not need - this runs from an effect that depends on `assignments`.
+ */
+export function backfillFromLoadPool(
+  a: Assignment, pool: Map<string, Volume | Offer>,
+): boolean {
+  const row = pool.get(String(a.OFFER_ID));
+  if (!row) return false;
+  let changed = false;
+  if (!a.PRODUCT && row.PRODUCT) { a.PRODUCT = String(row.PRODUCT); changed = true; }
+  if (!realPlace(a.PICKUP_CITY)) {
+    const p = realPlace(row.PICKUP_CITY);
+    if (p) { a.PICKUP_CITY = p; changed = true; }
+  }
+  if (!realPlace(a.PROPOSAL_DROPOFF_CITY)) {
+    const d = realPlace(row.DROPOFF_CITY);
+    if (d) { a.PROPOSAL_DROPOFF_CITY = d; changed = true; }
+  }
+  // The stops list is a separate render of the same places, so leaving it blank
+  // would fix the card and not the panel below it.
+  for (const s of a.STOPS) {
+    if (s.kind === 'pickup' && !realPlace(s.city)) {
+      const p = realPlace(row.PICKUP_CITY);
+      if (p) { s.city = p; changed = true; }
+    }
+    if (s.kind === 'dropoff' && !realPlace(s.city)) {
+      const d = realPlace(row.DROPOFF_CITY);
+      if (d) { s.city = d; changed = true; }
+    }
+    if ((s.kind === 'pickup' || s.kind === 'dropoff') && !s.product && row.PRODUCT) {
+      s.product = String(row.PRODUCT); changed = true;
+    }
+  }
+  return changed;
+}
+
 // Solver snap radius (meters). The optimization/VROOM path enforces the region
 // maximum_snapping_radius (1000m for standard regions). MATRIX snaps more
 // leniently, so a point can return a finite duration yet still abort the whole
@@ -583,12 +702,21 @@ export const MAX_DIRECTIONS_WAYPOINTS = 50;
 // Drop unusable waypoints (non-finite, null island) and collapse consecutive
 // duplicates - DIRECTIONS rejects zero-length legs, and VROOM `break` steps
 // often repeat the location of the step before them.
+// Drop unusable and repeated waypoints before a DIRECTIONS call.
+//
+// Consecutive duplicates are compared with `samePlace`, NOT with `===`. MEASURED
+// in QUERY_HISTORY (3 calls today): a pair differing only in the 15th decimal -
+// [-95.653004999012620, 28.821004867129155] then [..., 28.82100486712915] - both
+// survived exact-equality dedupe, ORS returned a degenerate one-point line, and
+// the statement failed with "GeoJSON::LineString: 'coordinates' malformed". The
+// caller swallows that null and draws a straight line, so the only visible trace
+// was a wasted round trip. 1e-5 deg is ~1 m: below any routable difference.
 function cleanWaypoints(pts: [number, number][]): [number, number][] {
   const out: [number, number][] = [];
   for (const [lon, lat] of pts) {
     if (!Number.isFinite(lon) || !Number.isFinite(lat) || (lon === 0 && lat === 0)) continue;
     const prev = out[out.length - 1];
-    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;
+    if (prev && samePlace(prev, [Number(lon), Number(lat)])) continue;
     out.push([Number(lon), Number(lat)]);
   }
   return out;

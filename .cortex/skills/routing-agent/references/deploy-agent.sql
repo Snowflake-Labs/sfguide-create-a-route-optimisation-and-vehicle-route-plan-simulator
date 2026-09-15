@@ -3490,7 +3490,8 @@ try {
                     DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
                     PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
                     DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
-                    IS_INTERNAL: l.IS_INTERNAL === true, SOURCE: l.SOURCE
+                    IS_INTERNAL: l.IS_INTERNAL === true, SOURCE: l.SOURCE,
+                    PRODUCT: l.PRODUCT
                 });
             }
         }
@@ -3524,7 +3525,8 @@ try {
                 DELIVERY_LON: num(bl.DELIVERY_LON), DELIVERY_LAT: num(bl.DELIVERY_LAT),
                 PICKUP_CITY: bl.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
                 DELIVERY_CITY: bl.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
-                IS_INTERNAL: bl.IS_INTERNAL === true, SOURCE: bl.SOURCE
+                IS_INTERNAL: bl.IS_INTERNAL === true, SOURCE: bl.SOURCE,
+                PRODUCT: bl.PRODUCT
             });
         }
         return out;
@@ -3789,6 +3791,7 @@ try {
             maxStopSeq: (best.TRAILER_ID in trailerStops) ? trailerStops[best.TRAILER_ID] : null,
             idleHours: (best.TRAILER_ID in idleHrsByTrailer) ? idleHrsByTrailer[best.TRAILER_ID] : null,
             feasible: feasible, isInternal: best.IS_INTERNAL === true, source: best.SOURCE,
+            product: best.PRODUCT,
             pickupCity: best.PICKUP_CITY, pickupCountry: best.PICKUP_COUNTRY,
             deliveryCity: best.DELIVERY_CITY, emptyCity: best.EMPTY_CITY,
             pickupLon: best.PICKUP_LON, pickupLat: best.PICKUP_LAT,
@@ -3889,7 +3892,7 @@ try {
                 emptyKm: y.emptyKm, loadedKm: y.loadedKm, loadedKmEst: y.loadedKmEst,
                 detourKm: y.detourKm, totalKm: y.totalKm, marginUsd: econMargin(y),
                 pickupSlackHrs: y.pickupSlackHrs, maxStopSeq: y.maxStopSeq, idleHours: y.idleHours,
-                feasible: y.feasible, isInternal: y.isInternal, source: y.source,
+                feasible: y.feasible, isInternal: y.isInternal, source: y.source, product: y.product,
                 pickupCity: y.pickupCity, pickupCountry: y.pickupCountry,
                 deliveryCity: y.deliveryCity, emptyCity: y.emptyCity,
                 pickupLon: y.pickupLon, pickupLat: y.pickupLat,
@@ -3931,6 +3934,12 @@ try {
             grade: o.grade, composite: Math.round(o.composite * 10) / 10,
             best_strategy: o.bestSource, strategies_agreeing: o.agreement, strategies: o.families,
             is_internal: o.isInternal, source: o.source,
+            // What is being moved. Read by the cockpit's assignment card, which
+            // showed "loaded 1221 km \u00b7" with nothing after the separator for
+            // every collected plan while the same tour solved locally read
+            // "B2B pallets" - the feed always had l.PRODUCT, the proposal row
+            // simply dropped it.
+            product: o.product,
             empty_km: (o.emptyKm === null) ? null : Math.round(o.emptyKm * 10) / 10,
             loaded_km: (econLoaded(o) === null) ? null : Math.round(econLoaded(o) * 10) / 10,
             detour_km: (o.detourKm === null) ? null : Math.round(o.detourKm * 10) / 10,
