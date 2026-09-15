@@ -36,7 +36,7 @@ import {
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey, describeTourChain, realPlace,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
-  baselineEndpointFor, fetchBaselineLeg,
+  baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
   type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
@@ -264,6 +264,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       // dispatch stats together so the KPI denominator can never be paired with
       // assignments from a different preset / region.
       setAssignments([]); setUnassigned([]); setSelectedAssignment(null);
+      autoSelectedForRef.current = null; retriedGeomRef.current.clear();
       setSolveStats(null); setSolverLog(null);
 
       let cls: VehicleClass | null = null;
@@ -315,6 +316,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   // enrichment effect cannot loop on the state update it causes.
   const enrichedKeysRef = useRef<Set<string>>(new Set());
 
+  // Plan (set of assignment ids) the top card was last auto-selected for. See
+  // the auto-select effect below. Reset to null wherever the plan is cleared, so
+  // a re-solve that happens to place the same assignments still auto-selects.
+  const autoSelectedForRef = useRef<string | null>(null);
+
   const enrichGeometry = useCallback(async (
     list: Assignment[], profile: string, regionName: string,
   ): Promise<void> => {
@@ -345,6 +351,15 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           emptyLegCacheRef.current.set(outKey, leg);
           a.EMPTY_GEOJSON = leg.geo;
           if (leg.km !== null) a.EMPTY_OUT_KM = leg.km;
+        } else {
+          // DIRECTIONS refused this pair (transient seam error, unroutable, or
+          // over the waypoint cap). Draw the straight link rather than nothing:
+          // an absent dashed leg is indistinguishable from a plan that has no
+          // deadhead. NOT cached, so a later selection retries the road call,
+          // and no km is taken from it - EMPTY_OUT_KM keeps the solver's figure.
+          a.EMPTY_GEOJSON = straightLineGeoJSON(
+            [a.TRAILER_DROPOFF_LON, a.TRAILER_DROPOFF_LAT], [a.PICKUP_LON, a.PICKUP_LAT],
+          ) ?? undefined;
         }
       }
 
@@ -367,6 +382,12 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
             emptyLegCacheRef.current.set(retKey, leg);
             a.EMPTY_RETURN_GEOJSON = leg.geo;
             if (leg.km !== null) a.EMPTY_BACK_KM = leg.km;
+          } else {
+            // Same fallback as the outbound leg above, same reasoning.
+            a.EMPTY_RETURN_GEOJSON = straightLineGeoJSON(
+              [a.LAST_TASK_LON as number, a.LAST_TASK_LAT as number],
+              [a.END_LON as number, a.END_LAT as number],
+            ) ?? undefined;
           }
         }
       }
@@ -501,6 +522,40 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     return () => { cancelled = true; };
   }, [assignments, cfg, vehicleClass, enrichGeometry]);
 
+  // -----------------------------------------------------------------
+  // Retry the geometry for the assignment the dispatcher just clicked.
+  //
+  // Every polyline here comes from ORS DIRECTIONS, and `fetchDirections` returns
+  // null on ANY failure - a transient seam error, an unroutable pair, or more
+  // than MAX_DIRECTIONS_WAYPOINTS stops. The post-solve pass runs once, so a
+  // single null left that card with no route line for the rest of the session:
+  // the card rendered complete, nothing threw, and clicking it again could not
+  // fix it because there was no second attempt anywhere. Selecting a card is
+  // exactly the moment its geometry is worth paying for again.
+  //
+  // Uses the SAME enrichGeometry as the solve and rehydrate paths - one fetch
+  // path, so a fix or a cache hit benefits all three.
+  // -----------------------------------------------------------------
+  const retriedGeomRef = useRef<Set<string>>(new Set());
+  const [geomRetrying, setGeomRetrying] = useState(false);
+  useEffect(() => {
+    if (!cfg || !vehicleClass || !selectedAssignment) return;
+    const target = assignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment);
+    if (!target || target.ROUTE_GEOJSON) return;
+    // Claim before the await, for the same reason as the rehydrate pass: this
+    // effect reruns on `assignments`, which the enrichment itself replaces.
+    if (retriedGeomRef.current.has(selectedAssignment)) return;
+    retriedGeomRef.current.add(selectedAssignment);
+    let cancelled = false;
+    setGeomRetrying(true);
+    enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {
+      if (cancelled) return;
+      setGeomRetrying(false);
+      setAssignments((prev) => [...prev]);
+    }).catch(() => { if (!cancelled) setGeomRetrying(false); });
+    return () => { cancelled = true; };
+  }, [selectedAssignment, assignments, cfg, vehicleClass, enrichGeometry]);
+
 
   // -----------------------------------------------------------------
   // Solve - every visible knob lands inside the OPTIMIZATION call.
@@ -513,6 +568,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     }
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({});
     setConfirmMsg(null); setSolverLog(null); setSolveError(null); setSelectedAssignment(null);
+    autoSelectedForRef.current = null; retriedGeomRef.current.clear();
     setSolveStats(null);
     // This page is now the author of the plan, so the "showing the agent's plan"
     // notice must go - leaving it would attribute these numbers to the agent.
@@ -1048,10 +1104,23 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     useMultiDimCapacity, useMultiWindow, enrichGeometry,
   ]);
 
-  // Auto-select the top assignment after a solve.
+  // Auto-select the top assignment when a NEW plan arrives, and repair a
+  // selection that no longer exists in the list.
+  //
+  // Keyed on the SET OF ASSIGNMENT IDS, not on `selectedAssignment` and not on
+  // the array identity. The old form re-ran on the selection change itself, so
+  // toggling the selected card off set it to null and this effect immediately
+  // put it back on assignments[0] - clicking a card twice silently selected the
+  // first one and there was no way to select nothing. The array identity is no
+  // good either: geometry enrichment replaces the array (`setAssignments([...])`)
+  // with the same plan in it, which would yank the selection back to the top.
   useEffect(() => {
     if (!assignments.length) return;
-    if (!selectedAssignment || !assignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment)) {
+    const planKey = assignments.map((a) => a.ASSIGNMENT_ID).join('|');
+    const isNewPlan = autoSelectedForRef.current !== planKey;
+    autoSelectedForRef.current = planKey;
+    const stale = !!selectedAssignment && !assignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment);
+    if (isNewPlan || stale) {
       setSelectedAssignment(assignments[0].ASSIGNMENT_ID);
     }
   }, [assignments, selectedAssignment]);
@@ -1420,8 +1489,14 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   );
 
   // Fit-to coords: selected route (+empty leg, +baseline) when an assignment is
-  // selected; the selected vehicle plus its baseline when only a vehicle is (the
-  // pre-solve case); else the whole estate.
+  // selected; else the whole estate.
+  //
+  // Selecting a VEHICLE deliberately contributes nothing here. It used to narrow
+  // the coords to that trailer plus its baseline, which - paired with a `tr:`
+  // focusKey - forced a zoom onto one vehicle every time the user clicked one.
+  // Clicking a vehicle is a "show me its baseline line" gesture, not a "take me
+  // there" one, so the coords set stays byte-identical to the unselected estate
+  // view and MapView performs no fit at all.
   const fitCoords = useMemo<LngLat[]>(() => {
     const baseCoords = coordsFromGeoJSON(baseline?.geo);
     if (selected) {
@@ -1436,21 +1511,12 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       ];
       return out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
     }
-    if (selectedTrailerRow) {
-      const out: LngLat[] = [
-        [Number(selectedTrailerRow.DROPOFF_LON), Number(selectedTrailerRow.DROPOFF_LAT)],
-        [Number(selectedTrailerRow.HOME_LON), Number(selectedTrailerRow.HOME_LAT)],
-        ...baseCoords,
-      ];
-      const ok = out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
-      if (ok.length) return ok;
-    }
     const out: LngLat[] = [];
     for (const t of trailers) if (Number.isFinite(Number(t.DROPOFF_LON))) out.push([Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)]);
     for (const i of internal) if (Number.isFinite(Number(i.PICKUP_LON))) out.push([Number(i.PICKUP_LON), Number(i.PICKUP_LAT)]);
     for (const e of external) if (Number.isFinite(Number(e.PICKUP_LON))) out.push([Number(e.PICKUP_LON), Number(e.PICKUP_LAT)]);
     return out;
-  }, [selected, selectedTrailerRow, baseline, trailers, internal, external]);
+  }, [selected, baseline, trailers, internal, external]);
 
   const getTooltip = useCallback((info: { object?: Record<string, unknown> }) => {
     const object = info?.object;
@@ -1667,6 +1733,10 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />Internal volume</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(22,163,74)', border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.15)', display: 'inline-block' }} />Idle trailer</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />Empty leg (out + return)</span>
+        {/* Matches the solid grey `baseline-path` PathLayer: thin and solid so it
+            reads as a different kind of thing from the dashed empty legs, which
+            are part of the plan. Drawn only for the selected vehicle. */}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 24, height: 0, borderTop: '2px solid rgb(150,150,150)', display: 'inline-block' }} />Baseline - no backload (selected vehicle)</span>
       </div>
 
       {confirmMsg && (<div style={{ marginBottom: 12, fontSize: 13, padding: '8px 12px', background: 'rgba(22,163,74,0.10)', border: '1px solid rgba(22,163,74,0.4)', borderRadius: 4, color: '#065f46' }}>{confirmMsg}</div>)}
@@ -1684,7 +1754,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
               <button type="button" onClick={() => solveAbortRef.current?.abort()} style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>Cancel</button>
             </div>
           )}
-          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : (selectedTrailer ? `tr:${selectedTrailer}` : ''), regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onClick={onMapClick} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', focusOnlyIfOffscreen: true, regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onClick={onMapClick} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
           {/* Baseline readout. Pre-solve this is the whole answer ("what would
               this vehicle have driven anyway"); post-solve it sits beside the
               plan's own empty km so the comparison is on screen, not implied. */}
@@ -1704,11 +1774,30 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
             </div>
           )}
           <button type="button" onClick={() => recenterRef.current?.()} style={{ position: 'absolute', top: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Recenter</button>
+          {/* A selected card with no loaded polyline is otherwise a silently blank
+              map: the stops and every number are right, nothing joins them, and
+              no error is raised anywhere. Say which of the two states it is. */}
+          {selected && !selected.ROUTE_GEOJSON && (
+            <div style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid rgba(245,158,11,0.45)', background: 'rgba(255,255,255,0.94)', color: '#92400e', boxShadow: '0 1px 3px rgba(0,0,0,0.12)', maxWidth: 300 }}>
+              {geomRetrying
+                ? 'Fetching road geometry for this tour...'
+                : 'No routable road geometry for this tour - showing stops only. Reselect the card to retry.'}
+            </div>
+          )}
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ position: 'absolute', top: 12, right: 108, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Stops &darr;</button>
           )}
         </div>
-        <AssignmentList assignments={visibleAssignments} unassigned={unassigned} selectedAssignment={selectedAssignment} onSelect={(id) => setSelectedAssignment(selectedAssignment === id ? null : id)} rationale={rationale} rationaleLoading={rationaleLoading} onAskRationale={askRationale} />
+        <AssignmentList assignments={visibleAssignments} unassigned={unassigned} selectedAssignment={selectedAssignment} onSelect={(id) => {
+          if (selectedAssignment === id) {
+            // Deselecting drops the geometry claim, so reselecting the card is a
+            // real second attempt - which is what the no-geometry notice says.
+            retriedGeomRef.current.delete(id);
+            setSelectedAssignment(null);
+          } else {
+            setSelectedAssignment(id);
+          }
+        }} rationale={rationale} rationaleLoading={rationaleLoading} onAskRationale={askRationale} />
       </div>
 
       {selected && (
