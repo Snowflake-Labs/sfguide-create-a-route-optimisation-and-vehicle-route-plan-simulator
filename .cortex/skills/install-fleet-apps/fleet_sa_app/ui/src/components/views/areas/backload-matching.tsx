@@ -1211,7 +1211,25 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           const endStr = tour.endCity ? ` | tour ends at ${tour.endCity} (depot, not a delivery)` : '';
           const origin = tour.firstPickup ?? realPlace(a.PICKUP_CITY) ?? '?';
           const dest = tour.finalDropoff ?? realPlace(a.PROPOSAL_DROPOFF_CITY) ?? '?';
-          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
+          // Economics: publish the revenue/cost breakdown ONLY when both terms
+          // exist. A collected plan (REHYDRATED) carries the procedure's margin
+          // and no breakdown - the proposal has no per-offer price, so revenue
+          // cannot be derived for an external offer at all - and `|| 0` turned
+          // that into "rev $0 cost $0 net +$1432". Every number there was
+          // individually defensible and the line as a whole did not add up, which
+          // is precisely the shape the agent quotes as fact. An unbacked breakdown
+          // is worse than no breakdown.
+          //
+          // Restored after a concurrent commit reverted it. `check_backload_rehydrate_geometry.py`
+          // rule E is what named the regression, and mutations M9/M10 are its
+          // controls - if this block goes missing again, that gate goes red.
+          const hasBreakdown = a.REVENUE_USD !== undefined && a.COST_USD !== undefined;
+          const econ = hasBreakdown
+            ? `, rev $${Math.round(a.REVENUE_USD as number)} cost $${Math.round(a.COST_USD as number)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`
+            : (a.NET_BENEFIT_USD !== undefined
+                ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
+                : '');
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
         }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
       : null;
     return {
