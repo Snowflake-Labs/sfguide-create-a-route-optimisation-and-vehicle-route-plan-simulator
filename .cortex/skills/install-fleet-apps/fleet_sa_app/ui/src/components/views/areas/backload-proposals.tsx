@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
-import { usePublishMapState } from '@/lib/agent-memo';
+import { usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
 import { collectAgentSolve } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import {
@@ -547,11 +547,17 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
-    const topList = grouped.slice(0, MAX_TRIPS).map((r) => {
+    const parts = grouped.slice(0, MAX_TRIPS).map((r) => {
       const margin = r.best.marginUsd != null ? `${r.best.marginUsd >= 0 ? '+' : ''}$${Math.round(r.best.marginUsd)}` : 'n/a';
       const loaded = (r.best.loadedKm ?? r.best.loadedKmEst ?? 0).toFixed(0);
       return `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}) ${r.best.pickupCity || '?'}->${r.best.deliveryCity || '?'}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km loaded ${loaded}km, margin ${margin}${r.best.isInternal ? ', internal' : ', external'}`;
-    }).join('; ') + (grouped.length > MAX_TRIPS ? ` (+${grouped.length - MAX_TRIPS} more)` : '');
+    });
+    // Row count alone does not bound prose (see agent-memo.ts): route.ts trims
+    // whole panels, so a list that outgrows the budget disappears rather than
+    // shortens. The overflow note is a part so it is either kept or counted.
+    const overflow = grouped.length - parts.length;
+    if (overflow > 0) parts.push(`(+${overflow} more proposals, not listed)`);
+    const topList = joinBounded(parts, TRIP_MEMO_MAX_LEN);
     const acc = Object.values(decisions);
     return {
       view: 'backload_proposals', region: region ?? null,
