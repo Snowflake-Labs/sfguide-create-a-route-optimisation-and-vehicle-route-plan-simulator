@@ -113,7 +113,7 @@ For a typical operator:
 ## 8. Onboarding another operator
 
 The whole skill is **vendor-neutral by construction**. To onboard another carrier:
-1. Keep `EXTERNAL_OFFERS.SOURCE` on the neutral channel vocabulary (`DISPATCH`, `MARKETPLACE`, `PARTNER_APP`, `INTERNAL`) and carry the originating system in `SOURCE_SYSTEM` instead, so no consumer hardcodes a provider.
+1. Keep `EXTERNAL_OFFERS.SOURCE` on the neutral channel vocabulary (`DISPATCH`, `MARKETPLACE`, `PARTNER_APP`, `BROKER`) and carry the originating system in `SOURCE_SYSTEM` instead, so no consumer hardcodes a provider.
 2. Regenerate the synthetic dataset for the target region via Data Studio.
 3. Switch `useRegion()` to the customer's provisioned ORS region.
 4. Adjust `CONFIG.HOME_LAT/LON` to the customer's home depot anchor.

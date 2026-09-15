@@ -54,7 +54,7 @@ WAREHOUSE = ROUTING_ANALYTICS
 | Column | Type | Notes |
 |---|---|---|
 | `OFFER_ID` | VARCHAR | Primary key, e.g. `OFF-000041` |
-| `SOURCE` | VARCHAR | `DISPATCH` / `MARKETPLACE` / `PARTNER_APP` / `INTERNAL` |
+| `SOURCE` | VARCHAR | `DISPATCH` / `MARKETPLACE` / `PARTNER_APP` / `BROKER` (channel only - internal-vs-external is `IS_INTERNAL`) |
 | `PICKUP_LON`, `PICKUP_LAT` | FLOAT | |
 | `DROPOFF_LON`, `DROPOFF_LAT` | FLOAT | |
 | `PICKUP_COUNTRY`, `DROPOFF_COUNTRY` | VARCHAR | ISO-2 |

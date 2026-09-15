@@ -25,7 +25,15 @@ interface OfferClassDefaults {
   base_rate_per_km: number; // USD/km market mean
 }
 
-const NEUTRAL_SOURCES = ['DISPATCH', 'MARKETPLACE', 'PARTNER_APP', 'INTERNAL'];
+// Channel labels for EXTERNAL offers. 'INTERNAL' was in this list and must not
+// come back: every row generated here lands in VW_LOADS with IS_INTERNAL=FALSE,
+// so a round-robin over four labels stamped a quarter of the EXTERNAL pool with
+// the word INTERNAL - measured 75 rows of 300 - and made the one distinction
+// this feature exists to express unreadable from the SOURCE column. It was not
+// merely ambiguous, it was untrue: an offer that arrived from an external
+// exchange did not arrive through an internal channel. 'BROKER' replaces it -
+// still a channel, still vendor-free.
+const NEUTRAL_SOURCES = ['DISPATCH', 'MARKETPLACE', 'PARTNER_APP', 'BROKER'];
 
 const OFFER_DEFAULTS: Record<VehicleType, OfferClassDefaults> = {
   ebike: {

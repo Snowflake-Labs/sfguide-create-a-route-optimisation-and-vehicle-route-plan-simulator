@@ -406,7 +406,17 @@ pp AS (
 -- empties the external half of the demand pool with no error anywhere.
 shifted AS (
   SELECT
-    f.*,
+    f.* EXCLUDE (SOURCE, LISTING_TEXT),
+    -- CHANNEL REMAP, idempotent. Already-seeded rows carry SOURCE='INTERNAL'
+    -- from a four-label round robin, and EVERY row in this view is external -
+    -- it reaches VW_LOADS with IS_INTERNAL=FALSE - so the literal made
+    -- internal-vs-external unreadable from SOURCE while looking well-formed.
+    -- The seeder no longer emits it; this repairs rows already on disk.
+    -- LISTING_TEXT is stored, so its leading channel token is rewritten too.
+    IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
+    IFF(LEFT(f.LISTING_TEXT, 9) = 'INTERNAL ',
+        'BROKER' || SUBSTR(f.LISTING_TEXT, 9),
+        f.LISTING_TEXT) AS LISTING_TEXT,
     GREATEST(
       f.PICKUP_FROM_TS,
       DATEADD('minute',
@@ -420,9 +430,10 @@ shifted AS (
 SELECT
   f.OFFER_ID,
   f.SOURCE,
-  -- SOURCE is a CHANNEL label whose values mix internal and external
-  -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot answer "did
-  -- this come from outside". SOURCE_SYSTEM is the system identity: a real
+  -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER),
+  -- so it cannot answer "did this come from outside" - every row here is
+  -- external regardless of channel. IS_INTERNAL is the structural answer and
+  -- SOURCE_SYSTEM is the system identity: a real
   -- integration replaces the literal with its own system key and no consumer
   -- changes. Deliberately vendor-free. Held as a literal here (rather than read
   -- from the source table) because this reference script targets the legacy
