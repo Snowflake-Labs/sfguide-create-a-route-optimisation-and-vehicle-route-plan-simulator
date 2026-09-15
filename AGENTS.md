@@ -610,12 +610,31 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative
 # Rule F is why the plan claimed INTERNAL provenance it did not have: SOURCE is a
 # channel label carrying the literal word INTERNAL on 75 of 300 external offers
 # still live in VW_LOADS, so internal-vs-external must come from IS_INTERNAL.
-# 12 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
+# Rules G-K came from the CoWork deep link: the same "one producer, two entry
+# points" bug in the BASELINE pass (G) - so a collected card lost
+# BASELINE_EMPTY_KM, "deadhead avoided" and its tooltip while looking complete -
+# plus three gaps that all rendered as nothing at all. H: 316 of 800 internal
+# loads have no delivery city and 235 no pickup city (2,621 trip POI ids exist in
+# no POI table), and a raw column made that data gap look like a broken renderer.
+# I: 35 of 89 USA vehicles are parked at their own end point and carry the HIGHEST
+# margins, so the top card of a collected plan usually has no baseline line to
+# draw - which must be stated, not left blank. J: `(EMPTY_BACK_KM ?? 0) > 0` is
+# the SOLVER's statement that a tour repositions; a proposal makes none, so a
+# collected plan never fetched its return leg. K: cleanWaypoints deduped with
+# `===`, so a pair differing in the 15th decimal reached DIRECTIONS and failed as
+# a one-point LineString (3 calls in QUERY_HISTORY).
+# 25 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
 # one of which convicted this gate's own first draft: rule D checked that
 # REHYDRATED was MENTIONED in the rehydrate module, which commenting out the one
 # line that sets it survives untouched. Anchor mutations WITHOUT leading
 # whitespace - an indentation-sensitive anchor turned a neighbouring refactor into
 # a harness that aborted mid-run instead of testing anything.
+# M14 convicted the SECOND draft the same way: the REHYDRATED-keying rules matched
+# the COMMENT that explains the keying, so removing the `a.REHYDRATED` predicate
+# passed. The keying checks now strip comments and require the predicate itself.
+# Two anchors also rotted here - `block_of` matched the inline object TYPE in a
+# callback's parameters instead of its body, and M8's anchor was a comment another
+# session had reworded. Anchor on code, not prose.
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
 

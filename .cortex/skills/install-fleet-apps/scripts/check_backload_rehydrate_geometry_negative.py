@@ -23,6 +23,10 @@ REL_VIEW = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/vie
 REL_REH = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/lib/backload-rehydrate.ts"
 REL_HELP = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/areas/backload-matching/helpers.ts"
 REL_GATE = ".cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py"
+REL_CARD = (".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/"
+            "areas/backload-matching/AssignmentList.tsx")
+REL_STOPS = (".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/"
+             "areas/backload-matching/StopsPanel.tsx")
 
 
 def sub(text: str, old: str, new: str, label: str) -> str:
@@ -80,6 +84,89 @@ MUTATIONS: list[tuple[str, str, dict[str, object]]] = [
     ("M12", "the authoritative flag is dropped from the collected assignment",
      {REL_REH: lambda s: sub(s, "      IS_INTERNAL: channel.internal,",
                              "      // IS_INTERNAL dropped", "M12")}),
+
+    # ---- RULE G: the baseline pass, which had the SAME shape of bug as the
+    # geometry pass and was found only after it was fixed.
+    ("M13", "the original baseline bug: computed inside solve only",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "    computeBaselines(rows, vehicleClass.ORS_PROFILE, trailerEndFor, cfg.region, {",
+         "    Promise.resolve(new Map()).then(() => {}); void ((rows: unknown) => rows)({",
+         "M13")}),
+    ("M14", "the collected-plan baseline call exists but is not keyed off REHYDRATED",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "      (a) => a.REHYDRATED && a.BASELINE_EMPTY_KM === undefined",
+         "      (a) => a.BASELINE_EMPTY_KM === undefined",
+         "M14")}),
+    ("M15", "the shared wrapper is bypassed by a second direct call",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "    const baselines = await computeBaselines(",
+         "    const baselines = await computeEmptyLegBaselines(profile, [], trailerEnd, cfg.region, {}) ?? await computeBaselines(",
+         "M15")}),
+    ("M16", "the saved-km rule is re-implemented in the page instead of shared",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "      deriveSavedKm(a);",
+         "      if (a.BASELINE_EMPTY_KM !== undefined) a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);",
+         "M16")}),
+
+    # ---- RULE H: the blank place name, in each of the three surfaces.
+    ("M17", "the card renders the city columns raw again (the reported defect)",
+     {REL_CARD: lambda s: sub(
+         s,
+         "              {placeLabel(a.PICKUP_CITY, a.OFFER_ID)} -&gt; {placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID)}",
+         "              {a.PICKUP_CITY} -&gt; {a.PROPOSAL_DROPOFF_CITY}",
+         "M17")}),
+    ("M18", "the stops panel falls back on a raw city, so 'Destination' reads as a place",
+     {REL_STOPS: lambda s: sub(
+         s,
+         "                <b>{realPlace(s.city) ?? s.label}</b>",
+         "                <b>{s.city || s.label}</b>",
+         "M18")}),
+    ("M19", "the agent memo publishes '?' as a place again",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "          const dest = tour.finalDropoff ?? placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID);",
+         "          const dest = tour.finalDropoff ?? realPlace(a.PROPOSAL_DROPOFF_CITY) ?? '?';",
+         "M19")}),
+    ("M20", "placeLabel is removed from helpers, so each site invents its own fallback",
+     {REL_HELP: lambda s: sub(s, "export function placeLabel(", "function placeLabelUnused(", "M20")}),
+
+    # ---- RULE I: the at-end state, and the near miss of surfacing it in only one
+    # of the two places, or with wording that does not explain the missing line.
+    ("M21", "the card stops checking at-end",
+     {REL_CARD: lambda s: sub(s, "            {isAtEndBaseline(a) && (",
+                             "            {false && (", "M21")}),
+    ("M22", "the readout says 0 km but no longer says a backload adds empty km",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "so there is no reposition to\n                  draw and a backload here adds empty km rather than avoiding any",
+         "",
+         "M22")}),
+    ("M23", "isAtEndBaseline compares coordinates exactly instead of by tolerance",
+     {REL_HELP: lambda s: sub(
+         s,
+         "  return samePlace(\n    [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],\n    [Number(a.END_LON), Number(a.END_LAT)],\n  );",
+         "  return Number(a.TRAILER_DROPOFF_LON) === Number(a.END_LON)\n    && Number(a.TRAILER_DROPOFF_LAT) === Number(a.END_LAT);",
+         "M23")}),
+
+    # ---- RULE J: the return leg the proposal cannot ask for.
+    ("M24", "the original return-leg bug: gated on a km a proposal never carries",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "      const hasReturn = endsKnown\n        && (a.REHYDRATED ? endsDiffer : (a.EMPTY_BACK_KM ?? 0) > 0);",
+         "      const hasReturn = endsKnown && (a.EMPTY_BACK_KM ?? 0) > 0;",
+         "M24")}),
+
+    # ---- RULE K: the tolerance dedupe.
+    ("M25", "waypoints are deduped exactly again, so a 1e-14 twin reaches DIRECTIONS",
+     {REL_HELP: lambda s: sub(
+         s,
+         "    if (prev && samePlace(prev, [Number(lon), Number(lat)])) continue;",
+         "    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;",
+         "M25")}),
 ]
 
 
@@ -110,7 +197,9 @@ def _nest_in_solve(src: str) -> str:
 
 def _move_after_solve(src: str) -> str:
     block, rest = _extract(src, "  const enrichGeometry = useCallback(async (")
-    anchor = "  // Auto-select the top assignment after a solve."
+    # The comment above the auto-select effect has been reworded once already, so
+    # anchor on the effect's own code rather than on its prose.
+    anchor = "  const totalNetBenefit = useMemo("
     if anchor not in rest:
         raise SystemExit("M8: post-solve anchor not found")
     return rest.replace(anchor, block + "\n" + anchor, 1)
@@ -133,7 +222,7 @@ def main() -> int:
             root = Path(td) / "repo"
             # Copy only what the gate reads; the gate resolves paths from its own
             # location, so the tree shape must be preserved.
-            for rel in (REL_VIEW, REL_REH, REL_HELP, REL_GATE):
+            for rel in (REL_VIEW, REL_REH, REL_HELP, REL_GATE, REL_CARD, REL_STOPS):
                 dst = root / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / rel, dst)
