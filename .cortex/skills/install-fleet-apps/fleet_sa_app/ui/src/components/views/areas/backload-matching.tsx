@@ -20,6 +20,7 @@ import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
 import { describeDeckLayers, usePublishMapState } from '@/lib/agent-memo';
 import { escapeHtml } from '@/lib/html';
+import { formatNumber } from '@/lib/format-number';
 import { postSolve } from '@/lib/solve-client';
 import { collectAgentSolve, proposalsToAssignments } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
@@ -35,7 +36,9 @@ import {
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey, describeTourChain, realPlace,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
+  baselineEndpointFor, fetchBaselineLeg,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
+  type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
 
 // Cached ORS empty-leg result (geometry + real road km) keyed by
@@ -87,8 +90,6 @@ function coordNear(a: number, b: number): boolean { return Math.abs(a - b) < 1e-
 function locMatchesCoord(loc: unknown, lon: number, lat: number): boolean {
   return Array.isArray(loc) && coordNear(Number(loc[0]), lon) && coordNear(Number(loc[1]), lat);
 }
-
-type EndMode = 'home' | 'shared' | 'open';
 
 function clampPayload(v: number, i: number, e: number, budget: number): { v: number; i: number; e: number; clamped: boolean } {
   const used = 2 * v + 2 * i + 2 * e;
@@ -154,6 +155,17 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   const tourCacheRef = useRef<Map<string, TourCacheEntry>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
+  // Selected VEHICLE, independent of any assignment. Set by clicking a trailer
+  // dot on the map and kept in sync with selectedAssignment below. This exists
+  // separately because the baseline (no-backload) line must be answerable BEFORE
+  // a solve, when there are no assignments at all to select.
+  const [selectedTrailer, setSelectedTrailer] = useState<string | null>(null);
+  // Baseline reposition line for selectedTrailer, fetched lazily. Cache key is
+  // `<trailer>|<endLon>,<endLat>`: the endpoint MUST be in the key because
+  // endMode and the shared destination are editable at runtime, and a
+  // trailer-only key would keep serving the line drawn to the old endpoint.
+  const baselineCacheRef = useRef<Map<string, BaselineGeom>>(new Map());
+  const [baseline, setBaseline] = useState<BaselineGeom | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
   const [rationaleLoading, setRationaleLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -1100,6 +1112,62 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
 
   const selected = visibleAssignments.find((a) => a.ASSIGNMENT_ID === selectedAssignment) || null;
   const stopsPanelRef = useRef<HTMLDivElement | null>(null);
+  const selectedTrailerRow = useMemo(
+    () => trailers.find((t) => t.TRAILER_ID === selectedTrailer) || null,
+    [trailers, selectedTrailer],
+  );
+
+  // Keep the two selections in one story: selecting an assignment (from the list
+  // or from the post-solve auto-select) also selects its vehicle, so the
+  // baseline on screen always belongs to the plan on screen. Clearing the
+  // assignment does NOT clear the vehicle - the dispatcher is then looking at a
+  // bare baseline, which is exactly the pre-solve view.
+  useEffect(() => {
+    if (selected) setSelectedTrailer(selected.TRAILER_ID);
+  }, [selected]);
+
+  // Map click: the trailers layer is the only pickable vehicle surface. Clicking
+  // a dot toggles it; clicking an offer, a stop marker, or empty space leaves the
+  // selection alone, because a stray background click clearing the map is worse
+  // than an extra click to dismiss.
+  const onMapClick = useCallback((info: { object?: Record<string, unknown> } | null) => {
+    const id = info?.object?.TRAILER_ID;
+    if (typeof id !== 'string' || !id) return;
+    setSelectedTrailer((prev) => (prev === id ? null : id));
+    // If that vehicle has an assignment on screen, select it too so the stops
+    // panel and the coloured route follow the click.
+    const owned = visibleAssignments.find((a) => a.TRAILER_ID === id);
+    setSelectedAssignment(owned ? owned.ASSIGNMENT_ID : null);
+  }, [visibleAssignments]);
+
+  // Lazy baseline fetch for the selected vehicle. Same live routing seam every
+  // other polyline here uses. The key check before setBaseline discards a slow
+  // response for a vehicle/endpoint that is no longer selected - without it,
+  // clicking two vehicles quickly can paint the first one's baseline under the
+  // second one's plan.
+  useEffect(() => {
+    const t = selectedTrailerRow;
+    const profile = vehicleClass?.ORS_PROFILE;
+    const regionName = cfg?.region;
+    if (!t || !profile || !regionName) { setBaseline(null); return; }
+    const from = [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)] as [number, number];
+    const end = baselineEndpointFor(t, endMode, sharedDestLon, sharedDestLat);
+    if (!end || !Number.isFinite(from[0]) || !Number.isFinite(from[1])) { setBaseline(null); return; }
+    const key = `${t.TRAILER_ID}|${end.pt[0].toFixed(5)},${end.pt[1].toFixed(5)}`;
+    const cached = baselineCacheRef.current.get(key);
+    if (cached) { setBaseline(cached); return; }
+    let live = true;
+    setBaseline(null);
+    fetchBaselineLeg(profile, from, end.pt, regionName, end.label).then((res) => {
+      baselineCacheRef.current.set(key, res);
+      if (live) setBaseline(res);
+    }).catch(() => {
+      // Never leave the readout on "routing...": a failed leg is a stated
+      // outcome, not an in-flight one.
+      if (live) setBaseline({ geo: null, km: null, endLabel: end.label, status: 'failed' });
+    });
+    return () => { live = false; };
+  }, [selectedTrailerRow, vehicleClass, cfg?.region, endMode, sharedDestLon, sharedDestLat]);
 
   // ---- agent grounding (Channel A; ref-guarded publish on change only) ----
   // Custom views keep results in local state, so the left-panel Cortex agent is
@@ -1133,21 +1201,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           const endStr = tour.endCity ? ` | tour ends at ${tour.endCity} (depot, not a delivery)` : '';
           const origin = tour.firstPickup ?? realPlace(a.PICKUP_CITY) ?? '?';
           const dest = tour.finalDropoff ?? realPlace(a.PROPOSAL_DROPOFF_CITY) ?? '?';
-          // Economics: publish the revenue/cost breakdown ONLY when both terms
-          // exist. A collected plan (REHYDRATED) carries the procedure's margin
-          // and no breakdown - the proposal has no per-offer price, so revenue
-          // cannot be derived for an external offer at all - and `|| 0` turned
-          // that into "rev $0 cost $0 net +$1432". Every number there was
-          // individually defensible and the line as a whole did not add up, which
-          // is precisely the shape the agent quotes as fact. An unbacked breakdown
-          // is worse than no breakdown.
-          const hasBreakdown = a.REVENUE_USD !== undefined && a.COST_USD !== undefined;
-          const econ = hasBreakdown
-            ? `, rev $${Math.round(a.REVENUE_USD as number)} cost $${Math.round(a.COST_USD as number)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`
-            : (a.NET_BENEFIT_USD !== undefined
-                ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
-                : '');
-          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)} net ${(a.NET_BENEFIT_USD ?? 0) >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD || 0)}`;
         }).join('; ') + (visibleAssignments.length > MAX_TRIPS ? ` (+${visibleAssignments.length - MAX_TRIPS} more)` : '')
       : null;
     return {
@@ -1203,8 +1257,31 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       result.push(new ScatterplotLayer({
         id: 'trailers', data: trailers, getPosition: (d: Trailer) => [Number(d.DROPOFF_LON), Number(d.DROPOFF_LAT)],
         getFillColor: [22, 163, 74, 240], getLineColor: [255, 255, 255, 255],
-        stroked: true, lineWidthMinPixels: 1, getRadius: 1200, radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
+        stroked: true, lineWidthMinPixels: 1,
+        getRadius: (d: Trailer) => (d.TRAILER_ID === selectedTrailer ? 2000 : 1200),
+        radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
+        updateTriggers: { getRadius: [selectedTrailer] },
       }) as unknown as Layer);
+    }
+    // Baseline: what the selected vehicle would have driven with NO backload -
+    // its idle drop-off straight to the reposition endpoint. Pushed BEFORE the
+    // route layers so the optimised plan always draws on top of it, and thin +
+    // solid so it reads as a different kind of thing from the dashed empty legs
+    // (which are part of the plan) and the coloured loaded path. Deliberately
+    // NOT dimmed when an assignment is selected: the whole point is to compare
+    // it against the plan, side by side.
+    if (baseline?.geo) {
+      const path = coordsFromGeoJSON(baseline.geo);
+      if (path.length >= 2) {
+        result.push(new PathLayer({
+          id: 'baseline-path',
+          data: [{ path, _baselineKm: baseline.km, _baselineEnd: baseline.endLabel }],
+          getPath: (d: { path: LngLat[] }) => d.path,
+          getColor: [150, 150, 150, 200],
+          getWidth: 2, widthUnits: 'pixels', widthMinPixels: 1, widthMaxPixels: 3,
+          parameters: { depthTest: false }, pickable: true,
+        }) as unknown as Layer);
+      }
     }
     const hasSel = !!selectedAssignment;
     // The lazily fetched tour path already ends at the last task stop, so this
@@ -1279,7 +1356,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       }) as unknown as Layer);
     }
     return result;
-  }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected]);
+  }, [external, internal, trailers, visibleAssignments, selectedAssignment, selected, selectedTrailer, baseline]);
 
   // Agent grounding, Channel B: this page builds deck.gl layers itself, so nothing
   // publishes map state for it and the agent could not answer "what is on the map"
@@ -1290,15 +1367,23 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     useMemo(
       () =>
         describeDeckLayers(layers, {
-          selection: { selected_trailer: selected?.TRAILER_ID ?? null },
+          selection: {
+            selected_trailer: selected?.TRAILER_ID ?? selectedTrailer ?? null,
+            baseline_km: baseline?.km ?? null,
+            baseline_end: baseline?.endLabel ?? null,
+            baseline_status: baseline?.status ?? null,
+          },
           ready: trailers.length > 0 || internal.length > 0 || external.length > 0,
         }),
-      [layers, selected, trailers.length, internal.length, external.length],
+      [layers, selected, selectedTrailer, baseline, trailers.length, internal.length, external.length],
     ),
   );
 
-  // Fit-to coords: selected route (+empty leg) when selected, else the estate.
+  // Fit-to coords: selected route (+empty leg, +baseline) when an assignment is
+  // selected; the selected vehicle plus its baseline when only a vehicle is (the
+  // pre-solve case); else the whole estate.
   const fitCoords = useMemo<LngLat[]>(() => {
+    const baseCoords = coordsFromGeoJSON(baseline?.geo);
     if (selected) {
       const out: LngLat[] = [
         [selected.TRAILER_DROPOFF_LON, selected.TRAILER_DROPOFF_LAT],
@@ -1307,20 +1392,34 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         ...coordsFromGeoJSON(selected.ROUTE_GEOJSON),
         ...coordsFromGeoJSON(selected.EMPTY_GEOJSON),
         ...coordsFromGeoJSON(selected.EMPTY_RETURN_GEOJSON),
+        ...baseCoords,
       ];
       return out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
+    }
+    if (selectedTrailerRow) {
+      const out: LngLat[] = [
+        [Number(selectedTrailerRow.DROPOFF_LON), Number(selectedTrailerRow.DROPOFF_LAT)],
+        [Number(selectedTrailerRow.HOME_LON), Number(selectedTrailerRow.HOME_LAT)],
+        ...baseCoords,
+      ];
+      const ok = out.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
+      if (ok.length) return ok;
     }
     const out: LngLat[] = [];
     for (const t of trailers) if (Number.isFinite(Number(t.DROPOFF_LON))) out.push([Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)]);
     for (const i of internal) if (Number.isFinite(Number(i.PICKUP_LON))) out.push([Number(i.PICKUP_LON), Number(i.PICKUP_LAT)]);
     for (const e of external) if (Number.isFinite(Number(e.PICKUP_LON))) out.push([Number(e.PICKUP_LON), Number(e.PICKUP_LAT)]);
     return out;
-  }, [selected, trailers, internal, external]);
+  }, [selected, selectedTrailerRow, baseline, trailers, internal, external]);
 
   const getTooltip = useCallback((info: { object?: Record<string, unknown> }) => {
     const object = info?.object;
     if (!object) return null;
     const style = { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' };
+    if (object._baselineEnd !== undefined) {
+      const km = formatNumber(object._baselineKm, { column: 'km' });
+      return { html: `<b>Baseline - no backload</b><br/>Reposition to ${escapeHtml(object._baselineEnd)}${km ? `<br/>${escapeHtml(km)} km empty` : ''}`, style };
+    }
     if (object._idx && ['start', 'pickup', 'dropoff', 'end', 'break'].includes(object.kind as string)) {
       const labelMap: Record<string, string> = { start: 'START', pickup: 'PICKUP', dropoff: 'DROPOFF', end: 'END', break: 'BREAK' };
       const members = (Array.isArray(object._members) && object._members.length ? object._members : [object]) as Record<string, unknown>[];
@@ -1545,7 +1644,25 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
               <button type="button" onClick={() => solveAbortRef.current?.abort()} style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>Cancel</button>
             </div>
           )}
-          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : '', regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selectedAssignment ? `sel:${selectedAssignment}` : (selectedTrailer ? `tr:${selectedTrailer}` : ''), regionKey: cfg?.region, regionCoords }} getTooltip={getTooltip} onClick={onMapClick} onRecenterReady={(fn) => { recenterRef.current = fn; }} />
+          {/* Baseline readout. Pre-solve this is the whole answer ("what would
+              this vehicle have driven anyway"); post-solve it sits beside the
+              plan's own empty km so the comparison is on screen, not implied. */}
+          {selectedTrailer && (
+            <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 5, padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', boxShadow: '0 1px 3px rgba(0,0,0,0.12)', maxWidth: 320 }}>
+              <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: '2px solid rgb(150,150,150)', verticalAlign: 'middle', marginRight: 6 }} />
+              <b>{selectedTrailer}</b> baseline (no backload):{' '}
+              {!baseline && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>routing...</span>}
+              {baseline?.status === 'at-end' && <>0 km - already at {baseline.endLabel}</>}
+              {baseline?.status === 'failed' && <span style={{ color: 'var(--text-secondary, #6b7280)' }}>no routable leg to {baseline.endLabel}</span>}
+              {baseline?.status === 'ok' && <>{formatNumber(baseline.km, { column: 'km' }) ?? '-'} km empty to {baseline.endLabel}</>}
+              {selected && (
+                <> - plan drives {formatNumber(selected.EMPTY_KM, { column: 'km' }) ?? '-'} km empty
+                  {(selected.SAVED_KM ?? 0) > 0 ? `, saving ${formatNumber(selected.SAVED_KM, { column: 'km' })} km` : ''}</>
+              )}
+              <button type="button" onClick={() => { setSelectedTrailer(null); setSelectedAssignment(null); }} style={{ marginLeft: 8, padding: '0 4px', fontSize: 11, borderRadius: 3, border: '1px solid var(--border-default, #e5e7eb)', background: 'transparent', color: 'var(--text-secondary, #6b7280)', cursor: 'pointer' }}>clear</button>
+            </div>
+          )}
           <button type="button" onClick={() => recenterRef.current?.()} style={{ position: 'absolute', top: 12, right: 12, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Recenter</button>
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ position: 'absolute', top: 12, right: 108, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border-default, #e5e7eb)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary, #111827)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>Stops &darr;</button>

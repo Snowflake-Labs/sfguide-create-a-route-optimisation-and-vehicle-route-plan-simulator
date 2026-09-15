@@ -621,6 +621,72 @@ export async function fetchEmptyLeg(
   return fetchDirections(profile, [from, to], region);
 }
 
+// Where a tour is required to finish. Mirrors the End radio group on the page.
+export type EndMode = 'home' | 'shared' | 'open';
+
+// Baseline (no-backload) reposition leg for ONE vehicle: the road polyline plus
+// the road km it measured, and a human label for the point it ends at.
+//
+// `status` separates the three outcomes a caller must not conflate:
+//   'ok'      - a real leg, `geo` is a LineString and `km` is road km
+//   'at-end'  - the vehicle is ALREADY at its endpoint, so the baseline is 0 km
+//               and there is nothing to draw. Measured: several trailers report
+//               DROPOFF == HOME, and cleanWaypoints drops a zero-length leg, so
+//               without this the UI waits on a fetch that can never return.
+//   'failed'  - unroutable or the seam errored; no line, no number
+export interface BaselineGeom {
+  geo: unknown; km: number | null; endLabel: string;
+  status: 'ok' | 'at-end' | 'failed';
+}
+
+// Two positions are the same place for baseline purposes. Matches the tolerance
+// cleanWaypoints effectively applies (it collapses exact repeats) but with a
+// little slack, because DROPOFF and HOME arrive from different columns and can
+// differ in the last decimal for the same POI.
+export function samePlace(a: [number, number], b: [number, number]): boolean {
+  return Math.abs(a[0] - b[0]) < 1e-5 && Math.abs(a[1] - b[1]) < 1e-5;
+}
+
+/**
+ * Endpoint the vehicle would have repositioned to with NO backload.
+ *
+ * Mirrors the `end` stop the solve builds (see endPt in backload-matching.tsx)
+ * so this line and BASELINE_EMPTY_KM measure the SAME leg - a baseline drawn to
+ * a different point than the baseline km was computed against puts a line and a
+ * number that disagree on the same screen.
+ *
+ * `open` has no solver end point, so the baseline falls back to the home depot:
+ * a vehicle with no backload still goes home, and drawing nothing would read as
+ * "this vehicle has no baseline" rather than "the solve left the tour open".
+ */
+export function baselineEndpointFor(
+  t: Pick<Trailer, 'HOME_LON' | 'HOME_LAT' | 'HOME_DEPOT'>,
+  endMode: EndMode, sharedLon: number | null, sharedLat: number | null,
+): { pt: [number, number]; label: string } | null {
+  if (endMode === 'shared' && sharedLon !== null && sharedLat !== null
+    && Number.isFinite(Number(sharedLon)) && Number.isFinite(Number(sharedLat))) {
+    return { pt: [Number(sharedLon), Number(sharedLat)], label: 'shared destination' };
+  }
+  const lon = Number(t.HOME_LON), lat = Number(t.HOME_LAT);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const depot = t.HOME_DEPOT ? String(t.HOME_DEPOT) : 'home depot';
+  return { pt: [lon, lat], label: endMode === 'open' ? `${depot} (assumed)` : depot };
+}
+
+// Baseline polyline for one vehicle: idle drop-off -> the endpoint above. Same
+// live routing seam every other line on this map uses, so no precomputed table
+// and no new procedure. Never returns null: a caller needs to tell "still
+// fetching" from "there is no baseline", and returning null for both is what
+// leaves a spinner up forever on a vehicle that is already home.
+export async function fetchBaselineLeg(
+  profile: string, from: [number, number], to: [number, number], region: string, endLabel: string,
+): Promise<BaselineGeom> {
+  if (samePlace(from, to)) return { geo: null, km: 0, endLabel, status: 'at-end' };
+  const leg = await fetchEmptyLeg(profile, from, to, region);
+  if (!leg) return { geo: null, km: null, endLabel, status: 'failed' };
+  return { geo: leg.geo, km: leg.km, endLabel, status: 'ok' };
+}
+
 // Geometry-only wrapper (kept for callers that do not need the distance).
 export async function fetchEmptyLegGeoJSON(
   profile: string, from: [number, number], to: [number, number], region: string,
