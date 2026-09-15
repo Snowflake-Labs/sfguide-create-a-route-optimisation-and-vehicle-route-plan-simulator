@@ -811,7 +811,10 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   # these files DEPLOY prose that contains such words; tail the log instead.
   semantic_optional_verdict() {
     local label="$1" log="$2" hint="$3"
-    if grep -qi 'does not exist or not authorized' "$log"; then
+    # snow sql wraps errors in box-drawing chars (│) that split "does not exist
+    # or not authorized" across lines, so grep -qi misses it. Strip box-drawing,
+    # rejoin lines, and collapse whitespace before matching.
+    if tr -d '│' < "$log" | tr '\n' ' ' | tr -s ' ' | grep -qi 'does not exist or not authorized'; then
       note "  NOTE: $label skipped - $hint"
       step "$label" SKIPPED
     else
