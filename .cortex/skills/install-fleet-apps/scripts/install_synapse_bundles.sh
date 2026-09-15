@@ -248,6 +248,7 @@ JSON
   # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s).
   if [ "$SRC" = "user" ]; then
     snow sql -c "$CONNECTION" -q "
+      $TAG_SQL
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
     " >/tmp/synapse_${SRC}_dropstale.log 2>&1 \
