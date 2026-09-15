@@ -612,3 +612,22 @@ if [ -f "$BACKLOAD_MEMO_CHECK" ]; then
     exit 1
   }
 fi
+
+# TOOL_BACKLOAD_SOLVE must stay time-bounded and vehicle-scopable. It had NO
+# wall-clock ceiling: 'ensemble' runs 3 road families in sequence, each retrying
+# up to 17 times, each attempt allowed 45s (matrix pre-compute) + 300s (VROOM) by
+# the gateway - an upper bound near 4.9 HOURS against the account-default 48h
+# statement timeout. Nothing cancelled it, so the caller simply hung, and a cold
+# continental graph reaches that state on the FIRST call after an idle period.
+# The agent also had no way to ask about one vehicle: max_vehicles=1 is ordered
+# by free time, so it returns the LONGEST-IDLE vehicle and answers about a
+# different truck without saying so. Both regressions leave a proc that compiles
+# and returns correct numbers on a small warm region, which is why this is a gate.
+BACKLOAD_BUDGET_CHECK="$SKILL_DIR/scripts/check_backload_budget.py"
+if [ -f "$BACKLOAD_BUDGET_CHECK" ]; then
+  echo "pre-commit: backload solve budget + vehicle-scope check..."
+  python3 "$BACKLOAD_BUDGET_CHECK" || {
+    echo "pre-commit FAILED: backload_solve is unbounded or can no longer be scoped to one vehicle."
+    exit 1
+  }
+fi

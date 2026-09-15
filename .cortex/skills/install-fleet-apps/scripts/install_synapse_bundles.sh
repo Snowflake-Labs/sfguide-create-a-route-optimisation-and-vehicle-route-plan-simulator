@@ -230,6 +230,31 @@ JSON
 
   ( cd "$SRC_DIR" && npx synapse materialize --install "$TARGET" >/tmp/synapse_${SRC}_mat.log 2>&1 ) \
     || { echo "ERROR: synapse materialize failed for $SRC"; tail -30 /tmp/synapse_${SRC}_mat.log; exit 1; }
+
+  # Drop wrapper signatures left behind by an EARLIER arity of the same verb.
+  #
+  # The generated wrapper ends in `IDEMPOTENCY_KEY VARCHAR DEFAULT NULL`, so an
+  # N-business-arg verb produces a procedure callable with N or N+1 arguments.
+  # CREATE OR REPLACE only replaces an identical signature, so adding a business
+  # argument leaves the OLD wrapper in place next to the new one. Two problems
+  # follow: if the accepted-arity ranges overlap, Snowflake rejects the new
+  # procedure with "ambiguous PROCEDURE overloading" and takes the whole bundle
+  # deploy down half-way; and if they do not overlap, the stale wrapper stays
+  # silently CALLABLE, so anything still passing the old argument count reaches
+  # the previous implementation and nobody is told.
+  #
+  # Scoped to verbs whose arity has actually changed, listed explicitly rather
+  # than derived, because dropping a signature is not something to do by pattern
+  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s).
+  if [ "$SRC" = "user" ]; then
+    snow sql -c "$CONNECTION" -q "
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+    " >/tmp/synapse_${SRC}_dropstale.log 2>&1 \
+      || { echo "ERROR: could not drop stale BACKLOAD_SOLVE wrapper signatures"; \
+           tail -20 /tmp/synapse_${SRC}_dropstale.log; exit 1; }
+  fi
+
   # --no-publish is REQUIRED. As of the vendored SHA, `synapse deploy` runs the
   # Cortex Extension publish step by DEFAULT: it PUTs the materialized plugin into
   # the workspace `SYNAPSE.COCO.PLUGINS` and creates `SYNAPSE.COCO.EXT_<APP>`.

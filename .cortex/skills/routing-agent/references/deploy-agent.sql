@@ -2843,21 +2843,52 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VA
 --                             still cold-starting. Resume and retry.
 --   NO_FEED                   no vehicles or no loads for this region.
 --   DATA_NOT_PROVISIONED      the cockpit views do not exist for this dataset.
+--   VEHICLE_NOT_FOUND         P_TRAILER_ID names no vehicle in this region.
+--   TIME_BUDGET_EXCEEDED      the wall-clock budget ran out before anything solved.
+--
+-- TWO THINGS BOUND THE RUNTIME, and both exist because this proc used to have
+-- NO ceiling at all. Default 'ensemble' runs three road families in sequence,
+-- each retrying up to MAX_UNROUTABLE_RETRIES+1 times, and each attempt is one
+-- gateway call the gateway itself allows 45s (matrix pre-compute) + 300s
+-- (VROOM). That is an upper bound near 4.9 HOURS, against a warehouse
+-- STATEMENT_TIMEOUT_IN_SECONDS of 172800 - so nothing cancelled it and the
+-- caller simply hung. Measured warm runs are 75.8s / 168.6s / 270.1s, all of
+-- them past any interactive patience.
+--   1. P_TIME_BUDGET_S is a wall-clock deadline checked before each family AND
+--      before each attempt inside the shear loop. Between-family only is not
+--      enough: one family can burn the whole budget by itself.
+--      SCOPE, stated because it is not what the name implies: it bounds the time
+--      spent CALLING THE OPTIMIZER, which is the unbounded part. The feed reads
+--      and the great-circle baseline scan run BEFORE the first check, so total
+--      elapsed can exceed the budget - measured 25.8s against a 15s budget at
+--      200 vehicles / 1000 loads. That cost is bounded and engine-free, and
+--      checking the deadline ahead of the baseline scan would throw away the one
+--      family that still answers when the engine is down. elapsed_s is returned
+--      next to time_budget_s so the difference is visible rather than implied.
+--   2. P_TRAILER_ID answers a question about ONE named vehicle by solving ONE
+--      vehicle. Without it a single-truck question paid a full region solve -
+--      20 vehicles x 120 loads is up to 280 unique locations, a 280x280 matrix
+--      on a continental graph - and there was no way to narrow it, because
+--      max_vehicles=1 takes the LONGEST-IDLE vehicle, not the named one.
 ----------------------------------------------------------------------
--- Drop the previous 5-argument signature before recreating. All arguments are
--- defaulted, so CREATE OR REPLACE with a 6th defaulted argument does NOT replace
--- it: Snowflake keeps both and rejects the new one with "Cannot overload
--- PROCEDURE ... as it would cause ambiguous PROCEDURE overloading". Without this
--- drop the file fails on every account that already has the earlier version,
--- which is every account that installed before granularity was added.
+-- Drop the previous 5- and 6-argument signatures before recreating. All
+-- arguments are defaulted, so CREATE OR REPLACE with an extra defaulted
+-- argument does NOT replace them: Snowflake keeps both and rejects the new one
+-- with "Cannot overload PROCEDURE ... as it would cause ambiguous PROCEDURE
+-- overloading". Without this drop the file fails on every account that already
+-- has an earlier version, which is every account installed before this change.
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(
     P_STRATEGY     VARCHAR DEFAULT NULL,
     P_MAX_VEHICLES FLOAT   DEFAULT NULL,
     P_MAX_LOADS    FLOAT   DEFAULT NULL,
     P_REGION       VARCHAR DEFAULT NULL,
     P_LIMIT        FLOAT   DEFAULT NULL,
-    P_GRANULARITY  VARCHAR DEFAULT NULL
+    P_GRANULARITY  VARCHAR DEFAULT NULL,
+    P_TRAILER_ID   VARCHAR DEFAULT NULL,
+    P_TIME_BUDGET_S FLOAT  DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -2938,6 +2969,17 @@ var WEIGHTS = { costEff: 0.12, revenue: 0.13, margin: 0.20, feasibility: 0.18,
                 utilization: 0.15, consolidation: 0.10, urgency: 0.12 };
 var COST_SCALE = 100;
 var MAX_UNROUTABLE_RETRIES = 16;
+// Wall-clock ceiling for the WHOLE proc. 90s is above a measured warm
+// single-region ensemble (75.8s) and below the point where every caller has
+// given up. The floor is 15s because one gateway attempt can legitimately take
+// that long; the cap is 600s for a deliberate large batch run.
+var DEFAULT_TIME_BUDGET_S = 90;
+var MIN_TIME_BUDGET_S = 15;
+var MAX_TIME_BUDGET_S = 600;
+var START_MS = Date.now();
+var timeBudgetMs = DEFAULT_TIME_BUDGET_S * 1000;
+function elapsedS() { return Math.round((Date.now() - START_MS) / 100) / 10; }
+function budgetExhausted() { return (Date.now() - START_MS) >= timeBudgetMs; }
 
 try {
     // ---------------------------------------------------------------- region
@@ -2984,6 +3026,18 @@ try {
     var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.min(200,  Math.floor(Number(P_LIMIT)))        : 25;
     // Math.floor'd above because LIMIT cannot be a bind in Snowflake, so these two
     // are string-concatenated into the feed SQL. Integer-only, hence injection-safe.
+    // The budget is clamped the same way and for the same reason as the caps: the
+    // verb's t.number() carries no bounds, so an agent asking for 86400 would
+    // otherwise reinstate the unbounded behaviour this argument exists to remove.
+    var timeBudgetS = finite(P_TIME_BUDGET_S) && Number(P_TIME_BUDGET_S) > 0
+        ? Math.max(MIN_TIME_BUDGET_S, Math.min(MAX_TIME_BUDGET_S, Math.floor(Number(P_TIME_BUDGET_S))))
+        : DEFAULT_TIME_BUDGET_S;
+    timeBudgetMs = timeBudgetS * 1000;
+    // Scope to ONE named vehicle. Trimmed and length-checked rather than
+    // concatenated: it is bound, but a 10KB id would still reach the feed SQL.
+    var trailerId = (P_TRAILER_ID === null || P_TRAILER_ID === undefined)
+        ? null : String(P_TRAILER_ID).trim();
+    if (trailerId !== null && (trailerId === '' || trailerId.length > 64)) trailerId = null;
 
     // ------------------------------------------------------------ feed reads
     var vehicleType = 'hgv';
@@ -3031,6 +3085,12 @@ try {
     // Region-scoped feeds. Deterministic ORDER BY so the same request returns the
     // same subset when the caps bite - the cockpit relied on the view's natural
     // order, which makes a capped run irreproducible.
+    //
+    // When trailerId is set every feed narrows to that ONE vehicle and to the
+    // loads it is actually eligible for. That is what makes a single-truck
+    // question cheap: the region default builds up to 280 unique locations
+    // (20 vehicles + 120 loads, both doubled into pickup/delivery tasks) and a
+    // 280x280 matrix, where one vehicle builds 2 + 2*eligible.
     var trailers, loads, eligible;
     try {
         trailers = rowsOf(
@@ -3039,11 +3099,23 @@ try {
           + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO g "
           + "WHERE g.TRAILER_ID IN ("
           + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + (trailerId ? "AND g.TRAILER_ID = ? " : "")
           + "ORDER BY g.EMPTY_FROM_TS NULLS LAST, g.TRAILER_ID "
           + "LIMIT " + maxVehicles,
-            [region],
+            trailerId ? [region, trailerId] : [region],
             ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',
              'EMPTY_FROM_TS', 'NEXT_START_LON', 'NEXT_START_LAT', 'MAX_PAYLOAD_KG', 'HAZMAT_CERT']);
+        // A named vehicle that resolves to nothing is its OWN failure. Folding it
+        // into NO_FEED below would report a typo, or a vehicle parked in another
+        // region, as "this region has no idle vehicles" - which sends the caller
+        // to look at the fleet instead of at the id they passed.
+        if (trailerId && !trailers.length) {
+            return { status: 'FAILED', reason: 'VEHICLE_NOT_FOUND', region: region,
+                     vehicle_type: vehicleType, trailer_id: trailerId,
+                     error: 'No vehicle ' + trailerId + ' among the idle vehicles for region ' + region
+                          + '. Check the id and the region: a vehicle is only in this feed when it is '
+                          + 'idle or has a future free time, and it is scoped to one region.' };
+        }
         // The region-scoped id set MUST be a CTE joined in, not an IN (...) with a
         // UNION ALL inside it: Snowflake rejects that with "Unsupported subquery
         // type cannot be evaluated".
@@ -3057,16 +3129,35 @@ try {
           + "       l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM "
           + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l "
           + "JOIN scoped s ON s.LOAD_ID = l.LOAD_ID "
+          // Prefilter to the loads THIS vehicle can actually take. Without it a
+          // one-vehicle solve still carries the region's whole load book into the
+          // matrix, which is the expensive half of the request.
+          + (trailerId
+              ? "WHERE l.LOAD_ID IN (SELECT c.LOAD_ID "
+              + "                    FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
+              + "                    WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID = ?) "
+              : "")
           + "ORDER BY l.IS_INTERNAL DESC, l.REQUESTED_PICKUP_TS NULLS LAST, l.LOAD_ID "
           + "LIMIT " + maxLoads,
-            [region, region],
+            trailerId ? [region, region, trailerId] : [region, region],
             ['LOAD_ID', 'IS_INTERNAL', 'SOURCE', 'PICKUP_CITY', 'PICKUP_LON', 'PICKUP_LAT',
              'DELIVERY_CITY', 'DELIVERY_LON', 'DELIVERY_LAT', 'REQUESTED_PICKUP_TS',
              'WEIGHT_KG', 'PRODUCT', 'HAZMAT', 'PRICE_USD', 'APPROX_DISTANCE_KM']);
+        // REGION-SCOPED, unlike every earlier version of this read. VW_CANDIDATES_SCORED
+        // spans every loaded region, so an unfiltered ELIGIBLE = TRUE returned the whole
+        // account - measured 29,047 rows across two regions - and pulled another region's
+        // eligibility chips into this plan's baseline scan. The trailer and load feeds
+        // above were already scoped, so this one read was the leak.
         eligible = rowsOf(
-            "SELECT TRAILER_ID, LOAD_ID, DIST_CHECK, TIME_CHECK, HORIZON_CHECK, CAP_CHECK, HAZMAT_CHECK "
-          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED WHERE ELIGIBLE = TRUE",
-            [], ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK']);
+            "WITH scoped_t AS ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + "SELECT c.TRAILER_ID, c.LOAD_ID, c.DIST_CHECK, c.TIME_CHECK, c.HORIZON_CHECK, c.CAP_CHECK, c.HAZMAT_CHECK "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
+          + "JOIN scoped_t s ON s.TRAILER_ID = c.TRAILER_ID "
+          + "WHERE c.ELIGIBLE = TRUE "
+          + (trailerId ? "AND c.TRAILER_ID = ? " : ""),
+            trailerId ? [region, trailerId] : [region],
+            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK']);
     } catch (e) {
         var m = e && e.message ? String(e.message) : 'unknown error';
         if (/does not exist or not authorized/i.test(m)) {
@@ -3079,7 +3170,12 @@ try {
     if (!trailers.length || !loads.length) {
         return { status: 'FAILED', reason: 'NO_FEED', region: region, vehicle_type: vehicleType,
                  vehicles: trailers.length, loads: loads.length,
-                 error: 'No idle vehicles or no open loads for region ' + region + '.' };
+                 trailer_id: trailerId,
+                 error: trailerId
+                     ? 'Vehicle ' + trailerId + ' has no eligible open load in region ' + region
+                       + '. It is idle but nothing in the load book passes the distance, pickup-time, '
+                       + 'horizon, capacity and hazmat checks for it.'
+                     : 'No idle vehicles or no open loads for region ' + region + '.' };
     }
 
     var eligibleSet = {}, chipsByPair = {};
@@ -3157,6 +3253,9 @@ try {
     // yields nothing for the family rather than failing the whole request, so
     // one bad family cannot take its siblings down.
     var suspendedSeen = null;
+    // Set by the deadline check in solveWithShear or the family loop. Reported the
+    // same way suspendedSeen is: a truncated run is a DEGRADED run, not a clean one.
+    var budgetHit = false;
     function solveOnce(vehicles, shipments) {
         var challenge = JSON.stringify({ vehicles: vehicles, shipments: shipments, options: { g: false } });
         var rs = q("SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP",
@@ -3177,6 +3276,19 @@ try {
             if (!workV.length || !workS.length) {
                 return { result: null, excluded: excluded,
                          reason: 'nothing left to solve after removing unroutable points' };
+            }
+            // The deadline is checked HERE, not only between families. A single
+            // family can consume the entire budget by itself: 17 attempts at the
+            // gateway's own 45s matrix + 300s VROOM ceilings is over 90 minutes,
+            // and the shear loop had no notion of elapsed time at all. Checking
+            // BEFORE the call is what makes the ceiling real - after the call the
+            // time is already spent.
+            if (budgetExhausted()) {
+                budgetHit = true;
+                return { result: null, excluded: excluded,
+                         reason: 'time budget of ' + timeBudgetS + 's exhausted after '
+                               + elapsedS() + 's, on attempt ' + (attempt + 1)
+                               + ' of ' + (MAX_UNROUTABLE_RETRIES + 1) };
             }
             var res = solveOnce(workV, workS);
             if (!res) return { result: null, excluded: excluded, reason: 'the routing engine returned no response' };
@@ -3291,12 +3403,69 @@ try {
     var ROAD_FAMILIES = { vrp: true, fleet: true, bpmp: true };
     var all = [], excludedTotal = 0, familiesRun = [], familiesSkipped = [];
     function skip(fam, reason) { familiesSkipped.push({ family: fam, reason: reason }); }
+
+    // ------------------------------------------------------- engine preflight
+    // Read the region's run-state BEFORE spending the budget on a solve that
+    // cannot succeed. The cockpit already had this (it auto-resumes and offers a
+    // Retry); the verb path did not, which is why the first call after an idle
+    // period behaved like a hang: a cold continental graph does not answer the
+    // gateway's 45s matrix pre-compute, and the fallback path then routes leg by
+    // leg for minutes. SHOW SERVICES is METADATA ONLY and never wakes a service,
+    // and SHOW + RESULT_SCAN must be two sequential statements on this session -
+    // do not wrap them in EXECUTE IMMEDIATE.
+    //
+    // The probe FAILS OPEN on purpose. If it cannot read the status (no MONITOR,
+    // renamed service, a region whose services live elsewhere) we proceed and let
+    // the budget bound the bad case. A probe that guessed SUSPENDED would break
+    // every working solve, which is a worse failure than the one being fixed.
+    var engineState = null;
+    function engineNotRunning() {
+        var svcRegion = String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        try {
+            q("SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE");
+            var sr = rowsOf(
+                "SELECT \"name\" AS NAME, \"status\" AS STATUS FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) "
+              + "WHERE \"name\" IN (?, ?)",
+                ['ORS_SERVICE_' + svcRegion, 'VROOM_SERVICE_' + svcRegion],
+                ['NAME', 'STATUS']);
+            if (!sr.length) return null;
+            var bad = [];
+            for (var si3 = 0; si3 < sr.length; si3++) {
+                var st = String(sr[si3].STATUS || '').toUpperCase();
+                if (st !== 'RUNNING') bad.push(String(sr[si3].NAME) + ' is ' + st);
+            }
+            engineState = bad.length ? bad.join(', ') : 'RUNNING';
+            return bad.length ? engineState : null;
+        } catch (e) {
+            return null;
+        }
+    }
+    var wantsRoad = false;
+    for (var wf = 0; wf < families.length; wf++) if (ROAD_FAMILIES[families[wf]]) wantsRoad = true;
+    var enginePreflight = wantsRoad ? engineNotRunning() : null;
+
     for (var fi = 0; fi < families.length; fi++) {
         var fam = families[fi];
         if (fam === 'baseline') {
             var bp = baselineProposals();
             if (bp.length) { familiesRun.push(fam); all = all.concat(bp); }
             else skip(fam, 'no eligible pair survived the great-circle scan');
+            continue;
+        }
+        // Refuse the road families up front rather than discovering it per family:
+        // three identical connection failures cost three gateway round trips and
+        // report the same thing three times.
+        if (enginePreflight) {
+            skip(fam, 'routing engine not running for ' + region + ': ' + enginePreflight
+                    + ' (resume it and retry; strategy "baseline" answers without it)');
+            continue;
+        }
+        // Between-family deadline check. The in-loop check inside solveWithShear
+        // catches a family that overruns; this one stops the NEXT family from
+        // starting a fresh multi-minute attempt on a budget that is already spent.
+        if (budgetExhausted()) {
+            budgetHit = true;
+            skip(fam, 'not attempted: time budget of ' + timeBudgetS + 's exhausted after ' + elapsedS() + 's');
             continue;
         }
         var built = buildChallenge(fam, null);
@@ -3325,6 +3494,21 @@ try {
     var degradedNote = null;
     if (suspendedSeen) {
         degradedNote = 'Some strategies could not solve: the routing engine was unreachable.';
+    } else if (enginePreflight && roadLost.length) {
+        // Named cause first. "No road-graph strategy produced a plan" is true here
+        // but useless: it reads as "no backload exists" when the real answer is
+        // that nobody resumed the engine.
+        degradedNote = 'The routing engine is not running for ' + region + ' (' + enginePreflight
+                     + '), so ' + roadLost.join(', ') + ' did not run and these figures are '
+                     + 'GREAT-CIRCLE estimates from the baseline scan, not a live road solve. '
+                     + 'Resume the region and retry for road distances.';
+    } else if (budgetHit && roadLost.length) {
+        degradedNote = 'The ' + timeBudgetS + 's time budget ran out after ' + elapsedS() + 's, so '
+                     + roadLost.join(', ') + ' did not finish. '
+                     + (roadLost.length === roadAsked.length
+                         ? 'These figures are GREAT-CIRCLE estimates from the baseline scan, not a live road solve. '
+                         : 'Fewer strategies agreed on each pair than requested. ')
+                     + 'Scope to one vehicle with trailer_id, ask for a single strategy, or raise time_budget_s.';
     } else if (roadAsked.length && roadLost.length === roadAsked.length) {
         degradedNote = 'No road-graph strategy produced a plan (' + roadLost.join(', ')
                      + '), so these figures are GREAT-CIRCLE estimates from the baseline scan, '
@@ -3335,18 +3519,31 @@ try {
                      + ': fewer strategies agreed on each pair than requested.';
     }
     if (!all.length) {
-        if (suspendedSeen) {
+        if (suspendedSeen || enginePreflight) {
             return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
-                     vroom_service: vroomSvc,
+                     vroom_service: vroomSvc, elapsed_s: elapsedS(),
                      error: 'Route optimization for ' + region + ' is not responding (it may be suspended '
-                          + 'or starting). Resume it and retry. Detail: ' + suspendedSeen };
+                          + 'or starting). Resume it and retry. Detail: ' + (suspendedSeen || enginePreflight) };
+        }
+        // Nothing solved AND the clock ran out: that is a budget failure, not an
+        // empty load book. Reporting it as SUCCESS-with-no-proposals would tell the
+        // caller no backload exists for a plan that was never actually attempted.
+        if (budgetHit) {
+            return { status: 'FAILED', reason: 'TIME_BUDGET_EXCEEDED', region: region,
+                     vehicle_type: vehicleType, trailer_id: trailerId,
+                     time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
+                     strategies_run: familiesRun, families_skipped: familiesSkipped,
+                     error: 'Nothing finished inside the ' + timeBudgetS + 's budget (' + elapsedS() + 's elapsed). '
+                          + 'This is a size problem, not a data problem: scope to one vehicle with trailer_id, '
+                          + 'ask for a single strategy instead of the ensemble, lower max_vehicles/max_loads, '
+                          + 'or raise time_budget_s.' };
         }
         return { status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
                  counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
                            proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
                  proposals: [], totals: {},
                  strategies_run: familiesRun, families_skipped: familiesSkipped,
-                 degraded: degradedNote,
+                 degraded: degradedNote, elapsed_s: elapsedS(),
                  note: 'No proposals were produced. Every candidate pair was either ineligible or unroutable.' };
     }
 
@@ -3569,6 +3766,7 @@ try {
             status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
             granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
             strategies_run: familiesRun,
+            trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
             counts: {
                 vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
                 graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
@@ -3612,6 +3810,10 @@ try {
         status: 'SUCCESS', region: region, vehicle_type: vehicleType, strategy: strategy,
         granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
         strategies_run: familiesRun,
+        // Echoed so the caller can see the run was scoped and how much of the
+        // budget it used. elapsed_s next to time_budget_s is what makes a
+        // truncated run legible without reading families_skipped.
+        trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(),
         counts: {
             vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount,
             graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
@@ -3660,7 +3862,7 @@ try {
     return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
 }
 $$;
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_BACKLOAD_CHAIN_SOLVE: two-hop (chained) return planning.

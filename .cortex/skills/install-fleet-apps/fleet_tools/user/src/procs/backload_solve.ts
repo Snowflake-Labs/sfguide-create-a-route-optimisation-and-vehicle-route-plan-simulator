@@ -22,7 +22,9 @@ export const backload_solve = defineProc({
     'one graded proposal per vehicle with empty km, loaded km, margin and per-constraint ' +
     'pass/fail. Internal loads are preferred over external offers. Use for "what can ' +
     'bring these vehicles back loaded", "reduce empty running", "find backloads", ' +
-    '"which return loads should we take". Read-only: proposes, never books.',
+    '"which return loads should we take". When the user names ONE vehicle, pass trailer_id ' +
+    '- never max_vehicles=1, which answers about the longest-idle vehicle instead. ' +
+    'Read-only: proposes, never books.',
   roles: ['user'],
   args: {
     strategy: t
@@ -65,6 +67,45 @@ export const backload_solve = defineProc({
         'the pairs itself, so prefer "vehicle" unless the user explicitly asks to compare ' +
         'several candidate loads for the same vehicle.',
       ),
+    // The ONLY way to answer a question about a NAMED vehicle. max_vehicles=1 is
+    // not a substitute: the feed is ordered by free time, so it returns the
+    // longest-idle vehicle in the region and silently answers about a different
+    // truck than the one asked about.
+    trailer_id: t
+      .string({ max: 64 })
+      .nullable()
+      .describe(
+        'Scope the whole solve to ONE named vehicle (e.g. "V-DRI-00033"). PASS THIS whenever ' +
+        'the user names a specific vehicle, trailer or truck. It narrows the feed to that ' +
+        'vehicle and to the loads it is eligible for, which is both far faster and the only ' +
+        'correct way to answer about a named vehicle - do NOT use max_vehicles=1 for this, ' +
+        'that returns the longest-idle vehicle instead. Returns reason VEHICLE_NOT_FOUND if ' +
+        'the id is not among the region\'s idle vehicles, and NO_FEED if it is idle but has ' +
+        'no eligible load. Leave null to plan the whole region. ' +
+        // Measured, and it is not a rounding difference: V-DRI-00033 solved alone got
+        // 46.4 empty km / $1,432 on DLV-000228, while the same truck inside the
+        // 20-vehicle regional plan got 895.2 empty km / $824 on a different load - and
+        // DLV-000228 went unassigned fleet-wide. Two different problems, not two
+        // answers to one.
+        'IMPORTANT, STATE THIS: a single-vehicle result optimises THAT VEHICLE ALONE. The ' +
+        'regional plan optimises across the fleet and can hand the same vehicle a worse ' +
+        'individual load, so these figures are the best case for this truck in isolation ' +
+        'and are OPTIMISTIC versus what it would be assigned in a fleet-wide plan. Say so ' +
+        'rather than presenting them as the dispatch decision.',
+      ),
+    time_budget_s: t
+      .number()
+      .nullable()
+      .describe(
+        'Ceiling on the time spent CALLING THE OPTIMIZER, in seconds. Default 90, clamped ' +
+        '15..600. It is checked before each strategy and before each engine attempt, so a ' +
+        'run that overruns returns whatever finished with degraded set instead of running ' +
+        'on. It does NOT bound the feed reads and the great-circle baseline scan that ' +
+        'precede the first engine call, so total elapsed_s can exceed it at large ' +
+        'max_vehicles/max_loads - compare elapsed_s against it rather than assuming. ' +
+        'Raise it only for a deliberately large batch; for a faster answer prefer ' +
+        'trailer_id or a single strategy over lowering it.',
+      ),
   },
   returns: {
     result: t.object({}).describe(
@@ -72,7 +113,10 @@ export const backload_solve = defineProc({
       'counts, totals, weights, proposals[], solve_key, families_skipped[], degraded }. ' +
       'On failure: { status:"FAILED", ' +
       'reason, error } where reason is OPTIMIZATION_UNAVAILABLE (routing suspended - resume ' +
-      'and retry), NO_FEED (no vehicles or loads for the region), DATA_NOT_PROVISIONED, or ' +
+      'and retry), NO_FEED (no vehicles or loads for the region), VEHICLE_NOT_FOUND (trailer_id ' +
+      'names no idle vehicle in the region - report the id, do not retry region-wide and ' +
+      'present another vehicle), TIME_BUDGET_EXCEEDED (nothing solved inside time_budget_s - ' +
+      'say so and suggest trailer_id or a single strategy), DATA_NOT_PROVISIONED, or ' +
       'BAD_STRATEGY. solve_key identifies this stored result: pass it to show_view as ' +
       'selection="solve_key=<key>" to put THIS plan on screen instead of making the page ' +
       'solve again. It is absent when the result could not be cached, in which case just open ' +
@@ -98,6 +142,8 @@ export const backload_solve = defineProc({
       region: args.region,
       limit: args.limit,
       granularity: args.granularity,
+      trailer_id: args.trailer_id,
+      time_budget_s: args.time_budget_s,
     };
     const result = await callTool(ctx.conn, Procs.backloadSolve, [
       args.strategy,
@@ -106,6 +152,8 @@ export const backload_solve = defineProc({
       args.region,
       args.limit,
       args.granularity,
+      args.trailer_id,
+      args.time_budget_s,
     ]);
     // Cache successful solves so the app can REDRAW this exact plan rather than
     // running a second, different one. Only on success: caching a failure would

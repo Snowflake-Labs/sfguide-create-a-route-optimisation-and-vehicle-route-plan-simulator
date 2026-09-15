@@ -66,6 +66,12 @@ interface VehicleClass {
 // vehicle across three perspectives, so a per-vehicle-best response would make the
 // Loads and Ensemble views impossible; this bounds the payload instead.
 const PAIR_LIMIT = 200;
+// Wall-clock ceiling handed to the verb. The cockpit is a DELIBERATE full-region
+// run behind a Run button with its own busy state, and measured solves here reach
+// 168.6s at 100/500, so it asks for the verb's maximum rather than the 90s default
+// the agent path gets. Passing the default would truncate a solve this page has
+// always completed.
+const PAGE_TIME_BUDGET_S = 600;
 
 // Single-strategy options (non-ensemble perspectives).
 const STRATEGY_OPTIONS: StrategyOption[] = [
@@ -308,6 +314,9 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
     try {
       const result = await callVerb('backload_solve', [
         strat, maxVehicles, maxLoads, cfg.region, PAIR_LIMIT, 'pair',
+        // trailer_id: null - the cockpit plans the whole region. Scoping to one
+        // vehicle is the agent's path, not the dispatcher's.
+        null, PAGE_TIME_BUDGET_S,
       ]);
       const rows = (result.pairs as ScoredPair[] | undefined) ?? [];
       const counts = (result.counts ?? {}) as Record<string, number>;

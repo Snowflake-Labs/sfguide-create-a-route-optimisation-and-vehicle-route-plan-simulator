@@ -541,6 +541,41 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
 # 10 mutations negative-tested via scripts/check_backload_memo_negative.sh.
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_memo.py
 
+# TOOL_BACKLOAD_SOLVE must stay TIME-BOUNDED and VEHICLE-SCOPABLE. It had no
+# wall-clock ceiling of any kind. Default 'ensemble' runs three road families in
+# sequence, each retrying up to MAX_UNROUTABLE_RETRIES+1 = 17 times, and each
+# attempt is one gateway call the gateway itself allows 45s (matrix pre-compute)
+# + 300s (VROOM): an upper bound near 4.9 HOURS, against the account-default
+# STATEMENT_TIMEOUT_IN_SECONDS of 172800. Nothing cancelled it, so an agent turn
+# that asked for a backload simply never came back. Measured warm runs are
+# already 75.8s / 168.6s / 270.1s, and a COLD continental graph misses the 45s
+# pre-compute and drops into the gateway's per-leg fallback - which that source
+# file itself calls "a multi-minute apparent hang at the OPTIMIZATION TVF
+# caller". That is why the failure looked state-dependent: running the cockpit
+# first warmed the graph, so the same question answered in 75s.
+#
+# The second half is correctness, not latency. There was no way to ask about a
+# NAMED vehicle: `max_vehicles=1` is ordered by free time, so it returns the
+# LONGEST-IDLE vehicle and answers about a different truck without saying so.
+# P_TRAILER_ID scopes the feed to that vehicle and to the loads it is eligible
+# for, which also collapses the 280-location / 280x280-matrix default.
+#
+# Both regressions leave a proc that COMPILES and returns correct numbers on a
+# small warm region, and they pass every other gate here - hence a gate. Rule B
+# insists the deadline is checked INSIDE solveWithShear and BEFORE the engine
+# call: a between-families check alone is not a ceiling (one family owns the
+# 17-attempt loop), and a check after the call cannot prevent the overrun it
+# reports. Rule D covers the eligible-pairs read, which was account-wide
+# (measured 29,047 rows across two regions) while the trailer and load feeds
+# were already scoped. Rule F requires the trailer_id guidance inside the
+# backload_solve bullet ITSELF, same reason as the memo gate above.
+# 15 mutations negative-tested via scripts/check_backload_budget_negative.py,
+# two of which convicted this gate's own first draft (the in-loop check was
+# satisfiable from the family loop, and `args.trailer_id` was satisfiable from
+# the cache-key params while the CALL passed a literal null).
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS

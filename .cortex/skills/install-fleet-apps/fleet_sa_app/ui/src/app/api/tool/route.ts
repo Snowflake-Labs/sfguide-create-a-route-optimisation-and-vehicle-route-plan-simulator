@@ -35,7 +35,10 @@ const DEFAULT_VERBS: Record<string, number> = {
   // ONE implementation: the same procedures back the MCP tools, so a plan drawn on
   // screen and a plan the agent describes cannot diverge.
   // Arity excludes the trailing IDEMPOTENCY_KEY, as above.
-  backload_solve: 6,
+  // backload_solve is 8: the six original args plus trailer_id (scope to ONE named
+  // vehicle) and time_budget_s (wall-clock ceiling). Arity is matched EXACTLY below,
+  // so every caller must pass all eight - including nulls.
+  backload_solve: 8,
   backload_chain_solve: 6,
 };
 
