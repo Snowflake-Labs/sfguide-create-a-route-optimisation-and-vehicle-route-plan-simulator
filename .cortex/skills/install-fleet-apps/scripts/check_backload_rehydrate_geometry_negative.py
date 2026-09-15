@@ -56,6 +56,21 @@ MUTATIONS: list[tuple[str, str, dict[str, object]]] = [
      {REL_HELP: lambda s: sub(s, "  REHYDRATED?: boolean;", "  // REHYDRATED dropped", "M7")}),
     ("M8", "the producer is declared after solve (temporal dead zone at render)",
      {REL_VIEW: lambda s: _move_after_solve(s)}),
+    ("M9", "the original memo bug: rev/cost coerced with || 0",
+     {REL_VIEW: lambda s: sub(
+         s,
+         # Anchored WITHOUT leading whitespace: this line sits inside the memo
+         # builder, which is being restructured on another branch, and an
+         # indentation-sensitive anchor turns a live refactor into a harness that
+         # ABORTS mid-run rather than one that tests anything.
+         "const hasBreakdown = a.REVENUE_USD !== undefined && a.COST_USD !== undefined;",
+         "const hasBreakdown = true;", "M9")}),
+    ("M10", "the memo prints the breakdown unconditionally via || 0",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "${econ}`;",
+         "${econ}, rev $${Math.round(a.REVENUE_USD || 0)} cost $${Math.round(a.COST_USD || 0)}`;",
+         "M10")}),
     ("M11", "the channel label is derived from `source` again",
      {REL_REH: lambda s: sub(
          s,

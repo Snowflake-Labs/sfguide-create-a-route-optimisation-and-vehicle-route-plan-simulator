@@ -591,10 +591,21 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative
 # which is why rule B checks the second call site is keyed off the collected
 # plan (negative test M4 is that control) and rule C forbids any second,
 # unshared geometry write (M5).
-# 8 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
+#
+# Rule E is the same failure class one layer up: the memo published
+# `rev $0 cost $0 net +$1432` for a collected plan, because it coerced an absent
+# breakdown with `|| 0`. Revenue is NOT derivable for an external offer - the
+# proposal carries no per-offer price - so the breakdown is omitted rather than
+# invented, and the rule bans the coercion that made an absence look measured.
+# Rule F is why the plan claimed INTERNAL provenance it did not have: SOURCE is a
+# channel label carrying the literal word INTERNAL on 75 of 300 external offers
+# still live in VW_LOADS, so internal-vs-external must come from IS_INTERNAL.
+# 12 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
 # one of which convicted this gate's own first draft: rule D checked that
 # REHYDRATED was MENTIONED in the rehydrate module, which commenting out the one
-# line that sets it survives untouched.
+# line that sets it survives untouched. Anchor mutations WITHOUT leading
+# whitespace - an indentation-sensitive anchor turned a neighbouring refactor into
+# a harness that aborted mid-run instead of testing anything.
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
 

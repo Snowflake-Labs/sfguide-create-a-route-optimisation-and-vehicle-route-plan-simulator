@@ -28,6 +28,10 @@ RULES
      producer, so no second, unshared fetch path can grow back.
   D  The rehydrate collection path does not claim to draw routes it never asks
      for: if it sets assignments, a REHYDRATED marker must reach them.
+  E  The agent memo publishes a revenue/cost breakdown only when it HAS one. A
+     collected plan carries the solver's margin and no split, and `|| 0` turned
+     that into `rev $0 cost $0 net +$1432` - a self-contradicting line quoted to
+     the user as fact.
   F  Internal vs external is decided by the IS_INTERNAL flag, never by the SOURCE
      label, which has carried the literal word INTERNAL on external offers.
 
@@ -160,6 +164,30 @@ def main() -> int:
         if not re.search(r"REHYDRATED\??:\s*boolean", helpers_src):
             fail("D", "the Assignment type has no REHYDRATED field, so the marker is dropped by the "
                       "type the page actually renders")
+
+    # ---- RULE E: the agent memo must not publish an economics breakdown it does
+    # not have. A collected plan carries the solver's margin and no revenue/cost
+    # split - the proposal has no per-offer price, so revenue is not derivable for
+    # an external offer - and coercing the absent terms with `|| 0` produced
+    # `rev $0 cost $0 net +$1432`: three defensible numbers in a line that does
+    # not add up, published to the agent as fact.
+    memo_econ = re.search(r"rev \$\$\{[^}]*\}", src)
+    if memo_econ:
+        window = src[max(0, memo_econ.start() - 1500):memo_econ.start()]
+        if "REVENUE_USD !== undefined" not in window or "COST_USD !== undefined" not in window:
+            line = src[: memo_econ.start()].count("\n") + 1
+            fail(
+                "E",
+                f"{VIEW.name}:{line} publishes a rev/cost breakdown to the agent memo without first "
+                "proving BOTH REVENUE_USD and COST_USD exist; a collected plan has neither, so this "
+                "prints rev $0 cost $0 against a non-zero net",
+            )
+        if re.search(r"REVENUE_USD \|\| 0|COST_USD \|\| 0", src):
+            fail(
+                "E",
+                "the memo coerces REVENUE_USD/COST_USD with `|| 0`, which is exactly what turned an "
+                "absent breakdown into a measured-looking zero",
+            )
 
     # ---- RULE F: internal vs external is decided by the FLAG, never by the label.
     # SOURCE has carried the literal word INTERNAL on external offers (measured 75
