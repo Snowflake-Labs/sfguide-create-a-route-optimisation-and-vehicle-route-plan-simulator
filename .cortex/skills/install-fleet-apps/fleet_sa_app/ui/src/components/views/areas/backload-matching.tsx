@@ -1104,27 +1104,6 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     useMultiDimCapacity, useMultiWindow, enrichGeometry,
   ]);
 
-  // Auto-select the top assignment when a NEW plan arrives, and repair a
-  // selection that no longer exists in the list.
-  //
-  // Keyed on the SET OF ASSIGNMENT IDS, not on `selectedAssignment` and not on
-  // the array identity. The old form re-ran on the selection change itself, so
-  // toggling the selected card off set it to null and this effect immediately
-  // put it back on assignments[0] - clicking a card twice silently selected the
-  // first one and there was no way to select nothing. The array identity is no
-  // good either: geometry enrichment replaces the array (`setAssignments([...])`)
-  // with the same plan in it, which would yank the selection back to the top.
-  useEffect(() => {
-    if (!assignments.length) return;
-    const planKey = assignments.map((a) => a.ASSIGNMENT_ID).join('|');
-    const isNewPlan = autoSelectedForRef.current !== planKey;
-    autoSelectedForRef.current = planKey;
-    const stale = !!selectedAssignment && !assignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment);
-    if (isNewPlan || stale) {
-      setSelectedAssignment(assignments[0].ASSIGNMENT_ID);
-    }
-  }, [assignments, selectedAssignment]);
-
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
     try {
@@ -1173,6 +1152,37 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     const base = hideUnprofitable ? assignments.filter((a) => (a.NET_BENEFIT_USD ?? 0) >= 0) : assignments;
     return [...base].sort((a, b) => (b.NET_BENEFIT_USD ?? -Infinity) - (a.NET_BENEFIT_USD ?? -Infinity));
   }, [assignments, hideUnprofitable]);
+
+  // Auto-select the top assignment when a NEW plan arrives, and repair a
+  // selection that no longer exists in the list.
+  //
+  // Reads `visibleAssignments`, NOT `assignments`, and must therefore be declared
+  // after that memo. The old form selected `assignments[0]` - the solver's
+  // emission order - while the list renders `visibleAssignments`, which is
+  // net-desc sorted and `hideUnprofitable`-filtered. So the highlighted card was
+  // usually not the first card on screen, and when the filter hid that row the
+  // selection resolved to null and the page looked unselected after a solve.
+  //
+  // Keyed on the SET OF VISIBLE IDS, not on `selectedAssignment` and not on the
+  // array identity. The old form re-ran on the selection change itself, so
+  // toggling the selected card off set it to null and this effect immediately
+  // put it back on the first one - clicking a card twice silently selected the
+  // top one and there was no way to select nothing. The array identity is no
+  // good either: `visibleAssignments` is a fresh array on every render and
+  // geometry enrichment replaces `assignments` with the same plan in it, which
+  // would yank the selection back to the top on every enrichment tick.
+  useEffect(() => {
+    if (!visibleAssignments.length) return;
+    const planKey = visibleAssignments.map((a) => a.ASSIGNMENT_ID).join('|');
+    const isNewPlan = autoSelectedForRef.current !== planKey;
+    autoSelectedForRef.current = planKey;
+    const stale = !!selectedAssignment && !visibleAssignments.some((a) => a.ASSIGNMENT_ID === selectedAssignment);
+    // A selection that is still on screen survives a list change, so toggling
+    // `hideUnprofitable` does not yank the dispatcher back to the top card.
+    if (stale || (isNewPlan && !selectedAssignment)) {
+      setSelectedAssignment(visibleAssignments[0].ASSIGNMENT_ID);
+    }
+  }, [visibleAssignments, selectedAssignment]);
 
   const totalNetBenefit = useMemo(() => Math.round(visibleAssignments.reduce((s, a) => s + (a.NET_BENEFIT_USD || 0), 0)), [visibleAssignments]);
   // Counted on IS_INTERNAL, never on SOURCE. This number is published to the
@@ -1392,40 +1402,45 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         }) as unknown as Layer);
       }
     }
-    const hasSel = !!selectedAssignment;
-    // The lazily fetched tour path already ends at the last task stop, so this
-    // trim is normally a no-op. It stays because a geometry-bearing solve
-    // response would cover the return reposition too, and that tail must not be
-    // painted as if the vehicle were still carrying freight - the dashed
-    // empty-leg layer owns it.
-    const loadedPaths = visibleAssignments.map((a, i) => ({ a, i }))
-      .filter(({ a }) => !!a.ROUTE_GEOJSON)
-      .map(({ a, i }) => {
-        const full = coordsFromGeoJSON(a.ROUTE_GEOJSON);
-        const path = a.LAST_TASK_LON !== undefined && a.LAST_TASK_LAT !== undefined && (a.EMPTY_BACK_KM ?? 0) > 0
-          ? trimPathAt(full, [a.LAST_TASK_LON, a.LAST_TASK_LAT])
+    // Route geometry is drawn for the SELECTED card only - loaded path and both
+    // dashed empty legs. Drawing every assignment (previously done at reduced
+    // alpha/width) put 16 coloured paths and up to 32 dashed legs on one map:
+    // the dimming did not read as "context", it read as a plan nobody chose,
+    // and it hid the one tour the stops panel and the KPI readout describe.
+    // Nothing selected therefore means no route lines, which is the pre-solve
+    // view plus - if a vehicle is selected - its bare grey baseline above.
+    if (selected) {
+      // The lazily fetched tour path already ends at the last task stop, so this
+      // trim is normally a no-op. It stays because a geometry-bearing solve
+      // response would cover the return reposition too, and that tail must not be
+      // painted as if the vehicle were still carrying freight - the dashed
+      // empty-leg layer owns it.
+      if (selected.ROUTE_GEOJSON) {
+        // Colour index is the card's position in the RENDERED list, not 0, so the
+        // line keeps the same colour as its card swatch when the selection moves.
+        const idx = visibleAssignments.findIndex((a) => a.ASSIGNMENT_ID === selected.ASSIGNMENT_ID);
+        const c = ROUTE_COLORS[(idx < 0 ? 0 : idx) % ROUTE_COLORS.length];
+        const full = coordsFromGeoJSON(selected.ROUTE_GEOJSON);
+        const path = selected.LAST_TASK_LON !== undefined && selected.LAST_TASK_LAT !== undefined && (selected.EMPTY_BACK_KM ?? 0) > 0
+          ? trimPathAt(full, [selected.LAST_TASK_LON, selected.LAST_TASK_LAT])
           : full;
-        return { idx: i, path, isSel: a.ASSIGNMENT_ID === selectedAssignment };
-      });
-    result.push(new PathLayer({
-      id: 'loaded-routes', data: loadedPaths, getPath: (d: { path: LngLat[] }) => d.path,
-      getColor: (d: { idx: number; isSel: boolean }) => { const c = ROUTE_COLORS[d.idx % ROUTE_COLORS.length]; const a = d.isSel ? 255 : (hasSel ? 80 : 110); return [c[0], c[1], c[2], a]; },
-      getWidth: (d: { isSel: boolean }) => (d.isSel ? 6 : (hasSel ? 2 : 3)),
-      widthUnits: 'pixels', widthMinPixels: 2, parameters: { depthTest: false }, pickable: true,
-      updateTriggers: { getColor: [selectedAssignment, hasSel], getWidth: [selectedAssignment, hasSel] },
-    }) as unknown as Layer);
-    visibleAssignments.forEach((a, i) => {
-      const isSel = a.ASSIGNMENT_ID === selectedAssignment;
-      const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
-      const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
+        if (path.length >= 2) {
+          result.push(new PathLayer({
+            id: 'loaded-routes', data: [{ path }], getPath: (d: { path: LngLat[] }) => d.path,
+            getColor: [c[0], c[1], c[2], 255], getWidth: 6,
+            widthUnits: 'pixels', widthMinPixels: 2, parameters: { depthTest: false }, pickable: true,
+            updateTriggers: { getColor: [selectedAssignment] },
+          }) as unknown as Layer);
+        }
+      }
       const dashed = (id: string, data: unknown) => new GeoJsonLayer({
         id, data: data as GeoJSON.GeoJSON,
-        stroked: true, getLineColor: [110, 110, 110, emptyAlpha], getDashArray: [10, 6], lineWidthMinPixels: emptyW,
+        stroked: true, getLineColor: [110, 110, 110, 255], getDashArray: [10, 6], lineWidthMinPixels: 6,
         extensions: [new PathStyleExtension({ dash: true })], parameters: { depthTest: false },
       }) as unknown as Layer;
-      if (a.EMPTY_GEOJSON) result.push(dashed(`empty-${i}`, a.EMPTY_GEOJSON));
-      if (a.EMPTY_RETURN_GEOJSON) result.push(dashed(`empty-ret-${i}`, a.EMPTY_RETURN_GEOJSON));
-    });
+      if (selected.EMPTY_GEOJSON) result.push(dashed('empty-sel', selected.EMPTY_GEOJSON));
+      if (selected.EMPTY_RETURN_GEOJSON) result.push(dashed('empty-ret-sel', selected.EMPTY_RETURN_GEOJSON));
+    }
     if (selected && Array.isArray(selected.STOPS) && selected.STOPS.length) {
       const palette: Record<Stop['kind'], { ring: [number, number, number]; halo: [number, number, number, number] }> = {
         start: { ring: [156, 163, 175], halo: [156, 163, 175, 60] },
