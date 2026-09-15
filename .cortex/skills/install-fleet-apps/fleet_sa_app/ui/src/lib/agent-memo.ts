@@ -41,6 +41,13 @@ import type { MapLayerDescriptor, MapStateDescriptor } from '@/lib/types';
  */
 export const MEMO_MAX_LEN = 500;
 
+/**
+ * Budgets live in `lib/memo-budget.ts` (a server-safe module, since the chat
+ * route enforces MEMO_TOTAL_MAX and cannot import this `'use client'` file) and
+ * are re-exported here so components have one import for memo work.
+ */
+export { MEMO_TOTAL_MAX, TRIP_MEMO_MAX_LEN } from '@/lib/memo-budget';
+
 /** Rows sampled into a table memo. The agent gets a top-of-sort window, not the table. */
 export const MEMO_SAMPLE_ROWS = 5;
 

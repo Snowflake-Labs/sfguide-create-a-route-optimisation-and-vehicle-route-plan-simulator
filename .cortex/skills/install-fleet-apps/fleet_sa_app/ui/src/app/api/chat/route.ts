@@ -17,6 +17,9 @@ import { recordAgentTurn, extractRequestId, type AgentTurnRecord } from '@/lib/a
 // TOOLS_USED answers WHICH skill, not just that one did.
 import { attributeTool } from '@/lib/tool-visibility';
 import { getIngressUser } from '@/lib/ingress-identity';
+// Shared with the memo publishers (lib/agent-memo.ts re-exports it) so the cap
+// enforced here and the cap they trim to cannot drift apart again.
+import { MEMO_TOTAL_MAX } from '@/lib/memo-budget';
 
 export async function POST(request: NextRequest) {
   const reqId = crypto.randomUUID().slice(0, 8);
@@ -76,26 +79,47 @@ export async function POST(request: NextRequest) {
           return 0;
         };
         rendered.sort((a, b) => memoRank(a) - memoRank(b));
-        // Total budget across all panels. Each publisher self-bounds to ~500
-        // chars, but a busy view has 5+ areas and the map block plus the useCase
-        // block still have to fit in the same prompt. Trim whole panels rather
-        // than characters, so nothing is half-quoted.
-        const MEMO_TOTAL_MAX = 3000;
+        // Total budget across all panels. Each publisher self-bounds, but a busy
+        // view has 5+ areas and the map block plus the useCase block still have
+        // to fit in the same prompt. Trim whole panels rather than characters, so
+        // nothing is half-quoted - EXCEPT for a panel that alone exceeds the
+        // budget, which the whole-panel rule can only delete. That is how the
+        // backload assignments list went silent: one 3,627-char memo against a
+        // 3,000-char total meant the loop broke at i=0, memoText stayed empty,
+        // and the agent was told on-screen values existed while being shown
+        // none. A clamped panel with the cut declared is recoverable; a deleted
+        // one is invisible.
         let memoText = '';
         let dropped = 0;
         for (let i = 0; i < rendered.length; i++) {
           const next = memoText ? `${memoText} | ${rendered[i]}` : rendered[i];
           if (next.length > MEMO_TOTAL_MAX) {
-            dropped = rendered.length - i;
+            if (i === 0) {
+              const room = MEMO_TOTAL_MAX - 60;
+              const cut = rendered[0].length - room;
+              memoText = `${rendered[0].slice(0, room)} (panel memo truncated, ${cut} chars dropped)`;
+              dropped = rendered.length - 1;
+            } else {
+              dropped = rendered.length - i;
+            }
             break;
           }
           memoText = next;
         }
         if (dropped > 0) memoText += ` | (+${dropped} more panels not shown)`;
-        parts.push(`On-screen values by panel: ${memoText}.`);
-        parts.push(
-          'Those on-screen values are what the user is looking at right now - quote them when asked what is on screen, and prefer them over re-running a query, which can disagree with the panel (several views are scoped to a replay instant or a client-side sort). Table memos are a bounded top-N sample of the rendered rows and say how many rows exist; never report the sample size as the total, and query the semantic view for any row, column, or category outside the sample.',
-        );
+        // Never announce on-screen values and then list none: an empty block
+        // plus the "quote them" instruction below is what makes the agent
+        // improvise from the scalar filters and hedge about rows it cannot see.
+        if (memoText.trim()) {
+          parts.push(`On-screen values by panel: ${memoText}.`);
+          parts.push(
+            'Those on-screen values are what the user is looking at right now - quote them when asked what is on screen, and prefer them over re-running a query, which can disagree with the panel (several views are scoped to a replay instant or a client-side sort). Table memos are a bounded top-N sample of the rendered rows and say how many rows exist; never report the sample size as the total, and query the semantic view for any row, column, or category outside the sample.',
+          );
+        } else {
+          parts.push(
+            'The panels on screen published values but none fitted the context budget, so you cannot see them: say so rather than inferring the rendered rows from the filters above.',
+          );
+        }
       }
     }
     const ak = view.agentKnowledge;
