@@ -184,6 +184,21 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload rehydrate geometry gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${BACKLOAD_MEMO_VERIFY:-1}" != "0" ]; then
+    # What the agent can see of a solved plan is one bounded string per panel, and
+    # the chat route trims by WHOLE PANEL. A memo that outgrows the budget is
+    # therefore deleted rather than shortened: the 21-trip assignments list
+    # vanished while its KPI scalars survived, so the agent totalled a plan it
+    # could not name one trip in, and no surface reported anything. Wired here
+    # because .githooks/pre-commit does not run (core.hooksPath is unset), which
+    # makes the deploy the only place that can actually stop a regression.
+    MEMO_GATE="$SKILL_DIR/scripts/check_backload_memo.py"
+    if [ -f "$MEMO_GATE" ]; then
+      echo "[1/7] Verify the backload memos fit the agent context budget..."
+      python3 "$MEMO_GATE" \
+        || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
