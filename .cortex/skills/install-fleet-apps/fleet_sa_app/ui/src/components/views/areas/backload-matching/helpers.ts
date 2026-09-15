@@ -594,6 +594,20 @@ function cleanWaypoints(pts: [number, number][]): [number, number][] {
   return out;
 }
 
+// Straight LineString between two points, or null when they are the same place
+// or either is unusable. Used as the LAST resort for a deadhead leg whose road
+// geometry DIRECTIONS refused to return: without it the dashed layer is simply
+// not pushed, so the map shows a tour with no visible connection to the vehicle
+// and nothing anywhere says why. Geometry only - the caller must NOT copy a km
+// off this, because a straight line is not the distance the vehicle drives.
+export function straightLineGeoJSON(
+  from: [number, number], to: [number, number],
+): unknown | null {
+  const pts = cleanWaypoints([from, to]);
+  if (pts.length < 2) return null;
+  return { type: 'LineString', coordinates: pts };
+}
+
 // Road polyline + real road distance through N waypoints via ORS DIRECTIONS.
 // Returns null on failure so callers can fall back to haversine km / straight
 // links. Numeric-only waypoints -> inlined array literal is injection-safe.
