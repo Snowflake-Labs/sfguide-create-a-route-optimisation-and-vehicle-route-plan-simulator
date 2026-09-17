@@ -384,7 +384,12 @@ LIMIT 15'
 -- Source: FLEET_APP.DWELL.VW_DWELL_SESSIONS (dwell sessions),
 --         FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY (per-driver SLA)
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
--- AVG_POINT GEOGRAPHY excluded. Two independent facts.
+-- AVG_POINT GEOGRAPHY is still excluded (it is not a useful dimension type), but
+-- its lat/lon pair IS exposed as DWELL_LAT/DWELL_LON so any H3 resolution can be
+-- derived through the GOVERNED path. Before that, H3_CELL_R7 was the only
+-- resolution obtainable here, so "use resolution 9" forced the agent onto run_sql
+-- and CoWork's data_to_map rejects an MCP result - the question was unanswerable.
+-- Two independent facts.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
 
@@ -420,7 +425,13 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
       WITH SYNONYMS ('asset mode', 'vehicle class', 'fleet type', 'mode')
       COMMENT = 'Asset mode (car, hgv, ebike). A data value, not a fixed set.'
     , sessions.location_name AS LOCATION_NAME WITH SYNONYMS ('facility name', 'place') COMMENT = 'Dwell location name'
-    , sessions.h3_cell AS H3_CELL_R7 WITH SYNONYMS ('hex cell', 'h3') COMMENT = 'H3 resolution-7 cell for congestion heatmaps'
+    , sessions.h3_cell AS H3_CELL_R7 WITH SYNONYMS ('hex cell', 'h3') COMMENT = 'H3 cell id, STORED at resolution 7 (~1.2 km edge). Pre-computed, so it is the cheapest hexmap. For ANY OTHER resolution do not use this column - re-bin from dwell_lat/dwell_lon (see the resolution rule in the SQL generation instructions).'
+    , sessions.dwell_lat AS DWELL_LAT
+      WITH SYNONYMS ('dwell latitude', 'session latitude')
+      COMMENT = 'Latitude of the dwell session centroid. Pair with dwell_lon to re-bin H3 at ANY resolution via H3_LATLNG_TO_CELL_STRING(dwell_lat, dwell_lon, N), or to draw a latlon layer of individual stops.'
+    , sessions.dwell_lon AS DWELL_LON
+      WITH SYNONYMS ('dwell longitude', 'session longitude')
+      COMMENT = 'Longitude of the dwell session centroid. Pair with dwell_lat. Argument order for H3 is (lat, lon) - reversing it silently returns cells in the wrong hemisphere.'
     , sessions.driver_profile AS DRIVER_PROFILE COMMENT = 'Driver profile'
     , sessions.operating_mode AS OPERATING_MODE COMMENT = 'Operating mode'
     , sessions.session_start AS SESSION_START WITH SYNONYMS ('dwell start') COMMENT = 'Dwell session start timestamp'
@@ -464,6 +475,15 @@ REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 Conventions:
 - "congestion" / "heatmap" / "density" / "hotspots" / "where do vehicles stop" -> group sessions by h3_cell, AND select a measure alongside it (total_dwell_minutes or total_sessions). A cell id with no measure cannot be shaded, so a bare h3_cell list is not an answer. This is the SPATIAL question: a breakdown by facility_type or city answers a DIFFERENT one, so do not silently substitute it (see the chart_customization block below for how to draw it).
 - "SLA breaches" / "violations" -> driver_dwell.total_sla_breaches or total_critical_breaches.
+
+H3 RESOLUTION IS A PARAMETER, NOT A FIXED PROPERTY OF THIS VIEW:
+- h3_cell is STORED at resolution 7. For resolution 7 just select it - it is pre-computed and free.
+- For ANY OTHER resolution, re-bin from the point: SELECT H3_LATLNG_TO_CELL_STRING(dwell_lat, dwell_lon, N) AS h3_cell, SUM(dwell_minutes) AS total_dwell_minutes ... GROUP BY 1. That is the ONLY way to change resolution here, and it works for finer AND coarser N. Verified faithful: re-binning to N = 7 reproduces h3_cell exactly on all 18,000 SF sessions.
+- Coarser than 7 may instead use H3_CELL_TO_PARENT(h3_cell, N), which is cheaper because it needs no point.
+- The argument order is (lat, lon). H3_LATLNG_TO_CELL_STRING(dwell_lon, dwell_lat, N) returns valid-looking cells in the wrong place with no error.
+- These are the functions that EXIST: H3_LATLNG_TO_CELL_STRING, H3_POINT_TO_CELL_STRING, H3_CELL_TO_PARENT, H3_GET_RESOLUTION. H3_CELL_TO_CHILDREN, H3_CELL_TO_GEOGRAPHY and H3_CELL_TO_BOUNDARY_WKT do NOT exist in Snowflake - do not reach for them.
+- CELL COUNT GROWS ~7x PER LEVEL, so always aggregate and always say what you filtered. Measured for San Francisco: 31 cells at r7, 146 at r8, 538 at r9, 2,376 at r11. A raw per-session SELECT at r9 exceeds the 500-row result cap and returns a SILENTLY PARTIAL map, which is what a GROUP BY avoids. If a row cap still truncates the result, say the map is partial rather than describing it as the whole region.
+- Honest floor: dwell_lat/dwell_lon is the centroid of ONE standing vehicle''s pings, spread 2 m median and 4 m worst over 3,000 sessions, so re-binning stays truthful to about resolution 12. Beyond that the centroid is finer than the evidence - say so instead of drawing it.
 - "dwell time" -> sessions.total_dwell_minutes or avg_dwell_minutes.
 - status values look like DWELL_WAREHOUSE, DWELL_STORE, DWELL_REST.
 
@@ -641,7 +661,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
     , zips.zip_land_sqmi AS LAND_SQMI COMMENT = 'ZIP land area in square miles'
     , hh_cells.cell_h3 AS H3
       WITH SYNONYMS ('h3', 'hex', 'h3 cell', 'household cell')
-      COMMENT = 'Map-ready H3 cell id as a STRING. Use as the h3 column of an h3 layer for a household-density hexmap.'
+      COMMENT = 'Map-ready H3 cell id as a STRING, STORED at resolution 8 (~460 m edge). Use as the h3 column of an h3 layer for a household-density hexmap. Resolution 8 is the FINEST grain that exists: households were counted per res-8 cell, so this can be rolled UP with H3_CELL_TO_PARENT(cell_h3, N) for N < 8 but can NEVER be split into finer cells. No point column is exposed here on purpose - there is no sub-cell position to re-bin from.'
     , hh_cells.cell_region AS REGION COMMENT = 'Region the H3 cell belongs to'
   )
 
@@ -666,6 +686,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_LOCATION
 - zips (VW_ZIP_AREAS): one row per ZIP, standalone (NOT joined to stores). Population, households, median income, land area, and a map-ready simplified boundary.
 - hh_cells (VW_HH_CELLS): one row per H3 cell, standalone. Household counts for a density hexmap.
 Conventions:
+- H3 RESOLUTION, COARSER ONLY: cell_h3 is STORED at resolution 8 (~460 m edge) and that is the FINEST grain that exists - households were counted per res-8 cell, and no sub-cell position was kept. Roll UP with H3_CELL_TO_PARENT(cell_h3, N) for N < 8, re-aggregating total_cell_households with SUM. For N > 8 there is NO valid answer: say the stored grain is resolution 8 and offer 8 or coarser. NEVER divide a cell''s households among its children (e.g. hh / 49) to fake a finer map - every household would land in one arbitrary child, and the result LOOKS like real data. This differs from dwell, where a true per-session point exists and finer resolutions are legitimate.
 - "how many stores" -> store_count; "total revenue/ebitda" -> total_revenue/total_ebitda grouped by store_role.
 - "best value stores" -> avg_value_per_cost or store_name ordered by value_per_cost.
 - MAPPING: for a store map select store_lat + store_lon and use a latlon layer, coloring by store_role. For a ZIP choropleth select zip_geojson and use a geojson layer, coloring by a ZIP metric. For household density select cell_h3 and use an h3 layer, coloring by total_cell_households. Keep the row count modest when selecting zip_geojson - the boundary strings are large.
