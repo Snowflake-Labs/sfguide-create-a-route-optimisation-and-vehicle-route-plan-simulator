@@ -2663,6 +2663,24 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_visited_nodes: ' + str(limits['matrix_maximum_visited_nodes']),
         '      maximum_routes: ' + str(limits['matrix_maximum_routes']),
         '      maximum_routes_flexible: ' + str(limits['matrix_maximum_routes']),
+        # Bound to maximum_snapping_radius ON PURPOSE, and read from the same
+        # dict entry so the two can never drift apart again. ORS snaps matrix
+        # coordinates with endpoints.matrix.maximum_search_radius (shipped
+        # default 2000) and routing coordinates with
+        # profile_default.service.maximum_snapping_radius (set to 1000 here), so
+        # while these differed MATRIX was strictly MORE PERMISSIVE than
+        # DIRECTIONS: a point 1-2 km off the graph resolved to a finite matrix
+        # duration and then made DIRECTIONS answer 404/2010 "could not find
+        # routable point". Measured on this deployment: every 2010 in
+        # OBSERVABILITY.ORS_REQUEST_LOG was preceded within one second by a
+        # matrix 200 on the same profile and host. That is what defeats the
+        # get_directions matrix pre-flight (deploy-agent.sql step 1e) and the
+        # VROOM code-3 pre-filter in the SA app's backload helpers.ts - both use
+        # the matrix as an oracle for a call with a tighter radius, so the
+        # oracle cannot convict the case it exists for. Equal radii make the
+        # oracle sound. This is a runtime cap: it applies on container restart,
+        # never a graph rebuild.
+        '      maximum_search_radius: ' + str(limits['maximum_snapping_radius']),
         '    isochrones:',
         '      maximum_locations: ' + str(limits['isochrones_maximum_locations']),
         '      maximum_intervals: ' + str(limits['isochrones_maximum_intervals']),

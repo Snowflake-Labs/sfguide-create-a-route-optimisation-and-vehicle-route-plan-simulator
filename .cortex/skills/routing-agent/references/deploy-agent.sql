@@ -194,6 +194,10 @@ DECLARE
     v_region_source VARCHAR;
     v_unroutable_legs INT;
     v_first_bad_leg INT;
+    v_snap_radius FLOAT;
+    v_far_snap_count INT;
+    v_first_far_coord INT;
+    v_far_snap_m FLOAT;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -380,6 +384,67 @@ BEGIN
     -- TRUE). DUR_ROWS separates "no route" from "no matrix" - without it a
     -- failed matrix has no durations key at all, every cell reads NULL, and a
     -- perfectly routable request would be refused.
+    --
+    -- A NULL duration is NOT the only way the pair can fail, and this is the
+    -- second half of the same lesson. ORS snaps MATRIX coordinates with
+    -- endpoints.matrix.maximum_search_radius and ROUTING coordinates with
+    -- profile_default.service.maximum_snapping_radius, and until the config
+    -- change alongside this the matrix radius was the larger of the two. A point
+    -- 1-2 km off the graph therefore snapped for the matrix, returned a finite
+    -- duration, passed this gate, and then made DIRECTIONS answer 404/2010
+    -- "could not find routable point within a radius". Measured in
+    -- OBSERVABILITY.ORS_REQUEST_LOG: every 2010 was preceded within one second
+    -- by a matrix 200 on the same profile and host - the oracle passing the
+    -- exact case it exists for, a second time. So the gate also reads the
+    -- snapped distance the matrix reports per coordinate and convicts anything
+    -- beyond the region's ROUTING radius. The SA app's backload pre-filter
+    -- (helpers.ts findUnroutablePoints) already had to do this for VROOM code 3;
+    -- this is the same check for the same reason.
+    --
+    -- A NULL snapped_distance deliberately does NOT convict. The defect being
+    -- closed always produces a PRESENT and large value, so a missing one is an
+    -- absence of evidence, not evidence of absence - and treating it as a
+    -- refusal would let one degraded matrix response reject a good route.
+    -- `SNAP_M > ?` is null-safe for the same reason (NULL > x is NULL, so
+    -- COUNT_IF does not count it).
+    -- Resolved in three separate statements, not one COALESCE over a scalar
+    -- subquery: Snowflake Scripting rejects `SELECT COALESCE((SELECT ...)) INTO
+    -- :var` with "INTO clause is not allowed in this context". Each step is
+    -- wrapped so an older deploy missing REGION_ORS_LIMITS or
+    -- ORS_LIMIT_DEFAULTS falls back to the 1000 m default rather than failing
+    -- the whole route.
+    --
+    -- This value is what the config SAYS, which can lag what the running engine
+    -- is USING until the region's container restarts. Measured on this
+    -- deployment: config resolved 1000 while the live SanFrancisco service
+    -- answered "within a radius of 400.0 meters" - it was still serving the
+    -- static bootstrap ors-config.yml, which set no snapping radius at all and
+    -- so took the ORS default. A configured value that is too HIGH under-
+    -- convicts (a point at 500 m passes this gate and still 2010s), and
+    -- guessing lower would refuse good routes, so the 2010 branch after the
+    -- DIRECTIONS call is the deliberate backstop for exactly that window
+    -- rather than a redundant second check.
+    v_snap_radius := NULL;
+    BEGIN
+        SELECT LIMITS:maximum_snapping_radius::FLOAT INTO :v_snap_radius
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
+         WHERE UPPER(REGION) = UPPER(:v_region)
+         LIMIT 1;
+    EXCEPTION WHEN OTHER THEN
+        v_snap_radius := NULL;
+    END;
+    IF (v_snap_radius IS NULL OR v_snap_radius <= 0) THEN
+        BEGIN
+            SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS():maximum_snapping_radius::FLOAT
+              INTO :v_snap_radius;
+        EXCEPTION WHEN OTHER THEN
+            v_snap_radius := NULL;
+        END;
+    END IF;
+    IF (v_snap_radius IS NULL OR v_snap_radius <= 0) THEN
+        v_snap_radius := 1000;
+    END IF;
+
     IF (v_coord_count <= 25) THEN
         BEGIN
             LET pf_sql VARCHAR := 'WITH m AS (
@@ -392,19 +457,37 @@ BEGIN
                        COALESCE(ARRAY_SIZE(m.R:durations), 0) AS DUR_ROWS
                 FROM m, LATERAL FLATTEN(INPUT => PARSE_JSON(?)) s
                 WHERE s.INDEX < ARRAY_SIZE(PARSE_JSON(?)) - 1
+            ),
+            snaps AS (
+                SELECT s.INDEX AS CIDX,
+                       m.R:destinations[s.INDEX]:snapped_distance::FLOAT AS SNAP_M
+                FROM m, LATERAL FLATTEN(INPUT => PARSE_JSON(?)) s
+            ),
+            leg_agg AS (
+                SELECT IFF(MAX(DUR_ROWS) > 0, COUNT_IF(SECS IS NULL), NULL) AS BAD_LEGS,
+                       IFF(MAX(DUR_ROWS) > 0, MIN(IFF(SECS IS NULL, LEG_IDX, NULL)), NULL) AS FIRST_BAD
+                FROM legs
+            ),
+            snap_agg AS (
+                SELECT COUNT_IF(SNAP_M > ?)               AS FAR_COUNT,
+                       MIN(IFF(SNAP_M > ?, CIDX, NULL))   AS FIRST_FAR,
+                       MAX(IFF(SNAP_M > ?, SNAP_M, NULL)) AS FAR_M
+                FROM snaps
             )
-            SELECT IFF(MAX(DUR_ROWS) > 0, COUNT_IF(SECS IS NULL), NULL),
-                   IFF(MAX(DUR_ROWS) > 0, MIN(IFF(SECS IS NULL, LEG_IDX, NULL)), NULL)
-            FROM legs';
+            SELECT l.BAD_LEGS, l.FIRST_BAD, s.FAR_COUNT, s.FIRST_FAR, s.FAR_M
+            FROM leg_agg l, snap_agg s';
             LET pf_coords VARCHAR := v_coords::STRING;
-            res := (EXECUTE IMMEDIATE :pf_sql USING (pf_coords, pf_coords, pf_coords, pf_coords));
+            res := (EXECUTE IMMEDIATE :pf_sql USING (
+                pf_coords, pf_coords, pf_coords, pf_coords, pf_coords,
+                v_snap_radius, v_snap_radius, v_snap_radius));
             LET cp CURSOR FOR res;
             OPEN cp;
-            FETCH cp INTO v_unroutable_legs, v_first_bad_leg;
+            FETCH cp INTO v_unroutable_legs, v_first_bad_leg, v_far_snap_count, v_first_far_coord, v_far_snap_m;
             CLOSE cp;
         EXCEPTION
             WHEN OTHER THEN
                 v_unroutable_legs := NULL;
+                v_far_snap_count := NULL;
         END;
 
         IF (v_unroutable_legs IS NOT NULL AND v_unroutable_legs > 0) THEN
@@ -425,6 +508,33 @@ BEGIN
                 'profile', v_used,
                 'unroutable_legs', v_unroutable_legs,
                 'first_unroutable_leg', v_first_bad_leg,
+                'status', 'FAILED'
+            );
+        END IF;
+
+        -- Far-snap refusal. Same class as UNROUTABLE_LEG (the place is not on
+        -- the road graph this region built) but a different measurement, so it
+        -- names the place and the distance instead of the leg: this is the case
+        -- where a route WOULD have been reported as an opaque ORS 2010.
+        IF (v_far_snap_count IS NOT NULL AND v_far_snap_count > 0) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: place ', (COALESCE(v_first_far_coord, 0) + 1)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_far_coord, 0)]:name::STRING, 'unknown'), ')',
+                    ' is ', ROUND(COALESCE(v_far_snap_m, 0))::VARCHAR, ' m from the nearest road on the ',
+                    v_region, ' ', v_used, ' graph, beyond this region''s ',
+                    ROUND(v_snap_radius)::VARCHAR, ' m snapping radius. ',
+                    v_far_snap_count::VARCHAR, ' of ', v_coord_count::VARCHAR,
+                    ' places are off-graph. Name a nearby street address instead, or provision a region whose graph covers it.'
+                ),
+                'error_code', 'OFF_GRAPH_PLACE',
+                'locations_requested', v_locations,
+                'region', v_region,
+                'profile', v_used,
+                'off_graph_places', v_far_snap_count,
+                'first_off_graph_place', v_first_far_coord,
+                'snapped_distance_m', v_far_snap_m,
+                'snapping_radius_m', v_snap_radius,
                 'status', 'FAILED'
             );
         END IF;
@@ -451,6 +561,36 @@ BEGIN
     CLOSE c2;
 
     IF (v_ors_error IS NOT NULL) THEN
+        -- ORS 2010 is "could not find routable point within a radius of N
+        -- meters of specified coordinate K" - the SAME off-graph condition the
+        -- pre-flight above convicts, reaching here only when the pre-flight was
+        -- skipped (more than 25 places) or declined to claim (matrix errored, or
+        -- reported no snapped_distance). Before this branch existed it fell
+        -- through to the generic dump below, which stringifies the whole error
+        -- VARIANT: the caller got `{"code":2010,"message":"..."}` and no
+        -- indication that the fix is to name a different place rather than to
+        -- retry. ORS's own message carries the coordinate index and the radius,
+        -- so it is surfaced verbatim rather than paraphrased. Classified with
+        -- the same error_code as the pre-flight refusal so a caller has one
+        -- condition to handle, not two.
+        IF (v_ors_error:code::INT = 2010) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: at least one place is not on the ', v_region, ' ', v_used,
+                    ' road graph, so no route could start or end there. The routing engine reported: ',
+                    COALESCE(v_ors_error:message::STRING, v_ors_error::VARCHAR),
+                    ' Name a nearby street address instead, or provision a region whose graph covers it.'
+                ),
+                'error_code', 'OFF_GRAPH_PLACE',
+                'ors_code', 2010,
+                'ors_message', v_ors_error:message::STRING,
+                'locations_requested', v_locations,
+                'region', v_region,
+                'profile', v_used,
+                'snapping_radius_m', v_snap_radius,
+                'status', 'FAILED'
+            );
+        END IF;
         RETURN OBJECT_CONSTRUCT(
             'error', CONCAT('ROUTING FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR),
             'locations_requested', v_locations,
