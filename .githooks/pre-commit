@@ -733,6 +733,34 @@ fi
 # nothing to the dash period, which is why the units looked handled. The gate
 # also holds the empty-leg and baseline greys apart: at 110 vs 150 they were the
 # same line whenever a dash gap was off screen.
+# ── Stored GEOGRAPHY must be carried to the map, not dropped and rebuilt ──────
+# Every fact table is dual-carrier: a GEOGRAPHY column beside the lat/lon
+# numerics. Both are load-bearing (ORS needs JSON numbers; a semantic view cannot
+# hold a GEOGRAPHY column), so geometry is never simply "missing". The defect is
+# a seam that DROPS it and a downstream view that rebuilds it - invisible, because
+# every number stays right. VW_EXTERNAL_OFFERS omitted PICKUP_GEOM and
+# EXTERNAL_OFFER_SEARCH then rebuilt the same point five times per row.
+# The client half is the same shape: detectGeoColumns ranked declared GEOGRAPHY
+# highest yet was imported by nothing but its own harness, so RULE D asserts the
+# rebind is CALLED, not merely exported.
+GEO_CARRIER_CHECK="$SKILL_DIR/scripts/check_geography_carrier.py"
+if [ -f "$GEO_CARRIER_CHECK" ]; then
+  echo "pre-commit: stored GEOGRAPHY carrier check..."
+  python3 "$GEO_CARRIER_CHECK" || {
+    echo "pre-commit FAILED: stored geometry is dropped or rebuilt, or the rebind is unwired."
+    exit 1
+  }
+  GEO_CARRIER_NEG="$SKILL_DIR/scripts/check_geography_carrier_negative.py"
+  if [ -f "$GEO_CARRIER_NEG" ]; then
+    echo "pre-commit: geography carrier negative tests..."
+    python3 "$GEO_CARRIER_NEG" >/dev/null || {
+      echo "pre-commit FAILED: the geography gate no longer catches its own regressions."
+      echo "  Re-run for detail: python3 '$GEO_CARRIER_NEG'"
+      exit 1
+    }
+  fi
+fi
+
 DASH_UNITS_CHECK="$SKILL_DIR/scripts/check_dash_units.py"
 if [ -f "$DASH_UNITS_CHECK" ]; then
   echo "pre-commit: dashed map layer units check..."

@@ -255,6 +255,32 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
                echo "         python3 '$H3_NEG'"; exit 1; }
       fi
     fi
+
+    # Stored GEOGRAPHY must reach the map, not be dropped and rebuilt.
+    #
+    # Every fact table here is dual-carrier: a GEOGRAPHY column sits beside the
+    # lat/lon numerics. Both matter - ORS needs JSON numbers and a semantic view
+    # cannot hold a GEOGRAPHY column - so nothing is ever "missing". The failure
+    # is that a seam DROPS the geometry and a downstream view rebuilds it, which
+    # is invisible because every number stays correct. That shipped:
+    # VW_EXTERNAL_OFFERS omitted PICKUP_GEOM and EXTERNAL_OFFER_SEARCH rebuilt
+    # the same point five times per row.
+    #
+    # The client half is the same shape: detectGeoColumns already ranked declared
+    # GEOGRAPHY highest but was imported by nothing except its own test harness,
+    # so RULE D asserts the rebind is CALLED rather than merely exported.
+    GEO_CARRIER_GATE="$SKILL_DIR/scripts/check_geography_carrier.py"
+    GEO_CARRIER_NEG="$SKILL_DIR/scripts/check_geography_carrier_negative.py"
+    if [ -f "$GEO_CARRIER_GATE" ]; then
+      echo "[1/7] Verify stored GEOGRAPHY is carried, not rebuilt..."
+      python3 "$GEO_CARRIER_GATE" \
+        || { echo "ERROR: geography carrier gate failed (see above)."; exit 1; }
+      if [ -f "$GEO_CARRIER_NEG" ]; then
+        python3 "$GEO_CARRIER_NEG" >/dev/null \
+          || { echo "ERROR: geography carrier negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$GEO_CARRIER_NEG'"; exit 1; }
+      fi
+    fi
   fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:

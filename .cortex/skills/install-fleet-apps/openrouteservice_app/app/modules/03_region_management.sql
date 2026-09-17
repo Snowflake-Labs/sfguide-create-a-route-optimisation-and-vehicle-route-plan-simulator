@@ -5454,6 +5454,20 @@ DECLARE
     errors_arr     ARRAY DEFAULT ARRAY_CONSTRUCT();
     ok BOOLEAN DEFAULT TRUE;
 BEGIN
+    -- Degree-box area, DELIBERATELY without the cos(latitude) correction its
+    -- sibling in 06_matrix_ops.sql applies, and deliberately not ST_AREA.
+    --
+    -- Two reasons, both load-bearing:
+    --   1. No geometry is in scope. This procedure takes four bbox FLOATs and
+    --      no region key, so there is no BOUNDARY column to measure - unlike
+    --      ESTIMATE_MATRIX_COST, which resolves REGION_CATALOG.BOUNDARY_AREA_KM2
+    --      first and only falls back to a cos-corrected box.
+    --   2. The over-estimate is the safety margin. Away from the equator this
+    --      overstates the true area (~27% at SF's latitude), which feeds
+    --      est_pbf_gib -> est_graph_gib -> a LARGER recommended compute size.
+    --      Adding cos() here would shrink every estimate and recommend smaller
+    --      pods, so a graph build that currently gets warned about would
+    --      instead OOM. The heuristic errs toward warning on purpose.
     bbox_area_sqkm := ABS((P_MAX_LON - P_MIN_LON) * (P_MAX_LAT - P_MIN_LAT)) * 111.0 * 111.0;
     -- Inhabited-area heuristic: ~0.05 GiB per 2500 km^2 (Berlin / SF / Munich
     -- city extracts) climbing to ~10 GiB at continental scale. Coastal /
