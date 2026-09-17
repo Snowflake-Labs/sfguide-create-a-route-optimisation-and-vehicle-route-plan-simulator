@@ -500,13 +500,23 @@ export async function ensureBackloadAndAssetVelocityObjects(
         COMMENT = ${TRACK}
         AS
         WITH last_drop AS (
+          -- Picks the latest trip ROW per vehicle rather than aggregating each
+          -- column independently. MAX_BY cannot take a GEOGRAPHY argument
+          -- (measured: "Invalid argument types for function 'MAX_BY':
+          -- (GEOGRAPHY, TIMESTAMP_NTZ)"), so carrying the stored DESTINATION
+          -- geometry requires a row pick. It is also strictly safer than the
+          -- per-column MAX_BY it replaces: on a TRIP_END tie those could each
+          -- resolve to a DIFFERENT trip and yield a lon/lat pair that belongs
+          -- to no single drop-off. Verified to return the same 100 vehicles and
+          -- the same coordinates as the MAX_BY form.
           SELECT VEHICLE_ID,
-                 MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
-                 MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
-                 MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-                 MAX(TRIP_END) AS LAST_TRIP_END
+                 DESTINATION_LON    AS DROPOFF_LON,
+                 DESTINATION_LAT    AS DROPOFF_LAT,
+                 DESTINATION        AS DROPOFF_GEOM,
+                 DESTINATION_POI_ID AS DROPOFF_POI_ID,
+                 TRIP_END           AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-          GROUP BY VEHICLE_ID
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
         ),
         -- Home anchor is grouped BY REGION. Averaging POI coordinates across two
         -- regions puts the fallback depot in the ocean between them.
@@ -523,7 +533,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME,
                  ANY_VALUE(LAT)  AS LAT,
-                 ANY_VALUE(LNG)  AS LNG
+                 ANY_VALUE(LNG)  AS LNG,
+                 ANY_VALUE(POINT_GEOM) AS POINT_GEOM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           GROUP BY LOCATION_ID
         ),
@@ -546,6 +557,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
           COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
           COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
+          -- The depot POI's stored point where there is one. The region-average
+          -- fallback has no stored geometry (it is an AVG of many POIs), so it
+          -- is still constructed - and only in that fallback case.
+          COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT)) AS HOME_GEOM,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
           -- A location NAME or nothing. These *_CITY values are read straight
           -- into the agent's answer and onto the backload map as stop labels, so
@@ -557,6 +572,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           d.NAME                                              AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
           ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+          ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
           ld.LAST_TRIP_END                                    AS ETA_TS,
           DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
           'IN_TRANSIT'                                        AS STATUS,
@@ -604,6 +620,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  t.REGION, t.VEHICLE_TYPE,
                  t.ORIGIN_LON, t.ORIGIN_LAT,
                  t.DESTINATION_LON, t.DESTINATION_LAT,
+                 -- FACT_TRIPS stores ORIGIN/DESTINATION as GEOGRAPHY alongside
+                 -- the numerics; carry them so the internal pool can hand a
+                 -- real geometry to VW_LOADS instead of making it rebuild one.
+                 t.ORIGIN, t.DESTINATION,
                  t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
@@ -640,9 +660,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
             o.NAME                                                                      AS PICKUP_CITY,
             t.ORIGIN_LON                                                                AS PICKUP_LON,
             t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+            t.ORIGIN                                                                    AS PICKUP_GEOM,
             d.NAME                                                                      AS DROPOFF_CITY,
             t.DESTINATION_LON                                                           AS DROPOFF_LON,
             t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+            t.DESTINATION                                                               AS DROPOFF_GEOM,
             -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
             -- wider of PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - rather
             -- than the next ~10 hours. Vehicle availability is now forward-looking
@@ -705,8 +727,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
-          PICKUP_CITY, PICKUP_LON, PICKUP_LAT,
-          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT,
+          PICKUP_CITY, PICKUP_LON, PICKUP_LAT, PICKUP_GEOM,
+          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, DROPOFF_GEOM,
           PICKUP_FROM_TS, PICKUP_TO_TS,
           WEIGHT_KG, PRODUCT, HAZMAT
         FROM deduped
@@ -839,9 +861,22 @@ export async function ensureBackloadAndAssetVelocityObjects(
           p2.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
+          -- Carry the STORED GEOGRAPHY through rather than letting consumers
+          -- rebuild it. FACT_OFFERS already persists PICKUP_GEOM/DROPOFF_GEOM
+          -- next to the numerics, and dropping them here is what forced every
+          -- downstream reader (VW_LOADS, EXTERNAL_OFFER_SEARCH) to re-derive
+          -- the same point with ST_MAKEPOINT - five times per row in the
+          -- search function's filter + projection + ORDER BY. Verified
+          -- identical to ST_MAKEPOINT(lon, lat) over all 300 rows (0
+          -- mismatches, max deviation 6.9e-05 m, i.e. float noise), so this is
+          -- a pass-through and not a change of value. The numerics stay: the
+          -- ORS engine needs JSON numbers and a semantic view cannot hold a
+          -- GEOGRAPHY column at all.
+          f.PICKUP_GEOM,
           d.NAME                                   AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
+          f.DROPOFF_GEOM,
           f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
           DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
