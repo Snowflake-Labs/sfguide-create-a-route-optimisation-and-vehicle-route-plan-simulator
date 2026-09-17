@@ -71,12 +71,12 @@ entities:
       - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
       - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
       - { name: DEVIATION_RATE_PCT,         type: NUMBER,   expr: "ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2)" }
-      - { name: TOTAL_EXCESS_KM,            type: FLOAT,    expr: "SUM(DISTANCE_DEVIATION_KM)" }
-      - { name: TOTAL_TIME_LOST_MIN,        type: FLOAT,    expr: "SUM(DURATION_DEVIATION_MIN)" }
-      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DISTANCE_DEVIATION_PCT)" }
-      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DURATION_DEVIATION_PCT)" }
-      - { name: MAX_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "MAX(DISTANCE_DEVIATION_PCT)" }
-      - { name: MAX_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "MAX(DURATION_DEVIATION_PCT)" }
+      - { name: TOTAL_EXCESS_KM,            type: FLOAT,    expr: "ROUND(SUM(DISTANCE_DEVIATION_KM), 2)" }
+      - { name: TOTAL_TIME_LOST_MIN,        type: FLOAT,    expr: "ROUND(SUM(DURATION_DEVIATION_MIN), 2)" }
+      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(AVG(DISTANCE_DEVIATION_PCT), 2)" }
+      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(AVG(DURATION_DEVIATION_PCT), 2)" }
+      - { name: MAX_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(MAX(DISTANCE_DEVIATION_PCT), 2)" }
+      - { name: MAX_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(MAX(DURATION_DEVIATION_PCT), 2)" }
     gaps:
       - "DRIVER_PROFILE / OPERATING_MODE / HOME_CITY exist in the legacy physical summary but come from a driver dimension, not the trip fact. Map a driver dim entity to populate them; omitted here (dashboards do not use them)."
 
@@ -95,10 +95,10 @@ entities:
       - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
       - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
       - { name: DEVIATION_RATE_PCT,         type: NUMBER,   expr: "ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2)" }
-      - { name: TOTAL_EXCESS_DISTANCE_KM,   type: FLOAT,    expr: "SUM(DISTANCE_DEVIATION_KM)" }
-      - { name: TOTAL_EXCESS_DURATION_MIN,  type: FLOAT,    expr: "SUM(DURATION_DEVIATION_MIN)" }
-      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DISTANCE_DEVIATION_PCT)" }
-      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DURATION_DEVIATION_PCT)" }
+      - { name: TOTAL_EXCESS_DISTANCE_KM,   type: FLOAT,    expr: "ROUND(SUM(DISTANCE_DEVIATION_KM), 2)" }
+      - { name: TOTAL_EXCESS_DURATION_MIN,  type: FLOAT,    expr: "ROUND(SUM(DURATION_DEVIATION_MIN), 2)" }
+      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(AVG(DISTANCE_DEVIATION_PCT), 2)" }
+      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "ROUND(AVG(DURATION_DEVIATION_PCT), 2)" }
 
   # ---- Derived: per-point GPS trace for the trip inspector ------------------
   - name: TRIP_GPS_POINTS
