@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
-import { usePublishMapState } from '@/lib/agent-memo';
+import { usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
 import type { ViewProps } from '@/lib/types';
 import { sfRead, sqlLiteral, callVerb } from './backload-matching/helpers';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
@@ -667,7 +667,13 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
       `${c.beatsBaseline ? 'beats baseline' : 'does NOT beat baseline'}; ` +
       `grade ${c.grade}; ${c.eligible ? 'eligible' : 'near miss'}`,
     );
-    return `${head}\n${lines.join('\n')}`;
+    // Bounded by CHARACTERS as well as by row count: a chain line carries both
+    // hops, both baselines and its grade, so 12 of them measured ~6 kB - past
+    // route.ts's whole-panel budget, which would drop this memo in full rather
+    // than trim it. The head is subtracted from the budget instead of competing
+    // with it, because the head holds the totals the chains are a sample of.
+    const lineBudget = Math.max(400, TRIP_MEMO_MAX_LEN - head.length);
+    return `${head}\n${joinBounded(lines, lineBudget, '\n')}`;
   }, [shown, chains.length, costBasis, rungReached, threshold]);
 
   const summary = useMemo(() => ({

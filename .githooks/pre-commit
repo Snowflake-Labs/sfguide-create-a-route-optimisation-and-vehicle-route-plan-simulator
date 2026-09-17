@@ -61,6 +61,47 @@ fi
 # The ops/admin specs MUST be in this trigger list: they are now inputs, so a
 # commit touching only ops-agent-spec.json would otherwise skip the check and
 # leave the super agent describing the old routing.
+# -- 2c. CoWork skills freshness + CoWork surface wiring -----------------------
+# The 26 SKILL.md folders and the 26-entry `skills` array in the agent spec are
+# GENERATED from the same useCase blocks as the view catalog, so a stale copy
+# means the agent advertises a workflow that no longer matches the view - or
+# points at a stage folder that no longer exists, which fails per request.
+COWORK_SKILLS_BUILD="$SKILL_DIR/scripts/build_cowork_skills.py"
+if [ -f "$COWORK_SKILLS_BUILD" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/fleet_sa_app/app/app-config.json" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/cowork_skills" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/packs/fleet/pack-views.json" \
+  "$SKILL_DIR/scripts/build_cowork_skills.py"; then
+  echo "pre-commit: CoWork skills freshness check..."
+  python3 "$COWORK_SKILLS_BUILD" --check || {
+    echo "pre-commit FAILED: CoWork skills are stale - run python3 $COWORK_SKILLS_BUILD"
+    exit 1
+  }
+fi
+
+# Every CoWork-facing failure in this class is SILENT: an agent with no sandbox
+# tool just cannot produce a file, a view with no verified query just regenerates
+# SQL, a broken vega_template is merged into every chart and reported nowhere.
+COWORK_CHECK="$SKILL_DIR/scripts/check_cowork_surfaces.py"
+if [ -f "$COWORK_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/cowork_skills" \
+  "$SKILL_DIR/scripts/verified_queries.py" \
+  "$SKILL_DIR/scripts/check_cowork_surfaces.py"; then
+  echo "pre-commit: CoWork surface wiring check..."
+  python3 "$COWORK_CHECK" || {
+    echo "pre-commit FAILED: see the rules above"
+    exit 1
+  }
+fi
+
 SUPER_BUILD="$SKILL_DIR/scripts/build_super_agent_spec.py"
 if [ -f "$SUPER_BUILD" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
@@ -73,6 +114,83 @@ if [ -f "$SUPER_BUILD" ] && staged_any \
     echo "pre-commit FAILED: super-agent-spec.json is stale - run python3 $SUPER_BUILD"
     exit 1
   }
+fi
+
+# ── 1b2. data_to_chart must state what it accepts ───────────────────────────────
+# data_to_chart and data_to_map are HOST-INJECTED and accept only a SQL or Cortex
+# Analyst result as tool_result_id; an MCP verb result is rejected. The specs said
+# so for maps and nothing for charts, and the tool description ("tabular data
+# returned by the analytics tools") read as though any verb result would do.
+# Measured cost of that missing sentence: a turn that produced NO ANSWER. The agent
+# solved backload_solve, was pushed at a chart by the host's own "charts are
+# MANDATORY for 2+ numeric rows" guidance, had only an MCP tool_use_id to offer,
+# and ended the turn after 125 s and 3,979 output tokens with no prose at all.
+# Nothing catches this: the rule is prose inside a single-line JSON string that four
+# specs share, --check above proves the super spec is CURRENT and not CORRECT, and
+# deleting the sentence fails no build and raises no error. It produces silence.
+CHART_SOURCE_CHECK="$SKILL_DIR/scripts/check_chart_source_constraint.py"
+if [ -f "$CHART_SOURCE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/ops-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/admin-agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
+  "$SKILL_DIR/scripts/check_chart_source_constraint.py"; then
+  echo "pre-commit: data_to_chart source constraint check..."
+  python3 "$CHART_SOURCE_CHECK" || exit 1
+fi
+
+# ── 1b2b. The client must be able to RENDER the chart it just asked for ───────
+# The sibling of the rule above, one layer out. 1b2 guarantees the agent CALLS
+# data_to_chart correctly; this guarantees the SA app draws the result. It did
+# not, ever: the inline registry knew `render_chart` (a name only the unused
+# `response.chart` SSE branch produces) while the real result streams as
+# `data_to_chart`, and an unregistered tool is a LEGAL state that falls through
+# to the collapsed JSON viewer. So every bar, line and pie the agent produced
+# rendered as a tidy "> Tool result" blob and nothing failed - maps escaped only
+# because `render_map` happens to be registered under the name it arrives with.
+# Same silent class as the routing_mcp_render_map separator bug. Also pins the
+# payload key (charts is an ARRAY), the theme merge DIRECTION (spec must win over
+# the app theme, or the agent's sort and colours are quietly overridden), the
+# citation stripping (react-markdown has no rehype-raw, so <chart>ID</chart> is
+# swallowed without trace), and the lazy boundary that keeps vega out of the
+# initial bundle.
+CHART_RENDER_CHECK="$SKILL_DIR/scripts/check_chart_rendering.py"
+if [ -f "$CHART_RENDER_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/tool-names.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/chart-spec.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/vega-theme.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/chart-citations.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/lib/cortex-stream.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/index.ts" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/chart-inline.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/chart-deferred.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/chat/message-part.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/chat/message-list.tsx" \
+  "$SKILL_DIR/scripts/check_chart_rendering.py"; then
+  echo "pre-commit: inline chart rendering check..."
+  python3 "$CHART_RENDER_CHECK" || exit 1
+fi
+
+# ── 1b3. A forbidden map must name the tool that can draw one ───────────────────
+# render_map shipped fully working and the agent never called it: asked to show
+# dwell density it drew two facility-type bar charts and handed off to a link. Two
+# semantic views' chart_customization blocks were PROHIBITIONS WITH NO ALTERNATIVE
+# ("H3 congestion is a MAP, not a chart", "A path or a route is a MAP ... never a
+# chart") - each correctly refuses the chart and then stops. Alongside a
+# host-injected chart skill that says maps cannot be created at all, the agent's
+# most salient local instructions read "do not chart this, and maps do not work".
+# Naming the tool is what turns a dead end into a path. Same failure class as 1b2:
+# a missing sentence in prose no test reads, which produces a bar chart where a map
+# belongs. Also checks the trigger words that make the geometry get SELECTed at all
+# - "density" was absent, so the analyst never fetched h3_cell and no map was
+# possible however good the map guidance was.
+MAP_GUIDANCE_CHECK="$SKILL_DIR/scripts/check_map_guidance.py"
+if [ -f "$MAP_GUIDANCE_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/scripts/check_map_guidance.py"; then
+  echo "pre-commit: map guidance check..."
+  python3 "$MAP_GUIDANCE_CHECK" || exit 1
 fi
 
 # ── 1c. Every synapse verb must be routed by the agents that can see it ────────
@@ -293,11 +411,32 @@ fi
 #     renders a full page while returning every loaded region; the Backload
 #     Matching page then posted 29 San Francisco coordinates to the Europe road
 #     graph, which refused the matrix in 5 ms with ORS 6010 "out of bounds".
+#   RULE 5 - RULES 1-4 all glob view/function bodies and app reads, so a JS
+#     STORED PROCEDURE was outside every one of them. That is where the class
+#     survived longest: TOOL_BACKLOAD_SOLVE accepted P_REGION, scoped all three
+#     of its feeds with it, and then resolved vehicle_type from the ONE-ROW
+#     CONFIG table - so a SanFrancisco solve over 100 ebikes reported hgv,
+#     resolved the driving-hgv profile and priced its objective at 0.85/km
+#     instead of 0.08/km, with nothing thrown anywhere. CONFIG as a documented
+#     FALLBACK is legitimate, so the rule enforces ORDER, not absence.
+#   RULE 6 - SOURCE is a CHANNEL label and its vocabulary contained the literal
+#     'INTERNAL', while every row it labels is an EXTERNAL offer
+#     (IS_INTERNAL=FALSE). 75 of 300 rows therefore claimed provenance they did
+#     not have, which coloured badges wrong and over-counted the
+#     internal_matched figure published to the agent memo.
 REGION_SCOPE_CHECK="$SKILL_DIR/scripts/check_region_scoping.py"
 if [ -f "$REGION_SCOPE_CHECK" ]; then
   echo "pre-commit: region scoping check..."
   python3 "$REGION_SCOPE_CHECK" || {
-    echo "pre-commit FAILED: a view is pinned to one region, or a semantic view cannot be filtered by region."
+    echo "pre-commit FAILED: a view is pinned to one region, a semantic view cannot be filtered by region, or a region-aware proc resolves its vehicle class from the CONFIG singleton."
+    exit 1
+  }
+fi
+REGION_SCOPE_NEG="$SKILL_DIR/scripts/check_region_scoping_negative.py"
+if [ -f "$REGION_SCOPE_NEG" ]; then
+  echo "pre-commit: region scoping negative tests..."
+  python3 "$REGION_SCOPE_NEG" >/dev/null || {
+    echo "pre-commit FAILED: the region-scoping gate no longer catches its own mutations (run it directly for the list)."
     exit 1
   }
 fi
@@ -327,6 +466,246 @@ if [ -f "$VERB_GLOBALS_CHECK" ]; then
   echo "pre-commit: verb JavaScript globals check..."
   python3 "$VERB_GLOBALS_CHECK" || {
     echo "pre-commit FAILED: a verb uses a JavaScript global the Snowflake proc runtime lacks."
+    exit 1
+  }
+fi
+
+# 9. Warehouse DDL drift. Runs on EVERY commit with no staged-path filter: the
+# scan is fast, and a divergent spec can arrive in any .sql layer or .sh deploy
+# script. Seven files used to create ROUTING_ANALYTICS with three different
+# specs; because `CREATE ... IF NOT EXISTS` makes every later one a silent no-op,
+# the spec an account received was decided by install order, and no existing
+# gate could see it (they all verify objects were CREATED, not that they match
+# the source). Comments are stripped first, which matters because these files
+# quote the very DDL they must not diverge from.
+WAREHOUSE_DDL_CHECK="$SKILL_DIR/scripts/check_warehouse_ddl.py"
+if [ -f "$WAREHOUSE_DDL_CHECK" ]; then
+  echo "pre-commit: warehouse DDL single-owner check..."
+  python3 "$WAREHOUSE_DDL_CHECK" || {
+    echo "pre-commit FAILED: warehouse spec drift -- scripts/warehouses.sql is the single owner."
+    exit 1
+  }
+fi
+
+# 10. Client-side polling must use the visibility-guarded hook. Runs on EVERY
+# commit with no staged-path filter: the scan is ~139 files and finishes
+# instantly. DEFAULT-DENY by design - the obvious "flag setInterval whose body
+# contains fetch('/api/...')" version would have caught NONE of the six loops
+# this gate was written for, because every one of them called an indirect helper.
+# Opting out is possible via '// polling-gate: ui-only -- <reason>' and three
+# genuine UI timers use it. Server-side trees are deliberately out of scope.
+CLIENT_POLLING_CHECK="$SKILL_DIR/scripts/check_client_polling.py"
+if [ -f "$CLIENT_POLLING_CHECK" ]; then
+  echo "pre-commit: client polling visibility-guard check..."
+  python3 "$CLIENT_POLLING_CHECK" || {
+    echo "pre-commit FAILED: unguarded client polling holds a warehouse awake for a background tab."
+    exit 1
+  }
+fi
+
+# 11. Batch workloads must use the batch SQL transport, not the interactive one.
+# This is the gate that would have caught a real shipped defect: the two-warehouse
+# split LOOKED complete because both submitSqlAsync call sites were correct, while
+# nothing verified that callers of the SYNCHRONOUS transport had been classified.
+# Three subsystems were still interactive - the whole studio generation pipeline
+# (from ONE injected argument), all of instrumentation.ts, and six heavy routes.
+# A batch workload is invisible at the transport, so the check has to know which
+# entry points are batch BY NAME and assert they never receive `runSql`.
+BATCH_TRANSPORT_CHECK="$SKILL_DIR/scripts/check_batch_transport.py"
+if [ -f "$BATCH_TRANSPORT_CHECK" ]; then
+  echo "pre-commit: batch SQL transport routing check..."
+  python3 "$BATCH_TRANSPORT_CHECK" || {
+    echo "pre-commit FAILED: batch work on the interactive warehouse starves dashboard reads."
+    exit 1
+  }
+fi
+
+# 12. Solver verbs must use the ASYNC solve path. Measured, the DEFAULT
+# backload_solve parameters take 38.1s and 100 vehicles / 500 loads takes 168.6s,
+# against a synchronous transport that gives up at 60s (pollResult 30x2s) with the
+# statement capped at 80s to stay under the ~90s SPCS ingress limit. A solver route
+# that reverts to query/queryBatch still WORKS for small inputs and only breaks
+# past ~40 vehicles - as a timeout that reads like an infrastructure fault rather
+# than a regression, which is why this needs a gate.
+SOLVER_ASYNC_CHECK="$SKILL_DIR/scripts/check_solver_async.py"
+if [ -f "$SOLVER_ASYNC_CHECK" ]; then
+  echo "pre-commit: solver async path check..."
+  python3 "$SOLVER_ASYNC_CHECK" || {
+    echo "pre-commit FAILED: a synchronous solve cannot exceed ~60s."
+    exit 1
+  }
+fi
+
+# 13. JS-bearing SQL must deploy with --enable-templating NONE. `snow sql` defaults
+# to LEGACY templating (SnowSQL &var), where `&&` is the ESCAPE for a literal `&`,
+# so deploying a JavaScript procedure without the flag rewrites every LOGICAL AND
+# into a BITWISE AND. `&` does not short-circuit, so `a && a.b` becomes a null
+# dereference. Measured: deploy-agent.sql has 75 `&&`; the deployed
+# TOOL_BACKLOAD_SOLVE had 0 `&&` and 25 bare `&`, which is why max_loads >= ~600
+# returned "unknown error". 8 of 9 JS TOOL_* procs shipped corrupted on every install.
+JS_TEMPLATING_CHECK="$SKILL_DIR/scripts/check_js_proc_templating.py"
+if [ -f "$JS_TEMPLATING_CHECK" ]; then
+  echo "pre-commit: JS procedure templating check..."
+  python3 "$JS_TEMPLATING_CHECK" || {
+    echo "pre-commit FAILED: LEGACY templating corrupts && into bitwise & in JS procs."
+    exit 1
+  }
+fi
+
+# 14. Routing procs must not probe ORS on the routing path, and TOOL_DIRECTIONS
+# must scope DIRECTIONS to a region. Measured on 2026-09-14: one agent turn ran
+# 840.6 s and was killed, with 839.7 s of it inside a single
+# `ORS_STATUS(NULL):profiles` probe that never routed anything. Its own comment
+# called that probe "best-effort" - EXCEPTION WHEN OTHER catches an ERROR, never
+# a HANG, and a procedure cannot ALTER SESSION SET STATEMENT_TIMEOUT to bound a
+# service function. Underneath it, DIRECTIONS was called with no region, so the
+# gateway resolved NULL to DEFAULT_REGION_NAME and every route ran on the
+# city-only San Francisco graph regardless of where the places were. The gate
+# also fails an uncast matrix durations cell: ORS writes an unroutable cell as a
+# JSON null, `IS NULL` is FALSE for that, and the first version of the
+# unroutable-leg check therefore passed on the very pair it was written for.
+ROUTING_PROBE_CHECK="$SKILL_DIR/scripts/check_routing_probe.py"
+if [ -f "$ROUTING_PROBE_CHECK" ]; then
+  echo "pre-commit: routing probe / region-scope check..."
+  python3 "$ROUTING_PROBE_CHECK" || {
+    echo "pre-commit FAILED: an unboundable ORS probe or an unscoped DIRECTIONS call is on the routing path."
+    exit 1
+  }
+fi
+
+# 15. Numbers a user reads must not carry more than two decimals.
+# A row-level view rounds to 2dp and casts back to FLOAT; 2dp is not exactly
+# representable in binary, so a SUM over a few hundred rows re-accumulates the
+# error and a semantic-view metric returned 21289.670000000002. Nothing failed -
+# the total was right to the cent - and every render site stringified rows
+# verbatim, so the artifact reached the screen and, through the agent memo, got
+# quoted back as fact. Both halves are needed: SQL rounding cannot survive a raw
+# String(v), and a client formatter never touches the agent's own prose.
+NUMBER_FORMAT_CHECK="$SKILL_DIR/scripts/check_number_formatting.py"
+if [ -f "$NUMBER_FORMAT_CHECK" ]; then
+  echo "pre-commit: number formatting / decimal cap check..."
+  python3 "$NUMBER_FORMAT_CHECK" || {
+    echo "pre-commit FAILED: an unrounded metric or an unformatted render site is on a user-facing path."
+    exit 1
+  }
+fi
+
+# 16. An optional semantic view that fails to deploy must not report as a
+# fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
+# entry with its name and its source expression the wrong way round - and the
+# view therefore existed in no account. Nothing surfaced it: the installer mapped
+# EVERY non-zero exit of semantic_views_marketplace.sql to "MARKETPLACE not
+# present yet (expected on a fresh install)", so a permanent defect and an
+# ordering skip produced byte-identical output on every run. The verdict is now
+# decided from the log; this test is what stops it regressing to a constant, and
+# its case 2 is that exact failure. A static gate was tried first and rejected by
+# its own evidence - `sessions.h3_cell AS H3_CELL_R7` deploys and returns rows,
+# so a shorter dimension name over a longer real column is legal and no static
+# rule separates it from the defect. The deploy is the only sound oracle here,
+# which is why the thing under test is how the deploy REPORTS.
+SEMANTIC_VERDICT_CHECK="$SKILL_DIR/scripts/check_semantic_verdict_negative.sh"
+if [ -f "$SEMANTIC_VERDICT_CHECK" ]; then
+  echo "pre-commit: semantic view deploy-verdict classification..."
+  bash "$SEMANTIC_VERDICT_CHECK" || {
+    echo "pre-commit FAILED: a failed optional semantic view would be reported as an expected skip."
+    exit 1
+  }
+fi
+
+# 16b. The same SV_OFFERS view then turned out to have a SECOND, independent
+# defect that the verdict fix above could only report, never prevent: its two
+# source views were authored ONLY by the admin app's boot init.ts, which does not
+# run until install step 7, while the view is created at step 4.5. Measured on a
+# clean install: SV_OFFERS attempted at 13:11, sources appeared at 13:30, in an
+# account that held the data all along (300 offers, 455 lane rows). The knock-on
+# was larger than the missing view - prune_agent_specs.py probes SHOW SEMANTIC
+# VIEWS at step 6, so the absent SV_OFFERS also deleted the query_offers tool
+# from the agents. Fixed by mirroring the sources into scripts/marketplace_layer.sql
+# (step 4.4) and scripts/projection_views.sql, ahead of the consumer. init.ts
+# stays the RUNTIME owner and REPLACES them on every boot, so a drifted mirror
+# would make the deployment change shape at the next container restart - and
+# init.ts swallows each statement failure as a WARN, so nothing would say so.
+# This gate compares the two sides, normalising only the tag's source":"sql" vs
+# "app", the ${TRACK_FX} interpolation, whitespace and comments.
+MARKETPLACE_PARITY_CHECK="$SKILL_DIR/scripts/check_marketplace_ddl_parity.py"
+if [ -f "$MARKETPLACE_PARITY_CHECK" ]; then
+  echo "pre-commit: MARKETPLACE / projection DDL parity with init.ts..."
+  python3 "$MARKETPLACE_PARITY_CHECK" || {
+    echo "pre-commit FAILED: mirrored DDL has drifted from its runtime owner (init.ts)."
+    exit 1
+  }
+fi
+
+# 17. A backload trip published to the agent must name every load it carries and
+# must report its LAST dropoff as the destination. A user asked for one truck's
+# workload and the agent answered "final destination: RCA Trucking" for a tour
+# that handed one load over there and carried a second onward - while the app's
+# own Stops panel showed the real 6-stop, 2-load chain beside it. The agent was
+# faithful: __memo_backload_matching was built from Assignment's scalar
+# PICKUP_CITY / PROPOSAL_DROPOFF_CITY, which come from the FIRST pickup only, so
+# hop 1 was published as the whole workload and the second load id existed
+# nowhere the agent could read. Nothing threw, every number was right, and the
+# memo's own drop list was already chain-correct - so the memo contradicted
+# itself and the agent trusted the "A->B" half. Derive from STOPS instead, and
+# do not restore the flat summary alongside the chain text: that shape leaves
+# every keyword rule passing (negative test M7 is the control).
+BACKLOAD_MEMO_CHECK="$SKILL_DIR/scripts/check_backload_memo.py"
+if [ -f "$BACKLOAD_MEMO_CHECK" ]; then
+  echo "pre-commit: backload memo chain-truthfulness check..."
+  python3 "$BACKLOAD_MEMO_CHECK" || {
+    echo "pre-commit FAILED: a multi-load backload tour would be published to the agent as a single match."
+    exit 1
+  }
+fi
+
+# TOOL_BACKLOAD_SOLVE must stay time-bounded and vehicle-scopable. It had NO
+# wall-clock ceiling: 'ensemble' runs 3 road families in sequence, each retrying
+# up to 17 times, each attempt allowed 45s (matrix pre-compute) + 300s (VROOM) by
+# the gateway - an upper bound near 4.9 HOURS against the account-default 48h
+# statement timeout. Nothing cancelled it, so the caller simply hung, and a cold
+# continental graph reaches that state on the FIRST call after an idle period.
+# The agent also had no way to ask about one vehicle: max_vehicles=1 is ordered
+# by free time, so it returns the LONGEST-IDLE vehicle and answers about a
+# different truck without saying so. Both regressions leave a proc that compiles
+# and returns correct numbers on a small warm region, which is why this is a gate.
+BACKLOAD_BUDGET_CHECK="$SKILL_DIR/scripts/check_backload_budget.py"
+if [ -f "$BACKLOAD_BUDGET_CHECK" ]; then
+  echo "pre-commit: backload solve budget + vehicle-scope check..."
+  python3 "$BACKLOAD_BUDGET_CHECK" || {
+    echo "pre-commit FAILED: backload_solve is unbounded or can no longer be scoped to one vehicle."
+    exit 1
+  }
+fi
+
+# The road geometry on the Backload map has exactly ONE producer (an ORS
+# DIRECTIONS pass - the solve runs with VROOM geometry disabled), and it lived
+# inside solve(). A plan collected from an agent solve via ?solve_key= never runs
+# solve(), so it rendered its stop markers, its assignment card and its distances
+# with NOTHING joining the stops: every number right, no error, and a screen that
+# reads as a failed plan. The invariant is that the pass is SHARED between the
+# local solve and the rehydrate path - a gate on the fetch merely existing would
+# have passed for as long as the bug was live.
+BACKLOAD_GEOM_CHECK="$SKILL_DIR/scripts/check_backload_rehydrate_geometry.py"
+if [ -f "$BACKLOAD_GEOM_CHECK" ]; then
+  echo "pre-commit: backload rehydrated-plan geometry check..."
+  python3 "$BACKLOAD_GEOM_CHECK" || {
+    echo "pre-commit FAILED: a backload plan collected from an agent solve would render without route lines."
+    exit 1
+  }
+fi
+
+# deck.gl's getDashArray is [dash, gap] relative to the path width in the LAYER'S
+# WIDTH UNITS, which default to metres - so a dashed empty leg had a 16 m dash
+# period in world space and rendered as one solid stroke at country zoom, while
+# looking correct zoomed in. lineWidthMinPixels clamps the stroke width and does
+# nothing to the dash period, which is why the units looked handled. The gate
+# also holds the empty-leg and baseline greys apart: at 110 vs 150 they were the
+# same line whenever a dash gap was off screen.
+DASH_UNITS_CHECK="$SKILL_DIR/scripts/check_dash_units.py"
+if [ -f "$DASH_UNITS_CHECK" ]; then
+  echo "pre-commit: dashed map layer units check..."
+  python3 "$DASH_UNITS_CHECK" || {
+    echo "pre-commit FAILED: a dashed map layer would render solid when zoomed out."
     exit 1
   }
 fi

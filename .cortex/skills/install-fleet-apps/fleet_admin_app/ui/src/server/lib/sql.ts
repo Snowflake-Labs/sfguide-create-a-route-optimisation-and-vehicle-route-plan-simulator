@@ -8,16 +8,92 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../constants';
+import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, SF_BATCH_WAREHOUSE, CONN, SNOWFLAKE_HOST } from '../constants';
 import { getSpcsToken } from './sanitize';
 import { log } from '../diagnostics';
 
-const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+const QUERY_TAG_VALUE = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
 
-export function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
+// `parameters: { QUERY_TAG }` on a SQL REST request is REQUEST-scoped, and a
+// request-scoped tag does NOT propagate into the body of a procedure the
+// statement calls. Measured on one procedure invoked two ways: called from a
+// task carrying a session-level QUERY_TAG, both the CALL and its inner SELECT
+// were tagged; called with a request-scoped tag, the CALL was tagged and the
+// inner SELECT was not. That is the whole reason thousands of the admin app's
+// warehouse-consuming statements were unattributed - the app tags every
+// statement it issues, but the work happens one level down, inside
+// BUILD_HEXAGONS, RECOMMEND_RETRY_STRATEGY, SET_ACTIVE_REGION and friends.
+//
+// The procedures cannot fix this themselves: `ALTER SESSION SET query_tag`
+// fails inside a procedure body with "Unsupported statement type
+// 'ALTER_SESSION'", and so does the EXECUTE IMMEDIATE form, in SQL and
+// JavaScript procedures alike. So the tag has to become SESSION-level on the
+// caller's side, which over the stateless REST API means sending it as the
+// first statement of a MULTI-STATEMENT request - the exact pattern the SQL API
+// docs use as their multi-statement example.
+//
+// Only CALL statements get this treatment. Everything else already lands
+// tagged, and doubling the statement count for every SELECT would buy nothing.
+const SESSION_TAG_STMT = `ALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}'`;
+
+function needsSessionTag(sql: string): boolean {
+  // Strip leading line comments and whitespace before testing the keyword, so a
+  // commented preamble does not hide the CALL.
+  const head = sql.replace(/^(?:\s|--[^\n]*\n|\/\*[\s\S]*?\*\/)+/, '');
+  return /^CALL\s/i.test(head);
+}
+
+// Body builder shared by the sync and async transports.
+function statementBody(sql: string, extra: Record<string, unknown>): Record<string, unknown> {
+  const tagged = needsSessionTag(sql);
+  const parameters: Record<string, string> = { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' };
+  if (tagged) parameters.MULTI_STATEMENT_COUNT = '2';
+  return {
+    statement: tagged ? `${SESSION_TAG_STMT};\n${sql}` : sql,
+    ...extra,
+    parameters,
+  };
+}
+
+// A multi-statement response carries no rows: `data` is just the string
+// "Multiple statements executed successfully." and the per-statement handles
+// live in `statementHandles`. Resolve to the LAST child (our real statement -
+// the first is the ALTER SESSION). Returns null when the argument is an
+// ordinary single-statement result, so callers can fall through unchanged.
+async function resolveMultiStatement(
+  result: any,
+  headers: Record<string, string>,
+): Promise<any | null> {
+  const handles: string[] = result?.statementHandles || [];
+  if (handles.length < 2) return null;
+  const last = handles[handles.length - 1];
+  // The parent has already completed at this point, so the children have too -
+  // but poll briefly rather than assume, since a 202 here would otherwise be
+  // read as an empty result set.
+  const deadline = Date.now() + 60_000;
+  let delay = 200;
+  for (;;) {
+    const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${last}`, { headers });
+    if (r.status !== 202) {
+      const child: any = await r.json();
+      if (child.code !== '333334') return child;
+    }
+    if (Date.now() > deadline) throw new Error(`SQL error: timed out reading multi-statement child ${last}`);
+    await new Promise((res) => setTimeout(res, delay));
+    delay = Math.min(Math.floor(delay * 1.5), 3000);
+  }
+}
+
+export function snowSqlLocal(sql: string, database?: string, schema?: string, warehouse?: string): any[] {
   const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
   const db = database || SF_DATABASE;
-  let fullSql = `ALTER SESSION SET TIMEZONE='UTC';\nALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+  // `warehouse` is explicit so the BATCH transport keeps its warehouse under
+  // `npm run dev` too. submitSqlAsync's non-SPCS fallback delegates here, and
+  // while this defaulted to SF_WAREHOUSE it silently ran batch work on the
+  // interactive warehouse in local dev - the same misrouting this file exists to
+  // prevent, just invisible because it only reproduced off-SPCS.
+  const wh = warehouse || SF_WAREHOUSE;
+  let fullSql = `ALTER SESSION SET TIMEZONE='UTC';\nALTER SESSION SET query_tag = '${QUERY_TAG_VALUE}';\nUSE WAREHOUSE ${wh};\nUSE DATABASE ${db};\n`;
   if (schema) fullSql += `USE SCHEMA ${schema};\n`;
   fullSql += `${sql};`;
   writeFileSync(tmpFile, fullSql);
@@ -33,42 +109,98 @@ export function snowSqlLocal(sql: string, database?: string, schema?: string): a
   }
 }
 
-export async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600): Promise<any[]> {
+export async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600, warehouse?: string): Promise<any[]> {
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' } };
+  // ONE place decides the warehouse for the sync transport. Callers pass it
+  // explicitly (runSqlBatch) rather than the module reading a constant, so a
+  // batch caller cannot silently inherit the interactive warehouse.
+  const wh = warehouse || SF_WAREHOUSE;
+  const body = statementBody(sql, { timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: wh });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
-  console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${SF_WAREHOUSE}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
+  console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${wh}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
   const sqlStart = Date.now();
   const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const submitMs = Date.now() - sqlStart;
   if (!res.ok) {
     const errBody = (await res.text()).slice(0, 500);
     log('ERROR', 'SQL', `API error ${res.status}: ${errBody.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
     throw new Error(`SQL API error ${res.status}: ${errBody}`);
   }
   let result: any = await res.json();
+  // Phase timings. Without these, a stall inside this transport is impossible to
+  // attribute: submit, polling and row fetch all disappear into one endpoint
+  // duration. The statement handle is logged so a container log line can be
+  // joined to QUERY_HISTORY.
+  log('DEBUG', 'SQL', 'submitted', {
+    durationMs: submitMs,
+    detail: {
+      handle: String(result?.statementHandle || '').slice(0, 20),
+      warehouse: wh,
+    },
+  });
   if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
     const pollUrl = `https://${SNOWFLAKE_HOST}${result.statementStatusUrl}`;
     // Backoff poll instead of a flat 5s. Short statements (e.g. per-leg ORS
     // DIRECTIONS calls in Data Studio generation) usually finish in well under
     // a second, so a fixed 5s interval taxed every async-path route ~5s. Start
-    // at 300ms and ramp to a 3s cap for genuinely long statements. Overall
-    // bound stays ~10 min (matches the previous 120 x 5s ceiling).
-    const deadline = Date.now() + 600_000;
+    // at 300ms and ramp to a 3s cap for genuinely long statements.
+    //
+    // The deadline is derived from timeoutSecs. It used to be a hardcoded
+    // 600_000 ms no matter what the caller asked for, so a caller requesting a
+    // 60s bound still had its request held for TEN MINUTES.
+    //
+    // More importantly, exiting this loop by DEADLINE used to fall straight
+    // through to `if (!result.data) return []` at the end of this function -
+    // returning an EMPTY ARRAY for a statement that simply never finished, with
+    // no exception and nothing for a caller to distinguish from "no rows". That
+    // is the deepest layer of the "Total Points 0" defect: even after the API
+    // routes were fixed to report failures honestly, a poll-deadline exit here
+    // would still have handed them a clean, empty, successful-looking result.
+    // A timeout is now an error.
+    const pollBudgetMs = Math.max(5_000, timeoutSecs * 1000);
+    const deadline = Date.now() + pollBudgetMs;
     let delay = 300;
+    let polls = 0;
+    let completed = false;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, delay));
+      polls += 1;
       const pr = await fetch(pollUrl, { headers });
       result = await pr.json();
-      if (result.data || (result.code && result.code !== '333334')) break;
+      if (result.data || (result.code && result.code !== '333334')) { completed = true; break; }
       delay = Math.min(Math.floor(delay * 1.5), 3000);
+    }
+    log('DEBUG', 'SQL', completed ? 'poll complete' : 'poll deadline exceeded', {
+      durationMs: Date.now() - sqlStart,
+      detail: { polls, budgetMs: pollBudgetMs, warehouse: wh },
+    });
+    if (!completed) {
+      const handle = String(result?.statementHandle || '').slice(0, 40);
+      // Best-effort cancel: an abandoned statement keeps running and keeps
+      // holding a concurrency slot, making the contention worse for whatever
+      // comes next.
+      cancelStatement(handle).catch(() => {});
+      log('ERROR', 'SQL', `Statement did not complete within ${timeoutSecs}s`, {
+        durationMs: Date.now() - sqlStart,
+        detail: { handle, warehouse: wh },
+      });
+      throw new Error(
+        `SQL error: statement did not complete within ${timeoutSecs}s on warehouse `
+        + `${wh} (handle ${handle}, cancelled). This is a timeout, not an empty result.`,
+      );
     }
   }
   if (result.message && !result.data) {
     log('ERROR', 'SQL', `Statement error: ${result.message?.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
     throw new Error(`SQL error: ${result.message}`);
+  }
+  const child = await resolveMultiStatement(result, headers);
+  if (child) {
+    if (child.message && !child.data) throw new Error(`SQL error: ${child.message}`);
+    return child.data ? mapSqlApiResult(child, headers) : [];
   }
   if (!result.data) return [];
   return mapSqlApiResult(result, headers);
@@ -123,9 +255,33 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
   });
 }
 
-export async function runSql(sql: string, database?: string, schema?: string): Promise<any[]> {
-  if (IS_SPCS) return snowSqlSpcs(sql, database, schema);
-  return snowSqlLocal(sql, database, schema);
+// `timeoutSecs` lets an INTERACTIVE caller opt into a short bound. The default
+// stays at the transport's 600s so no existing caller changes behaviour, but a
+// dashboard tile should pass something small: a stalled read that holds a
+// spinner for eight minutes and then renders 0 is worse than a fast, visible
+// failure.
+export async function runSql(sql: string, database?: string, schema?: string, timeoutSecs?: number): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs, SF_WAREHOUSE);
+  return snowSqlLocal(sql, database, schema, SF_WAREHOUSE);
+}
+
+// INTERACTIVE vs BATCH is a property of the WORKLOAD, not of the transport.
+//
+// `submitSqlAsync` below is the batch transport for fire-and-forget work, but it
+// returns a statement HANDLE - useless to a caller that needs rows. The Data
+// Studio generation pipeline needs rows on every one of its ~60 injected calls,
+// so it had no batch option and used `runSql`, putting bulk INSERTs, every ORS
+// DIRECTIONS call, a 6-minute waitForOrsReady poll loop and two 60s-per-job
+// timers onto the warehouse reserved for dashboard reads. Generation alone runs
+// 13-15 concurrent statements against MAX_CONCURRENCY_LEVEL 8.
+//
+// So: same synchronous semantics as runSql, batch warehouse. Use this for
+// anything a user is not actively waiting on - bulk writes, boot DDL,
+// reconcilers, catalog refreshes, generation. Enforced for the known batch entry
+// points by scripts/check_batch_transport.py.
+export async function runSqlBatch(sql: string, database?: string, schema?: string, timeoutSecs?: number): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema, timeoutSecs, SF_BATCH_WAREHOUSE);
+  return snowSqlLocal(sql, database, schema, SF_BATCH_WAREHOUSE);
 }
 
 export async function callProcedure(proc: string): Promise<string> {
@@ -142,7 +298,7 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     // fetch-by-handle path can pop. Keeps `npm run dev` working without SPCS.
     const handle = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      localResultCache.set(handle, { rows: snowSqlLocal(sql, database, schema), ts: Date.now() });
+      localResultCache.set(handle, { rows: snowSqlLocal(sql, database, schema, SF_BATCH_WAREHOUSE), ts: Date.now() });
     } catch (e: any) {
       localResultCache.set(handle, { error: e?.message || String(e), ts: Date.now() });
     }
@@ -150,7 +306,16 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     return handle;
   }
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' } };
+  // BATCH warehouse, not the interactive one. This transport is the long-running
+  // path by construction (`timeout: 0` below), and its callers are region
+  // provisioning and matrix builds. `PROVISION_REGION_WRAPPER` runs here as a
+  // SINGLE statement for up to 23,600 seconds, and its poll loop issues
+  // `SELECT SYSTEM$WAIT(30)` hundreds of times, each holding a concurrency slot
+  // just to sleep. Sharing one X-Small (MAX_CONCURRENCY_LEVEL 8) with the app's
+  // dashboard reads is what made Data Studio render "Total Points 0" while the
+  // data was intact: reads queued past their timeout and the routes reported the
+  // failure as an empty array. Keep this on SF_BATCH_WAREHOUSE.
+  const body = statementBody(sql, { timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_BATCH_WAREHOUSE });
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -191,6 +356,16 @@ export async function fetchResultByHandle(handle: string): Promise<{ status: 'ru
   }
   if (result.message && !result.data) {
     throw new Error(`SQL error: ${result.message}`);
+  }
+  // A CALL submitted through this path is a multi-statement request (session
+  // tag + the CALL), so the handle the caller polled is the PARENT. Its result
+  // holds no rows - unwrap to the real statement's child result, or every
+  // caller of the async path would read the string "Multiple statements
+  // executed successfully." instead of the procedure's return value.
+  const child = await resolveMultiStatement(result, headers);
+  if (child) {
+    if (child.message && !child.data) throw new Error(`SQL error: ${child.message}`);
+    return { rows: child.data ? await mapSqlApiResult(child, headers) : [] };
   }
   if (!result.data) return { rows: [] };
   return { rows: await mapSqlApiResult(result, headers) };

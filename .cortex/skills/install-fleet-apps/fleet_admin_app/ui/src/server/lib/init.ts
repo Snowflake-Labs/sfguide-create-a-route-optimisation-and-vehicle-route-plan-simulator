@@ -408,6 +408,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'OPENROUTESERVICE_APP', schema: 'CORE',
     },
     {
+      // SOLVE_RESULTS. Also in scripts/seed_data.sql for fresh installs; created
+      // here so an ALREADY-DEPLOYED account gets it on the next restart rather
+      // than needing a reinstall.
+      //
+      // Solves exceed what the SA app can wait for. Measured server-side
+      // (`ensemble`, SanFrancisco): the DEFAULT 20 vehicles / 120 loads takes
+      // 38.1s, 40/200 takes 54.8s, 100/500 takes 168.6s - against a transport
+      // that gives up at 60s and a statement capped at 80s to stay under the
+      // ~90s SPCS ingress limit. Slow solves are therefore submitted async and
+      // land here.
+      //
+      // Not reusable from the verb audit table: `verb_attempt` stores only a
+      // result_hash and an idempotent replay returns
+      // `{"replayed": true, "result_hash": "..."}` with no payload, so it cannot
+      // serve a result to a caller that reconnects.
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.SOLVE_RESULTS (
+        SOLVE_KEY        VARCHAR       NOT NULL PRIMARY KEY,
+        VERB             VARCHAR,
+        STATEMENT_HANDLE VARCHAR,
+        STATUS           VARCHAR       NOT NULL,
+        RESULT           VARIANT,
+        ERROR_MESSAGE    VARCHAR,
+        ACTOR            VARCHAR,
+        PARAMS_JSON      VARIANT,
+        SUBMITTED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        COMPLETED_AT     TIMESTAMP_NTZ
+      ) COMMENT = ${TRACK}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'CORE',
+    },
+    {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING COMMENT = ${TRACK}`,
       db: 'FLEET_INTELLIGENCE',
     },
@@ -517,7 +547,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
           COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
-          COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+          -- A location NAME or nothing. These *_CITY values are read straight
+          -- into the agent's answer and onto the backload map as stop labels, so
+          -- a placeholder like 'Drop-off' or 'Origin' reads as a real place and
+          -- the reader cannot tell it apart from one. 16.2% of trips (2807 of
+          -- 17342) point at a POI id outside the ACTIVE dataset, so this fires
+          -- often and is a genuine gap, not a formatting nicety. NULL says
+          -- "unknown" honestly; consumers already fall back to blank.
+          d.NAME                                              AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
           ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
           ld.LAST_TRIP_END                                    AS ETA_TS,
@@ -575,7 +612,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT
             COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
             COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
-            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+            -- Spread pickups over the horizon the CONSUMERS filter on. See the
+            -- long note on PICKUP_FROM_TS below.
+            GREATEST(
+              COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+              COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+            )                                                                                         AS PICKUP_SPREAD_DAYS
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         ),
         -- Fleet population per region. Same basis as the FLEET_APP copy of this
@@ -593,28 +636,44 @@ export async function ensureBackloadAndAssetVelocityObjects(
         -- consume rank slots and leave the pool under its target.
         deduped AS (
           SELECT
-            COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+            -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+            o.NAME                                                                      AS PICKUP_CITY,
             t.ORIGIN_LON                                                                AS PICKUP_LON,
             t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-            COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+            d.NAME                                                                      AS DROPOFF_CITY,
             t.DESTINATION_LON                                                           AS DROPOFF_LON,
             t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-            -- Future-aware pickup window, spread across the PLANNING_LEAD_DAYS
-            -- horizon rather than the next ~10 hours. Vehicle availability is now
-            -- forward-looking too (VW_TRAILERS_GEO), so a pickup pool bunched into
-            -- today would be reachable only by the handful of vehicles free today
-            -- and would silently starve every later vehicle of candidates.
+            -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
+            -- wider of PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - rather
+            -- than the next ~10 hours. Vehicle availability is now forward-looking
+            -- too (VW_TRAILERS_GEO), so a pickup pool bunched into today would be
+            -- reachable only by the handful of vehicles free today and would
+            -- silently starve every later vehicle of candidates.
+            --
+            -- The spread must be the CONSUMER's horizon, not the lead time.
+            -- MEASURED with a 4-day spread: all 1,100 pool rows sat inside
+            -- now..now+4d, and because VW_TRIANGLES requires a hop-2 pickup at or
+            -- after the hop-1 delivery ETA - which lands at the far end of that
+            -- same window after 500-1,000 km of loaded running - VW_TRIANGLES was
+            -- empty ACCOUNT-WIDE. On UnitedStatesOfAmerica, 9 of 10,990 pairs
+            -- cleared both geometry filters and all 9 missed the sequence check by
+            -- 8 to 106 hours. MAX_PICKUP_HORIZON_DAYS (7) is what VW_CANDIDATES
+            -- and VW_TRIANGLES already permit, so generate out to it.
+            --
+            -- Kept UNIFORM rather than shifted later, so ~4/7 of pickups still
+            -- fall inside the old window and near-term single-hop candidates are
+            -- not traded away for chains.
             GREATEST(
               t.TRIP_START,
               DATEADD('minute',
-                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
             )                                                                           AS PICKUP_FROM_TS,
             DATEADD(hour, 4,
               GREATEST(
                 t.TRIP_START,
                 DATEADD('minute',
-                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                   CURRENT_TIMESTAMP())
               )
             )                                                                           AS PICKUP_TO_TS,
@@ -719,7 +778,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
             ON vcp.VEHICLE_TYPE = rv.VEHICLE_TYPE
         ),
         p AS (
-          SELECT COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          -- Same spread as the internal pool: an external offer is a legitimate
+          -- hop-2 (cascade rungs 2 and 4), so rebasing every offer into the next
+          -- few days leaves it unable to follow a hop-1 delivery.
+          SELECT GREATEST(
+                   COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+                   COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+                 ) AS PICKUP_SPREAD_DAYS
           FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
         ),
         -- Rebase each offer's pickup window onto the live planning horizon,
@@ -730,11 +795,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
         -- the external half of the pool without any error.
         shifted AS (
           SELECT
-            f.*,
+            f.* EXCLUDE (SOURCE, LISTING_TEXT),
+            -- CHANNEL REMAP, idempotent. Already-generated rows carry
+            -- SOURCE='INTERNAL' from a four-label round robin (measured 75 of
+            -- 300 external offers), and EVERY row in this view is external - it
+            -- reaches VW_LOADS with IS_INTERNAL=FALSE. The literal therefore
+            -- made internal-vs-external unreadable from SOURCE while looking
+            -- perfectly well-formed. The generator no longer emits it; this
+            -- repairs rows already on disk so no dataset needs regenerating.
+            -- LISTING_TEXT is a STORED string here (not derived), and it is fed
+            -- to AISQL and quoted in agent prose, so its leading channel token
+            -- is rewritten too.
+            IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
+            IFF(LEFT(f.LISTING_TEXT, 9) = 'INTERNAL ',
+                'BROKER' || SUBSTR(f.LISTING_TEXT, 9),
+                f.LISTING_TEXT) AS LISTING_TEXT,
             GREATEST(
               f.PICKUP_FROM_TS,
               DATEADD('minute',
-                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT LEAD_DAYS FROM p) * 1440)::INT)) + 30,
+                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
                 CURRENT_TIMESTAMP())
             ) AS PICKUP_FROM_TS_ADJ,
             GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
@@ -744,18 +823,23 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.OFFER_ID,
           f.SOURCE,
           -- SOURCE is a CHANNEL label whose values mix internal and external
-          -- (INTERNAL / DISPATCH / MARKETPLACE / PARTNER_APP), so it cannot
-          -- answer "did this come from outside". SOURCE_SYSTEM is the system
-          -- identity: a real integration replaces the literal with its own
-          -- system key and no consumer changes. Deliberately vendor-free.
+          -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP /
+          -- BROKER), so it cannot answer "did this come from outside" - every
+          -- row here is external regardless of channel. IS_INTERNAL is the
+          -- structural answer; SOURCE_SYSTEM is the system identity: a real
+          -- integration replaces the literal with its own system key and no
+          -- consumer changes. Vendor-free, and no longer containing the word
+          -- INTERNAL.
           'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
           COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-          COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above. LISTING_TEXT
+          -- keeps its own fallbacks, being one sentence that would go wholly NULL.
+          p2.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
-          COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+          d.NAME                                   AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
           f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
@@ -892,6 +976,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
           ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
           ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+          ('MAX_CANDIDATE_PAIRS_PER_TRAILER', '50', 'number', 'core',   TRUE,  'How many eligible (vehicle, load) candidate pairs the solver materialises PER VEHICLE, nearest pickup first. Bounds the candidate read, which is not covered by the solver time budget. Distinct from MAX_PROPOSALS_PER_TRAILER, which caps OUTPUT per vehicle.'),
           ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
           ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
           ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -1388,8 +1473,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
             -- against doing nothing; the direct-return baseline it is compared with is
             -- computed alongside the proposal, not here. Costed on the residual-
             -- inclusive empty distance for the reason given above.
-            (q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
-              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM AS NET_BENEFIT_USD,
+            ROUND((q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM, 2) AS NET_BENEFIT_USD,
             (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
             q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
             q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,
@@ -1608,7 +1693,13 @@ $$`,
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
-        SELECT p.*
+        -- NAME is normalised, not passed through. See projection_views.sql for
+        -- the full note: the Overture sampler landed NAMES:primary as its
+        -- VARIANT JSON form, so every POI name carries literal double quotes,
+        -- and those names are stop labels on the backload map and cities in the
+        -- agent's answer. The sampler is fixed; this TRIM repairs already-landed
+        -- data without a regenerate, and is idempotent on clean names.
+        SELECT p.* EXCLUDE NAME, TRIM(p.NAME, '"') AS NAME
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = p.JOB_ID
@@ -1944,9 +2035,10 @@ $$`,
           f.JOB_ID,
           f.SOURCE,
           f.PARTNER_ID,
-          COALESCE(p.NAME, 'Pickup')              AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+          p.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON, f.PICKUP_LAT, f.PICKUP_GEOM,
-          COALESCE(d.NAME, 'Dropoff')             AS DROPOFF_CITY,
+          d.NAME                                  AS DROPOFF_CITY,
           f.DROPOFF_LON, f.DROPOFF_LAT, f.DROPOFF_GEOM,
           f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
           f.WEIGHT_KG, f.PRODUCT, f.PRICE_USD, f.HAZMAT,

@@ -64,6 +64,12 @@ export interface Stop {
 export interface Assignment {
   ASSIGNMENT_ID: string;
   TRAILER_ID: string; OFFER_ID: string; SOURCE: string;
+  // Provenance, carried STRUCTURALLY rather than inferred from SOURCE. SOURCE is
+  // a channel label, and one of its values used to be the literal 'INTERNAL' on
+  // rows that are external, which made the internal-first preference this whole
+  // page expresses unreadable from that column. Set at assignment build time
+  // from WHICH POOL the row came out of, so no label can flip it.
+  IS_INTERNAL: boolean;
   PICKUP_LON: number; PICKUP_LAT: number;
   DROPOFF_LON: number; DROPOFF_LAT: number;
   EMPTY_KM: number; LOADED_KM: number; SCORE: number;
@@ -95,6 +101,10 @@ export interface Assignment {
   COST_USD?: number;
   REVENUE_USD?: number;
   NET_BENEFIT_USD?: number;
+  // Set when the plan was collected from a solve the AGENT ran (see
+  // lib/backload-rehydrate). Such a plan arrives with no polylines, so the page
+  // must run the same geometry-enrichment pass a local solve runs.
+  REHYDRATED?: boolean;
 }
 
 export interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
@@ -189,6 +199,95 @@ export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: numb
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Tokens that are NOT place names. Pickup/dropoff cities fall back to these
+// literal strings when the underlying POI has no name, so "Destination" and
+// "Origin" are placeholders - never somewhere a vehicle actually goes. Mirrors
+// the PLACEHOLDERS set in TOOL_BACKLOAD_CHAIN_SOLVE, which already scrubs them
+// server-side. Anything published to the agent must scrub them too, or the
+// agent quotes "Destination" back to the user as a delivery point.
+export const PLACEHOLDER_PLACES = new Set([
+  'origin', 'destination', 'drop-off', 'dropoff', 'unknown', 'depot',
+]);
+
+// A city name if it is really a place, else null.
+export function realPlace(city?: string | null): string | null {
+  const t = (city ?? '').trim();
+  if (!t) return null;
+  return PLACEHOLDER_PLACES.has(t.toLowerCase()) ? null : t;
+}
+
+/**
+ * What to SHOW where a place name is expected.
+ *
+ * MEASURED on the live pool: 316 of 800 internal loads have no DELIVERY_CITY and
+ * 235 have no PICKUP_CITY, because 2,621 trip destination POI ids (and 2,497
+ * origins) exist in neither V_DIM_POIS_CURRENT nor the base DIM_POIS - the name
+ * is genuinely unknown, not merely unjoined. Rendering that as an empty span gave
+ * cards reading "Cowen Warehouse Services ->" and, when both ends were unknown, a
+ * bare "->": a data gap that looks exactly like a broken renderer, on a card whose
+ * every number is right.
+ *
+ * `ref` is a load or vehicle id to name the site by when there is no place name,
+ * which is more use to a dispatcher than the word "unknown" alone.
+ */
+export function placeLabel(city?: string | null, ref?: string | null): string {
+  const p = realPlace(city);
+  if (p) return p;
+  const r = (ref ?? '').trim();
+  return r ? `unnamed site (${r})` : 'location unknown';
+}
+
+export interface TourChain {
+  // Ordered "pick X [LOAD] -> drop Y [LOAD]" text over the task stops.
+  chain: string;
+  // Every distinct load carried on this tour, in the order first touched. A
+  // tour with more than one entry is a CHAINED tour: the first dropoff is a
+  // handover, not the destination.
+  loadIds: string[];
+  firstPickup: string | null;
+  // The LAST dropoff. This is the tour's destination; the first dropoff is
+  // only hop 1. Falls back to the load id when the site is unnamed.
+  finalDropoff: string | null;
+  // Where the tour terminates (home depot / shared destination). Never a
+  // delivery.
+  endCity: string | null;
+  truncatedStops: number;
+}
+
+// Derive a chain-truthful description of a tour from its ordered STOPS array.
+// STOPS is the only complete record of a solved tour: the scalar OFFER_ID /
+// PICKUP_CITY / PROPOSAL_DROPOFF_CITY fields on Assignment come from the FIRST
+// pickup only, so reading them for a multi-load tour reports hop 1 as if it
+// were the whole workload.
+export function describeTourChain(stops: Stop[] | undefined, maxStops = 8): TourChain {
+  const list = Array.isArray(stops) ? stops : [];
+  const tasks = list.filter((s) => s.kind === 'pickup' || s.kind === 'dropoff');
+  const loadIds: string[] = [];
+  for (const s of tasks) {
+    if (s.offerId && !loadIds.includes(s.offerId)) loadIds.push(s.offerId);
+  }
+  const site = (s: Stop): string => {
+    const where = realPlace(s.city);
+    if (where) return where;
+    return s.offerId ? `unnamed site for ${s.offerId}` : 'unnamed site';
+  };
+  const shown = tasks.slice(0, maxStops);
+  const chain = shown
+    .map((s) => `${s.kind === 'pickup' ? 'pick' : 'drop'} ${site(s)}${s.offerId ? ` [${s.offerId}]` : ''}`)
+    .join(' -> ');
+  const drops = tasks.filter((s) => s.kind === 'dropoff');
+  const lastDrop = drops.length ? drops[drops.length - 1] : undefined;
+  const firstPick = tasks.find((s) => s.kind === 'pickup');
+  return {
+    chain,
+    loadIds,
+    firstPickup: firstPick ? site(firstPick) : null,
+    finalDropoff: lastDrop ? site(lastDrop) : null,
+    endCity: realPlace(list.find((s) => s.kind === 'end')?.city),
+    truncatedStops: Math.max(0, tasks.length - shown.length),
+  };
 }
 
 // Synthesize multi-dim capacity when source data only has kg.
@@ -354,6 +453,104 @@ export async function computeEmptyLegBaselines(
   return out;
 }
 
+/**
+ * Deadhead avoided, from the baseline already on the assignment.
+ *
+ * ONE rule for the whole page, because there are now two producers of
+ * BASELINE_EMPTY_KM (the solve and the collected-plan pass) and a second copy of
+ * this arithmetic would be free to disagree with the first. 'fixed-open' is
+ * excluded deliberately: that baseline is a fixed envelope, not a measurement of
+ * this vehicle, so subtracting the tour's empty km from it invents a saving.
+ */
+export function deriveSavedKm(a: Assignment): void {
+  if (a.BASELINE_EMPTY_KM === undefined || a.BASELINE_SOURCE === 'fixed-open') return;
+  a.SAVED_KM = Math.max(0, a.BASELINE_EMPTY_KM - a.EMPTY_KM);
+}
+
+/**
+ * Attach one vehicle's reposition baseline to an assignment.
+ *
+ * DETOUR_KM is deliberately NOT touched. On the solve path it is derived from
+ * the real tour km; on a collected plan the procedure computed its own and the
+ * card must keep the number the agent quoted rather than switch to a locally
+ * recomputed one halfway through a session.
+ */
+export function applyBaseline(a: Assignment, base: EmptyLegBaseline | undefined): void {
+  if (!base) return;
+  a.BASELINE_EMPTY_KM = base.distMeters / 1000;
+  a.BASELINE_SOURCE = base.source;
+  deriveSavedKm(a);
+}
+
+/**
+ * The vehicle is already standing at the point it would have repositioned to, so
+ * its no-backload baseline is zero and there is no line to draw.
+ *
+ * MEASURED on the live USA pool: 35 of 89 vehicles report idle == home, and
+ * because a zero approach is cheap those vehicles carry the HIGHEST margins - so
+ * the top card of a collected plan is very often one of them. Without an
+ * explicit state the map simply shows no grey line and the page reads as broken
+ * on arrival. Threshold matches `samePlace`, the same tolerance fetchBaselineLeg
+ * uses to decide it has nothing to route.
+ */
+export function isAtEndBaseline(a: Assignment): boolean {
+  if (a.END_LON === undefined || a.END_LAT === undefined) return false;
+  return samePlace(
+    [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],
+    [Number(a.END_LON), Number(a.END_LAT)],
+  );
+}
+
+/**
+ * Fill the fields a graded PROPOSAL does not carry from the load pool this page
+ * already holds.
+ *
+ * A collected plan arrives with `PRODUCT: ''` (the procedure's proposal rows have
+ * no product at all), so the card rendered "loaded 1221 km \u00b7" with nothing
+ * after the separator, and the same tour solved locally showed "B2B pallets".
+ * The load rows are already in memory for the map, so this needs no query.
+ *
+ * Only ever fills a BLANK field. A value the solver resolved stays, because the
+ * pool row is a different read of the same load and overwriting would let the
+ * card disagree with the plan it is describing. `realPlace` is applied so a
+ * placeholder ('Origin', 'Drop-off') is not laundered into a real-looking name.
+ *
+ * Returns true when it changed something, so the caller can skip a state update
+ * it does not need - this runs from an effect that depends on `assignments`.
+ */
+export function backfillFromLoadPool(
+  a: Assignment, pool: Map<string, Volume | Offer>,
+): boolean {
+  const row = pool.get(String(a.OFFER_ID));
+  if (!row) return false;
+  let changed = false;
+  if (!a.PRODUCT && row.PRODUCT) { a.PRODUCT = String(row.PRODUCT); changed = true; }
+  if (!realPlace(a.PICKUP_CITY)) {
+    const p = realPlace(row.PICKUP_CITY);
+    if (p) { a.PICKUP_CITY = p; changed = true; }
+  }
+  if (!realPlace(a.PROPOSAL_DROPOFF_CITY)) {
+    const d = realPlace(row.DROPOFF_CITY);
+    if (d) { a.PROPOSAL_DROPOFF_CITY = d; changed = true; }
+  }
+  // The stops list is a separate render of the same places, so leaving it blank
+  // would fix the card and not the panel below it.
+  for (const s of a.STOPS) {
+    if (s.kind === 'pickup' && !realPlace(s.city)) {
+      const p = realPlace(row.PICKUP_CITY);
+      if (p) { s.city = p; changed = true; }
+    }
+    if (s.kind === 'dropoff' && !realPlace(s.city)) {
+      const d = realPlace(row.DROPOFF_CITY);
+      if (d) { s.city = d; changed = true; }
+    }
+    if ((s.kind === 'pickup' || s.kind === 'dropoff') && !s.product && row.PRODUCT) {
+      s.product = String(row.PRODUCT); changed = true;
+    }
+  }
+  return changed;
+}
+
 // Solver snap radius (meters). The optimization/VROOM path enforces the region
 // maximum_snapping_radius (1000m for standard regions). MATRIX snaps more
 // leniently, so a point can return a finite duration yet still abort the whole
@@ -505,15 +702,38 @@ export const MAX_DIRECTIONS_WAYPOINTS = 50;
 // Drop unusable waypoints (non-finite, null island) and collapse consecutive
 // duplicates - DIRECTIONS rejects zero-length legs, and VROOM `break` steps
 // often repeat the location of the step before them.
+// Drop unusable and repeated waypoints before a DIRECTIONS call.
+//
+// Consecutive duplicates are compared with `samePlace`, NOT with `===`. MEASURED
+// in QUERY_HISTORY (3 calls today): a pair differing only in the 15th decimal -
+// [-95.653004999012620, 28.821004867129155] then [..., 28.82100486712915] - both
+// survived exact-equality dedupe, ORS returned a degenerate one-point line, and
+// the statement failed with "GeoJSON::LineString: 'coordinates' malformed". The
+// caller swallows that null and draws a straight line, so the only visible trace
+// was a wasted round trip. 1e-5 deg is ~1 m: below any routable difference.
 function cleanWaypoints(pts: [number, number][]): [number, number][] {
   const out: [number, number][] = [];
   for (const [lon, lat] of pts) {
     if (!Number.isFinite(lon) || !Number.isFinite(lat) || (lon === 0 && lat === 0)) continue;
     const prev = out[out.length - 1];
-    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;
+    if (prev && samePlace(prev, [Number(lon), Number(lat)])) continue;
     out.push([Number(lon), Number(lat)]);
   }
   return out;
+}
+
+// Straight LineString between two points, or null when they are the same place
+// or either is unusable. Used as the LAST resort for a deadhead leg whose road
+// geometry DIRECTIONS refused to return: without it the dashed layer is simply
+// not pushed, so the map shows a tour with no visible connection to the vehicle
+// and nothing anywhere says why. Geometry only - the caller must NOT copy a km
+// off this, because a straight line is not the distance the vehicle drives.
+export function straightLineGeoJSON(
+  from: [number, number], to: [number, number],
+): unknown | null {
+  const pts = cleanWaypoints([from, to]);
+  if (pts.length < 2) return null;
+  return { type: 'LineString', coordinates: pts };
 }
 
 // Road polyline + real road distance through N waypoints via ORS DIRECTIONS.
@@ -549,6 +769,72 @@ export async function fetchEmptyLeg(
   return fetchDirections(profile, [from, to], region);
 }
 
+// Where a tour is required to finish. Mirrors the End radio group on the page.
+export type EndMode = 'home' | 'shared' | 'open';
+
+// Baseline (no-backload) reposition leg for ONE vehicle: the road polyline plus
+// the road km it measured, and a human label for the point it ends at.
+//
+// `status` separates the three outcomes a caller must not conflate:
+//   'ok'      - a real leg, `geo` is a LineString and `km` is road km
+//   'at-end'  - the vehicle is ALREADY at its endpoint, so the baseline is 0 km
+//               and there is nothing to draw. Measured: several trailers report
+//               DROPOFF == HOME, and cleanWaypoints drops a zero-length leg, so
+//               without this the UI waits on a fetch that can never return.
+//   'failed'  - unroutable or the seam errored; no line, no number
+export interface BaselineGeom {
+  geo: unknown; km: number | null; endLabel: string;
+  status: 'ok' | 'at-end' | 'failed';
+}
+
+// Two positions are the same place for baseline purposes. Matches the tolerance
+// cleanWaypoints effectively applies (it collapses exact repeats) but with a
+// little slack, because DROPOFF and HOME arrive from different columns and can
+// differ in the last decimal for the same POI.
+export function samePlace(a: [number, number], b: [number, number]): boolean {
+  return Math.abs(a[0] - b[0]) < 1e-5 && Math.abs(a[1] - b[1]) < 1e-5;
+}
+
+/**
+ * Endpoint the vehicle would have repositioned to with NO backload.
+ *
+ * Mirrors the `end` stop the solve builds (see endPt in backload-matching.tsx)
+ * so this line and BASELINE_EMPTY_KM measure the SAME leg - a baseline drawn to
+ * a different point than the baseline km was computed against puts a line and a
+ * number that disagree on the same screen.
+ *
+ * `open` has no solver end point, so the baseline falls back to the home depot:
+ * a vehicle with no backload still goes home, and drawing nothing would read as
+ * "this vehicle has no baseline" rather than "the solve left the tour open".
+ */
+export function baselineEndpointFor(
+  t: Pick<Trailer, 'HOME_LON' | 'HOME_LAT' | 'HOME_DEPOT'>,
+  endMode: EndMode, sharedLon: number | null, sharedLat: number | null,
+): { pt: [number, number]; label: string } | null {
+  if (endMode === 'shared' && sharedLon !== null && sharedLat !== null
+    && Number.isFinite(Number(sharedLon)) && Number.isFinite(Number(sharedLat))) {
+    return { pt: [Number(sharedLon), Number(sharedLat)], label: 'shared destination' };
+  }
+  const lon = Number(t.HOME_LON), lat = Number(t.HOME_LAT);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const depot = t.HOME_DEPOT ? String(t.HOME_DEPOT) : 'home depot';
+  return { pt: [lon, lat], label: endMode === 'open' ? `${depot} (assumed)` : depot };
+}
+
+// Baseline polyline for one vehicle: idle drop-off -> the endpoint above. Same
+// live routing seam every other line on this map uses, so no precomputed table
+// and no new procedure. Never returns null: a caller needs to tell "still
+// fetching" from "there is no baseline", and returning null for both is what
+// leaves a spinner up forever on a vehicle that is already home.
+export async function fetchBaselineLeg(
+  profile: string, from: [number, number], to: [number, number], region: string, endLabel: string,
+): Promise<BaselineGeom> {
+  if (samePlace(from, to)) return { geo: null, km: 0, endLabel, status: 'at-end' };
+  const leg = await fetchEmptyLeg(profile, from, to, region);
+  if (!leg) return { geo: null, km: null, endLabel, status: 'failed' };
+  return { geo: leg.geo, km: leg.km, endLabel, status: 'ok' };
+}
+
 // Geometry-only wrapper (kept for callers that do not need the distance).
 export async function fetchEmptyLegGeoJSON(
   profile: string, from: [number, number], to: [number, number], region: string,
@@ -567,17 +853,24 @@ export async function fetchEmptyLegGeoJSON(
 // the deadheads, drawn separately from EMPTY_GEOJSON / EMPTY_RETURN_GEOJSON.
 // Falls back to a straight LineString through the same waypoints so the tour is
 // never silently missing from the map.
+//
+// Returns the road distance alongside the geometry. It used to return `geo` only
+// and drop the km that fetchDirections had already paid for, which left a
+// collected plan drawing a real road line beside a straight-line LOADED_KM - two
+// distance systems on one card, with a note promising the road one. `km` is null
+// when the straight-line fallback was used, so a caller can tell a real road
+// measurement from a substitute rather than treating them alike.
 export async function fetchTourPath(
   profile: string, stops: Stop[], region: string,
-): Promise<unknown | null> {
+): Promise<{ geo: unknown; km: number | null } | null> {
   const pts = cleanWaypoints(
     stops.filter((s) => s.kind !== 'start' && s.kind !== 'end')
       .map((s) => [Number(s.lon), Number(s.lat)] as [number, number]),
   );
   if (pts.length < 2) return null;
   const road = await fetchDirections(profile, pts, region);
-  if (road?.geo) return road.geo;
-  return { type: 'LineString', coordinates: pts };
+  if (road?.geo) return { geo: road.geo, km: road.km };
+  return { geo: { type: 'LineString', coordinates: pts }, km: null };
 }
 
 // Cut a tour polyline at the point closest to `at`, returning the leading

@@ -99,10 +99,14 @@ def _trigger_match(prompt: str, triggers_section: str, full_desc: str | None) ->
 
 def _load_descriptions(skills_root: str) -> dict[str, str]:
     import yaml
+
+    from .discovery import discover_skill_files
+
     descriptions = {}
-    for skill_md in Path(skills_root).rglob("SKILL.md"):
-        if "evals" in skill_md.parts:
-            continue
+    # Shared discovery, so a GENERATED CoWork artifact cannot enter this map. Its
+    # front matter now parses (it did not before), which would otherwise add 26
+    # `<view>-name -> description` entries that no trigger case owns.
+    for skill_md in discover_skill_files(skills_root):
         text = skill_md.read_text(encoding="utf-8")
         m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
         if m:

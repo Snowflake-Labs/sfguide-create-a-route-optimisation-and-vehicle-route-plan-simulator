@@ -361,6 +361,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG (
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
+  QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
   MERGE INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG tgt

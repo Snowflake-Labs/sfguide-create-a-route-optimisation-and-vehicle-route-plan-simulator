@@ -3,14 +3,14 @@ from pathlib import Path
 
 import yaml
 
+from .discovery import discover_skill_files
+
 
 def run(skills_root: str, overrides: dict | None = None) -> list[dict]:
     if overrides is None:
         overrides = {}
     results = []
-    for skill_md in sorted(Path(skills_root).rglob("SKILL.md")):
-        if "evals" in skill_md.parts:
-            continue
+    for skill_md in discover_skill_files(skills_root):
         skill_dir = skill_md.parent
         skill_name = skill_dir.name
         skips = set(overrides.get(skill_name, {}).get("skip", []))

@@ -293,6 +293,74 @@ case "$AG" in
   *) fail "only $AG/3 synapse bundle schemas - role-scoped tool isolation is incomplete" ;;
 esac
 
+# --- 7. compute split + app-facing data ---------------------------------------
+# Everything above verifies objects EXIST. This section verifies the two things
+# that were both true during a real outage in which every check above passed:
+#   (a) the warehouse the apps read on matches its declared spec, and
+#   (b) the reads the dashboards actually issue return NON-ZERO rows.
+#
+# The incident: an X-Small, single-cluster ROUTING_ANALYTICS carried both the
+# apps' interactive reads and a 6.5-hour `PROVISION_REGION_WRAPPER` statement
+# plus its `SYSTEM$WAIT(30)` poll loop. Dashboard reads queued past their
+# timeout; the API routes turned the failure into an empty array; Data Studio
+# rendered "Total Points 0" while 1,544,209+ telemetry rows sat in the table. No
+# existing gate could see it, because nothing was missing.
+#
+# Values are COMPARED, never grepped out of the log. `snow sql` echoes the
+# statement it runs, so an `IFF(..., 'PASS', 'FAIL')` probe puts the word FAIL in
+# the output on success too - a log grep reported two healthy regions as failed.
+echo
+echo "[7] compute split + app-facing data"
+
+# 7a. Both warehouses exist with the canonical spec (scripts/warehouses.sql).
+#     Checked LIVE, because source-level agreement (check_warehouse_ddl.py) does
+#     not prove the account was not drifted by an earlier install.
+for WH in FLEET_APPS_WH ROUTING_ANALYTICS; do
+  WHOUT=$(qc "SHOW WAREHOUSES LIKE '$WH';")
+  if ! has_i "$WHOUT" "$WH"; then
+    fail "$WH absent - the apps cannot run a single query without it"
+    continue
+  fi
+  WHSIZE=$(qc "SHOW WAREHOUSES LIKE '$WH';")
+  if has_i "$WHSIZE" "X-Small"; then pass "$WH present (X-Small as declared)"
+  else warn "$WH present but not X-Small - spec drift from scripts/warehouses.sql"; fi
+done
+
+# 7b. The app roles can actually USE the interactive warehouse. A missing grant
+#     here is invisible until runtime, where it fails every query while the
+#     service still reports RUNNING.
+for R in FLEET_APP_USER FLEET_APP_DYNAMIC_READER; do
+  GOUT=$(qc "SHOW GRANTS TO ROLE $R;")
+  if has_i "$GOUT" "FLEET_APPS_WH"; then pass "$R has USAGE on FLEET_APPS_WH"
+  else fail "$R lacks USAGE on FLEET_APPS_WH - every app query will fail"; fi
+done
+
+# 7c. The exact aggregate Data Studio renders. Zero here means the tiles will
+#     read 0, which is the whole defect this section exists to catch.
+PTS=$(scalar "SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT;")
+case "$PTS" in
+  ''|*[!0-9]*) fail "cannot read V_FACT_VEHICLE_TELEMETRY_CURRENT (Data Studio would show 0)" ;;
+  0)           fail "V_FACT_VEHICLE_TELEMETRY_CURRENT is EMPTY - Data Studio will show 'Total Points 0'" ;;
+  *)           pass "telemetry readable: $PTS points" ;;
+esac
+
+TRP=$(scalar "SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT;")
+case "$TRP" in
+  ''|*[!0-9]*) fail "cannot read V_FACT_TRIPS_CURRENT" ;;
+  0)           fail "V_FACT_TRIPS_CURRENT is EMPTY - Data Studio will show 'Total Trips 0'" ;;
+  *)           pass "trips readable: $TRP trips" ;;
+esac
+
+# 7d. The `V_*_CURRENT` views join DIM_DATASETS on IS_ACTIVE, so a registry with
+#     no active row makes every view return zero rows while both the tables and
+#     the views look perfectly healthy.
+ACT=$(scalar "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE;")
+case "$ACT" in
+  ''|*[!0-9]*) fail "cannot read DIM_DATASETS - every V_*_CURRENT view depends on it" ;;
+  0)           fail "DIM_DATASETS has no IS_ACTIVE row - every V_*_CURRENT view returns 0 rows" ;;
+  *)           pass "$ACT active dataset(s) registered" ;;
+esac
+
 # --- result ------------------------------------------------------------------
 echo
 if [ "$BLOCKING" = "1" ]; then

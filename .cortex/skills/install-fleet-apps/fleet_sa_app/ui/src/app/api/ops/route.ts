@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/snowflake';
+import { query, buildCallArgs } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
@@ -71,11 +71,13 @@ async function handlePost(req: Request) {
       ? body.idempotency_key.trim()
       : null;
 
-  const placeholders = [...args.map(() => '?'), '?'].join(', ');
-  const binds = [
+  // Placeholders + binds together: a null argument becomes a literal NULL in the
+  // CALL rather than a bound empty string, which a numeric verb parameter
+  // rejects with `Numeric value '' is not recognized`.
+  const { placeholders, binds } = buildCallArgs([
     ...args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a))),
     idemKey,
-  ];
+  ]);
 
   try {
     const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);

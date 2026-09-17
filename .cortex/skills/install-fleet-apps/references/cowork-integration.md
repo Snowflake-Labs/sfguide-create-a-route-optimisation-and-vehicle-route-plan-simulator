@@ -1,8 +1,177 @@
-# Cowork map recipes (`data_to_map`)
+# Snowflake CoWork integration contract
 
-Tested SQL for drawing SA-style maps in Snowflake CoWork. Every statement here was
-executed against a live deployment (tib85385, region `SanFrancisco`) - the traps below
-are observed, not theoretical.
+How this accelerator uses Snowflake CoWork, surface by surface: what is wired, what is
+deliberately not, and the traps behind each. Everything here was verified against a live
+deployment - the traps are observed, not theoretical.
+
+Maps were the first surface documented here (this file was `cowork-map-recipes.md`) and
+remain the largest section, because they are the one thing the app does that CoWork
+cannot reproduce one-for-one.
+
+## Surfaces at a glance
+
+| Surface | Status | Where it is configured |
+|---|---|---|
+| Cortex Analyst (13 semantic views) | wired | `semantic_views*.sql`, agent `tools` |
+| MCP verbs (47 across 3 servers) | wired | `fleet_tools/*/src/procs`, `mcp_servers` |
+| `data_to_chart` | wired, steered | `<chart_customization>` in every spec |
+| `data_to_map` | optional, host-injected | agent instructions fall back to `deep_link` |
+| `code_execution` sandbox | wired on all 4 agents | `tools` + `tool_resources` |
+| Agent skills (26) | wired on consumer + super | `cowork_skills/`, spec `skills` array |
+| Verified queries (11) | wired | `scripts/verified_queries.py` -> DDL |
+| Automations | enabled + instructed | `EXECUTE AGENT TASK` + AUTOMATIONS section |
+| Deep Research | available, not configured | nothing to configure per agent |
+| File upload | available, not relied on | see below |
+| Mobile client | available, informs layout | see below |
+
+Gate: `scripts/check_cowork_surfaces.py` (six rules, negative-tested). Every failure in
+this class is silent, which is the whole reason the gate exists.
+
+## Charts (`data_to_chart`) and `<chart_customization>`
+
+CoWork supports most Vega-Lite chart types - a **superset** of the six the app draws - so
+chart TYPE was never the gap. The gap was that nothing steered it: `chart_customization`
+appeared zero times in this repo, so the same question rendered in the app's cyan-led
+palette and in CoWork's defaults, and CoWork chose chart shapes with no knowledge of
+which ones are honest for this data.
+
+Two levels, and the split is deliberate:
+
+- **Agent level** (`instructions.orchestration`) carries the DETERMINISTIC half: the
+  eight-colour app palette and font families, in a `vega_template` with
+  `"usermeta": {"merge": "extend"}` so the model keeps the field and type it chose and
+  only gains the palette. `override` would force every chart's colour channel onto
+  whatever the template names.
+- **Semantic-view level** (`AI_SQL_GENERATION`) carries FREE TEXT ONLY - no
+  `vega_template`. A template merges into EVERY chart from that view with no
+  per-chart-type filtering, so an `encoding.y` override written for a money bar chart
+  also lands on a horizontal bar, where y is the category, and on a histogram.
+
+Traps:
+
+- **Only CSS generic families resolve.** `sans-serif`, `serif`, `monospace`. A named font
+  (Arial, Georgia) is not installed in the server-side render container, so the chart
+  silently falls back and looks different from the app. RULE B of the gate.
+- **The block needs its own section header.** Appending it to the end of an orchestration
+  string makes it part of whichever section is last, and any later append to that section
+  edits the chart block instead. This happened twice during development; the super-spec
+  twin assertion caught it both times. RULE C.
+- **A broken `vega_template` is reported nowhere.** The merge silently does nothing.
+
+What the view-level text encodes is domain knowledge, not styling: dwell, deviation and
+paid hours are heavily skewed, so the DISTRIBUTION is the finding and an average erases
+it; a dwell ranking without `is_dispatched = TRUE` puts a parked asset on top; an
+actual-vs-expected chart without `has_expected_path` reads as perfect compliance because
+elsewhere the two series coincide by construction.
+
+## The sandbox (`code_execution`)
+
+Enabled on all four agents. This is what makes CoWork able to produce a **file** - a PDF
+or PowerPoint deck from an answer - which for an accelerator whose audience is field SEs
+is the difference between an answer and a leave-behind.
+
+- `code_execution` and `code_toolset_all` are **mutually exclusive**. This repo uses
+  `code_execution`: the narrower Python sandbox (numpy, pandas, matplotlib, plotly).
+- The tool declaration alone does NOT enable it. It needs a `tool_resources` entry too,
+  and that pair is RULE A of the gate.
+- `permission_policy` is set explicitly to `always_ask` rather than left to a default.
+- **No SQL runs in the sandbox.** It has no warehouse and no Snowflake session. The
+  pattern is: query first with Analyst or `run_sql`, then pass the result in.
+- Unavailable under **owner's rights**, and sandbox state is thread-scoped.
+
+## Agent skills (26)
+
+A skill is a folder with a `SKILL.md` that the orchestrator matches on **name and
+description alone**, loading the full instructions only when it fires. That is exactly the
+shape of a demo use case, and CoWork exposes each one under the `/` menu.
+
+- Generated by `scripts/build_cowork_skills.py` from the same `useCase` and
+  `agentKnowledge` blocks as the view catalog, so a skill cannot drift from its view.
+- The 26-entry `skills` array in `agent-spec.json` is generated too. A hand-maintained
+  list of 26 stage paths that must match 26 folder names is exactly the list that goes
+  stale silently, and a dangling reference fails per request. RULE E.
+- Uploaded by `scripts/deploy_cowork_skills.sh` to
+  `@FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS/skills/<view_id>/`, which must run BEFORE
+  `create_agents.sh` (installer step 5.7).
+- Skills are REFERENCED, never copied, and read at request time - so editing a `SKILL.md`
+  and re-uploading takes effect with no agent redeploy.
+- `SKILL.md` must be at the **root** of its folder; Snowflake does not search
+  subdirectories.
+- The stage privilege is **READ**, not USAGE. The skills documentation says USAGE, but
+  that is the external-stage form and an internal stage rejects it outright. Without any
+  grant the agent still lists 26 skills and every one fails to load, which reads as a
+  broken agent rather than a missing grant.
+- Attached to the consumer and super agents ONLY. The ops and admin agents hold no
+  `query_*` tool, so 26 analytics workflows they could match and then fail to execute
+  would be worse than none.
+
+## Verified queries (11)
+
+A question that matches a verified query runs its validated SQL directly, skipping
+generation, and the `ONBOARDING_QUESTION` ones surface as starting points. Each question
+is the headline `businessQuestion` from the view catalog, so the fast path covers exactly
+what an SE demonstrates.
+
+- Source of truth: `scripts/verified_queries.py`. The DDL clause goes AFTER `COMMENT` and
+  `AI_SQL_GENERATION`, BEFORE `COPY GRANTS`.
+- The SQL was GENERATED by Cortex Analyst from the question, not hand-written, so it is
+  idiomatic per view - some answer best through `SEMANTIC_VIEW(...)`, others through the
+  physical contract view.
+- Validation requires **rows**, not just compilation: a verified query is presented as
+  trusted, so one that returns nothing is worse than none. That rule caught the first
+  backload query, which aggregated match decisions - legitimately empty until someone
+  accepts a match in the app.
+- `VERIFIED_AT` is a fixed timestamp. `SYSDATE()` would make the DDL non-deterministic and
+  every install would look like a change.
+
+## Automations
+
+CoWork turns a question into a scheduled recurring report that re-runs against fresh data.
+
+- Requires `EXECUTE AGENT TASK`, which Snowflake grants to **PUBLIC by default** - so on
+  most accounts nothing is needed. `role_binding.sql` grants it to the three app roles for
+  the account where an administrator has revoked it from PUBLIC, where the Automations tab
+  still lets a user create one and then tells them access is disabled.
+- Each run executes under the **requesting user's own role**, so a report cannot show data
+  the user could not query themselves.
+- **Hourly is the finest cadence.** Anything wanted more often is a dashboard - point at
+  the app view.
+- Worth scheduling here: projected overtime and at-risk drivers (weekly, while there is
+  still time to act), dwell SLA breaches (daily), plan-vs-actual by driver (weekly), idle
+  assets (weekly).
+- The ops guidance is deliberately NOT a twin of the consumer guidance: digests are worth
+  scheduling, platform actions are not, because an automation runs unattended and there is
+  nobody to confirm a suspend, a scale or a delete with.
+- An automation whose question omits region or asset mode silently mixes them on EVERY
+  run. This deployment holds every loaded region at once.
+
+## Surfaces deliberately NOT configured
+
+**Deep Research.** Available in CoWork and needs no per-agent configuration, so there is
+nothing to wire. It is worth knowing it exists: a multi-step research question over the
+semantic views will take a different path from a single Analyst call, and it costs more.
+
+**File upload.** A user can attach a file to a CoWork thread, and the sandbox can read it.
+This is NOT built into any use case, and deliberately: every use case here answers from
+governed data in Snowflake, and a workflow that depends on a spreadsheet a user happens to
+attach cannot be demonstrated reproducibly or governed. The honest handover for "here is
+my own fleet data" is the Data Studio page or a real ingestion path, not an upload.
+
+**Mobile client.** CoWork has one, and it is why the agent instructions favour a short
+answer plus a link over a wide table: a 12-column result is unreadable on a phone, and
+`deep_link` degrades correctly there. No configuration.
+
+**`data_to_map`.** Host-injected and Snowflake-Intelligence-only, so it CANNOT be declared
+in a spec. See the map section below - the instructions treat it as optional and fall back
+to `deep_link`, because an agent that assumes it exists will claim to have drawn a map
+nobody can see.
+
+---
+
+# Maps (`data_to_map`)
+
+Tested SQL for drawing SA-style maps in Snowflake CoWork. Every statement below was
+executed against a live deployment (tib85385, region `SanFrancisco`).
 
 ## What `data_to_map` is, and what it is not
 

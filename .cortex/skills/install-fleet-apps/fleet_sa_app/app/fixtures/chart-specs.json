@@ -1,0 +1,265 @@
+{
+  "_comment": [
+    "Chart payloads for ui/scripts/verify-chart-spec.mts.",
+    "",
+    "Case 1 is VERBATIM from a live turn - the data_to_chart result for 'show me",
+    "Visits by Facility Type', including the server-side vega_template config and",
+    "the `charts` array of spec STRINGS. It is the payload that rendered as a",
+    "collapsed JSON blob, so it is the one fixture that must never be paraphrased:",
+    "a hand-written approximation would not have reproduced the two defects it",
+    "carries (an array key, and a measure on x with the category on y).",
+    "",
+    "The rest cover each chart type the agent's chart_customization block asks for,",
+    "so the guidance and the renderer cannot drift apart: a type the agent is told",
+    "to produce must compile here.",
+    "",
+    "`expectSpecs` is the number of specs extractChartSpecs must find; `expectMarks`",
+    "is a MINIMUM mark count after compile. Zero marks is the exact shape of a",
+    "blank chart in production, which is why it is asserted rather than assumed."
+  ],
+
+  "cases": [
+    {
+      "name": "live-horizontal-bar (verbatim from a real turn)",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"axis\":{\"labelFont\":\"sans-serif\",\"labelFontSize\":11,\"titleFont\":\"sans-serif\",\"titleFontSize\":12},\"bar\":{\"minBandSize\":5},\"header\":{\"labelFont\":\"sans-serif\",\"labelFontSize\":11,\"titleFont\":\"sans-serif\"},\"legend\":{\"labelFont\":\"sans-serif\",\"labelFontSize\":11,\"titleFont\":\"sans-serif\",\"titleFontSize\":12},\"mark\":{\"font\":\"sans-serif\"},\"title\":{\"font\":\"sans-serif\",\"fontSize\":14,\"fontWeight\":\"bold\"}},\"data\":{\"values\":[{\"AVG_DWELL_MINUTES\":6.0538527,\"FACILITY_TYPE\":\"restaurant\",\"TOTAL_DWELL_MINUTES\":71417.3,\"TOTAL_VISITS\":11797},{\"AVG_DWELL_MINUTES\":5.4949433,\"FACILITY_TYPE\":\"cafe\",\"TOTAL_DWELL_MINUTES\":12605.4,\"TOTAL_VISITS\":2294},{\"AVG_DWELL_MINUTES\":6.3894967,\"FACILITY_TYPE\":\"casual_eatery\",\"TOTAL_DWELL_MINUTES\":14600,\"TOTAL_VISITS\":2285},{\"AVG_DWELL_MINUTES\":6.500076,\"FACILITY_TYPE\":\"coffee_shop\",\"TOTAL_DWELL_MINUTES\":8554.1,\"TOTAL_VISITS\":1316},{\"AVG_DWELL_MINUTES\":4.449569,\"FACILITY_TYPE\":\"fast_food_restaurant\",\"TOTAL_DWELL_MINUTES\":1032.3,\"TOTAL_VISITS\":232},{\"AVG_DWELL_MINUTES\":6.3232558,\"FACILITY_TYPE\":\"DWELL_STORE\",\"TOTAL_DWELL_MINUTES\":271.9,\"TOTAL_VISITS\":43},{\"AVG_DWELL_MINUTES\":2.74,\"FACILITY_TYPE\":\"DWELL_DESTINATION\",\"TOTAL_DWELL_MINUTES\":82.2,\"TOTAL_VISITS\":30},{\"AVG_DWELL_MINUTES\":20.8333333,\"FACILITY_TYPE\":\"DWELL_REST_STOP\",\"TOTAL_DWELL_MINUTES\":62.5,\"TOTAL_VISITS\":3}]},\"encoding\":{\"color\":{\"scale\":{\"range\":[\"#29B5E8\",\"#11567F\",\"#16A34A\",\"#D97706\",\"#7C3AED\",\"#DC2626\",\"#06B6D4\",\"#EC4899\"]}},\"tooltip\":[{\"field\":\"TOTAL_VISITS\",\"format\":\",.6~f\",\"title\":\"Total Visits\",\"type\":\"quantitative\"},{\"field\":\"FACILITY_TYPE\",\"title\":\"Facility Type\",\"type\":\"nominal\"},{\"field\":\"TOTAL_DWELL_MINUTES\",\"format\":\",.1f\",\"title\":\"Total Dwell (min)\",\"type\":\"quantitative\"},{\"field\":\"AVG_DWELL_MINUTES\",\"format\":\",.1f\",\"title\":\"Avg Dwell (min)\",\"type\":\"quantitative\"}],\"x\":{\"axis\":{\"format\":\".3~s\",\"labelExpr\":\"replace(datum.label, 'G', 'B')\"},\"field\":\"TOTAL_VISITS\",\"sort\":null,\"title\":\"Total Visits\",\"type\":\"quantitative\"},\"y\":{\"field\":\"FACILITY_TYPE\",\"sort\":\"-x\",\"title\":\"Facility Type\",\"type\":\"nominal\"}},\"mark\":\"bar\",\"title\":\"Visits by Facility Type - San Francisco\",\"usermeta\":{\"merge\":\"extend\",\"snowflake\":{\"color_mapping\":{\"bar\":{\"hex\":\"#4c78a8\",\"name\":\"blue\"}},\"columnRoles\":{\"AVG_DWELL_MINUTES\":\"metric\",\"FACILITY_TYPE\":\"dimension\",\"TOTAL_DWELL_MINUTES\":\"metric\"}}}}"
+        ]
+      }
+    },
+    {
+      "name": "time-series-line",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Trips per day",
+            "mark": { "type": "line", "point": true },
+            "data": { "values": [
+              { "TRIP_DAY": "2026-09-01", "TRIPS": 412 },
+              { "TRIP_DAY": "2026-09-02", "TRIPS": 388 },
+              { "TRIP_DAY": "2026-09-03", "TRIPS": 455 }
+            ] },
+            "encoding": {
+              "x": { "field": "TRIP_DAY", "type": "temporal", "title": "Day" },
+              "y": { "field": "TRIPS", "type": "quantitative", "title": "Trips" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "dual-axis-layer",
+      "expectSpecs": 1,
+      "expectMarks": 2,
+      "payload": {
+        "charts": [
+          {
+            "title": "Deadhead km vs margin",
+            "layer": [
+              {
+                "mark": "bar",
+                "encoding": {
+                  "x": { "field": "WEEK", "type": "ordinal" },
+                  "y": { "field": "EMPTY_KM", "type": "quantitative", "axis": { "title": "Empty km" } }
+                }
+              },
+              {
+                "mark": { "type": "line", "strokeWidth": 2 },
+                "encoding": {
+                  "x": { "field": "WEEK", "type": "ordinal" },
+                  "y": { "field": "MARGIN_USD", "type": "quantitative", "axis": { "title": "Margin (USD)" } }
+                }
+              }
+            ],
+            "resolve": { "scale": { "y": "independent" } },
+            "data": { "values": [
+              { "WEEK": 1, "EMPTY_KM": 1200, "MARGIN_USD": 4300 },
+              { "WEEK": 2, "EMPTY_KM": 980, "MARGIN_USD": 5100 }
+            ] }
+          }
+        ]
+      }
+    },
+    {
+      "name": "pie-arc",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Dwell minutes by facility",
+            "mark": { "type": "arc", "innerRadius": 50 },
+            "data": { "values": [
+              { "FACILITY_TYPE": "restaurant", "TOTAL_DWELL_MINUTES": 71417.3 },
+              { "FACILITY_TYPE": "cafe", "TOTAL_DWELL_MINUTES": 12605.4 },
+              { "FACILITY_TYPE": "casual_eatery", "TOTAL_DWELL_MINUTES": 14600 }
+            ] },
+            "encoding": {
+              "theta": { "field": "TOTAL_DWELL_MINUTES", "type": "quantitative" },
+              "color": { "field": "FACILITY_TYPE", "type": "nominal" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "boxplot-distribution",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Paid hours by depot",
+            "mark": { "type": "boxplot", "extent": "min-max" },
+            "data": { "values": [
+              { "HOME_BASE_NAME": "Depot A", "PAID_HOURS": 41.2 },
+              { "HOME_BASE_NAME": "Depot A", "PAID_HOURS": 85.4 },
+              { "HOME_BASE_NAME": "Depot B", "PAID_HOURS": 24.0 },
+              { "HOME_BASE_NAME": "Depot B", "PAID_HOURS": 52.6 }
+            ] },
+            "encoding": {
+              "y": { "field": "HOME_BASE_NAME", "type": "nominal" },
+              "x": { "field": "PAID_HOURS", "type": "quantitative" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "heatmap-rect",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Dwell by hour and weekday",
+            "mark": "rect",
+            "data": { "values": [
+              { "WEEKDAY": "Mon", "HOUR": 8, "TOTAL_DWELL_MINUTES": 120 },
+              { "WEEKDAY": "Mon", "HOUR": 9, "TOTAL_DWELL_MINUTES": 340 },
+              { "WEEKDAY": "Tue", "HOUR": 8, "TOTAL_DWELL_MINUTES": 210 }
+            ] },
+            "encoding": {
+              "x": { "field": "HOUR", "type": "ordinal" },
+              "y": { "field": "WEEKDAY", "type": "nominal" },
+              "color": { "field": "TOTAL_DWELL_MINUTES", "type": "quantitative" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "histogram-bin",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Dwell minutes distribution",
+            "mark": "bar",
+            "data": { "values": [
+              { "DWELL_MINUTES": 2.1 }, { "DWELL_MINUTES": 6.4 },
+              { "DWELL_MINUTES": 6.9 }, { "DWELL_MINUTES": 20.8 }
+            ] },
+            "encoding": {
+              "x": { "field": "DWELL_MINUTES", "bin": { "maxbins": 20 }, "type": "quantitative" },
+              "y": { "aggregate": "count", "type": "quantitative" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "fold-transform-multi-series",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Empty vs loaded km",
+            "transform": [{ "fold": ["EMPTY_KM", "LOADED_KM"] }],
+            "mark": "line",
+            "data": { "values": [
+              { "WEEK": 1, "EMPTY_KM": 1200, "LOADED_KM": 4300 },
+              { "WEEK": 2, "EMPTY_KM": 980, "LOADED_KM": 5100 }
+            ] },
+            "encoding": {
+              "x": { "field": "WEEK", "type": "ordinal" },
+              "y": { "field": "value", "type": "quantitative" },
+              "color": { "field": "key", "type": "nominal" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stacked-bar",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "title": "Sessions by facility and region",
+            "mark": "bar",
+            "data": { "values": [
+              { "REGION": "SanFrancisco", "FACILITY_TYPE": "cafe", "TOTAL_SESSIONS": 2294 },
+              { "REGION": "SanFrancisco", "FACILITY_TYPE": "restaurant", "TOTAL_SESSIONS": 11797 },
+              { "REGION": "Europe", "FACILITY_TYPE": "cafe", "TOTAL_SESSIONS": 120 }
+            ] },
+            "encoding": {
+              "x": { "field": "TOTAL_SESSIONS", "type": "quantitative", "stack": "zero" },
+              "y": { "field": "REGION", "type": "nominal" },
+              "color": { "field": "FACILITY_TYPE", "type": "nominal" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-charts-in-one-answer",
+      "expectSpecs": 2,
+      "expectMarks": 1,
+      "payload": {
+        "charts": [
+          {
+            "mark": "bar",
+            "data": { "values": [{ "K": "a", "V": 1 }] },
+            "encoding": { "x": { "field": "V", "type": "quantitative" }, "y": { "field": "K", "type": "nominal" } }
+          },
+          {
+            "mark": "line",
+            "data": { "values": [{ "K": "a", "V": 1 }, { "K": "b", "V": 2 }] },
+            "encoding": { "x": { "field": "K", "type": "ordinal" }, "y": { "field": "V", "type": "quantitative" } }
+          }
+        ]
+      }
+    },
+    {
+      "name": "legacy-single-chartSpec-key",
+      "expectSpecs": 1,
+      "expectMarks": 1,
+      "payload": {
+        "chartSpec": "{\"mark\":\"bar\",\"data\":{\"values\":[{\"K\":\"a\",\"V\":1}]},\"encoding\":{\"x\":{\"field\":\"V\",\"type\":\"quantitative\"},\"y\":{\"field\":\"K\",\"type\":\"nominal\"}}}"
+      }
+    }
+  ],
+
+  "rejectCases": [
+    {
+      "name": "malformed json string",
+      "payload": { "charts": ["{not json"] }
+    },
+    {
+      "name": "empty charts array",
+      "payload": { "charts": [] }
+    },
+    {
+      "name": "no chart at all",
+      "payload": { "status": "ok" }
+    }
+  ]
+}

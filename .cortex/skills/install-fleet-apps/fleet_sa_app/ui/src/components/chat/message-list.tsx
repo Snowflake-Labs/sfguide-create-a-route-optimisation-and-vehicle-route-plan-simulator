@@ -4,6 +4,7 @@ import { useEffect, useRef, useMemo, useState, memo } from 'react';
 import type { Message, MessagePart } from '@/lib/types';
 import { MessagePartRenderer } from './message-part';
 import { viewRegistry } from '@/lib/view-registry';
+import { resolveChartCitations } from '@/lib/chart-citations';
 
 interface MessageListProps {
   messages: Message[];
@@ -85,11 +86,16 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
 
   const orderedParts = useMemo(() => {
     if (isUser) return message.parts;
+    // Charts first: put each cited chart at its citation point (and strip the
+    // citation tags) BEFORE the view-label hoisting below, so the hoist sees the
+    // final text segments. Runs on rehydrated history too, since this is the one
+    // path every assistant message renders through.
+    const parts = resolveChartCitations(message.parts);
     const viewLabels = viewRegistry.list().map((v) => v.label);
-    if (viewLabels.length === 0) return message.parts;
+    if (viewLabels.length === 0) return parts;
     const viewTextParts: MessagePart[] = [];
     const otherParts: MessagePart[] = [];
-    for (const part of message.parts) {
+    for (const part of parts) {
       if (part.type === 'text' && viewLabels.some((label) => part.content.includes(label))) {
         viewTextParts.push(part);
       } else {

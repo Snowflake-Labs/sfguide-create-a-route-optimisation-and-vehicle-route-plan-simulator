@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { formatCellValue } from '@/lib/format-number';
 
 interface DataTableProps {
   columns: Array<{ key: string; label: string }>;
@@ -56,7 +57,7 @@ export function DataTable({ columns, rows, totalRows }: DataTableProps) {
                     color: 'var(--text-primary, #111827)',
                   }}
                 >
-                  {String(row[col.key] ?? '')}
+                  {formatCellValue(row[col.key], { column: col.key, grouping: true, empty: '' })}
                 </td>
               ))}
             </tr>

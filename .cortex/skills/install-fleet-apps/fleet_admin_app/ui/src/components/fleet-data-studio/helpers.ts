@@ -39,7 +39,11 @@ export interface CoverageEntry {
   REGION: string;
   ORS_PROFILE: string;
   TELEMETRY_ROWS: number;
-  TRIP_ROWS: number;
+  /** null when the trip-count query itself failed - see TRIPS_DEGRADED. Do not
+   *  coerce a failure to 0 and present it as a count. */
+  TRIP_ROWS: number | null;
+  /** true when TRIP_ROWS could not be measured rather than being genuinely 0. */
+  TRIPS_DEGRADED?: boolean;
   VEHICLES: number;
 }
 

@@ -20,11 +20,20 @@ export interface RegionOption {
   display_name?: string;
   isDefault?: boolean;
   bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
-  // Boundary GeoJSON parsed from REGION_CATALOG.BOUNDARY (via /api/regions).
-  // When present, samplePoints uses rejection sampling against the polygon
-  // instead of bbox - dramatically reduces ORS PointNotFound for water-bordered
-  // regions and shows the real region shape on the map.
+  // Boundary GeoJSON for the region. Now the LAND-clipped mask
+  // (ROUTABLE_BOUNDARY_SIMPLE) when one has been baked, falling back to
+  // ROUTABLE_BOUNDARY and then to the raw PBF extract BOUNDARY.
+  //
+  // The distinction matters: BOUNDARY is a download cut line whose coastal edges
+  // run far out to sea, so sampling inside it puts points in open water - the US
+  // extract is 31.4M km2 against 10.1M km2 of land. samplePoints uses this for
+  // rejection sampling, and ResultMap draws it as the region shape.
   boundaryGeoJson?: any | null;
+  /**
+   * Which mask boundaryGeoJson came from. 'extract' means no land clip has been
+   * baked yet, so in-polygon does not imply on-land.
+   */
+  boundarySource?: 'routable' | 'extract' | null;
   /** From /api/regions/provisioned - configured vs live-loaded profiles. */
   graphReadiness?: GraphReadiness | null;
 }

@@ -41,16 +41,32 @@ function resolveParamValue(
   return ref;
 }
 
+export interface UseViewDataOptions {
+  /** Force the owner's-rights dynamic query boundary (/api/query dynamic:true)
+   *  regardless of which view is active.
+   *
+   *  Normally `dynamic` is derived from the panel showing the ephemeral
+   *  agent-emitted page (DYNAMIC_VIEW_ID). An inline chat map is the case that
+   *  breaks that derivation: its SQL is equally agent-authored and equally
+   *  untrusted, but it renders in the chat stream while the panel still shows the
+   *  user's own trusted dashboard - so the active view id says "trusted" and
+   *  would run agent SQL with the app's full privileges. */
+  forceDynamic?: boolean;
+}
+
 export function useViewData(
   query: string | undefined,
   paramRefs?: Record<string, string>,
+  options?: UseViewDataOptions,
 ): UseViewDataResult {
   const viewState = useAppStore((s) => s.panel.viewState);
   const context = useAppStore((s) => s.context);
   const viewsVersion = useAppStore((s) => s.viewsVersion);
   // Queries for the ephemeral agent-emitted page run through the owner's-rights
   // dynamic boundary (/api/query dynamic:true). Trusted shipped views do not.
-  const isDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
+  // A caller may force it (see UseViewDataOptions.forceDynamic).
+  const activeIsDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
+  const isDynamic = options?.forceDynamic === true || activeIsDynamic;
   const beginFetch = useAppStore((s) => s.beginFetch);
   const endFetch = useAppStore((s) => s.endFetch);
   const [data, setData] = useState<QueryResult | null>(null);

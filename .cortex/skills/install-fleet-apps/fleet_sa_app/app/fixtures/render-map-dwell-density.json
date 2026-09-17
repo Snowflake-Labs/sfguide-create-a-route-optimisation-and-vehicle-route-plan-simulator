@@ -1,0 +1,48 @@
+{
+  "_comment": "Positive render_map fixture: a 2-layer inline map (h3 dwell density + a scatterplot of the sites inside it). Doubles as the worked example for the render_map spec contract. Asserted valid by fleet_tools/user/verify_map_spec.mts; the negative counterparts live in that harness. Queries read the neutral FLEET_APP contract, bind only context.* params, and simplify nothing because neither layer carries line or polygon geometry. It carries NO legend on purpose: the client derives one from each layer's colours, so an authored key could only contradict the map - name a layer with legendLabel instead.",
+  "title": "Dwell density and served sites",
+  "height": 380,
+  "emptyMessage": "No dwell sessions for the active region and date range.",
+  "layers": [
+    {
+      "id": "dwell_density",
+      "type": "h3",
+      "legendLabel": "Dwell minutes",
+      "hexColumn": "h3_cell",
+      "valueColumn": "dwell_minutes",
+      "colorScale": [
+        [231, 241, 247, 140],
+        [16, 108, 148, 220]
+      ],
+      "pickable": true,
+      "tooltip": "<b>{H3_CELL}</b><br/>{DWELL_MINUTES} dwell minutes",
+      "data": {
+        "query": "SELECT H3_CELL AS h3_cell, ROUND(SUM(DWELL_MINUTES)) AS dwell_minutes FROM FLEET_APP.DWELL.VW_DWELL_ENRICHED WHERE REGION = :region GROUP BY H3_CELL ORDER BY dwell_minutes DESC LIMIT 500",
+        "params": {
+          "region": "context.region"
+        }
+      }
+    },
+    {
+      "id": "sites",
+      "type": "scatterplot",
+      "legendLabel": "Site",
+      "lng": "site_lon",
+      "lat": "site_lat",
+      "fillColor": [255, 171, 0, 220],
+      "radius": 70,
+      "radiusMinPixels": 4,
+      "radiusMaxPixels": 12,
+      "stroked": true,
+      "lineWidthMinPixels": 1,
+      "pickable": true,
+      "tooltip": "<b>{SITE_NAME}</b><br/>{VISITS} visits",
+      "data": {
+        "query": "SELECT SITE_NAME AS site_name, SITE_LON AS site_lon, SITE_LAT AS site_lat, COUNT(*) AS visits FROM FLEET_APP.DWELL.VW_DWELL_ENRICHED WHERE REGION = :region AND SITE_LON IS NOT NULL GROUP BY SITE_NAME, SITE_LON, SITE_LAT ORDER BY visits DESC LIMIT 200",
+        "params": {
+          "region": "context.region"
+        }
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { RoutingSuspendedInlineHint } from '@/components/views/RoutingSuspendedInlineHint';
+import { formatCellValue } from '@/lib/format-number';
 
 interface ViewComboBoxAreaProps {
   areaConfig: {
@@ -73,8 +74,11 @@ export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
       >
         <option value="">{placeholder}</option>
         {options.map((row, i) => (
+          // The `value` attribute stays a RAW string on purpose: it is written into
+          // viewState and bound into dependent queries, so formatting it would change
+          // the selection, not its presentation. Only the option TEXT is formatted.
           <option key={i} value={String(row[valueField] ?? '')}>
-            {String(row[labelField] ?? row[valueField] ?? '')}
+            {formatCellValue(row[labelField] ?? row[valueField], { column: labelField, grouping: true, empty: '' })}
           </option>
         ))}
       </select>

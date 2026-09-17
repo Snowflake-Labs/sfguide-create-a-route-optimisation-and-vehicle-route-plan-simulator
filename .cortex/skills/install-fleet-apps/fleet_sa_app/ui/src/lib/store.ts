@@ -2,8 +2,10 @@ import { create } from 'zustand';
 import { temporal } from 'zundo';
 import type { Message, MessagePart, PanelContext, MapStateDescriptor, ChatStatus, AppRole, DisplayConfig, StyleConfig, SolutionCatalogEntry } from './types';
 import { viewRegistry } from './view-registry';
+import { resolveViewParams, applyResolvedParams } from './view-params';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
+import { matchesTool, unwrapVerbResult } from './tool-names';
 import { toCatalogEntry } from './use-case';
 import {
   detectSuspendedInResult,
@@ -207,16 +209,18 @@ export const useAppStore = create<AppStore>()(
       },
 
       appendAssistantPart: (messageId: string, part: MessagePart) => {
-        // propose_write is now served via CDP_WORKFLOW_MCP - tool name is cdp_workflow_mcp__propose_write.
+        // propose_write is served via CDP_WORKFLOW_MCP, so the tool name arrives
+        // namespaced by the server. matchesTool covers that prefix (see
+        // lib/tool-names.ts - the separator is a single underscore, which this
+        // site previously got wrong, so the branch never fired).
         // ConfirmAction renders from tool_result (pending_confirmation payload), not tool_pending.
-        const isMcpProposeWrite = (n: string | undefined) =>
-          !!n && (n === 'propose_write' || n.endsWith('__propose_write'));
+        const isMcpProposeWrite = (n: string | undefined) => matchesTool(n, 'propose_write');
 
         // Tools whose tool_result means data was written - bump views so the panel auto-refreshes.
         // Also bump when a confirmed propose_write lands (handled in message-part.tsx confirm flow directly).
         const WRITE_TOOLS = new Set(['execute_workflow', 'resume_workflow']);
         const isWriteTool = (n: string | undefined) =>
-          !!n && (WRITE_TOOLS.has(n) || Array.from(WRITE_TOOLS).some(w => n.endsWith('__' + w)));
+          !!n && Array.from(WRITE_TOOLS).some((w) => matchesTool(n, w));
 
         // Bump view version when workflow tools complete so the panel reflects new entities immediately
         if (part.type === 'tool_result' && isWriteTool(part.toolName)) {
@@ -354,21 +358,56 @@ export const useAppStore = create<AppStore>()(
 
                 appendAssistantPart(assistantId, part);
 
-                if (part.type === 'tool_result' && part.toolName === 'show_view') {
-                  const output = part.output as { viewId?: string; state?: Record<string, unknown> };
-                  if (output.viewId) {
+                // show_view (synapse verb on ROUTING_MCP): navigate the panel as
+                // part of the answer, instead of asking the user to click a
+                // `view:` chip.
+                //
+                // The name is matched by SUFFIX. A tool reached through an MCP
+                // server does not arrive as the bare verb name - `toolName` is
+                // taken straight from the agent event's `name`, which carries the
+                // server's prefix. An exact-equality check therefore never
+                // fires in a real deployment, which is a silent failure: the
+                // verb succeeds, the agent reports that it opened the view, and
+                // the panel does not move.
+                if (part.type === 'tool_result' && matchesTool(part.toolName, 'show_view')) {
+                  const output = part.output as {
+                    viewId?: string;
+                    params?: Record<string, unknown>;
+                    state?: Record<string, unknown>;
+                  };
+                  // Resolve through the SAME vocabulary as a deep link, so region
+                  // and asset mode land in `context` (where views read them) and
+                  // only a selection lands in `viewState`. Putting region in
+                  // viewState renders a correct page for the wrong region.
+                  const params = output.params;
+                  if (params) {
+                    const resolved = resolveViewParams((p) => {
+                      const v = params[p];
+                      return v == null ? null : String(v);
+                    });
+                    if (resolved.unknownView) {
+                      console.warn(
+                        `[show_view] unknown view id "${resolved.unknownView}" - applying context only`,
+                      );
+                    }
+                    applyResolvedParams(resolved, {
+                      setContext: get().setContext,
+                      showView: get().showView,
+                    });
+                  } else if (output.viewId) {
+                    // Older contract: an explicit viewId plus a raw viewState
+                    // patch, with no scoping params to split.
                     get().showView(output.viewId, output.state);
                   }
                 }
 
                 // render_view (synapse verb on ROUTING_MCP): the tool_result output is
                 // the agent-emitted view spec. Validate + register as an ephemeral page.
-                if (
-                  part.type === 'tool_result' &&
-                  (part.toolName === 'render_view' || part.toolName.endsWith('__render_view'))
-                ) {
+                // The result arrives DOUBLE-wrapped, so peel it rather than
+                // reading `.result` once - see unwrapVerbResult.
+                if (part.type === 'tool_result' && matchesTool(part.toolName, 'render_view')) {
                   const output = part.output as { result?: unknown; title?: string } | undefined;
-                  get().showDynamicView(output?.result ?? output, output?.title ?? null);
+                  get().showDynamicView(unwrapVerbResult(output), output?.title ?? null);
                 }
               } catch {
                 // skip malformed chunks

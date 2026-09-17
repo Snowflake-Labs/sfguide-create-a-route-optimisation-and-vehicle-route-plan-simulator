@@ -12,7 +12,15 @@
     "sourceMap": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    // verify_map_spec.mts imports SA app source directly (inline-legend.ts) so the
+    // legend/encoding helpers are asserted as the app actually runs them rather
+    // than through a copy. That source uses the app's own `@/*` alias, which node
+    // cannot resolve from here, so the mapping is mirrored. Nothing under src/
+    // uses `@/`, so this affects the verifier only.
+    "paths": {
+      "@/*": ["../../fleet_sa_app/ui/src/*"]
+    }
   },
   "include": ["src/**/*", "synapse.config.ts"]
 }

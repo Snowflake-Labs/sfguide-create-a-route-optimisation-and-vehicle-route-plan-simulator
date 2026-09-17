@@ -16,7 +16,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { useRegionCamera } from '@/hooks/use-region-camera';
-import { usePublishMapState } from '@/lib/agent-memo';
+import { usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
+import { collectAgentSolve } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import {
   rankByWeights, groupByTrailer, loadWeights, saveWeights,
@@ -65,6 +66,12 @@ interface VehicleClass {
 // vehicle across three perspectives, so a per-vehicle-best response would make the
 // Loads and Ensemble views impossible; this bounds the payload instead.
 const PAIR_LIMIT = 200;
+// Wall-clock ceiling handed to the verb. The cockpit is a DELIBERATE full-region
+// run behind a Run button with its own busy state, and measured solves here reach
+// 168.6s at 100/500, so it asks for the verb's maximum rather than the 90s default
+// the agent path gets. Passing the default would truncate a solve this page has
+// always completed.
+const PAGE_TIME_BUDGET_S = 600;
 
 // Single-strategy options (non-ensemble perspectives).
 const STRATEGY_OPTIONS: StrategyOption[] = [
@@ -104,7 +111,7 @@ async function fetchRouteCoords(profile: string, waypoints: [number, number][], 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
 
-export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}) {
+export function BackloadProposalsView({ viewState, onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
@@ -211,6 +218,78 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   useEffect(() => { load(); }, [load]);
 
+  // -----------------------------------------------------------------
+  // Rehydrate a solve the AGENT ran.
+  //
+  // `solve_key` arrives in viewState when the agent navigates here after calling
+  // backload_solve (show_view with selection="solve_key=..."). This page and that
+  // verb are the SAME code path - both call TOOL_BACKLOAD_SOLVE and both consume
+  // `pairs` - so the cached result drops straight into state with no conversion,
+  // and the weight sliders re-rank it exactly as they would a local solve.
+  //
+  // Collecting rather than re-running matters for more than time: a second solve
+  // is a genuinely different solve, so re-running would put numbers on screen
+  // that can disagree with the ones the agent just quoted in chat.
+  // -----------------------------------------------------------------
+  const solveKeyParam = typeof viewState?.solve_key === 'string' ? viewState.solve_key : null;
+  const rehydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!solveKeyParam) return;
+    if (rehydratedKeyRef.current === solveKeyParam) return;
+    let cancelled = false;
+    const ac = new AbortController();
+
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (cancelled) return;
+        const out = await collectAgentSolve(solveKeyParam, ac.signal);
+        if (cancelled) return;
+
+        if (out.state === 'pending') {
+          setBusy('Collecting the agent\u2019s solve\u2026');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        rehydratedKeyRef.current = solveKeyParam;
+        setBusy(null);
+
+        if (out.state === 'expired') {
+          setSolveError('That solve is no longer stored. Run a strategy to produce a new one.');
+          return;
+        }
+        if (out.state === 'failed') {
+          setSolveError(`The agent\u2019s solve could not be collected: ${out.error}`);
+          return;
+        }
+
+        // The agent may have asked for vehicle granularity, which returns
+        // `proposals` and no `pairs`. This cockpit ranks pairs, so say so plainly
+        // rather than rendering an empty grid.
+        const rows = (out.solve.pairs as ScoredPair[] | undefined) ?? [];
+        if (!rows.length) {
+          setSolveError(
+            'The agent\u2019s solve returned one proposal per vehicle rather than the graded pairs this ' +
+            'cockpit ranks. Run a strategy here to grade every candidate pair.',
+          );
+          return;
+        }
+        setPairs(rows);
+        setGradedCount(Number((out.solve.counts ?? {}).graded_pairs ?? rows.length));
+        setRanAt(Date.now());
+        const ran = out.solve.strategies_run ?? [];
+        setInfo(
+          `Showing the agent\u2019s solve` +
+          (ran.length > 1 ? ` - ${ran.length} strategies graded` : out.solve.strategy ? ` (${out.solve.strategy})` : '') +
+          '. Tune the scoring weights to re-rank it without re-solving.',
+        );
+        return;
+      }
+    })();
+
+    return () => { cancelled = true; ac.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKeyParam]);
+
   const trailerById = useMemo(() => {
     const m = new Map<string, Trailer>();
     for (const t of trailers) m.set(t.TRAILER_ID, t);
@@ -235,6 +314,9 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     try {
       const result = await callVerb('backload_solve', [
         strat, maxVehicles, maxLoads, cfg.region, PAIR_LIMIT, 'pair',
+        // trailer_id: null - the cockpit plans the whole region. Scoping to one
+        // vehicle is the agent's path, not the dispatcher's.
+        null, PAGE_TIME_BUDGET_S,
       ]);
       const rows = (result.pairs as ScoredPair[] | undefined) ?? [];
       const counts = (result.counts ?? {}) as Record<string, number>;
@@ -465,11 +547,17 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
-    const topList = grouped.slice(0, MAX_TRIPS).map((r) => {
+    const parts = grouped.slice(0, MAX_TRIPS).map((r) => {
       const margin = r.best.marginUsd != null ? `${r.best.marginUsd >= 0 ? '+' : ''}$${Math.round(r.best.marginUsd)}` : 'n/a';
       const loaded = (r.best.loadedKm ?? r.best.loadedKmEst ?? 0).toFixed(0);
       return `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}) ${r.best.pickupCity || '?'}->${r.best.deliveryCity || '?'}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km loaded ${loaded}km, margin ${margin}${r.best.isInternal ? ', internal' : ', external'}`;
-    }).join('; ') + (grouped.length > MAX_TRIPS ? ` (+${grouped.length - MAX_TRIPS} more)` : '');
+    });
+    // Row count alone does not bound prose (see agent-memo.ts): route.ts trims
+    // whole panels, so a list that outgrows the budget disappears rather than
+    // shortens. The overflow note is a part so it is either kept or counted.
+    const overflow = grouped.length - parts.length;
+    if (overflow > 0) parts.push(`(+${overflow} more proposals, not listed)`);
+    const topList = joinBounded(parts, TRIP_MEMO_MAX_LEN);
     const acc = Object.values(decisions);
     return {
       view: 'backload_proposals', region: region ?? null,

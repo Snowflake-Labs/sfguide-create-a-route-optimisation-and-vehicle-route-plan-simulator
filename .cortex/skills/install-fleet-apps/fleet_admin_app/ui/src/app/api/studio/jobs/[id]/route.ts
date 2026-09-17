@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
-import { runSql } from '@/server/lib/sql';
+import { runSql, runSqlBatch } from '@/server/lib/sql';
 import { getJob, deleteJobData, loadJobState } from '@/server/studio/jobs';
 import { requireOps } from '@/lib/ingress-identity';
 
@@ -22,7 +22,8 @@ export const DELETE = withLogging(async (req, ctx?: unknown) => {
       ? job.status === 'RUNNING'
       : (await loadJobState(id, runSql))?.status === 'RUNNING';
     if (running) return NextResponse.json({ error: 'Cannot delete data for a running job. Cancel it first.' }, { status: 409 });
-    const result = await deleteJobData(id, runSql);
+    // 17 DELETEs across the large fact tables -> batch.
+    const result = await deleteJobData(id, runSqlBatch);
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

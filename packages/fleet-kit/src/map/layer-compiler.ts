@@ -7,11 +7,13 @@
 import type { Layer } from '@deck.gl/core';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer, ArcLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
-import { cellToBoundary } from 'h3-js';
 import type {
   LayerSpec, ColorValue, ColorRGBA, ScatterplotLayerSpec, PathLayerSpec,
   H3HexagonLayerSpec, GeoJsonLayerSpec, ArcLayerSpec,
 } from './layer-spec';
+// Geometry reading lives in map-fit so the fit path and the compile path cannot
+// disagree about which coordinates count or which H3 cells are usable.
+import { coordsFromGeoJSON, coordsFromH3Cell, pushCoordPairs } from './geo-coords';
 import { decimateLineCoords, decimateGeometry, DEFAULT_MAX_PATH_POINTS } from './simplify';
 
 type Row = Record<string, any>;
@@ -78,26 +80,69 @@ function pathData(spec: PathLayerSpec, rows: Row[]): Array<{ path: number[][] } 
  * spec may carry heavy route GeoJSON - halving the parse is what keeps the
  * basemap responsive.
  */
+/**
+ * Rows of `rows` that carry every column `spec` needs to place a feature.
+ *
+ * Exists so a caller can tell "the query matched nothing" apart from "the query
+ * matched plenty and NONE of it could be drawn" - two states that looked
+ * identical (an empty basemap, no error) and have opposite fixes. The second is
+ * always a naming or a NULL-geometry problem: a misspelled `hexColumn`, a
+ * `valueColumn` that is not on the result set, or a live routing call that
+ * returned NULL geometry because its profile was wrong.
+ *
+ * Deliberately counts the SAME predicate each compile branch filters on, so the
+ * number describes what deck.gl was handed rather than an independent opinion
+ * about it.
+ */
+export function drawnCount(spec: LayerSpec, rows: Row[]): number {
+  if (!rows?.length) return 0;
+  switch (spec.type) {
+    case 'scatterplot':
+      return rows.filter((r) => has(r, spec.lng, spec.lat)).length;
+    case 'arc':
+      return rows.filter((r) => has(r, spec.source.lng, spec.source.lat, spec.target.lng, spec.target.lat)).length;
+    case 'h3':
+      return rows.filter((r) => has(r, spec.hexColumn)).length;
+    case 'path':
+      return pathData(spec, rows).length;
+    case 'geojson':
+      return geoFeatures(spec, rows).features.length;
+    default:
+      return 0;
+  }
+}
+
+/** Column names `spec` reads to place a feature: see `encodingColumns` in the SA
+ *  app's lib/map/inline-legend.ts. It was here, but it needs nothing from this
+ *  module and nothing here can be imported under tsx (deck.gl dies in
+ *  @luma.gl/shadertools), so its only caller reached it across a package
+ *  boundary and no test could cover it. `drawnCount` stays because it needs
+ *  pathData / geoFeatures. */
+
 export function compileLayerWithFit(
   spec: LayerSpec,
   rows: Row[],
   viewState: Record<string, unknown>,
   index: number,
   hovered?: { layerId: string; value: unknown } | null,
-): { layer: Layer | null; fitCoords: [number, number][] } {
-  if (!rows || rows.length === 0) return { layer: null, fitCoords: [] };
+): { layer: Layer | null; fitCoords: [number, number][]; drawn: number } {
+  if (!rows || rows.length === 0) return { layer: null, fitCoords: [], drawn: 0 };
   const id = spec.id ?? `spec-layer-${index}`;
   if (spec.type === 'path') {
     const s = spec as PathLayerSpec;
     const data = pathData(s, rows);
-    return { layer: buildPathLayer(s, id, data, hovered), fitCoords: fitFromPathData(data) };
+    return { layer: buildPathLayer(s, id, data, hovered), fitCoords: fitFromPathData(data), drawn: data.length };
   }
   if (spec.type === 'geojson') {
     const s = spec as GeoJsonLayerSpec;
     const fc = geoFeatures(s, rows);
-    return { layer: buildGeoJsonLayer(s, id, fc), fitCoords: fitFromFeatures(fc) };
+    return { layer: buildGeoJsonLayer(s, id, fc), fitCoords: fitFromFeatures(fc), drawn: fc.features.length };
   }
-  return { layer: compileLayer(spec, rows, viewState, index, hovered), fitCoords: layerFitCoords(spec, rows) };
+  return {
+    layer: compileLayer(spec, rows, viewState, index, hovered),
+    fitCoords: layerFitCoords(spec, rows),
+    drawn: drawnCount(spec, rows),
+  };
 }
 /** Parse a column of GeoJSON strings into a FeatureCollection. Line geometries
  *  are stride-decimated to spec.maxPathPoints; polygon rings are left intact. */
@@ -128,22 +173,16 @@ function fitFromPathData(data: Array<{ path: number[][] }>): [number, number][] 
   return out;
 }
 
-/** Recursively push finite [lng,lat] pairs from a nested coordinate array. */
-function pushCoords(c: any, out: [number, number][]): void {
-  if (!Array.isArray(c)) return;
-  if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-    if (Number.isFinite(c[0]) && Number.isFinite(c[1])) out.push([c[0], c[1]]);
-    return;
-  }
-  for (const inner of c) pushCoords(inner, out);
-}
-
 /** Collect [lng,lat] coords from an already-parsed FeatureCollection (no re-parse). */
 function fitFromFeatures(fc: GeoJSON.FeatureCollection): [number, number][] {
   const out: [number, number][] = [];
   for (const f of fc.features) {
     const g: any = f?.geometry;
-    if (g?.coordinates) pushCoords(g.coordinates, out);
+    if (g?.type === 'GeometryCollection') {
+      for (const inner of g.geometries ?? []) pushCoordPairs(inner?.coordinates, out);
+    } else if (g?.coordinates) {
+      pushCoordPairs(g.coordinates, out);
+    }
   }
   return out;
 }
@@ -321,41 +360,24 @@ export function layerFitCoords(spec: LayerSpec, rows: Row[]): [number, number][]
     for (const seg of pathData(spec, rows)) for (const p of seg.path) out.push([p[0], p[1]]);
   } else if (spec.type === 'geojson') {
     // Walk Polygon / MultiPolygon / Line coordinates so polygon layers (e.g. an
-    // isochrone ring) contribute their extent to the camera fit.
+    // isochrone ring) contribute their extent to the camera fit. coordsFromGeoJSON
+    // handles the string parse, Feature / FeatureCollection unwrapping and the
+    // recursive walk, so this branch no longer keeps its own copy of any of it -
+    // the previous local walker also silently dropped a FeatureCollection's
+    // GeometryCollection members by flattening features into a synthetic
+    // coordinates array.
     const s = spec as GeoJsonLayerSpec;
-    const pushCoords = (c: any): void => {
-      if (!Array.isArray(c)) return;
-      if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-        if (Number.isFinite(c[0]) && Number.isFinite(c[1])) out.push([c[0], c[1]]);
-        return;
-      }
-      for (const inner of c) pushCoords(inner);
-    };
     for (const r of rows) {
       const raw = r[s.geojsonColumn];
       if (!raw) continue;
-      try {
-        const geom = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        const g = geom?.type === 'Feature' ? geom.geometry
-          : geom?.type === 'FeatureCollection' ? { type: 'GC', coordinates: (geom.features ?? []).map((f: any) => f?.geometry?.coordinates) }
-          : geom;
-        if (g?.coordinates) pushCoords(g.coordinates);
-      } catch { /* skip unparseable */ }
+      for (const c of coordsFromGeoJSON(raw)) out.push(c);
     }
   } else if (spec.type === 'h3') {
     const s = spec as H3HexagonLayerSpec;
     const sample = 2000;
     const stride = rows.length > sample ? Math.ceil(rows.length / sample) : 1;
     for (let i = 0; i < rows.length; i += stride) {
-      const cell = rows[i]?.[s.hexColumn];
-      if (typeof cell !== 'string' || cell.length < 15) continue;
-      try {
-        for (const v of cellToBoundary(cell)) {
-          const lat = v[0];
-          const lng = v[1];
-          if (Number.isFinite(lat) && Number.isFinite(lng)) out.push([lng, lat]);
-        }
-      } catch { /* skip invalid cell */ }
+      for (const c of coordsFromH3Cell(rows[i]?.[s.hexColumn])) out.push(c);
     }
   }
   return out;

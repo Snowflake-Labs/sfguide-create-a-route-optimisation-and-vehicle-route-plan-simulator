@@ -5,6 +5,7 @@ import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
+import { formatCellValue } from '@/lib/format-number';
 import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
@@ -31,19 +32,11 @@ interface ViewTableAreaProps {
   areaName?: string;
 }
 
-function formatCell(value: unknown): string {
-  if (value === null || value === undefined) return '-';
-  if (typeof value === 'number') {
-    if (Math.abs(value) < 1 && value !== 0) return value.toFixed(4);
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
-  }
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
-    const d = new Date(value);
-    if (!isNaN(d.getTime())) return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-  }
-  return String(value);
+// Decimal policy, compaction and ISO-date handling all live in lib/format-number
+// so this grid, the chat grid and the map tooltips cannot drift apart. The column
+// name is passed through because it is what exempts coordinates from the 2dp cap.
+function formatCell(value: unknown, column?: string): string {
+  return formatCellValue(value, { column, grouping: true, compact: true });
 }
 
 function isNumericColumn(rows: Record<string, unknown>[], key: string): boolean {
@@ -197,7 +190,7 @@ export function ViewTableArea({ areaConfig, areaName }: ViewTableAreaProps) {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {formatCell(row[col.key])}
+                  {formatCell(row[col.key], col.key)}
                 </td>
               ))}
             </tr>

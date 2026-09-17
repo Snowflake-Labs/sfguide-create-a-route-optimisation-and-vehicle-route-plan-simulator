@@ -78,7 +78,7 @@ built against categories rather than any named company:
 - Drop-and-hook trailer pools.
 
 The offer `SOURCE` column carries a neutral channel vocabulary (`DISPATCH`,
-`MARKETPLACE`, `PARTNER_APP`, `INTERNAL`) and the originating system is carried
+`MARKETPLACE`, `PARTNER_APP`, `BROKER`) and the originating system is carried
 separately in `SOURCE_SYSTEM`, so onboarding a different set of external
 exchanges changes no consumer and no page. The skill is **vendor-neutral by
 construction**.

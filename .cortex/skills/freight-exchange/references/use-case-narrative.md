@@ -31,7 +31,7 @@ The two converge at `PROPOSAL_DECISIONS` - accepted offers from either page writ
 
 Phase A - **looks like a freight exchange**:
 1. Sidebar entry **Freight Exchange** (under *Solution Accelerators*) opens a new route.
-2. Top filter bar: source-channel chips (DISPATCH / MARKETPLACE / PARTNER_APP / INTERNAL), equipment chips (TAUTLINER / MEGA / REEFER / BOX / FLATBED), hazmat toggle, USD/km min/max, posted-since slider.
+2. Top filter bar: source-channel chips (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER), equipment chips (TAUTLINER / MEGA / REEFER / BOX / FLATBED), hazmat toggle, USD/km min/max, posted-since slider.
 3. Sortable AG-Grid (300 offers per preset): source, pickup, dropoff, distance_km, equipment, hazmat, weight, USD, USD/km, age.
 4. Map: deck.gl ScatterplotLayer of offer pickup points, color-coded by source channel; selected offer highlighted.
 5. Click any offer -> right-rail drawer with offer details.
@@ -56,7 +56,7 @@ Phase B - **trust + market intelligence on top**:
 
 Same profile as `backload-matching`. The skill is vendor-neutral by construction:
 - `EXTERNAL_OFFERS.SOURCE` carries a neutral channel vocabulary (DISPATCH /
-  MARKETPLACE / PARTNER_APP / INTERNAL) in every region, and the originating
+  MARKETPLACE / PARTNER_APP / BROKER) in every region, and the originating
   system is carried separately in `SOURCE_SYSTEM`, so no page or query hardcodes
   a provider.
 - `DIM_PARTNERS.COUNTRY` is region-aware (DE/NL/PL/CZ/AT for a Germany preset,

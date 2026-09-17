@@ -73,10 +73,15 @@ snow sql -c "$CONN" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
 
 # ── 1. ensure OPENROUTESERVICE_APP engine infra (db/schemas/stages/repo) ──
 note "[1/6] ensuring OPENROUTESERVICE_APP engine infra..."
+# Warehouses come from the single owner, scripts/warehouses.sql. This script used
+# to run a bare `CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS` with no size
+# and no auto-suspend at all, so on an account where this step ran first the
+# warehouse silently took Snowflake's defaults instead of the spec the three
+# .sql layers declared.
+snow sql -c "$CONN" -f "$SCRIPTS/warehouses.sql" >/dev/null 2>&1 || true
+
 snow sql -c "$CONN" -q "
   $TAG_SQL
-  CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
-    COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   ALTER DATABASE OPENROUTESERVICE_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
@@ -89,6 +94,13 @@ snow sql -c "$CONN" -q "
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
+    COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
+  CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.RAW_TEXT_FF
+    TYPE = CSV
+    FIELD_DELIMITER = NONE
+    RECORD_DELIMITER = NONE
+    SKIP_HEADER = 0
+    FIELD_OPTIONALLY_ENCLOSED_BY = NONE
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE='SNOWFLAKE_SSE') DIRECTORY = (ENABLE=TRUE)
     COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\",\"component\":\"engine\"}}';
@@ -122,7 +134,7 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   push_image() { # <full-image-ref>
     local ref="$1"
     if command -v crane >/dev/null 2>&1 && [ "$CONTAINER_CMD" = "docker" ] && [ "${USE_CRANE_PUSH:-1}" = "1" ]; then
-      snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
+      [ "${REGISTRY_LOGGED_IN:-0}" = "1" ] || snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
       local tar; tar="$(mktemp -t orsimg.XXXXXX).tar"
       if "$CONTAINER_CMD" save "$ref" -o "$tar" && crane push "$tar" "$ref"; then
         rm -f "$tar"; return 0
@@ -139,7 +151,7 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   # needs a single-platform manifest.
   copy_image() { # <upstream-ref> <dest-ref>
     if command -v crane >/dev/null 2>&1; then
-      snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
+      [ "${REGISTRY_LOGGED_IN:-0}" = "1" ] || snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
       crane copy --platform linux/amd64 "$1" "$2" && return 0
       echo "  crane copy failed for $1 -> $2; falling back to local build"
     fi
@@ -162,25 +174,99 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   # tags diverge, fall back to build_push (the copy would no longer be equivalent).
   ORS_DOCKERFILE="$ORS_APP_DIR/services/openrouteservice/Dockerfile"
   ORS_NON_BOILERPLATE=$(grep -cvE '^\s*(#|ARG |FROM |$)' "$ORS_DOCKERFILE" || true)
-  if [ "${ORS_NON_BOILERPLATE:-0}" -eq 0 ] \
-     && [ "$OPENROUTESERVICE_TAG" = "$OPENROUTESERVICE_BASE_TAG" ]; then
-    note "  -> openrouteservice:$OPENROUTESERVICE_TAG (crane copy from Docker Hub - zero added layers)"
-    if ! copy_image "openrouteservice/openrouteservice:${OPENROUTESERVICE_BASE_TAG}" \
-                    "$REPO_URL/openrouteservice:${OPENROUTESERVICE_TAG}"; then
-      note "  crane copy unavailable or failed; falling back to local build"
+  ors_image() {
+    if [ "${ORS_NON_BOILERPLATE:-0}" -eq 0 ] \
+       && [ "$OPENROUTESERVICE_TAG" = "$OPENROUTESERVICE_BASE_TAG" ]; then
+      note "  -> openrouteservice:$OPENROUTESERVICE_TAG (crane copy from Docker Hub - zero added layers)"
+      if ! copy_image "openrouteservice/openrouteservice:${OPENROUTESERVICE_BASE_TAG}" \
+                      "$REPO_URL/openrouteservice:${OPENROUTESERVICE_TAG}"; then
+        note "  crane copy unavailable or failed; falling back to local build"
+        build_push openrouteservice openrouteservice "$OPENROUTESERVICE_TAG"
+      fi
+    else
+      note "  openrouteservice Dockerfile has custom layers or tags diverge; building locally"
       build_push openrouteservice openrouteservice "$OPENROUTESERVICE_TAG"
     fi
-  else
-    note "  openrouteservice Dockerfile has custom layers or tags diverge; building locally"
-    build_push openrouteservice openrouteservice "$OPENROUTESERVICE_TAG"
+  }
+
+  # ── run all four image jobs CONCURRENTLY ──────────────────────────────────
+  # Measured serially: openrouteservice 15m22s, downloader 3m31s,
+  # routing_reverse_proxy 3m44s, vroom-docker 6m04s -> 29m40s, which was 32% of a
+  # 93m install. ONE image dominates the other three combined, so running them
+  # together bounds the phase at the slowest single image (~15m) instead of their
+  # sum, saving ~13m. The dominant job is a network-bound registry-to-registry
+  # copy while the other three are small local builds, so they contend little.
+  #
+  # TRAP: `build_push` reports failure with `exit 1`. From a BACKGROUND job that
+  # exits only that subshell - it CANNOT abort this script. Backgrounding without
+  # collecting each job's status would turn a failed image into a phase that looks
+  # successful here and then dies minutes later at CREATE SERVICE, with the real
+  # cause far upstream of the visible error. So each PID is waited on
+  # INDIVIDUALLY, its status is checked, and the phase fails loudly naming every
+  # job that failed. Do not replace this with a bare `wait` (which reports only
+  # the LAST job) or with `&&` chaining (which serialises them again).
+  #
+  # The registry login is hoisted OUT of push_image/copy_image on purpose. Each
+  # ran `snow spcs image-registry login`, which writes ~/.docker/config.json;
+  # four concurrent writers to one credential file is a torn-write race, and the
+  # symptom would be an unrelated-looking auth failure on a random image. One
+  # login up front also fits the new timing better than the old per-push refresh
+  # did: serially the 4th push started ~24 min in and genuinely needed a fresh
+  # token, whereas now all four start at t0 and finish inside one token lifetime.
+  snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
+  REGISTRY_LOGGED_IN=1
+
+  IMG_JOB_PIDS=(); IMG_JOB_NAMES=()
+  ors_image & IMG_JOB_PIDS+=("$!"); IMG_JOB_NAMES+=("openrouteservice")
+  build_push downloader downloader "$DOWNLOADER_TAG" \
+    & IMG_JOB_PIDS+=("$!"); IMG_JOB_NAMES+=("downloader")
+  build_push gateway routing_reverse_proxy "$ROUTING_REVERSE_PROXY_TAG" \
+    & IMG_JOB_PIDS+=("$!"); IMG_JOB_NAMES+=("routing_reverse_proxy")
+  build_push vroom vroom-docker "$VROOM_DOCKER_TAG" \
+    & IMG_JOB_PIDS+=("$!"); IMG_JOB_NAMES+=("vroom-docker")
+
+  note "  4 image jobs running concurrently (pids: ${IMG_JOB_PIDS[*]}); waiting..."
+  IMG_FAILED=""
+  for i in "${!IMG_JOB_PIDS[@]}"; do
+    if ! wait "${IMG_JOB_PIDS[$i]}"; then
+      IMG_FAILED="$IMG_FAILED ${IMG_JOB_NAMES[$i]}"
+    fi
+  done
+  if [ -n "$IMG_FAILED" ]; then
+    echo "ERROR: engine image job(s) failed:$IMG_FAILED"
+    echo "       build logs: /tmp/ifa_img_<name>.log   push logs: /tmp/ifa_push_<name>.log"
+    echo "       Re-run after fixing; completed images are already in the repo and"
+    echo "       a repeat push of an unchanged image is a cheap no-op."
+    exit 1
   fi
-  build_push downloader       downloader            "$DOWNLOADER_TAG"
-  build_push gateway          routing_reverse_proxy "$ROUTING_REVERSE_PROXY_TAG"
-  build_push vroom            vroom-docker          "$VROOM_DOCKER_TAG"
+  note "  all 4 image jobs succeeded"
   note "  verifying pushed images..."
+
   snow spcs image-repository list-images "$ENGINE_REPO" -c "$CONN" 2>/dev/null | tail -8 || true
 else
   note "[3/6] SKIP_IMAGES=1 - skipping image build/push."
+fi
+
+# ── 3b. ONLY_IMAGES: stop here so the caller can overlap the image phase ──────
+# install_fleet_apps.sh runs this script TWICE when it overlaps the image build
+# with the ~204 MB seed upload: once with ONLY_IMAGES=1 in the background (phases
+# 1-3), then again with SKIP_IMAGES=1 in the foreground (phases 1,2,4,5,6).
+#
+# The split point is here, and not later, because everything above touches only
+# the engine namespace's own DDL (CREATE ... IF NOT EXISTS) plus the image
+# repository and registry, which the seed never reads or writes. Phases 4-6 are
+# what must NOT overlap the seed: `seed_data.sql` pre-creates a stub
+# OPENROUTESERVICE_APP.CORE + an empty REGION_CATALOG for the loader to LEFT JOIN,
+# and the region bootstrap in module 03 writes that same namespace for real.
+# (Verified safe to overlap phases 1-3: no engine module does CREATE OR REPLACE
+# or DROP on REGION_CATALOG, so the concurrent stub can never be clobbered.)
+#
+# Phases 1-2 are deliberately re-run by the second invocation rather than skipped:
+# they are seconds of idempotent DDL plus the tag pre-flight, and re-running keeps
+# the foreground pass self-sufficient if the overlap is disabled.
+if [ "${ONLY_IMAGES:-0}" = "1" ]; then
+  note "ONLY_IMAGES=1 - engine images done; leaving stage/modules/services to the caller."
+  exit 0
 fi
 
 # ── 4. upload staged map/config + service specs ─────────────────

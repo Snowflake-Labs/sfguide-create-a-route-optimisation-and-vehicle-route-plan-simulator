@@ -3,12 +3,12 @@ import re
 import yaml
 from pathlib import Path
 
+from .discovery import discover_skill_files
+
 
 def run(skills_root: str, config: dict, overrides: dict) -> list[dict]:
     results = []
-    for skill_md in sorted(Path(skills_root).rglob("SKILL.md")):
-        if "evals" in skill_md.parts:
-            continue
+    for skill_md in discover_skill_files(skills_root):
         result = _audit_skill(skill_md, config, overrides)
         results.append(result)
     return results

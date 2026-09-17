@@ -276,7 +276,13 @@ export async function loadPOIs(
       LIMIT 1
     ),
     candidates AS (
-      SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,
+      -- ::STRING is load-bearing. Without it the primary name stays a VARIANT
+      -- and reaches JS as its JSON form, quotes included, so every POI lands in
+      -- DIM_POIS as '"Castle Storage"'. Measured: 13738 of 13738 names quoted.
+      -- Those names are stop labels on the backload map and cities in the
+      -- agent's answer, so the quotes are user-visible in both. The three
+      -- sibling call sites (anchors.ts, places.ts, participants.ts) all cast.
+      SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary::STRING AS NAME,
              p.BASIC_CATEGORY AS CATEGORY,
              ST_Y(p.GEOMETRY) AS LAT, ST_X(p.GEOMETRY) AS LNG,
              ROW_NUMBER() OVER (
