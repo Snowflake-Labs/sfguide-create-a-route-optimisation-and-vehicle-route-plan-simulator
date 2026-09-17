@@ -1196,6 +1196,17 @@ RETURNS TABLE (
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
+  -- The two anchor points come from scalar FLOAT arguments, so they are built
+  -- once here rather than re-derived in the filter, the projection and the
+  -- ORDER BY. The OFFER side is no longer built at all: VW_EXTERNAL_OFFERS now
+  -- carries the stored PICKUP_GEOM/DROPOFF_GEOM, so what used to be five
+  -- ST_MAKEPOINT calls per row is now zero, and the geospatial predicates read
+  -- a real column instead of a computed expression.
+  WITH anchor AS (
+    SELECT ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT) AS ORIGIN_GEOM,
+           IFF(P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL, NULL,
+               ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT)) AS TARGET_GEOM
+  )
   SELECT
     o.OFFER_ID,
     o.SOURCE,
@@ -1213,26 +1224,22 @@ $$
     o.PRODUCT,
     o.PRICE_USD,
     o.HAZMAT,
-    ST_DISTANCE(ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
-                ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT)) / 1000.0 AS APPROACH_KM,
-    IFF(P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL, NULL,
-        ST_DISTANCE(ST_MAKEPOINT(o.DROPOFF_LON, o.DROPOFF_LAT),
-                    ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT)) / 1000.0)   AS TARGET_GAP_KM,
+    ST_DISTANCE(a.ORIGIN_GEOM, o.PICKUP_GEOM) / 1000.0 AS APPROACH_KM,
+    IFF(a.TARGET_GEOM IS NULL, NULL,
+        ST_DISTANCE(o.DROPOFF_GEOM, a.TARGET_GEOM) / 1000.0)              AS TARGET_GAP_KM,
     o.LISTING_TEXT
   FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS o
-  WHERE o.PICKUP_LON IS NOT NULL AND o.PICKUP_LAT IS NOT NULL
-    AND ST_DWITHIN(ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT),
-                   ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
+  CROSS JOIN anchor a
+  WHERE o.PICKUP_GEOM IS NOT NULL
+    AND ST_DWITHIN(o.PICKUP_GEOM, a.ORIGIN_GEOM,
                    COALESCE(P_RADIUS_KM, 100) * 1000)
-    AND (P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL
-         OR ST_DWITHIN(ST_MAKEPOINT(o.DROPOFF_LON, o.DROPOFF_LAT),
-                       ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT),
+    AND (a.TARGET_GEOM IS NULL
+         OR ST_DWITHIN(o.DROPOFF_GEOM, a.TARGET_GEOM,
                        COALESCE(P_TARGET_RADIUS_KM, 250) * 1000))
     AND (P_FROM_TS IS NULL OR o.PICKUP_TO_TS   >= P_FROM_TS)
     AND (P_TO_TS   IS NULL OR o.PICKUP_FROM_TS <= P_TO_TS)
   QUALIFY ROW_NUMBER() OVER (
-    ORDER BY ST_DISTANCE(ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT),
-                         ST_MAKEPOINT(o.PICKUP_LON, o.PICKUP_LAT))
+    ORDER BY ST_DISTANCE(a.ORIGIN_GEOM, o.PICKUP_GEOM)
   ) <= COALESCE(P_MAX_ROWS, 500)
 $$;
 
