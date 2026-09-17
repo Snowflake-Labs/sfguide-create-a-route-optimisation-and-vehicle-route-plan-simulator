@@ -188,9 +188,19 @@ MAP_GUIDANCE_CHECK="$SKILL_DIR/scripts/check_map_guidance.py"
 if [ -f "$MAP_GUIDANCE_CHECK" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
   "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
   "$SKILL_DIR/scripts/check_map_guidance.py"; then
   echo "pre-commit: map guidance check..."
   python3 "$MAP_GUIDANCE_CHECK" || exit 1
+  # RULES G/H are about PHRASING, so the mutations matter more than the pass: the
+  # text they reject includes the exact wording that shipped and produced three
+  # map-less answers. Run them whenever the gate or the specs move.
+  MAP_GUIDANCE_NEG="$SKILL_DIR/scripts/check_map_guidance_negative.py"
+  if [ -f "$MAP_GUIDANCE_NEG" ]; then
+    echo "pre-commit: map guidance negative tests..."
+    python3 "$MAP_GUIDANCE_NEG" || exit 1
+  fi
 fi
 
 # ── 1c. Every synapse verb must be routed by the agents that can see it ────────

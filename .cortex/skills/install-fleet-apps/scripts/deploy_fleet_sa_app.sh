@@ -213,6 +213,33 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${MAP_SURFACE_VERIFY:-1}" != "0" ]; then
+    # The agent cannot tell the SA app from CoWork except by its own tool list,
+    # and render_map is in the inventory on BOTH surfaces while only the SA app
+    # can render its result. render_map echoes the spec back, so a CoWork call
+    # returns OUTCOME='ok' and draws nothing: measured on tib85385 as three 'ok'
+    # calls in a row, each followed by a confident answer about a map that was
+    # never drawn. The guard can only be the guidance, so the guidance is gated -
+    # and the negative suite runs with it, because the previous wording named
+    # BOTH tools correctly and still lost the argument, so "both names present"
+    # would pass on the exact text that failed.
+    #
+    # Wired here for the same reason as the memo gate above: .githooks/pre-commit
+    # does not run (core.hooksPath is unset), so the deploy is the only place a
+    # regression can actually be stopped.
+    SURFACE_GATE="$SKILL_DIR/scripts/check_map_guidance.py"
+    SURFACE_NEG="$SKILL_DIR/scripts/check_map_guidance_negative.py"
+    if [ -f "$SURFACE_GATE" ]; then
+      echo "[1/7] Verify the map guidance names a surface discriminator..."
+      python3 "$SURFACE_GATE" \
+        || { echo "ERROR: map guidance gate failed (see above)."; exit 1; }
+      if [ -f "$SURFACE_NEG" ]; then
+        python3 "$SURFACE_NEG" >/dev/null \
+          || { echo "ERROR: map guidance negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$SURFACE_NEG'"; exit 1; }
+      fi
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
