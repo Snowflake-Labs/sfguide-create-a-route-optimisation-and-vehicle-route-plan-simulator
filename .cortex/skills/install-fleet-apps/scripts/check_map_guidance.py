@@ -164,6 +164,14 @@ MAP_COLUMN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Tokens that LOOK like a map-ready column to MAP_COLUMN_RE but are H3 FUNCTION
+# names. The resolution prose names them, including the three that do NOT exist in
+# Snowflake (a real dead end the agent burned a turn on), and none is ever a column
+# here - `h3_cell_to_*` is the function-name shape. Excluded from the reported
+# column list only; they never changed a verdict, but naming a function as a column
+# sends the reader looking for something that is not there.
+H3_FUNCTION_RE = re.compile(r"^h3_cell_to_[a-z_0-9]+$")
+
 # "X is a map, not a chart" / "is a MAP (path_geojson), never a chart".
 IS_A_MAP_RE = re.compile(r"\bis\s+a\s+map\b", re.IGNORECASE)
 
@@ -179,10 +187,17 @@ def norm(text: str) -> str:
 def split_semantic_views(sql: str) -> list[tuple[str, str]]:
     """Split a semantic-views SQL file into (view_name, body) pairs.
 
-    Body runs from CREATE OR REPLACE SEMANTIC VIEW to the next one (or EOF), so
-    the AI_SQL_GENERATION prose and any chart_customization block belong to
+    Body runs from CREATE OR REPLACE SEMANTIC VIEW to the statement's terminating
+    `;`, so the AI_SQL_GENERATION prose and any chart_customization block belong to
     exactly one view. Attributing a block to the wrong view would make RULE A
     pass on a neighbour's mention, which is the failure this scoping prevents.
+
+    Ending at the `;` rather than at the next CREATE matters: the file documents
+    each view in a `--` comment block ABOVE its CREATE, so a next-CREATE boundary
+    swept those comments into the PREVIOUS view's body. That is not hypothetical -
+    a comment mentioning DWELL_LAT/DWELL_LON was attributed to SV_CATCHMENT, whose
+    prose then "exposed a map-ready column" it does not have. A `--` comment is not
+    agent-facing prose and must not be scanned as if it were.
     """
     starts = [
         (m.start(), m.group(1))
@@ -193,7 +208,13 @@ def split_semantic_views(sql: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for i, (pos, name) in enumerate(starts):
         end = starts[i + 1][0] if i + 1 < len(starts) else len(sql)
-        out.append((name, sql[pos:end]))
+        body = sql[pos:end]
+        # Terminating `;` on its own line ends the DDL. Anything after it is
+        # commentary for the NEXT view and belongs to no view's prose.
+        term = re.search(r"\n;\s*$|\n;\n", body)
+        if term:
+            body = body[: term.end()]
+        out.append((name, body))
     return out
 
 
@@ -259,7 +280,18 @@ def main() -> int:
             # Search the DIMENSIONS half (the body), since that is where the
             # columns are declared, but require the mention in the PROSE, which is
             # what the agent reads at tool time.
-            cols = sorted({m.group(0).split(".")[-1].lower() for m in MAP_COLUMN_RE.finditer(body)})
+            cols = sorted({
+                m.group(0).split(".")[-1].lower()
+                for m in MAP_COLUMN_RE.finditer(body)
+                # A token followed by "(" is a FUNCTION CALL, not a column. The
+                # resolution prose names H3_CELL_TO_PARENT and friends, and
+                # `h3_cell[a-z_0-9]*` matches them, so without this the failure
+                # message lists functions as columns and sends the reader hunting
+                # for a column that does not exist. The verdict was still right;
+                # the attribution was not.
+                if not body[m.end():m.end() + 1].lstrip().startswith("(")
+                and not H3_FUNCTION_RE.match(m.group(0).split(".")[-1].lower())
+            })
             if cols:
                 map_capable.append(name)
                 if MAP_TOOL not in norm(prose):
