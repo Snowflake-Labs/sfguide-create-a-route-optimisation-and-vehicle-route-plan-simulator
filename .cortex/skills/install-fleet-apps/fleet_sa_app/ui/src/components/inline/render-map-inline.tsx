@@ -25,6 +25,7 @@ import MapView from '../views/areas/map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, LegendItem } from '@/lib/map/layer-spec';
 import { compileLayerWithFit } from '@/lib/map/layer-compiler';
+import { rebindLayerGeometry, type RebindNote } from '@fleet-kit/core/map';
 import { parseMapSpec, type InlineMapSpec } from '@/lib/map-spec-schema';
 import {
   deriveInlineLegend, synthesizeTooltip, encodingColumns,
@@ -58,6 +59,11 @@ interface LayerResult {
   domain?: ValueDomain;
   /** Column names on the returned rows, for tooltip synthesis. */
   columns?: string[];
+  /** Set when the layer's geometry encoding named a column absent from the
+   *  result and was rebound to a real geometry column. Surfaced rather than
+   *  applied silently: the spec and the map genuinely disagree, and the spec is
+   *  what needs fixing. */
+  rebind?: RebindNote;
 }
 
 /** Min/max of `column` over `rows`. Mirrors the compiler's h3 branch, which
@@ -129,7 +135,13 @@ function InlineLayerFetcher({
     const all = (data?.rows ?? []) as Record<string, unknown>[];
     const total = data?.totalRows ?? all.length;
     const rows = all.length > MAX_INLINE_ROWS ? all.slice(0, MAX_INLINE_ROWS) : all;
-    const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(layer, rows, context, index, null);
+    // Rebind the geometry encoding if it names a column this result does not
+    // contain. Validation cannot catch that (it checks the field is present, not
+    // that it resolves), and the compiler's row filter turns it into an empty
+    // basemap with no error - which is how an UPPERCASE hexColumn once drew
+    // nothing over correct data. No-op when the declared column resolves.
+    const { layer: bound, note: rebind } = rebindLayerGeometry(layer, data?.columns, rows);
+    const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(bound, rows, context, index, null);
     const columns = rows.length ? Object.keys(rows[0]) : [];
     return {
       layer: compiled,
@@ -141,8 +153,9 @@ function InlineLayerFetcher({
       // getTooltip returning null, so the map stays hover-dead for exactly the
       // specs the agent actually emits.
       tooltip: layer.tooltip ?? synthesizeTooltip(layer, columns),
-      domain: valueDomain(rows, layer.type === 'h3' ? layer.valueColumn : undefined),
+      domain: valueDomain(rows, bound.type === 'h3' ? bound.valueColumn : undefined),
       columns,
+      rebind,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, error, index, layer, context]);
@@ -329,6 +342,17 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
   const errors = spec.layers
     .map((_, i) => results[i]?.error)
     .filter((e): e is string => !!e);
+  // Layers drawn from a column other than the one the spec named. These would
+  // have been blank maps: reported so the spec gets fixed rather than leaving a
+  // rescue permanently load-bearing.
+  const rebound = spec.layers
+    .map((ls, i) => ({ ls, i, r: results[i] }))
+    .filter(({ r }) => !!r?.rebind)
+    .map(({ ls, i, r }) =>
+      `layer ${i}${ls.id ? ` (${ls.id})` : ''}: ${r!.rebind!.field} named ` +
+      `"${r!.rebind!.from}", which is not on the result - drawn from ` +
+      `"${r!.rebind!.to}" instead (${r!.rebind!.reason}).`,
+    );
   const truncated = spec.layers
     .map((_, i) => results[i])
     .filter((r): r is LayerResult => !!r && r.total > r.count);
@@ -411,6 +435,9 @@ function MapBody({ spec }: { spec: InlineMapSpec }) {
       ) : null}
       {unfittable.length ? (
         <Notice title="This map could not frame its data" lines={unfittable} />
+      ) : null}
+      {rebound.length ? (
+        <Notice title="This map was drawn from a different column than the spec named" lines={rebound} />
       ) : null}
     </div>
   );

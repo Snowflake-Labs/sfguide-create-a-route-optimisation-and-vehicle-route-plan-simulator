@@ -97,6 +97,7 @@ import {
   MAX_PADDING_FRACTION,
 } from '../../../../../packages/fleet-kit/src/map/geo-coords';
 import { detectGeoColumns } from '../../../../../packages/fleet-kit/src/map/detect-geo';
+import { rebindLayerGeometry } from '../../../../../packages/fleet-kit/src/map/rebind-geometry';
 
 let fails = 0;
 let checks = 0;
@@ -1112,6 +1113,220 @@ chk('memo: a grouped chart is NOT silenced by its category yKey',
     chartType: 'stacked bar', xKey: 'city', yKey: 'ebike',
     points: [{ city: 'SF', ebike: 3 }], seriesNames: ['ebike'], yKeyIsColumn: false,
   }) !== '');
+
+
+// ---------------------------------------------------------------------------
+// rebindLayerGeometry: rescue a geometry encoding that names a column the result
+// does not contain.
+//
+// This is the ONE blank-map class validation cannot reach. missingEncodings
+// rejects a layer with NO encoding before any query runs, so the interesting
+// case is an encoding that is present, well-formed, and unresolvable - the
+// compiler's `has(row, column)` filter then drops every row and the layer draws
+// an empty basemap with no error. An UPPERCASE hexColumn against lowercased row
+// keys shipped exactly that.
+// ---------------------------------------------------------------------------
+const geoCol = (name: string, type: string) => ({ key: name, type });
+
+// H3: the shipped defect. render_map's own description teaches an uppercase
+// column name, while /api/query lowercases every row key.
+{
+  const rows = [{ h3_cell: '872830828ffffff', n: 5 }];
+  const cols = [geoCol('h3_cell', 'text'), geoCol('n', 'fixed')];
+  const r = rebindLayerGeometry(
+    { type: 'h3', hexColumn: 'H3_CELL', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: an UPPERCASE hexColumn is rebound to the real lowercase column',
+    (r.layer as { hexColumn?: string }).hexColumn === 'h3_cell' && r.note?.field === 'hexColumn');
+  chk('rebind: the note names the column the spec asked for',
+    r.note?.from === 'H3_CELL' && r.note?.to === 'h3_cell');
+}
+
+// A DECLARED GEOGRAPHY column is bindable with no value sniffing. This is the
+// whole point of carrying `type` through /api/query.
+{
+  const rows = [{ route_geog: '{"type":"LineString","coordinates":[[0,0],[1,1]]}' }];
+  const cols = [geoCol('route_geog', 'geography')];
+  const r = rebindLayerGeometry(
+    { type: 'geojson', geojsonColumn: 'ROUTE_GEOG', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: a declared GEOGRAPHY column is bound by TYPE',
+    (r.layer as { geojsonColumn?: string }).geojsonColumn === 'route_geog');
+  chk('rebind: the reason cites the declared type, not a value guess',
+    (r.note?.reason ?? '').includes('GEOGRAPHY'));
+}
+
+// NEGATIVE: a resolvable column must never be touched. If this can fail, the
+// rescue is free to overwrite correct specs.
+{
+  const rows = [{ h3_cell: '872830828ffffff', other_cell: '872830829ffffff' }];
+  const cols = [geoCol('h3_cell', 'text'), geoCol('other_cell', 'text')];
+  const r = rebindLayerGeometry(
+    { type: 'h3', hexColumn: 'other_cell', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a column that RESOLVES is left exactly as authored',
+    (r.layer as { hexColumn?: string }).hexColumn === 'other_cell' && r.note === undefined);
+}
+
+// NEGATIVE: a geojson layer must not swallow an H3 column. Without this case the
+// geojson branch's representation guard is never exercised at all - its only
+// other test uses a GEOGRAPHY column, which detection ALSO classifies as
+// 'geojson', so deleting the guard passed every assertion (mutation M5 survived
+// until this case existed).
+{
+  const rows = [{ h3_cell: '872830828ffffff' }];
+  const cols = [geoCol('h3_cell', 'text')];
+  const r = rebindLayerGeometry(
+    { type: 'geojson', geojsonColumn: 'ROUTE_GEOG', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a geojson layer does not bind an H3 column', r.note === undefined);
+}
+
+// NEGATIVE: a path layer must not swallow an H3 column either.
+{
+  const rows = [{ h3_cell: '872830828ffffff' }];
+  const cols = [geoCol('h3_cell', 'text')];
+  const r = rebindLayerGeometry(
+    { type: 'path', geojsonColumn: 'PATH_GEOJSON', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a path layer does not bind an H3 column', r.note === undefined);
+}
+
+// The probe MUST read the row KEY, not the display label. /api/query returns
+// key='h3_cell' (lowercased, and what the compiler indexes rows with) alongside
+// label='H3_CELL' (the original Snowflake casing). Probing the label would hand
+// back an uppercase name that matches no row key - reintroducing the exact
+// blank-map bug this function exists to repair. Fixtures elsewhere omit `label`,
+// so without this case swapping key for label passes everything (mutation M7).
+{
+  const rows = [{ h3_cell: '872830828ffffff' }];
+  const cols = [{ key: 'h3_cell', label: 'H3_CELL', type: 'text' }];
+  const r = rebindLayerGeometry(
+    { type: 'h3', hexColumn: 'WRONG_COL', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: binds the lowercase row KEY, never the original-case label',
+    (r.layer as { hexColumn?: string }).hexColumn === 'h3_cell');
+}
+
+// NEGATIVE: a `path` layer using the start+end shape must be left alone even
+// when the result carries a GEOGRAPHY column. Rebinding it would convert a
+// two-point path into a geometry path - overriding a spec that WORKS - and
+// without this case the start/end guard can be deleted with every other
+// assertion still passing (mutation M6 survived until this existed).
+{
+  const rows = [{ from_lon: -122.4, from_lat: 37.8, to_lon: -122.3, to_lat: 37.9,
+                  route_geog: '{"type":"LineString","coordinates":[[0,0],[1,1]]}' }];
+  const cols = [geoCol('from_lon', 'real'), geoCol('from_lat', 'real'),
+                geoCol('to_lon', 'real'), geoCol('to_lat', 'real'),
+                geoCol('route_geog', 'geography')];
+  const r = rebindLayerGeometry({
+    type: 'path',
+    start: { lng: 'from_lon', lat: 'from_lat' },
+    end: { lng: 'to_lon', lat: 'to_lat' },
+    data: { query: 'q' },
+  } as never, cols, rows);
+  chk('rebind: NEG a start+end path is not converted into a geojson path',
+    r.note === undefined && (r.layer as { geojsonColumn?: string }).geojsonColumn === undefined);
+}
+
+// A column that is PRESENT but NULL is resolvable and must not be rebound.
+// resolves() mirrors the compiler's own `has(row, column)` key-presence test, and
+// it has to: NULL geometry with no error is a real state here (a live ISOCHRONES
+// call on a profile the region never loaded returns NULL geometry silently). If
+// resolves() tested truthiness instead, that correct-but-empty column would look
+// unresolvable and the layer would be rebound onto a DIFFERENT column - drawing
+// the wrong geometry, which is worse than drawing none. Without this case,
+// swapping key-presence for truthiness passes everything (mutation M10).
+{
+  const rows = [{ route_geog: null, other_geog: '{"type":"Point","coordinates":[1,2]}' }];
+  const cols = [geoCol('route_geog', 'geography'), geoCol('other_geog', 'geography')];
+  const r = rebindLayerGeometry(
+    { type: 'geojson', geojsonColumn: 'route_geog', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a present-but-NULL geometry column is NOT rebound',
+    (r.layer as { geojsonColumn?: string }).geojsonColumn === 'route_geog' && r.note === undefined);
+}
+
+// A scatterplot needs BOTH of lng/lat to resolve. Half-resolving is still a blank
+// map - getPosition returns [NaN, ...] for every row - so it must be rescued too.
+// Requiring only one (|| instead of &&) leaves that layer blank while passing
+// every other assertion (mutation M11).
+{
+  const rows = [{ lon: -122.4, lat: 37.8 }];
+  const cols = [geoCol('lon', 'real'), geoCol('lat', 'real')];
+  const r = rebindLayerGeometry(
+    { type: 'scatterplot', lng: 'lon', lat: 'LATITUDE', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: a scatterplot with only ONE resolvable coordinate is still rebound',
+    (r.layer as { lat?: string }).lat === 'lat' && r.note !== undefined);
+}
+
+// An arc needs a source AND a target pair. Detection reports a single point
+// binding, so there is no unambiguous repair and arc is deliberately untouched -
+// asserted so the default branch cannot quietly start rebinding it (mutation M12).
+{
+  const rows = [{ lon: -122.4, lat: 37.8 }];
+  const cols = [geoCol('lon', 'real'), geoCol('lat', 'real')];
+  const r = rebindLayerGeometry({
+    type: 'arc',
+    source: { lng: 'FROM_LON', lat: 'FROM_LAT' },
+    target: { lng: 'TO_LON', lat: 'TO_LAT' },
+    data: { query: 'q' },
+  } as never, cols, rows);
+  chk('rebind: NEG an arc layer is never rebound', r.note === undefined);
+}
+
+// NEGATIVE: never rebind across representations. A GEOGRAPHY column cannot feed
+// a scatterplot's numeric lng/lat, and drawing something else would be a WRONG
+// map rather than an empty one.
+{
+  const rows = [{ pickup_geom: '{"type":"Point","coordinates":[1,2]}' }];
+  const cols = [geoCol('pickup_geom', 'geography')];
+  const r = rebindLayerGeometry(
+    { type: 'scatterplot', lng: 'LON', lat: 'LAT', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a GEOGRAPHY column does not silently become a scatterplot',
+    r.note === undefined);
+}
+
+// NEGATIVE: nothing detectable means no rebind, so a genuinely broken spec still
+// surfaces as the existing "returned rows but drew nothing" notice.
+{
+  const rows = [{ name: 'SF', total: 3 }];
+  const cols = [geoCol('name', 'text'), geoCol('total', 'fixed')];
+  const r = rebindLayerGeometry(
+    { type: 'h3', hexColumn: 'H3_CELL', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: NEG a result with no geometry is left alone', r.note === undefined);
+}
+
+// A scatterplot IS rescued when the result really does carry lat/lon numerics.
+{
+  const rows = [{ lon: -122.4, lat: 37.8 }];
+  const cols = [geoCol('lon', 'real'), geoCol('lat', 'real')];
+  const r = rebindLayerGeometry(
+    { type: 'scatterplot', lng: 'LON', lat: 'LAT', data: { query: 'q' } } as never, cols, rows);
+  chk('rebind: an uppercase lng/lat pair is rebound to the real columns',
+    (r.layer as { lng?: string }).lng === 'lon' && (r.layer as { lat?: string }).lat === 'lat');
+}
+
+// An empty result must be left alone, and the reason is sharper than "nothing to
+// draw". With zero rows `resolves()` is false for EVERY column, including a
+// perfectly correct one, so a rebind here cannot distinguish a broken spec from a
+// working one and would emit a "drawn from a different column" notice against
+// specs that are fine.
+//
+// This has to be asserted with a DECLARED GEOGRAPHY column, because detection
+// treats declared metadata as authoritative and returns a binding with no rows at
+// all. Asserting it with a text column proves nothing: that needs sampled values
+// to validate, so it fails to detect for an unrelated reason and the guard can be
+// deleted with every assertion still green (mutation M9).
+{
+  const r = rebindLayerGeometry(
+    { type: 'geojson', geojsonColumn: 'ROUTE_GEOG', data: { query: 'q' } } as never,
+    [geoCol('route_geog', 'geography')], []);
+  chk('rebind: NEG an empty result leaves the spec alone (declared GEOGRAPHY present)',
+    (r.layer as { geojsonColumn?: string }).geojsonColumn === 'ROUTE_GEOG' && r.note === undefined);
+}
+
+// Same for a text column with no rows: still untouched.
+{
+  const r = rebindLayerGeometry(
+    { type: 'h3', hexColumn: 'H3_CELL', data: { query: 'q' } } as never,
+    [geoCol('h3_cell', 'text')], []);
+  chk('rebind: NEG an empty result leaves an h3 spec alone',
+    (r.layer as { hexColumn?: string }).hexColumn === 'H3_CELL' && r.note === undefined);
+}
 
 console.log(fails ? `\n${fails} FAILURE(S) of ${checks}` : `\nall ${checks} assertions passed`);
 process.exit(fails ? 1 : 0);

@@ -6,7 +6,12 @@ import { DYNAMIC_VIEW_ID } from '@/lib/load-views';
 import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 
 interface QueryResult {
-  columns: Array<{ key: string; label: string }>;
+  // `type` is the declared Snowflake type from result metadata (lowercased by
+  // /api/query), e.g. 'geography' | 'text' | 'fixed'. Optional because the
+  // suspended/empty paths below synthesize a result with no metadata. Carried so
+  // a map layer can bind to a GEOGRAPHY column on the declared type rather than
+  // by sniffing values.
+  columns: Array<{ key: string; label: string; type?: string }>;
   rows: Array<Record<string, unknown>>;
   totalRows: number;
 }
