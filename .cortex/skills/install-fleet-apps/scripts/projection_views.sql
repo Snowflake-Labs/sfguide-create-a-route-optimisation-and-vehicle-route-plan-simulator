@@ -11,9 +11,22 @@
 -- V_FACT_OFFERS_CURRENT is created here (in addition to being recreated at app
 -- boot by init.ts) because the backload_matching pack's VW_EXTERNAL_OFFERS reads
 -- it at pack-install time (step 4), which runs BEFORE the admin app boots. Its
--- body is kept byte-identical to init.ts to avoid drift. The remaining
--- partner views (V_DIM_PARTNERS_CURRENT / V_FACT_PARTNER_HISTORY_CURRENT) have
--- no step-4 pack consumer, so they stay init.ts-only.
+-- body is kept byte-identical to init.ts to avoid drift.
+--
+-- V_DIM_PARTNERS_CURRENT / V_FACT_PARTNER_HISTORY_CURRENT are here for the SAME
+-- reason, and this comment used to claim the opposite - that they had no early
+-- consumer and could stay init.ts-only. That claim is what produced a real
+-- defect: they ARE consumed before the app boots, by SV_OFFERS at step 4.5,
+-- through MARKETPLACE.VW_PARTNERS / VW_PARTNER_HISTORY (see
+-- scripts/marketplace_layer.sql). Leaving them to init.ts meant SV_OFFERS was
+-- created 19 minutes BEFORE its own sources existed, failed with "does not
+-- exist or not authorized", and the installer excused that as an expected
+-- fresh-install skip on every single run. The knock-on was worse than the
+-- missing view: prune_agent_specs.py probes SHOW SEMANTIC VIEWS at step 6, so
+-- the absent SV_OFFERS also silently deleted the query_offers tool from the
+-- agents. Anything the pack step (4) or the semantic step (4.5) reads must be
+-- created HERE, not at app boot - "no consumer yet" is a claim with an
+-- expiry date.
 --
 -- Each view returns only rows from the active dataset (DIM_DATASETS.IS_ACTIVE),
 -- so it requires the loader to have created DIM_DATASETS + the base tables. Run
@@ -99,6 +112,31 @@ JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
   ON d.DATASET_ID = f.JOB_ID
  AND d.REGION = f.REGION
  AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
+ AND d.IS_ACTIVE = TRUE;
+
+-- Partner projections. Created here (not just at app boot) so SV_OFFERS can bind
+-- at step 4.5 via MARKETPLACE.VW_PARTNERS / VW_PARTNER_HISTORY - see the header.
+-- Bodies byte-identical to fleet_admin_app/ui/src/server/lib/init.ts.
+CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT p.*
+FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS p
+JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+  ON d.DATASET_ID = p.JOB_ID
+ AND d.REGION = p.REGION
+ AND d.VEHICLE_TYPE = p.VEHICLE_TYPE
+ AND d.IS_ACTIVE = TRUE;
+
+CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT h.*
+FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY h
+JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+  ON d.DATASET_ID = h.JOB_ID
+ AND d.REGION = h.REGION
+ AND d.VEHICLE_TYPE = h.VEHICLE_TYPE
  AND d.IS_ACTIVE = TRUE;
 
 CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT

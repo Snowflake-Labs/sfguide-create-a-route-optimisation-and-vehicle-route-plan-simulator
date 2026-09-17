@@ -612,6 +612,30 @@ if [ -f "$SEMANTIC_VERDICT_CHECK" ]; then
   }
 fi
 
+# 16b. The same SV_OFFERS view then turned out to have a SECOND, independent
+# defect that the verdict fix above could only report, never prevent: its two
+# source views were authored ONLY by the admin app's boot init.ts, which does not
+# run until install step 7, while the view is created at step 4.5. Measured on a
+# clean install: SV_OFFERS attempted at 13:11, sources appeared at 13:30, in an
+# account that held the data all along (300 offers, 455 lane rows). The knock-on
+# was larger than the missing view - prune_agent_specs.py probes SHOW SEMANTIC
+# VIEWS at step 6, so the absent SV_OFFERS also deleted the query_offers tool
+# from the agents. Fixed by mirroring the sources into scripts/marketplace_layer.sql
+# (step 4.4) and scripts/projection_views.sql, ahead of the consumer. init.ts
+# stays the RUNTIME owner and REPLACES them on every boot, so a drifted mirror
+# would make the deployment change shape at the next container restart - and
+# init.ts swallows each statement failure as a WARN, so nothing would say so.
+# This gate compares the two sides, normalising only the tag's source":"sql" vs
+# "app", the ${TRACK_FX} interpolation, whitespace and comments.
+MARKETPLACE_PARITY_CHECK="$SKILL_DIR/scripts/check_marketplace_ddl_parity.py"
+if [ -f "$MARKETPLACE_PARITY_CHECK" ]; then
+  echo "pre-commit: MARKETPLACE / projection DDL parity with init.ts..."
+  python3 "$MARKETPLACE_PARITY_CHECK" || {
+    echo "pre-commit FAILED: mirrored DDL has drifted from its runtime owner (init.ts)."
+    exit 1
+  }
+fi
+
 # 17. A backload trip published to the agent must name every load it carries and
 # must report its LAST dropoff as the destination. A user asked for one truck's
 # workload and the agent answered "final destination: RCA Trucking" for a tour

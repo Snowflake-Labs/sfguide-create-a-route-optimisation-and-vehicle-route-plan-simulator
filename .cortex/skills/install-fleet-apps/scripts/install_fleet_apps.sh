@@ -77,6 +77,9 @@ LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
+# The MARKETPLACE views SV_OFFERS reads. Mirrored from the admin app's boot
+# init.ts because that boot happens at step 7, long after step 4.5 needs them.
+MARKETPLACE_LAYER_SQL="$SCRIPTS/marketplace_layer.sql"
 # SV_OFFERS lives apart because its FLEET_INTELLIGENCE.MARKETPLACE sources are
 # built by the admin app's boot init / the freight-exchange skill, not by this
 # installer. Its own file means a missing marketplace layer costs one view rather
@@ -784,7 +787,45 @@ else
          step "4.3 live-routing" WARN; }
 fi
 
-# ── 4.5 semantic views (Cortex Analyst SVs the consumer agent binds to) ──
+# ── 4.4 MARKETPLACE source layer for SV_OFFERS ──
+# The 6 FLEET_INTELLIGENCE.MARKETPLACE objects SV_OFFERS reads transitively.
+# These were previously authored ONLY by the admin app's boot init.ts, which does
+# not run until step 7, so step 4.5 created SV_OFFERS ~19 min BEFORE its own
+# sources existed, failed, and was excused as an expected fresh-install skip.
+# Deferring the view instead of advancing the sources cannot work: the admin
+# deploy has no readiness wait (so a later step races the container boot), and
+# prune_agent_specs.py DELETES the query_offers tool at step 6 whenever
+# SV_OFFERS is absent. Hence: sources here, before 4.5.
+# Must run AFTER packs (needs FLEET_APP.CORE.REGION_LABEL). See the file header.
+if [ "${SKIP_MARKETPLACE:-0}" = "1" ]; then
+  step "4.4 marketplace-layer" SKIPPED
+  # Unknown rather than absent: an explicitly skipped step must not make step 4.5
+  # assert its sources are present, so fall back to the lenient verdict.
+  MARKETPLACE_APPLICABLE=0
+else
+  # Probe FIRST. A preset with no offers seed is a LEGITIMATE skip, and must stay
+  # distinguishable from the ordering defect this step exists to fix - otherwise
+  # we have just moved the misattribution rather than removed it. Any error here
+  # (missing table included) yields an empty string and skips.
+  offers_rows="$(snow sql -c "$CONNECTION" --format json \
+      -q "SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS" 2>/dev/null \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["N"])' 2>/dev/null || true)"
+  if [ -z "$offers_rows" ] || [ "$offers_rows" = "0" ]; then
+    note "[4.4/8] marketplace layer SKIPPED (no offers in the active seed - SV_OFFERS is not applicable to this preset)"
+    step "4.4 marketplace-layer" SKIPPED
+    MARKETPLACE_APPLICABLE=0
+  else
+    note "[4.4/8] MARKETPLACE source layer for SV_OFFERS ($offers_rows offers)..."
+    MARKETPLACE_APPLICABLE=1
+    snow sql -c "$CONNECTION" -f "$MARKETPLACE_LAYER_SQL" >/tmp/ifa_marketplace.log 2>&1 \
+      && step "4.4 marketplace-layer" OK \
+      || { note "  WARN: marketplace layer FAILED; see /tmp/ifa_marketplace.log"; \
+           note "        SV_OFFERS (step 4.5) will fail and query_offers will be pruned from the agents."; \
+           step "4.4 marketplace-layer" FAILED; }
+  fi
+fi
+
+
 # Authors FLEET_INTELLIGENCE.SEMANTIC + the 5 agnostic SVs that FLEET_AGENT's
 # cortex_analyst_text_to_sql tools reference (agent-spec.json). Without this the
 # agent fails every question with "Schema 'FLEET_INTELLIGENCE.SEMANTIC' does not
@@ -824,14 +865,25 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
     fi
   }
 
-  # SV_OFFERS: separate file, separate outcome. On a fresh install the
-  # FLEET_INTELLIGENCE.MARKETPLACE views do not exist yet (admin app boot init /
-  # freight-exchange skill create them), so a skip here is EXPECTED and is not a
-  # defect. Re-run this one file once the marketplace layer is present.
-  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
-    && step "4.5 semantic (marketplace)" OK \
-    || semantic_optional_verdict "4.5 semantic (marketplace)" /tmp/ifa_semantic_mkt.log \
-         "FLEET_INTELLIGENCE.MARKETPLACE not present yet (expected on a fresh install; created by the admin app boot or the freight-exchange skill). Re-run semantic_views_marketplace.sql afterwards."
+  # SV_OFFERS. Its sources are now built by step 4.4 in the SAME run, so a
+  # missing-source failure is no longer an expected fresh-install ordering skip -
+  # it means 4.4 did not produce what it reported. Only when 4.4 found no offers
+  # in the seed (MARKETPLACE_APPLICABLE=0) is a skip legitimate, and then it is
+  # the preset that does not carry offers, not an ordering problem. Keeping the
+  # old blanket SKIPPED here would re-hide exactly the defect 4.4 removes.
+  if [ "${MARKETPLACE_APPLICABLE:-0}" = "1" ]; then
+    snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
+      && step "4.5 semantic (marketplace)" OK \
+      || { note "  WARN: SV_OFFERS FAILED even though step 4.4 built its sources in this run."; \
+           note "        This is a DEFECT, not a fresh-install skip. Last lines of /tmp/ifa_semantic_mkt.log:"; \
+           tail -20 /tmp/ifa_semantic_mkt.log; \
+           step "4.5 semantic (marketplace)" FAILED; }
+  else
+    snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_MARKETPLACE_SQL" >/tmp/ifa_semantic_mkt.log 2>&1 \
+      && step "4.5 semantic (marketplace)" OK \
+      || semantic_optional_verdict "4.5 semantic (marketplace)" /tmp/ifa_semantic_mkt.log \
+           "the active seed carries no offers, so FLEET_INTELLIGENCE.MARKETPLACE has no source rows (step 4.4 skipped). Expected for presets without a marketplace dataset."
+  fi
 
   # SV_EMERGENCY_RESPONSE: same treatment, same reason. The emergency pack's source
   # views only exist once its dataset has been generated, so a skip here is EXPECTED

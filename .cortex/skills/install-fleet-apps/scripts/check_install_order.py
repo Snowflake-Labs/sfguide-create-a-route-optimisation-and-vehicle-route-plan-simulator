@@ -56,11 +56,15 @@ ORDER = [
     ("4   contract",         SKILL / "fleet_sa_app" / "app" / "scoped_contract.sql"),
     ("4.2 delivery_sync",    SCRIPTS / "delivery_sync_layer.sql"),
     ("4.25 labour",          SKILL / "fleet_sa_app" / "app" / "labor_layer.sql"),
+    # The MARKETPLACE views SV_OFFERS reads. Must precede the semantic step: this
+    # entry is the ordering that was MISSING, and its absence is what let
+    # SV_OFFERS be created ~19 min before its own sources on every install.
+    ("4.4 marketplace",      SCRIPTS / "marketplace_layer.sql"),
     ("4.5 semantic",         SKILL / "fleet_sa_app" / "app" / "semantic_views.sql"),
-    # SV_OFFERS reads FLEET_INTELLIGENCE.MARKETPLACE, which NO install step
-    # creates (the admin app boot init / the freight-exchange skill do). It is
-    # therefore expected to reference an object this ordering does not provide,
-    # which is exactly why the installer runs it as its own best-effort file.
+    # SV_OFFERS reads FLEET_INTELLIGENCE.MARKETPLACE, which step 4.4 above now
+    # creates. The former exemption here ("NO install step creates it") is gone:
+    # it was true only because the sources were left to the app boot, and it is
+    # what made this gate blind to the very ordering defect it exists to catch.
     ("4.5 semantic (mkt)",   SKILL / "fleet_sa_app" / "app" / "semantic_views_marketplace.sql"),
     # SV_EMERGENCY_RESPONSE reads FLEET_APP.EMERGENCY_RESPONSE, built by the emergency
     # pack's Data Studio generator rather than by this ordered chain - so, like the
@@ -135,6 +139,57 @@ def analyse(path: pathlib.Path):
     return created, referenced
 
 
+def check_precedence() -> list[str]:
+    """Assert specific source-before-consumer pairs in ORDER.
+
+    WHY A SEPARATE CHECK. The reference scan above cannot see this class of
+    defect. `analyse()` marks the DATABASE available as soon as any step creates
+    anything in it (`created.add(parts[0])`), so once step 2 creates
+    FLEET_INTELLIGENCE, EVERY later FLEET_INTELLIGENCE.x.y reference counts as
+    satisfied. Satisfaction is database-granular by design - making it
+    schema-granular would flag the whole repo - which means an intra-database
+    ordering bug is invisible to it. That is precisely how SV_OFFERS came to be
+    created 19 minutes before its own sources while this gate reported PASSED.
+    Verified: deleting the marketplace entry from ORDER, and moving it after its
+    consumer, both left the scan green.
+
+    So the ordering that matters is asserted directly, as an explicit pair.
+    """
+    problems: list[str] = []
+    labels = [label for label, _ in ORDER]
+
+    # (source step, consumer step, why it matters)
+    PAIRS = [
+        (
+            "4.4 marketplace",
+            "4.5 semantic (mkt)",
+            "SV_OFFERS reads FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED / "
+            "VW_LANE_HISTORY. If the sources do not exist yet the view fails, and "
+            "prune_agent_specs.py then DELETES the query_offers tool from the agents "
+            "at step 6 - so the whole marketplace surface disappears silently.",
+        ),
+    ]
+
+    for src, consumer, why in PAIRS:
+        if src not in labels:
+            problems.append(
+                f"precedence: step '{src}' is missing from ORDER. {why}"
+            )
+            continue
+        if consumer not in labels:
+            problems.append(
+                f"precedence: step '{consumer}' is missing from ORDER. {why}"
+            )
+            continue
+        if labels.index(src) > labels.index(consumer):
+            problems.append(
+                f"precedence: '{src}' must run BEFORE '{consumer}', but ORDER has "
+                f"it after. {why}"
+            )
+
+    return problems
+
+
 def main() -> int:
     available: set[str] = set()
     problems: list[str] = []
@@ -169,6 +224,7 @@ def main() -> int:
         print(f"  {label:20s} files={len(files):2d} cumulative_objects={len(available)}")
 
     print()
+    problems.extend(check_precedence())
     if problems:
         print("FAILED: install-order check")
         for p in problems:
