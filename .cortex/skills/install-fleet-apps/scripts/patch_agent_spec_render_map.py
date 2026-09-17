@@ -195,6 +195,32 @@ EXTRA_BULLETS = (
 )
 EXTRA_MARKER = "THE HOST'S CHART GUIDANCE DOES NOT FORBID YOUR MAPS"
 
+# --- orchestration, sixth pass: H3 resolution is a parameter --------------------
+# The r7 map drew fine and "use resolution 9" then failed for 4 minutes. The h3
+# bullet named the two pre-binned columns and nothing else, so the agent read the
+# resolution as a fixed property of the data, went hunting for a way to convert
+# cells, invented three Snowflake functions that do not exist
+# (H3_CELL_TO_BOUNDARY_WKT, H3_CELL_TO_GEOGRAPHY, H3_CELL_TO_CHILDREN), fell back
+# to run_sql, and then could not map the result because data_to_map rejects an MCP
+# result. Every semantic view that carries an H3 cell now also documents its own
+# resolution rule, so this bullet only has to say the rule EXISTS and that the two
+# views differ - the detail belongs next to the columns, not here.
+H3_RES_MARKER = "H3 RESOLUTION IS A PARAMETER"
+H3_RES_ANCHOR = (
+    "* h3 -> an H3 cell STRING. Available as cell_h3 (query_location, household "
+    "density) and h3_cell (query_dwell, congestion)."
+)
+H3_RES_BULLET = (
+    "* h3 -> an H3 cell STRING. Available as cell_h3 (query_location, household "
+    "density) and h3_cell (query_dwell, congestion). H3 RESOLUTION IS A PARAMETER, "
+    "not a fixed property of the data: each of those views states its own stored "
+    "resolution and how to change it, so read its instructions before answering "
+    "\"use resolution N\". query_dwell can re-bin to ANY resolution from its "
+    "dwell_lat/dwell_lon pair; query_location is COARSEN-ONLY, and dividing a "
+    "cell's measure among child cells to fake a finer map is fabrication, not an "
+    "answer - refuse it and say what the stored grain is."
+)
+
 
 def main() -> int:
     src = SPEC.read_text()
@@ -280,6 +306,19 @@ def main() -> int:
         changed.append("response(data_to_map availability)")
     else:
         print("ERROR: response data_to_map clause not found", file=sys.stderr)
+        return 1
+
+    # --- Sixth pass: H3 resolution is a parameter ------------------------------
+    orch = spec["instructions"]["orchestration"]
+    if H3_RES_MARKER in orch:
+        print("orchestration: H3 resolution rule already present")
+    elif H3_RES_ANCHOR in orch:
+        spec["instructions"]["orchestration"] = orch.replace(
+            H3_RES_ANCHOR, H3_RES_BULLET, 1
+        )
+        changed.append("orchestration(H3 resolution)")
+    else:
+        print("ERROR: h3 layer bullet anchor not found", file=sys.stderr)
         return 1
 
     if not changed:
