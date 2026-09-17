@@ -60,6 +60,31 @@ RULE D  the agent specs must carry the sentence that stops a DUPLICATE map, in t
         no test reads: deleting it breaks no build and silently restores the double
         map.
 
+RULE G  The `DRAWING A MAP INLINE` block must state the SURFACE DISCRIMINATOR: that
+        the presence of `data_to_map` in the agent's own tool list means CoWork,
+        where `render_map` must NOT be called. And it must state the CONSEQUENCE -
+        that the call succeeds anyway and no map appears.
+
+        This is the defect the rule exists for. Asked for dwell density in CoWork
+        the agent called `render_map` three times, each returning OUTCOME='ok'
+        (measured on tib85385: 02:40:06, 02:41:26, 02:41:58), and wrote three
+        confident answers about a heatmap that was never drawn. `render_map` only
+        echoes the spec back, so it cannot detect its caller and its success is
+        unfalsifiable; the agent's tool list is the ONLY signal, because
+        `render_map` is in the inventory on both surfaces while `data_to_map` is
+        host-injected into CoWork alone.
+
+        Naming both tools is deliberately NOT sufficient. The text this replaced
+        named both - it titled `render_map` "THE SA APP PATH" and hedged
+        `data_to_map` as "when available" - and the agent still took the
+        championed path. So the consequence phrasing is what is asserted.
+
+RULE H  `instructions.response` must not claim `data_to_map` is unavailable. It
+        used to read "CoWork's data_to_map is host-injected and unavailable to
+        you", contradicted by the same spec's own `data_to_map` layer contract and
+        by the turn that drew a map with it. `response` governs how the answer is
+        composed, so a false claim there outranks a correct orchestration.
+
 Deliberately NOT checked: that every map-capable view has a chart_customization
 block. Several have none and are correct as-is; requiring one would add noise
 without preventing this defect.
@@ -104,6 +129,27 @@ ONE_MAP_INGREDIENTS = ["ISOCHRONES", "ST_WITHIN"]
 # value of 'unknown'}} with GEOJSON NULL. The verb's EXPLAIN gate cannot catch it
 # because the statement compiles perfectly.
 LOADED_PROFILES = ["driving-car", "driving-hgv", "cycling-electric"]
+
+# RULES G/H. The host-injected CoWork map tool, and the two things the guidance has
+# to say about it. COWORK_TOOL must be named in the SAME BULLET as render_map for
+# the discriminator to be actionable - the previous text named both tools in the
+# same BLOCK and lost the argument anyway.
+COWORK_TOOL = "data_to_map"
+# The consequence, not just the pairing: a mutation that keeps "use data_to_map in
+# CoWork" and drops "the call still returns ok and nothing is drawn" leaves the
+# agent with no reason to believe its successful call failed.
+CONSEQUENCE_RE = re.compile(
+    r"no map appears|nothing is drawn|draws nothing|no map is drawn", re.IGNORECASE
+)
+# The signal the agent can actually observe. "You are in CoWork" is not a rule if
+# nothing says how to tell.
+TOOL_LIST_RE = re.compile(r"tool list|your own tools|in your tools", re.IGNORECASE)
+# RULE H. Any of these next to data_to_map is the false claim returning.
+UNAVAILABLE_RE = re.compile(
+    r"data_to_map is[^.]{0,80}?(unavailable|not available|inaccessible)"
+    r"|(unavailable|not available|inaccessible) to you[^.]{0,40}?data_to_map",
+    re.IGNORECASE,
+)
 
 MAP_TOOL = "render_map"
 
@@ -174,6 +220,12 @@ def main() -> int:
     checked_views = 0
     map_capable: list[str] = []
     blocks_checked = 0
+    # Vacuity counters. A rule whose scope resolved to nothing passes silently, and
+    # that has already happened in this repo: a gate computed its repo root one
+    # parent short, inspected zero files, and reported PASSED. Print what each rule
+    # actually saw so a zero is visible.
+    surface_rules_found = 0
+    response_checked = 0
 
     for fname in SV_FILES:
         path = APP_DIR / fname
@@ -337,10 +389,69 @@ def main() -> int:
                 f"is blank and nothing says why."
             )
 
+        # --- RULE G: the surface discriminator ---------------------------------
+        # Required in ONE bullet, and required to carry all three parts: the
+        # observable signal (my tool list), the verdict (that means CoWork, do not
+        # call render_map), and the consequence (it returns ok and draws nothing).
+        # Split across bullets each part reads as a separate tip, and the agent
+        # that produced this defect had both tool names available to it already.
+        surface_bullets = [
+            b for b in re.split(r"\n(?=-)", block)
+            if COWORK_TOOL in b and MAP_TOOL in b
+        ]
+        if not surface_bullets:
+            # NOTE: no mutation in check_map_guidance_negative.py reaches this
+            # branch, because the block's first bullet ("call render_map ... does
+            # NOT depend on data_to_map") already names both tools, so deleting the
+            # surface bullet trips the completeness check below instead. It is kept
+            # as the guard for a block that loses both mentions, and it is UNTESTED.
+            problems.append(
+                f"{sname}: no bullet in the {MAP_BLOCK_HEAD!r} block names both "
+                f"{MAP_TOOL} and {COWORK_TOOL}, so nothing tells the agent which of "
+                f"the two to use. {MAP_TOOL} is in its tool list on BOTH surfaces, so "
+                f"without this it calls {MAP_TOOL} in CoWork, gets OUTCOME='ok', and "
+                f"draws no map."
+            )
+        else:
+            complete = [
+                b for b in surface_bullets
+                if TOOL_LIST_RE.search(b) and CONSEQUENCE_RE.search(b)
+            ]
+            if not complete:
+                missing = []
+                if not any(TOOL_LIST_RE.search(b) for b in surface_bullets):
+                    missing.append("the observable signal (the agent's own tool list)")
+                if not any(CONSEQUENCE_RE.search(b) for b in surface_bullets):
+                    missing.append(
+                        f"the consequence (a {MAP_TOOL} call in CoWork succeeds and no "
+                        f"map appears)"
+                    )
+                problems.append(
+                    f"{sname}: the surface rule in the {MAP_BLOCK_HEAD!r} block is "
+                    f"missing {' and '.join(missing)}. Naming both tools is not enough "
+                    f"- the text this replaced named both and the agent still called "
+                    f"{MAP_TOOL} three times in CoWork."
+                )
+            surface_rules_found += 1
+
+        # --- RULE H: response must not deny data_to_map exists -----------------
+        resp = json.loads(spath.read_text()).get("instructions", {}).get("response", "")
+        bad = UNAVAILABLE_RE.search(resp)
+        if bad:
+            problems.append(
+                f"{sname}: instructions.response claims {bad.group(0).strip()[:70]!r}. "
+                f"{COWORK_TOOL} IS available in CoWork - the same spec carries its layer "
+                f"contract - and response is what governs how the answer is composed, so "
+                f"this outranks the orchestration and stops the agent trying it."
+            )
+        response_checked += 1
+
     print("Map guidance gate (a forbidden map must name render_map)\n")
     print(f"  semantic views scanned        {checked_views}")
     print(f"  agent specs scanned           {specs_checked}")
     print(f"  chart_customization blocks    {blocks_checked}")
+    print(f"  surface-discriminator bullets {surface_rules_found}")
+    print(f"  response sections scanned     {response_checked}")
     print(f"  map-capable views             {len(map_capable)}"
           f"{' (' + ', '.join(map_capable) + ')' if map_capable else ''}")
     print()
@@ -349,6 +460,13 @@ def main() -> int:
         print("FAIL: map guidance is a dead end in " f"{len(problems)} place(s):")
         for p in problems:
             print(f"  - {p}")
+        return 1
+
+    if not surface_rules_found or not response_checked:
+        print("FAIL: the surface rules inspected nothing - "
+              f"{surface_rules_found} discriminator bullet(s), "
+              f"{response_checked} response section(s). A rule with an empty scope "
+              f"passes without checking anything, which is worse than no rule.")
         return 1
 
     print(f"PASSED: every map-capable view names {MAP_TOOL}, and no "
