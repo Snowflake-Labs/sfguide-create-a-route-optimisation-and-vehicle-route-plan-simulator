@@ -203,6 +203,28 @@ if [ -f "$MAP_GUIDANCE_CHECK" ] && staged_any \
   fi
 fi
 
+# ── 1b-2. An H3 cell must say what resolution it is and what it can become ─────
+# A pre-binned H3 column with no stated resolution and no re-bin path is a map that
+# can only ever be drawn one way, and nothing says so: "use resolution 9" sent the
+# agent to run_sql, whose result data_to_map rejects. The worse shape is silent
+# fabrication - household density keeps no sub-cell position, and the agent was one
+# step from spreading each cell's households over its 49 children, which renders a
+# detailed invented map with no error.
+H3_RES_CHECK="$SKILL_DIR/scripts/check_h3_resolution.py"
+if [ -f "$H3_RES_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/packs/fleet/dwell/setup.sql" \
+  "$SKILL_DIR/scripts/check_h3_resolution.py"; then
+  echo "pre-commit: H3 resolution guidance check..."
+  python3 "$H3_RES_CHECK" || exit 1
+  H3_RES_NEG="$SKILL_DIR/scripts/check_h3_resolution_negative.py"
+  if [ -f "$H3_RES_NEG" ]; then
+    echo "pre-commit: H3 resolution negative tests..."
+    python3 "$H3_RES_NEG" || exit 1
+  fi
+fi
+
 # ── 1c. Every synapse verb must be routed by the agents that can see it ────────
 # Verbs are AUTO-DISCOVERED: `npx synapse deploy` walks src/procs/ and publishes
 # each one, and the specs attach whole MCP servers with no tool allowlist, so a new

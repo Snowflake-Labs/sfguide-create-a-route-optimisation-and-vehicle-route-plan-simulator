@@ -239,6 +239,22 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
                echo "         python3 '$SURFACE_NEG'"; exit 1; }
       fi
     fi
+    # Same class, different question: not WHICH tool draws the map, but whether the
+    # H3 data can be drawn at the resolution asked for. Silent both ways - either
+    # the agent cannot answer and blames the wrong thing, or it fabricates a finer
+    # map by dividing a cell's measure among children.
+    H3_GATE="$SKILL_DIR/scripts/check_h3_resolution.py"
+    H3_NEG="$SKILL_DIR/scripts/check_h3_resolution_negative.py"
+    if [ -f "$H3_GATE" ]; then
+      echo "[1/7] Verify H3 views state a resolution and a re-bin direction..."
+      python3 "$H3_GATE" \
+        || { echo "ERROR: H3 resolution gate failed (see above)."; exit 1; }
+      if [ -f "$H3_NEG" ]; then
+        python3 "$H3_NEG" >/dev/null \
+          || { echo "ERROR: H3 resolution negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$H3_NEG'"; exit 1; }
+      fi
+    fi
   fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
