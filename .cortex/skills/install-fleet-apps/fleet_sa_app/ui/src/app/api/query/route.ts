@@ -74,6 +74,12 @@ function validateParams(params?: Record<string, string | null>): void {
 // scripts/check_dynamic_allowlist.py.
 const ALLOWED_DYNAMIC_DBS = new Set(['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM']);
 
+// Snowflake result-metadata type names for a geometry column, lowercased as the
+// SQL REST API reports them. MUST stay in sync with GEO_TYPES in
+// packages/fleet-kit/src/map/detect-geo.ts, which decides from the same names
+// whether a result can be mapped.
+const GEO_COLUMN_TYPES = new Set(['geography', 'geometry']);
+
 function validateDynamicAllowlist(sql: string): void {
   // Match any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
   // `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))` forms.
@@ -338,6 +344,26 @@ async function handleQuery(request: NextRequest): Promise<Response> {
           obj[col.key] = Number.isFinite(days)
             ? new Date(days * 86400000).toISOString().slice(0, 10)
             : raw;
+        } else if (GEO_COLUMN_TYPES.has(String(col.type).toLowerCase())) {
+          // A GEOGRAPHY column is the preferred way to put geometry on a map:
+          // it needs no ST_ASGEOJSON wrapper, and detectGeoColumns treats the
+          // declared type as authoritative, so a query that selects one is
+          // mappable without a hand-authored layer spec.
+          //
+          // Under the default GEOGRAPHY_OUTPUT_FORMAT (GeoJSON, confirmed on
+          // this account) the value already arrives as GeoJSON text, which is
+          // what the layer compiler and detect-geo both accept. This branch
+          // makes that contract EXPLICIT rather than incidental: until now
+          // geometry only reached the map because it fell through the final
+          // `else` as an untouched string, so nothing here said the map path
+          // depended on it and nothing normalized the shape.
+          //
+          // The value is deliberately left as a STRING rather than parsed.
+          // Table and detail renderers stringify whatever they are given, so
+          // handing them an object would print "[object Object]" where the
+          // GeoJSON text renders today. If a driver ever yields an object,
+          // re-serialize it so the wire shape stays one thing.
+          obj[col.key] = typeof raw === 'string' ? raw : JSON.stringify(raw);
         } else {
           obj[col.key] = raw;
         }
@@ -346,7 +372,12 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     });
 
     return NextResponse.json({
-      columns: columns.map(({ key, label }) => ({ key, label })),
+      // `type` is carried through deliberately. The client needs the declared
+      // Snowflake type to bind a map layer from a GEOGRAPHY column without a
+      // hand-authored spec (detectGeoColumns ranks declared geometry above
+      // every value heuristic, and that is the one signal an empty result set
+      // still carries). Dropping it here is why that detection could not run.
+      columns: columns.map(({ key, label, type }) => ({ key, label, type })),
       rows,
       totalRows: result.resultSetMetaData?.numRows ?? rows.length,
     });

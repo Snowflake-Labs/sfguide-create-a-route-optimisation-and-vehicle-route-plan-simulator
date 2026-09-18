@@ -11,6 +11,7 @@ import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
+import { rebindLayerGeometry } from '@fleet-kit/core/map';
 // Pure spec helper (no deck.gl): names the columns a layer reads, for the
 // 'returned rows but drew nothing' notice.
 import { encodingColumns } from '@/lib/map/inline-legend';
@@ -156,9 +157,13 @@ function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible
     const run = () => {
       if (cancelled) return;
       // Single parse: layer data + full fit coords derived from one pass.
-      const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(layer, rows, viewState, index, hovered);
+      // Rebind first: a geometry encoding naming a column absent from the result
+      // compiles to an empty layer with no error (see rebind-geometry.ts). No-op
+      // when the declared column resolves, which is the normal case.
+      const { layer: bound } = rebindLayerGeometry(layer, data?.columns, rows);
+      const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(bound, rows, viewState, index, hovered);
       const fitFull = fitCoords as LngLat[];
-      const fitSel = selectionFit(layer, rows, viewState, selectionKeys, fitFull);
+      const fitSel = selectionFit(bound, rows, viewState, selectionKeys, fitFull);
       startTransition(() => {
         if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length, drawn);
       });

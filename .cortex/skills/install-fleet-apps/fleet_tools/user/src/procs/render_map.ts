@@ -24,38 +24,49 @@ const QUALIFIED_NAME_RE =
 // Note this is an SA-app capability only. CoWork draws maps with the
 // host-injected `data_to_map`, which accepts ONE layer and only a SQL/analyst
 // tool result - an MCP result like this one is rejected there.
+//
+// That makes SUCCESS HERE UNFALSIFIABLE, and it has already misled the agent:
+// `execute` only echoes the spec back, so a call from CoWork returns
+// OUTCOME='ok' and draws nothing. Measured on tib85385 - three 'ok' render_map
+// rows at 02:40:06, 02:41:26 and 02:41:58 - after which the agent wrote three
+// confident answers about a heatmap nobody could see. The verb cannot fix this
+// itself: nothing in `args` or the session identifies the caller, so the guard
+// has to be the agent choosing the right tool. Hence the description opens with
+// the discriminator the agent CAN observe (is data_to_map in my tool list?),
+// mirrored by the SURFACE FIRST bullet in agent-spec.json's map block.
 export const render_map = defineProc({
   name: 'render_map',
   description:
-    'Draw a map inline in the chat answer from a declarative spec. Use for "map/plot/show me on a map ..." ' +
-    'when no saved view already answers it. The spec is a JSON object with `layers` (1-' + MAX_MAP_LAYERS + ') ' +
+    'SA APP ONLY: if data_to_map is in your tool list you are in CoWork - use that, NOT this. ' +
+    'CoWork cannot render this result: it returns ok and NO MAP APPEARS. ' +
+    'Draw a map inline in the answer from a declarative spec. Use for "map/plot/show me on a map ..." ' +
+    'when no saved view answers it. The spec is a JSON object with `layers` (1-' + MAX_MAP_LAYERS + ') ' +
     'and optional {title, height, legend, emptyMessage}. Each layer is ' +
     '{type, data:{query,params}, ...encoding}, where type is one of: ' + MAP_LAYER_TYPES.join(', ') + '. ' +
-    'Layer queries may read ONLY: ' + ALLOWED_DYNAMIC_DBS.join(', ') + '. Normally the neutral ' +
+    'Layer queries may read ONLY: ' + ALLOWED_DYNAMIC_DBS.join(', ') + '. Normally the ' +
     'FLEET_APP contract, e.g. TABLE(FLEET_APP.CORE.F_FACT_*_SCOPED(CAST(:region AS VARCHAR), ' +
     'CAST(:dataset_id AS VARCHAR))) or FLEET_APP.<DWELL|CATCHMENT|ROUTE_OPTIMIZATION|ROUTE_DEVIATION>.VW_*; ' +
     'for LIVE geometry a layer may call TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS|ISOCHRONES|OPTIMIZATION(...)) ' +
     'projecting ST_ASGEOJSON(GEOJSON)::STRING. Params may bind only ' +
-    'context.* params (region, vehicle_type, dataset_id, date_range_start, date_range_end) or literals. ' +
+    'context.* (region, vehicle_type, dataset_id, date_range_start, date_range_end) or literals. ' +
     'Use the REAL column names - an H3 dwell/congestion density map is ' +
     'FLEET_APP.DWELL.VW_DWELL_SESSIONS with H3_CELL_R7 (hex), DWELL_MINUTES (measure), REGION ' +
     '(filter). Column names are matched case-insensitively. ' +
     'Project geometry as ST_ASGEOJSON(ST_SIMPLIFY(<geog>, 250))::STRING, filtered to a region or band: ' +
     'an oversized payload renders a BLANK map with no error. ' +
     'Fails with INVALID_MAP_SPEC_JSON, INVALID_MAP_SPEC_SHAPE, UNKNOWN_LAYER_TYPE, INVALID_MAP_SPEC_DB ' +
-    '(a layer query naming any other database), INVALID_MAP_SPEC_ENCODING (a layer missing the ' +
-    'encoding its type draws from, e.g. an h3 layer with no hexColumn), or ' +
-    'INVALID_MAP_SPEC_SQL (a layer query that does not compile - fix the column names and retry). ' +
+    '(a layer query naming any other database), INVALID_MAP_SPEC_ENCODING (a layer missing its ' +
+    "type's encoding, e.g. an h3 layer with no hexColumn), or " +
+    'INVALID_MAP_SPEC_SQL (a layer query that does not compile - fix the columns and retry). ' +
     'Do NOT redraw geometry a routing tool returned (get_directions, compute_isochrone, ' +
-    'optimize_routes, find_poi, catchment): those draw their own result inline, so this would ' +
-    'produce TWO maps of one answer. ' +
-    'Do NOT author a `legend`: the client DERIVES it from the colours each layer actually draws, ' +
+    'optimize_routes, find_poi, catchment): those draw their own result inline, so this makes ' +
+    'TWO maps of one answer. ' +
+    'Do NOT author a `legend`: the client DERIVES it from the colours drawn, ' +
     'so a hand-written key would contradict the map. Set `legendLabel` on a layer ' +
     'to name it, and a `tooltip` template like "<b>{H3_CELL_R7}</b><br/>{DWELL_MINUTES} min" to say ' +
-    'what a hover shows - hovering is enabled for you, and a layer with no template gets one ' +
-    'synthesized from its columns. ' +
-    'Prefer a saved view (a view: link) when one matches; render_view for a page with KPIs and ' +
-    'tables around the map; deep_link when the user needs toggles or click-through.',
+    'what a hover shows - hovering is enabled, and a layer with no template gets one synthesized. ' +
+    'Prefer a saved view (view: link) when one matches; render_view for a page with KPIs and ' +
+    'tables; deep_link for toggles or click-through.',
   roles: ['user'],
   args: {
     spec_json: t

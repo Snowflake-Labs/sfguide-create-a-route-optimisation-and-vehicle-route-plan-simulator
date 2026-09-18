@@ -213,6 +213,92 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${FORCED_REGION_VERIFY:-1}" != "0" ]; then
+    # The active dashboard context is injected into the user turn, and it used to
+    # say "default to this region" for routing tools - overriding the agent spec's
+    # own "leave region null" rule for get_directions, which is closer to the
+    # verb but further from the turn. Measured: a 20 km SFO-to-Civic-Center trip
+    # was forced onto the UnitedStatesOfAmerica long-haul HGV graph, where SFO
+    # does not snap at all, and came back as a FINAL "no navigable road path"
+    # refusal with an invented explanation - while the SanFrancisco graph routes
+    # the same pair in 1435 s. Gated here as well as in .githooks/pre-commit
+    # because core.hooksPath is unset, so the deploy is the only enforcement.
+    FORCED_REGION_GATE="$SKILL_DIR/scripts/check_forced_region_refusal.py"
+    if [ -f "$FORCED_REGION_GATE" ]; then
+      echo "[1/7] Verify a forced routing region cannot produce a final refusal..."
+      python3 "$FORCED_REGION_GATE" \
+        || { echo "ERROR: forced-region refusal gate failed (see above)."; exit 1; }
+    fi
+  fi
+  if [ "${MAP_SURFACE_VERIFY:-1}" != "0" ]; then
+    # The agent cannot tell the SA app from CoWork except by its own tool list,
+    # and render_map is in the inventory on BOTH surfaces while only the SA app
+    # can render its result. render_map echoes the spec back, so a CoWork call
+    # returns OUTCOME='ok' and draws nothing: measured on tib85385 as three 'ok'
+    # calls in a row, each followed by a confident answer about a map that was
+    # never drawn. The guard can only be the guidance, so the guidance is gated -
+    # and the negative suite runs with it, because the previous wording named
+    # BOTH tools correctly and still lost the argument, so "both names present"
+    # would pass on the exact text that failed.
+    #
+    # Wired here for the same reason as the memo gate above: .githooks/pre-commit
+    # does not run (core.hooksPath is unset), so the deploy is the only place a
+    # regression can actually be stopped.
+    SURFACE_GATE="$SKILL_DIR/scripts/check_map_guidance.py"
+    SURFACE_NEG="$SKILL_DIR/scripts/check_map_guidance_negative.py"
+    if [ -f "$SURFACE_GATE" ]; then
+      echo "[1/7] Verify the map guidance names a surface discriminator..."
+      python3 "$SURFACE_GATE" \
+        || { echo "ERROR: map guidance gate failed (see above)."; exit 1; }
+      if [ -f "$SURFACE_NEG" ]; then
+        python3 "$SURFACE_NEG" >/dev/null \
+          || { echo "ERROR: map guidance negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$SURFACE_NEG'"; exit 1; }
+      fi
+    fi
+    # Same class, different question: not WHICH tool draws the map, but whether the
+    # H3 data can be drawn at the resolution asked for. Silent both ways - either
+    # the agent cannot answer and blames the wrong thing, or it fabricates a finer
+    # map by dividing a cell's measure among children.
+    H3_GATE="$SKILL_DIR/scripts/check_h3_resolution.py"
+    H3_NEG="$SKILL_DIR/scripts/check_h3_resolution_negative.py"
+    if [ -f "$H3_GATE" ]; then
+      echo "[1/7] Verify H3 views state a resolution and a re-bin direction..."
+      python3 "$H3_GATE" \
+        || { echo "ERROR: H3 resolution gate failed (see above)."; exit 1; }
+      if [ -f "$H3_NEG" ]; then
+        python3 "$H3_NEG" >/dev/null \
+          || { echo "ERROR: H3 resolution negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$H3_NEG'"; exit 1; }
+      fi
+    fi
+
+    # Stored GEOGRAPHY must reach the map, not be dropped and rebuilt.
+    #
+    # Every fact table here is dual-carrier: a GEOGRAPHY column sits beside the
+    # lat/lon numerics. Both matter - ORS needs JSON numbers and a semantic view
+    # cannot hold a GEOGRAPHY column - so nothing is ever "missing". The failure
+    # is that a seam DROPS the geometry and a downstream view rebuilds it, which
+    # is invisible because every number stays correct. That shipped:
+    # VW_EXTERNAL_OFFERS omitted PICKUP_GEOM and EXTERNAL_OFFER_SEARCH rebuilt
+    # the same point five times per row.
+    #
+    # The client half is the same shape: detectGeoColumns already ranked declared
+    # GEOGRAPHY highest but was imported by nothing except its own test harness,
+    # so RULE D asserts the rebind is CALLED rather than merely exported.
+    GEO_CARRIER_GATE="$SKILL_DIR/scripts/check_geography_carrier.py"
+    GEO_CARRIER_NEG="$SKILL_DIR/scripts/check_geography_carrier_negative.py"
+    if [ -f "$GEO_CARRIER_GATE" ]; then
+      echo "[1/7] Verify stored GEOGRAPHY is carried, not rebuilt..."
+      python3 "$GEO_CARRIER_GATE" \
+        || { echo "ERROR: geography carrier gate failed (see above)."; exit 1; }
+      if [ -f "$GEO_CARRIER_NEG" ]; then
+        python3 "$GEO_CARRIER_NEG" >/dev/null \
+          || { echo "ERROR: geography carrier negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$GEO_CARRIER_NEG'"; exit 1; }
+      fi
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when

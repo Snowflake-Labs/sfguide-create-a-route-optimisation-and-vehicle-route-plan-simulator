@@ -500,13 +500,23 @@ export async function ensureBackloadAndAssetVelocityObjects(
         COMMENT = ${TRACK}
         AS
         WITH last_drop AS (
+          -- Picks the latest trip ROW per vehicle rather than aggregating each
+          -- column independently. MAX_BY cannot take a GEOGRAPHY argument
+          -- (measured: "Invalid argument types for function 'MAX_BY':
+          -- (GEOGRAPHY, TIMESTAMP_NTZ)"), so carrying the stored DESTINATION
+          -- geometry requires a row pick. It is also strictly safer than the
+          -- per-column MAX_BY it replaces: on a TRIP_END tie those could each
+          -- resolve to a DIFFERENT trip and yield a lon/lat pair that belongs
+          -- to no single drop-off. Verified to return the same 100 vehicles and
+          -- the same coordinates as the MAX_BY form.
           SELECT VEHICLE_ID,
-                 MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
-                 MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
-                 MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-                 MAX(TRIP_END) AS LAST_TRIP_END
+                 DESTINATION_LON    AS DROPOFF_LON,
+                 DESTINATION_LAT    AS DROPOFF_LAT,
+                 DESTINATION        AS DROPOFF_GEOM,
+                 DESTINATION_POI_ID AS DROPOFF_POI_ID,
+                 TRIP_END           AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-          GROUP BY VEHICLE_ID
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
         ),
         -- Home anchor is grouped BY REGION. Averaging POI coordinates across two
         -- regions puts the fallback depot in the ocean between them.
@@ -523,7 +533,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME,
                  ANY_VALUE(LAT)  AS LAT,
-                 ANY_VALUE(LNG)  AS LNG
+                 ANY_VALUE(LNG)  AS LNG,
+                 ANY_VALUE(POINT_GEOM) AS POINT_GEOM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           GROUP BY LOCATION_ID
         ),
@@ -546,6 +557,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
           COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
           COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
+          -- The depot POI's stored point where there is one. The region-average
+          -- fallback has no stored geometry (it is an AVG of many POIs), so it
+          -- is still constructed - and only in that fallback case.
+          COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT)) AS HOME_GEOM,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
           -- A location NAME or nothing. These *_CITY values are read straight
           -- into the agent's answer and onto the backload map as stop labels, so
@@ -557,6 +572,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           d.NAME                                              AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
           ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+          ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
           ld.LAST_TRIP_END                                    AS ETA_TS,
           DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
           'IN_TRANSIT'                                        AS STATUS,
@@ -604,6 +620,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  t.REGION, t.VEHICLE_TYPE,
                  t.ORIGIN_LON, t.ORIGIN_LAT,
                  t.DESTINATION_LON, t.DESTINATION_LAT,
+                 -- FACT_TRIPS stores ORIGIN/DESTINATION as GEOGRAPHY alongside
+                 -- the numerics; carry them so the internal pool can hand a
+                 -- real geometry to VW_LOADS instead of making it rebuild one.
+                 t.ORIGIN, t.DESTINATION,
                  t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
@@ -640,9 +660,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
             o.NAME                                                                      AS PICKUP_CITY,
             t.ORIGIN_LON                                                                AS PICKUP_LON,
             t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+            t.ORIGIN                                                                    AS PICKUP_GEOM,
             d.NAME                                                                      AS DROPOFF_CITY,
             t.DESTINATION_LON                                                           AS DROPOFF_LON,
             t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+            t.DESTINATION                                                               AS DROPOFF_GEOM,
             -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
             -- wider of PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - rather
             -- than the next ~10 hours. Vehicle availability is now forward-looking
@@ -705,8 +727,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
-          PICKUP_CITY, PICKUP_LON, PICKUP_LAT,
-          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT,
+          PICKUP_CITY, PICKUP_LON, PICKUP_LAT, PICKUP_GEOM,
+          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, DROPOFF_GEOM,
           PICKUP_FROM_TS, PICKUP_TO_TS,
           WEIGHT_KG, PRODUCT, HAZMAT
         FROM deduped
@@ -839,9 +861,22 @@ export async function ensureBackloadAndAssetVelocityObjects(
           p2.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
+          -- Carry the STORED GEOGRAPHY through rather than letting consumers
+          -- rebuild it. FACT_OFFERS already persists PICKUP_GEOM/DROPOFF_GEOM
+          -- next to the numerics, and dropping them here is what forced every
+          -- downstream reader (VW_LOADS, EXTERNAL_OFFER_SEARCH) to re-derive
+          -- the same point with ST_MAKEPOINT - five times per row in the
+          -- search function's filter + projection + ORDER BY. Verified
+          -- identical to ST_MAKEPOINT(lon, lat) over all 300 rows (0
+          -- mismatches, max deviation 6.9e-05 m, i.e. float noise), so this is
+          -- a pass-through and not a change of value. The numerics stay: the
+          -- ORS engine needs JSON numbers and a semantic view cannot hold a
+          -- GEOGRAPHY column at all.
+          f.PICKUP_GEOM,
           d.NAME                                   AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
+          f.DROPOFF_GEOM,
           f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
           DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
@@ -1104,12 +1139,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           'INTERNAL' AS SOURCE_SYSTEM,
           'ANY' AS REQUIRED_EQUIPMENT,
           iv.PICKUP_CITY, iv.PICKUP_LON, iv.PICKUP_LAT,
-          ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT) AS PICKUP_GEOM,
+          iv.PICKUP_GEOM,
           iv.DROPOFF_CITY AS DELIVERY_CITY, iv.DROPOFF_LON AS DELIVERY_LON, iv.DROPOFF_LAT AS DELIVERY_LAT,
-          ST_MAKEPOINT(iv.DROPOFF_LON, iv.DROPOFF_LAT) AS DELIVERY_GEOM,
+          iv.DROPOFF_GEOM AS DELIVERY_GEOM,
           iv.PICKUP_FROM_TS AS REQUESTED_PICKUP_TS, iv.PICKUP_TO_TS AS LATEST_PICKUP_TS,
           iv.WEIGHT_KG, iv.PRODUCT, iv.HAZMAT, NULL::NUMBER AS PRICE_USD,
-          ST_DISTANCE(ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT), ST_MAKEPOINT(iv.DROPOFF_LON, iv.DROPOFF_LAT)) / 1000.0 AS APPROX_DISTANCE_KM,
+          ST_DISTANCE(iv.PICKUP_GEOM, iv.DROPOFF_GEOM) / 1000.0 AS APPROX_DISTANCE_KM,
           'Internal load: ' || iv.PICKUP_CITY || ' -> ' || iv.DROPOFF_CITY AS LISTING_TEXT
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES iv
         WHERE iv.PICKUP_LON IS NOT NULL AND iv.PICKUP_LAT IS NOT NULL
@@ -1119,12 +1154,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
           eo.SOURCE_SYSTEM,
           COALESCE(eo.VEHICLE_EQUIPMENT, 'ANY') AS REQUIRED_EQUIPMENT,
           eo.PICKUP_CITY, eo.PICKUP_LON, eo.PICKUP_LAT,
-          ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT) AS PICKUP_GEOM,
+          eo.PICKUP_GEOM,
           eo.DROPOFF_CITY AS DELIVERY_CITY, eo.DROPOFF_LON AS DELIVERY_LON, eo.DROPOFF_LAT AS DELIVERY_LAT,
-          ST_MAKEPOINT(eo.DROPOFF_LON, eo.DROPOFF_LAT) AS DELIVERY_GEOM,
+          eo.DROPOFF_GEOM AS DELIVERY_GEOM,
           eo.PICKUP_FROM_TS AS REQUESTED_PICKUP_TS, eo.PICKUP_TO_TS AS LATEST_PICKUP_TS,
           eo.WEIGHT_KG, eo.PRODUCT, eo.HAZMAT, eo.PRICE_EUR AS PRICE_USD,
-          ST_DISTANCE(ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT), ST_MAKEPOINT(eo.DROPOFF_LON, eo.DROPOFF_LAT)) / 1000.0 AS APPROX_DISTANCE_KM,
+          ST_DISTANCE(eo.PICKUP_GEOM, eo.DROPOFF_GEOM) / 1000.0 AS APPROX_DISTANCE_KM,
           eo.LISTING_TEXT
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS eo
         WHERE eo.PICKUP_LON IS NOT NULL AND eo.PICKUP_LAT IS NOT NULL`,
@@ -1142,7 +1177,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         SELECT
           t.TRAILER_ID, t.OPERATING_COUNTRY, t.HOME_DEPOT, t.HOME_LON, t.HOME_LAT,
           t.DROPOFF_CITY AS EMPTY_CITY, t.DROPOFF_LON AS EMPTY_LON, t.DROPOFF_LAT AS EMPTY_LAT,
-          ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT) AS EMPTY_GEOM,
+          t.DROPOFF_GEOM AS EMPTY_GEOM,
           -- Dispatch-time availability. A vehicle whose trip is still running is
           -- plannable NOW for the moment it frees up, so its free time is that
           -- future arrival - this is what lets a return leg be planned at
@@ -1159,16 +1194,15 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- like a live fleet. Surface this rather than hiding the synthesis.
           IFF(t.ETA_TS > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
           t.ETA_TS AS LAST_DROPOFF_TS,
-          ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS NEXT_START_GEOM,
+          t.HOME_GEOM AS NEXT_START_GEOM,
           t.HOME_LON AS NEXT_START_LON, t.HOME_LAT AS NEXT_START_LAT, t.HOME_DEPOT AS NEXT_START_LOCATION_TEXT,
           -- Chain target. TARGET_MODE=home_depot resolves to the home depot;
           -- dispatcher_choice overrides these per request at query time (a view
           -- cannot hold a per-request target), and falls back to the depot.
           t.HOME_LON AS TARGET_LON, t.HOME_LAT AS TARGET_LAT,
-          ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS TARGET_GEOM,
+          t.HOME_GEOM AS TARGET_GEOM,
           t.HOME_DEPOT AS TARGET_LABEL,
-          ST_DISTANCE(ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT),
-                      ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT)) / 1000.0 AS TARGET_GAP_KM,
+          ST_DISTANCE(t.DROPOFF_GEOM, t.HOME_GEOM) / 1000.0 AS TARGET_GAP_KM,
           t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.VEHICLE_EQUIPMENT, t.EV_RANGE_KM
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS t
         JOIN p ON TRUE
@@ -2110,21 +2144,28 @@ $$`,
             h.PARTNER_ID,
             h.VEHICLE_EQUIPMENT,
             h.SHIPPED_AT,
-            o.PICKUP_LON, o.PICKUP_LAT,
-            o.DROPOFF_LON, o.DROPOFF_LAT
+            o.PICKUP_LON, o.PICKUP_LAT, o.PICKUP_GEOM,
+            o.DROPOFF_LON, o.DROPOFF_LAT, o.DROPOFF_GEOM
           FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY h
           LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
             ON o.PARTNER_ID = h.PARTNER_ID
         )
         SELECT
+          -- Lane midpoint from the STORED endpoint geometry rather than an
+          -- arithmetic average of four numerics. A midpoint is genuinely derived
+          -- (no stored column holds it), but its ENDPOINTS are stored, so this
+          -- reads them instead of rebuilding both points first.
+          -- MEASURED equivalent on the 300-offer pool: 0 of 300 H3 cells change
+          -- and the two midpoints differ by at most 2.35 m, against res-5 cells
+          -- ~250 km across.
           H3_POINT_TO_CELL_STRING(
-            ST_MAKEPOINT((PICKUP_LON + DROPOFF_LON) / 2, (PICKUP_LAT + DROPOFF_LAT) / 2),
+            ST_CENTROID(ST_MAKELINE(PICKUP_GEOM, DROPOFF_GEOM)),
             5
           ) AS H3_CELL,
           VEHICLE_EQUIPMENT,
           COUNT(*) AS SHIPMENT_COUNT
         FROM lane_midpoints
-        WHERE PICKUP_LON IS NOT NULL AND DROPOFF_LON IS NOT NULL
+        WHERE PICKUP_GEOM IS NOT NULL AND DROPOFF_GEOM IS NOT NULL
         GROUP BY 1, 2`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
@@ -2372,6 +2413,12 @@ export async function ensureObservabilityObjects(
       db: 'OPENROUTESERVICE_APP', schema: 'OBSERVABILITY',
     },
     {
+      // Second copy of 08_observability.sql's V_ORS_METRICS_SUMMARY, issued at
+      // container boot. The window cutoffs use CURRENT_TIMESTAMP() because
+      // REQUEST_TS is TIMESTAMP_LTZ and SYSDATE() is the UTC wall clock as NTZ:
+      // comparing them shifted every cutoff forward by the session UTC offset,
+      // which made the "1h" window unconditionally empty and "24h" cover 17h.
+      // Keep both copies in step - see the full note in 08_observability.sql.
       sql: `CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY
         COMMENT = ${TRACK_OBS}
         AS
@@ -2390,9 +2437,9 @@ export async function ensureObservabilityObjects(
           FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
         ),
         windowed AS (
-          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, SYSDATE())
+          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
           UNION ALL
-          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, SYSDATE())
+          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
         )
         SELECT
           WINDOW_NAME,

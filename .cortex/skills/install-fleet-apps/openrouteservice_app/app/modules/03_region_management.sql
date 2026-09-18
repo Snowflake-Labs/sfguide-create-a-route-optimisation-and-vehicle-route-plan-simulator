@@ -120,6 +120,13 @@ $$;
 -- vertices and 165 KB while losing 0.04% of the area (10,146,511 -> 10,142,357
 -- km2), and still rejects the open-ocean coordinate the exact clip rejects.
 --
+-- A metre tolerance alone does not bound the payload, because ST_SIMPLIFY thins
+-- rings but never drops one. MEASURED for Europe, whose clip is 185,107 vertices
+-- across thousands of islands and fjords: the 500 m cap leaves 92,079 vertices
+-- and 4.28 MB, so the tolerance is escalated against a vertex budget instead and
+-- settles at 8,000 m for 15,068 vertices and 702 KB. The US is already under
+-- budget at 500 m, so its copy is unchanged.
+--
 -- Cached in a column rather than simplified per request: /api/regions/provisioned
 -- enriches EVERY provisioned region on page load, so an inline ST_SIMPLIFY over a
 -- 69k-vertex polygon would be paid per region per load.
@@ -161,6 +168,37 @@ DECLARE
     -- shrinking a region to a fifth of itself would be far worse than not
     -- clipping at all.
     min_ratio     FLOAT DEFAULT 0.20;
+    -- Pre-union decimation. ST_UNION_AGG, not ST_INTERSECTION, is what fails on a
+    -- continent: MEASURED for Europe, 1,324 Overture region polygons carry
+    -- 10,286,175 vertices and the union raises 'GEOGRAPHY too large' outright,
+    -- while the US (96 polygons, 1,421,517 vertices) unions fine. Simplifying each
+    -- polygon BEFORE the union at 1,000 m takes Europe to 231,563 input vertices,
+    -- a 190,120-vertex union and a 185,128-vertex clip of 9,607,243 km2 - 45.5% of
+    -- the 21,110,196 km2 extract, so still far above min_ratio.
+    --
+    -- The tolerance is derived from the MEASURED input size rather than applied
+    -- unconditionally, so every region that unions today keeps its exact mask
+    -- byte-for-byte (USA 1.42M, France 1.68M, Germany 1.19M, SanFrancisco 16,854
+    -- vertices all land on 0). Straightening a city-scale coastline by a kilometre
+    -- would push land points into water, which is the failure this mask exists to
+    -- prevent.
+    -- FLOAT, and every ST_NPOINTS result below is cast, deliberately. An
+    -- ST_NPOINTS value assigned INTO a scripting variable typed INTEGER poisons
+    -- that variable: the assignment succeeds and the next READ of it raises
+    -- EXPRESSION_ERROR 'Numeric value '5' is out of range' - MEASURED on a
+    -- 5-vertex square, so it is the binding, not the magnitude. The error is
+    -- reported against the reading line, which points away from the cause, and a
+    -- surrounding EXCEPTION handler does not catch it.
+    in_pts        FLOAT   DEFAULT 0;
+    clip_tol_m    FLOAT   DEFAULT 0;
+    attempt       INTEGER DEFAULT 0;
+    clip_ok       BOOLEAN DEFAULT FALSE;
+    last_err      VARCHAR DEFAULT '';
+    -- Vertex budget for the browser copy, and the tolerance that satisfies it.
+    simple_tol    FLOAT;
+    simple_pts    FLOAT   DEFAULT 0;
+    max_simple_pts FLOAT   DEFAULT 25000;
+    max_simple_tol FLOAT   DEFAULT 10000;
 BEGIN
     -- REGION_NAME is included in all three predicates below so this procedure
     -- accepts exactly the same region spellings as every consumer (the canonical
@@ -195,6 +233,57 @@ BEGIN
         END IF;
     END IF;
 
+    -- Measure the land input before assembling it. One aggregate over exactly the
+    -- predicate the clip uses, so the tolerance below is chosen from this region's
+    -- real vertex count instead of from its area (area does not predict vertices:
+    -- Europe is 2/3 the extract area of the US and carries 7x the vertices, almost
+    -- all of it Norwegian fjords and Aegean islands).
+    --
+    -- This also front-loads the 'Overture not shared / not authorized' failure, so
+    -- that mode still reports UNAVAILABLE rather than escalating a tolerance
+    -- against a table that cannot be read.
+    BEGIN
+        WITH src AS (
+            SELECT BOUNDARY AS B
+            FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE BOUNDARY IS NOT NULL
+              AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+                   OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+                   OR UPPER(REGION_NAME) = UPPER(:P_REGION))
+            ORDER BY CASE WHEN UPPER(REGION_KEY) = UPPER(:P_REGION) THEN 0
+                          WHEN UPPER(LOOKUP_NAME) = UPPER(:P_REGION) THEN 1
+                          ELSE 2 END,
+                     CASE LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+                                WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3
+                                ELSE 4 END,
+                     COALESCE(BOUNDARY_AREA_KM2, 0) DESC
+            LIMIT 1
+        )
+        SELECT COALESCE(SUM(ST_NPOINTS(d.GEOMETRY)), 0)::FLOAT INTO :in_pts
+        FROM OVERTURE_MAPS__DIVISIONS.CARTO.DIVISION_AREA d, src
+        WHERE d.SUBTYPE = 'region'
+          AND d.bbox:xmin::FLOAT <= ST_XMAX(src.B)
+          AND d.bbox:xmax::FLOAT >= ST_XMIN(src.B)
+          AND d.bbox:ymin::FLOAT <= ST_YMAX(src.B)
+          AND d.bbox:ymax::FLOAT >= ST_YMIN(src.B)
+          AND ST_INTERSECTS(d.GEOMETRY, src.B);
+    EXCEPTION WHEN OTHER THEN
+        RETURN 'UNAVAILABLE: land input could not be measured for ' || :P_REGION
+               || ' (' || SQLERRM || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END;
+
+    clip_tol_m := CASE WHEN :in_pts <= 2000000  THEN 0
+                       WHEN :in_pts <= 15000000 THEN 1000
+                       ELSE 3000 END;
+
+    -- At most two attempts. The second exists because the vertex thresholds above
+    -- are calibrated on the regions measured so far, and the next continent added
+    -- to the catalog will have its own profile; without it, a region just past a
+    -- threshold lands back on the silent NULL this whole block is here to avoid.
+    -- Escalating once is bounded, so it cannot turn a permanent error (missing
+    -- share, bad geometry) into an unbounded retry loop.
+    WHILE (attempt < 2 AND NOT clip_ok) DO
+    attempt := attempt + 1;
     BEGIN
         -- TEMP table so the (expensive) intersection is computed ONCE and can
         -- be sanity-checked before it is committed to the catalog. Session
@@ -229,7 +318,15 @@ BEGIN
             -- The Overture bbox columns are a partition prefilter only; without
             -- them this scans the global divisions table. ST_INTERSECTS against
             -- the real boundary is the authoritative filter.
-            SELECT ST_UNION_AGG(d.GEOMETRY) AS G, COUNT(*) AS N
+            --
+            -- The decimation is applied to each POLYGON here, inside the aggregate,
+            -- and not to the union or to the final clip: the union is the statement
+            -- that overflows, so simplifying its OUTPUT cannot help - that geometry
+            -- never gets built. clip_tol_m = 0 leaves the geometry untouched.
+            SELECT ST_UNION_AGG(IFF(:clip_tol_m > 0,
+                                    ST_SIMPLIFY(d.GEOMETRY, :clip_tol_m),
+                                    d.GEOMETRY)) AS G,
+                   COUNT(*) AS N
             FROM OVERTURE_MAPS__DIVISIONS.CARTO.DIVISION_AREA d, src
             WHERE d.SUBTYPE = 'region'
               AND d.bbox:xmin::FLOAT <= ST_XMAX(src.B)
@@ -249,12 +346,23 @@ BEGIN
         SELECT COUNT(*), MAX(ORIG_KM2), MAX(ST_AREA(CLIPPED) / 1e6), MAX(LAND_POLYS)
           INTO :match_count, :orig_area, :clip_area, :land_polys
         FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+        clip_ok := TRUE;
     EXCEPTION WHEN OTHER THEN
-        -- Overture DIVISION_AREA not shared / not authorized / geometry error.
-        -- Leave NULL: callers fall back to the unclipped boundary.
-        RETURN 'UNAVAILABLE: land clip could not be computed for ' || :P_REGION
-               || ' (' || SQLERRM || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+        -- 'GEOGRAPHY too large' from the union, or Overture geometry error. Record
+        -- and coarsen; the loop condition bounds this to one more try.
+        last_err := SQLERRM;
+        clip_tol_m := GREATEST(:clip_tol_m * 4, 2000);
     END;
+    END WHILE;
+
+    IF (NOT clip_ok) THEN
+        -- Overture DIVISION_AREA geometry error, or a union still too large at the
+        -- escalated tolerance. Leave NULL: callers fall back to the unclipped
+        -- boundary.
+        RETURN 'UNAVAILABLE: land clip could not be computed for ' || :P_REGION
+               || ' after ' || :attempt || ' attempt(s) (' || COALESCE(:last_err, 'unknown')
+               || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END IF;
 
     IF (match_count = 0 OR clip_area IS NULL OR clip_area <= 0) THEN
         RETURN 'UNAVAILABLE: land clip produced no geometry for ' || :P_REGION
@@ -281,21 +389,43 @@ BEGIN
     -- 69k vertices -> 3.5k), while a city-scale region stays near the floor so
     -- its coastline is not straightened into water. A fixed 500 m would be
     -- reasonable for the US and actively harmful for San Francisco Bay.
+    --
+    -- That formula alone is not enough, because metres of tolerance do not bound
+    -- vertices: ST_SIMPLIFY thins a ring but never drops one, so an archipelago
+    -- keeps its ring count at any tolerance. MEASURED for Europe at the 500 m cap:
+    -- 91,976 vertices and 4.28 MB of GeoJSON, against 3,510 and 165 KB for the US.
+    -- So the tolerance is escalated until the result fits a vertex budget (Europe
+    -- settles around 25k vertices / 1.2 MB; 5,000 m costs 0.05% of the area,
+    -- 9,601,990 against 9,607,243 km2).
+    --
+    -- Coarsening THIS copy is safe in a way that coarsening ROUTABLE_BOUNDARY would
+    -- not be. Water rejection uses the exact mask (ROUTABLE_BOUNDARY_EXACT in
+    -- api/sample-road-points, the land-anchor query); this column is only shipped to
+    -- the browser and used per segment to drop roads reaching across a nearby
+    -- border - and roads are on land under either outline.
+    simple_tol := LEAST(500, GREATEST(25, SQRT(GREATEST(:clip_area, 0)) / 6));
+    SELECT MAX(ST_NPOINTS(ST_SIMPLIFY(CLIPPED, :simple_tol)))::FLOAT INTO :simple_pts
+    FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+    WHILE (:simple_pts > :max_simple_pts AND :simple_tol < :max_simple_tol) DO
+        simple_tol := LEAST(:max_simple_tol, :simple_tol * 2);
+        SELECT MAX(ST_NPOINTS(ST_SIMPLIFY(CLIPPED, :simple_tol)))::FLOAT INTO :simple_pts
+        FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+    END WHILE;
+
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_CATALOG t
     SET ROUTABLE_BOUNDARY = c.CLIPPED,
         ROUTABLE_BOUNDARY_AREA_KM2 = ROUND(:clip_area, 4),
         ROUTABLE_BOUNDARY_SOURCE = 'overture-division-area',
         ROUTABLE_BOUNDARY_BAKED_AT = SYSDATE(),
-        ROUTABLE_BOUNDARY_SIMPLE = ST_SIMPLIFY(
-            c.CLIPPED,
-            LEAST(500, GREATEST(25, SQRT(GREATEST(:clip_area, 0)) / 6))
-        )
+        ROUTABLE_BOUNDARY_SIMPLE = ST_SIMPLIFY(c.CLIPPED, :simple_tol)
     FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP c
     WHERE t.REGION_KEY = c.REGION_KEY;
 
     RETURN 'BAKED: ' || :P_REGION || ' land-clipped from ' || ROUND(orig_area) || ' to '
            || ROUND(clip_area) || ' km2 (' || ROUND(ratio * 100, 1) || '% kept, '
-           || land_polys || ' division polygons).';
+           || land_polys || ' division polygons, ' || ROUND(in_pts) || ' input vertices, '
+           || ROUND(clip_tol_m) || ' m pre-union tolerance, browser copy '
+           || ROUND(simple_pts) || ' vertices at ' || ROUND(simple_tol) || ' m).';
 END;
 $$;
 
@@ -2663,6 +2793,24 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_visited_nodes: ' + str(limits['matrix_maximum_visited_nodes']),
         '      maximum_routes: ' + str(limits['matrix_maximum_routes']),
         '      maximum_routes_flexible: ' + str(limits['matrix_maximum_routes']),
+        # Bound to maximum_snapping_radius ON PURPOSE, and read from the same
+        # dict entry so the two can never drift apart again. ORS snaps matrix
+        # coordinates with endpoints.matrix.maximum_search_radius (shipped
+        # default 2000) and routing coordinates with
+        # profile_default.service.maximum_snapping_radius (set to 1000 here), so
+        # while these differed MATRIX was strictly MORE PERMISSIVE than
+        # DIRECTIONS: a point 1-2 km off the graph resolved to a finite matrix
+        # duration and then made DIRECTIONS answer 404/2010 "could not find
+        # routable point". Measured on this deployment: every 2010 in
+        # OBSERVABILITY.ORS_REQUEST_LOG was preceded within one second by a
+        # matrix 200 on the same profile and host. That is what defeats the
+        # get_directions matrix pre-flight (deploy-agent.sql step 1e) and the
+        # VROOM code-3 pre-filter in the SA app's backload helpers.ts - both use
+        # the matrix as an oracle for a call with a tighter radius, so the
+        # oracle cannot convict the case it exists for. Equal radii make the
+        # oracle sound. This is a runtime cap: it applies on container restart,
+        # never a graph rebuild.
+        '      maximum_search_radius: ' + str(limits['maximum_snapping_radius']),
         '    isochrones:',
         '      maximum_locations: ' + str(limits['isochrones_maximum_locations']),
         '      maximum_intervals: ' + str(limits['isochrones_maximum_intervals']),
@@ -5454,6 +5602,20 @@ DECLARE
     errors_arr     ARRAY DEFAULT ARRAY_CONSTRUCT();
     ok BOOLEAN DEFAULT TRUE;
 BEGIN
+    -- Degree-box area, DELIBERATELY without the cos(latitude) correction its
+    -- sibling in 06_matrix_ops.sql applies, and deliberately not ST_AREA.
+    --
+    -- Two reasons, both load-bearing:
+    --   1. No geometry is in scope. This procedure takes four bbox FLOATs and
+    --      no region key, so there is no BOUNDARY column to measure - unlike
+    --      ESTIMATE_MATRIX_COST, which resolves REGION_CATALOG.BOUNDARY_AREA_KM2
+    --      first and only falls back to a cos-corrected box.
+    --   2. The over-estimate is the safety margin. Away from the equator this
+    --      overstates the true area (~27% at SF's latitude), which feeds
+    --      est_pbf_gib -> est_graph_gib -> a LARGER recommended compute size.
+    --      Adding cos() here would shrink every estimate and recommend smaller
+    --      pods, so a graph build that currently gets warned about would
+    --      instead OOM. The heuristic errs toward warning on purpose.
     bbox_area_sqkm := ABS((P_MAX_LON - P_MIN_LON) * (P_MAX_LAT - P_MIN_LAT)) * 111.0 * 111.0;
     -- Inhabited-area heuristic: ~0.05 GiB per 2500 km^2 (Berlin / SF / Munich
     -- city extracts) climbing to ~10 GiB at continental scale. Coastal /

@@ -111,6 +111,23 @@ snow sql -c "$CONN" -q "
 note "[2/6] validating engine image tags vs service YAMLs..."
 bash "$SCRIPTS/check_image_versions.sh" || exit 1
 
+# ── 2b. gateway resilience + observability window pre-flight ─────
+# Wired HERE because this script is what ships routing_service.py into an image,
+# and because .githooks/pre-commit does not run in this repo (core.hooksPath is
+# unset), which makes the deploy the only place a regression can actually be
+# stopped. Guards three silent defects measured in
+# OBSERVABILITY.ORS_REQUEST_LOG: a deterministic ORS 6099 retried at full size
+# (44 logical calls -> 119 error events), a circuit breaker that cleared its own
+# counter on the final failed attempt and so had never opened, and metrics
+# windows computed against SYSDATE() on a TIMESTAMP_LTZ column, which put the
+# "last hour" cutoff 360 minutes in the future and left that panel permanently
+# empty. Opt out with ORS_OBSERVABILITY_VERIFY=0.
+if [ "${ORS_OBSERVABILITY_VERIFY:-1}" != "0" ]; then
+  note "[2/6] validating gateway retry/breaker policy + metrics windows..."
+  python3 "$SCRIPTS/check_ors_observability.py" \
+    || { echo "ERROR: ORS observability/resilience gate failed (see above)."; exit 1; }
+fi
+
 # ── 3. build + push the 4 engine images ─────────────────────────
 if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   note "[3/6] building + pushing 4 engine images (see references/build-images.md)..."
@@ -285,6 +302,18 @@ snow stage copy "$ORS_APP_DIR/services/gateway/routing-gateway-service.yaml" \
 
 # ── 5. load engine SQL modules (fail-fast) ──────────────────────
 if [ "${SKIP_MODULES:-0}" != "1" ]; then
+  # Land-clip pre-flight, wired here for the same reason as 2b: this loop is what
+  # ships 03_region_management.sql, and .githooks/pre-commit does not run in this
+  # repo. Guards ENSURE_ROUTABLE_BOUNDARY against the shapes that leave a
+  # continental region with NO land mask and no error - measured on Europe, whose
+  # 1,324 Overture polygons carry 10,286,175 vertices and overflow ST_UNION_AGG,
+  # after which every sampled point came from a 21,110,196 km2 extract that is
+  # more than half open water. Opt out with LAND_CLIP_VERIFY=0.
+  if [ "${LAND_CLIP_VERIFY:-1}" != "0" ]; then
+    note "[5/6] validating continental land-clip simplify + vertex budget..."
+    python3 "$SCRIPTS/check_land_clip_simplify.py" \
+      || { echo "ERROR: land-clip gate failed (see above)."; exit 1; }
+  fi
   note "[5/6] loading engine SQL modules 01-08,15 (default region bootstraps in 03)..."
   for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql \

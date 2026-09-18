@@ -234,6 +234,13 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
       if (typeof v === 'boolean') return v;
       return v === 'true' || v === true;
     };
+    // GEOGRAPHY / GEOMETRY arrive as GeoJSON text under the default
+    // GEOGRAPHY_OUTPUT_FORMAT. Keep the wire shape a single thing - a string -
+    // rather than sometimes an object, so map and table consumers do not each
+    // have to guess. Mirrors GEO_COLUMN_TYPES in the SA app's serializers.
+    if (t === 'geography' || t === 'geometry') {
+      return (v: any) => (v == null || typeof v === 'string' ? v : JSON.stringify(v));
+    }
     return (v: any) => v;
   });
   let allData: any[][] = [...(result.data || [])];

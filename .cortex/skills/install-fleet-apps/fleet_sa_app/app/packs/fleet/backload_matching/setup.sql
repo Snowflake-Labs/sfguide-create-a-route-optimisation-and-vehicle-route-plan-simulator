@@ -38,13 +38,18 @@ CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
 --   3. last_drop needs no filter at all - it groups by VEHICLE_ID, which is
 --      globally unique (measured: 0 colliding ids across datasets).
 WITH last_drop AS (
+  -- Latest trip ROW per vehicle, not a per-column aggregate: MAX_BY rejects a
+  -- GEOGRAPHY argument, so carrying the stored DESTINATION geometry needs a row
+  -- pick. Also safer than per-column MAX_BY, which on a TRIP_END tie could
+  -- resolve each column to a different trip. Verified same 100 rows, 0 diffs.
   SELECT VEHICLE_ID,
-         MAX_BY(DESTINATION_LON, TRIP_END)    AS DROPOFF_LON,
-         MAX_BY(DESTINATION_LAT, TRIP_END)    AS DROPOFF_LAT,
-         MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-         MAX(TRIP_END)                        AS LAST_TRIP_END
+         DESTINATION_LON    AS DROPOFF_LON,
+         DESTINATION_LAT    AS DROPOFF_LAT,
+         DESTINATION        AS DROPOFF_GEOM,
+         DESTINATION_POI_ID AS DROPOFF_POI_ID,
+         TRIP_END           AS LAST_TRIP_END
   FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-  GROUP BY VEHICLE_ID
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
 ),
 home_anchor AS (
   SELECT REGION, AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
@@ -63,10 +68,15 @@ SELECT
   COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
   COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
   COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
+  -- The depot POI's own stored point where there is one. The region-average
+  -- fallback is an AVG across many POIs and so has no stored geometry; it is
+  -- constructed only in that fallback case.
+  COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT)) AS HOME_GEOM,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
   COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
   ld.DROPOFF_LON                                      AS DROPOFF_LON,
   ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+  ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
   ld.LAST_TRIP_END                                    AS ETA_TS,
   DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
   -- Dispatch-time availability: a vehicle still in transit is plannable
@@ -87,10 +97,11 @@ SELECT
   COALESCE(h.LNG, ha.HOME_LON)                        AS TARGET_LON,
   COALESCE(h.LAT, ha.HOME_LAT)                        AS TARGET_LAT,
   COALESCE(h.NAME, 'Home Depot')                      AS TARGET_LABEL,
+  -- Reads the stored drop-off geometry and the depot POI point instead of
+  -- rebuilding both endpoints per row.
   ST_DISTANCE(
-    ST_MAKEPOINT(ld.DROPOFF_LON, ld.DROPOFF_LAT),
-    ST_MAKEPOINT(COALESCE(h.LNG, ha.HOME_LON),
-                 COALESCE(h.LAT, ha.HOME_LAT))
+    ld.DROPOFF_GEOM,
+    COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT))
   ) / 1000.0                                          AS TARGET_GAP_KM,
   'IN_TRANSIT'                                        AS STATUS,
   FALSE                                               AS HAZMAT_CERT,
@@ -174,9 +185,11 @@ deduped AS (
     COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
     t.ORIGIN_LON                                                                AS PICKUP_LON,
     t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+    t.ORIGIN                                                                    AS PICKUP_GEOM,
     COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
     t.DESTINATION_LON                                                           AS DROPOFF_LON,
     t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+    t.DESTINATION                                                               AS DROPOFF_GEOM,
     -- Pickup window spread over PICKUP_SPREAD_DAYS = the wider of
     -- PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS.
     --
@@ -232,8 +245,8 @@ deduped AS (
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
   REGION, REGION_LABEL,
-  PICKUP_CITY, PICKUP_LON, PICKUP_LAT,
-  DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT,
+  PICKUP_CITY, PICKUP_LON, PICKUP_LAT, PICKUP_GEOM,
+  DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, DROPOFF_GEOM,
   PICKUP_FROM_TS, PICKUP_TO_TS,
   WEIGHT_KG, PRODUCT, HAZMAT
 FROM deduped
@@ -313,9 +326,16 @@ SELECT
   COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
+  -- Stored GEOGRAPHY carried through instead of being dropped here and rebuilt
+  -- by every consumer. FACT_OFFERS persists PICKUP_GEOM/DROPOFF_GEOM next to
+  -- the numerics; verified identical to ST_MAKEPOINT(lon, lat) over all 300
+  -- rows (0 mismatches, max deviation 6.9e-05 m). The numerics stay: ORS needs
+  -- JSON numbers and a semantic view cannot hold a GEOGRAPHY column.
+  f.PICKUP_GEOM,
   COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
+  f.DROPOFF_GEOM,
   f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
   DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(

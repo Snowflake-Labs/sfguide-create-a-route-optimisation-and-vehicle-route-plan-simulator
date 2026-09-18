@@ -156,15 +156,20 @@ CREATE OR REPLACE VIEW VW_TRAILERS
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 WITH last_drop AS (
+  -- Latest trip ROW per vehicle rather than a per-column aggregate: MAX_BY
+  -- rejects a GEOGRAPHY argument, so carrying the stored DESTINATION geometry
+  -- needs a row pick. Also safer than per-column MAX_BY, which on a TRIP_END
+  -- tie could resolve each column to a different trip.
   SELECT VEHICLE_ID,
-         MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
-         MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
-         MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-         MAX(TRIP_END) AS LAST_TRIP_END
+         DESTINATION_LON    AS DROPOFF_LON,
+         DESTINATION_LAT    AS DROPOFF_LAT,
+         DESTINATION        AS DROPOFF_GEOM,
+         DESTINATION_POI_ID AS DROPOFF_POI_ID,
+         TRIP_END           AS LAST_TRIP_END
   FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
   WHERE REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
     AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-  GROUP BY VEHICLE_ID
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
 ),
 home_anchor AS (
   SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
@@ -182,6 +187,11 @@ SELECT
   COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
   COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
   COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+  -- The depot POI's own stored point where there is one; the region-average
+  -- fallback has no stored geometry, so it is constructed only in that case.
+  COALESCE(h.POINT_GEOM,
+           ST_MAKEPOINT((SELECT HOME_LON FROM home_anchor),
+                        (SELECT HOME_LAT FROM home_anchor))) AS HOME_GEOM,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
   -- A location NAME or nothing. These *_CITY values become stop labels on the
   -- backload map and place names in an agent's answer, so a placeholder reads as
@@ -189,6 +199,7 @@ SELECT
   d.NAME                                              AS DROPOFF_CITY,
   ld.DROPOFF_LON                                      AS DROPOFF_LON,
   ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+  ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
   ld.LAST_TRIP_END                                    AS ETA_TS,
   DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
   'IN_TRANSIT'                                        AS STATUS,
@@ -248,9 +259,11 @@ SELECT
   o.NAME                                                                      AS PICKUP_CITY,
   t.ORIGIN_LON                                                                AS PICKUP_LON,
   t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+  t.ORIGIN                                                                    AS PICKUP_GEOM,
   d.NAME                                                                      AS DROPOFF_CITY,
   t.DESTINATION_LON                                                           AS DROPOFF_LON,
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+  t.DESTINATION                                                               AS DROPOFF_GEOM,
   GREATEST(
     t.TRIP_START,
     DATEADD('minute',
@@ -446,9 +459,11 @@ SELECT
   p.NAME                                   AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
+  f.PICKUP_GEOM,
   d.NAME                                   AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
+  f.DROPOFF_GEOM,
   f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
   DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(

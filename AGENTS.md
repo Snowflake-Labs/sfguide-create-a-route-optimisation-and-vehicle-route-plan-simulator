@@ -655,6 +655,66 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geome
 python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
 
+# The ORS metrics windows must be timezone-correct, and the gateway must not
+# amplify an error that retrying cannot fix. Three silent defects, all found by
+# reading OBSERVABILITY.ORS_REQUEST_LOG after an Observability page full of
+# errors. (1) REQUEST_TS is TIMESTAMP_LTZ and the windows used SYSDATE(), which
+# returns the UTC wall clock as NTZ: comparing them reads that time as LOCAL and
+# pushes every cutoff forward by the session UTC offset. Measured, the "last
+# hour" cutoff sat 360 minutes in the FUTURE, so that panel was unconditionally
+# empty and printed "No metrics yet" above a populated 24h event list, while
+# "last 24h" really covered 17h. Three copies of the predicate. (2) The retry
+# loop keyed off HTTP status alone, so ORS 6099 - whose only remedy is the
+# chunked matrix fallback, reachable only AFTER get_ors_response returns - was
+# re-sent twice at full size: 44 logical calls produced 119 error events. (3) A
+# 5xx that ENDED the loop fell through to _breaker_on_success, so the attempt
+# that proved the host unwell cleared the counter the previous two had built; the
+# breaker had never opened, which the data confirms (119 5xx events, ZERO 503
+# circuit_open rows). Rules strip comments first because the fixes DOCUMENT the
+# banned patterns verbatim, rule A asserts the correct predicate is PRESENT per
+# file (a mutation that only removed it survived the bad-pattern-only draft), and
+# rule D scopes to the emitted `matrix:` block because `maximum_search_radius` is
+# also legal under `match:` - an unscoped regex matched the wrong block and
+# reported a misleading cause. 11 mutations negative-tested; the retry/breaker
+# harness drives the real function with a stubbed transport and COUNTS attempts,
+# because "the code mentions 6099" passes on the comment and "a breaker call
+# exists" passed on the buggy version too.
+python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
+python3 .cortex/skills/install-fleet-apps/scripts/mutate_ors_observability.py
+
+# A continental region must still get a land clip. Europe's Function Tester read
+# "[routable_boundary: UNAVAILABLE: land clip could not be computed for Europe
+# (GEOGRAPHY too large)]" and then sampled every point from the raw Geofabrik
+# extract - 21,110,196 km2, less than half of it land - so ORS answered code 2010
+# for anything at sea. The statement that overflows is ST_UNION_AGG, NOT
+# ST_INTERSECTION: Europe matches 1,324 Overture region polygons carrying
+# 10,286,175 vertices, against 96 and 1,421,517 for the US, which unions fine.
+# That is why the obvious fix is wrong and why RULE A asserts the ST_SIMPLIFY sits
+# inside the aggregate's ARGUMENT on the per-row d.GEOMETRY - decimating the
+# union's output cannot help, because that geometry is never built (mutation M1 is
+# exactly that fix). Pre-union at 1,000 m: 231,563 input vertices, a
+# 185,107-vertex clip of 9,607,243 km2, 44.3% kept. The tolerance is derived from
+# a MEASURED vertex count because area does not predict vertices (Europe is 2/3
+# the US extract area with 7x the vertices), and it must stay a bind: a fixed
+# kilometre would straighten SanFrancisco's coast into water, the exact failure
+# the mask prevents. Two further silent shapes: metres do not bound an
+# archipelago, since ST_SIMPLIFY thins a ring but never drops one (Europe at the
+# old 500 m cap = 92,079 vertices / 4.28 MB shipped to the browser per region on
+# page load, against 3,510 / 165 KB for the US), so the browser copy is escalated
+# against a vertex budget that must be RE-MEASURED in the loop (M5 keeps the loop
+# and drops the measurement); and an uncast ST_NPOINTS assignment POISONS its
+# variable - the SELECT INTO succeeds and the next READ raises "Numeric value '5'
+# is out of range", measured on a five-vertex square, reported against the reading
+# line and not catchable by an enclosing EXCEPTION handler, so it aborts the proc
+# after the expensive clip is already computed. 7 mutations negative-tested; M7 is
+# the false-pass shape (code deleted, explanatory comments left), which is why the
+# rules strip comments first. Wired into provision_engine.sh step 5 as well as the
+# hook, because that loop is what ships the module and core.hooksPath is unset.
+python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify_mutations.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 verify_gateway_retry_policy.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 mutate_gateway_retry_policy.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS

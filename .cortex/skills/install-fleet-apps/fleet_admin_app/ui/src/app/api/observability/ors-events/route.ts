@@ -12,7 +12,12 @@ export const GET = withLogging(async (req: NextRequest) => {
   const endpoint = (sp.get('endpoint') || '').trim();
   const onlyErrors = (sp.get('errors') || '').trim() === '1';
   try {
-    const filters: string[] = ['REQUEST_TS >= DATEADD(hour, -24, SYSDATE())'];
+    // CURRENT_TIMESTAMP(), not SYSDATE(): REQUEST_TS is TIMESTAMP_LTZ and
+    // SYSDATE() is the UTC wall clock as NTZ, so comparing them shifts the
+    // cutoff forward by the session's UTC offset. Measured: this "24h" filter
+    // really covered 17h, and the summary view's "1h" window was
+    // unconditionally empty. See 08_observability.sql for the full note.
+    const filters: string[] = ['REQUEST_TS >= DATEADD(hour, -24, CURRENT_TIMESTAMP())'];
     if (endpoint && /^[a-z_]+$/i.test(endpoint)) filters.push(`ENDPOINT = '${endpoint.toLowerCase()}'`);
     if (onlyErrors) filters.push('(STATUS_CODE >= 400 OR ERROR_CODE IS NOT NULL)');
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';

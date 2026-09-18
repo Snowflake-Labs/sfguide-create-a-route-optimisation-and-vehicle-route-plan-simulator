@@ -133,12 +133,26 @@ async function pollResult(handle: string): Promise<SnowflakeResponse> {
   throw new Error(`Statement ${handle} timed out after 60s (cancelled)`);
 }
 
+/** Snowflake result-metadata type names for a geometry column, lowercased as the
+ *  SQL REST API reports them. Mirrors GEO_COLUMN_TYPES in app/api/query/route.ts
+ *  and GEO_TYPES in packages/fleet-kit/src/map/detect-geo.ts. */
+const GEO_COLUMN_TYPES = new Set(['geography', 'geometry']);
+
 function rowToObject(row: string[], cols: Array<{ name: string; type: string }>): Record<string, unknown> {
   const obj: Record<string, unknown> = {};
   cols.forEach((col, i) => {
     const raw = row[i];
     if (raw === null || raw === undefined) { obj[col.name] = null; return; }
-    obj[col.name] = (col.type === 'fixed' || col.type === 'real' || col.type === 'float') ? Number(raw) : raw;
+    if (col.type === 'fixed' || col.type === 'real' || col.type === 'float') { obj[col.name] = Number(raw); return; }
+    if (GEO_COLUMN_TYPES.has(String(col.type).toLowerCase())) {
+      // GEOGRAPHY arrives as GeoJSON text under the default
+      // GEOGRAPHY_OUTPUT_FORMAT. Keep it a string so the wire shape is one
+      // thing (see the long note in app/api/query/route.ts), re-serializing
+      // only if a driver ever hands back an object.
+      obj[col.name] = typeof raw === 'string' ? raw : JSON.stringify(raw);
+      return;
+    }
+    obj[col.name] = raw;
   });
   return obj;
 }

@@ -188,9 +188,41 @@ MAP_GUIDANCE_CHECK="$SKILL_DIR/scripts/check_map_guidance.py"
 if [ -f "$MAP_GUIDANCE_CHECK" ] && staged_any \
   "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
   "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/agent-spec.json" \
+  "$SKILL_DIR/fleet_sa_app/app/super-agent-spec.json" \
   "$SKILL_DIR/scripts/check_map_guidance.py"; then
   echo "pre-commit: map guidance check..."
   python3 "$MAP_GUIDANCE_CHECK" || exit 1
+  # RULES G/H are about PHRASING, so the mutations matter more than the pass: the
+  # text they reject includes the exact wording that shipped and produced three
+  # map-less answers. Run them whenever the gate or the specs move.
+  MAP_GUIDANCE_NEG="$SKILL_DIR/scripts/check_map_guidance_negative.py"
+  if [ -f "$MAP_GUIDANCE_NEG" ]; then
+    echo "pre-commit: map guidance negative tests..."
+    python3 "$MAP_GUIDANCE_NEG" || exit 1
+  fi
+fi
+
+# ── 1b-2. An H3 cell must say what resolution it is and what it can become ─────
+# A pre-binned H3 column with no stated resolution and no re-bin path is a map that
+# can only ever be drawn one way, and nothing says so: "use resolution 9" sent the
+# agent to run_sql, whose result data_to_map rejects. The worse shape is silent
+# fabrication - household density keeps no sub-cell position, and the agent was one
+# step from spreading each cell's households over its 49 children, which renders a
+# detailed invented map with no error.
+H3_RES_CHECK="$SKILL_DIR/scripts/check_h3_resolution.py"
+if [ -f "$H3_RES_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/semantic_views_emergency.sql" \
+  "$SKILL_DIR/fleet_sa_app/app/packs/fleet/dwell/setup.sql" \
+  "$SKILL_DIR/scripts/check_h3_resolution.py"; then
+  echo "pre-commit: H3 resolution guidance check..."
+  python3 "$H3_RES_CHECK" || exit 1
+  H3_RES_NEG="$SKILL_DIR/scripts/check_h3_resolution_negative.py"
+  if [ -f "$H3_RES_NEG" ]; then
+    echo "pre-commit: H3 resolution negative tests..."
+    python3 "$H3_RES_NEG" || exit 1
+  fi
 fi
 
 # ── 1c. Every synapse verb must be routed by the agents that can see it ────────
@@ -701,11 +733,109 @@ fi
 # nothing to the dash period, which is why the units looked handled. The gate
 # also holds the empty-leg and baseline greys apart: at 110 vs 150 they were the
 # same line whenever a dash gap was off screen.
+# ── Stored GEOGRAPHY must be carried to the map, not dropped and rebuilt ──────
+# Every fact table is dual-carrier: a GEOGRAPHY column beside the lat/lon
+# numerics. Both are load-bearing (ORS needs JSON numbers; a semantic view cannot
+# hold a GEOGRAPHY column), so geometry is never simply "missing". The defect is
+# a seam that DROPS it and a downstream view that rebuilds it - invisible, because
+# every number stays right. VW_EXTERNAL_OFFERS omitted PICKUP_GEOM and
+# EXTERNAL_OFFER_SEARCH then rebuilt the same point five times per row.
+# The client half is the same shape: detectGeoColumns ranked declared GEOGRAPHY
+# highest yet was imported by nothing but its own harness, so RULE D asserts the
+# rebind is CALLED, not merely exported.
+GEO_CARRIER_CHECK="$SKILL_DIR/scripts/check_geography_carrier.py"
+if [ -f "$GEO_CARRIER_CHECK" ]; then
+  echo "pre-commit: stored GEOGRAPHY carrier check..."
+  python3 "$GEO_CARRIER_CHECK" || {
+    echo "pre-commit FAILED: stored geometry is dropped or rebuilt, or the rebind is unwired."
+    exit 1
+  }
+  GEO_CARRIER_NEG="$SKILL_DIR/scripts/check_geography_carrier_negative.py"
+  if [ -f "$GEO_CARRIER_NEG" ]; then
+    echo "pre-commit: geography carrier negative tests..."
+    python3 "$GEO_CARRIER_NEG" >/dev/null || {
+      echo "pre-commit FAILED: the geography gate no longer catches its own regressions."
+      echo "  Re-run for detail: python3 '$GEO_CARRIER_NEG'"
+      exit 1
+    }
+  fi
+fi
+
 DASH_UNITS_CHECK="$SKILL_DIR/scripts/check_dash_units.py"
 if [ -f "$DASH_UNITS_CHECK" ]; then
   echo "pre-commit: dashed map layer units check..."
   python3 "$DASH_UNITS_CHECK" || {
     echo "pre-commit FAILED: a dashed map layer would render solid when zoomed out."
+    exit 1
+  }
+fi
+
+# ORS observability windows + gateway resilience.
+# Three defects found by reading OBSERVABILITY.ORS_REQUEST_LOG after an
+# Observability page full of errors, all silent. (1) The metrics windows compared
+# a TIMESTAMP_LTZ column against SYSDATE() (UTC as NTZ), which pushed every
+# cutoff forward by the session UTC offset: measured, the "last hour" cutoff sat
+# 360 minutes in the FUTURE, so that panel read "No metrics yet" above a
+# populated 24h event list and "last 24h" really covered 17h. (2) The gateway
+# retried on HTTP status alone, so ORS 6099 - whose only remedy is the chunked
+# matrix fallback - was re-sent twice at full size: 44 logical calls produced 119
+# error events. (3) A 5xx that ENDED the retry loop called _breaker_on_success,
+# so the attempt that proved the host unwell cleared the counter and the breaker
+# had never once opened (zero 503 circuit_open rows in the whole table).
+ORS_OBSERVABILITY_CHECK="$SKILL_DIR/scripts/check_ors_observability.py"
+if [ -f "$ORS_OBSERVABILITY_CHECK" ]; then
+  echo "pre-commit: ORS observability window / gateway resilience check..."
+  python3 "$ORS_OBSERVABILITY_CHECK" || {
+    echo "pre-commit FAILED: a metrics window is timezone-shifted, or the gateway would amplify a deterministic ORS error."
+    exit 1
+  }
+fi
+
+# A FORCED routing region must not turn a routable trip into a dead end.
+# Measured on 2026-09-18: "route from SF international airport to Civic center" -
+# which the SanFrancisco graph routes in 1435 s - was refused as a FINAL
+# UNROUTABLE_LEG, "no navigable road path ... often caused by the Bay Area's
+# peninsula geography". Three silent defects. (1) The SA app prepended "default
+# to this region" to the user turn, overriding the agent spec's own "leave region
+# null" rule for get_directions, so region = UnitedStatesOfAmerica (a long-haul
+# HGV extract) was forced onto a 20 km city trip. (2) SFO does not snap on that
+# graph at all - ORS returned destinations[0] = null - but the pre-flight only
+# read snapped_distance, which is then NULL and deliberately does not convict, so
+# the request fell through to the leg check and was blamed on water. (3)
+# TOOL_DIRECTIONS knew the region came from the caller and had
+# COVERING_REGION_FOR_POINTS but never consulted it, so the one refusal with a
+# known remedy was reported as final and the agent invented an explanation.
+FORCED_REGION_CHECK="$SKILL_DIR/scripts/check_forced_region_refusal.py"
+if [ -f "$FORCED_REGION_CHECK" ]; then
+  echo "pre-commit: forced routing region / off-graph refusal check..."
+  python3 "$FORCED_REGION_CHECK" || {
+    echo "pre-commit FAILED: a forced routing region or an off-graph place would be refused as a final unroutable leg."
+    exit 1
+  }
+fi
+
+# A continental region must still get a land clip.
+# Measured on 2026-09-18: Europe's Function Tester reported "[routable_boundary:
+# UNAVAILABLE: land clip could not be computed for Europe (GEOGRAPHY too large)]"
+# and then sampled points from the raw Geofabrik extract - 21,110,196 km2 of
+# which less than half is land - so ORS answered code 2010 for every point at
+# sea. The overflowing statement is ST_UNION_AGG, not ST_INTERSECTION: Europe
+# matches 1,324 Overture region polygons carrying 10,286,175 vertices, against
+# 96 and 1,421,517 for the US, which unions fine. Decimating the union's OUTPUT
+# therefore cannot help - that geometry is never built - which is the plausible
+# wrong fix this gate exists to reject (mutation M1). Two further shapes are
+# silent: a metre tolerance does not bound an archipelago's vertex count, since
+# ST_SIMPLIFY thins a ring but never drops one (Europe: 92,079 vertices and
+# 4.28 MB of GeoJSON at the old 500 m cap, shipped to the browser per region on
+# page load); and an uncast ST_NPOINTS assignment POISONS its variable, so the
+# next read aborts the procedure with "Numeric value ... is out of range" after
+# the expensive clip has already been computed, reported against the wrong line
+# and uncatchable by an enclosing EXCEPTION handler.
+LAND_CLIP_CHECK="$SKILL_DIR/scripts/check_land_clip_simplify.py"
+if [ -f "$LAND_CLIP_CHECK" ]; then
+  echo "pre-commit: continental land-clip simplify / vertex budget check..."
+  python3 "$LAND_CLIP_CHECK" || {
+    echo "pre-commit FAILED: a continental region's land clip would overflow, or its browser copy would be unbounded."
     exit 1
   }
 fi
