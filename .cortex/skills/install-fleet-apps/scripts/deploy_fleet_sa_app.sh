@@ -213,6 +213,23 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${FORCED_REGION_VERIFY:-1}" != "0" ]; then
+    # The active dashboard context is injected into the user turn, and it used to
+    # say "default to this region" for routing tools - overriding the agent spec's
+    # own "leave region null" rule for get_directions, which is closer to the
+    # verb but further from the turn. Measured: a 20 km SFO-to-Civic-Center trip
+    # was forced onto the UnitedStatesOfAmerica long-haul HGV graph, where SFO
+    # does not snap at all, and came back as a FINAL "no navigable road path"
+    # refusal with an invented explanation - while the SanFrancisco graph routes
+    # the same pair in 1435 s. Gated here as well as in .githooks/pre-commit
+    # because core.hooksPath is unset, so the deploy is the only enforcement.
+    FORCED_REGION_GATE="$SKILL_DIR/scripts/check_forced_region_refusal.py"
+    if [ -f "$FORCED_REGION_GATE" ]; then
+      echo "[1/7] Verify a forced routing region cannot produce a final refusal..."
+      python3 "$FORCED_REGION_GATE" \
+        || { echo "ERROR: forced-region refusal gate failed (see above)."; exit 1; }
+    fi
+  fi
   if [ "${MAP_SURFACE_VERIFY:-1}" != "0" ]; then
     # The agent cannot tell the SA app from CoWork except by its own tool list,
     # and render_map is in the inventory on BOTH surfaces while only the SA app

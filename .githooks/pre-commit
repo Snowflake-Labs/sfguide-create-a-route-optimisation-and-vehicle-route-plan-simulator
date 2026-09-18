@@ -790,3 +790,26 @@ if [ -f "$ORS_OBSERVABILITY_CHECK" ]; then
     exit 1
   }
 fi
+
+# A FORCED routing region must not turn a routable trip into a dead end.
+# Measured on 2026-09-18: "route from SF international airport to Civic center" -
+# which the SanFrancisco graph routes in 1435 s - was refused as a FINAL
+# UNROUTABLE_LEG, "no navigable road path ... often caused by the Bay Area's
+# peninsula geography". Three silent defects. (1) The SA app prepended "default
+# to this region" to the user turn, overriding the agent spec's own "leave region
+# null" rule for get_directions, so region = UnitedStatesOfAmerica (a long-haul
+# HGV extract) was forced onto a 20 km city trip. (2) SFO does not snap on that
+# graph at all - ORS returned destinations[0] = null - but the pre-flight only
+# read snapped_distance, which is then NULL and deliberately does not convict, so
+# the request fell through to the leg check and was blamed on water. (3)
+# TOOL_DIRECTIONS knew the region came from the caller and had
+# COVERING_REGION_FOR_POINTS but never consulted it, so the one refusal with a
+# known remedy was reported as final and the agent invented an explanation.
+FORCED_REGION_CHECK="$SKILL_DIR/scripts/check_forced_region_refusal.py"
+if [ -f "$FORCED_REGION_CHECK" ]; then
+  echo "pre-commit: forced routing region / off-graph refusal check..."
+  python3 "$FORCED_REGION_CHECK" || {
+    echo "pre-commit FAILED: a forced routing region or an off-graph place would be refused as a final unroutable leg."
+    exit 1
+  }
+fi
