@@ -2413,6 +2413,12 @@ export async function ensureObservabilityObjects(
       db: 'OPENROUTESERVICE_APP', schema: 'OBSERVABILITY',
     },
     {
+      // Second copy of 08_observability.sql's V_ORS_METRICS_SUMMARY, issued at
+      // container boot. The window cutoffs use CURRENT_TIMESTAMP() because
+      // REQUEST_TS is TIMESTAMP_LTZ and SYSDATE() is the UTC wall clock as NTZ:
+      // comparing them shifted every cutoff forward by the session UTC offset,
+      // which made the "1h" window unconditionally empty and "24h" cover 17h.
+      // Keep both copies in step - see the full note in 08_observability.sql.
       sql: `CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY
         COMMENT = ${TRACK_OBS}
         AS
@@ -2431,9 +2437,9 @@ export async function ensureObservabilityObjects(
           FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
         ),
         windowed AS (
-          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, SYSDATE())
+          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
           UNION ALL
-          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, SYSDATE())
+          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
         )
         SELECT
           WINDOW_NAME,

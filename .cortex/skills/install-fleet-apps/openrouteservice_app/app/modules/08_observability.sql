@@ -49,6 +49,22 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"ma
 -- per (window, endpoint) with p50 / p95 / error-rate. Windows are emitted
 -- as a UNION so the same view answers both "last hour" and "last 24h" with
 -- a single query from the control-app.
+--
+-- The window cutoffs use CURRENT_TIMESTAMP(), not SYSDATE(). REQUEST_TS is
+-- TIMESTAMP_LTZ and SYSDATE() returns the UTC wall clock as TIMESTAMP_NTZ, so
+-- comparing them reads that UTC time AS IF it were local and shifts every
+-- cutoff FORWARD by the session's UTC offset. Measured on this deployment
+-- (session America/Los_Angeles): DATEADD(hour,-1,SYSDATE()) evaluated to
+-- 20:02 -0700 while CURRENT_TIMESTAMP() was 14:02 -0700 - the "last hour"
+-- cutoff sat 360 minutes in the FUTURE, so that window was unconditionally
+-- EMPTY however fresh the events, and "last 24h" really covered 17h. That is
+-- what put "No metrics yet. Make a few routing / matrix calls" on the
+-- Observability page above a populated 24h event list: the panel was not
+-- missing data, it was asking for events that had not happened yet. The
+-- companion event-list endpoint had the same predicate, which is why it showed
+-- 17 hours and called it 24. Every OTHER SYSDATE() comparison in this app is
+-- against a TIMESTAMP_NTZ column and is consistent; this table is the only
+-- LTZ one, so this is a narrow fix, not a blanket rename.
 CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
@@ -67,9 +83,9 @@ WITH events AS (
     FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
 ),
 windowed AS (
-    SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, SYSDATE())
+    SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
     UNION ALL
-    SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, SYSDATE())
+    SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
 )
 SELECT
     WINDOW_NAME,
