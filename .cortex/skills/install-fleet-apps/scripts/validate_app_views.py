@@ -81,7 +81,7 @@ LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 # the layer compiler drops the layer. The repo forces a cast failure carrying
 # this token so the failure is visible; recognising it here keeps "the engine is
 # asleep" separate from "the view is broken".
-ORS_DOWN_TOKENS = ("service_unreachable", "ors-service-")
+ORS_DOWN_TOKENS = ("service_unreachable", "ors-service-", "all_chunks_failed")
 
 # Components that genuinely initialise their emitted value from their own query,
 # the way a FilterBar filter does: an option picker mounts with row one selected.
