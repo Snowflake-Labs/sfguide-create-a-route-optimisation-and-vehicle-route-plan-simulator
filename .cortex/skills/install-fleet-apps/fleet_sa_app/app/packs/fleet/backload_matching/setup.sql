@@ -38,10 +38,10 @@ CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
 --   3. last_drop needs no filter at all - it groups by VEHICLE_ID, which is
 --      globally unique (measured: 0 colliding ids across datasets).
 WITH last_drop AS (
-  -- Latest trip ROW per vehicle, not a per-column aggregate: MAX_BY rejects a
-  -- GEOGRAPHY argument, so carrying the stored DESTINATION geometry needs a row
-  -- pick. Also safer than per-column MAX_BY, which on a TRIP_END tie could
-  -- resolve each column to a different trip. Verified same 100 rows, 0 diffs.
+  -- Latest trip ROW per vehicle, not a per-column aggregate: MAX_BY rejects
+  -- a GEOGRAPHY argument, so carrying the stored DESTINATION geometry
+  -- needs a row pick. Also safer than per-column MAX_BY, which on a
+  -- TRIP_END tie could resolve each column to a different trip.
   SELECT VEHICLE_ID,
          DESTINATION_LON    AS DROPOFF_LON,
          DESTINATION_LAT    AS DROPOFF_LAT,
@@ -68,9 +68,9 @@ SELECT
   COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
   COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
   COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
-  -- The depot POI's own stored point where there is one. The region-average
-  -- fallback is an AVG across many POIs and so has no stored geometry; it is
-  -- constructed only in that fallback case.
+  -- The depot POI's own stored point where there is one. The region
+  -- average is an AVG across many POIs and has no stored geometry, so it
+  -- is constructed only in that fallback case.
   COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT)) AS HOME_GEOM,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
   COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
@@ -326,11 +326,9 @@ SELECT
   COALESCE(p2.NAME, 'Pickup')              AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
-  -- Stored GEOGRAPHY carried through instead of being dropped here and rebuilt
-  -- by every consumer. FACT_OFFERS persists PICKUP_GEOM/DROPOFF_GEOM next to
-  -- the numerics; verified identical to ST_MAKEPOINT(lon, lat) over all 300
-  -- rows (0 mismatches, max deviation 6.9e-05 m). The numerics stay: ORS needs
-  -- JSON numbers and a semantic view cannot hold a GEOGRAPHY column.
+  -- Stored GEOGRAPHY carried through rather than dropped and rebuilt
+  -- downstream. Verified identical to ST_MAKEPOINT(lon, lat) on all 300
+  -- rows. The numerics stay for ORS and the semantic views.
   f.PICKUP_GEOM,
   COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
   f.DROPOFF_LON,

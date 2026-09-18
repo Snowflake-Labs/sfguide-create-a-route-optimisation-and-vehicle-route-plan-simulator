@@ -181,24 +181,6 @@ SELECT
   s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
   s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
   s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
-  -- The session centroid as a plain lat/lon pair, so the SEMANTIC layer can
-  -- re-bin at any H3 resolution. H3_CELL_R7 above is pre-computed and free, but
-  -- it is the ONLY resolution the semantic view could offer while AVG_POINT was
-  -- GEOGRAPHY-only: an agent asked for resolution 9 had to reach the geometry
-  -- through run_sql, and CoWork's data_to_map rejects an MCP result, so the
-  -- question was unanswerable through the governed path.
-  --
-  -- Derived here rather than as a semantic-view dimension EXPRESSION because a
-  -- plain FLOAT column needs no new syntax, and it matches how every other
-  -- domain exposes a mappable point (store_lat/store_lon, center_lat/lon).
-  --
-  -- Safe at fine resolutions: AVG_POINT is the centroid of one STANDING
-  -- vehicle's pings, and the spread around it measures 2 m median / 4 m worst
-  -- over 3,000 SF sessions - inside a res-11 cell (~25 m), so re-binning stays
-  -- faithful to about res 12. Verified: re-binning to res 7 from this pair
-  -- reproduces H3_CELL_R7 exactly (31 of 31 distinct SF cells).
-  ST_Y(s.AVG_POINT) AS DWELL_LAT,
-  ST_X(s.AVG_POINT) AS DWELL_LON,
   COALESCE(
     d.NAME, rs.NAME, sn.NAME,
     'Unmapped ' || LOWER(REPLACE(REPLACE(s.STATUS, 'DWELL_', ''), '_', ' '))
