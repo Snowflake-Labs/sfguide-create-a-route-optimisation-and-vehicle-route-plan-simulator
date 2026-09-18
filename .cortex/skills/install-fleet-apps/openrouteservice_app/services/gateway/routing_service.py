@@ -843,14 +843,31 @@ def post_matrix_tabular(format="json"):
         body = _build_matrix_body(method, data_cols[1:], has_dest)
         resp = get_ors_response('matrix', method, body, format, ors_host)
         error_obj = resp.get('error') if isinstance(resp, dict) else None
-        if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
-            origin = data_cols[1]
-            destinations = data_cols[2]
-            if origin and not isinstance(origin[0], list):
-                origin = [origin]
-            locations = origin + destinations
-            sources_idx = list(range(len(origin)))
-            destinations_idx = list(range(len(origin), len(locations)))
+        # 6099 is the engine failing to complete a matrix it was given, and the
+        # only remedy is a smaller matrix. This used to be gated on `has_dest`,
+        # which silently excluded the 2-arg MATRIX_TABULAR form (locations only,
+        # all-to-all) - and that is the form the incident actually used: ~2,510
+        # request bytes is roughly 100 coordinates with no room for a
+        # destinations index list, so the remedy never fired for the calls that
+        # produced 119 error events. For the locations-only form the equivalent
+        # split is by destination COLUMN over the same location list, which
+        # rebuilds the identical N x N matrix because the chunks are contiguous
+        # and stitched in order.
+        if isinstance(error_obj, dict) and error_obj.get('code') == 6099:
+            if has_dest:
+                origin = data_cols[1]
+                destinations = data_cols[2]
+                if origin and not isinstance(origin[0], list):
+                    origin = [origin]
+                locations = origin + destinations
+                sources_idx = list(range(len(origin)))
+                destinations_idx = list(range(len(origin), len(locations)))
+            else:
+                locations = data_cols[1]
+                if locations and not isinstance(locations[0], list):
+                    locations = [locations]
+                sources_idx = list(range(len(locations)))
+                destinations_idx = list(range(len(locations)))
             resp = _retry_matrix_chunked(method, locations, sources_idx, destinations_idx, format, ors_host)
         return [row[0], resp]
 
@@ -1122,6 +1139,36 @@ ORS_BREAKER_ROLLING_WINDOW_S = int(os.getenv('ORS_BREAKER_ROLLING_WINDOW_S', '30
 ORS_BREAKER_COOLDOWN_S = int(os.getenv('ORS_BREAKER_COOLDOWN_S', '30'))
 ORS_RETRY_MAX_ATTEMPTS = int(os.getenv('ORS_RETRY_MAX_ATTEMPTS', '3'))
 ORS_RETRY_BACKOFF_BASE_MS = int(os.getenv('ORS_RETRY_BACKOFF_BASE_MS', '500'))
+
+# ---------------------------------------------------------------------------
+# Engine error codes that a retry cannot fix.
+#
+# The retry loop below keys off the HTTP status alone, which is right for a
+# genuinely transient 5xx and wrong for an ORS code that describes the REQUEST.
+# ORS answers several of those with a 500, so they were being re-sent two more
+# times at full size before anything looked at the code.
+#
+# Measured in OBSERVABILITY.ORS_REQUEST_LOG over 4.5 minutes: 44 logical
+# cycling-electric matrix calls on the SanFrancisco host produced 119 error
+# events -- 36 first attempts plus 42 `.retry1` plus 41 `.retry2` -- for a code
+# whose actual remedy is the chunked fallback in post_matrix_tabular. That
+# fallback is only reachable AFTER get_ors_response returns, so every 6099 paid
+# for three full-size attempts before the one thing that helps was tried, and
+# the retries themselves are what kept the engine busy enough to keep failing.
+#
+#   6099  matrix: internal failure computing the matrix. The remedy is a
+#         smaller matrix (see _retry_matrix_chunked), never the same one again.
+#   6004  matrix: number of routes exceeds the configured limit.
+#   6010  matrix: a location could not be resolved on the graph.
+#   2010  directions: no routable point within the snapping radius.
+#
+# 6010 / 2010 are already treated as off-graph rather than "engine unwell" by
+# _annotate_engine_error; this list is the same judgement applied one layer up,
+# where the cost of getting it wrong is three times the load instead of a
+# misleading hint. Codes are matched as strings AND ints because ORS is not
+# consistent about which it emits.
+# ---------------------------------------------------------------------------
+ORS_NON_RETRYABLE_CODES = frozenset({6099, 6004, 6010, 2010, '6099', '6004', '6010', '2010'})
 
 # ---------------------------------------------------------------------------
 # Request-size guardrails (#51).
@@ -1437,8 +1484,12 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
                          error_code=err_code, caller=retried_caller, region=region_hint, request_id=req_id)
             # Retry only on server-side transient failures (5xx). 4xx are user errors,
-            # 2xx/3xx are success-shaped, both end the loop here.
-            if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS:
+            # 2xx/3xx are success-shaped, both end the loop here. An ORS code in
+            # ORS_NON_RETRYABLE_CODES also ends it: those describe the request,
+            # so re-sending it unchanged can only add load and delay the caller's
+            # own fallback (see the 6099 measurement above that definition).
+            non_retryable = err_code in ORS_NON_RETRYABLE_CODES
+            if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS and not non_retryable:
                 last_error_payload = annotated
                 _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
                 backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
@@ -1450,7 +1501,23 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
                 logger.warning(f'ORS {r.status_code} on {host}; retry {attempt}/{ORS_RETRY_MAX_ATTEMPTS - 1} after {backoff_s:.2f}s')
                 time.sleep(backoff_s)
                 continue
-            _breaker_on_success(host)
+            # A 5xx that ends the loop is still a FAILURE. Calling
+            # _breaker_on_success here (as this did) meant the counter was
+            # cleared by the very attempt that proved the host unwell, so a host
+            # failing every single call could never trip the breaker: the third
+            # attempt reset what the first two had accumulated. That is why the
+            # 119 recorded 5xx events above are accompanied by ZERO 503
+            # circuit_open events in the whole log table - the breaker has never
+            # once opened in production. Only a non-5xx response clears it.
+            #
+            # A non-retryable code counts too. It is still evidence about the
+            # host (a 6099 means the engine could not complete the work it was
+            # given), and exempting it would re-create the same blind spot for
+            # the one code that produced the incident.
+            if 500 <= r.status_code < 600:
+                _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
+            else:
+                _breaker_on_success(host)
             return annotated
         except requests.exceptions.ConnectionError:
             latency_ms = int((time.monotonic() - t0) * 1000)
