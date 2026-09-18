@@ -813,3 +813,29 @@ if [ -f "$FORCED_REGION_CHECK" ]; then
     exit 1
   }
 fi
+
+# A continental region must still get a land clip.
+# Measured on 2026-09-18: Europe's Function Tester reported "[routable_boundary:
+# UNAVAILABLE: land clip could not be computed for Europe (GEOGRAPHY too large)]"
+# and then sampled points from the raw Geofabrik extract - 21,110,196 km2 of
+# which less than half is land - so ORS answered code 2010 for every point at
+# sea. The overflowing statement is ST_UNION_AGG, not ST_INTERSECTION: Europe
+# matches 1,324 Overture region polygons carrying 10,286,175 vertices, against
+# 96 and 1,421,517 for the US, which unions fine. Decimating the union's OUTPUT
+# therefore cannot help - that geometry is never built - which is the plausible
+# wrong fix this gate exists to reject (mutation M1). Two further shapes are
+# silent: a metre tolerance does not bound an archipelago's vertex count, since
+# ST_SIMPLIFY thins a ring but never drops one (Europe: 92,079 vertices and
+# 4.28 MB of GeoJSON at the old 500 m cap, shipped to the browser per region on
+# page load); and an uncast ST_NPOINTS assignment POISONS its variable, so the
+# next read aborts the procedure with "Numeric value ... is out of range" after
+# the expensive clip has already been computed, reported against the wrong line
+# and uncatchable by an enclosing EXCEPTION handler.
+LAND_CLIP_CHECK="$SKILL_DIR/scripts/check_land_clip_simplify.py"
+if [ -f "$LAND_CLIP_CHECK" ]; then
+  echo "pre-commit: continental land-clip simplify / vertex budget check..."
+  python3 "$LAND_CLIP_CHECK" || {
+    echo "pre-commit FAILED: a continental region's land clip would overflow, or its browser copy would be unbounded."
+    exit 1
+  }
+fi
