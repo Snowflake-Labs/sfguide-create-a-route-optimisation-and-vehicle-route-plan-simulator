@@ -211,11 +211,23 @@ export async function POST(request: NextRequest) {
   }
 
   // Active dashboard context (region / vehicle / dataset / date range) so the
-  // agent can state its scope and default routing args. The legacy control app
-  // injected an equivalent hidden turn; the SA app discarded panelContext.context
-  // until now. Routing verbs default region/profile to the active context when
-  // the user does not name a place; the analytics views are already scoped, but
-  // this lets the agent name its region and pick the right routing defaults.
+  // agent can state its scope and default the routing PROFILE. The legacy control
+  // app injected an equivalent hidden turn; the SA app discarded
+  // panelContext.context until now.
+  //
+  // The region here scopes DATA, never routing. This prefix used to say "when a
+  // routing tool needs a region or profile and the user did not name one, default
+  // to this region", which contradicted the agent spec's own get_directions rule
+  // ("Leave region null: it is resolved from the places") and won, because the
+  // prefix rides in the user turn while orchestration sits further away. Measured
+  // consequence: "route from SF International Airport to Civic Center" was sent
+  // with region = UnitedStatesOfAmerica, a long-haul HGV extract on which SFO does
+  // not snap at all (MATRIX_TABULAR returned destinations[0] = null and all-null
+  // durations), and was refused as UNROUTABLE_LEG - while the same pair routes in
+  // 1435 s on the SanFrancisco graph that COVERING_REGION_FOR_POINTS resolves for
+  // it. "The user did not name one" was the trap: the user named PLACES, not a
+  // region, so the agent read the default as applying. A forced region can only
+  // ever be equal to or worse than the resolved one, so it is not offered.
   const activeCtx = (panelContext?.context || {}) as Record<string, unknown>;
   // Map the active vehicle_type to the ORS routing profile the engine actually
   // builds, so the agent passes a profile that routes instead of one the engine
@@ -246,7 +258,8 @@ export async function POST(request: NextRequest) {
   if (ctxBits.length > 0) {
     activeContextPrefix =
       `[Active context: ${ctxBits.join('; ')}. ` +
-      `When a routing tool needs a region or profile and the user did not name one, default to this region and pass the routing profile shown above (or null to use the active vehicle). ` +
+      `The region above scopes fleet DATA, not routing: routing verbs resolve their own region from the places named, so pass region = null to them and never force this one. ` +
+      `Pass the routing profile shown above when the user does not name a travel type. ` +
       `State the active region when it is relevant to your answer. Do not override an explicit place the user names.]\n\n`;
   }
 

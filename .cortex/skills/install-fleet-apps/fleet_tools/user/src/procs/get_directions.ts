@@ -16,7 +16,9 @@ export const get_directions = defineProc({
     'A place that is not on the road graph at all - an island, a lake, a point in ' +
     'open water - fails with OFF_GRAPH_PLACE and reports how far it sits from the ' +
     'nearest road; answer that by naming a street address nearby, not by retrying. ' +
-    'All three are refusals to report, not conditions to retry.',
+    'All three are refusals to report, not conditions to retry - unless the result ' +
+    'carries retry_without_region, which means the region was forced and ' +
+    'suggested_region covers every place: then retry exactly once with region null.',
   roles: ['user'],
   args: {
     locations_description: t
