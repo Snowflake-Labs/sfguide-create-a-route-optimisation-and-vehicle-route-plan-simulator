@@ -655,6 +655,35 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geome
 python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units.py
 python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
 
+# The ORS metrics windows must be timezone-correct, and the gateway must not
+# amplify an error that retrying cannot fix. Three silent defects, all found by
+# reading OBSERVABILITY.ORS_REQUEST_LOG after an Observability page full of
+# errors. (1) REQUEST_TS is TIMESTAMP_LTZ and the windows used SYSDATE(), which
+# returns the UTC wall clock as NTZ: comparing them reads that time as LOCAL and
+# pushes every cutoff forward by the session UTC offset. Measured, the "last
+# hour" cutoff sat 360 minutes in the FUTURE, so that panel was unconditionally
+# empty and printed "No metrics yet" above a populated 24h event list, while
+# "last 24h" really covered 17h. Three copies of the predicate. (2) The retry
+# loop keyed off HTTP status alone, so ORS 6099 - whose only remedy is the
+# chunked matrix fallback, reachable only AFTER get_ors_response returns - was
+# re-sent twice at full size: 44 logical calls produced 119 error events. (3) A
+# 5xx that ENDED the loop fell through to _breaker_on_success, so the attempt
+# that proved the host unwell cleared the counter the previous two had built; the
+# breaker had never opened, which the data confirms (119 5xx events, ZERO 503
+# circuit_open rows). Rules strip comments first because the fixes DOCUMENT the
+# banned patterns verbatim, rule A asserts the correct predicate is PRESENT per
+# file (a mutation that only removed it survived the bad-pattern-only draft), and
+# rule D scopes to the emitted `matrix:` block because `maximum_search_radius` is
+# also legal under `match:` - an unscoped regex matched the wrong block and
+# reported a misleading cause. 11 mutations negative-tested; the retry/breaker
+# harness drives the real function with a stubbed transport and COUNTS attempts,
+# because "the code mentions 6099" passes on the comment and "a breaker call
+# exists" passed on the buggy version too.
+python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
+python3 .cortex/skills/install-fleet-apps/scripts/mutate_ors_observability.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 verify_gateway_retry_policy.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 mutate_gateway_retry_policy.py
+
 # An optional semantic view that fails to deploy must not be REPORTED as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round, so the RHS

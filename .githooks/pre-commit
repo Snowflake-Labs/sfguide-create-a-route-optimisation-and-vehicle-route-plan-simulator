@@ -769,3 +769,24 @@ if [ -f "$DASH_UNITS_CHECK" ]; then
     exit 1
   }
 fi
+
+# ORS observability windows + gateway resilience.
+# Three defects found by reading OBSERVABILITY.ORS_REQUEST_LOG after an
+# Observability page full of errors, all silent. (1) The metrics windows compared
+# a TIMESTAMP_LTZ column against SYSDATE() (UTC as NTZ), which pushed every
+# cutoff forward by the session UTC offset: measured, the "last hour" cutoff sat
+# 360 minutes in the FUTURE, so that panel read "No metrics yet" above a
+# populated 24h event list and "last 24h" really covered 17h. (2) The gateway
+# retried on HTTP status alone, so ORS 6099 - whose only remedy is the chunked
+# matrix fallback - was re-sent twice at full size: 44 logical calls produced 119
+# error events. (3) A 5xx that ENDED the retry loop called _breaker_on_success,
+# so the attempt that proved the host unwell cleared the counter and the breaker
+# had never once opened (zero 503 circuit_open rows in the whole table).
+ORS_OBSERVABILITY_CHECK="$SKILL_DIR/scripts/check_ors_observability.py"
+if [ -f "$ORS_OBSERVABILITY_CHECK" ]; then
+  echo "pre-commit: ORS observability window / gateway resilience check..."
+  python3 "$ORS_OBSERVABILITY_CHECK" || {
+    echo "pre-commit FAILED: a metrics window is timezone-shifted, or the gateway would amplify a deterministic ORS error."
+    exit 1
+  }
+fi

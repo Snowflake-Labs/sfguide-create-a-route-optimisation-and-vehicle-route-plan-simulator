@@ -111,6 +111,23 @@ snow sql -c "$CONN" -q "
 note "[2/6] validating engine image tags vs service YAMLs..."
 bash "$SCRIPTS/check_image_versions.sh" || exit 1
 
+# ── 2b. gateway resilience + observability window pre-flight ─────
+# Wired HERE because this script is what ships routing_service.py into an image,
+# and because .githooks/pre-commit does not run in this repo (core.hooksPath is
+# unset), which makes the deploy the only place a regression can actually be
+# stopped. Guards three silent defects measured in
+# OBSERVABILITY.ORS_REQUEST_LOG: a deterministic ORS 6099 retried at full size
+# (44 logical calls -> 119 error events), a circuit breaker that cleared its own
+# counter on the final failed attempt and so had never opened, and metrics
+# windows computed against SYSDATE() on a TIMESTAMP_LTZ column, which put the
+# "last hour" cutoff 360 minutes in the future and left that panel permanently
+# empty. Opt out with ORS_OBSERVABILITY_VERIFY=0.
+if [ "${ORS_OBSERVABILITY_VERIFY:-1}" != "0" ]; then
+  note "[2/6] validating gateway retry/breaker policy + metrics windows..."
+  python3 "$SCRIPTS/check_ors_observability.py" \
+    || { echo "ERROR: ORS observability/resilience gate failed (see above)."; exit 1; }
+fi
+
 # ── 3. build + push the 4 engine images ─────────────────────────
 if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   note "[3/6] building + pushing 4 engine images (see references/build-images.md)..."
