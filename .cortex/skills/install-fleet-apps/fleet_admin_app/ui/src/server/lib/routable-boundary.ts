@@ -14,20 +14,38 @@
 // ROUTABLE_BOUNDARY (BOUNDARY intersected with the Overture division-area union)
 // is the land mask, baked and cached by CORE.ENSURE_ROUTABLE_BOUNDARY.
 //
+// Continental regions and the union
+// ---------------------------------
+// The step that fails on a continent is ST_UNION_AGG, not ST_INTERSECTION.
+// MEASURED for Europe: 1,324 Overture region polygons carry 10,286,175 vertices
+// and the union raises 'GEOGRAPHY too large' outright, so ENSURE_ROUTABLE_BOUNDARY
+// returned UNAVAILABLE and the Function Tester drew points from the raw extract -
+// which for Europe is 21,110,196 km2 of which less than half is land. The proc now
+// decimates each polygon BEFORE the union when the measured input warrants it
+// (Europe 1,000 m -> a 185,107-vertex clip of 9,607,243 km2, 44.3% kept). Regions
+// that union today are untouched: US, France, Germany and SanFrancisco all measure
+// under the threshold and re-bake to byte-identical masks.
+//
 // Which column to use
 // -------------------
 // Two selectors, chosen by cost per use, not by taste.
 //
 // ROUTABLE_BOUNDARY_EXACT - the authoritative clip. Correct but heavy: the US
-// clip is 68,987 vertices. Use it for low-cardinality tests, e.g. rejection
-// sampling a few thousand candidate points once per region.
+// clip is 68,987 vertices and Europe's is 185,107. Use it for low-cardinality
+// tests, e.g. rejection sampling a few thousand candidate points once per region.
+// MEASURED for Europe: 2,000 draws against the exact mask is ~5 s, inside the 10 s
+// timeout in api/sample-road-points but not by a wide margin.
 //
-// ROUTABLE_BOUNDARY_FAST - the same mask decimated with a size-scaled tolerance,
-// 3,510 vertices and 165 KB of GeoJSON for the US against 3.24 MB exact, losing
-// 0.04% of the area and still rejecting the same open-ocean coordinates. Use it
-// for anything paid PER ROW and for anything crossing the network. MEASURED on
-// one H3 res-4 cell of Overture segments: 2.7 s with the exact mask against 1.2 s
-// with this one, on a query that runs on every reshuffle.
+// ROUTABLE_BOUNDARY_FAST - the same mask decimated to a VERTEX budget, 3,510
+// vertices and 165 KB of GeoJSON for the US against 3.24 MB exact, losing 0.04% of
+// the area and still rejecting the same open-ocean coordinates. Use it for
+// anything paid PER ROW and for anything crossing the network. MEASURED on one H3
+// res-4 cell of Overture segments: 2.7 s with the exact mask against 1.2 s with
+// this one, on a query that runs on every reshuffle. Europe needs 8,000 m of
+// tolerance to reach 15,068 vertices and 702 KB, because simplification thins
+// rings but cannot drop an island; that is safe here precisely because this
+// selector never does water rejection - see the note on the per-segment filter in
+// api/sample-road-points.
 //
 // Every selector COALESCEs back to BOUNDARY. A region without the Overture share,
 // or one whose clip was rejected as implausible, keeps working exactly as it did
