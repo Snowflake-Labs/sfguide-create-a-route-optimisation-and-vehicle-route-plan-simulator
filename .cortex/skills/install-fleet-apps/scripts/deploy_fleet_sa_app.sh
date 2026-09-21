@@ -213,6 +213,28 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${CHAT_PRESENTATION_VERIFY:-1}" != "0" ]; then
+    # Three defects a user reported in one sitting, all on the agent tab, none of
+    # which raised anything: a markdown table squeezed to the panel width and then
+    # clipped (the columns past the edge were simply absent from the answer); a
+    # discrete chart axis drawing every category label on top of the next, because
+    # vega-lite's default labelOverlap for a discrete axis is false and the plot
+    # height was pinned at 260px; and a semantic-view FACT summed by Cortex Analyst
+    # reaching the screen as 21289.670000000002, because the decimal policy had no
+    # hold on the agent's own prose - which is what the agent tab's tables ARE.
+    #
+    # Wired here as well as in .githooks/pre-commit because core.hooksPath is unset,
+    # so the hook never runs and the deploy is the only real enforcement point.
+    for GATE_NAME in check_chat_table_scroll.py check_chart_rendering.py \
+                     check_number_formatting.py; do
+      GATE_PATH="$SKILL_DIR/scripts/$GATE_NAME"
+      if [ -f "$GATE_PATH" ]; then
+        echo "[1/7] Verify chat presentation: $GATE_NAME ..."
+        python3 "$GATE_PATH" \
+          || { echo "ERROR: $GATE_NAME failed (see above)."; exit 1; }
+      fi
+    done
+  fi
   if [ "${FORCED_REGION_VERIFY:-1}" != "0" ]; then
     # The active dashboard context is injected into the user turn, and it used to
     # say "default to this region" for routing tools - overriding the agent spec's

@@ -187,6 +187,93 @@ expect_behaviour_fail "identifier regex loses its end anchor (static-invisible)"
   "$SA/ui/src/lib/format-number.ts" \
   's/\|geoid\)\$\/i;/|geoid)(_|\$)\/i;/'
 
+
+# ── RULE F: the PROSE layer ───────────────────────────────────────────────────
+# The third surface, and the one this file's header said neither other layer could
+# reach. The agent tab's tables ARE prose (agent-spec.json tells the model to write
+# markdown tables), so these mutations put a raw FLOAT sum back on the main surface
+# a user reads.
+
+# 15. The plugin imported but not MOUNTED. Everything compiles, the import is used
+#     nowhere, and every number renders exactly as the model wrote it.
+expect_fail "remarkNumberFormat imported but not in remarkPlugins" \
+  "$SA/ui/src/components/chat/message-part.tsx" \
+  "s/remarkPlugins=\{\[remarkGfm, remarkNumberFormat\]\}/remarkPlugins={[remarkGfm]}/"
+
+# 16. The cap restated instead of derived, so widening MAX_DECIMALS silently leaves
+#     prose behind on the old policy - the drift rule F exists to prevent.
+expect_fail "prose formatter stops using decimalsFor" \
+  "$SA/ui/src/lib/remark-number-format.ts" \
+  "s/decimalsFor\(value\)\) return match;/2) return match;/"
+
+# 17. The coordinate guard deleted. Prose carries no column name, so this pair-shape
+#     test is the only thing between a 5dp latitude and a kilometre of error.
+expect_fail "prose coordinate guard removed" \
+  "$SA/ui/src/lib/remark-number-format.ts" \
+  "s/const COORD_PAIR_RE/const REMOVED_PAIR_RE/"
+
+# 18. Vacuity for rule F, matching mutation 7: a stale path must FAIL rather than
+#     quietly inspect one file instead of two.
+expect_fail "rule F prose module path stale" \
+  ".cortex/skills/install-fleet-apps/scripts/check_number_formatting.py" \
+  "s|lib/remark-number-format.ts|lib/remark-number-format-GONE.ts|"
+
+# ── Behavioural: the prose formatter ──────────────────────────────────────────
+# No static rule can see what it RETURNS, and the coordinate and version cases are
+# the ones that would make this fix WORSE than the defect if they regressed.
+run_prose_behaviour() {
+  (cd "$SA/ui" && npx tsx --eval '
+import { formatNumbersInText } from "./src/lib/remark-number-format.ts";
+const cases: Array<[string,string]> = [
+  ["| 21289.670000000002 |", "| 21289.67 |"],
+  ["Total 21,289.670000000002 hours", "Total 21,289.67 hours"],
+  ["utilisation 0.996912345", "utilisation 0.9969"],
+  ["12.50 dollars", "12.50 dollars"],
+  ["1065 trips", "1065 trips"],
+  ["at 37.774929, -122.419416 today", "at 37.774929, -122.419416 today"],
+  ["image v1.1.145 shipped", "image v1.1.145 shipped"],
+];
+let bad = 0;
+for (const [inp, want] of cases) {
+  const got = formatNumbersInText(inp);
+  if (got === want) { continue; }
+  bad += 1;
+  console.error("  BAD " + JSON.stringify(inp) + ": got " + JSON.stringify(got));
+}
+if (bad > 0) { process.exit(1); }
+console.log("  " + cases.length + " prose cases pass");
+' 2>&1)
+}
+
+echo "behaviour: executing the prose formatter ..."
+if run_prose_behaviour; then
+  pass=$((pass+1))
+else
+  echo "BEHAVIOUR FAILED: the prose formatter does not match the documented policy"; fail=$((fail+1))
+fi
+
+# 19. Prove that suite can FAIL on a change no static rule sees: dropping the
+#     fraction requirement from DECIMAL_RE makes it match integers too, so a year
+#     or an id in prose starts being rewritten.
+expect_behaviour_fail_prose() { # name file sed-expr
+  local name="$1" file="$2" expr="$3"
+  cp "$file" /tmp/nt.bak
+  perl -0pi -e "$expr" "$file"
+  if cmp -s /tmp/nt.bak "$file"; then
+    echo "INCONCLUSIVE: $name - mutation changed nothing (pattern stale)"; fail=$((fail+1))
+  elif run_prose_behaviour >/dev/null 2>&1; then
+    echo "NOT CONVICTED: $name - the prose suite PASSED on a mutated tree"; fail=$((fail+1))
+  else
+    echo "convicted (behaviour): $name"; pass=$((pass+1))
+  fi
+  cp /tmp/nt.bak "$file"
+  cmp -s /tmp/nt.bak "$file" || { echo "RESTORE FAILED for $file"; exit 1; }
+}
+
+expect_behaviour_fail_prose "protected ranges no longer consulted (static-invisible)" \
+  "$SA/ui/src/lib/remark-number-format.ts" \
+  "s/const skip = protectedRanges\(text\);/const skip: Range[] = [];/"
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "NEGATIVE TESTS FAILED: $pass convicted, $fail not convicted."

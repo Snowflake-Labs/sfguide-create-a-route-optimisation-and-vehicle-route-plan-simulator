@@ -622,6 +622,24 @@ if [ -f "$NUMBER_FORMAT_CHECK" ]; then
   }
 fi
 
+# ── 15b. A table in the chat panel must be reachable ──────────────────────────
+# The tables a user reads in the agent tab are MARKDOWN, written by the agent
+# (agent-spec.json instructs it to present verb results as one), and they were
+# styled by a single `width: 100%` rule with nothing but `overflow: hidden` in the
+# chain. A twelve-column answer was squeezed until the cells collided and then cut
+# off at the panel edge - no scrollbar, no error, and the table still looked like a
+# table, so the missing columns were simply absent from the answer. The React grid
+# had the same defect from its own wrapper.
+TABLE_SCROLL_CHECK="$SKILL_DIR/scripts/check_chat_table_scroll.py"
+if [ -f "$TABLE_SCROLL_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/chat/message-part.tsx" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/app/globals.css" \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/inline/data-table.tsx" \
+  "$SKILL_DIR/scripts/check_chat_table_scroll.py"; then
+  echo "pre-commit: chat table scrollability check..."
+  python3 "$TABLE_SCROLL_CHECK" || exit 1
+fi
+
 # 16. An optional semantic view that fails to deploy must not report as a
 # fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
 # entry with its name and its source expression the wrong way round - and the
