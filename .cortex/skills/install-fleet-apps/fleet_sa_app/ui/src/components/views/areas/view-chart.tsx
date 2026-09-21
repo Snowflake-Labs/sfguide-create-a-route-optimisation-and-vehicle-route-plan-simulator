@@ -7,6 +7,7 @@ import {
   Line,
   BarChart,
   Bar,
+  ComposedChart,
   AreaChart,
   Area,
   PieChart,
@@ -123,6 +124,28 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
     return { data: points, categories: Array.from(categories) };
   }, [data, config]);
 
+  // A chart needs ComposedChart when its series disagree about mark type, or
+  // when one of them is pinned to the second axis.
+  //
+  // Neither was honoured before. `hasBar` is a some(), so the bar branch won for
+  // ANY config containing a bar and then mapped EVERY series to <Bar> - an
+  // authored `type: "line"` was never a line. And `yAxis` was read only by
+  // <Line> in the line-only branch, so it was a silent no-op everywhere else.
+  // Together that put a headcount series on a currency axis: measured 19,340 vs
+  // 22 on one week of the labor view, a bar 0.1% of plot height - drawn,
+  // hit-testable, invisible.
+  //
+  // Computed here, above the early returns, because `kindOf()` in the agent memo
+  // must name the SAME branch the renderer takes; two copies of this expression
+  // would drift and the memo would describe a chart that is not on screen.
+  // Excludes a grouped chart: its value columns are category VALUES derived from
+  // one series, so per-series type and axis have nothing to bind to.
+  const isCombo = useMemo(() => {
+    if (groupedData) return false;
+    const types = new Set(config.series.map((s) => s.type));
+    return types.size > 1 || config.series.some((s) => s.yAxis === 'right');
+  }, [config.series, groupedData]);
+
   // Checked against the raw rows, not chartData/groupedData: a grouped chart's
   // point keys are category values, so the derived shape cannot distinguish a
   // missing column from an absent category. Must sit above the early returns to
@@ -150,6 +173,11 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
         if (config.series.some((s) => s.type === 'scatter')) return 'scatter';
         if (config.series.some((s) => s.type === 'area')) return 'area';
         if (groupedData) return 'stacked bar';
+        // Mirrors the ComposedChart branch, which sits between the grouped and
+        // bar branches in the render dispatch below. Names the marks actually
+        // drawn rather than collapsing to 'bar', so the memo cannot claim a
+        // single-axis bar chart where two scales are plotted.
+        if (isCombo) return `combo (${Array.from(new Set(config.series.map((s) => s.type))).join(' + ')})`;
         if (config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar')) return 'bar';
         return 'line';
       };
@@ -167,9 +195,16 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
         yKey: groupedData ? (groupedData.categories[0] ?? config.series[0].field) : config.series[0].field,
         yKeyIsColumn: !groupedData,
         points,
-        seriesNames: groupedData ? groupedData.categories : series.map((s) => s.label).filter(Boolean),
+        seriesNames: groupedData
+          ? groupedData.categories
+          : series
+              // A dual-axis chart plots two SCALES, and the memo reports one
+              // yKey plus these names - so without the axis said out loud the
+              // agent reads 19,340 and 22 as comparable magnitudes on one axis.
+              .map((s) => (s.yAxis === 'right' && isCombo ? `${s.label} (right axis)` : s.label))
+              .filter(Boolean),
       });
-    }, [chartData, groupedData, config, series]),
+    }, [chartData, groupedData, config, series, isCombo]),
     'chart',
   );
 
@@ -290,6 +325,67 @@ export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
               <Bar key={cat} dataKey={cat} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  if (isCombo) {
+    // Every mark carries an explicit yAxisId. Recharts drops a series whose
+    // yAxisId matches no mounted axis, so omitting it on the left-axis marks
+    // (or mounting only the right axis) empties the plot rather than erroring.
+    const axisLabel = (side: 'left' | 'right') => {
+      const owned = series.filter((s) => (s.yAxis === 'right' ? 'right' : 'left') === side);
+      return owned.length === 1 ? owned[0].label : undefined;
+    };
+    const hasRightAxis = series.some((s) => s.yAxis === 'right');
+    return (
+      <div style={{ height: '100%', minHeight: '220px' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
+            <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis
+              yAxisId="left"
+              fontSize={11}
+              tickFormatter={numericTick}
+              tick={{ fill: 'var(--text-secondary, #6b7280)' }}
+              label={axisLabel('left') ? { value: axisLabel('left'), angle: -90, position: 'insideLeft', fontSize: 11, fill: 'var(--text-secondary, #6b7280)', style: { textAnchor: 'middle' } } : undefined}
+            />
+            {/* Two axes with no labels is differently misleading, not fixed: the
+                reader cannot tell which scale a mark belongs to. Labelled only
+                when exactly one series owns the axis, since a shared axis has no
+                single name to give it. */}
+            {hasRightAxis && (
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                fontSize={11}
+                tickFormatter={numericTick}
+                tick={{ fill: 'var(--text-secondary, #6b7280)' }}
+                label={axisLabel('right') ? { value: axisLabel('right'), angle: 90, position: 'insideRight', fontSize: 11, fill: 'var(--text-secondary, #6b7280)', style: { textAnchor: 'middle' } } : undefined}
+              />
+            )}
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <Legend wrapperStyle={{ fontSize: '12px' }} />
+            {series.map((s, i) => {
+              const axisId = s.yAxis === 'right' ? 'right' : 'left';
+              const color = CHART_COLORS[i % CHART_COLORS.length];
+              if (s.type === 'line') {
+                return (
+                  <Line key={s.field} type="monotone" dataKey={s.field} name={s.label} stroke={color} yAxisId={axisId} dot={false} strokeWidth={2} />
+                );
+              }
+              if (s.type === 'area') {
+                return (
+                  <Area key={s.field} type="monotone" dataKey={s.field} name={s.label} stroke={color} fill={color} fillOpacity={0.25} yAxisId={axisId} />
+                );
+              }
+              // Unknown types keep the previous behaviour (a bar), so adding a
+              // mark type to app-views.json degrades rather than blanks the chart.
+              return <Bar key={s.field} dataKey={s.field} name={s.label} fill={color} yAxisId={axisId} />;
+            })}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     );
