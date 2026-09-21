@@ -74,6 +74,11 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
 LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
+# Route-plan standardization + planner variance. Engine-FREE: reads only the
+# FLEET_APP contract (CORE.VW_DIM_PLAN / VW_DIM_SITE + ROUTE_OPTIMIZATION), so it
+# is correct under --no-engine. The live optimizer comparison that prices a
+# non-standard plan lives in analytic_layer_live_routing.sql instead.
+PLAN_STANDARDS_SQL="$SCRIPTS/plan_standards_layer.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
@@ -756,6 +761,27 @@ PYEOF
   fi
 else
   step "4.25 labour" SKIPPED
+fi
+
+# ── 4.27 route-plan standards (FLEET_APP.PLAN_STANDARDS) ──────────────────
+# Scores every planned route against a written planning standard and ranks the
+# planners on compliance AND on consistency, so "our planners each build routes
+# differently" becomes a number instead of an anecdote.
+#
+# Must run AFTER 4 (needs FLEET_APP.CORE.VW_DIM_PLAN / VW_DIM_SITE and
+# FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_CURRENT) and BEFORE 4.5, which creates
+# SV_PLAN_STANDARDS over these views.
+#
+# Engine-free by construction: it reads only the FLEET_APP contract, so it is
+# correct under --no-engine and is NOT gated on the routing engine. The live
+# optimizer comparison is a separate UDTF in step 4.3.
+if [ "${SKIP_PLAN_STANDARDS:-0}" != "1" ]; then
+  note "[4.27/8] route-plan standards (FLEET_APP.PLAN_STANDARDS)..."
+  snow sql -c "$CONNECTION" -f "$PLAN_STANDARDS_SQL" --enable-templating NONE >/tmp/ifa_plan_standards.log 2>&1 \
+    && step "4.27 plan standards" OK \
+    || { note "  WARN: plan-standards layer reported errors; see /tmp/ifa_plan_standards.log"; step "4.27 plan standards" WARN; }
+else
+  step "4.27 plan standards" SKIPPED
 fi
 
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────

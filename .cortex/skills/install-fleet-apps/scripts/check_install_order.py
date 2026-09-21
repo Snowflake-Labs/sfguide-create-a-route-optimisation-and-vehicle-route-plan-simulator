@@ -56,6 +56,10 @@ ORDER = [
     ("4   contract",         SKILL / "fleet_sa_app" / "app" / "scoped_contract.sql"),
     ("4.2 delivery_sync",    SCRIPTS / "delivery_sync_layer.sql"),
     ("4.25 labour",          SKILL / "fleet_sa_app" / "app" / "labor_layer.sql"),
+    # Reads FLEET_APP.CORE.VW_DIM_PLAN / VW_DIM_SITE (step 4 packs) and
+    # FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_CURRENT, and must precede the
+    # semantic step because SV_PLAN_STANDARDS binds to the views it creates.
+    ("4.27 plan_standards",  SCRIPTS / "plan_standards_layer.sql"),
     # The MARKETPLACE views SV_OFFERS reads. Must precede the semantic step: this
     # entry is the ordering that was MISSING, and its absence is what let
     # SV_OFFERS be created ~19 min before its own sources on every install.
@@ -167,6 +171,22 @@ def check_precedence() -> list[str]:
             "VW_LANE_HISTORY. If the sources do not exist yet the view fails, and "
             "prune_agent_specs.py then DELETES the query_offers tool from the agents "
             "at step 6 - so the whole marketplace surface disappears silently.",
+        ),
+        (
+            "4   packs",
+            "4.27 plan_standards",
+            "Every view in FLEET_APP.PLAN_STANDARDS reads FLEET_APP.CORE.VW_DIM_PLAN, "
+            "VW_DIM_SITE and FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_CURRENT, all built "
+            "by the packs. FLEET_APP exists from step 4 regardless, so the reference "
+            "scan above cannot see this: it is database-granular by design.",
+        ),
+        (
+            "4.27 plan_standards",
+            "4.5 semantic",
+            "SV_PLAN_STANDARDS binds to FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN and "
+            "VW_PLANNER_SCORECARD. If those are missing the semantic view fails, and "
+            "prune_agent_specs.py then DELETES query_plan_standards from the agents at "
+            "step 6, so the planner-variance surface disappears with no error.",
         ),
     ]
 
