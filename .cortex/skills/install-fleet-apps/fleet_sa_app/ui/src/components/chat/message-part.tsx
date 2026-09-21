@@ -130,6 +130,16 @@ function TextPart({ content }: { content: string }) {
         remarkPlugins={[remarkGfm]}
         urlTransform={(url) => (url.startsWith('view:') ? url : defaultUrlTransform(url))}
         components={{
+          // A markdown table is the agent's own output format for verb and
+          // analyst results (agent-spec.json instructs it to use one), so this
+          // is the grid most answers are read in. It needs a bounded, scrollable
+          // ancestor: the CSS alone cannot scroll, because the element that
+          // overflows and the element with a size are not the same one.
+          table: ({ children }) => (
+            <div className="markdown-table-scroll">
+              <table>{children}</table>
+            </div>
+          ),
           a: ({ href, children }) => {
             if (href?.startsWith('view:') || href?.startsWith('#view:')) {
               const rawId = href.startsWith('view:') ? href.slice(5) : href.slice(6);
