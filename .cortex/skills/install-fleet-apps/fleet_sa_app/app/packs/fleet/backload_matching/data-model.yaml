@@ -103,21 +103,29 @@ entities:
       --      still yields no row for that vehicle (the inner join replaces the
       --      old `EXISTS (SELECT 1 FROM cls)` guard, per vehicle instead of
       --      globally).
-      --   3. last_drop needs no filter at all - it groups by VEHICLE_ID, which is
-      --      globally unique (measured: 0 colliding ids across datasets).
+      --   3. last_drop is keyed on (REGION, VEHICLE_ID). VEHICLE_ID is unique only
+      --      WITHIN a region - measured on tib85385, V-DRI-00013 and V-DRI-00019
+      --      exist in both UsTexas and UnitedStatesOfAmerica - so partitioning on
+      --      VEHICLE_ID alone handed a Texas trailer the globally-latest trip,
+      --      which was a USA trip ending in Florida, ~900 km outside the Texas
+      --      road graph. ORS then refused the whole solve with code 6010. Same
+      --      reason the POI joins below carry REGION: 483 LOCATION_IDs appear in
+      --      more than one region, so an id-only join fans out one trailer into
+      --      several rows and can pull another region's copy of the place.
       WITH last_drop AS (
         -- Latest trip ROW per vehicle, not a per-column aggregate: MAX_BY rejects
         -- a GEOGRAPHY argument, so carrying the stored DESTINATION geometry
         -- needs a row pick. Also safer than per-column MAX_BY, which on a
         -- TRIP_END tie could resolve each column to a different trip.
         SELECT VEHICLE_ID,
+               REGION,
                DESTINATION_LON    AS DROPOFF_LON,
                DESTINATION_LAT    AS DROPOFF_LAT,
                DESTINATION        AS DROPOFF_GEOM,
                DESTINATION_POI_ID AS DROPOFF_POI_ID,
                TRIP_END           AS LAST_TRIP_END
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION, VEHICLE_ID ORDER BY TRIP_END DESC) = 1
       ),
       home_anchor AS (
         SELECT REGION, AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
@@ -182,11 +190,11 @@ entities:
         c.PAYLOAD_KG_TYP::NUMBER                            AS MAX_PAYLOAD_KG,
         NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
       FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
-      JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+      JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID AND ld.REGION = f.REGION
       JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = f.VEHICLE_TYPE
       LEFT JOIN home_anchor ha ON ha.REGION = f.REGION
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT h ON h.LOCATION_ID = f.HOME_LOCATION_ID AND h.REGION = f.REGION
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = ld.DROPOFF_POI_ID AND d.REGION = ld.REGION
 
   - name: INTERNAL_VOLUMES
     description: "Recent internal loads waiting for a backhaul (class-clamped weight, future pickup window)."
@@ -228,7 +236,9 @@ entities:
       -- rank slots and the pool would land under its target. It also collapses
       -- the row multiplication a repeated DIM_POIS LOCATION_ID would otherwise
       -- cause here, which the sibling copy in init.ts handles with a pre-aggregated
-      -- `poi` CTE instead.
+      -- `poi` CTE instead. The POI joins below are ALSO region-keyed: LOCATION_ID
+      -- repeats across regions (483 measured), and without REGION the name could
+      -- come from another region's copy of the same place.
       WITH p AS (
         SELECT
           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
@@ -306,8 +316,8 @@ entities:
           COALESCE(fs.TRAILERS, 0)                                                    AS TRAILERS
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
         JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT o ON o.LOCATION_ID = t.ORIGIN_POI_ID AND o.REGION = t.REGION
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = t.DESTINATION_POI_ID AND d.REGION = t.REGION
         LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
         QUALIFY ROW_NUMBER() OVER (
                   PARTITION BY t.REGION,
@@ -437,5 +447,5 @@ entities:
       FROM shifted f
       JOIN reg_vt rv ON rv.REGION = f.REGION
       JOIN {schema}.VW_VEHICLE_CLASS c ON c.VEHICLE_TYPE = rv.VEHICLE_TYPE
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
-      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID AND p2.REGION = f.REGION
+      LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID AND d.REGION = f.REGION
