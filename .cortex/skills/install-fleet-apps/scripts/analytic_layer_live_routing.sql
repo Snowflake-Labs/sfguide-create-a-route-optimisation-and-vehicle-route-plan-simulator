@@ -1944,6 +1944,11 @@ $$
   ),
   -- Last known position per vehicle at or before the as-of instant, dropping
   -- vehicles whose position is too old to be actionable.
+  --
+  -- Trip pings OUTRANK the trip-less IDLE home heartbeat, for the same reason and
+  -- with the same worked example as LIVE_FLEET_STATUS.last_pos below. This table
+  -- quotes a NUMBER of minutes out, so picking the depot row does not just mis-draw
+  -- a dot, it publishes a confident ETA measured from the wrong place.
   last_pos AS (
     SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
     FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
@@ -1951,7 +1956,9 @@ $$
       AND TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
       AND TS >= DATEADD('minute', -1 * COALESCE(P_MAX_STALENESS_MIN, 15),
                         COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY VEHICLE_ID
+              ORDER BY IFF(TRIP_ID IS NULL AND STATUS = 'IDLE', 1, 0), TS DESC) = 1
   ),
   ordered AS (
     SELECT VEHICLE_ID, TS, POINT_GEOM, LONGITUDE, LATITUDE,
@@ -2013,6 +2020,34 @@ $$
     SELECT MONITORED_SITE_TYPES
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS LIMIT 1
   ),
+  -- The position the map PLOTS, and therefore the position every status in this
+  -- function must agree with.
+  --
+  -- THE ORDERING IS NOT JUST "LATEST". A vehicle can emit a trip-less IDLE
+  -- heartbeat pinned at its HOME POI while a trip is still running - the generator
+  -- emits it with no knowledge of trip activity (studio/engine.ts:552) - so a
+  -- plain MAX(TS) can return the depot while the vehicle is standing on a
+  -- customer site. Worked example UsTexas 2026-09-03, V-DRI-00096 (home POI
+  -- 31.027434,-95.933739):
+  --
+  --   00:58:11  52355052...  27.8863,-98.5932  DWELL_DESTINATION  (on site)
+  --   00:58:15  NULL         31.0274,-95.9337  IDLE               (434 km away)
+  --
+  -- At the 01:00 replay instant the plain rule picked the 00:58:15 row, so the dot
+  -- was drawn 520 km from the site: the geofence test could not match, the
+  -- drive-time BACK to the site came out at 432.7 min against a 15-minute gate,
+  -- and the vehicle rendered flat blue DRIVING with MINUTES_OUT 432.7 / 518.26 km
+  -- to a site it was parked at. Fleet-wide at that instant: 16 DRIVING, 73 IDLE,
+  -- ZERO ON_SITE and ZERO JUST_LEFT - the two states this page exists to show were
+  -- unreachable. 20 to 27 of the ~89-108 live vehicles per hour on that day
+  -- carried such a position.
+  --
+  -- So trip pings OUTRANK the heartbeat, and only then does recency apply. The
+  -- heartbeat is deliberately kept as a FALLBACK rather than filtered out (which
+  -- is what DT_SITE_VISITS does, because there it can only ever be noise): a
+  -- vehicle genuinely parked at base all day has NOTHING ELSE, and dropping it
+  -- would erase it from the vehicles layer instead of drawing it correctly as
+  -- IDLE at its depot.
   last_pos AS (
     SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
     FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
@@ -2020,7 +2055,9 @@ $$
       AND TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
       AND TS >= DATEADD('minute', -1 * COALESCE(P_MAX_STALENESS_MIN, 20),
                         COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY VEHICLE_ID
+              ORDER BY IFF(TRIP_ID IS NULL AND STATUS = 'IDLE', 1, 0), TS DESC) = 1
   ),
   -- The monitored-site set with the geofence radius resolved per (vehicle type,
   -- site type). Deliberately mirrors the `sites` CTE of DT_SITE_VISITS verbatim
