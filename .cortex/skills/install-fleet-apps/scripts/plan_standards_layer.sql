@@ -215,6 +215,12 @@ SELECT
   FLEET_APP.CORE.REGION_LABEL(l.REGION)                             AS REGION_LABEL,
   l.ENTITY_ID                                                       AS VEHICLE_ID,
   l.PLAN_DATE,
+  -- Surrogate route key. The natural key is the triple (REGION, VEHICLE_ID,
+  -- PLAN_DATE); a semantic view relationship needs ONE column, and the app needs
+  -- one selection token. REGION is first so the key cannot collide across regions
+  -- (vehicle ids ARE reused between them).
+  l.REGION || '|' || l.ENTITY_ID || '|' || TO_VARCHAR(l.PLAN_DATE, 'YYYY-MM-DD')
+                                                                    AS ROUTE_ID,
   'DISP-' || LPAD(MOD(ABS(HASH(l.ENTITY_ID)), 12) + 1, 2, '0')      AS PLANNER_ID,
   l.PLAN_ID,
   l.SEQUENCE_NUM                                                    AS STOP_SEQ,
@@ -268,6 +274,7 @@ depots AS (
 agg AS (
   SELECT
     st.REGION, st.REGION_LABEL, st.VEHICLE_ID, st.PLAN_DATE, st.PLANNER_ID,
+    ANY_VALUE(st.ROUTE_ID)                              AS ROUTE_ID,
     COUNT(*)                                            AS STOPS,
     COUNT(st.SITE_GEOG)                                 AS GEOCODED_STOPS,
     COUNT(DISTINCT st.SITE_ID)                           AS UNIQUE_SITES,
@@ -295,6 +302,7 @@ spread AS (
 scored AS (
   SELECT
     a.REGION, a.REGION_LABEL, a.VEHICLE_ID, a.PLAN_DATE, a.PLANNER_ID,
+    a.ROUTE_ID,
     'Planner ' || SUBSTR(a.PLANNER_ID, 6, 2)            AS PLANNER_LABEL,
     a.OPERATOR_ID,
     d.HOME_LOCATION_ID                                  AS DEPOT_ID,
@@ -455,6 +463,11 @@ SELECT
   REGION_LABEL,
   SERVICE_DATE,
   DEPOT_ID,
+  -- Surrogate key so a semantic view can declare a PRIMARY KEY over this grain.
+  -- REGION leads for the same reason as ROUTE_ID: depot ids are not unique across
+  -- regions.
+  REGION || '|' || DEPOT_ID || '|' || TO_VARCHAR(SERVICE_DATE, 'YYYY-MM-DD')
+                                                        AS READINESS_ID,
   COALESCE(DEPOT_NAME, 'Depot ' || DEPOT_ID)            AS DEPOT_NAME,
   ANY_VALUE(DEPOT_LNG)                                  AS DEPOT_LNG,
   ANY_VALUE(DEPOT_LAT)                                  AS DEPOT_LAT,
