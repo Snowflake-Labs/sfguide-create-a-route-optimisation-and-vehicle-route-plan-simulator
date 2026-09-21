@@ -15,6 +15,10 @@ APP = pathlib.Path(
     ".cortex/skills/install-fleet-apps/fleet_sa_app/app/app-views.json"
 )
 CONN = sys.argv[1] if len(sys.argv) > 1 else "TIB"
+# Region is an argument because the gap area needs the region's routing service
+# RUNNING, and services auto-suspend after 4 hours. A hardcoded region turns an
+# environmental suspend into what looks like a broken query.
+REGION = sys.argv[2] if len(sys.argv) > 2 else "SanFrancisco"
 VIEW = "route_plan_standards"
 
 
@@ -67,7 +71,7 @@ def main() -> int:
 
     # Pass 1: first render. Region resolved, nothing selected, sliders unset so
     # every threshold falls back to the region's stored standard.
-    first = {"region": "SanFrancisco"}
+    first = {"region": REGION}
     # Pass 2: a seeded selection. Sourced from the data rather than invented, so
     # the gap area is exercised on a route that genuinely has geocoded stops.
     seed_sql = (
@@ -80,8 +84,8 @@ def main() -> int:
         " WITHIN GROUP (ORDER BY STOP_SEQ) AS STOPS_JSON"
         " FROM FLEET_APP.PLAN_STANDARDS.VW_ROUTE_STOPS WHERE SITE_GEOG IS NOT NULL"
         " GROUP BY ROUTE_ID) s ON s.ROUTE_ID = r.ROUTE_ID"
-        " WHERE r.REGION='SanFrancisco' AND r.DEPOT_LNG IS NOT NULL"
-        " AND r.GEOCODED_STOPS BETWEEN 6 AND 12"
+        f" WHERE r.REGION='{REGION}' AND r.DEPOT_LNG IS NOT NULL"
+        " AND r.GEOCODED_STOPS >= 3"
         " ORDER BY r.KM_PER_STOP DESC LIMIT 1"
     )
     p = subprocess.run(
@@ -93,7 +97,7 @@ def main() -> int:
     if not seed:
         print("FATAL: could not seed a selection")
         return 1
-    print(f"seeded route {seed['ROUTE_ID']} ({seed['STOPS']} stops)\n")
+    print(f"region {REGION}: seeded route {seed['ROUTE_ID']} ({seed['STOPS']} stops)\n")
 
     second = dict(first)
     second.update(
