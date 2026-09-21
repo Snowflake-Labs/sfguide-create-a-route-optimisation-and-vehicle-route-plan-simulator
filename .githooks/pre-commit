@@ -727,6 +727,25 @@ if [ -f "$BACKLOAD_BUDGET_CHECK" ]; then
   }
 fi
 
+# A stop outside the road graph must be EXCLUDED, not allowed to abort the solve,
+# and a region-scoped dimension must be joined ON its region. VEHICLE_ID and
+# LOCATION_ID are unique only WITHIN a region, so id-only keys handed a UsTexas
+# trailer a UnitedStatesOfAmerica trip's destination in Florida - ~900 km past
+# the Texas graph - and ORS refused the entire solve with code 6010. The client
+# could not recover either: the 422 already NAMED the offending coordinates and
+# nothing read them, while the MATRIX pre-filter classed the 6010 throw as
+# transient and kept all 150 points of the batch. Every one of those shapes
+# compiles, returns correct numbers on a single-region dataset, and throws
+# nothing - which is why this is a gate.
+OFFGRAPH_CHECK="$SKILL_DIR/scripts/check_offgraph_region_keys.py"
+if [ -f "$OFFGRAPH_CHECK" ]; then
+  echo "pre-commit: off-graph exclusion + region-keyed join check..."
+  python3 "$OFFGRAPH_CHECK" || {
+    echo "pre-commit FAILED: an out-of-graph stop would abort the solve, or a region-scoped join is keyed on the id alone."
+    exit 1
+  }
+fi
+
 # The road geometry on the Backload map has exactly ONE producer (an ORS
 # DIRECTIONS pass - the solve runs with VROOM geometry disabled), and it lived
 # inside solve(). A plan collected from an agent solve via ?solve_key= never runs
