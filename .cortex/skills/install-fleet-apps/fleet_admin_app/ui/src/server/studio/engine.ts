@@ -207,6 +207,16 @@ export async function* generateTelemetry(
     let unroutable = 0;
     let busyUntilDayOffset: number | undefined;
 
+    // Day-spill guard FIRST. This must precede the ghost branch below: the ghost
+    // emitter writes a midnight-anchored block of totalGhostDays * 86400 s of
+    // home-pinned IDLE pings regardless of anything else, so if the previous
+    // vehicle-day spilled past midnight into this one, running it here would lay
+    // that block straight over the tail of the still-active trip - manufacturing
+    // exactly the interleaved-stream artifact the reservation exists to prevent.
+    if ((busyUntil.get(member.vehicle_id) ?? -1) >= dayOffset) {
+      return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
+    }
+
     // Ghost trailer handling - vehicle is parked at home for several days.
     const inGhostWindow = member.ghost_start_day !== undefined
       && member.ghost_end_day !== undefined
@@ -240,11 +250,12 @@ export async function* generateTelemetry(
         ghostLifecycle, config, member.home_poi,
         durationSec, ghostCfg.ping_interval_min_sec, ghostCfg.ping_interval_max_sec, memberRng,
       ));
-      return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
-    }
-
-    if ((busyUntil.get(member.vehicle_id) ?? -1) >= dayOffset) {
-      return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
+      // Reserve the whole ghost window, so the days this block already covers
+      // cannot also run a normal operating day on top of it.
+      return {
+        vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable,
+        busyUntilDayOffset: member.ghost_end_day!,
+      };
     }
 
     const operatingRate = config.fleet.daily_operating_rate
@@ -271,6 +282,11 @@ export async function* generateTelemetry(
 
     const numTrips = rngInt(memberRng, config.fleet.trips_per_day.min, config.fleet.trips_per_day.max);
     let currentOriginPoi = member.home_poi;
+    // Hoisted out of the trip loop: the day-spill reservation is now computed
+    // AFTER the loop and after the post-loop legs, so both need this in scope.
+    const dayStartMidnight = Date.UTC(
+      currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(),
+    );
 
     // How far past the rostered shift end this vehicle may work TODAY if it still
     // has jobs left. Drawn ONCE per vehicle-day: drawing per trip would let the
@@ -347,7 +363,7 @@ export async function* generateTelemetry(
     for (let t = 0; t < numTrips; t++) {
       if (abortSignal?.aborted) break;
       const shiftEnd = member.shift_end < member.shift_start ? member.shift_end + 24 : member.shift_end;
-      const currentHour = lifecycle.currentTime.getHours() + (lifecycle.currentTime.getHours() < member.shift_start ? 24 : 0);
+      const currentHour = lifecycle.currentTime.getUTCHours() + (lifecycle.currentTime.getUTCHours() < member.shift_start ? 24 : 0);
       // ROSTER boundary - soft. Exceeding it is ordinary overtime, so the vehicle
       // may keep working its remaining jobs up to today's allowance. With
       // overrunHours = 0 (no shift_overrun config, or a day that does not run
@@ -523,14 +539,14 @@ export async function* generateTelemetry(
         trips.push(tripRecord);
       }
 
-      const dayStartMidnight = Date.UTC(
-        currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(),
-      );
-      const daysConsumed = Math.floor(
+      // The day has spilled past midnight. Stop taking new jobs, but do NOT
+      // compute the reservation here - the post-loop return-to-base leg and the
+      // end-of-day idle still advance the clock, and reserving before them
+      // systematically under-reserves. See the block after the loop.
+      const daysConsumedSoFar = Math.floor(
         (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
       );
-      if (daysConsumed > 0) {
-        busyUntilDayOffset = dayOffset + daysConsumed;
+      if (daysConsumedSoFar > 0) {
         break;
       }
 
@@ -547,9 +563,54 @@ export async function* generateTelemetry(
       }
     }
 
+    // End-of-day idle heartbeat, CLAMPED to the next shift start.
+    //
+    // This emitter is trip-less and knows nothing about trip activity, and its
+    // duration is a lognormal sample that `long_wait_probability` can double past
+    // max_min (see emitDwell). Unbounded on the right, it runs into the vehicle's
+    // NEXT shift and interleaves home-pinned pings into the middle of the next
+    // day's active dwell - 1,204 such pings on UsTexas, 1,192 of them a >5 km jump
+    // from the previous ping. Downstream that is not cosmetic: the ping becomes a
+    // sequence discontinuity that shreds one delivery dwell into three, and it
+    // becomes the "next ping after the fence" that Delivery Sync reads as evidence
+    // of DEPARTURE, so the notification feed announced a departure while the
+    // vehicle was still parked on the customer's site 434 km away.
+    //
+    // long_wait_probability is dropped rather than clamped: the tail is what
+    // overruns, and a parked heartbeat gains nothing analytically from it.
     const idleDwell = config.dwell.idle;
     if (idleDwell && 'median_min' in idleDwell) {
-      points.push(...emitDwell(lifecycle, config, null, idleDwell as DwellConfig, 'IDLE', currentOriginPoi, memberRng));
+      const nextShiftStartMs = dayStartMidnight + 86400000 + shiftStart * 3600000;
+      const budgetMin = (nextShiftStartMs - lifecycle.currentTime.getTime()) / 60000;
+      if (budgetMin > 0) {
+        const capped: DwellConfig = {
+          ...(idleDwell as DwellConfig),
+          median_min: Math.min((idleDwell as DwellConfig).median_min, budgetMin),
+          max_min: Math.min((idleDwell as DwellConfig).max_min, budgetMin),
+          long_wait_probability: undefined,
+        };
+        points.push(...emitDwell(lifecycle, config, null, capped, 'IDLE', currentOriginPoi, memberRng));
+      }
+    }
+
+    // Day-spill reservation, computed LAST so it covers every time-advancing
+    // emission of this vehicle-day.
+    //
+    // It used to be computed inside the trip loop, before the return-to-base EMPTY
+    // leg and before the idle dwell above - both of which advance
+    // lifecycle.currentTime, and the empty leg writes a real trip row that can
+    // cross midnight (or two midnights, once an OVERNIGHT rest is inserted
+    // mid-route). Whatever they consumed was therefore never reserved, so the next
+    // vehicle-day started at shift_start and ran CONCURRENTLY with them: 42
+    // strictly overlapping trip pairs across 24 vehicles on UsTexas, the longest
+    // 1,030 minutes of true concurrency (UnitedStatesOfAmerica 38 / 20 / 1,787
+    // min). Worked example V-DRI-00086, two trips alternating by timestamp 436 km
+    // apart, which produced 36 "visits" to one site on one day.
+    const daysConsumed = Math.floor(
+      (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
+    );
+    if (daysConsumed > 0) {
+      busyUntilDayOffset = dayOffset + daysConsumed;
     }
 
     return {
