@@ -118,15 +118,19 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
           WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
         ),
         flows AS (
-          SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
+          SELECT REGION, ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1, 2
           UNION ALL
-          SELECT DESTINATION_POI_ID AS POI_ID, 0 AS OUT_CNT, COUNT(*) AS IN_CNT FROM recent_trips GROUP BY 1
+          SELECT REGION, DESTINATION_POI_ID AS POI_ID, 0 AS OUT_CNT, COUNT(*) AS IN_CNT FROM recent_trips GROUP BY 1, 2
         ),
+        -- Keyed on (REGION, POI_ID). A POI id repeats across regions (483
+        -- measured), so aggregating on the id alone MERGED two regions' trip
+        -- flows into one score and then reported whichever region's copy of the
+        -- place the join happened to pick.
         agg AS (
-          SELECT POI_ID, SUM(OUT_CNT) AS OUTBOUND, SUM(IN_CNT) AS INBOUND
+          SELECT REGION, POI_ID, SUM(OUT_CNT) AS OUTBOUND, SUM(IN_CNT) AS INBOUND
           FROM flows
           WHERE POI_ID IS NOT NULL
-          GROUP BY POI_ID
+          GROUP BY REGION, POI_ID
         )
         SELECT
           p.LOCATION_ID                                       AS TERMINAL_ID,
@@ -143,7 +147,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
             + ROUND(GREATEST(0, a.OUTBOUND - a.INBOUND) * 0.25, 0) AS DEMAND_SCORE
         FROM agg a
         JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
-          ON p.LOCATION_ID = a.POI_ID
+          ON p.LOCATION_ID = a.POI_ID AND p.REGION = a.REGION
         WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','STORE','RESTAURANT')
           AND (a.OUTBOUND - a.INBOUND) > 0`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
@@ -2105,8 +2109,8 @@ $$`,
           f.VEHICLE_TYPE,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID AND p.REGION = f.REGION
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID AND d.REGION = f.REGION`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
