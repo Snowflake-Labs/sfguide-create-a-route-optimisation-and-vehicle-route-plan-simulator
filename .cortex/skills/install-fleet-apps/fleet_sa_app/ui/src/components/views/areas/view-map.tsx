@@ -754,7 +754,13 @@ export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMa
     const lng = Number(rawLng);
     const lat = Number(rawLat);
     if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
-    return { lng, lat, zoom: focusOn.zoom };
+    // keyKey folds a per-row identity into the focus signature, so two rows that
+    // resolve to the same coordinate are still two distinct focus gestures.
+    const rawKey = focusOn.keyKey ? viewState[focusOn.keyKey] : undefined;
+    return {
+      lng, lat, zoom: focusOn.zoom,
+      key: rawKey == null ? undefined : String(rawKey),
+    };
   }, [focusOn, viewState]);
 
   return (

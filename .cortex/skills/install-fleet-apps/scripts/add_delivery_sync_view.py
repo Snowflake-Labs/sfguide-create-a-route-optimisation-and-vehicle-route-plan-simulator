@@ -523,7 +523,26 @@ VIEW = {
                 "focusOn": {
                     "lngKey": "map_focus_lng",
                     "latKey": "map_focus_lat",
-                    "zoom": 13,
+                    # Per-row identity, so clicking a SECOND row that focuses the
+                    # same point still moves the camera. MapView de-dupes on the
+                    # focus signature, and all three of a visit's events
+                    # (ARRIVED / UNLOAD_COMPLETE / DEPARTED) focus that visit's
+                    # SITE - one coordinate - so without this only the first click
+                    # of a site did anything and the rest were silently dropped.
+                    # Every emitting table writes this key from its own row id.
+                    "keyKey": "map_focus_key",
+                    # 11, not 13. The focus point is the SITE, but the thing the
+                    # user is looking for is the VEHICLE, and at the instant a
+                    # DEPARTED row snaps to, that vehicle is already minutes down
+                    # the road: measured on the UsTexas 2026-09-03 case,
+                    # V-DRI-00096 sits 7 km from Straight Line construction at
+                    # the 01:20 the 01:12:28 departure snaps to. Zoom 13 frames
+                    # roughly 2.5 km, so the dot the click exists to reveal
+                    # started off-screen. 11 frames ~20 km, which is the scale of
+                    # the 15-minute HGV approach ring this page draws - so the
+                    # site, its ring, and anything inside the JUST_LEFT band are
+                    # in view together.
+                    "zoom": 11,
                 },
                 "clickEmits": {
                     "object": "selected_site",
@@ -756,11 +775,42 @@ VIEW = {
                         "lineColor": SNOWFLAKE_BLUE,
                         "lineWidthMinPixels": 1,
                         "fillColor": {
-                            "column": "status",
-                            "palette": VEHICLE_PALETTE,
-                            # Any future status not in the palette degrades to blue
-                            # rather than to a stray colour.
-                            "default": SNOWFLAKE_BLUE,
+                            # ConditionalColor, NOT CategoricalColor, and the
+                            # shape is forced: colorAccessor() in
+                            # @fleet-kit/core/map tests `'palette' in color`
+                            # FIRST, so an object carrying both `palette` and
+                            # `whenViewStateEquals` takes the categorical branch
+                            # and the selection highlight is silently dead code.
+                            # The status palette therefore has to ride in as
+                            # baseColumn + basePalette, which is exactly what
+                            # ConditionalColor exposes it for.
+                            #
+                            # WHY A HIGHLIGHT AT ALL: all three tables on this
+                            # page already emit `selected_vehicle` (feed,
+                            # readiness, inbound) and ViewClickableTableArea
+                            # writes every emit into panel.viewState
+                            # unconditionally - so the key has always been set
+                            # and NOTHING consumed it. Only the `sites` layer had
+                            # a conditional fill, keyed on selected_site. Clicking
+                            # a feed row therefore moved the clock and the ring
+                            # but left the reader to find the vehicle among ~90
+                            # dots by reading the tooltip of each.
+                            #
+                            # Dark blue #11567F at full alpha, the same "this is
+                            # the selected thing" token the sites layer uses, so
+                            # selection reads identically for both classes.
+                            "base": SNOWFLAKE_BLUE,
+                            "active": [17, 86, 127, 255],
+                            "matchColumn": "vehicle_id",
+                            "whenViewStateEquals": "selected_vehicle",
+                            # Unselected vehicles keep the status colouring, so
+                            # the three actionable states stay legible while one
+                            # row is picked. Without baseColumn/basePalette every
+                            # OTHER vehicle would flatten to `base` blue, which
+                            # would trade one missing affordance for the loss of
+                            # the whole legend.
+                            "baseColumn": "status",
+                            "basePalette": VEHICLE_PALETTE,
                         },
                         "radius": 70,
                         "radiusMinPixels": 4,
@@ -894,6 +944,11 @@ VIEW = {
                 "as_of_minute": "as_of_minute",
                 "map_focus_lng": "focus_lng",
                 "map_focus_lat": "focus_lat",
+                # Per-row focus identity - see the map's focusOn.keyKey. The RAW
+                # event type is already baked into event_id, so all three events
+                # of one visit are three distinct focus gestures even though they
+                # share the site coordinate.
+                "map_focus_key": "event_id",
             },
         },
         "readiness": {
@@ -959,6 +1014,10 @@ VIEW = {
                 "as_of_minute": "as_of_minute",
                 "map_focus_lng": "focus_lng",
                 "map_focus_lat": "focus_lat",
+                # Per-row focus identity - see the map's focusOn.keyKey. Keyed on
+                # the VISIT, matching this table's rowKey, so two visits to one
+                # site on the same day each re-focus.
+                "map_focus_key": "visit_id",
             },
         },
         "inbound": {
@@ -999,6 +1058,11 @@ VIEW = {
                 "selected_site": "site_id",
                 "map_focus_lng": "focus_lng",
                 "map_focus_lat": "focus_lat",
+                # Per-row focus identity - see the map's focusOn.keyKey. This
+                # table focuses the VEHICLE's own position, so its coordinates
+                # already differ per row; the key keeps re-clicking the same
+                # vehicle a gesture that still works after panning away.
+                "map_focus_key": "vehicle_id",
             },
         },
     },
