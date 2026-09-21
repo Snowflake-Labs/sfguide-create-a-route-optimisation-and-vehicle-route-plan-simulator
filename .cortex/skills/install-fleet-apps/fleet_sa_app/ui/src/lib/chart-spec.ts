@@ -116,6 +116,28 @@ export function extractChartSpecs(output: unknown): ChartSpecBundle {
   return { specs, reason: reasons.length ? reasons.join('; ') : undefined, rows };
 }
 
+/** Pixels per band for a discrete axis: a 13px row collides with its own label. */
+export const DISCRETE_BAND_STEP = 22;
+
+/**
+ * True when a spec's y channel is DISCRETE - the horizontal-bar / ranked-list
+ * shape the chart guidance asks for on "top N" questions.
+ *
+ * Read from the declared `type` where there is one. Where there is not, the
+ * fallback is that y carries a plain field while x is aggregated, which is what
+ * a ranked list looks like once Vega-Lite has inferred the types.
+ */
+function hasDiscreteY(spec: Record<string, unknown>): boolean {
+  const enc = spec.encoding;
+  if (!isPlainObject(enc)) return false;
+  const y = enc.y;
+  if (!isPlainObject(y)) return false;
+  if (typeof y.type === 'string') return y.type === 'nominal' || y.type === 'ordinal';
+  if (y.aggregate !== undefined || y.bin !== undefined || y.timeUnit !== undefined) return false;
+  const x = isPlainObject(enc.x) ? enc.x : undefined;
+  return y.field !== undefined && x?.aggregate !== undefined;
+}
+
 /**
  * Make a spec renderable in a chat bubble of unknown width.
  *
@@ -123,6 +145,15 @@ export function extractChartSpecs(output: unknown): ChartSpecBundle {
  * instructions say those are set in post-processing), so a spec arrives with no
  * size at all and Vega falls back to a fixed 200px plot. `width: "container"`
  * plus `autosize: fit` makes it track the bubble.
+ *
+ * HEIGHT IS NOT A CONSTANT when the y axis is discrete. A fixed 260px split
+ * across 20 categories is a 13px band, so the bars and their labels overlap - the
+ * "records on top of one another" a ranked list showed. Such a spec gets
+ * `height: {step: N}` instead, which lets the plot grow with the number of
+ * categories without this module having to count rows. `autosize` drops to
+ * `fit-x` alongside it: measured against vega-lite's compiler, a step-sized
+ * height makes it discard `fit-y` with a warning and emit `fit-x` regardless, so
+ * setting `fit-x` here states the outcome instead of leaving a fit it will strip.
  *
  * Set only when ABSENT, and skipped entirely for multi-view specs (`facet`,
  * `repeat`, `concat`), where Vega-Lite rejects a container width outright - such
@@ -135,7 +166,12 @@ export function sizeSpec(spec: Record<string, unknown>, height: number): Record<
   if (multiView) return spec;
   const out = { ...spec };
   if (out.width === undefined) out.width = 'container';
-  if (out.height === undefined) out.height = height;
-  if (out.autosize === undefined) out.autosize = { type: 'fit', contains: 'padding' };
+  const stepHeight = out.height === undefined && hasDiscreteY(out);
+  if (out.height === undefined) out.height = stepHeight ? { step: DISCRETE_BAND_STEP } : height;
+  if (out.autosize === undefined) {
+    out.autosize = stepHeight
+      ? { type: 'fit-x', contains: 'padding' }
+      : { type: 'fit', contains: 'padding' };
+  }
   return out;
 }
