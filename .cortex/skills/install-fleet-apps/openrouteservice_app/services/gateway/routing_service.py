@@ -31,7 +31,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.9'
+GATEWAY_VERSION = 'v1.1.16'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -261,7 +261,23 @@ def _compute_matrices_from_ors(locations, profile, ors_host):
             return {'durations': durations, 'costs': costs}
         if 'error' in data:
             logger.error(f'ORS matrix error: {data}')
-            return {'__error__': data.get('error') or data}
+            err = data.get('error') or data
+            # Keep the ORS code and message INTACT. The client distinguishes an
+            # unusable engine from an unroutable payload by looking for code 6010
+            # / "out of bounds" in this text; flattening it to a bare string used
+            # to erase that distinction, so an off-graph coordinate on a healthy
+            # engine was reported to the user as "the routing engine is starting"
+            # with a Retry that could never clear.
+            if isinstance(err, dict):
+                code = err.get('code')
+                message = err.get('message') or ''
+                return {
+                    '__error__': f'matrix pre-compute rejected by {ors_host}: '
+                                 f'ORS code {code}: {message}',
+                    '__ors_code__': code,
+                    '__ors_message__': message,
+                }
+            return {'__error__': f'matrix pre-compute rejected by {ors_host}: {err}'}
         return None
     except requests.exceptions.Timeout:
         logger.error(f'ORS matrix pre-compute timed out on {ors_host} after {timeout_s}s')
@@ -375,6 +391,10 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
                     # VROOM fall back to per-leg ORS routing (= multi-minute
                     # hang). The wrapper UI can render this directly.
                     payload['__matrix_error__'] = computed['__error__']
+                    if computed.get('__ors_code__') is not None:
+                        payload['__matrix_ors_code__'] = computed['__ors_code__']
+                    if computed.get('__ors_message__'):
+                        payload['__matrix_ors_message__'] = computed['__ors_message__']
                 elif computed:
                     _remap_indices(jobs, vehs, loc_indices, shps)
                     payload['matrices'] = {profile: computed}
@@ -397,12 +417,28 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
     for row in input_rows:
         payload = build_vroom_payload(row)
         if payload.get('__matrix_error__'):
-            results.append([row[0], {
+            ors_code = payload.get('__matrix_ors_code__')
+            # 6010 (matrix) / 2010 (directions) mean the POINTS are off-graph, not
+            # that the engine is unwell, so the hint must not send the caller off
+            # to wait for a graph load that is already finished.
+            off_graph = ors_code in (6010, 2010, '6010', '2010')
+            failure = {
                 'code': 99,
                 'error': 'matrix_precompute_failed',
                 'message': payload['__matrix_error__'],
-                'hint': 'Try again after the ORS graph is fully loaded, or reduce the number of unique locations (lower vehicle/shipment caps).',
-            }])
+                'hint': (
+                    'One or more locations are outside this region\'s road graph. '
+                    'Check that the selected region matches the data being solved; '
+                    'waiting or retrying will not help.'
+                    if off_graph else
+                    'Try again after the ORS graph is fully loaded, or reduce the number of unique locations (lower vehicle/shipment caps).'
+                ),
+            }
+            if ors_code is not None:
+                failure['ors_code'] = ors_code
+            if payload.get('__matrix_ors_message__'):
+                failure['ors_message'] = payload['__matrix_ors_message__']
+            results.append([row[0], failure])
             continue
         resp = get_vroom_response(payload, vroom_host=vroom_host_override)
         if 'routes' in resp and isinstance(resp.get('routes'), list):
@@ -559,7 +595,13 @@ def post_directions_tabular_with_format(format="geojson"):
 
 def _handle_directions(input_rows, format, ors_host=None):
     host = ors_host or resolve_ors_host(None)
-    return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, host)])
+    return output_rows
 
 
 @app.post("/directions")
@@ -578,7 +620,10 @@ def post_directions_with_format(format="geojson"):
     for row in input_rows:
         region = _extract_region(row, 3)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], get_ors_response('directions', row[1], row[2], format, ors_host)])
+        payload = row[2]
+        if isinstance(payload, list):
+            payload = {'coordinates': payload}
+        output_rows.append([row[0], get_ors_response('directions', row[1], payload, format, ors_host)])
     return _make_response(output_rows)
 
 
@@ -798,14 +843,31 @@ def post_matrix_tabular(format="json"):
         body = _build_matrix_body(method, data_cols[1:], has_dest)
         resp = get_ors_response('matrix', method, body, format, ors_host)
         error_obj = resp.get('error') if isinstance(resp, dict) else None
-        if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
-            origin = data_cols[1]
-            destinations = data_cols[2]
-            if origin and not isinstance(origin[0], list):
-                origin = [origin]
-            locations = origin + destinations
-            sources_idx = list(range(len(origin)))
-            destinations_idx = list(range(len(origin), len(locations)))
+        # 6099 is the engine failing to complete a matrix it was given, and the
+        # only remedy is a smaller matrix. This used to be gated on `has_dest`,
+        # which silently excluded the 2-arg MATRIX_TABULAR form (locations only,
+        # all-to-all) - and that is the form the incident actually used: ~2,510
+        # request bytes is roughly 100 coordinates with no room for a
+        # destinations index list, so the remedy never fired for the calls that
+        # produced 119 error events. For the locations-only form the equivalent
+        # split is by destination COLUMN over the same location list, which
+        # rebuilds the identical N x N matrix because the chunks are contiguous
+        # and stitched in order.
+        if isinstance(error_obj, dict) and error_obj.get('code') == 6099:
+            if has_dest:
+                origin = data_cols[1]
+                destinations = data_cols[2]
+                if origin and not isinstance(origin[0], list):
+                    origin = [origin]
+                locations = origin + destinations
+                sources_idx = list(range(len(origin)))
+                destinations_idx = list(range(len(origin), len(locations)))
+            else:
+                locations = data_cols[1]
+                if locations and not isinstance(locations[0], list):
+                    locations = [locations]
+                sources_idx = list(range(len(locations)))
+                destinations_idx = list(range(len(locations)))
             resp = _retry_matrix_chunked(method, locations, sources_idx, destinations_idx, format, ors_host)
         return [row[0], resp]
 
@@ -846,15 +908,116 @@ def post_matrix(format="json"):
     return _make_response(output_rows)
 
 
+@app.post("/snap")
+@app.post("/snap/<format>")
+def post_snap(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS snap body (a VARIANT built by the SQL layer):
+      {"locations": [[lon,lat], ...], "radius": <meters>}.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        body = row[2]
+        # Accept a bare locations list too (defensive) - snap still needs a radius,
+        # so fall back to a sane default when only a list is supplied.
+        if isinstance(body, list):
+            body = {'locations': body, 'radius': 350}
+        output_rows.append([row[0], get_ors_response('snap', row[1], body, format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/match")
+@app.post("/match/<format>")
+def post_match(format="json"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS match body (a VARIANT built by the SQL layer):
+      {"features": {GeoJSON FeatureCollection}}. Point features snap to the
+      nearest edge; LineString features are matched with the HMM map-matcher;
+      Polygon features are intersected with the graph. Returns edge_ids per feature.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('match', row[1], row[2], format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+@app.post("/export")
+@app.post("/export/<format>")
+def post_export(format="topojson"):
+    """
+    row = [id, profile, options, region]
+    options is the ORS export body (a VARIANT built by the SQL layer):
+      {"bbox": [[minLon,minLat],[maxLon,maxLat]], "geometry": true,
+       "additional_info": true}.
+    Default format is topojson so the response carries edge geometry plus the
+    internal graph edge id, which MATCH_PATH joins against /match edge_ids to
+    resolve them to road geometry. The id surfaces as `ors_ids` (plural, one
+    geometry per OSM way) when the profile has OsmId ext storage enabled, and
+    otherwise as `ors_id` (singular, one geometry per directed edge) - the latter
+    ONLY when the body sets additional_info, hence the SQL layer always sets it.
+    region is the LAST column and can be NULL.
+    """
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('export', row[1], row[2], format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
 def get_vroom_response(payload, vroom_host=None):
     logger.info(payload)
     default_vroom_host = resolve_vroom_host(None)
     host = vroom_host or default_vroom_host
     downstream_url = f'http://{host}:{VROOM_PORT}'
     downstream_headers = {"Content-Type": "application/json"}
+    # timeout=300 is DELIBERATE and must not be lowered to match
+    # ORS_TIMEOUT_DEFAULT. The directions ceiling exists to fail before SPCS
+    # ingress; applying the same logic here would break working solves. Measured
+    # in this repo: a real backload solve takes 168.6s at 100/500, and the Cortex
+    # Agent path completed at 270.1s without being cut. A 55s ceiling would
+    # reject both. For VROOM the parse guard below IS the fix - a body that is
+    # not JSON is reported instead of raising, whatever produced it.
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
-        vroom_r = r.json()
+        try:
+            vroom_r = r.json()
+        except ValueError:
+            logger.error(f'Non-JSON response from VROOM at {host} (HTTP {r.status_code}): '
+                         f'{(r.text or "")[:200]!r}')
+            return _non_json_envelope(r, host, service='VROOM')
     except requests.exceptions.ConnectionError:
         # Per-region VROOM unreachable. Fall back to the default-region VROOM service.
         if host != default_vroom_host:
@@ -862,7 +1025,12 @@ def get_vroom_response(payload, vroom_host=None):
             try:
                 r = requests.post(url=f'http://{default_vroom_host}:{VROOM_PORT}',
                                   headers=downstream_headers, json=payload, timeout=300)
-                vroom_r = r.json()
+                try:
+                    vroom_r = r.json()
+                except ValueError:
+                    logger.error(f'Non-JSON response from fallback VROOM at {default_vroom_host} '
+                                 f'(HTTP {r.status_code}): {(r.text or "")[:200]!r}')
+                    return _non_json_envelope(r, default_vroom_host, service='VROOM')
             except requests.exceptions.ConnectionError:
                 logger.error(f'Cannot connect to VROOM at {default_vroom_host}:{VROOM_PORT} (fallback)')
                 return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {default_vroom_host}:{VROOM_PORT}'}
@@ -973,6 +1141,36 @@ ORS_RETRY_MAX_ATTEMPTS = int(os.getenv('ORS_RETRY_MAX_ATTEMPTS', '3'))
 ORS_RETRY_BACKOFF_BASE_MS = int(os.getenv('ORS_RETRY_BACKOFF_BASE_MS', '500'))
 
 # ---------------------------------------------------------------------------
+# Engine error codes that a retry cannot fix.
+#
+# The retry loop below keys off the HTTP status alone, which is right for a
+# genuinely transient 5xx and wrong for an ORS code that describes the REQUEST.
+# ORS answers several of those with a 500, so they were being re-sent two more
+# times at full size before anything looked at the code.
+#
+# Measured in OBSERVABILITY.ORS_REQUEST_LOG over 4.5 minutes: 44 logical
+# cycling-electric matrix calls on the SanFrancisco host produced 119 error
+# events -- 36 first attempts plus 42 `.retry1` plus 41 `.retry2` -- for a code
+# whose actual remedy is the chunked fallback in post_matrix_tabular. That
+# fallback is only reachable AFTER get_ors_response returns, so every 6099 paid
+# for three full-size attempts before the one thing that helps was tried, and
+# the retries themselves are what kept the engine busy enough to keep failing.
+#
+#   6099  matrix: internal failure computing the matrix. The remedy is a
+#         smaller matrix (see _retry_matrix_chunked), never the same one again.
+#   6004  matrix: number of routes exceeds the configured limit.
+#   6010  matrix: a location could not be resolved on the graph.
+#   2010  directions: no routable point within the snapping radius.
+#
+# 6010 / 2010 are already treated as off-graph rather than "engine unwell" by
+# _annotate_engine_error; this list is the same judgement applied one layer up,
+# where the cost of getting it wrong is three times the load instead of a
+# misleading hint. Codes are matched as strings AND ints because ORS is not
+# consistent about which it emits.
+# ---------------------------------------------------------------------------
+ORS_NON_RETRYABLE_CODES = frozenset({6099, 6004, 6010, 2010, '6099', '6004', '6010', '2010'})
+
+# ---------------------------------------------------------------------------
 # Request-size guardrails (#51).
 #
 # Reject payloads that would exceed the active ORS preset's caps BEFORE
@@ -994,6 +1192,41 @@ GUARDRAIL_ISOCHRONES_MAX_LOCATIONS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX
 GUARDRAIL_ISOCHRONES_MAX_INTERVALS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS', '10'))
 GUARDRAIL_ISOCHRONES_MAX_RANGE_S = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S', '18000'))
 GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS = int(os.getenv('ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS', '1000'))
+
+
+def _non_json_envelope(response, host, service='ORS', latency_ms=None):
+    """Structured failure for a response body that is not JSON.
+
+    Same envelope shape as the ORS engine errors and _guardrail_response below,
+    so SQL callers (which already special-case 'error') need no new schema. It
+    MUST be a dict: _annotate_engine_error subscripts the parsed response, and
+    get_vroom_response's callers branch on `'routes' in ...`, so a string here
+    would just move the failure a few lines down.
+
+    Why this exists: an unguarded r.json() raises JSONDecodeError, which is NOT
+    caught by the ConnectionError / Timeout handlers around either call site. A
+    plain-text body therefore became a Flask 500 and reached SQL callers as
+    "Unexpected token 'u', \"upstream r\"... is not valid JSON". The usual cause
+    is an infrastructure layer answering instead of the service: SPCS ingress
+    cuts the connection at ~60-90s and substitutes 'upstream request timeout'.
+    """
+    body = (getattr(response, 'text', '') or '').strip()
+    status = getattr(response, 'status_code', None)
+    env = {
+        'error': 'non_json_response',
+        'message': f'{host} returned a non-JSON body (HTTP {status})'
+                   + (f' after {latency_ms}ms' if latency_ms is not None else '')
+                   + f': {body[:200] or "(empty body)"}. '
+                   f'This is usually the service ingress timing the request out before '
+                   f'{service} answered - check for an unroutable or very distant '
+                   f'coordinate pair, or reduce the request size.',
+        'ors_host': host,
+        'status': status,
+        'body_prefix': body[:200],
+    }
+    if latency_ms is not None:
+        env['latency_ms'] = latency_ms
+    return env
 
 
 def _guardrail_response(endpoint, host, message, limits):
@@ -1064,11 +1297,29 @@ def _validate_request(endpoint, payload, host=None):
             )
     return True, None
 
-_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN'}
+_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN', cause: str|None}
+
+# Failure causes that must NOT count towards opening the breaker.
+#
+# The breaker exists to shield an OVERLOADED engine from further load. A
+# SUSPENDED one is not overloaded: the connection fails in milliseconds, so
+# fail-fast buys nothing. Counting it actively causes harm, because once the
+# breaker is OPEN every subsequent call returns the generic `circuit_open`
+# instead of `service_unreachable` - and `service_unreachable` is the token the
+# app matches on to detect a suspended region and trigger its resume. A view
+# that issues several ORS calls per render (Delivery Sync makes six) crosses the
+# 5-failure threshold inside a single render, so the outage would go undetected
+# from the second render onwards and the region would never be resumed.
+BREAKER_EXEMPT_CAUSES = frozenset({'service_unreachable', 'service_warming_up'})
 
 
 def _breaker_check(host):
-    """Returns (allow, reason). allow=False means fail fast without calling ORS."""
+    """Returns (allow, reason). allow=False means fail fast without calling ORS.
+
+    `reason` is the error code that OPENED the breaker rather than a generic
+    'circuit_open', so a fail-fast response keeps naming the underlying
+    condition and stays detectable by callers.
+    """
     st = _BREAKER_STATE.get(host)
     if not st:
         return True, None
@@ -1078,7 +1329,7 @@ def _breaker_check(host):
             st['state'] = 'HALF_OPEN'
             logger.warning(f'circuit-breaker HALF_OPEN for {host} after cooldown')
             return True, None
-        return False, 'circuit_open'
+        return False, st.get('cause') or 'circuit_open'
     return True, None
 
 
@@ -1091,11 +1342,21 @@ def _breaker_on_success(host):
     st['state'] = 'CLOSED'
     st['failures'] = []
     st['open_until'] = 0
+    st['cause'] = None
 
 
-def _breaker_on_failure(host):
+def _breaker_on_failure(host, cause=None):
+    """Record a failure for `host`. `cause` is the error code that caused it.
+
+    Causes in BREAKER_EXEMPT_CAUSES are recorded (so a later fail-fast can name
+    them) but never advance the failure counter.
+    """
     now = time.monotonic()
-    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED'})
+    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED', 'cause': None})
+    if cause:
+        st['cause'] = cause
+    if cause in BREAKER_EXEMPT_CAUSES:
+        return
     # Drop failures outside the rolling window.
     cutoff = now - ORS_BREAKER_ROLLING_WINDOW_S
     st['failures'] = [t for t in st['failures'] if t >= cutoff]
@@ -1103,7 +1364,7 @@ def _breaker_on_failure(host):
     if st['state'] == 'HALF_OPEN' or len(st['failures']) >= ORS_BREAKER_FAILURE_THRESHOLD:
         st['state'] = 'OPEN'
         st['open_until'] = now + ORS_BREAKER_COOLDOWN_S
-        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
+        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cause={st.get("cause")}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
 
 
 def _emit_metric(endpoint, profile, host, status, latency_ms, req_bytes, resp_bytes,
@@ -1176,12 +1437,18 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
     if not allow:
         req_id = uuid.uuid4().hex
         _emit_metric(function, profile, host, 503, 0, req_bytes, None,
-                     error_code='circuit_open', caller=caller, region=region_hint, request_id=req_id)
+                     error_code=breaker_reason, caller=caller, region=region_hint, request_id=req_id)
+        # Report the code that OPENED the breaker, not a generic 'circuit_open'.
+        # Callers key off this string to tell a suspended region (resume it) from
+        # an overloaded one (back off), and collapsing both into one opaque code
+        # is what made a suspended region undetectable for the cooldown window.
         return {
-            'error': 'circuit_open',
-            'message': f'Circuit breaker is OPEN for {host} after repeated failures. '
-                       f'Calls will resume after the {ORS_BREAKER_COOLDOWN_S}s cooldown. '
+            'error': breaker_reason,
+            'message': f'Circuit breaker is OPEN for {host} after repeated failures '
+                       f'({breaker_reason}). Calls will resume after the '
+                       f'{ORS_BREAKER_COOLDOWN_S}s cooldown. '
                        f'See the Observability page for the failing endpoint history.',
+            'circuit_open': True,
             'ors_host': host,
         }
 
@@ -1194,7 +1461,21 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
             latency_ms = int((time.monotonic() - t0) * 1000)
             resp_bytes = len(r.content) if r.content is not None else None
-            resp = r.json()
+            try:
+                resp = r.json()
+            except ValueError:
+                # Returned rather than retried: the request already burned the
+                # full ingress budget, same reasoning as the Timeout branch.
+                # See _non_json_envelope for why this guard exists at all.
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                body = (r.text or '').strip()
+                logger.error(f'Non-JSON response from {host} (HTTP {r.status_code}) after '
+                             f'{latency_ms}ms: {body[:200]!r}')
+                _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
+                             error_code='non_json_response', caller=retried_caller,
+                             region=region_hint, request_id=req_id)
+                _breaker_on_failure(host, 'non_json_response')
+                return _non_json_envelope(r, host, service='ORS', latency_ms=latency_ms)
             logger.debug(resp)
             annotated = _annotate_engine_error(resp, host, payload)
             engine_err = annotated.get('error') if isinstance(annotated, dict) else None
@@ -1203,10 +1484,14 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
                          error_code=err_code, caller=retried_caller, region=region_hint, request_id=req_id)
             # Retry only on server-side transient failures (5xx). 4xx are user errors,
-            # 2xx/3xx are success-shaped, both end the loop here.
-            if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS:
+            # 2xx/3xx are success-shaped, both end the loop here. An ORS code in
+            # ORS_NON_RETRYABLE_CODES also ends it: those describe the request,
+            # so re-sending it unchanged can only add load and delay the caller's
+            # own fallback (see the 6099 measurement above that definition).
+            non_retryable = err_code in ORS_NON_RETRYABLE_CODES
+            if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS and not non_retryable:
                 last_error_payload = annotated
-                _breaker_on_failure(host)
+                _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
                 backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
                 # +/-25% jitter (full random distribution) so simultaneous
                 # callers do not synchronize retries. Using random.uniform
@@ -1216,7 +1501,23 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
                 logger.warning(f'ORS {r.status_code} on {host}; retry {attempt}/{ORS_RETRY_MAX_ATTEMPTS - 1} after {backoff_s:.2f}s')
                 time.sleep(backoff_s)
                 continue
-            _breaker_on_success(host)
+            # A 5xx that ends the loop is still a FAILURE. Calling
+            # _breaker_on_success here (as this did) meant the counter was
+            # cleared by the very attempt that proved the host unwell, so a host
+            # failing every single call could never trip the breaker: the third
+            # attempt reset what the first two had accumulated. That is why the
+            # 119 recorded 5xx events above are accompanied by ZERO 503
+            # circuit_open events in the whole log table - the breaker has never
+            # once opened in production. Only a non-5xx response clears it.
+            #
+            # A non-retryable code counts too. It is still evidence about the
+            # host (a 6099 means the engine could not complete the work it was
+            # given), and exempting it would re-create the same blind spot for
+            # the one code that produced the incident.
+            if 500 <= r.status_code < 600:
+                _breaker_on_failure(host, err_code if isinstance(err_code, str) else 'http_5xx')
+            else:
+                _breaker_on_success(host)
             return annotated
         except requests.exceptions.ConnectionError:
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -1240,7 +1541,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'Cannot connect to ORS{region_label} (attempt {attempt}) - suspended or not provisioned')
             _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
                          error_code='service_unreachable', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'service_unreachable')
             last_error_payload = {
                 'error': 'service_unreachable',
                 'graph_loading': False,
@@ -1264,7 +1565,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
             logger.error(f'ORS request timed out on {host} after {timeout_s}s')
             _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
                          error_code='timeout', caller=retried_caller, region=region_hint, request_id=req_id)
-            _breaker_on_failure(host)
+            _breaker_on_failure(host, 'timeout')
             return {
                 'error': 'timeout',
                 'message': f'ORS request timed out on {host} after {timeout_s}s. '

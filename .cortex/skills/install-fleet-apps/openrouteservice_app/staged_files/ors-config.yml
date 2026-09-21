@@ -17,10 +17,35 @@ ors:
         maximum_distance_round_trip_routes: 100000000
         maximum_visited_nodes: 100000000
         maximum_waypoints: 1000
-    profiles:   
+        # Explicit because the ORS default has drifted between 350 and 400 across
+        # engine versions, and because endpoints.matrix.maximum_search_radius
+        # below must be able to match it. WRITE_ORS_CONFIG emits the same pair
+        # from ORS_LIMIT_DEFAULTS(); this static copy is only the first-boot
+        # bootstrap staged by provision_engine.sh, so it has to agree.
+        maximum_snapping_radius: 1000
+    profiles:
+## ext_storages below are load-bearing, keep them in sync with the generated path.
+## WRITE_ORS_CONFIG (03_region_management.sql) emits the same per-profile sets PLUS
+## OsmId for every provisioned region. OsmId is what makes the /export TopoJSON
+## expose ors_ids, which MATCH_PATH joins on to turn matched edge ids into road
+## geometry - without it MATCH_PATH returns MATCHED_EDGES > 0 but a NULL GEOJSON.
+## The default region boots from THIS static file (BOOTSTRAP_DEFAULT_REGION skips
+## the provisioning flow), so leaving these commented out silently ships a default
+## region whose graph cannot support MATCH_PATH. Each profile's full default set is
+## re-declared rather than only adding OsmId, because a config ext_storages block
+## may replace the built-in defaults rather than extend them (same reasoning as
+## WRITE_ORS_CONFIG). Changing these requires a graph REBUILD, not just a restart.
 ## Driving profiles
       driving-car: 
         enabled: true
+        build:
+          ext_storages:
+            WayCategory:
+            WaySurfaceType:
+            Tollways:
+            RoadAccessRestrictions:
+            HeavyVehicle:
+            OsmId:
       driving-hgv: 
         enabled: false
 ## Cycling profiles
@@ -32,6 +57,13 @@ ors:
         enabled: false
       cycling-electric:
         enabled: true
+        build:
+          ext_storages:
+            WayCategory:
+            WaySurfaceType:
+            HillIndex:
+            TrailDifficulty:
+            OsmId:
 # Foot profiles
       foot-walking:
         enabled: false
@@ -45,6 +77,13 @@ ors:
       maximum_visited_nodes: 100000000
       maximum_routes: 2000000
       maximum_routes_flexible: 2000000
+      # Must equal profile_default.service.maximum_snapping_radius above. ORS
+      # snaps matrix coordinates with this key (shipped default 2000) and
+      # routing coordinates with maximum_snapping_radius, so while they
+      # differed MATRIX accepted points that DIRECTIONS then rejected with
+      # 404/2010 - which is exactly what defeats the matrix-as-oracle
+      # pre-flights in deploy-agent.sql and the SA backload helpers.
+      maximum_search_radius: 1000
     isochrones:
       maximum_locations: 50
       maximum_intervals: 10

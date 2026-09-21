@@ -3,23 +3,40 @@
 import { useState } from 'react';
 import type { MessagePart } from '@/lib/types';
 import { inlineRegistry } from '@/lib/inline-registry';
+import { matchesTool } from '@/lib/tool-names';
+import { isSuppressedResult } from '@/lib/tool-visibility';
 import { useAppStore } from '@/lib/store';
 import { ApprovalAction } from '@/components/inline/approval-action';
 import { ConfirmAction } from '@/components/inline/confirm-action';
 import type { Operation } from '@/components/inline/confirm-action';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { stripCitationTags } from '@/lib/chart-citations';
+import { roundForDisplay } from '@/lib/format-number';
+
+// Raw tool-result viewer: still a surface a user reads, so numbers are capped at
+// the display precision here too. Applied as a JSON replacer rather than a string
+// rewrite, so the payload keeps its shape and only the rendered precision changes.
+function roundJsonNumbers(key: string, value: unknown): unknown {
+  return typeof value === 'number' ? roundForDisplay(value, key) : value;
+}
 
 // Tools whose tool_result is suppressed - agent text summarizes these.
 // propose_write is NOT in this list: its tool_result is rendered as ConfirmAction.
-const SUPPRESS_RESULT_SUFFIXES = ['execute_workflow', 'resume_workflow', 'cortex_analyst_text_to_sql'];
-function isSuppressedTool(toolName: string): boolean {
-  return SUPPRESS_RESULT_SUFFIXES.some((s) => toolName === s || toolName.endsWith('__' + s));
+//
+// The list and the payload-shape tests now live in lib/tool-visibility.ts, where
+// the harness can drive them. Moved because the version inlined here keyed the
+// analyst tools on their tool TYPE (`cortex_analyst_text_to_sql`) while the stream
+// sends their NAMES (`query_dwell`, ...13 of them), so it never suppressed
+// anything and every analytics turn dumped its whole semantic model into the
+// transcript.
+function isSuppressedTool(toolName: string, output?: unknown): boolean {
+  return isSuppressedResult(toolName, output);
 }
 
-// Matches propose_write from MCP (cdp_workflow_mcp__propose_write) or bare name.
+// Matches propose_write from MCP (cdp_workflow_mcp_propose_write) or bare name.
 function isMcpProposeWrite(toolName: string | undefined): boolean {
-  return !!toolName && (toolName === 'propose_write' || toolName.endsWith('__propose_write'));
+  return matchesTool(toolName, 'propose_write');
 }
 
 function useDebugMode(): boolean {
@@ -61,7 +78,7 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
   if ((part.type === 'tool_result') &&
       isSuppressedTool(part.toolName) &&
       part.toolName !== undefined &&
-      (part.toolName === 'execute_workflow' || part.toolName.endsWith('__execute_workflow'))) {
+      matchesTool(part.toolName, 'execute_workflow')) {
     const pa = (part.output as Record<string, unknown>)?.pending_approval as Record<string, unknown> | undefined;
     if (pa?.instance_id) {
       return (
@@ -76,8 +93,11 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
 
   // Suppress tool_result/tool_error for workflow and analytics tools whose results
   // the agent narrates directly - the agent text is the user-facing output.
+  // The PAYLOAD is passed too, because the analyst tools are recognised by shape
+  // (`semantic_model_key`) rather than by name - 13 names in a list would go stale
+  // the moment a semantic view is added. `?debug=1` still shows everything.
   if (!debug && (part.type === 'tool_result' || part.type === 'tool_error') &&
-      isSuppressedTool(part.toolName)) {
+      isSuppressedTool(part.toolName, part.type === 'tool_result' ? part.output : undefined)) {
     return null;
   }
 
@@ -97,6 +117,12 @@ export function MessagePartRenderer({ part }: { part: MessagePart }) {
 
 function TextPart({ content }: { content: string }) {
   const showView = useAppStore((s) => s.showView);
+  // Belt and braces: message-list already resolves `<chart>ID</chart>` citations
+  // into chart parts, but this is the component that actually renders markdown,
+  // and react-markdown carries no rehype-raw - so an unresolved tag would be
+  // dropped by the parser with no trace. Strip here too, so any text reaching
+  // the renderer through a path that skipped resolution cannot show a raw tag.
+  const text = stripCitationTags(content);
 
   return (
     <div className="markdown-body" style={{ fontSize: '14px', lineHeight: '1.6' }}>
@@ -134,7 +160,7 @@ function TextPart({ content }: { content: string }) {
           },
         }}
       >
-        {content}
+        {text}
       </ReactMarkdown>
     </div>
   );
@@ -168,7 +194,10 @@ function ToolPending({ toolName }: { toolName: string }) {
 
 function ToolResult({ toolName, output }: { toolName: string; output: Record<string, unknown> }) {
   const def = inlineRegistry.get(toolName);
-  if (!def) return <JsonViewer data={output} />;
+  // A registered component may still decline THIS payload (see
+  // InlineComponentDef.shouldRender), in which case the result is shown rather
+  // than replaced by a component that has nothing to draw.
+  if (!def || (def.shouldRender && !def.shouldRender(output))) return <JsonViewer data={output} />;
   const Component = def.component;
   return (
     <div style={{ maxHeight: def.maxHeight, overflow: def.maxHeight ? 'auto' : undefined }}>
@@ -224,7 +253,7 @@ function JsonViewer({ data }: { data: Record<string, unknown> }) {
             maxHeight: '200px',
           }}
         >
-          {JSON.stringify(data, null, 2)}
+          {JSON.stringify(data, roundJsonNumbers, 2)}
         </pre>
       )}
     </div>

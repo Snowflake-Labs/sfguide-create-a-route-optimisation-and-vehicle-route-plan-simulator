@@ -3,6 +3,8 @@
 import { useEffect } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedInlineHint } from '@/components/views/RoutingSuspendedInlineHint';
+import { formatCellValue } from '@/lib/format-number';
 
 interface FilterDef {
   name: string;
@@ -33,9 +35,14 @@ function FilterSelect({
 }: {
   filter: FilterDef;
 }) {
-  const { data, loading } = useViewData(filter.data.query, filter.data.params);
+  // `suspended` matters here even though a filter is not itself an ORS surface:
+  // a filter fed by a live-routing query would otherwise render an empty
+  // dropdown, and every dependent panel then looks like "no data" instead of
+  // "engine starting".
+  const { data, loading, suspended, refetch } = useViewData(filter.data.query, filter.data.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
+  const setBlockedBind = useAppStore((s) => s.setBlockedBind);
 
   const valueField = filter.data.mapping?.value || 'value';
   const labelField = filter.data.mapping?.label || 'label';
@@ -54,6 +61,26 @@ function FilterSelect({
     if (first != null) updateViewState({ [emitKey]: String(first) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter.required, emitKey, options, valueField]);
+
+  // A required filter whose query returns NOTHING cannot seed anything, so the
+  // bind stays null and the "dependent queries never see a null filter" contract
+  // above silently breaks. Register the gap so useViewData skips those queries
+  // instead of sending NULL into a table-function argument, where it surfaces as
+  // "Unsupported subquery type cannot be evaluated" rather than an empty panel.
+  // Gated on `loading` so the first render (options not yet fetched) is not
+  // mistaken for "no options", and cleared on unmount so a blocked bind cannot
+  // outlive the view that declared it.
+  const isBlocked = Boolean(filter.required) && !loading && !suspended && options.length === 0;
+  useEffect(() => {
+    if (!emitKey) return;
+    setBlockedBind(emitKey, isBlocked ? (filter.label || filter.name) : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emitKey, isBlocked, filter.label, filter.name]);
+  useEffect(() => {
+    if (!emitKey) return;
+    return () => setBlockedBind(emitKey, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emitKey]);
 
   const handleChange = (value: string) => {
     if (emitKey) {
@@ -84,11 +111,20 @@ function FilterSelect({
       >
         {!filter.required && <option value="">All</option>}
         {options.map((row, i) => (
+          // The `value` attribute stays a RAW string on purpose: it is written into
+          // viewState and bound into dependent queries, so formatting it would change
+          // the filter, not its presentation. Only the option TEXT is formatted.
           <option key={i} value={String(row[valueField] ?? '')}>
-            {String(row[labelField] ?? row[valueField] ?? '')}
+            {formatCellValue(row[labelField] ?? row[valueField], { column: labelField, grouping: true, empty: '' })}
           </option>
         ))}
       </select>
+      {suspended && <RoutingSuspendedInlineHint info={suspended} onRetry={refetch} />}
+      {isBlocked && (
+        <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-secondary, #6b7280)' }}>
+          No options available - dependent panels are empty until this loads.
+        </div>
+      )}
     </div>
   );
 }

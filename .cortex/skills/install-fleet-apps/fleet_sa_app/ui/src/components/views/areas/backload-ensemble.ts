@@ -187,12 +187,26 @@ function rowCost(r: ProposalRow): number {
 
 // Phase A - de-duplicate proposals to one ScoredPair per (trailer, load) and
 // compute per-dimension 0-100 scores + letter grades. Independent of weights.
+//
+// ECON RATES ARE AN OVERRIDE, NOT A RE-DERIVATION. The solver re-rates the two
+// economic rates PER VEHICLE CLASS (empty cost from the class row, loaded
+// revenue scaled by the class/hgv cost ratio) and echoes the pair it used in
+// totals.econ_basis / totals.cost_per_empty_km / totals.revenue_per_loaded_km.
+// Reading MATCH_PARAMS here instead would silently re-price an ebike fleet at
+// the truck rates the solver deliberately stopped using, so any caller that
+// scores pairs locally must pass the rates the solve reported. The live app path
+// does NOT come through here - proposals arrive already scored from the solver
+// and the client only applies weights - so this is the guard for a local or
+// offline scoring path rather than a hot code path.
 export function computeScoredPairs(
   proposals: ProposalRow[], params: ParamRow[], trailers: TrailerLoc[] = [],
+  rates?: { costPerEmptyKm?: number | null; revenuePerLoadedKm?: number | null },
 ): ScoredPair[] {
   if (!proposals.length) return [];
-  const costEmpty = numParam(params, 'COST_PER_EMPTY_KM', 1.2);
-  const revLoaded = numParam(params, 'REVENUE_PER_LOADED_KM', 1.10);
+  const costEmpty = finite(rates?.costPerEmptyKm)
+    ? Number(rates?.costPerEmptyKm) : numParam(params, 'COST_PER_EMPTY_KM', 1.2);
+  const revLoaded = finite(rates?.revenuePerLoadedKm)
+    ? Number(rates?.revenuePerLoadedKm) : numParam(params, 'REVENUE_PER_LOADED_KM', 1.10);
   const maxEmptyKm = Math.max(1, numParam(params, 'MAX_EMPTY_KM', 100));
   const maxStops = Math.max(2, numParam(params, 'BPMP_MAX_STOPS', 4));
   const IDEAL_SLACK_HRS = 24;

@@ -5,7 +5,7 @@
 
 import { Fragment } from 'react';
 import PhasePips from '@/components/shared/phase-pips';
-import { ProvisionJob, RegionStatus } from '../helpers';
+import { ProvisionJob, RegionStatus, describeJobSource } from '../helpers';
 import { StepsStrip, StepsLegend } from '../Steps';
 import type { BuildProgress, DiagState } from '../types';
 import { DiagDrawer, getTimeSince } from './shared';
@@ -64,6 +64,7 @@ export default function ActiveJobsTable({
             const gr = region?.graphReadiness;
             const showPhaseTriplet = stage === 'building_graph';
             const elapsedHint = job.started_at ? getTimeSince(job.started_at) : undefined;
+            const source = describeJobSource(job);
             return (
               <Fragment key={job.job_id}>
                 {profileRows.map((profile, idx) => {
@@ -127,6 +128,15 @@ export default function ActiveJobsTable({
                           {job.message}
                         </span>
                       )}
+                      {source && (
+                        <span>
+                          <span className="details-label">Source</span>
+                          {source.host}
+                          {source.isMirror && (
+                            <span className="badge warn" style={{ marginLeft: 6 }}>mirror</span>
+                          )}
+                        </span>
+                      )}
                       {showBuildBar && (
                         <div className="build-progress" style={{ minWidth: 220, flex: '1 1 240px' }}>
                           <div className="progress-bar-track">
@@ -151,7 +161,7 @@ export default function ActiveJobsTable({
                           {startupHint}
                         </span>
                       )}
-                      {!job.started_at && !job.message && !showBuildBar && !startupHint && (
+                      {!job.started_at && !job.message && !showBuildBar && !startupHint && !source && (
                         <span style={{ opacity: 0.7 }}>Waiting for first status update...</span>
                       )}
                     </div>

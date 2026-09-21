@@ -2,6 +2,7 @@
 -- pack=starter mapping_source_id=neutral_sf
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"pack-setup"}}';
 CREATE DATABASE IF NOT EXISTS STARTER_APP COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER DATABASE STARTER_APP SET DATA_RETENTION_TIME_IN_DAYS = 0;
 CREATE SCHEMA IF NOT EXISTS STARTER_APP.CORE COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE OR REPLACE VIEW STARTER_APP.CORE.VW_LOCATIONS

@@ -2,8 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getSnowflakeAuth } from '@/lib/sf-auth';
+import {
+  detectOrsSuspended,
+  outOfGraphMessage,
+  parseOutOfGraphPoints,
+  OUT_OF_GRAPH_REASON,
+} from '@/lib/routing-suspend';
+import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
+// Warehouse comes from lib/warehouse.ts (single owner). Do not reintroduce a
+// `|| 'COMPUTE_WH'` fallback: that named a warehouse this stack never creates.
+import { WAREHOUSE } from '@/lib/warehouse';
 
-const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
 
 interface StatementResponse {
@@ -47,10 +56,29 @@ function validateParams(params?: Record<string, string | null>): void {
 
 // Databases an agent-emitted (dynamic) query may reference. FLEET_APP is the
 // neutral data contract; SNOWFLAKE.CORTEX.COMPLETE backs the asset-velocity
-// rationale. This is a fast pre-filter for clear errors - the AUTHORITATIVE
-// boundary is the owner's-rights proc FLEET_APP.CORE.QUERY_DYNAMIC, which runs
-// as FLEET_APP_DYNAMIC_READER and physically cannot reach other databases.
-const ALLOWED_DYNAMIC_DBS = new Set(['FLEET_APP', 'SNOWFLAKE']);
+// rationale; ROUTING_PLATFORM.CONTRACT is the routing seam, so an inline
+// `render_map` layer (or a render_view Map area) can draw LIVE geometry -
+// DIRECTIONS / ISOCHRONES / OPTIMIZATION each project a GEOJSON GEOGRAPHY
+// column. Those contract functions are owner's-rights wrappers, so USAGE is the
+// whole grant and no underlying-source privilege leaks with it (role_binding.sql).
+//
+// Consequence to keep in view: agent-authored SQL can now spend routing-engine
+// time. It is bounded by MAX_MAP_LAYERS (4 queries per map) and the per-layer row
+// cap, not by anything here.
+//
+// This is a fast pre-filter for clear errors - the AUTHORITATIVE boundary is the
+// owner's-rights proc FLEET_APP.CORE.QUERY_DYNAMIC, which runs as
+// FLEET_APP_DYNAMIC_READER and physically cannot reach a database that role was
+// never granted. MUST stay in sync with ALLOWED_DYNAMIC_DBS in
+// fleet_tools/user/src/codes.ts and with the reader's grants; asserted by
+// scripts/check_dynamic_allowlist.py.
+const ALLOWED_DYNAMIC_DBS = new Set(['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM']);
+
+// Snowflake result-metadata type names for a geometry column, lowercased as the
+// SQL REST API reports them. MUST stay in sync with GEO_TYPES in
+// packages/fleet-kit/src/map/detect-geo.ts, which decides from the same names
+// whether a result can be mapped.
+const GEO_COLUMN_TYPES = new Set(['geography', 'geometry']);
 
 function validateDynamicAllowlist(sql: string): void {
   // Match any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
@@ -195,15 +223,44 @@ async function pollForResults(handle: string, sqlPreview: string): Promise<State
       throw new Error(data.message || 'Query failed');
     }
   }
-  throw new Error('Query timed out after 30s');
+  // Give up, but CANCEL the statement first. An abandoned statement keeps
+  // running and keeps holding a slot on an X-Small whose MAX_CONCURRENCY_LEVEL
+  // is 8, so a page that times out several panels at once makes the contention
+  // that caused the timeout measurably worse. Best-effort: a failed cancel must
+  // not replace the real error.
+  try {
+    await fetch(`${auth.baseUrl}/api/v2/statements/${handle}/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: 'application/json',
+        'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+      },
+    });
+  } catch (e) {
+    logger.warn('sf-cancel-failed', { handle: handle.slice(0, 16), err: String(e) });
+  }
+  // Name the warehouse in the message. The previous bare "Query timed out after
+  // 30s" gave no way to tell a slow query from a saturated warehouse, which is
+  // what this actually was: reads queueing behind a multi-hour provisioning
+  // statement on a shared warehouse.
+  throw new Error(
+    `Query timed out after 30s on warehouse ${WAREHOUSE} (statement cancelled). `
+    + `The query itself may be fine - check whether the warehouse is saturated.`,
+  );
 }
 
 async function handleQuery(request: NextRequest): Promise<Response> {
+  // Region hint (optional): lets the suspended-engine handler resume the right
+  // region even when the error string does not name the service host. Parsed
+  // before the try so it is available in the catch.
+  let regionHint: string | null = null;
   try {
     const body = await request.json();
     const rawSql = body.sql as string;
     const params = body.params as Record<string, string | null> | undefined;
     const dynamic = body.dynamic === true;
+    regionHint = typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
     if (!rawSql) {
       return NextResponse.json({ error: 'sql is required' }, { status: 400 });
@@ -277,6 +334,36 @@ async function handleQuery(request: NextRequest): Promise<Response> {
         } else if (col.type === 'timestamp_ntz' || col.type === 'timestamp_ltz' || col.type === 'timestamp_tz') {
           const ms = Math.round(parseFloat(raw) * 1000);
           obj[col.key] = new Date(ms).toISOString();
+        } else if (col.type === 'date') {
+          // The SQL REST API serializes DATE as DAYS SINCE EPOCH ("20666"), not
+          // as text, so without this branch a projected DATE renders as a raw
+          // number. Emit a date-only YYYY-MM-DD string (UTC, so no local-timezone
+          // off-by-one) which stays lexically comparable and is directly usable
+          // as an <input type="date"> value/min/max.
+          const days = Number(raw);
+          obj[col.key] = Number.isFinite(days)
+            ? new Date(days * 86400000).toISOString().slice(0, 10)
+            : raw;
+        } else if (GEO_COLUMN_TYPES.has(String(col.type).toLowerCase())) {
+          // A GEOGRAPHY column is the preferred way to put geometry on a map:
+          // it needs no ST_ASGEOJSON wrapper, and detectGeoColumns treats the
+          // declared type as authoritative, so a query that selects one is
+          // mappable without a hand-authored layer spec.
+          //
+          // Under the default GEOGRAPHY_OUTPUT_FORMAT (GeoJSON, confirmed on
+          // this account) the value already arrives as GeoJSON text, which is
+          // what the layer compiler and detect-geo both accept. This branch
+          // makes that contract EXPLICIT rather than incidental: until now
+          // geometry only reached the map because it fell through the final
+          // `else` as an untouched string, so nothing here said the map path
+          // depended on it and nothing normalized the shape.
+          //
+          // The value is deliberately left as a STRING rather than parsed.
+          // Table and detail renderers stringify whatever they are given, so
+          // handing them an object would print "[object Object]" where the
+          // GeoJSON text renders today. If a driver ever yields an object,
+          // re-serialize it so the wire shape stays one thing.
+          obj[col.key] = typeof raw === 'string' ? raw : JSON.stringify(raw);
         } else {
           obj[col.key] = raw;
         }
@@ -285,14 +372,40 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     });
 
     return NextResponse.json({
-      columns: columns.map(({ key, label }) => ({ key, label })),
+      // `type` is carried through deliberately. The client needs the declared
+      // Snowflake type to bind a map layer from a GEOGRAPHY column without a
+      // hand-authored spec (detectGeoColumns ranks declared geometry above
+      // every value heuristic, and that is the one signal an empty result set
+      // still carries). Dropping it here is why that detection could not run.
+      columns: columns.map(({ key, label, type }) => ({ key, label, type })),
       rows,
       totalRows: result.resultSetMetaData?.numRows ?? rows.length,
     });
   } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Query execution failed';
+    // A live ISOCHRONES/MATRIX view over a suspended region surfaces the
+    // gateway's DNS/connection failure. Resume the region and return a typed,
+    // friendly notice so the panel shows "resume triggered" instead of a raw error.
+    const det = detectOrsSuspended(rawMsg);
+    // Off-graph coordinates: a healthy engine refused a bad payload. Reporting a
+    // resume here would be false, and the panel would advertise a wait that
+    // changes nothing.
+    if (det.outOfGraph) {
+      const pts = parseOutOfGraphPoints(rawMsg);
+      logger.warn('sf-out-of-graph', { region: regionHint, points: pts.length });
+      return NextResponse.json(
+        { error: outOfGraphMessage(regionHint, pts.length, pts), reason: OUT_OF_GRAPH_REASON },
+        { status: 422 },
+      );
+    }
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, regionHint) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
     logger.error('sf-error', { warehouse: WAREHOUSE }, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Query execution failed' },
+      { error: rawMsg },
       { status: 500 },
     );
   }

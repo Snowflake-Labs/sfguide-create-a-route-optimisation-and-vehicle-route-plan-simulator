@@ -1,0 +1,26 @@
+# Scheduled evaluation config - FLEET_AGENT (consumer).
+# Targets the PRODUCTION alias so it always scores the version serving users.
+# See fleet_agent.yaml for the full metric rationale.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "PRODUCTION"
+  run_params:
+    label: "Fleet consumer agent scheduled"
+    description: "Daily cadence evaluation of the production consumer agent."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_AGENT"
+
+metrics:
+  - name: "answer_correctness"
+    version: "v3"
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"
+  - name: "tool_execution_accuracy"
+    version: "v3"

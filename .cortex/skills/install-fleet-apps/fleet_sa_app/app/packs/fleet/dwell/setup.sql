@@ -23,8 +23,6 @@ SELECT
     t.LOCATION_ID, t.LOCATION_TYPE, t.POINT_INDEX, t.ODOMETER_KM,
     t.POINT_GEOM, t.VEHICLE_TYPE, t.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
-WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
-  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_VEHICLE_FLEET
@@ -32,31 +30,53 @@ CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_VEHICLE_FLEET
 SELECT
     f.VEHICLE_ID, f.HOME_LOCATION_ID AS HOME_BASE_ID,
     f.DRIVER_PROFILE, f.OPERATING_MODE, f.SHIFT_TYPE, f.BASE_SPEED_KMH,
-    f.VEHICLE_TYPE, f.REGION, f.REGION AS HOME_BASE_NAME
+    f.VEHICLE_TYPE, f.REGION,
+    FLEET_APP.CORE.REGION_LABEL(f.REGION) AS REGION_LABEL,
+    f.REGION AS HOME_BASE_NAME,
+    -- Dispatch state. IS_GHOST means the generator deliberately parked
+    -- this vehicle at its home POI for the GHOST_* day window, emitting
+    -- only IDLE pings with no TRIP_ID. When the window covers the whole
+    -- horizon the vehicle has NO trips at all, hence no actual/expected
+    -- path to draw - which is the honest answer to "show me this
+    -- vehicle's route", rather than the dataset looking incomplete.
+    -- NULL on datasets generated before the column existed, so it is
+    -- COALESCEd to FALSE (assume dispatched) rather than reclassifying
+    -- every legacy vehicle as parked.
+    COALESCE(f.IS_GHOST, FALSE) AS IS_GHOST,
+    f.GHOST_START_DAY, f.GHOST_END_DAY
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
-WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
-  AND f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DESTINATIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
-    p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
-    p.CATEGORY AS BASIC_CATEGORY, p.REGION AS CITY,
+    p.LOCATION_ID AS ID,
+    -- Strip the wrapping double quotes the loader leaves on every POI name
+    -- (measured: ALL 16,847 rows in DIM_POIS, both regions, e.g. '"BP"').
+    -- Without this the agent answers with a quoted token and the UI shows
+    -- '"$6 Bowl Shop"'. The real fix belongs in the writer - see NOTE in
+    -- data-model.yaml - this keeps the contract clean meanwhile.
+    REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
+    p.LOCATION_TYPE,
+    p.CATEGORY AS BASIC_CATEGORY,
+    -- CITY is the human-readable form of the region key, NOT the key
+    -- itself. It used to be `p.REGION AS CITY`, so the column advertised
+    -- a city and held 'SanFrancisco' - unmatchable against the phrase a
+    -- person types.
+    FLEET_APP.CORE.REGION_LABEL(p.REGION) AS CITY,
     p.POINT_GEOM AS GEOMETRY, p.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
 WHERE p.LOCATION_TYPE NOT IN ('REST_STOP')
-  AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_REST_STOPS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
-    p.LOCATION_ID AS REST_STOP_ID, p.NAME,
+    p.LOCATION_ID AS REST_STOP_ID,
+    REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
     p.CATEGORY AS REST_TYPE, p.POINT_GEOM AS CENTER_POINT, p.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
 WHERE p.LOCATION_TYPE = 'REST_STOP'
-  AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_CONFIG
@@ -68,6 +88,7 @@ CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_STATE_CHANGES
 SELECT
     TELEMETRY_ID, VEHICLE_ID, TRIP_ID, TS, POINT_GEOM,
     SPEED_KMH, STATUS, LOCATION_ID, LOCATION_TYPE,
+    REGION, VEHICLE_TYPE,
     LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS PREV_STATUS,
     CASE WHEN STATUS != LAG(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS)
          THEN 1 ELSE 0 END AS IS_STATE_CHANGE
@@ -79,11 +100,27 @@ CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_SESSIONS_RAW
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 WITH sessions AS (
   SELECT *,
-    CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID
+    CONDITIONAL_CHANGE_EVENT(STATUS) OVER (PARTITION BY VEHICLE_ID ORDER BY TS) AS SESSION_ID,
+    -- Dispatch state, derived from the telemetry itself rather than from
+    -- DIM_FLEET, so it holds for ANY mapping source (a customer table has
+    -- no notion of the generator's ghost window, but it does have a trip
+    -- reference). A vehicle whose EVERY ping carries a NULL TRIP_ID was
+    -- never dispatched over the horizon: it produced no trip, therefore no
+    -- actual or expected path, and its whole stay is one unbroken IDLE
+    -- span. Left in the fact and flagged rather than deleted - a parked
+    -- asset is a real and interesting thing (it is the premise of the
+    -- backload demo) - but it must not be silently ranked against
+    -- vehicles that actually worked. Measured before this flag existed:
+    -- 5 of the top 7 Europe vehicles by total dwell minutes were parked
+    -- trailers with a single ~10,000-minute session, beating the real
+    -- leader which had 45 sessions.
+    MAX(CASE WHEN TRIP_ID IS NOT NULL THEN 1 ELSE 0 END)
+      OVER (PARTITION BY VEHICLE_ID) = 1 AS IS_DISPATCHED
   FROM FLEET_APP.DWELL.VW_STATE_CHANGES
 )
 SELECT
   VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID,
+  REGION, IS_DISPATCHED,
   MIN(TS) AS SESSION_START, MAX(TS) AS SESSION_END,
   DATEDIFF('second', MIN(TS), MAX(TS)) AS DWELL_SECONDS,
   ROUND(DATEDIFF('second', MIN(TS), MAX(TS)) / 60.0, 1) AS DWELL_MINUTES,
@@ -92,22 +129,82 @@ SELECT
   H3_POINT_TO_CELL_STRING(ST_CENTROID(ST_COLLECT(POINT_GEOM)), 7) AS H3_CELL_R7
 FROM sessions
 WHERE STATUS LIKE 'DWELL%' OR STATUS = 'IDLE'
-GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID;
+GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID, REGION, IS_DISPATCHED;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DWELL_SESSIONS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
+-- Location enrichment resolves in three steps, in descending trust:
+--   1. the recorded LOCATION_ID (exact),
+--   2. a co-located POI within SNAP_M metres of the session centroid,
+--   3. an explicit "unmapped" label naming the STOP KIND we do know.
+--
+-- Step 2 is deliberately capped very tight. On this account 2,693 of 2,802
+-- Europe sessions reference a LOCATION_ID that is absent from DIM_POIS
+-- entirely (not a dataset mismatch - the ids exist nowhere, so the Europe
+-- generator emitted telemetry against POIs it never persisted). Measured
+-- over a 400-session sample, the distance to the NEAREST POI in that
+-- region has a MEDIAN of 11.1 km and a max of 72.4 km, with only 1% inside
+-- 150 m: these are motorway rest stops, which legitimately have no POI
+-- record. A loose nearest-POI fallback would therefore have labelled a
+-- lay-by after a warehouse 11 km away - fabricated data that reads as
+-- authoritative. San Francisco resolves 100% by id and never reaches
+-- step 2.
+--
+-- Step 3 is honest rather than blank: 'Unmapped rest stop' /
+-- 'Unmapped warehouse' says what the telemetry actually asserts, where
+-- the old 'Unknown' + 'N/A' pair implied the whole fact was regionless
+-- and led an agent to report the dataset as missing.
+-- NOTE (upstream defect, not fixed here): every DIM_POIS.NAME is wrapped
+-- in double quotes by the writer - all 16,847 rows across both regions,
+-- e.g. '"BP"'. The leaf projections in entity-mapping.yaml strip them so
+-- this contract stays clean, and the snap CTE below does the same, but the
+-- writer should stop emitting them; every OTHER consumer of DIM_POIS still
+-- sees the quoted form.
+WITH snap AS (
+  SELECT s.VEHICLE_ID, s.SESSION_ID, s.STATUS,
+         REGEXP_REPLACE(p.NAME, '^"|"$', '') AS NAME,
+         p.CATEGORY AS BASIC_CATEGORY, p.LOCATION_TYPE, p.REGION
+  FROM FLEET_APP.DWELL.VW_SESSIONS_RAW s
+  -- H3 res-8 (~460 m edge) prefilter so this stays a hash join instead of
+  -- a cross product; ST_DWITHIN below remains the authoritative test.
+  JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+    ON p.REGION = s.REGION
+   AND H3_POINT_TO_CELL_STRING(p.POINT_GEOM, 8) = H3_POINT_TO_CELL_STRING(s.AVG_POINT, 8)
+  WHERE s.AVG_POINT IS NOT NULL
+    AND ST_DWITHIN(s.AVG_POINT, p.POINT_GEOM, 150)
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY s.VEHICLE_ID, s.SESSION_ID
+    ORDER BY ST_DISTANCE(s.AVG_POINT, p.POINT_GEOM)
+  ) = 1
+)
 SELECT
   s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
   s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
   s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
-  COALESCE(d.NAME, rs.NAME, 'Unknown') AS LOCATION_NAME,
-  COALESCE(d.CITY, 'N/A') AS CITY,
-  COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, s.STATUS) AS FACILITY_TYPE,
-  COALESCE(d.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
+  COALESCE(
+    d.NAME, rs.NAME, sn.NAME,
+    'Unmapped ' || LOWER(REPLACE(REPLACE(s.STATUS, 'DWELL_', ''), '_', ' '))
+  ) AS LOCATION_NAME,
+  -- How LOCATION_NAME was resolved, so a consumer never has to guess
+  -- whether a name is authoritative.
+  CASE
+    WHEN d.NAME IS NOT NULL OR rs.NAME IS NOT NULL THEN 'location_id'
+    WHEN sn.NAME IS NOT NULL                       THEN 'nearest_poi_150m'
+    ELSE 'unmapped'
+  END AS LOCATION_MATCH,
+  -- Region is carried as a first-class dimension so a consumer can filter
+  -- it. Nothing here is scoped to one region any more.
+  s.REGION, s.IS_DISPATCHED,
+  -- Region LABEL, never 'N/A': the geographic column stays populated even
+  -- when the specific location cannot be named.
+  COALESCE(d.CITY, FLEET_APP.CORE.REGION_LABEL(s.REGION)) AS CITY,
+  COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, sn.BASIC_CATEGORY, s.STATUS) AS FACILITY_TYPE,
+  COALESCE(d.LOCATION_TYPE, sn.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
   tf.VEHICLE_TYPE, tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
 FROM FLEET_APP.DWELL.VW_SESSIONS_RAW s
 LEFT JOIN FLEET_APP.DWELL.VW_DESTINATIONS d ON s.LOCATION_ID = d.ID
 LEFT JOIN FLEET_APP.DWELL.VW_REST_STOPS rs ON s.LOCATION_ID = rs.REST_STOP_ID
+LEFT JOIN snap sn ON sn.VEHICLE_ID = s.VEHICLE_ID AND sn.SESSION_ID = s.SESSION_ID
 LEFT JOIN FLEET_APP.DWELL.VW_VEHICLE_FLEET tf ON s.VEHICLE_ID = tf.VEHICLE_ID;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_H3_CONGESTION
@@ -115,13 +212,15 @@ CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_H3_CONGESTION
 SELECT
   H3_CELL_R7,
   DATE_TRUNC('hour', SESSION_START) AS HOUR_BUCKET,
+  REGION,
+  CITY,
   COUNT(DISTINCT VEHICLE_ID) AS VEHICLE_COUNT,
   COUNT(*) AS SESSION_COUNT,
   ROUND(AVG(DWELL_MINUTES), 1) AS AVG_DWELL_MIN,
   ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN
 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS
 WHERE STATUS LIKE 'DWELL%'
-GROUP BY H3_CELL_R7, HOUR_BUCKET;
+GROUP BY H3_CELL_R7, HOUR_BUCKET, REGION, CITY;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_SLA_ALERTS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
@@ -129,7 +228,7 @@ SELECT
   e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID,
   e.SESSION_START, e.SESSION_END, e.DWELL_SECONDS, e.DWELL_MINUTES,
   e.PING_COUNT, e.AVG_POINT, e.H3_CELL_R7,
-  e.LOCATION_NAME, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
+  e.LOCATION_NAME, e.REGION, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
   e.HOME_BASE_NAME, e.OPERATING_MODE, e.DRIVER_PROFILE,
   t.WARNING_MIN AS WARNING_MINUTES, t.CRITICAL_MIN AS CRITICAL_MINUTES,
   CASE
@@ -146,7 +245,7 @@ WHERE e.DWELL_MINUTES >= t.WARNING_MIN AND (e.STATUS LIKE 'DWELL%' OR e.STATUS =
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_FACILITY_UTILIZATION
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
-  LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE,
+  LOCATION_ID, LOCATION_NAME, REGION, CITY, FACILITY_TYPE, LOC_TYPE,
   DATE_TRUNC('day', SESSION_START)::DATE AS VISIT_DATE,
   COUNT(DISTINCT VEHICLE_ID) AS UNIQUE_VEHICLES,
   COUNT(*) AS TOTAL_SESSIONS,
@@ -156,12 +255,13 @@ SELECT
   ROUND(SUM(DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS
 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS
 WHERE STATUS LIKE 'DWELL%'
-GROUP BY LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE;
+GROUP BY LOCATION_ID, LOCATION_NAME, REGION, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
   e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME,
+  e.REGION,
   COUNT(*) AS TOTAL_DWELL_SESSIONS,
   ROUND(SUM(e.DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
   ROUND(SUM(e.DWELL_MINUTES) / 60.0, 1) AS TOTAL_DWELL_HOURS,
@@ -172,13 +272,20 @@ SELECT
 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS e
 LEFT JOIN FLEET_APP.DWELL.VW_SLA_ALERTS a
   ON e.VEHICLE_ID = a.VEHICLE_ID AND e.SESSION_ID = a.SESSION_ID AND e.STATUS = a.STATUS
-WHERE e.STATUS LIKE 'DWELL%'
-GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME;
+-- Only vehicles that were actually dispatched. This is the one rollup
+-- that RANKS vehicles against each other, so a never-dispatched asset
+-- sitting on a single multi-day IDLE span would top it while having done
+-- no work at all. The parked vehicles remain fully queryable in
+-- VW_DWELL_SESSIONS via IS_DISPATCHED = FALSE.
+WHERE e.STATUS LIKE 'DWELL%' AND e.IS_DISPATCHED
+GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME, e.REGION;
 
 CREATE OR REPLACE VIEW FLEET_APP.DWELL.VW_DAILY_TRENDS
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}' AS
 SELECT
   DATE_TRUNC('day', SESSION_START)::DATE AS TREND_DATE,
+  REGION,
+  CITY,
   COUNT(*) AS TOTAL_SESSIONS,
   COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES,
   ROUND(SUM(DWELL_MINUTES), 0) AS TOTAL_DWELL_MIN,
@@ -191,7 +298,7 @@ SELECT
   COUNT(DISTINCT H3_CELL_R7) AS UNIQUE_H3_CELLS
 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS
 WHERE STATUS LIKE 'DWELL%'
-GROUP BY TREND_DATE;
+GROUP BY TREND_DATE, REGION, CITY;
 
 -- Grants (additive; roles from fleet_sa_app/app/role_binding.sql)
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_USER;

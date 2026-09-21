@@ -2,7 +2,7 @@
 // Failed jobs cards. Each card shows the error and offers Ask-for-status,
 // Retry and Dismiss actions. Diag drawer is shared with ActiveJobsTable.
 
-import { ProvisionJob } from '../helpers';
+import { ProvisionJob, describeJobSource } from '../helpers';
 import type { DiagState } from '../types';
 import { DiagDrawer, getTimeSince } from './shared';
 
@@ -13,6 +13,36 @@ interface Props {
   onRetry: (job: ProvisionJob) => void;
   onDismiss: (jobId: string) => void;
   onCloseDiag: (region: string) => void;
+}
+
+// ERROR_MSG holds an internal token, not prose. Rendering it raw put strings
+// like `provisioner_killed_by_1h_task_timeout` in front of an operator, which
+// reads as an unexplained internal bug and says nothing about what to do -
+// while the one line that DID explain it (MESSAGE, e.g. an upstream 502) was
+// shown only when ERROR_MSG happened to be empty. Map the token to a headline
+// and always keep MESSAGE as supporting detail.
+const ERROR_HEADLINES: Record<string, string> = {
+  download_relaunched_origin:
+    'The upstream PBF host is unreachable or returning errors. Data already '
+    + 'downloaded is preserved, and the build resumes automatically once the '
+    + 'host recovers.',
+  download_relaunched:
+    'Superseded by an automatic download resume. Already-downloaded data was '
+    + 'kept; a newer job for this region is carrying the build.',
+  provisioner_killed_by_1h_task_timeout:
+    'The provisioning task hit its 1 hour timeout (since raised to 12 hours). '
+    + 'The download resumes automatically from where it stopped.',
+  graph_load_timeout:
+    'The routing engine did not finish loading its graph in time. The build is '
+    + 'retried automatically.',
+  ors_status_unreachable:
+    'The routing service did not become reachable. The build is retried '
+    + 'automatically.',
+};
+
+function headlineFor(job: ProvisionJob): string | null {
+  const token = (job.error_msg || '').trim();
+  return token ? ERROR_HEADLINES[token] || token : null;
 }
 
 export default function FailedJobsList({
@@ -27,7 +57,11 @@ export default function FailedJobsList({
   return (
     <>
       <h3>Failed Jobs</h3>
-      {jobs.map((job) => (
+      {jobs.map((job) => {
+        const headline = headlineFor(job);
+        const detail = (job.message || '').trim();
+        const source = describeJobSource(job);
+        return (
         <div
           key={job.job_id}
           className="error-banner"
@@ -48,10 +82,27 @@ export default function FailedJobsList({
             </div>
           </div>
           <div style={{ fontSize: 12, color: 'var(--red)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {job.error_msg || job.message || 'Unknown error'}
+            {headline || detail || 'Unknown error'}
           </div>
+          {/* Detail is shown IN ADDITION to the headline, never instead of it:
+              the underlying message is what an operator needs to distinguish an
+              upstream outage from a genuine build failure. */}
+          {headline && detail && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 4 }}>
+              {detail}
+            </div>
+          )}
           {job.profiles && (
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Profiles: {job.profiles}</div>
+          )}
+          {/* The host that served the bytes. Load-bearing for diagnosis: an
+              origin-outage failure reads very differently depending on whether
+              it came from the primary or from a mirror. */}
+          {source && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+              Source: {source.host}
+              {source.isMirror && <span className="badge warn" style={{ marginLeft: 6 }}>mirror</span>}
+            </div>
           )}
           {diagState[job.region]?.expanded && (
             <div style={{ marginTop: 8 }}>
@@ -59,7 +110,8 @@ export default function FailedJobsList({
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </>
   );
 }

@@ -25,6 +25,11 @@ Usage:
 """
 import argparse, os, subprocess, sys
 
+# Kept in sync with generate.py's QUERY_TAG_JSON (same value). Duplicated rather
+# than imported because install.py is invoked as a script from several places and
+# deliberately depends on nothing but the stdlib.
+QUERY_TAG_JSON = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"pack-setup"}}'
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACKS_DIR = os.path.dirname(HERE)                 # .../app/packs
 FLEET_DIR = os.path.join(PACKS_DIR, "fleet")
@@ -192,7 +197,12 @@ def probe_pack(pack, conn):
     probe = pack.get("probe")
     if not probe:
         return (pack["name"], None)
-    cmd = ["snow", "sql", "-q", f"SELECT COUNT(*) AS N FROM {probe}"]
+    # AGENTS.md: every session needs the tracking query_tag, and each `snow sql`
+    # run is a new session. The digit scrape below reads the LAST number in
+    # stdout, which is still the count (the tag preamble prints no digits).
+    cmd = ["snow", "sql", "-q",
+           f"ALTER SESSION SET query_tag = '{QUERY_TAG_JSON}'; "
+           f"SELECT COUNT(*) AS N FROM {probe}"]
     if conn:
         cmd += ["-c", conn]
     r = subprocess.run(cmd, capture_output=True, text=True)

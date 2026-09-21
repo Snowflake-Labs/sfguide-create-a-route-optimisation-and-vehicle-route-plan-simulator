@@ -39,7 +39,7 @@ Common issues and their solutions when deploying the ORS App.
 ```bash
 REGISTRY_URL=$(snow spcs image-repository url openrouteservice_app.core.image_repository -c <connection> | cut -d'/' -f1)
 TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
-podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/openrouteservice:v9.0.0
+podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/openrouteservice:v9.10.0
 ```
 
 ## Services Going PENDING (Resource Exhaustion)

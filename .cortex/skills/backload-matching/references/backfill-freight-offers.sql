@@ -87,10 +87,19 @@ SELECT
   'OFF-' || LPAD(S::VARCHAR, 6, '0')                                                            AS OFFER_ID,
   REGION,
   VEHICLE_TYPE,
-  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-  END                                                                                            AS SOURCE,
+  -- Neutral, vendor-free source vocabulary, matching the four values the rest of
+  -- the stack (and SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS) already holds. This
+  -- previously emitted named freight exchanges, region-conditionally, which put
+  -- vendor brands straight into demo data, listing text, and anything the agent
+  -- read. The vocabulary is region-independent: a channel label does not vary by
+  -- geography, so the region conditional went with the brands.
+  --
+  -- 'INTERNAL' is NOT in this vocabulary, and must not be re-added: every row
+  -- here is an EXTERNAL offer (IS_INTERNAL=FALSE in VW_LOADS), so stamping a
+  -- quarter of them INTERNAL made internal-vs-external - the one distinction
+  -- this feature turns on - unanswerable from SOURCE. 'BROKER' is the channel
+  -- that label was standing in for.
+  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'BROKER') AS SOURCE,
   P_ID                                                                                           AS PICKUP_POI_ID,
   P_LAT                                                                                          AS PICKUP_LAT,
   P_LON                                                                                          AS PICKUP_LON,
@@ -106,10 +115,8 @@ SELECT
                     3,'Beverages', 4,'Furniture', 5,'Bulk paper')                                 AS PRODUCT,
   (400 + MOD(ABS(HASH(Q_ID || P_ID)), 4000))::NUMBER                                              AS PRICE_USD,
   MOD(S, 13) = 0                                                                                  AS HAZMAT,
-  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-  END || ' ' || P_NAME || ' -> ' || Q_NAME                                                        AS LISTING_TEXT,
+  DECODE(MOD(S, 4), 0,'DISPATCH', 1,'MARKETPLACE', 2,'PARTNER_APP', 3,'BROKER')
+    || ' load: ' || P_NAME || ' -> ' || Q_NAME                                                    AS LISTING_TEXT,
   CURRENT_TIMESTAMP()                                                                             AS POSTED_AT,
   JOB_ID
 FROM pairs;

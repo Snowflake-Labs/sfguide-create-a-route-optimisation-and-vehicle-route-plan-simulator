@@ -33,14 +33,12 @@ BEGIN
     RETURN 'ERROR: dataset not found: ' || :P_DATASET_ID;
   END IF;
 
-  -- Demote peers in the same (region, vehicle) scope, then promote the target.
+  -- Demote peers and promote the target in ONE statement. Two UPDATEs can
+  -- interleave with a concurrent activation and leave the scope with two active
+  -- rows or none, which silently doubles or blanks every V_*_CURRENT consumer.
   UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = FALSE
-   WHERE REGION = :v_region AND VEHICLE_TYPE = :v_vehicle AND IS_ACTIVE = TRUE;
-
-  UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-     SET IS_ACTIVE = TRUE
-   WHERE DATASET_ID = :P_DATASET_ID;
+     SET IS_ACTIVE = (DATASET_ID = :P_DATASET_ID)
+   WHERE REGION = :v_region AND VEHICLE_TYPE = :v_vehicle;
 
   RETURN 'OK: activated ' || :P_DATASET_ID || ' for ' || :v_region || '/' || :v_vehicle;
 END;

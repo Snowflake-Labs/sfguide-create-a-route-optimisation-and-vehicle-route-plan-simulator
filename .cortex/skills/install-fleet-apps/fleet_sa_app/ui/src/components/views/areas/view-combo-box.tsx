@@ -2,6 +2,8 @@
 
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { RoutingSuspendedInlineHint } from '@/components/views/RoutingSuspendedInlineHint';
+import { formatCellValue } from '@/lib/format-number';
 
 interface ViewComboBoxAreaProps {
   areaConfig: {
@@ -17,7 +19,7 @@ interface ViewComboBoxAreaProps {
 
 export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
   const staticOptions = areaConfig.config?.options;
-  const { data, loading } = useViewData(staticOptions ? undefined : areaConfig.data?.query, areaConfig.data?.params);
+  const { data, loading, suspended, refetch } = useViewData(staticOptions ? undefined : areaConfig.data?.query, areaConfig.data?.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
@@ -72,11 +74,15 @@ export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
       >
         <option value="">{placeholder}</option>
         {options.map((row, i) => (
+          // The `value` attribute stays a RAW string on purpose: it is written into
+          // viewState and bound into dependent queries, so formatting it would change
+          // the selection, not its presentation. Only the option TEXT is formatted.
           <option key={i} value={String(row[valueField] ?? '')}>
-            {String(row[labelField] ?? row[valueField] ?? '')}
+            {formatCellValue(row[labelField] ?? row[valueField], { column: labelField, grouping: true, empty: '' })}
           </option>
         ))}
       </select>
+      {suspended && <RoutingSuspendedInlineHint info={suspended} onRetry={refetch} />}
     </div>
   );
 }

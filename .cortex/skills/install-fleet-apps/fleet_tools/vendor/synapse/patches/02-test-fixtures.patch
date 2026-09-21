@@ -1,0 +1,188 @@
+--- a/tests/unit/ddl.test.ts
++++ b/tests/unit/ddl.test.ts
+@@ -50,16 +50,32 @@
+     it('emits the canonical CREATE OR REPLACE PROCEDURE shape', () => {
+       const ddl = procDDL(sample, { body: 'return {ok: true};' });
+       expect(ddl).toContain('CREATE OR REPLACE PROCEDURE sample(');
+-      expect(ddl).toContain('RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS OWNER');
++      expect(ddl).toContain('EXECUTE AS OWNER');
+       expect(ddl).toContain('$$\nreturn {ok: true};\n$$;');
+     });
+ 
+-    it('appends IDEMPOTENCY_KEY STRING as the last arg', () => {
++    // LOCAL PATCH guard (see ../../VENDOR.md). Two invariants in one test:
++    // the tracking COMMENT is emitted at all, and it sits BEFORE `EXECUTE AS`.
++    // Snowflake rejects the reverse order with "unexpected COMMENT", which
++    // aborts the whole `synapse deploy` - no MCP server, so the agent silently
++    // has no tools. Cheap to regress on a re-vendor, expensive to diagnose.
++    it('emits the tracking COMMENT before EXECUTE AS', () => {
+       const ddl = procDDL(sample, { body: '' });
+-      // Last arg before the closing paren must be IDEMPOTENCY_KEY.
+-      expect(ddl).toMatch(/IDEMPOTENCY_KEY STRING\)/);
++      expect(ddl).toContain('"origin":"sf_sit-is-fleet"');
++      const comment = ddl.indexOf("COMMENT='");
++      const executeAs = ddl.indexOf('EXECUTE AS');
++      expect(comment).toBeGreaterThan(-1);
++      expect(comment).toBeLessThan(executeAs);
+     });
+ 
++    it('appends IDEMPOTENCY_KEY STRING DEFAULT NULL as the last arg', () => {
++      const ddl = procDDL(sample, { body: '' });
++      // Last arg before the closing paren must be IDEMPOTENCY_KEY, and it must
++      // carry a DEFAULT so an MCP dispatcher calling with named args can omit
++      // it (dc8827c3 added the DEFAULT but left this assertion on the old form).
++      expect(ddl).toMatch(/IDEMPOTENCY_KEY STRING DEFAULT NULL\)/);
++    });
++
+     it('quotes reserved-word args', () => {
+       const ddl = procDDL(sample, { body: '' });
+       expect(ddl).toContain('"GROUP" STRING');
+--- a/tests/unit/bundle.test.ts
++++ b/tests/unit/bundle.test.ts
+@@ -6,6 +6,12 @@
+ import { defineProc, t } from '../../src/index.js';
+ import { bundleProc } from '../../src/build/bundle.js';
+ 
++// Catalog target for the esbuild `define` substitution of __SYNAPSE_DATABASE__ /
++// __SYNAPSE_SCHEMA__. bundleProc gained this required third arg upstream in
++// dc8827c3 (FQ catalog) but the fixtures below were not updated, so every case
++// threw "Cannot read properties of undefined (reading 'database')".
++const CATALOG = { database: 'TEST_DB', schema: 'TEST_SCHEMA' };
++
+ describe('build/bundle', () => {
+   let tmpDir: string;
+   let entryPath: string;
+@@ -45,6 +51,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).not.toMatch(/^\s*import\s+/m);
+     expect(body).not.toMatch(/(?<![A-Za-z_$.])require\s*\(/);
+@@ -57,6 +64,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body.indexOf('function _n(v)')).toBeGreaterThanOrEqual(0);
+     // _n should be at the top, before the IIFE.
+@@ -69,6 +77,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     // The swap preserves the declarator shape (arrow expression) but replaces
+     // the body. Look for the sync-driver loop.
+@@ -91,6 +100,7 @@
+     const body = await bundleProc(
+       { proc, procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).toContain('"x": X');
+     expect(body).toContain('"y": Y');
+@@ -101,15 +111,38 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'my_audit_table', appIdField: 'rollout_id' },
++      CATALOG,
+     );
+     expect(body).not.toContain('__SYNAPSE_AUDIT_TABLE__');
+     expect(body).not.toContain('__SYNAPSE_APP_ID_FIELD__');
+     // esbuild normalizes string literals to double-quoted form; astring
+-    // round-trips them as such.
+-    expect(body).toContain('"my_audit_table"');
++    // round-trips them as such. LOCAL PATCH: the audit table is qualified with
++    // the install target so the envelope's INSERT does not depend on the
++    // caller's session schema.
++    expect(body).toContain('"TEST_DB.TEST_SCHEMA.my_audit_table"');
+     expect(body).toContain('"rollout_id"');
+   });
+ 
++  // LOCAL PATCH guards (see ../../VENDOR.md).
++  it('leaves an already-qualified audit table untouched', async () => {
++    const body = await bundleProc(
++      { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
++      { table: 'OTHER_DB.OTHER_SCHEMA.verb_attempt' },
++      CATALOG,
++    );
++    expect(body).toContain('"OTHER_DB.OTHER_SCHEMA.verb_attempt"');
++    expect(body).not.toContain('TEST_DB.TEST_SCHEMA.OTHER_DB');
++  });
++
++  it('falls back to the bare audit table when there is no target', async () => {
++    const body = await bundleProc(
++      { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
++      { table: 'verb_attempt' },
++      { database: '', schema: '' },
++    );
++    expect(body).toContain('"verb_attempt"');
++  });
++
+   it('runs synchronously in a vm with a fake snowflake global', async () => {
+     // The verification test the AST swap was added to support: actually
+     // execute the bundled body in a vm, with a fake `snowflake.execute`
+@@ -157,6 +190,7 @@
+     const body = await bundleProc(
+       { proc, procModulePath: echoPath, exportName: 'echo' },
+       { table: 'verb_attempt', appIdField: 'rollout_id' },
++      CATALOG,
+     );
+ 
+     // Build the fake snowflake global. snowflake.execute returns a
+@@ -225,6 +259,7 @@
+     const body = await bundleProc(
+       { proc: buildNoop(), procModulePath: entryPath, exportName: 'noop' },
+       { table: 'verb_attempt' },
++      CATALOG,
+     );
+     expect(body).not.toMatch(/\s&&\s/);
+     expect(body).not.toMatch(/\s\|\|\s/);
+--- /dev/null
++++ b/tests/unit/materialize.test.ts
+@@ -0,0 +1,42 @@
++import { describe, it, expect } from 'vitest';
++import { pickDeployRole } from '../../src/cli/materialize.js';
++
++/**
++ * LOCAL PATCH guard (see ../../VENDOR.md, deploy-role patch).
++ *
++ * install.sql emits `USE ROLE <deployRole>` and then creates the audit hybrid table,
++ * the verb procedures, the MCP server, and the grants - so the deploy role must be an
++ * installer-grade role. Upstream's chain starts at `roles.admin`, which in this repo
++ * names a CONSUMER app role (FLEET_APP_ADMIN), and with one binding per bundle it
++ * resolves to the consumer role for every bundle. The result is a total deploy
++ * failure on CREATE OR REPLACE HYBRID TABLE, with nothing installed.
++ *
++ * These cases pin the `deploy`-first precedence and the preserved fallback chain.
++ */
++describe('cli/materialize > pickDeployRole', () => {
++  it('prefers an explicit deploy role over admin', () => {
++    // The regression case: `admin` is bound to a consumer app role, so starting the
++    // chain there deploys as FLEET_APP_ADMIN and cannot create the audit table.
++    expect(pickDeployRole({ deploy: 'ACCOUNTADMIN', admin: 'FLEET_APP_ADMIN' }))
++      .toBe('ACCOUNTADMIN');
++  });
++
++  it('prefers deploy over a sole app-role binding', () => {
++    // user/ops bundles: one binding each, which upstream would take via the
++    // first-key fallback.
++    expect(pickDeployRole({ deploy: 'ACCOUNTADMIN', user: 'FLEET_APP_USER' }))
++      .toBe('ACCOUNTADMIN');
++  });
++
++  it('falls back to admin, then owner, then the first binding', () => {
++    // Upstream behaviour preserved for apps where `admin` IS the installer role.
++    expect(pickDeployRole({ admin: 'APP_ADMIN', owner: 'APP_OWNER', viewer: 'V' }))
++      .toBe('APP_ADMIN');
++    expect(pickDeployRole({ owner: 'APP_OWNER', viewer: 'V' })).toBe('APP_OWNER');
++    expect(pickDeployRole({ viewer: 'V' })).toBe('V');
++  });
++
++  it('returns undefined for an empty roles map so the caller can fail loudly', () => {
++    expect(pickDeployRole({})).toBeUndefined();
++  });
++});

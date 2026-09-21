@@ -185,12 +185,18 @@ export async function insertDimFleet(fleet: any[], config: GenerationConfig, sno
     `${m.base_speed_kmh},${m.battery_pct > 0 ? config.battery?.range_km || 'NULL' : 'NULL'},` +
     `${escVal(jobId)},` +
     `${escVal(m.weight_tons ?? null)},${escVal(m.height_m ?? null)},${escVal(m.length_m ?? null)},` +
-    `${escVal(m.width_m ?? null)},${escVal(m.axleload_t ?? null)},${escVal(m.hazmat ?? false)},${escVal(m.vehicle_subtype ?? null)})`
+    `${escVal(m.width_m ?? null)},${escVal(m.axleload_t ?? null)},${escVal(m.hazmat ?? false)},${escVal(m.vehicle_subtype ?? null)},` +
+    // Dispatch state, straight from the fleet member the telemetry run uses.
+    // This is only trustworthy because generateTelemetry now receives THIS
+    // fleet instead of rebuilding its own from a different RNG seed.
+    `${escVal(m.ghost_start_day !== undefined && m.ghost_end_day !== undefined)},` +
+    `${m.ghost_start_day ?? 'NULL'},${m.ghost_end_day ?? 'NULL'})`
   ).join(',\n');
   const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET
     (VEHICLE_ID,REGION,VEHICLE_TYPE,ORS_PROFILE,SHIFT_TYPE,SHIFT_START_HOUR,SHIFT_END_HOUR,
      HOME_LOCATION_ID,DRIVER_PROFILE,OPERATING_MODE,BASE_SPEED_KMH,BATTERY_RANGE_KM,JOB_ID,
-     WEIGHT_TONS,HEIGHT_M,LENGTH_M,WIDTH_M,AXLELOAD_T,HAZMAT,VEHICLE_SUBTYPE)
+     WEIGHT_TONS,HEIGHT_M,LENGTH_M,WIDTH_M,AXLELOAD_T,HAZMAT,VEHICLE_SUBTYPE,
+     IS_GHOST,GHOST_START_DAY,GHOST_END_DAY)
     VALUES ${values}`;
   try {
     await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);

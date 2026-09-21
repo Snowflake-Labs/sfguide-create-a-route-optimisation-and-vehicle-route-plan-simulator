@@ -141,7 +141,7 @@ RETURNS TABLE (
   VEHICLE_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, ORS_PROFILE VARCHAR, SHIFT_TYPE VARCHAR,
   SHIFT_START_HOUR NUMBER, SHIFT_END_HOUR NUMBER, HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR,
   OPERATING_MODE VARCHAR, BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, JOB_ID VARCHAR,
-  WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER, WIDTH_M NUMBER, AXLELOAD_T NUMBER,
+  WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2), WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2),
   HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -263,7 +263,7 @@ RETURNS TABLE (
   VEHICLE_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, ORS_PROFILE VARCHAR, SHIFT_TYPE VARCHAR,
   SHIFT_START_HOUR NUMBER, SHIFT_END_HOUR NUMBER, HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR,
   OPERATING_MODE VARCHAR, BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, JOB_ID VARCHAR,
-  WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER, WIDTH_M NUMBER, AXLELOAD_T NUMBER,
+  WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2), WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2),
   HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR
 )
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -325,6 +325,7 @@ CREATE SCHEMA IF NOT EXISTS FLEET_APP.FLEET_OPS
 CREATE OR REPLACE FUNCTION FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
 RETURNS TABLE (
   TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, OPERATOR_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR,
+  REGION_LABEL VARCHAR,
   ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR, ORIGIN_LAT FLOAT, ORIGIN_LON FLOAT, ORIGIN GEOGRAPHY,
   DESTINATION_LAT FLOAT, DESTINATION_LON FLOAT, DESTINATION GEOGRAPHY, ROUTE_GEOG GEOGRAPHY,
   DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, IS_DETOUR BOOLEAN, TRIP_START TIMESTAMP_NTZ,
@@ -333,7 +334,11 @@ RETURNS TABLE (
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
+  -- REGION_LABEL is the readable form of the region key ('San Francisco' for
+  -- 'SanFrancisco'), so a Cortex Analyst filter on the phrase a person types
+  -- resolves. Filtering on the key alone silently matched nothing.
   SELECT TRIP_ID, VEHICLE_ID, DRIVER_ID AS OPERATOR_ID, VEHICLE_TYPE, REGION,
+         FLEET_APP.CORE.REGION_LABEL(REGION) AS REGION_LABEL,
          ORIGIN_POI_ID, DESTINATION_POI_ID, ORIGIN_LAT, ORIGIN_LON, ORIGIN,
          DESTINATION_LAT, DESTINATION_LON, DESTINATION, ROUTE_GEOG,
          DISTANCE_KM, DURATION_MINUTES, IS_DETOUR, TRIP_START, TRIP_END, STATUS, JOB_ID
@@ -511,7 +516,7 @@ $$;
 CREATE OR REPLACE FUNCTION FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
 RETURNS TABLE (
   VEHICLE_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR, OPERATING_MODE VARCHAR, VEHICLE_SUBTYPE VARCHAR,
-  BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER,
+  BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2),
   WIDTH_M NUMBER, AXLELOAD_T NUMBER, HAZMAT BOOLEAN, SHIFT_TYPE VARCHAR, DRIVER_PROFILE VARCHAR,
   HOME_LOCATION_ID VARCHAR
 )
@@ -1127,3 +1132,117 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_A
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_USER;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_ADMIN;
+
+-- ===========================================================================
+-- External freight-exchange search seam (data seam, Tenet 1)
+-- ===========================================================================
+-- Mirrors the request shape a dispatcher actually makes against an outside
+-- exchange: "I am empty HERE, I want to get THERE, show me loads within N km
+-- in this time window". A real exchange integration replaces ONLY this function
+-- body (or repoints it at a landed feed) and every consumer - the chain
+-- matcher, the cascade, the app - is unchanged. That is the whole point of
+-- putting the search behind a contract function instead of letting consumers
+-- read the offer table directly.
+--
+-- Deliberately parameterised rather than reading MATCH_PARAMS: this is a pure
+-- search primitive, and the caller already resolves the radius / horizon /
+-- target from config. Keeping config out of the body means a swapped-in live
+-- implementation does not have to know about MATCH_PARAMS at all.
+--
+-- Vendor-free by construction: it returns SOURCE_SYSTEM (a system identity),
+-- never an exchange brand name.
+--
+-- Semantics:
+--   P_TARGET_LON/LAT NULL -> no destination filter (search "to anywhere", which
+--                            is exactly the first hop of a chain).
+--   P_FROM_TS / P_TO_TS NULL -> that side of the window is unbounded.
+--   APPROACH_KM   = empty km from the origin to the offer pickup.
+--   TARGET_GAP_KM = remaining great-circle km from the offer dropoff to target,
+--                   i.e. how much of the return is still outstanding after it.
+--                   NULL when no target was supplied.
+-- ===========================================================================
+CREATE OR REPLACE FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(
+  P_ORIGIN_LON       FLOAT,
+  P_ORIGIN_LAT       FLOAT,
+  P_RADIUS_KM        FLOAT,
+  P_TARGET_LON       FLOAT,
+  P_TARGET_LAT       FLOAT,
+  P_TARGET_RADIUS_KM FLOAT,
+  P_FROM_TS          TIMESTAMP_LTZ,
+  P_TO_TS            TIMESTAMP_LTZ,
+  P_MAX_ROWS         NUMBER
+)
+RETURNS TABLE (
+  OFFER_ID          VARCHAR,
+  SOURCE            VARCHAR,
+  SOURCE_SYSTEM     VARCHAR,
+  VEHICLE_EQUIPMENT VARCHAR,
+  PICKUP_CITY       VARCHAR,
+  PICKUP_LON        FLOAT,
+  PICKUP_LAT        FLOAT,
+  DROPOFF_CITY      VARCHAR,
+  DROPOFF_LON       FLOAT,
+  DROPOFF_LAT       FLOAT,
+  PICKUP_FROM_TS    TIMESTAMP_LTZ,
+  PICKUP_TO_TS      TIMESTAMP_LTZ,
+  WEIGHT_KG         NUMBER,
+  PRODUCT           VARCHAR,
+  PRICE_USD         NUMBER,
+  HAZMAT            BOOLEAN,
+  APPROACH_KM       FLOAT,
+  TARGET_GAP_KM     FLOAT,
+  LISTING_TEXT      VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  -- The two anchor points come from scalar FLOAT arguments, so they are built
+  -- once here rather than re-derived in the filter, the projection and the
+  -- ORDER BY. The OFFER side is no longer built at all: VW_EXTERNAL_OFFERS now
+  -- carries the stored PICKUP_GEOM/DROPOFF_GEOM, so what used to be five
+  -- ST_MAKEPOINT calls per row is now zero, and the geospatial predicates read
+  -- a real column instead of a computed expression.
+  WITH anchor AS (
+    SELECT ST_MAKEPOINT(P_ORIGIN_LON, P_ORIGIN_LAT) AS ORIGIN_GEOM,
+           IFF(P_TARGET_LON IS NULL OR P_TARGET_LAT IS NULL, NULL,
+               ST_MAKEPOINT(P_TARGET_LON, P_TARGET_LAT)) AS TARGET_GEOM
+  )
+  SELECT
+    o.OFFER_ID,
+    o.SOURCE,
+    o.SOURCE_SYSTEM,
+    o.VEHICLE_EQUIPMENT,
+    o.PICKUP_CITY,
+    o.PICKUP_LON,
+    o.PICKUP_LAT,
+    o.DROPOFF_CITY,
+    o.DROPOFF_LON,
+    o.DROPOFF_LAT,
+    o.PICKUP_FROM_TS,
+    o.PICKUP_TO_TS,
+    o.WEIGHT_KG,
+    o.PRODUCT,
+    o.PRICE_USD,
+    o.HAZMAT,
+    ST_DISTANCE(a.ORIGIN_GEOM, o.PICKUP_GEOM) / 1000.0 AS APPROACH_KM,
+    IFF(a.TARGET_GEOM IS NULL, NULL,
+        ST_DISTANCE(o.DROPOFF_GEOM, a.TARGET_GEOM) / 1000.0)              AS TARGET_GAP_KM,
+    o.LISTING_TEXT
+  FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS o
+  CROSS JOIN anchor a
+  WHERE o.PICKUP_GEOM IS NOT NULL
+    AND ST_DWITHIN(o.PICKUP_GEOM, a.ORIGIN_GEOM,
+                   COALESCE(P_RADIUS_KM, 100) * 1000)
+    AND (a.TARGET_GEOM IS NULL
+         OR ST_DWITHIN(o.DROPOFF_GEOM, a.TARGET_GEOM,
+                       COALESCE(P_TARGET_RADIUS_KM, 250) * 1000))
+    AND (P_FROM_TS IS NULL OR o.PICKUP_TO_TS   >= P_FROM_TS)
+    AND (P_TO_TS   IS NULL OR o.PICKUP_FROM_TS <= P_TO_TS)
+  QUALIFY ROW_NUMBER() OVER (
+    ORDER BY ST_DISTANCE(a.ORIGIN_GEOM, o.PICKUP_GEOM)
+  ) <= COALESCE(P_MAX_ROWS, 500)
+$$;
+
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH(FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, FLOAT, TIMESTAMP_LTZ, TIMESTAMP_LTZ, NUMBER) TO ROLE FLEET_APP_ADMIN;

@@ -1,8 +1,16 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/snowflake';
+import { runSolve } from '@/lib/solve-runner';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { requireUser } from '@/lib/ingress-identity';
+import {
+  detectOrsSuspended,
+  detectSuspendedInResult,
+  outOfGraphMessage,
+  parseOutOfGraphPoints,
+  OUT_OF_GRAPH_REASON,
+} from '@/lib/routing-suspend';
+import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
 
 // Max serialized challenge size forwarded to the solver. VROOM's own body-parser
 // limit is 50mb (for large precomputed matrices), but a matrix-free challenge
@@ -57,10 +65,34 @@ async function handlePost(req: Request) {
     typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
 
   try {
-    const rows = await query(
+    // Submitted ASYNC with a 45s inline wait, not held open synchronously.
+    // Measured server-side, the DEFAULT 20-vehicle / 120-load solve takes 38.1s
+    // and 100 vehicles / 500 loads takes 168.6s, while the synchronous transport
+    // gives up at 60s and the statement is capped at 80s to stay under the ~90s
+    // SPCS ingress limit. This page's own BM_SOLVE_TIMEOUT_MS is 180s, so it was
+    // built to wait three times longer than the server could ever allow.
+    //
+    // The solve key is derived from the challenge itself, so a page reload or a
+    // second dispatcher opening the same plan collects the in-flight solve rather
+    // than starting another copy of a ~3-minute job.
+    const outcome = await runSolve(
+      'backload_dispatch',
       `SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP`,
       [challengeJson, region],
+      { challenge: challengeJson, region },
+      g.user ?? null,
     );
+    if (outcome.pending) {
+      return NextResponse.json(
+        {
+          pending: true,
+          solve_key: outcome.solveKey,
+          poll_url: `/api/solve-status?key=${encodeURIComponent(outcome.solveKey)}`,
+        },
+        { status: 202 },
+      );
+    }
+    const rows = (outcome.rows ?? []) as Record<string, unknown>[];
     const raw = rows[0] ? (Object.values(rows[0])[0] as unknown) : null;
     let result: unknown = raw;
     if (typeof raw === 'string') {
@@ -71,6 +103,40 @@ async function handlePost(req: Request) {
     const errObj = result as { error?: unknown; message?: unknown } | null;
     if (errObj && typeof errObj === 'object' && 'error' in errObj && errObj.error) {
       const msg = typeof errObj.message === 'string' ? errObj.message : String(errObj.error);
+      // Suspended routing engine: the region's ORS/VROOM service is down (DNS
+      // failure inside the gateway). Resume it and return a typed, friendly
+      // notice instead of the raw connection error.
+      const det = detectOrsSuspended(msg);
+      const detResult = det.suspended ? det : detectSuspendedInResult(result);
+      // Coordinates the region's graph does not cover. A healthy engine refused
+      // a bad payload, so this must NOT be reported as an engine state: it used
+      // to fall through the suspend path and render "the routing engine is
+      // starting", with a Retry that could never clear because nothing was
+      // warming up. 422 (not 502) marks it as the caller's payload.
+      if (det.outOfGraph || detResult.outOfGraph) {
+        const pts = parseOutOfGraphPoints(msg).concat(
+          parseOutOfGraphPoints(JSON.stringify(result) ?? ''),
+        );
+        const uniq = Array.from(
+          new Map(pts.map((p) => [`${p.lon.toFixed(5)},${p.lat.toFixed(5)}`, p])).values(),
+        );
+        logger.warn('backload-solve-out-of-graph', { region, points: uniq.length });
+        return NextResponse.json(
+          {
+            error: outOfGraphMessage(region, uniq.length, uniq),
+            reason: OUT_OF_GRAPH_REASON,
+            region,
+            outOfGraphPoints: uniq,
+            result,
+          },
+          { status: 422 },
+        );
+      }
+      const resumeRegion = detResult.suspended ? resolveResumeRegion(detResult.region, region) : null;
+      if (resumeRegion) {
+        const payload = await resumeAndBuildPayload(resumeRegion, detResult.kind, detResult.state);
+        return NextResponse.json(payload, { status: 503 });
+      }
       // VROOM code 3 aborts the whole solve when a single location cannot be
       // routed (e.g. a point snapped onto a disconnected road component). It
       // names the offending coordinate: "Unfound route(s) from location
@@ -83,9 +149,30 @@ async function handlePost(req: Request) {
     }
     return NextResponse.json({ ok: true, result });
   } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Backload solve failed';
+    // A suspended ORS/VROOM service can also surface as a thrown SQL/HTTP error.
+    const det = detectOrsSuspended(rawMsg);
+    if (det.outOfGraph) {
+      const pts = parseOutOfGraphPoints(rawMsg);
+      logger.warn('backload-solve-out-of-graph', { region, points: pts.length });
+      return NextResponse.json(
+        {
+          error: outOfGraphMessage(region, pts.length, pts),
+          reason: OUT_OF_GRAPH_REASON,
+          region,
+          outOfGraphPoints: pts,
+        },
+        { status: 422 },
+      );
+    }
+    const resumeRegion = det.suspended ? resolveResumeRegion(det.region, region) : null;
+    if (resumeRegion) {
+      const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
     logger.error('backload-solve', {}, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Backload solve failed' },
+      { error: rawMsg },
       { status: 500 },
     );
   }

@@ -15,7 +15,8 @@ export const GET = withLogging(async () => {
     try {
       const rows = await runSql(
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE, HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
-                PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
+                PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE, ROAD_FILTER,
+                HEXAGONS_BEFORE_ROUTABILITY, HEXAGONS_AFTER_ROUTABILITY, ROUTABILITY_NOTE, FILTER_WARNING,
                 TO_VARCHAR(CREATED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS CREATED_AT,
                 TO_VARCHAR(STARTED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS STARTED_AT,
                 TO_VARCHAR(COMPLETED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS COMPLETED_AT
@@ -26,6 +27,11 @@ export const GET = withLogging(async () => {
         hexagons: Number(r.HEXAGONS) || 0, work_queue_rows: Number(r.WORK_QUEUE_ROWS) || 0, raw_rows: Number(r.RAW_ROWS) || 0,
         matrix_rows: Number(r.MATRIX_ROWS) || 0, pct_complete: Number(r.PCT_COMPLETE) || 0, error_msg: r.ERROR_MSG,
         statement_handle: r.STATEMENT_HANDLE, created_at: toIso(r.CREATED_AT), started_at: toIso(r.STARTED_AT), completed_at: toIso(r.COMPLETED_AT),
+        road_filter: r.ROAD_FILTER === true || String(r.ROAD_FILTER).toLowerCase() === 'true',
+        hexagons_before_routability: Number(r.HEXAGONS_BEFORE_ROUTABILITY) || 0,
+        hexagons_after_routability: Number(r.HEXAGONS_AFTER_ROUTABILITY) || 0,
+        routability_note: r.ROUTABILITY_NOTE || '',
+        filter_warning: r.FILTER_WARNING || '',
       })) as unknown as Job[];
       await Promise.all(jobs.filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0).map(async (j) => {
         const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');

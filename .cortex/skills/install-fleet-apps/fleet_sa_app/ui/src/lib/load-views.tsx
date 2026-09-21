@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import type { ViewDef, AgentKnowledge, AppRole } from './types';
+import type { ViewDef, AgentKnowledge, AppRole, UseCase } from './types';
 import type { ParsedViewDef } from '@/components/views/view-renderer';
 import { viewRegistry } from './view-registry';
 import { getDisplayConfigGlobal, interpolateTokens } from './display-config';
@@ -22,9 +22,9 @@ interface YamlViewDef {
   label: string;
   description: string;
   hidden?: boolean;
-  // Optional markdown shown in a per-view info overlay (the "i" button in the
-  // view bar). Use for methodology / attribution notes.
-  info?: string;
+  // Presenter/agent description of the use case (see UseCase). Drives the "i"
+  // info overlay and the agent's solution catalog.
+  useCase?: UseCase;
   // Nav grouping section (e.g. "Core", "Optimization", "Location"). Omitted => "Core".
   category?: string;
   // Config-driven role tagging (simulated view filter). Omitted => all roles.
@@ -86,6 +86,28 @@ function interpolateAgentKnowledge(
   };
 }
 
+// Field-aware copy so unknown JSON subfields are dropped (mirrors
+// interpolateAgentKnowledge) and every authored string picks up the app vocabulary.
+function interpolateUseCase(
+  uc: UseCase | undefined,
+  display: ReturnType<typeof getDisplayConfigGlobal>,
+): UseCase | undefined {
+  if (!uc) return undefined;
+  const list = (items?: string[]) => items?.map((i) => interpolateTokens(i, display));
+  return {
+    headline: interpolateTokens(uc.headline, display),
+    businessQuestion: interpolateTokens(uc.businessQuestion, display),
+    audience: list(uc.audience),
+    industries: list(uc.industries),
+    talkTrack: list(uc.talkTrack),
+    snowflakeCapabilities: list(uc.snowflakeCapabilities),
+    dataRequired: list(uc.dataRequired),
+    valueDrivers: list(uc.valueDrivers),
+    method: uc.method ? interpolateTokens(uc.method, display) : undefined,
+    caveats: uc.caveats ? interpolateTokens(uc.caveats, display) : undefined,
+  };
+}
+
 export function registerViewsFromConfig(
   config: ViewsConfig,
   disabledSchemas?: Set<string>,
@@ -100,7 +122,7 @@ export function registerViewsFromConfig(
       id: view.id,
       label: interpolateTokens(view.label, display),
       description: interpolateTokens(view.description, display),
-      info: view.info ? interpolateTokens(view.info, display) : undefined,
+      useCase: interpolateUseCase(view.useCase, display),
       hidden: view.hidden || gatedOff,
       category: view.category ?? 'Core',
       roles: view.roles,

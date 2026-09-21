@@ -8,7 +8,7 @@ USE SCHEMA BENCHMARK.BENCH_MATRIX;
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"is_quickstart":0,"source":"sql"}}';
 
 CREATE OR REPLACE TABLE BENCH_PROBES_W1 (probe_id INTEGER, ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"probes_w1"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"is_quickstart":0,"source":"sql","variant":"probes_w1"}}';
 
 INSERT INTO BENCH_PROBES_W1
 SELECT ROW_NUMBER() OVER (ORDER BY 1) AS probe_id, ORIGIN_H3, DEST_H3
@@ -16,7 +16,7 @@ FROM BENCHMARK.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES7
 SAMPLE (1000 ROWS);
 
 CREATE OR REPLACE TABLE BENCH_PROBES_W2 (probe_id INTEGER, ORIGIN_H3 VARCHAR)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"probes_w2"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"is_quickstart":0,"source":"sql","variant":"probes_w2"}}';
 
 INSERT INTO BENCH_PROBES_W2
 SELECT ROW_NUMBER() OVER (ORDER BY 1) AS probe_id, ORIGIN_H3

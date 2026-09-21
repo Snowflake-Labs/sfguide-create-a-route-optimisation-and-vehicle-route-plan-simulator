@@ -19,6 +19,8 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 | `ISOCHRONES(method, lon, lat, range [, region])` | TABLE (RESPONSE, GEOJSON) |
 | `OPTIMIZATION(jobs, vehicles [, matrices, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
 | `OPTIMIZATION(challenge [, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
+| `SNAP_POINTS(method, locations, radius [, region])` | TABLE (IDX, INPUT_GEOG, SNAPPED_GEOG, SNAPPED_DISTANCE, NAME) |
+| `MATCH_PATH(method, linestring [, region])` | TABLE (RESPONSE, GEOJSON, MATCHED_EDGES) - HMM map matching; GEOJSON = matched road segments. Needs engine >= v9.8.0 (see the note below) |
 
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
@@ -34,9 +36,92 @@ Return VARIANT:
 | `MATRIX(method, locations [, region])` | Full NxN distance/duration matrix |
 | `MATRIX(method, options [, region])` | Matrix with advanced options |
 | `MATRIX_TABULAR(method, origin, destinations [, region])` | Origin-to-destinations matrix |
+| `SNAP(method, locations, radius [, region])` | Snap each point to nearest routable edge (raw ORS VARIANT: `:locations[]` of null or `{location, name, snapped_distance}`) |
+| `MATCH(method, features [, region])` | Map matching: match a GeoJSON FeatureCollection to the graph, returns `:edge_ids` per feature (raw ORS VARIANT). Needs engine >= v9.4.0. Use `MATCH_PATH` for geometry. |
 | `ORS_STATUS([region])` | Service status JSON |
 
 Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
+
+**Note on `MATCH` / `MATCH_PATH`**: both wrappers pass the profile to `_MATCH_RAW` with a
+trailing `?` (e.g. `'cycling-electric?'`). This is load-bearing, do NOT strip it. ORS exposes
+`POST /v2/match/{profile}` only - it has no format-suffixed route (unlike `/snap` and
+`/export`), and its `@PostMapping("/{profile}/*")` catch-all answers any extra path segment
+with error 9007 "Response format is not supported". The gateway appends a format segment
+(`/json`) unconditionally in `get_ors_response`, so the `?` demotes it to a query string that
+Spring ignores. It stays harmless if the gateway is ever changed to skip the format for
+`match` (the query is then simply empty). Side effect: `OBSERVABILITY.ORS_REQUEST_LOG.PROFILE`
+records `<profile>?` for match calls.
+
+**Note on `MATCH_PATH` geometry resolution**: `/v2/match` never returns geometry - only
+internal graph `edge_ids`. `MATCH_PATH` resolves them by chaining a bbox `/v2/export`
+topojson call, joining `edge_id` to the export geometry properties. Four details are
+load-bearing:
+
+- The export payload MUST set `additional_info: true`. TopoJSON export has two mutually
+  exclusive property branches: with `OsmId` ext storage enabled on the profile it emits
+  one geometry per OSM way carrying `ors_ids` (plural), and without `OsmId` it emits one
+  geometry per directed edge carrying `ors_id` (singular) - but only when
+  `additional_info` is set. Omitting the flag on a non-OsmId profile suppresses the edge
+  id entirely, so the join matches nothing and `GEOJSON` comes back NULL while
+  `MATCHED_EDGES` still looks healthy. `MATCH_PATH` tests both property names, so
+  `OsmId` ext storage is NOT required and no graph rebuild is needed.
+- `ors_id` (singular) requires engine >= **v9.8.0** (ORS PR #2244). On v9.4.0 - v9.7.x
+  only the `OsmId` / `ors_ids` branch can produce geometry.
+- TopoJSON encodes a reversed arc as `-(1 + index)`, and the non-OsmId branch reuses one
+  arc for both directions of an edge, so a large share of arc references are negative.
+  `ABS()` is NOT the inverse (it yields `index + 1` and silently draws a neighbouring
+  road); decode with `IFF(v < 0, -v - 1, v)`.
+- **Positional arc-to-edge pairing.** On the `OsmId` branch, `arcs[i]` pairs 1:1 with
+  `ors_ids[i]` within each geometry. Matching at the geometry level (e.g.
+  `ARRAYS_OVERLAP(ors_ids, edge_ids)`) and then taking ALL arcs of the matching geometry
+  over-selects the entire OSM way - measured 78 arcs for 36 matched edges (54% residual),
+  painting stray road segments the trajectory never traversed. The predicate must be
+  positional: `ors_ids[a.index]` so only the arc whose own edge id was matched is
+  included. `COALESCE(ors_ids[a.index], ors_id)` handles both export branches.
+
+**Note on `MATCH_PATH` geometry (`OsmId` ext storage required)**: `MATCH_PATH` resolves matched
+edge ids to road geometry by joining `/export` TopoJSON `properties.ors_ids`, which ORS emits
+ONLY when the profile's graph was built with the `OsmId` external storage. Without it `/export`
+returns the `{node_from, node_to, weight}` shape with no ids to join, so `MATCH_PATH` returns
+`MATCHED_EDGES > 0` and `GEOJSON = NULL` (`MATCH` itself is unaffected). `WRITE_ORS_CONFIG`
+always emits `OsmId`, so any region provisioned through the normal flow is fine. Deployments
+created before `OsmId` was added to `staged_files/ors-config.yml` have an OsmId-less DEFAULT
+region, because `BOOTSTRAP_DEFAULT_REGION` boots from that static file and never calls
+`WRITE_ORS_CONFIG`. Repair (a graph REBUILD is required - an ext_storages change does not take
+effect on a plain restart):
+
+```sql
+-- Pass the profiles EXPLICITLY. The region has no REGION_PROVISION_JOBS row, and every
+-- implicit derivation in this codebase falls back to 'driving-car' alone, which would
+-- silently drop the region's other profiles. Check the current set first with:
+--   SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON(CORE.ORS_STATUS('SanFrancisco')::VARCHAR):profiles), ',');
+CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG('SanFrancisco', 'SanFrancisco.osm.pbf', 'driving-car,cycling-electric', 'S');
+CALL OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS('SanFrancisco');
+```
+
+Order matters: the container reads the staged config on start and `REBUILD_REGION_GRAPHS` does
+not regenerate it. The rebuild purges the persisted graph and recreates the pool + ORS + VROOM
+services, so the region is unavailable for the duration (an S-tier city extract is a few
+minutes).
+
+Verify with the authoritative signal - the storages ORS actually loaded - NOT by probing
+`/export`, and check the graph really was recomputed:
+
+```sql
+WITH s AS (SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('SanFrancisco')::VARCHAR) AS j)
+SELECT j:engine:graph_date::STRING AS GRAPH_DATE,                     -- must be NEW
+       TO_JSON(OBJECT_KEYS(j:profiles:"cycling-electric":storages))   -- must contain OsmId
+FROM s;
+```
+
+If `graph_date` did not move, the purge did not take effect. On a deployment still running a
+`REBUILD_REGION_GRAPHS` older than the suspend-before-purge fix, the graph stage is purged while
+the container is still RUNNING; because the graph dir is a stage-mounted volume the container
+flushes its cached copy straight back on shutdown, ORS reloads the identical graph, and the proc
+still reports "Rebuild complete". Repair manually in this order: `ALTER SERVICE ... SUSPEND`,
+poll `SHOW SERVICES` until `SUSPENDED` (it passes through `SUSPENDING`), then
+`CALL WRITE_ORS_CONFIG(...)`, then `REMOVE @ORS_GRAPHS_SPCS_STAGE/<region>/`, confirm the `LIST`
+is empty, then `ALTER SERVICE ... RESUME`.
 
 ## Utility Functions
 

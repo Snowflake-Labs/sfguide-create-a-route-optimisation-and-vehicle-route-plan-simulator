@@ -21,12 +21,14 @@ This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimens
 
 | Layer | INSTALLED (agnostic) | EXCLUDED (industry-vertical) |
 |---|---|---|
-| Packs | `unified_fleet`, `fleet_ops`, `dwell`, `route_deviation`, `route_optimization`, `catchment`, `starter` | `marketplace`, `backload`, `dhl_ntbo` |
-| UI views | Fleet/Asset Status, Asset Map, Demand Density (H3), Trip Inspection, Operator Performance, Top Origins, Dwell & Congestion, Route Deviation, Asset Utilization, VRP, Catchment | Freight Marketplace, Backload Matching, DHL pages |
-| Agents | `SV_FLEET_OPS`, `SV_DWELL_ANALYTICS`, `SV_ROUTE_DEVIATION`, `SV_ASSET_VELOCITY`, `SV_CATCHMENT` + neutral routing verbs | `SV_DELIVERIES`, `SV_BACKLOAD_MATCHING`, `SV_DHL_BACKLOAD` |
-| Seed data | `SYNTHETIC_DATASETS.UNIFIED.*` / `NEUTRAL.*`, `FLEET_INTELLIGENCE.CORE`, DWELL/DEVIATION/ROUTE_OPT CONFIG, `CATCHMENT` base tables | freight offers/partners, DHL tables |
+| Packs | `unified_fleet`, `fleet_ops`, `dwell`, `route_deviation`, `route_optimization`, `catchment`, `starter` | `marketplace`, `backload` (retired vertical packs) |
+| UI views | Fleet/Asset Status, Asset Map, Demand Density (H3), Trip Inspection, Operator Performance, Top Origins, Dwell & Congestion, Route Deviation, Asset Utilization, VRP, Catchment | Freight Marketplace, Backload Matching, retired vertical pages |
+| Agents | `SV_FLEET_OPS`, `SV_DWELL_ANALYTICS`, `SV_ROUTE_DEVIATION`, `SV_ASSET_VELOCITY`, `SV_CATCHMENT` + neutral routing verbs | `SV_DELIVERIES`, `SV_BACKLOAD_MATCHING` |
+| Seed data | `SYNTHETIC_DATASETS.UNIFIED.*` / `NEUTRAL.*`, `FLEET_INTELLIGENCE.CORE`, DWELL/DEVIATION/ROUTE_OPT CONFIG, `CATCHMENT` base tables | freight offers/partners, retired vertical tables |
 
 The installer always installs the **complete** agnostic set - there is no per-use-case selection prompt.
+
+> **One exception to the EXCLUDED column above.** The `marketplace` *pack, page and vertical* are excluded, but the installer DOES build six `FLEET_INTELLIGENCE.MARKETPLACE` views (step 4.4, `scripts/marketplace_layer.sql`) because its own `SV_OFFERS` semantic view reads them. It builds only what that view needs - the page-only objects (`VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `V_FACT_OFFER_ROUTES_CURRENT`, `FACT_DEADHEAD_MATRIX`, `DELIVERY_DRAFTS`) stay with the admin app boot and the `freight-exchange` skill. Skipped automatically when the active seed carries no offers.
 
 > **Agent Playground demo tools are dynamic.** The `TOOL_CATCHMENT`,
 > `TOOL_DELIVERY_OPTIMIZATION`, and `TOOL_NETWORK_OPTIMIZATION` procs source live,
@@ -68,6 +70,8 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 4. **Analytic layer** - authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode - the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
 5. **Data contract** - `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
 5.5. **Semantic views** - `fleet_sa_app/app/semantic_views.sql` creates `FLEET_INTELLIGENCE.SEMANTIC` + the 5 Cortex Analyst SVs the consumer agent binds to (`SV_FLEET_OPS`, `SV_ROUTE_DEVIATION`, `SV_CATCHMENT`, `SV_DWELL_ANALYTICS`, `SV_ASSET_VELOCITY`). DWELL/ASSET_VELOCITY are rebound onto the pack-built `FLEET_APP.*` views; the rest bind the analytic-layer objects. Runs after packs + analytic layer, before roles/agents (so the role grant and the agent's Cortex Analyst tools resolve). Best-effort; gate off with `SKIP_SEMANTIC=1`.
+5.6. **Solution catalog + deployment facts** - `scripts/build_view_catalog.py` regenerates `fleet_sa_app/app/view_catalog.sql` from `app-views.json`, then the installer applies it (`FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG` + the `SOLUTION_CATALOG_SEARCH` Cortex Search service) followed by `app/deployment_facts.sql` (`SEMANTIC.DESCRIBE_DEPLOYMENT`). These make the per-view `useCase` blocks and platform run-state answerable OUTSIDE the app: inside the SA app the chat route prepends the catalog per turn, but in Cowork / Snowflake Intelligence the agent has no app client, so without them it cannot say what the deployment demonstrates or whether a region's routing is up. All three agents read both. Both files MUST be run with `--enable-templating NONE` (authored prose contains `&`). Best-effort; gate off with `SKIP_VIEW_CATALOG=1`.
+
 6. **Synapse tools** - per-account materialize + deploy of the `user`/`ops`/`admin` bundles (`ROUTING_MCP`, `FLEET_OPS_MCP`, `FLEET_ADMIN_MCP`). See `references/synapse-bundles.md`.
 7. **Roles** - applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
 8. **Agents** - `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
@@ -92,6 +96,29 @@ bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connectio
 
 The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes) but runs by default and is skipped automatically when an engine is already present. `provision_engine.sh` ensures the `OPENROUTESERVICE_APP.CORE` infra, builds + pushes the 4 engine images (`references/build-images.md`), stages the map/config + service specs, loads SQL modules `01-08`/`15`, and lets module `03` bootstrap the default region. The engine keeps the `OPENROUTESERVICE_APP.CORE` namespace behind the `ROUTING_PLATFORM.CONTRACT` seam, and preserves the AUTO_SUSPEND_SECS, REBUILD_GRAPHS reuse, and per-region VROOM invariants (see `references/available-functions.md`, `references/snowflake-scripting-guidelines.md`, `references/snowflake-sql-gotchas.md`, `references/troubleshooting.md`).
 
+### Prewarm before a live demo
+
+Region ORS services carry `AUTO_SUSPEND_SECS = 14400` (4h) and their compute pool 3600 (1h), so an
+idle region WILL be suspended when you next open a view. Live routing then returns
+`service_unreachable` and the graph needs 2-5 minutes to reload. Roughly 20 minutes before a
+demo, run:
+
+```sql
+-- (region, wait_for_ready, timeout_seconds) - all three are required
+CALL OPENROUTESERVICE_APP.CORE.RESUME_REGION_ORS('<Region>', TRUE, 600);
+CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH('<Region>');
+```
+
+Resume alone is not enough - a resumed service still has to load the graph. The 4h timer runs from
+resume, so one prewarm comfortably covers a normal demo slot.
+
+Views that call ORS live surface a suspended engine as a resume notice and trigger the resume
+automatically (`/api/query` matches `service_unreachable` and the `ors-service-*` host), so a cold
+region self-heals rather than rendering blank. Prewarming just avoids doing that wait on stage.
+Note this only works if the SQL RAISES: a function that degrades an ORS error into NULL or into
+zero rows is invisible to that path and produces a silently empty panel instead - see the
+`LIVE_APPROACH_RING` / `LIVE_INBOUND_ETA` comments in `scripts/delivery_sync_layer.sql`.
+
 ## Configuration
 
 | Parameter | Default | Purpose |
@@ -103,7 +130,8 @@ The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens o
 | `CARTO_EAI` | resolved (`ORS_CARTO_EAI` else `FLEET_APP_CARTO_EAI`) | basemap tile egress |
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
-| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` | `0` | shorten idempotent re-runs |
+| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_MARKETPLACE` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` / `SKIP_COWORK` / `SKIP_AGENT_EVALS` | `0` | shorten idempotent re-runs |
+| `RUN_AGENT_EVALS` | `0` | Step 6.6 always CREATES the four agent eval sets; a baseline evaluation RUN is opt-in. Set to `1` to also run one. Runs cost credits (47 agent invocations plus an LLM judge per metric per row), which is why they are off by default. Note both Snowsight agent-readiness checklist items ("Create the first eval set" and "Run an evaluation") are satisfied only once a RUN exists - a dataset alone clears neither - and a wipe/reinstall destroys runs while leaving datasets in place, so a rebuilt account shows the checklist gap until a baseline is re-run: `bash scripts/setup_agent_evals.sh <connection>`. `NO_RUN_AGENT_EVALS` is accepted as a no-op (datasets-only is already the default). |
 
 ## Required Privileges
 
@@ -117,6 +145,9 @@ The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens o
 | CREATE ROLE + MANAGE GRANTS | account | `FLEET_APP_USER/OPS/ADMIN`, `FLEET_APP_DYNAMIC_READER` |
 | CREATE AGENT, CREATE MCP SERVER | schema | consumer/ops agents + synapse bundles |
 | SNOWFLAKE.CORTEX_USER | database role | Cortex Analyst / agent calls |
+| CREATE SNOWFLAKE INTELLIGENCE | account | register the agents with the Snowflake CoWork object (step 6.5). Optional: without it the agents stay reachable by direct link and Snowsight only. |
+| CREATE DATASET, CREATE STAGE, CREATE FILE FORMAT, CREATE TASK | schema (`FLEET_INTELLIGENCE.EVALS`) | agent evaluation sets (step 6.6) |
+| USE AI FUNCTIONS, EXECUTE TASK | account | running a Cortex Agent evaluation (step 6.6, on by default; skip with `NO_RUN_AGENT_EVALS=1`); evaluations score with `AI_COMPLETE` and are driven by a task |
 
 ACCOUNTADMIN satisfies all of the above but is not required if the above are granted to a custom role.
 
@@ -137,6 +168,16 @@ DROP SERVICE IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP;
 DROP SERVICE IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP;
 DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT;
 DROP AGENT  IF EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT;
+-- Snowflake CoWork registration (step 6.5). Dropping an agent does NOT remove it
+-- from the CoWork object, so remove it explicitly or the list keeps a dead entry.
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT;
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT;
+-- Agent eval sets + the deployment-history semantic view (steps 6.6 and 4.95):
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.EVALS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.SEMANTIC_OPS;
+DROP SEMANTIC VIEW IF EXISTS FLEET_INTELLIGENCE.SEMANTIC.SV_EMERGENCY_RESPONSE;
 DROP DATABASE IF EXISTS FLEET_APP;
 DROP DATABASE IF EXISTS STARTER_APP;
 -- SAP mock landscape (demo example landed by step 3.5):
@@ -159,15 +200,22 @@ The agnostic `FLEET_INTELLIGENCE.*` analytic objects the packs read are owned by
 - `scripts/vehicle_profile_catalog.sql` - `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` + the `DIM_FLEET` asset-column stamp.
 - `scripts/projection_views.sql` - the dataset-scoped `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views.
 - `scripts/analytic_layer.sql` (step 3.5) - `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables.
+- `scripts/delivery_sync_layer.sql` (step 4.2) - `DELIVERY_SYNC`: the `DT_SITE_VISITS` geofence-episode Dynamic Table (site arrival / departure detection), `F_SITE_READINESS_ASOF`, the `DELIVERY_EVENT_LOG` ledger + its (SUSPENDED) 5-minute task, and the neutral `FLEET_APP.DELIVERY_SYNC` contract the `delivery_sync` app view and `SV_DELIVERY_SYNC` read. Runs AFTER packs because the Dynamic Table reads the physical `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` projections - a Dynamic Table CANNOT read `FLEET_APP.CORE.VW_*`, which wrap table functions. Skip with `SKIP_DELIVERY_SYNC=1`.
+- `scripts/analytic_layer_live_routing.sql` (step 4.3) - the ENGINE-DEPENDENT half extracted from the two files above: the 25 `LIVE_*` UDTFs across `FLEET_APP.LOCATION` / `CATCHMENT` / `SOURCING` / `DELIVERY_SYNC` whose bodies call `OPENROUTESERVICE_APP.CORE.ISOCHRONES` / `MATRIX_TABULAR` / `DIRECTIONS`, plus their grants. **Why it is separate:** a `LANGUAGE SQL` UDTF body resolves at CREATE time, so without the engine each is a hard error - and since `snow sql -f` is stop-on-first-error, keeping them inline aborted their parent file partway. `analytic_layer.sql` died at line 1072 of 2722 (discarding ~129 statements including the 6 `FLEET_INTELLIGENCE.SOURCING` tables and the 9 `FLEET_APP.SOURCING` views) and `delivery_sync_layer.sql` lost 33 of its 44 (discarding the whole `FLEET_APP.DELIVERY_SYNC` contract) - in both cases silently dropping objects that need no engine at all, while the installer reported "dependent views will be empty". They CANNOT be wrapped in the `EXECUTE IMMEDIATE ... EXCEPTION` idiom used elsewhere in those files: they carry dollar-quoted function bodies and Snowflake dollar-quotes do not nest. Skipped outright in analytics-only mode; enforced by `scripts/check_engine_guards.py` (pre-commit).
 
-These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design); its legacy DWELL asset-velocity views are gated on `DWELL_ANALYSIS.DT_DWELL_ENRICHED` (absent on the agnostic install → skipped) and its `MARKETPLACE`/`BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. The legacy `build-routing-solution` Vite control app (which had its own `init.ts`) has been removed from the repo.
+- `scripts/marketplace_layer.sql` (step 4.4) - the six `FLEET_INTELLIGENCE.MARKETPLACE` objects `SV_OFFERS` reads transitively (`VW_OFFERS`, `VW_PARTNERS`, `VW_PARTNER_HISTORY`, `VW_LANE_HISTORY`, `RATE_INDEX`, `VW_OFFER_ENRICHED`). **Why it exists:** these were authored ONLY by the admin app's boot `init.ts`, which does not run until step 7, so step 4.5 created `SV_OFFERS` before its own sources - measured at 19 minutes early on a clean install - and the failure was excused as an expected fresh-install skip. The knock-on was bigger than the missing view: `prune_agent_specs.py` probes `SHOW SEMANTIC VIEWS` at step 6, so the absent `SV_OFFERS` also deleted the `query_offers` tool from the agents. Deferring the view instead cannot work (the admin deploy has no readiness wait, and step 6 precedes step 7 regardless), so the sources moved earlier. Runs after packs (needs `FLEET_APP.CORE.REGION_LABEL`); auto-skipped when the seed has no offers; `SKIP_MARKETPLACE=1`. Parity with `init.ts` is enforced by `scripts/check_marketplace_ddl_parity.py` (pre-commit) and the ordering by the precedence assertion in `scripts/check_install_order.py`.
+
+These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design) and on `SYNTHETIC_DATASETS.UNIFIED.F_DIM_FLEET_SCOPED` (kept consistent with `scoped_contract.sql`, which wraps it — the column SCALES must match on both sides or precision is truncated); its DWELL asset-velocity views are gated on the fleet/dwell pack's `FLEET_APP.DWELL.VW_DWELL_SESSIONS`, so they build on every standard install (they previously probed `DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which belongs to the separate opt-in dwell-analysis skill and left the Asset Velocity page silently empty), and its `BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. Its `MARKETPLACE` creations do NOT skip - they succeed, and are the runtime owner that `scripts/marketplace_layer.sql` mirrors (parity gated). Assuming they were dead is what left the `SV_OFFERS` sources to a step-7 boot in the first place. The legacy `build-routing-solution` Vite control app (which had its own `init.ts`) has been removed from the repo.
 
 ## References
 
+- `references/cowork-integration.md` - the full Snowflake CoWork contract, surface by surface: which surfaces are wired (Analyst, MCP verbs, `data_to_chart` with `<chart_customization>`, the `code_execution` sandbox, 26 agent skills, 11 verified queries, automations), which are deliberately NOT (Deep Research, file upload, mobile - each with the reason), and the `data_to_map` section it grew out of: the contract (host-injected, SI-only, ONE layer per map), which semantic dimensions feed which layer type, measured payload budgets, tested live-ORS ring and VRP-tour SQL, the composite single-layer UNION pattern, and the four silent-failure traps.
 - `references/conventions.md` - query_tag + COMMENT tracking literals.
 - `references/infra.sql` - detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` - agnostic seed-data probe + load path.
 - `references/synapse-bundles.md` - per-account materialize + deploy.
+- `references/upstream-synapse-app-patterns.md` - survey of the upstream synapse `apps/` for portable patterns (warehouse, endpoint grants, verb conventions).
+- `references/agent-map-knowledge.md` - what the chat agent knows about the map layers.
 - `references/routing-engine.md` - engine detection + native provisioning (default; skip with `--no-engine`).
 - `references/build-images.md` - build + push the 4 ORS/VROOM engine images.
 - `references/available-functions.md` - engine SQL functions, profiles, service limits, matrix builders.
@@ -175,4 +223,6 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 - `references/snowflake-sql-gotchas.md` - engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
 - `references/troubleshooting.md` - engine image build / registry / service troubleshooting.
 - `references/cost-guardrails.sql` - OPTIONAL privileged resource monitor + budget (see Cost Guardrails).
+- `references/overtime-alert.sql` - OPTIONAL overtime-risk alert over `FLEET_APP.LABOR`. Warns a supervisor before a weekly hours threshold is crossed. Created SUSPENDED and NOT run by the installer, because its only purpose is to send email.
+- `references/agent-verb-coverage.md` - why every synapse verb needs a routing line in each agent that can see it.
 - `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` - the locked agnostic contract.

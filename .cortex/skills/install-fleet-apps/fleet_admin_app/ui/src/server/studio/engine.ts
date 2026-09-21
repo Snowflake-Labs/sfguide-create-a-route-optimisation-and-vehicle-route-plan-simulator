@@ -18,7 +18,6 @@ import type {
   GenerationProgress, SnowSqlFn, VehicleLifecycle, FleetMember,
 } from './engine/types';
 
-import { buildFleet } from './engine/fleet';
 import { loadPOIs } from './engine/routability';
 import {
   fetchRoute, fetchDetourRoute, pickDestination,
@@ -27,6 +26,7 @@ import {
 } from './engine/routing';
 import { interpolateRoute } from './engine/interpolate';
 import { emitDwell, emitLongIdleDwell } from './engine/dwell';
+import { overrunAllowanceHours } from './engine/shift-overrun';
 
 export type {
   TelemetryPoint, TripRecord, GenerationEvent, POI, RouteGeometry,
@@ -64,9 +64,22 @@ interface VehicleDayResult {
   busyUntilDayOffset?: number;
 }
 
+// `fleet` is REQUIRED and must be the SAME array that was written to DIM_FLEET.
+// This used to be rebuilt here from a second, differently-seeded RNG
+// (`createRng(start_date.length * 31 + num_vehicles)`) while jobs.ts inserted a
+// fleet drawn from `createRng(num_vehicles * 31)`. Vehicle ids are index-derived
+// so every join still succeeded and every panel still populated, but everything
+// rng-derived (home_poi, profile_type, base_speed_kmh, and the ghost window)
+// described a DIFFERENT fleet than the one that produced the facts. Measured on
+// a live account: 2 of 96 Europe vehicles had a DIM_FLEET home base matching
+// their first telemetry ping, and speeding rate by driver profile was flat
+// (COMPLIANT 5.78%, MILD 5.83%, OUTLIER 5.19%) - i.e. the dimension was
+// uncorrelated with the behaviour it is supposed to explain. Never rebuild the
+// fleet in here.
 export async function* generateTelemetry(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
+  fleet: FleetMember[],
   onProgress?: (p: GenerationProgress) => void,
   abortSignal?: { aborted: boolean },
   onLog?: (msg: string) => void,
@@ -110,7 +123,6 @@ export async function* generateTelemetry(
     );
   }
 
-  const fleet = buildFleet(config, pois, rng);
   const profileBreakdown: Record<string, number> = {};
   for (const m of fleet) profileBreakdown[m.profile_type] = (profileBreakdown[m.profile_type] || 0) + 1;
   const shiftBreakdown: Record<string, number> = {};
@@ -118,7 +130,7 @@ export async function* generateTelemetry(
     const key = `${m.shift_start}:00-${m.shift_end}:00`;
     shiftBreakdown[key] = (shiftBreakdown[key] || 0) + 1;
   }
-  log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles (parallelism=${PARALLELISM})`, {
+  log('INFO', 'Studio', `Using fleet of ${fleet.length} ${vt} vehicles as written to DIM_FLEET (parallelism=${PARALLELISM})`, {
     detail: { driverProfiles: profileBreakdown, shifts: shiftBreakdown, homePoisUsed: new Set(fleet.map(m => m.home_poi.location_id)).size },
   });
 
@@ -131,6 +143,13 @@ export async function* generateTelemetry(
   let routeFailures = 0;
   let consecutiveFails = 0;
   let unroutableSkips = 0;
+  // Trips produced per vehicle across the whole horizon, so the run can report
+  // WHICH vehicles ended up with none. Until this existed, a vehicle that lost
+  // every route call was indistinguishable from one the generator deliberately
+  // parked: both emit IDLE-only telemetry with no trip and no schedule row, and
+  // only fleet-wide counters (unroutableSkips / routeFailures) recorded that
+  // anything had gone wrong at all.
+  const tripsByVehicle = new Map<string, number>();
   const unroutablePoiIds = new Set<string>();
   const busyUntil = new Map<string, number>();
   const MAX_CONSECUTIVE_FAILURES = 25;
@@ -253,6 +272,23 @@ export async function* generateTelemetry(
     const numTrips = rngInt(memberRng, config.fleet.trips_per_day.min, config.fleet.trips_per_day.max);
     let currentOriginPoi = member.home_poi;
 
+    // How far past the rostered shift end this vehicle may work TODAY if it still
+    // has jobs left. Drawn ONCE per vehicle-day: drawing per trip would let the
+    // allowance change mid-shift, so a day could stop and then resume.
+    //
+    // This is an ALLOWANCE, not an instruction. The loop below still ends when
+    // the assignment is exhausted, so a shift with time to spare gains nothing
+    // and only a capacity-bound shift accrues overtime - which is what makes the
+    // overtime explainable (more work was assigned than fits). See
+    // engine/shift-overrun.ts for the measurements that motivated this.
+    const overrunHours = overrunAllowanceHours({
+      shiftStartHour: member.shift_start,
+      shiftEndHour: member.shift_end,
+      driverProfile: member.profile_type,
+      cfg: config.shift_overrun,
+      draw: memberRng(),
+    });
+
     // Empty-leg / deadhead modeling (all vehicle types, default on). Routes a
     // repositioning leg from the vehicle's current location to `toPoi`, emitting
     // MOVING pings and a TRIP_KIND='EMPTY' trip row. Returns true when the
@@ -312,7 +348,11 @@ export async function* generateTelemetry(
       if (abortSignal?.aborted) break;
       const shiftEnd = member.shift_end < member.shift_start ? member.shift_end + 24 : member.shift_end;
       const currentHour = lifecycle.currentTime.getHours() + (lifecycle.currentTime.getHours() < member.shift_start ? 24 : 0);
-      if (currentHour >= shiftEnd) break;
+      // ROSTER boundary - soft. Exceeding it is ordinary overtime, so the vehicle
+      // may keep working its remaining jobs up to today's allowance. With
+      // overrunHours = 0 (no shift_overrun config, or a day that does not run
+      // late) this is exactly the historical hard stop.
+      if (currentHour >= shiftEnd + overrunHours) break;
 
       if (config.breaks && lifecycle.minSinceBreak >= config.breaks.driving_hours_between_breaks * 60) {
         const breakDwell: DwellConfig = { median_min: config.breaks.mandatory_break_duration_min, sigma: 0.2, max_min: config.breaks.mandatory_break_duration_min * 1.5 };
@@ -322,6 +362,9 @@ export async function* generateTelemetry(
         lifecycle.minSinceBreak = 0;
       }
 
+      // LEGAL cap - hard, deliberately unlike the roster boundary above. A driver
+      // may finish a late route; they may not drive beyond permitted hours. Real
+      // breaches are modelled separately and rarely as IS_HOS_VIOLATION.
       if (config.breaks?.max_daily_driving_hours && lifecycle.dailyDrivingMin >= config.breaks.max_daily_driving_hours * 60) break;
 
       if (config.battery && lifecycle.vehicle.battery_pct <= (config.battery.recharge_threshold_pct || 15)) {
@@ -560,6 +603,7 @@ export async function* generateTelemetry(
       routeFailures += result.failures;
       unroutableSkips += result.unroutable;
       totalTrips += result.trips.length;
+      tripsByVehicle.set(result.vehicleId, (tripsByVehicle.get(result.vehicleId) || 0) + result.trips.length);
       if (result.successes > 0) {
         consecutiveFails = 0;
       } else       if (result.failures > 0) {
@@ -683,5 +727,35 @@ export async function* generateTelemetry(
       unroutablePois: unroutablePoiIds.size,
       status: `Day ${dayOffset + 1}/${totalDays} complete: ${totalTrips} trips total${unroutableSuffix}${cacheSuffix}`,
     });
+  }
+
+  // Per-vehicle zero-trip diagnostic. A vehicle that produced no trip has no
+  // actual or expected path anywhere downstream, and its whole stay collapses
+  // into one unbroken IDLE dwell session. Two very different causes produce
+  // that identical signature, so name both rather than leaving a reader to
+  // guess from fleet-wide counters:
+  //   ghost   - deliberate. config.ghost_trailer parked it for a day window,
+  //             and when that window spans the horizon it never works at all.
+  //   no_route- a defect. Every destination it tried was unroutable, or the
+  //             routing engine hard-failed, and the trip loop skipped out.
+  // The ghost share is expected (probability * fleet size); a non-zero
+  // no_route count means the POI catalog and the graph disagree.
+  const undispatched = fleet.filter(m => (tripsByVehicle.get(m.vehicle_id) || 0) === 0);
+  if (undispatched.length > 0) {
+    const ghosts = undispatched.filter(m => m.ghost_start_day !== undefined);
+    const noRoute = undispatched.filter(m => m.ghost_start_day === undefined);
+    const msg = `${undispatched.length}/${fleet.length} vehicles produced ZERO trips: `
+      + `${ghosts.length} parked by design (ghost window), ${noRoute.length} with no routable work`
+      + (noRoute.length > 0 ? ` - INVESTIGATE: ${noRoute.slice(0, 10).map(m => m.vehicle_id).join(', ')}` : '');
+    log(noRoute.length > 0 ? 'WARN' : 'INFO', 'Studio', msg, {
+      detail: {
+        region: config.region,
+        ghost_vehicles: ghosts.map(m => ({ vehicle_id: m.vehicle_id, from_day: m.ghost_start_day, to_day: m.ghost_end_day })),
+        no_route_vehicles: noRoute.map(m => m.vehicle_id),
+        unroutable_poi_skips: unroutableSkips,
+        route_failures: routeFailures,
+      },
+    });
+    onLog?.(msg);
   }
 }

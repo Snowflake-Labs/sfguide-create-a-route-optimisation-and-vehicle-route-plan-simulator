@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_FLEET_OPS - the ONE universal, mode-agnostic fleet analytics semantic view (R6)
 -- Source: FLEET_APP.FLEET_OPS.* global-active views (thin wrappers over the
 --         dataset-scoped UDTFs in fleet_sa_app/app/scoped_contract.sql).
@@ -85,28 +98,28 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     , trips.total_operators AS COUNT(DISTINCT OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'active operators', 'drivers')
       COMMENT = 'Distinct count of operators'
-    , trips.total_distance_km AS SUM(distance_km)
+    , trips.total_distance_km AS ROUND(SUM(distance_km), 2)
       WITH SYNONYMS ('total km driven', 'total distance')
       COMMENT = 'Total actual distance driven (km)'
-    , trips.avg_distance_km AS AVG(distance_km)
+    , trips.avg_distance_km AS ROUND(AVG(distance_km), 2)
       COMMENT = 'Average actual trip distance (km)'
-    , trips.total_duration_min AS SUM(duration_minutes)
+    , trips.total_duration_min AS ROUND(SUM(duration_minutes), 2)
       COMMENT = 'Total actual trip duration (minutes)'
-    , trips.avg_duration_min AS AVG(duration_minutes)
+    , trips.avg_duration_min AS ROUND(AVG(duration_minutes), 2)
       COMMENT = 'Average actual trip duration (minutes)'
-    , trips.avg_speed_kmh AS AVG(DIV0(distance_km, duration_minutes) * 60)
+    , trips.avg_speed_kmh AS ROUND(AVG(DIV0(distance_km, duration_minutes) * 60), 2)
       WITH SYNONYMS ('average speed', 'mean speed')
       COMMENT = 'Average trip speed (km/h), derived from distance and duration'
     , trips.detour_trip_count AS COUNT_IF(IS_DETOUR)
       WITH SYNONYMS ('number of detours', 'detour trips')
       COMMENT = 'Count of trips flagged as detours'
-    , trips.detour_rate_pct AS DIV0(COUNT_IF(IS_DETOUR), COUNT(*)) * 100
+    , trips.detour_rate_pct AS ROUND(DIV0(COUNT_IF(IS_DETOUR), COUNT(*)) * 100, 2)
       WITH SYNONYMS ('detour percentage')
       COMMENT = 'Percent of trips flagged as detours'
     , origins.total_origins AS COUNT(DISTINCT ORIGIN_POI_ID)
       WITH SYNONYMS ('number of origins', 'origin locations')
       COMMENT = 'Distinct count of origin POIs'
-    , origins.total_origin_trips AS SUM(origin_total_trips)
+    , origins.total_origin_trips AS ROUND(SUM(origin_total_trips), 2)
       WITH SYNONYMS ('trips from origins')
       COMMENT = 'Total trips departing from origins'
   )

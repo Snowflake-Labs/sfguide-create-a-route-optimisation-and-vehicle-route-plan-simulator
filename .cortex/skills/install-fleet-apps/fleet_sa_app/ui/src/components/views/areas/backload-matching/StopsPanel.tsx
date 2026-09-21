@@ -1,6 +1,6 @@
 'use client';
 
-import { Assignment, Stop } from './helpers';
+import { Assignment, Stop, realPlace } from './helpers';
 
 interface Props {
   assignment: Assignment | null;
@@ -32,8 +32,12 @@ export default function StopsPanel({ assignment, showWaitTimes = true }: Props) 
         <span style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)' }}>
           {stops.length} stops &middot; {pickupCount} pickup{pickupCount === 1 ? '' : 's'} &middot; {dropoffCount} dropoff{dropoffCount === 1 ? '' : 's'}
           {breakCount ? ` \u00b7 ${breakCount} break${breakCount === 1 ? '' : 's'}` : ''}
-          {' \u00b7 '}empty {Math.round(assignment.EMPTY_KM)} km &middot; loaded {Math.round(assignment.LOADED_KM)} km
+          {' \u00b7 '}empty {Math.round(assignment.EMPTY_KM)} km
+          {assignment.EMPTY_OUT_KM !== undefined && (assignment.EMPTY_BACK_KM ?? 0) > 0
+            ? ` (${Math.round(assignment.EMPTY_OUT_KM)} out + ${Math.round(assignment.EMPTY_BACK_KM as number)} back)` : ''}
+          {' \u00b7 '}loaded {Math.round(assignment.LOADED_KM)} km
           {assignment.DETOUR_KM !== undefined ? ` \u00b7 detour +${Math.round(assignment.DETOUR_KM)} km` : ''}
+          {assignment.SAVED_KM !== undefined ? ` \u00b7 deadhead avoided ~${Math.round(assignment.SAVED_KM)} km` : ''}
           {assignment.TOUR_HRS ? ` \u00b7 ${assignment.TOUR_HRS.toFixed(1)} h` : ` \u00b7 ${assignment.SCORE.toFixed(0)}s`}
           {showWaitTimes && totalWait > 0 ? ` \u00b7 wait ${Math.round(totalWait / 60)} min total` : ''}
         </span>
@@ -59,8 +63,12 @@ export default function StopsPanel({ assignment, showWaitTimes = true }: Props) 
               </div>
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: ks.fg }}>{ks.label}</span>
               <div style={{ fontSize: 12 }}>
-                <b>{s.city || s.label}</b>
-                {s.city && s.label && s.label !== s.city && <span style={{ color: 'var(--text-secondary, #6b7280)', marginLeft: 6, fontSize: 11 }}>{s.label}</span>}
+                {/* realPlace, not the raw column: `s.city` can be blank (the POI
+                    has no name) or a placeholder token like 'Destination', and
+                    both used to render as though they named a real site. The
+                    label ("INTERNAL INT-00404") is the honest fallback. */}
+                <b>{realPlace(s.city) ?? s.label}</b>
+                {realPlace(s.city) && s.label && s.label !== s.city && <span style={{ color: 'var(--text-secondary, #6b7280)', marginLeft: 6, fontSize: 11 }}>{s.label}</span>}
                 {s.kind === 'break' && s.serviceSec && (
                   <span style={{ color: ks.fg, marginLeft: 6, fontSize: 11 }}>&middot; {Math.round(s.serviceSec / 60)} min</span>
                 )}

@@ -13,19 +13,55 @@ import { OpsCodes } from '../codes.js';
 // two are complementary: set_active_context drives the app dashboards/projection
 // views; set_active_region drives the substrate default. Ops-only.
 const DB = 'FLEET_INTELLIGENCE';
-// The dashboard CONFIG schemas whose single-row CONFIG table carries REGION /
-// VEHICLE_TYPE. Matches the /api/region default schema allowlist. Hardcoded to
-// FLEET_INTELLIGENCE (this bundle is fleet-scoped, like the other ops verbs).
-const SCHEMAS = ['DWELL_ANALYSIS', 'ROUTE_DEVIATION', 'ROUTE_OPTIMIZATION'] as const;
+
+// The dashboard CONFIG schemas are DISCOVERED, not listed.
+//
+// There used to be three hardcoded lists in three separately-deployed packages -
+// this verb and the SA app's /api/region both carried 3 schemas while the admin
+// app's region-sync carried 8 - so promoting a region moved HALF the account and
+// left the rest wherever the last Data Studio run had put it. Measured on
+// tib85385: DWELL_ANALYSIS / ROUTE_DEVIATION / ROUTE_OPTIMIZATION on
+// SanFrancisco while CATCHMENT / MARKETPLACE / BACKLOAD_MATCHING sat on Europe,
+// so a cross-domain question silently mixed San Francisco e-bikes with European
+// trucks. Because the three lists live in different npm packages there is no
+// shared module to import, so any list-based fix would drift again.
+//
+// Discovery keys off the SHAPE of the table (a CONFIG table carrying both REGION
+// and VEHICLE_TYPE), so a seventh domain is picked up with no code change
+// (Tenet 4: config-driven, not code-edited). Schema names come from
+// INFORMATION_SCHEMA and are re-validated against an identifier pattern before
+// interpolation; only the VALUES are ever user-supplied.
+const IDENT = /^[A-Z_][A-Z0-9_]*$/;
+
+type ExecFn = (sql: string, binds?: unknown[]) => Record<string, unknown>[] | Promise<Record<string, unknown>[]>;
+
+async function discoverConfigSchemas(exec: ExecFn): Promise<string[]> {
+  const rows = await exec(
+    `SELECT TABLE_SCHEMA
+       FROM ${DB}.INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_NAME = 'CONFIG'
+        AND COLUMN_NAME IN ('REGION', 'VEHICLE_TYPE')
+      GROUP BY TABLE_SCHEMA
+     HAVING COUNT(DISTINCT COLUMN_NAME) = 2
+      ORDER BY TABLE_SCHEMA`,
+  );
+  return (Array.isArray(rows) ? rows : [])
+    .map((r) => String(Object.values(r)[0] ?? '').toUpperCase())
+    .filter((s) => IDENT.test(s));
+}
 
 export const set_active_context = defineProc({
   name: 'set_active_context',
   description:
-    'Promote the global active dashboard context by setting the region and/or ' +
-    'vehicle/asset mode in the per-schema CONFIG tables that dashboards and the ' +
-    'routing tool layer read. Provide region, vehicle_type, or both (at least ' +
-    'one). Fails NO_CONTEXT_VALUE when neither is given and REGION_NOT_PROVISIONED ' +
-    'for an unknown region. Distinct from set_active_region (substrate default). Ops-only.',
+    'MUTATES SHARED GLOBAL STATE for every user of this deployment: promotes the ' +
+    'default dashboard context by setting region and/or vehicle/asset mode in the ' +
+    'per-domain CONFIG tables. Confirm the exact target with the user and call ONLY ' +
+    'after explicit agreement. NOT needed to ANSWER a question about a region - the ' +
+    'dashboards and semantic views carry every loaded region as a filterable ' +
+    'dimension, so reading about another region requires no switch. Provide region, ' +
+    'vehicle_type, or both (at least one). Fails NO_CONTEXT_VALUE when neither is ' +
+    'given and REGION_NOT_PROVISIONED for an unknown region. Distinct from ' +
+    'set_active_region (substrate default). Ops-only.',
   roles: ['ops'],
   args: {
     region: t
@@ -79,8 +115,9 @@ export const set_active_context = defineProc({
     }
 
     const updated: Record<string, number> = {};
-    for (const schema of SCHEMAS) {
-      // schema is a compile-time constant identifier; values are bound.
+    const schemas = await discoverConfigSchemas((sql, b) => ctx.conn.exec(sql, b));
+    for (const schema of schemas) {
+      // schema is validated against IDENT above; values are bound.
       const rows = (await ctx.conn.exec(`UPDATE ${DB}.${schema}.CONFIG SET ${sets.join(', ')}`, binds)) as Record<
         string,
         unknown

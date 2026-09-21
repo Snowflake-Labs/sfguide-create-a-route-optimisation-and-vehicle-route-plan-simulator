@@ -3,16 +3,25 @@
 spec:
   containers:
     - name: downloader
-      image: /openrouteservice_app/core/image_repository/downloader:v0.0.7
+      image: /openrouteservice_app/core/image_repository/downloader:v0.0.11
       env:
         # Parallel byte-range connections for large range-capable downloads.
         # Multiplies effective throughput against per-connection throttling
         # (e.g. Geofabrik ~1 MB/s) so continental PBFs finish under the SQL
         # provisioning poll ceiling. Capped at 8 in the service code.
         DOWNLOAD_CONCURRENCY: "6"
-        # Per-segment retry budget. A transient reset resumes the same segment
-        # from its current offset rather than restarting the whole file.
-        DOWNLOAD_MAX_RETRIES: "6"
+        # Per-segment retry budget. A retry RESUMES the segment from the byte
+        # count already on disk (Range start shifted, file opened for append),
+        # so a broken connection costs seconds instead of re-fetching the whole
+        # segment. Before that fix a 5.8 GB segment needed ~1.6h of unbroken TCP
+        # per attempt and Europe could never finish.
+        DOWNLOAD_MAX_RETRIES: "10"
+        # Read timeout (seconds) for a segment body read. Geofabrik stalls for
+        # minutes under load; a short timeout turns a stall into a failed attempt.
+        DOWNLOAD_READ_TIMEOUT: "600"
+        # Target bytes per byte-range segment. Fixed-size segments keep sidecar
+        # progress fine-grained instead of a handful of multi-GB units.
+        DOWNLOAD_SEGMENT_BYTES: "536870912"
       resources:
         requests:
           cpu: "0.5"

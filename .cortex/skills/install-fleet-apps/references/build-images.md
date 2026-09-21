@@ -4,6 +4,8 @@ Authenticate, build, and push the four ORS/VROOM engine container images to the 
 
 > **Working directory:** All commands below must be run from `.cortex/skills/install-fleet-apps/`. Run `cd .cortex/skills/install-fleet-apps` before starting.
 
+> **Two repositories, on purpose.** The four ENGINE images below are pinned to `OPENROUTESERVICE_APP.core.image_repository` unconditionally (`provision_engine.sh`), because the committed engine service YAMLs under `openrouteservice_app/services/` reference that path literally and are never rewritten. The two APP images follow whatever `install_fleet_apps.sh` resolved at step 1, which on a from-scratch install is `FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY` (the engine has not run yet, so the ORS repo does not exist when the probe runs). So an account holding both repos with images split between them is the expected steady state, not drift. Never hardcode a repo in an app deploy path: `scripts/lib/resolve_image_repo.sh` resolves it (env export, else the live service's own image path, else FLEET, else ORS).
+
 All paths below are relative to the skill directory (`.cortex/skills/install-fleet-apps/`). Each build command uses `-f` and a build context path so no `cd` commands are needed.
 
 ## 1. Authenticate with SPCS Image Registry

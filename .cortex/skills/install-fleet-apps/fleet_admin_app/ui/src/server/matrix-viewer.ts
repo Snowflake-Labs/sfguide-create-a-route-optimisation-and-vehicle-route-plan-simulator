@@ -63,9 +63,24 @@ export async function getViewerInventory(): Promise<ViewerTable[]> {
       road_filter: roadFilterMap[lookupKey] === true,
     } as ViewerTable;
   }).filter(Boolean) as ViewerTable[];
-  cacheRef.tables = tables;
+  // Exclude matrices with no pairs. ENSURE_MATRIX_TABLES creates the table when
+  // a build STARTS, so a still-running build is already listed here with
+  // ROW_COUNT 0 - and selecting it made the viewer silently unviewable: the
+  // random-origin probe finds no ORIGIN_H3, so nothing loads.
+  //
+  // Consequence accepted deliberately: a region whose only matrix is still
+  // building drops out of the Region dropdown until it has rows. That is honest
+  // - there is nothing to view yet - and the alternative is offering a
+  // selection that cannot work.
+  //
+  // Note ROW_COUNT here is INFORMATION_SCHEMA metadata, which is maintained
+  // lazily, and this inventory is cached for 60s. So this filter reduces the
+  // failure but cannot eliminate it; the client must still handle an empty
+  // result rather than assuming a listed table is loadable.
+  const viewable = tables.filter((t) => t.row_count > 0);
+  cacheRef.tables = viewable;
   cacheRef.ts = Date.now();
-  return tables;
+  return viewable;
 }
 
 export function validateViewerTable(tableName: string): string | null {

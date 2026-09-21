@@ -48,6 +48,53 @@ cases:
           The assistant's answer describes a driving route and states both a
           distance and a travel time (duration).
 
+  # snap_to_road and map_match had NO eval coverage, and both failed on EVERY
+  # call from 2026-09-14 back to whenever they were written: each passed a VARIANT
+  # PARSE_JSON into an ARRAY parameter and a bare untyped NULL region, so
+  # CORE.SNAP_POINTS / CORE.MATCH_PATH rejected the call with "Invalid argument
+  # types" and the user read a raw SQL compilation error. A dynamic-SQL string
+  # compiles at EXECUTE IMMEDIATE time, so no install or static check could see it
+  # and the absence of a case is why it went unnoticed. Both assert the AUDIT row,
+  # not just prose - an agent can narrate a plausible answer over a failed verb.
+  - id: snap-sf
+    prompt: >-
+      Are these two San Francisco locations on the road network - Union Square
+      and the Ferry Building? Snap them to the nearest road.
+    assertions:
+      - type: verb
+        verbs: [snap_to_road]
+        description: snap_to_road verb was audited with outcome ok
+      - type: sql
+        description: the snap verb call succeeded (no error outcome)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'snap_to_road' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant reports that the locations were snapped to the road
+          network, and does NOT report a SQL error or an invalid-argument error.
+
+  - id: map-match-sf
+    prompt: >-
+      Map-match this track to the roads it drove on - Union Square San Francisco,
+      then Market Street, then the Ferry Building.
+    assertions:
+      - type: verb
+        verbs: [map_match]
+        description: map_match verb was audited with outcome ok
+      - type: sql
+        description: the map_match verb call succeeded (no error outcome)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'map_match' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant reports a road-following matched path for the trajectory
+          (e.g. a count of matched road segments), and does NOT report a SQL error
+          or an invalid-argument error.
+
   - id: isochrone-live
     prompt: >-
       Show me the area reachable within a 10 minute drive from Union Square
@@ -141,3 +188,214 @@ cases:
           The assistant returned a dashboard / view specification (a layout with
           at least one area that has a component and a data query), rather than
           only a plain-text answer or only a link to an existing view.
+
+  # --- render_map inline chat map (render_map IS a synapse verb) -------------
+  # No case anywhere emitted a Map before this one. The Map component was legal
+  # in both render_view validators and no fixture, sample or test ever exercised
+  # it, while its config.layers block was a permissive passthrough - so an agent
+  # could emit a structurally accepted map that rendered a blank basemap and
+  # nothing would have noticed. The judge assertion deliberately checks for
+  # LAYERS carrying their own queries, not just "a map was returned": an empty
+  # layers array is the failure this is here to catch.
+  - id: render-map-inline
+    prompt: >-
+      Map the top dwell hotspots for the active region as a density heatmap.
+      Draw it in your answer as a map; do not just link me to an existing page.
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: judge
+        text: >-
+          The assistant returned a map specification containing a non-empty
+          `layers` array, where each layer declares a `type` (one of
+          scatterplot, path, h3, geojson, arc) and a `data.query` that SELECTs
+          from the FLEET_APP contract. It must NOT be only a plain-text answer,
+          only a link to an existing view, and must not reference
+          SYNTHETIC_DATASETS, FLEET_INTELLIGENCE or OPENROUTESERVICE_APP in a
+          layer query.
+
+  # --- render_map, UN-HINTED phrasing (the prompt that actually failed) -------
+  # The case above says "Draw it in your answer as a map", which pre-empts the
+  # decision the agent got wrong - it would have PASSED against the broken build.
+  # This is the user's literal wording, with no mention of a map, which is the only
+  # form that tests whether the agent recognises a spatial question by itself.
+  #
+  # What it failed on: three instructions stacked against the map. A host-injected
+  # chart skill said maps cannot be created (true of data_to_chart, false of
+  # render_map); the dwell view's chart_customization said "H3 congestion is a MAP,
+  # not a chart" and named no way to draw one; and "density" was not a trigger word,
+  # so h3_cell was never even SELECTed. The agent produced two facility-type bar
+  # charts and a deep link. Hence the assertions below check the SPATIAL grain, not
+  # just that a map appeared - a facility_type breakdown is a different question.
+  - id: render-map-density-unhinted
+    prompt: >-
+      show me dwell density in the us
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: judge
+        text: >-
+          The assistant drew a MAP of spatial density, not only a chart. Its map
+          specification must contain a layer whose data.query SELECTs an H3 cell
+          column together with a measure (dwell minutes or session count) from the
+          FLEET_APP contract, filtered to the US region. A bar chart or table
+          broken down by facility_type, city or category is NOT an acceptable
+          substitute for the spatial answer: if one is present it must be offered
+          as a supporting view alongside the map, not instead of it. The assistant
+          must NOT claim maps cannot be rendered.
+
+  # --- render_map, travel-time-scoped density: ONE map, not two ---------------
+  # The prompt that produced two maps and two empty stubs, verbatim.
+  #
+  # The case above ("dwell density in the us") does NOT cover this. There the
+  # failure was drawing no map at all; here the agent drew a perfectly good
+  # 45-minute isochrone (automatically - compute_isochrone is a mapTool, so its
+  # geometry is drawn client-side with no instruction involved) and THEN called
+  # render_map for the H3 layer. Two maps, one question. The user wanted one
+  # picture: hexes clipped to the ring, shaded by POI count.
+  #
+  # The existing no-duplicate-map rule did not catch it, because the two are
+  # DIFFERENT geometry - it only forbids redrawing the SAME geometry. The fix
+  # names the composition (an ISOCHRONES layer + an h3 layer joined with
+  # ST_WITHIN), so the assertions check that the ring is a LAYER rather than a
+  # separate tool call.
+  #
+  # The absence assertion is the point of the case and cannot be expressed as a
+  # `verb` assertion (that type only proves a row EXISTS), so it is a `sql` one.
+  # Measured for reference: the h3 query returns 68 POIs in its top cell, so a
+  # correct answer has real numbers to quote.
+  - id: render-map-travel-time-density
+    prompt: >-
+      show me density of pois within 45 min ebike travel time around SF airport
+    assertions:
+      - type: verb
+        verbs: [render_map]
+        description: render_map verb was audited with outcome ok
+      - type: sql
+        description: >-
+          compute_isochrone was NOT called - the ring belongs in a render_map layer,
+          and calling both is what drew two maps for one question
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'compute_isochrone'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: sql
+        description: exactly one render_map call, so the answer is one picture
+        text: >-
+          SELECT (COUNT(*) = 1) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'render_map' AND OUTCOME = 'ok'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant answered with a SINGLE map that combines two layers: a
+          drive-time / cycling-time ring around SFO obtained live from
+          ROUTING_PLATFORM.CONTRACT.ISOCHRONES, and an H3 hexagon layer over POIs
+          restricted to that ring (ST_WITHIN or an equivalent spatial predicate)
+          and shaded by a COUNT. It must NOT call compute_isochrone and then draw a
+          second map. The isochrone profile must be cycling-electric (the loaded
+          e-bike profile); cycling-regular is wrong and returns NULL geometry with
+          no error. Quoting POI counts per cell is good; a bar chart of POI
+          categories is acceptable only ALONGSIDE the map, never instead of it.
+
+  # --- data_to_chart, UN-HINTED phrasing -----------------------------------
+  # The counterpart to the render_map cases above, and the question that exposed
+  # the rendering bug: "show me Visits by Facility Type" produced a perfectly
+  # good Vega-Lite spec that the app then displayed as a collapsed JSON blob,
+  # because the inline registry knew `render_chart` while the result arrives as
+  # `data_to_chart`. Nothing failed - not a test, not a log line.
+  #
+  # Deliberately un-hinted: no "as a chart", no chart type named. A ranked
+  # breakdown is the canonical case the host's own guidance calls MANDATORY to
+  # chart, so an agent that answers with a bare markdown table has regressed.
+  # The assertion checks the SPEC, not just that a chart tool ran: an empty or
+  # field-less encoding is the failure mode that renders a blank card.
+  #
+  # NOTE this is a `judge` assertion and not a `verb` one - data_to_chart is
+  # HOST-injected, so it never appears in the synapse VERB_ATTEMPT audit.
+  - id: data-to-chart-ranked-breakdown
+    prompt: >-
+      show me visits by facility type in san francisco
+    assertions:
+      - type: judge
+        text: >-
+          The assistant called data_to_chart and its argument is a single-view
+          Vega-Lite specification whose `encoding` binds real result columns:
+          a quantitative channel for the visit measure and a nominal channel for
+          the facility type, with a `mark` (bar is expected for a ranked list).
+          It must NOT be a layered, faceted or concatenated spec, must NOT have
+          an empty or field-less encoding, and the answer must not consist of a
+          markdown table alone with no chart. The assistant must not claim it
+          cannot draw charts here, and must not deep-link to a view in place of
+          charting the figures it already retrieved.
+
+  # --- deep_link regression -------------------------------------------------
+  # deep_link failed 4 calls out of 4 on tib85385 with "URLSearchParams is not
+  # defined": synapse compiles every verb into a LANGUAGE JAVASCRIPT procedure
+  # and that runtime has no WHATWG URL APIs. tsc accepted it, esbuild bundled
+  # it, the procedure created cleanly, and every static gate stayed green - so
+  # only a live call could have caught it. check_verb_js_globals.py now blocks
+  # the whole class; this case proves the verb still actually RUNS, which a
+  # static scan cannot tell you.
+  - id: deep-link-view
+    prompt: >-
+      Give me a link I can open to the Dwell Overview page for San Francisco.
+    assertions:
+      - type: verb
+        verbs: [deep_link]
+        description: deep_link verb was audited with outcome ok
+      - type: sql
+        description: deep_link did not error (regression guard for the JS-runtime fault)
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'deep_link' AND OUTCOME = 'error'
+          AND ACTOR = CURRENT_USER() AND AT >= '{{start_ts}}'
+      - type: judge
+        text: >-
+          The assistant supplied an actual https URL containing a query string
+          (a "?" followed by at least one parameter), or clearly explained that
+          the app endpoint is not provisioned. It did NOT report an internal
+          error, and did NOT tell the user to contact an administrator or raise
+          a bug.
+
+  # --- unknown view id must be recoverable ---------------------------------
+  # The agent guessed view_id "route_deviation", which does not exist. The error
+  # is correct and names the tools to try, but the turn still dead-ends unless
+  # the agent acts on it. This asserts recovery, not merely a clean failure.
+  - id: deep-link-unknown-view
+    prompt: >-
+      Open the "route_deviation" view for me.
+    assertions:
+      - type: judge
+        text: >-
+          The assistant either opened a real view whose name is close to the one
+          requested (for example a route deviation or detour page), or listed the
+          view ids that do exist so the user can pick one. Simply reporting that
+          "route_deviation" is not a valid view, with no alternatives and no
+          lookup attempt, is a FAILURE.
+
+  # --- governed path beats run_sql ----------------------------------------
+  # The acceptance test for the in-band governed_note nudge. Prose guidance for
+  # this exists in BOTH the agent spec and run_sql's tool description, and the
+  # agent still answered dwell questions by hand-writing SQL against
+  # FLEET_APP.DWELL.VW_DWELL_SESSIONS - which SV_DWELL_ANALYTICS models. Note a
+  # query_* Cortex Analyst tool writes NO VERB_ATTEMPT row, so the evidence here
+  # is the ABSENCE of a run_sql row plus a judged answer, not a verb assertion.
+  - id: governed-path-dwell
+    prompt: >-
+      Which vehicle type has the most dwell time?
+    assertions:
+      - type: sql
+        description: answered without hand-written SQL against a modelled object
+        text: >-
+          SELECT (COUNT(*) = 0) AS OK FROM {{verb_attempt}}
+          WHERE VERB = 'run_sql' AND ACTOR = CURRENT_USER()
+          AND AT >= '{{start_ts}}'
+          AND UPPER(ARGS_JSON:sql::STRING) LIKE '%VW_DWELL_SESSIONS%'
+      - type: judge
+        text: >-
+          The assistant answered with a specific vehicle type and a dwell figure.
+          If it did use raw SQL against the dwell tables, it also said so and
+          named the governed query_* tool that models this data - staying silent
+          about it is a FAILURE.

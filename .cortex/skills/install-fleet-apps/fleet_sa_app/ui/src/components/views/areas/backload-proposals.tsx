@@ -15,14 +15,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
+import { useRegionCamera } from '@/hooks/use-region-camera';
+import { usePublishMapState, joinBounded, TRIP_MEMO_MAX_LEN } from '@/lib/agent-memo';
+import { collectAgentSolve } from '@/lib/backload-rehydrate';
 import type { ViewProps } from '@/lib/types';
 import {
-  computeScoredPairs, rankByWeights, groupByTrailer, loadWeights, saveWeights,
+  rankByWeights, groupByTrailer, loadWeights, saveWeights,
   DEFAULT_WEIGHTS, FAMILY_LABELS,
-  type ProposalRow, type ParamRow, type TrailerLoc, type EnsembleWeights,
+  type ScoredPair, type ParamRow, type EnsembleWeights,
   type StrategyFamily,
 } from './backload-ensemble';
-import { sqlLiteral } from './backload-matching/helpers';
+import { sfRead, sqlLiteral, callVerb } from './backload-matching/helpers';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import { isRoutingSuspendedError, RoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
 import KpiStrip, { type KpiStat } from './backload-proposals/KpiStrip';
 import StatusBar from './backload-proposals/StatusBar';
 import FilterBar, { type StrategyOption } from './backload-proposals/FilterBar';
@@ -55,15 +60,18 @@ interface Load {
 }
 interface VehicleClass {
   VEHICLE_TYPE: string; ORS_PROFILE: string; PAYLOAD_KG_TYP: number;
-  AVG_SPEED_KMH: number; COST_EUR_PER_KM: number; HOME_RANGE_KM: number; LABEL_NOUN: string;
+  AVG_SPEED_KMH: number; COST_PER_KM: number; HOME_RANGE_KM: number; LABEL_NOUN: string;
 }
-interface ScoredCandidate {
-  TRAILER_ID: string; LOAD_ID: string;
-  DIST_CHECK: boolean; TIME_CHECK: boolean; HORIZON_CHECK: boolean;
-  CAP_CHECK: boolean; HAZMAT_CHECK: boolean; ELIGIBLE: boolean;
-}
-
-const COST_SCALE = 100;
+// How many graded pairs to pull back. The cockpit shows several candidates per
+// vehicle across three perspectives, so a per-vehicle-best response would make the
+// Loads and Ensemble views impossible; this bounds the payload instead.
+const PAIR_LIMIT = 200;
+// Wall-clock ceiling handed to the verb. The cockpit is a DELIBERATE full-region
+// run behind a Run button with its own busy state, and measured solves here reach
+// 168.6s at 100/500, so it asks for the verb's maximum rather than the 90s default
+// the agent path gets. Passing the default would truncate a solve this page has
+// always completed.
+const PAGE_TIME_BUDGET_S = 600;
 
 // Single-strategy options (non-ensemble perspectives).
 const STRATEGY_OPTIONS: StrategyOption[] = [
@@ -73,37 +81,10 @@ const STRATEGY_OPTIONS: StrategyOption[] = [
   { key: 'bpmp', label: 'Profit-max backhaul (road)' },
 ];
 
-function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
-  const R = 6371, toRad = (x: number) => (x * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-async function sfRead(sql: string): Promise<Record<string, unknown>[]> {
-  const res = await fetch('/api/query', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  const rows = (body.rows as Record<string, unknown>[]) || [];
-  return rows.map((r) => {
-    const o: Record<string, unknown> = {};
-    for (const k of Object.keys(r)) o[k.toUpperCase()] = r[k];
-    return o;
-  });
-}
-
-async function apiSolve(challenge: object, region: string): Promise<Record<string, unknown> | null> {
-  const res = await fetch('/api/backload/solve', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ challenge, region }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return (body.result as Record<string, unknown>) ?? null;
-}
+// Thrown by apiSolve and sfRead when the routing engine is suspended so the
+// caller can show the shared resume notice (server has already triggered the
+// resume). Aliased to the shared class so both paths land in ONE catch.
+const SuspendedError = RoutingSuspendedError;
 
 // Road path for a single pair via ORS DIRECTIONS through [empty, pickup,
 // delivery]. Returns [lon,lat][] or null on any failure (caller falls back to
@@ -130,14 +111,18 @@ async function fetchRouteCoords(profile: string, waypoints: [number, number][], 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const okPt = (lon: number, lat: number) => Number.isFinite(lon) && Number.isFinite(lat) && !(lon === 0 && lat === 0);
 
-export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}) {
+export function BackloadProposalsView({ viewState, onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
   const [cfg, setCfg] = useState<{ vehicleType: string; region: string } | null>(null);
   const [cls, setCls] = useState<VehicleClass | null>(null);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [loads, setLoads] = useState<Load[]>([]);
-  const [scored, setScored] = useState<ScoredCandidate[]>([]);
+  // Count only. The eligibility view is a cross join of the two pools, so the
+  // page used to pull ~246k rows into the browser purely to display its size and
+  // to look up five booleans per selected pair. The verb now returns those
+  // booleans with each pair, so a scalar count is all that is left.
+  const [eligibleCount, setEligibleCount] = useState(0);
   const [params, setParams] = useState<ParamRow[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
@@ -153,7 +138,9 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [busy, setBusy] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
-  const [proposals, setProposals] = useState<ProposalRow[]>([]);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
+  const [pairs, setPairs] = useState<ScoredPair[]>([]);
+  const [gradedCount, setGradedCount] = useState(0);
   const [ranAt, setRanAt] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -163,31 +150,61 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   const [rationaleByKey, setRationaleByKey] = useState<Record<string, string>>({});
   const [explaining, setExplaining] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  // Region bbox for the map camera. Keyed off the region the feeds were actually
+  // scoped to (cfg.region), not the raw store value, so camera and data agree.
+  const regionCoords = useRegionCamera(cfg?.region ?? region);
 
   useEffect(() => { setWeights(loadWeights()); }, []);
 
   const load = useCallback(async () => {
     setLoadErr(null);
+    // A pair key from the previous region cannot exist in the new one, and holding
+    // it also pins `focusKey`, which is one of the two things that can force the
+    // camera to re-fit.
+    setSelectedKey(null);
     try {
       const cfgRows = await sfRead(`SELECT VEHICLE_TYPE, REGION FROM ${BM}.VW_CONFIG LIMIT 1`);
       const c = cfgRows[0] as { VEHICLE_TYPE?: string; REGION?: string } | undefined;
       const vehicleType = String(c?.VEHICLE_TYPE ?? 'hgv');
-      const cfgRegion = String(c?.REGION ?? region ?? 'SanFrancisco');
+      // The APP's selected region wins over CONFIG's single row. CONFIG is a
+      // default-selection hint, not the scope.
+      const cfgRegion = String(region ?? c?.REGION ?? 'SanFrancisco');
       setCfg({ vehicleType, region: cfgRegion });
 
+      // Region scoping is mandatory and NOT optional tidying. VW_TRAILERS_GEO,
+      // VW_LOADS and VW_CANDIDATES_SCORED do not project REGION (their sources
+      // do), so reading them bare pools every loaded region into one cockpit -
+      // measured 191 vehicles and 5,632 loads account-wide against 100 and 5,300
+      // for San Francisco. The result is not merely noisy: it proposes a backload
+      // the vehicle physically cannot reach, and it scores WELL, because the empty
+      // leg is computed from coordinates that are perfectly valid in isolation.
+      // The FLEET_APP contract views do carry REGION, so scope through them.
+      const scope = { region: cfgRegion };
+      const scopedTrailerIds = `SELECT TRAILER_ID FROM ${BM}.VW_TRAILERS WHERE REGION = :region`;
+      const scopedLoadIds =
+        `SELECT ID AS LOAD_ID FROM ${BM}.VW_INTERNAL_VOLUMES WHERE REGION = :region`
+        + ` UNION ALL SELECT OFFER_ID AS LOAD_ID FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`;
       const [clsRows, tRows, lRows, scRows, pRows] = await Promise.all([
         sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vehicleType)}' LIMIT 1`),
-        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO`),
-        sfRead(`SELECT LOAD_ID, IS_INTERNAL, SOURCE, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DELIVERY_CITY, DELIVERY_LON, DELIVERY_LAT, REQUESTED_PICKUP_TS, WEIGHT_KG, PRODUCT, HAZMAT, PRICE_USD, APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS`),
-        sfRead(`SELECT TRAILER_ID, LOAD_ID, DIST_CHECK, TIME_CHECK, HORIZON_CHECK, CAP_CHECK, HAZMAT_CHECK, ELIGIBLE FROM ${PHYS}.VW_CANDIDATES_SCORED WHERE ELIGIBLE = TRUE`),
+        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        // The id set MUST be a CTE joined in: Snowflake rejects an IN (...) with a
+        // UNION ALL inside it as "Unsupported subquery type cannot be evaluated".
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS l JOIN scoped s ON s.LOAD_ID = l.LOAD_ID`, { params: scope }),
+        // Scoped on BOTH sides, not just the vehicle: this set feeds the visible
+        // "Eligible pairs" KPI, so leaving loads unscoped would count in-region
+        // vehicles paired with out-of-region loads and inflate the number the
+        // dispatcher reads. A COUNT, not the rows: the page needs the size, and the
+        // per-pair booleans now arrive with each pair from the verb.
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT COUNT(*) AS N FROM ${PHYS}.VW_CANDIDATES_SCORED c JOIN scoped s ON s.LOAD_ID = c.LOAD_ID WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
       ]);
       setCls((clsRows[0] as unknown as VehicleClass) ?? null);
       setTrailers(tRows as unknown as Trailer[]);
       setLoads(lRows as unknown as Load[]);
-      setScored(scRows as unknown as ScoredCandidate[]);
+      setEligibleCount(Number((scRows[0] as { N?: number } | undefined)?.N ?? 0));
       setParams(pRows as unknown as ParamRow[]);
     } catch (e) {
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       const msg = e instanceof Error ? e.message : 'Failed to load backload data';
       // The cockpit data layer (VW_LOADS / VW_CANDIDATES_SCORED / MATCH_PARAMS in
       // FLEET_INTELLIGENCE.BACKLOAD_MATCHING) is provisioned by the admin app boot
@@ -201,6 +218,78 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
 
   useEffect(() => { load(); }, [load]);
 
+  // -----------------------------------------------------------------
+  // Rehydrate a solve the AGENT ran.
+  //
+  // `solve_key` arrives in viewState when the agent navigates here after calling
+  // backload_solve (show_view with selection="solve_key=..."). This page and that
+  // verb are the SAME code path - both call TOOL_BACKLOAD_SOLVE and both consume
+  // `pairs` - so the cached result drops straight into state with no conversion,
+  // and the weight sliders re-rank it exactly as they would a local solve.
+  //
+  // Collecting rather than re-running matters for more than time: a second solve
+  // is a genuinely different solve, so re-running would put numbers on screen
+  // that can disagree with the ones the agent just quoted in chat.
+  // -----------------------------------------------------------------
+  const solveKeyParam = typeof viewState?.solve_key === 'string' ? viewState.solve_key : null;
+  const rehydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!solveKeyParam) return;
+    if (rehydratedKeyRef.current === solveKeyParam) return;
+    let cancelled = false;
+    const ac = new AbortController();
+
+    (async () => {
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (cancelled) return;
+        const out = await collectAgentSolve(solveKeyParam, ac.signal);
+        if (cancelled) return;
+
+        if (out.state === 'pending') {
+          setBusy('Collecting the agent\u2019s solve\u2026');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        rehydratedKeyRef.current = solveKeyParam;
+        setBusy(null);
+
+        if (out.state === 'expired') {
+          setSolveError('That solve is no longer stored. Run a strategy to produce a new one.');
+          return;
+        }
+        if (out.state === 'failed') {
+          setSolveError(`The agent\u2019s solve could not be collected: ${out.error}`);
+          return;
+        }
+
+        // The agent may have asked for vehicle granularity, which returns
+        // `proposals` and no `pairs`. This cockpit ranks pairs, so say so plainly
+        // rather than rendering an empty grid.
+        const rows = (out.solve.pairs as ScoredPair[] | undefined) ?? [];
+        if (!rows.length) {
+          setSolveError(
+            'The agent\u2019s solve returned one proposal per vehicle rather than the graded pairs this ' +
+            'cockpit ranks. Run a strategy here to grade every candidate pair.',
+          );
+          return;
+        }
+        setPairs(rows);
+        setGradedCount(Number((out.solve.counts ?? {}).graded_pairs ?? rows.length));
+        setRanAt(Date.now());
+        const ran = out.solve.strategies_run ?? [];
+        setInfo(
+          `Showing the agent\u2019s solve` +
+          (ran.length > 1 ? ` - ${ran.length} strategies graded` : out.solve.strategy ? ` (${out.solve.strategy})` : '') +
+          '. Tune the scoring weights to re-rank it without re-solving.',
+        );
+        return;
+      }
+    })();
+
+    return () => { cancelled = true; ac.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solveKeyParam]);
+
   const trailerById = useMemo(() => {
     const m = new Map<string, Trailer>();
     for (const t of trailers) m.set(t.TRAILER_ID, t);
@@ -212,165 +301,61 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return m;
   }, [loads]);
 
-  const eligibleSet = useMemo(() => {
-    const s = new Set<string>();
-    for (const c of scored) if (c.ELIGIBLE) s.add(`${c.TRAILER_ID}::${c.LOAD_ID}`);
-    return s;
-  }, [scored]);
-
-  // Build the VROOM challenge for a strategy family.
-  const buildChallenge = useCallback((fam: StrategyFamily) => {
-    if (!cls) return null;
-    const profile = cls.ORS_PROFILE;
-    const classCapacityKg = cls.PAYLOAD_KG_TYP || 1000;
-    const effPerKm = cls.COST_EUR_PER_KM || 0.85;
-    const maxStops = fam === 'bpmp' ? 4 : fam === 'vrp' ? 1 : 2;
-
-    const idToTrailer = new Map<number, Trailer>();
-    const vehicles = trailers.slice(0, maxVehicles).map((t, i) => {
-      const id = i + 1;
-      idToTrailer.set(id, t);
-      return {
-        id, profile,
-        start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
-        end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
-        capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
-        skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-        max_tasks: maxStops,
-        costs: { fixed: 120 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) },
-      } as Record<string, unknown>;
-    });
-
-    const idToLoad = new Map<number, Load>();
-    let nextId = 1000;
-    const shipments: Record<string, unknown>[] = [];
-    for (const l of loads.slice(0, maxLoads)) {
-      const id = nextId++;
-      idToLoad.set(id, l);
-      const kg = Math.min(num(l.WEIGHT_KG), classCapacityKg);
-      let priority = l.IS_INTERNAL ? 90 : 10;
-      if (fam === 'bpmp') {
-        const rev = l.PRICE_USD != null ? num(l.PRICE_USD) : num(l.APPROX_DISTANCE_KM) * 1.1;
-        priority = Math.max(1, Math.min(100, Math.round(rev / 25)));
-      }
-      shipments.push({
-        pickup: { id, location: [num(l.PICKUP_LON), num(l.PICKUP_LAT)], service: 1800 },
-        delivery: { id, location: [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)], service: 600 },
-        amount: [kg],
-        skills: l.HAZMAT ? (l.IS_INTERNAL ? [1, 3] : [2, 3]) : (l.IS_INTERNAL ? [1] : [2]),
-        priority,
-      });
-    }
-    // g:false - do NOT ask VROOM to return per-route road geometry. For a large
-    // region (e.g. Europe/car) the geometry for many long cross-country routes
-    // pushes the _OPTIMIZATION_RAW external-function response past its 20MB cap
-    // (Snowflake 100335). The solve still runs (VROOM sources its matrix from
-    // ORS internally); the selected route's road path is fetched lazily via ORS
-    // DIRECTIONS (routeGeo) at selection time, so nothing on the map needs the
-    // solve-time geometry. PATH_COORDS is therefore null and routePath falls
-    // back to the DIRECTIONS path.
-    return { challenge: { vehicles, shipments, options: { g: false } }, idToTrailer, idToLoad };
-  }, [cls, trailers, loads, maxVehicles, maxLoads]);
-
-  const parseSolve = useCallback((
-    resp: Record<string, unknown> | null, fam: StrategyFamily,
-    idToTrailer: Map<number, Trailer>, idToLoad: Map<number, Load>,
-  ): ProposalRow[] => {
-    const basis = fam === 'vrp' ? 'vrp_road' : fam === 'fleet' ? 'fleet_vrp' : fam === 'bpmp' ? 'bpmp' : 'great_circle';
-    const routes = Array.isArray(resp?.routes) ? (resp!.routes as Record<string, unknown>[]) : [];
-    const out: ProposalRow[] = [];
-    for (const route of routes) {
-      const t = idToTrailer.get(Number(route.vehicle));
-      if (!t) continue;
-      const geom = Array.isArray(route.geometry) && (route.geometry as unknown[]).length > 1 ? (route.geometry as [number, number][]) : null;
-      const steps = Array.isArray(route.steps) ? (route.steps as Record<string, unknown>[]) : [];
-      const pickups = steps.filter((s) => s.type === 'pickup');
-      let seq = 0;
-      for (const s of pickups) {
-        const l = idToLoad.get(Number(s.id));
-        if (!l) continue;
-        seq += 1;
-        const emptyKm = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
-        const loadedKm = haversineKm(num(l.PICKUP_LON), num(l.PICKUP_LAT), num(l.DELIVERY_LON), num(l.DELIVERY_LAT));
-        const nextKm = haversineKm(num(l.DELIVERY_LON), num(l.DELIVERY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
-        const baselineKm = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
-        const totalKm = emptyKm + loadedKm + nextKm;
-        out.push({
-          PROPOSAL_ID: `${fam}:${t.TRAILER_ID}:${l.LOAD_ID}`,
-          TRAILER_ID: t.TRAILER_ID, LOAD_ID: l.LOAD_ID, DISTANCE_BASIS: basis,
-          EMPTY_KM: emptyKm, LOADED_KM: loadedKm, DETOUR_KM: Math.max(0, totalKm - loadedKm - baselineKm),
-          TOTAL_KM: totalKm, PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: fam === 'bpmp' ? seq : null,
-          PICKUP_LON: num(l.PICKUP_LON), PICKUP_LAT: num(l.PICKUP_LAT),
-          DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
-          PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
-          DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
-          IS_INTERNAL: l.IS_INTERNAL, SOURCE: l.SOURCE,
-          PATH_COORDS: geom,
-        });
-      }
-    }
-    return out;
-  }, []);
-
-  const baselineProposals = useCallback((): ProposalRow[] => {
-    const out: ProposalRow[] = [];
-    for (const t of trailers.slice(0, maxVehicles)) {
-      let best: { l: Load; km: number } | null = null;
-      for (const l of loads.slice(0, maxLoads)) {
-        if (eligibleSet.size && !eligibleSet.has(`${t.TRAILER_ID}::${l.LOAD_ID}`)) continue;
-        const km = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
-        if (!best || km < best.km) best = { l, km };
-      }
-      if (!best) continue;
-      const l = best.l;
-      const loadedKm = haversineKm(num(l.PICKUP_LON), num(l.PICKUP_LAT), num(l.DELIVERY_LON), num(l.DELIVERY_LAT));
-      out.push({
-        PROPOSAL_ID: `baseline:${t.TRAILER_ID}:${l.LOAD_ID}`,
-        TRAILER_ID: t.TRAILER_ID, LOAD_ID: l.LOAD_ID, DISTANCE_BASIS: 'great_circle',
-        EMPTY_KM: best.km, LOADED_KM: loadedKm, DETOUR_KM: null, TOTAL_KM: best.km + loadedKm,
-        PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: null,
-        PICKUP_LON: num(l.PICKUP_LON), PICKUP_LAT: num(l.PICKUP_LAT),
-        DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
-        PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
-        DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
-        IS_INTERNAL: l.IS_INTERNAL, SOURCE: l.SOURCE,
-        PATH_COORDS: null,
-      });
-    }
-    return out;
-  }, [trailers, loads, maxVehicles, maxLoads, eligibleSet]);
-
-  const runFamilies = useCallback(async (families: StrategyFamily[]) => {
+  // One verb call replaces the whole browser-side pipeline: strategy selection,
+  // challenge construction, the routability pre-filter, the solve, the
+  // unroutable-point shear-and-retry, and the seven-dimension scoring. It returns
+  // pairs WITH their per-dimension scores, which is what lets the weight sliders
+  // keep re-ranking locally with no round trip.
+  const runStrategy = useCallback(async (strat: string) => {
     if (!cfg || !cls) return;
-    setBusy('Generating proposals\u2026'); setSolveError(null); setInfo(null);
-    setProposals([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({});
+    setBusy(strat === 'ensemble' ? 'Solving all strategies\u2026' : 'Solving\u2026');
+    setSolveError(null); setInfo(null);
+    setPairs([]); setDecisions({}); setSelectedKey(null); setRouteGeo({}); setRationaleByKey({}); setSuspended(null);
     try {
-      const all: ProposalRow[] = [];
-      for (const fam of families) {
-        if (fam === 'baseline') { all.push(...baselineProposals()); continue; }
-        const built = buildChallenge(fam);
-        if (!built || !built.challenge.vehicles.length || !built.challenge.shipments.length) continue;
-        setBusy(`Solving ${FAMILY_LABELS[fam]}\u2026`);
-        const resp = await apiSolve(built.challenge, cfg.region);
-        all.push(...parseSolve(resp, fam, built.idToTrailer, built.idToLoad));
+      const result = await callVerb('backload_solve', [
+        strat, maxVehicles, maxLoads, cfg.region, PAIR_LIMIT, 'pair',
+        // trailer_id: null - the cockpit plans the whole region. Scoping to one
+        // vehicle is the agent's path, not the dispatcher's.
+        null, PAGE_TIME_BUDGET_S,
+      ]);
+      const rows = (result.pairs as ScoredPair[] | undefined) ?? [];
+      const counts = (result.counts ?? {}) as Record<string, number>;
+      const ranSt = (result.strategies_run as string[] | undefined) ?? [];
+      const excluded = Number(counts.excluded_unroutable ?? 0);
+      const excludedNote = excluded > 0 ? ` Excluded ${excluded} unroutable stop(s).` : '';
+      // A partially-degraded solve is still a success; say so rather than
+      // presenting a thinner plan as complete.
+      const degraded = result.degraded ? ` ${String(result.degraded)}` : '';
+      if (!rows.length) {
+        setSolveError('No proposals produced. Ensure the routing service is running for this region '
+          + 'and that vehicles/loads exist for the active preset.' + excludedNote);
+      } else {
+        setInfo((ranSt.length > 1
+          ? `Ensemble complete - ${ranSt.length} strategies graded. Tune the scoring weights to re-rank instantly.`
+          : 'Match complete.') + excludedNote + degraded);
       }
-      if (!all.length) setSolveError('No proposals produced. Ensure the routing service is running for this region and that vehicles/loads exist for the active preset.');
-      else setInfo(families.length > 1 ? `Ensemble complete - ${families.length} strategies graded. Tune the scoring weights to re-rank instantly.` : 'Match complete.');
-      setProposals(all);
+      setPairs(rows);
+      setGradedCount(Number(counts.graded_pairs ?? rows.length));
       setRanAt(Date.now());
     } catch (e) {
-      setSolveError(e instanceof Error ? e.message : 'Solve failed');
+      if (e instanceof SuspendedError) setSuspended(e.info);
+      else setSolveError(e instanceof Error ? e.message : 'Solve failed');
     } finally { setBusy(null); }
-  }, [cfg, cls, baselineProposals, buildChallenge, parseSolve]);
+  }, [cfg, cls, maxVehicles, maxLoads]);
 
-  const onRun = useCallback(() => runFamilies([strategy as StrategyFamily]), [runFamilies, strategy]);
-  const onRunEnsemble = useCallback(() => runFamilies(ensembleBasis === 'road' ? ['baseline', 'vrp', 'fleet', 'bpmp'] : ['baseline']), [runFamilies, ensembleBasis]);
+  const onRun = useCallback(() => runStrategy(strategy), [runStrategy, strategy]);
+  // 'great_circle' basis means the estimate-only strategy, which is also the one
+  // that still answers when the routing engine is suspended.
+  const onRunEnsemble = useCallback(
+    () => runStrategy(ensembleBasis === 'road' ? 'ensemble' : 'baseline'),
+    [runStrategy, ensembleBasis]);
 
-  // Ensemble scoring pipeline (client-side, re-ranks on weight change).
-  const trailerLocs = useMemo<TrailerLoc[]>(() => trailers.map((t) => ({ TRAILER_ID: t.TRAILER_ID, EMPTY_FROM_TS: t.EMPTY_FROM_TS })), [trailers]);
-  const scoredPairs = useMemo(() => computeScoredPairs(proposals, params, trailerLocs), [proposals, params, trailerLocs]);
-  const rankedAll = useMemo(() => rankByWeights(scoredPairs, weights), [scoredPairs, weights]);
-  const consolidationActive = useMemo(() => scoredPairs.some((p) => p.scores.consolidation != null), [scoredPairs]);
+  // Pairs arrive already scored on all seven dimensions, so the only thing left
+  // client-side is applying the dispatcher's weights - which is deliberate: it is
+  // a pure function of (scores, weights), so a slider re-ranks instantly with no
+  // server round trip.
+  const rankedAll = useMemo(() => rankByWeights(pairs, weights), [pairs, weights]);
+  const consolidationActive = useMemo(() => pairs.some((p) => p.scores?.consolidation != null), [pairs]);
 
   // Country options from operating countries.
   const countries = useMemo(() => Array.from(new Set(trailers.map((t) => t.OPERATING_COUNTRY).filter(Boolean))).sort(), [trailers]);
@@ -436,15 +421,18 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
   }, []);
 
   // --- per-pair constraint chips ---
+  // Per-constraint verdicts now travel WITH each pair from the verb, so the page no
+  // longer scans the whole eligibility view to find five booleans.
   const chipsFor = useCallback((trailerId: string, loadId: string): ChipDef[] => {
-    const c = scored.find((x) => x.TRAILER_ID === trailerId && x.LOAD_ID === loadId);
+    const p = pairs.find((x) => x.trailerId === trailerId && x.loadId === loadId);
+    const c = (p as unknown as { constraints?: Record<string, boolean> } | undefined)?.constraints;
     if (!c) return [];
     return [
-      { label: 'Distance', ok: c.DIST_CHECK }, { label: 'Pickup time', ok: c.TIME_CHECK },
-      { label: 'Horizon', ok: c.HORIZON_CHECK }, { label: 'Capacity', ok: c.CAP_CHECK },
-      { label: 'Hazmat', ok: c.HAZMAT_CHECK },
+      { label: 'Distance', ok: c.distance === true }, { label: 'Pickup time', ok: c.pickup_time === true },
+      { label: 'Horizon', ok: c.horizon === true }, { label: 'Capacity', ok: c.capacity === true },
+      { label: 'Hazmat', ok: c.hazmat === true },
     ];
-  }, [scored]);
+  }, [pairs]);
   const selectedChips = useMemo(() => selectedPair ? chipsFor(selectedPair.trailerId, selectedPair.loadId) : [], [selectedPair, chipsFor]);
 
   // --- Cortex explain for one pair ---
@@ -482,7 +470,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       { label: `Idle ${labelNoun}s`, value: trailers.length },
       { label: 'Internal loads', value: internalCount },
       { label: 'External offers', value: externalCount },
-      { label: 'Eligible pairs', value: eligibleSet.size },
+      { label: 'Eligible pairs', value: eligibleCount },
     ];
     if (grouped.length) {
       out.push({ label: `${labelNoun}s matched`, value: kpis.n, sub: `${ranked.length} graded pairs` });
@@ -491,7 +479,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       out.push({ label: 'Avg score', value: kpis.avg.toFixed(0) });
     }
     return out;
-  }, [labelNoun, trailers.length, internalCount, externalCount, eligibleSet.size, grouped.length, kpis, ranked.length]);
+  }, [labelNoun, trailers.length, internalCount, externalCount, eligibleCount, grouped.length, kpis, ranked.length]);
 
   // --- map data ---
   const mapVehicles = useMemo<MapVehicle[]>(() => trailers
@@ -529,22 +517,55 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
     return null;
   }, [selectedKey, routeGeo, selectedPair]);
 
+  // Agent grounding, Channel B. The layers live inside ProposalMap, so describe the
+  // semantic arrays this page feeds it rather than reaching into the child: same
+  // counts, and it stays correct if the child changes how it draws them. Gated on
+  // having any vehicles or loads so a still-loading page publishes null instead of
+  // an empty map the agent would report as "nothing to dispatch".
+  usePublishMapState(
+    useMemo(
+      () => {
+        const layers = [
+          { id: 'vehicles', type: 'scatterplot', featureCount: mapVehicles.length },
+          { id: 'loads', type: 'scatterplot', featureCount: mapLoads.length },
+          { id: 'proposal-links', type: 'arc', featureCount: mapLinks.length },
+          { id: 'selected-stops', type: 'scatterplot', featureCount: mapStops.length },
+          { id: 'selected-route', type: 'path', featureCount: routePath ? 1 : 0 },
+        ].map((l) => ({ ...l, rendered: l.featureCount > 0 }));
+        if (!mapVehicles.length && !mapLoads.length) return null;
+        return {
+          layerCount: layers.length,
+          layers,
+          emptyLayers: layers.filter((l) => !l.rendered).map((l) => l.id),
+          selection: selectedKey ? { selected_pair: selectedKey } : undefined,
+        };
+      },
+      [mapVehicles.length, mapLoads.length, mapLinks.length, mapStops.length, routePath, selectedKey],
+    ),
+  );
+
   // --- agent grounding (ref pattern; publish only on change) ---
   const summary = useMemo(() => {
     const MAX_TRIPS = 12;
-    const topList = grouped.slice(0, MAX_TRIPS).map((r) => {
+    const parts = grouped.slice(0, MAX_TRIPS).map((r) => {
       const margin = r.best.marginUsd != null ? `${r.best.marginUsd >= 0 ? '+' : ''}$${Math.round(r.best.marginUsd)}` : 'n/a';
       const loaded = (r.best.loadedKm ?? r.best.loadedKmEst ?? 0).toFixed(0);
       return `${r.trailerId}->${r.best.loadId} ${r.grade} (${FAMILY_LABELS[r.best.bestSource]}) ${r.best.pickupCity || '?'}->${r.best.deliveryCity || '?'}, empty ${(r.best.emptyKm ?? 0).toFixed(0)}km loaded ${loaded}km, margin ${margin}${r.best.isInternal ? ', internal' : ', external'}`;
-    }).join('; ') + (grouped.length > MAX_TRIPS ? ` (+${grouped.length - MAX_TRIPS} more)` : '');
+    });
+    // Row count alone does not bound prose (see agent-memo.ts): route.ts trims
+    // whole panels, so a list that outgrows the budget disappears rather than
+    // shortens. The overflow note is a part so it is either kept or counted.
+    const overflow = grouped.length - parts.length;
+    if (overflow > 0) parts.push(`(+${overflow} more proposals, not listed)`);
+    const topList = joinBounded(parts, TRIP_MEMO_MAX_LEN);
     const acc = Object.values(decisions);
     return {
       view: 'backload_proposals', region: region ?? null,
       perspective, strategy: perspective === 'ensemble' ? 'ensemble' : strategy,
       vehicle_type: cfg?.vehicleType ?? null,
       vehicles_loaded: trailers.length, loads_loaded: loads.length,
-      eligible_pairs: eligibleSet.size || null,
-      proposals_run: proposals.length || null,
+      eligible_pairs: eligibleCount || null,
+      proposals_run: gradedCount || null,
       vehicles_matched: kpis.n || null,
       internal_matched: grouped.length ? kpis.internal : null,
       total_empty_km: grouped.length ? Math.round(kpis.totalEmpty) : null,
@@ -554,7 +575,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       rejected: acc.filter((d) => d.action === 'REJECT').length || null,
       __memo_backload: grouped.length ? topList : null,
     };
-  }, [grouped, decisions, region, perspective, strategy, cfg, trailers.length, loads.length, eligibleSet.size, proposals.length, kpis]);
+  }, [grouped, decisions, region, perspective, strategy, cfg, trailers.length, loads.length, eligibleCount, gradedCount, kpis]);
 
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
@@ -625,6 +646,7 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
       </div>
 
       {/* Status bar */}
+      {suspended && (<RoutingSuspendedNotice info={suspended} onRetry={onRun} />)}
       <StatusBar
         busy={busy}
         error={solveError}
@@ -698,6 +720,8 @@ export function BackloadProposalsView({ onStateChange }: Partial<ViewProps> = {}
               stops={mapStops}
               routePath={routePath}
               focusKey={selectedKey ?? ''}
+              regionKey={cfg?.region ?? ''}
+              regionCoords={regionCoords}
             />
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
               <button type="button" className="btn small secondary" onClick={() => setLegendOpen(true)}>Legend</button>

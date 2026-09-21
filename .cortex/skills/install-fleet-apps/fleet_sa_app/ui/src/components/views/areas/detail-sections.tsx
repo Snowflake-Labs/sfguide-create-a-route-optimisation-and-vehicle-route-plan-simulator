@@ -7,6 +7,9 @@
 // generic auto-table, and the two query-backed section renderers.
 
 import { useViewData } from '@/hooks/use-view-data';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { formatNumber, formatCellValue } from '@/lib/format-number';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // ── Shared config types ─────────────────────────────────────────────────────
 
@@ -19,7 +22,7 @@ export interface ColumnDef {
 export interface PropertyDef {
   field: string;
   label: string;
-  format?: 'number' | 'currency' | 'datetime' | 'date' | 'text';
+  format?: 'number' | 'currency' | 'percent' | 'datetime' | 'date' | 'text';
   link_view?: string;   // navigate to this view on click
   id_field?: string;    // which row field provides the ID for link_view
   conditional?: boolean; // hide row when field is null/empty
@@ -33,17 +36,23 @@ export type SectionDef =
 
 // ── Value formatting ────────────────────────────────────────────────────────
 
-export function fmtValue(val: unknown, format?: string): string {
+export function fmtValue(val: unknown, format?: string, column?: string): string {
   if (val === null || val === undefined || val === '') return '-';
   const s = String(val);
-  if (!format || format === 'text') return s;
+  if (!format || format === 'text') {
+    // No declared format still means a number gets the 2dp cap: a detail row is
+    // the surface where a raw FLOAT artifact is most visible, and this is also
+    // what the drawer's related tables fall back to.
+    return formatCellValue(val, { column, grouping: true });
+  }
   if (format === 'number') {
-    const n = Number(val);
-    return isNaN(n) ? s : n.toLocaleString();
+    return formatNumber(val, { column, grouping: true }) ?? s;
   }
   if (format === 'currency') {
-    const n = Number(val);
-    return isNaN(n) ? s : '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return formatNumber(val, { format: 'currency', grouping: true }) ?? s;
+  }
+  if (format === 'percent') {
+    return formatNumber(val, { format: 'percent' }) ?? s;
   }
   if (format === 'datetime' || format === 'date') {
     try {
@@ -93,6 +102,7 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
 // tables rendered side by side line up regardless of row count; omit it for the
 // default max-height behavior.
 export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns: ColumnDef[]; rows: Record<string, unknown>[]; totalRows?: number; scrollHeight?: number }) {
+  const display = useDisplayConfig();
   const displayed = rows.length;
   const total = totalRows ?? displayed;
   return (
@@ -103,7 +113,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
           <tr>
             {columns.map(col => (
               <th key={col.field} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, backgroundColor: 'var(--surface-secondary, #f3f4f6)', borderBottom: '2px solid var(--border-default, #e5e7eb)', whiteSpace: 'nowrap', position: 'sticky', top: 0, zIndex: 1 }}>
-                {col.header}
+                {interpolateTokens(col.header, display)}
               </th>
             ))}
           </tr>
@@ -113,7 +123,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
             <tr key={i} style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
               {columns.map(col => (
                 <td key={col.field} style={{ padding: '6px 12px', whiteSpace: 'nowrap', color: 'var(--text-primary, #111827)' }}>
-                  {fmtValue(row[col.field], col.format)}
+                  {fmtValue(row[col.field], col.format, col.field)}
                 </td>
               ))}
             </tr>
@@ -133,7 +143,7 @@ export function AutoTable({ columns, rows, totalRows, scrollHeight }: { columns:
 // Runs row[field] as a SQL query - used for "Live Membership" in audience detail.
 export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; title?: string; limit?: number }) {
   const wrappedSql = sql ? `SELECT * FROM (${sql}) AS _t LIMIT ${limit ?? 200}` : undefined;
-  const { data, loading, error, refetch } = useViewData(wrappedSql);
+  const { data, loading, error, suspended, refetch } = useViewData(wrappedSql);
 
   return (
     <div style={{ marginBottom: '28px' }}>
@@ -143,6 +153,8 @@ export function DynamicSqlSection({ sql, title, limit }: { sql: string | null; t
           <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No SQL - membership cannot be computed.</div>
         ) : loading ? (
           <Skeleton />
+        ) : suspended ? (
+          <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />
         ) : error ? (
           <div style={{ padding: '12px 16px' }}>
             <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px', marginBottom: '8px' }}>Error: {error}</div>
@@ -177,7 +189,12 @@ export function RelatedTableSection({
   showViewFn: (id: string) => void;
   scrollHeight?: number;
 }) {
-  const { data, loading, error } = useViewData(section.query, params);
+  const { data, loading, error, suspended, refetch } = useViewData(section.query, params);
+  // emptyMessage is an authored, on-screen string, so it carries the same neutral
+  // {{labels.x}} tokens as every other one and must be interpolated. It was
+  // rendered raw here, in DetailPanel and in ViewMap - the same defect that made
+  // chart series labels print "{{labels.operator_plural}}" on screen.
+  const display = useDisplayConfig();
 
   return (
     <div style={{ marginBottom: '28px' }}>
@@ -185,10 +202,12 @@ export function RelatedTableSection({
       <div style={{ border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', overflow: 'hidden', minHeight: scrollHeight }}>
         {loading ? (
           <Skeleton />
+        ) : suspended ? (
+          <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />
         ) : error ? (
           <div style={{ padding: '12px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>
         ) : !data?.rows.length ? (
-          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{section.emptyMessage ?? 'No records found.'}</div>
+          <div style={{ padding: '12px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>{interpolateTokens(section.emptyMessage ?? 'No records found.', display)}</div>
         ) : (
           <AutoTable columns={section.columns} rows={data.rows} scrollHeight={scrollHeight} />
         )}

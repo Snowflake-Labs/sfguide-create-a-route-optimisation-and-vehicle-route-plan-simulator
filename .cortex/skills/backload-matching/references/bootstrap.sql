@@ -65,8 +65,8 @@ USING (
     ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0, FALSE,  80, 'motorcycle'),
     ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0, FALSE,  80, 'car'),
     ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, FALSE, 150, 'van'),
-    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'trailer'),
-    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'truck')
+    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 28.0, TRUE,  200, 'trailer'),
+    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 28.0, TRUE,  200, 'truck')
   AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
 ) src
 ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE
@@ -156,15 +156,20 @@ CREATE OR REPLACE VIEW VW_TRAILERS
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 WITH last_drop AS (
+  -- Latest trip ROW per vehicle rather than a per-column aggregate: MAX_BY
+  -- rejects a GEOGRAPHY argument, so carrying the stored DESTINATION geometry
+  -- needs a row pick. Also safer than per-column MAX_BY, which on a TRIP_END
+  -- tie could resolve each column to a different trip.
   SELECT VEHICLE_ID,
-         MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
-         MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
-         MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-         MAX(TRIP_END) AS LAST_TRIP_END
+         DESTINATION_LON    AS DROPOFF_LON,
+         DESTINATION_LAT    AS DROPOFF_LAT,
+         DESTINATION        AS DROPOFF_GEOM,
+         DESTINATION_POI_ID AS DROPOFF_POI_ID,
+         TRIP_END           AS LAST_TRIP_END
   FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
   WHERE REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
     AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-  GROUP BY VEHICLE_ID
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
 ),
 home_anchor AS (
   SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
@@ -182,10 +187,19 @@ SELECT
   COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
   COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
   COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+  -- The depot POI's own stored point where there is one; the region-average
+  -- fallback has no stored geometry, so it is constructed only in that case.
+  COALESCE(h.POINT_GEOM,
+           ST_MAKEPOINT((SELECT HOME_LON FROM home_anchor),
+                        (SELECT HOME_LAT FROM home_anchor))) AS HOME_GEOM,
   f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
-  COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+  -- A location NAME or nothing. These *_CITY values become stop labels on the
+  -- backload map and place names in an agent's answer, so a placeholder reads as
+  -- a real place and cannot be told apart from one. NULL says "unknown" honestly.
+  d.NAME                                              AS DROPOFF_CITY,
   ld.DROPOFF_LON                                      AS DROPOFF_LON,
   ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+  ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
   ld.LAST_TRIP_END                                    AS ETA_TS,
   DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
   'IN_TRANSIT'                                        AS STATUS,
@@ -211,23 +225,57 @@ WITH cls AS (
   SELECT vcp.*
   FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+),
+-- Pickup windows spread across PICKUP_SPREAD_DAYS - the wider of
+-- PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - and the pool sized by
+-- INTERNAL_LOADS_PER_TRAILER x the active region's fleet (INTERNAL_POOL_CAP is
+-- now an absolute ceiling only). A flat cap made this count the CAP wherever the
+-- trip history was larger than it and the TRUE trip count everywhere else, so the
+-- same number meant two different things. Vehicle availability is forward-looking (see
+-- proposals-schema.sql VW_TRAILERS_GEO), so a pool bunched into the next few
+-- hours would be reachable only by vehicles free today and would silently
+-- starve every later vehicle of candidates.
+--
+-- The spread is the CONSUMER's horizon, not the lead time. MEASURED with a
+-- 4-day spread: every pool row sat inside now..now+4d, and since a chain's
+-- hop-2 pickup must be at or after the hop-1 delivery ETA - which lands at the
+-- far end of that same window - VW_TRIANGLES was empty account-wide (9 of 10,990
+-- pairs cleared the geometry filters, all 9 missed the sequence check by 8-106
+-- hours). Uniform, not shifted later, so near-term single-hop candidates remain.
+p AS (
+  SELECT
+    COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
+    COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+    GREATEST(
+      COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+      COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+    )                                                                                          AS PICKUP_SPREAD_DAYS
+  FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
 )
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
-  COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
+  -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+  o.NAME                                                                      AS PICKUP_CITY,
   t.ORIGIN_LON                                                                AS PICKUP_LON,
   t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-  COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
+  t.ORIGIN                                                                    AS PICKUP_GEOM,
+  d.NAME                                                                      AS DROPOFF_CITY,
   t.DESTINATION_LON                                                           AS DROPOFF_LON,
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+  t.DESTINATION                                                               AS DROPOFF_GEOM,
   GREATEST(
     t.TRIP_START,
-    DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+    DATEADD('minute',
+      MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
+      CURRENT_TIMESTAMP())
   )                                                                           AS PICKUP_FROM_TS,
   DATEADD(hour, 4,
     GREATEST(
       t.TRIP_START,
-      DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+      DATEADD('minute',
+        MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
     )
   )                                                                           AS PICKUP_TO_TS,
   (
@@ -242,7 +290,15 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND EXISTS (SELECT 1 FROM cls)
-QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120;
+QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC)
+        <= LEAST(
+             (SELECT POOL_CAP FROM p),
+             GREATEST(1, CEIL(
+               (SELECT COUNT(DISTINCT VEHICLE_ID)
+                  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+                 WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1))
+               * (SELECT LOADS_PER_TRAILER FROM p)))
+           );
 
 -- ----------------------------------------------------------------------------
 -- 4b. Ensure FACT_FREIGHT_OFFERS exists and is populated for the active region.
@@ -346,20 +402,70 @@ WITH cls AS (
   SELECT vcp.*
   FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
   WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+),
+pp AS (
+  -- Same spread as the internal pool: an external offer is a legitimate hop-2 of
+  -- a chain (cascade rungs 2 and 4).
+  SELECT GREATEST(
+           COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+           COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+         ) AS PICKUP_SPREAD_DAYS
+  FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+),
+-- Rebase each offer's pickup window onto the live planning horizon while
+-- preserving its own window LENGTH. The seeded timestamps are relative to seed
+-- time, so on any older dataset they already sit in the past - and with
+-- forward-looking vehicle availability a past pickup can never be served, which
+-- empties the external half of the demand pool with no error anywhere.
+shifted AS (
+  SELECT
+    f.* EXCLUDE (SOURCE, LISTING_TEXT),
+    -- CHANNEL REMAP, idempotent. Already-seeded rows carry SOURCE='INTERNAL'
+    -- from a four-label round robin, and EVERY row in this view is external -
+    -- it reaches VW_LOADS with IS_INTERNAL=FALSE - so the literal made
+    -- internal-vs-external unreadable from SOURCE while looking well-formed.
+    -- The seeder no longer emits it; this repairs rows already on disk.
+    -- LISTING_TEXT is stored, so its leading channel token is rewritten too.
+    IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
+    IFF(LEFT(f.LISTING_TEXT, 9) = 'INTERNAL ',
+        'BROKER' || SUBSTR(f.LISTING_TEXT, 9),
+        f.LISTING_TEXT) AS LISTING_TEXT,
+    GREATEST(
+      f.PICKUP_FROM_TS,
+      DATEADD('minute',
+        MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM pp) * 1440)::INT)) + 30,
+        CURRENT_TIMESTAMP())
+    ) AS PICKUP_FROM_TS_ADJ,
+    GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+  WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 )
 SELECT
   f.OFFER_ID,
   f.SOURCE,
+  -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP / BROKER),
+  -- so it cannot answer "did this come from outside" - every row here is
+  -- external regardless of channel. IS_INTERNAL is the structural answer and
+  -- SOURCE_SYSTEM is the system identity: a real
+  -- integration replaces the literal with its own system key and no consumer
+  -- changes. Deliberately vendor-free. Held as a literal here (rather than read
+  -- from the source table) because this reference script targets the legacy
+  -- FACT_FREIGHT_OFFERS shape, which carries no equipment column.
+  'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+  'ANY'                                    AS VEHICLE_EQUIPMENT,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
   COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-  COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+  -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+  p.NAME                                   AS PICKUP_CITY,
   f.PICKUP_LON,
   f.PICKUP_LAT,
-  COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+  f.PICKUP_GEOM,
+  d.NAME                                   AS DROPOFF_CITY,
   f.DROPOFF_LON,
   f.DROPOFF_LAT,
-  f.PICKUP_FROM_TS,
-  f.PICKUP_TO_TS,
+  f.DROPOFF_GEOM,
+  f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+  DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
   LEAST(
     (SELECT SHIPMENT_KG_MAX FROM cls),
     GREATEST(
@@ -371,11 +477,10 @@ SELECT
   f.PRICE_USD                              AS PRICE_EUR,
   f.HAZMAT,
   f.LISTING_TEXT
-FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+FROM shifted f
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-  AND EXISTS (SELECT 1 FROM cls);
+WHERE EXISTS (SELECT 1 FROM cls);
 
 -- ----------------------------------------------------------------------------
 -- 6. Sanity report

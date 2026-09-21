@@ -24,6 +24,12 @@ import { requireOps } from '@/lib/ingress-identity';
 // before interpolation. Values ARE bound.
 
 const DEFAULT_DB = 'FLEET_INTELLIGENCE';
+// Fallback only. The live schema set is DISCOVERED from INFORMATION_SCHEMA (see
+// resolveSchemas below): three separately-deployed packages used to carry three
+// hardcoded lists - this one and the ops verb had 3 schemas, the admin app's
+// region-sync had 8 - so promoting a region moved HALF the account and left the
+// rest wherever the last Data Studio run had put it (measured on tib85385:
+// three domains on SanFrancisco, three on Europe). Discovery removes the list.
 const DEFAULT_SCHEMAS = ['DWELL_ANALYSIS', 'ROUTE_DEVIATION', 'ROUTE_OPTIMIZATION'];
 // Used only when config has no contextBar with configColumns.
 const DEFAULT_CONTEXT_COLUMNS: Record<string, string> = {

@@ -1,3 +1,16 @@
+-- ── REFERENCE COPY, NOT INSTALLED ──────────────────────────────────────────────
+-- No installer, script or gate reads this directory. The live definitions are in
+-- .cortex/skills/install-fleet-apps/fleet_sa_app/app/semantic_views*.sql, which
+-- is what install-fleet-apps deploys; this is the older authoring location, kept
+-- because docs/dev/catchment-rename-migration.md still cites these paths as
+-- manual deploy steps. semantic_views.sql:849 records the cost of the drift: a
+-- view authored here was never copied across, so SV_BACKLOAD_MATCHING did not
+-- exist and every backload question fell back to client-side memo text.
+--
+-- Edits here change nothing until they are mirrored into the app copy. The ROUND()
+-- wrappers on the metrics below were applied for consistency with the live views
+-- (the 2-decimal display policy, see scripts/check_number_formatting.py), not
+-- because deploying this file is expected.
 -- SV_DWELL_ANALYTICS - dwell analysis semantic view
 -- Source: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED (dwell sessions),
 --         FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY (per-driver SLA)
@@ -44,16 +57,16 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
 
   METRICS (
     sessions.total_sessions AS COUNT(*) WITH SYNONYMS ('dwell sessions', 'number of dwells') COMMENT = 'Total dwell sessions'
-    , sessions.total_dwell_minutes AS SUM(dwell_minutes) WITH SYNONYMS ('total dwell time') COMMENT = 'Total dwell minutes'
-    , sessions.total_dwell_hours AS SUM(dwell_minutes) / 60.0 COMMENT = 'Total dwell hours'
-    , sessions.avg_dwell_minutes AS AVG(dwell_minutes) WITH SYNONYMS ('average dwell time') COMMENT = 'Average dwell minutes per session'
-    , sessions.max_dwell_minutes AS MAX(dwell_minutes) COMMENT = 'Longest dwell session in minutes'
+    , sessions.total_dwell_minutes AS ROUND(SUM(dwell_minutes), 2) WITH SYNONYMS ('total dwell time') COMMENT = 'Total dwell minutes'
+    , sessions.total_dwell_hours AS ROUND(SUM(dwell_minutes) / 60.0, 2) COMMENT = 'Total dwell hours'
+    , sessions.avg_dwell_minutes AS ROUND(AVG(dwell_minutes), 2) WITH SYNONYMS ('average dwell time') COMMENT = 'Average dwell minutes per session'
+    , sessions.max_dwell_minutes AS ROUND(MAX(dwell_minutes), 2) COMMENT = 'Longest dwell session in minutes'
     , sessions.unique_vehicles AS COUNT(DISTINCT VEHICLE_ID) WITH SYNONYMS ('vehicles dwelling') COMMENT = 'Distinct vehicles with dwells'
     , sessions.unique_dwell_locations AS COUNT(DISTINCT LOCATION_ID) WITH SYNONYMS ('locations') COMMENT = 'Distinct dwell locations'
-    , driver_dwell.total_sla_breaches AS SUM(d_sla_breach_count) WITH SYNONYMS ('SLA breaches', 'sla violations') COMMENT = 'Total SLA breaches across drivers'
-    , driver_dwell.total_critical_breaches AS SUM(d_critical_breach_count) WITH SYNONYMS ('critical breaches') COMMENT = 'Total critical SLA breaches'
-    , driver_dwell.driver_total_dwell_hours AS SUM(d_total_dwell_hours) COMMENT = 'Total dwell hours (driver summary)'
-    , driver_dwell.avg_driver_session_min AS AVG(d_avg_session_min) COMMENT = 'Average per-driver session minutes'
+    , driver_dwell.total_sla_breaches AS ROUND(SUM(d_sla_breach_count), 2) WITH SYNONYMS ('SLA breaches', 'sla violations') COMMENT = 'Total SLA breaches across drivers'
+    , driver_dwell.total_critical_breaches AS ROUND(SUM(d_critical_breach_count), 2) WITH SYNONYMS ('critical breaches') COMMENT = 'Total critical SLA breaches'
+    , driver_dwell.driver_total_dwell_hours AS ROUND(SUM(d_total_dwell_hours), 2) COMMENT = 'Total dwell hours (driver summary)'
+    , driver_dwell.avg_driver_session_min AS ROUND(AVG(d_avg_session_min), 2) COMMENT = 'Average per-driver session minutes'
   )
 
   COMMENT = 'Dwell analysis: vehicle dwell sessions (where/how long vehicles stop), facility utilization, H3 congestion, and per-driver SLA breaches.'

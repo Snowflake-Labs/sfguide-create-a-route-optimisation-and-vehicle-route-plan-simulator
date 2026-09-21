@@ -22,7 +22,7 @@ Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook a
 8. **New-deployment-first** - fixes land in pack/config/synapse source so a fresh deploy is correct; live hotfix is always secondary.
 9. **Live routing, not precomputed** - demo analytics that depend on drive-time reachability, catchments, matrices, or optimization MUST call the ORS functions (`OPENROUTESERVICE_APP.CORE.ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION`) at interaction time, NOT read materialized/precomputed ORS results. Precomputing isochrone or matrix output into tables is an anti-pattern: it hides the routing engine (the thing being demoed), goes stale when the estate/region/params change, and diverges from what a customer would build. Config-driven views call ORS inline by resolving the interactive selection into scalar-subquery / bind args (ORS SQL functions only evaluate with literal, scalar-subquery, or bind args - NOT correlated per-row columns; `ISOCHRONES` range is in MINUTES). Guard with `COALESCE(:selection, <default>)` so nothing is called with a NULL arg, and remember every ORS call requires the region's service RESUMED (a suspended service returns an embedded error, not a throw). Precomputed **non-ORS** reference data (Overture POI subsets, address/household density, synthetic commercials) is fine - the rule is specifically about not caching ORS engine output.
 
-10. **Agent-aware by construction** - every new or changed consumer view must be answerable by the left-panel Cortex agent: publish its on-screen values as bounded, pre-joined `__memo_<area>` `viewState` strings (Channel A), carry an accurate `agentKnowledge` block (Channel C - omit `preferredTool` when no semantic view models the data), and add `clickEmits` to the primary map layer (Channel B) so the agent can answer questions about the map and results. A view whose numbers exist only client-side, or whose `preferredTool` points at a semantic view that does not model the data, is incomplete.
+10. **Agent-aware by construction** - every new or changed consumer view must be answerable by the left-panel Cortex agent AND must state what it is for: publish its on-screen values as bounded, pre-joined `__memo_<area>` `viewState` strings (Channel A), carry an accurate `agentKnowledge` block (Channel C - omit `preferredTool` when no semantic view models the data), add `clickEmits` to the primary map layer (Channel B) so the agent can answer questions about the map and results, and carry a `useCase` block (Channel D - `headline` + `businessQuestion` mandatory) which renders the per-view "i" overlay for a presenting Solution Engineer and feeds the agent's cross-view `solutionCatalog` ("what can we show this customer?"). A view whose numbers exist only client-side, whose `preferredTool` points at a semantic view that does not model the data, or which has no `useCase` (no "i" overlay, invisible to the catalog), is incomplete. `useCase.snowflakeCapabilities` must be truthful per tenet 9 and `caveats` must name synthetic or hindsight data; enforced by `.cortex/skills/install-fleet-apps/scripts/check_view_usecases.py` via `.githooks/pre-commit`.
 
 See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
 
@@ -57,14 +57,733 @@ python3 .cortex/skills/evals/run_evals.py
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
+# Validate that no contract view is pinned to ONE region by a singleton CONFIG row,
+# and that every semantic view over a multi-region fact models region PLUS a readable
+# label. This entire class of failure is SILENT: a view filtered to one region returns
+# rows, compiles, and renders a populated panel, so nothing distinguishes "this region
+# has no data" from "this region was excluded before the first aggregate". It cost a
+# CoWork answer of "there is no San Francisco data" while 15,091 San Francisco dwell
+# sessions sat in the view - and because the CONFIG row is writable at runtime
+# (including by an agent calling `set_active_context`), the same question returned
+# different data at different times. Three writers with three different schema lists
+# also let the six CONFIG tables drift apart, so a cross-domain question silently mixed
+# San Francisco e-bikes with European trucks. The label rule is the one that closes the
+# bug: region keys are CamelCase identifiers, so a filter on the phrase a person types
+# (`region = 'San Francisco'`) matches NOTHING against `'SanFrancisco'` - hence
+# `FLEET_APP.CORE.REGION_LABEL()` and the `city` / `region_label` dimensions. Reading
+# CONFIG to EXPOSE the active context is still legal (an explicit in-file allowlist);
+# what is banned is FILTERING analytic data by it.
+#
+# Two further rules cover the same defect one layer out. RULE 1b: a PHYSICAL view
+# must not keep its CONFIG pin once a contract view of the SAME NAME has been
+# de-scoped - FLEET_INTELLIGENCE.BACKLOAD_MATCHING and FLEET_APP.BACKLOAD_MATCHING
+# both define VW_TRAILERS / VW_INTERNAL_VOLUMES / VW_EXTERNAL_OFFERS, so after the
+# de-scope one name meant two opposite region semantics depending on which schema
+# was read. RULE 4: de-scoping transfers the filtering duty to the CONSUMER, and
+# nothing checked the consumer accepted it - `SELECT * FROM ...VW_TRAILERS`
+# compiles, returns rows and renders a populated page while carrying every loaded
+# region, which is how the Backload Matching page posted 29 San Francisco
+# coordinates into a Europe solve and got ORS 6010 "out of bounds" back in 5 ms.
+# The demo skills' references SQL is scanned under RULE 1b ONLY (twin views), not
+# full RULE 1: those legacy files hold 42 pre-existing pins, mostly in seed
+# loaders where a CONFIG read legitimately picks the region to INGEST, so failing
+# on them would gate nothing and block everything.
+python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping.py
+# RULE 5 extends the same class to JS STORED PROCEDURES, which every earlier glob
+# missed: TOOL_BACKLOAD_SOLVE took P_REGION, scoped all three feeds with it, then
+# resolved vehicle_type from the ONE-ROW CONFIG table - so a SanFrancisco solve
+# over 100 ebikes reported hgv, routed on driving-hgv and priced the objective at
+# 0.85/km. CONFIG as a FALLBACK is fine; what the rule enforces is ORDER, because
+# a co-presence check passes on the defect with a region read bolted on after.
+# RULE 6 keeps SOURCE a CHANNEL: its vocabulary held the literal 'INTERNAL' while
+# every row it labels is an external offer (IS_INTERNAL=FALSE), so 75 of 300 rows
+# claimed provenance they did not have.
+python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping_negative.py
+
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
 bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
+
+# Validate every SA app view carries a useCase block (Tenet 10, Channel D) and an
+# agentKnowledge block (Channel C)
+# Validate every SA app view carries a useCase block (Tenet 10, Channel D) and an
+# agentKnowledge block (Channel C). Covers BOTH authoring surfaces: the
+# declarative app-views.json AND packs/fleet/pack-views.json (the code-registered
+# showcase views). The pack surface used to be checked for useCase only, which is
+# how two views shipped with no agent grounding at all.
+python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
+
+# Validate that every {{...}} token in an authored view spec sits on a path the
+# renderer actually interpolates. A token on a field rendered raw does not fail
+# anything - the query runs, the panel renders, the numbers are right - it just
+# prints its own braces on screen, which is how a chart legend reading
+# "{{labels.operator_plural}}: 32" reached a live account. `series[].label` was the
+# ONE authored string never interpolated (view-renderer handles the area title, so
+# a titled chart looked correct while its own legend and tooltip did not), and the
+# same audit found `emptyMessage` rendered raw in three components with two views
+# already authoring tokens into it, plus map legend labels, map toggle labels and
+# map tooltips - so the defect is a class, not one field.
+#
+# The allowlist is keyed on the normalized PATH and is DEFAULT-DENY. An earlier
+# version derived the allowed set from the renderer sources by field NAME and was
+# rejected by its own negative test: `label` is interpolated on a metric card and
+# on a detail-panel action, so a token on the chart's `series[].label` PASSED - the
+# gate could not catch the one defect it was written for. Each entry names its
+# render site so the claim is checkable in one grep, and an advisory cross-check
+# reports entries whose field appears in no interpolateTokens call (expected for
+# templates passed as locals, e.g. the map tooltip).
+python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens.py
+
+# Regenerate / verify the generated agent-facing artifacts. Both are derived, so a
+# stale committed copy is a real defect: the catalog is what an agent reads to
+# answer "what can you show me" outside the app, and the super agent spec is a
+# derived copy of the consumer instructions PLUS the per-verb routing sections
+# lifted verbatim from the ops and admin specs. That last part is why the ops and
+# admin specs are inputs to the super build: they used to be restated by hand
+# inside the generator, so `--check` could prove the output current while the text
+# had silently diverged from the role spec - which is how `recent_verb_attempts`
+# ended up documented in the SUPER agent and not in the OPS agent that owns it.
+# Sections that are FALSE for a superuser are excluded with a recorded reason
+# (both role specs end with "you have no geospatial tool", and admin has a
+# "HANDOFF (you cannot do these)" block, none of which is true for an agent
+# holding all three MCP servers), and the build fails on any role-spec section
+# that is neither derived nor excluded.
+python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog.py --check
+python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py --check
+
+# Validate every synapse verb is named in the orchestration instructions of each
+# agent that can see it. Verbs are AUTO-DISCOVERED - `npx synapse deploy` walks
+# src/procs/ and publishes each one with its description and a generated JSON
+# input schema, and the specs attach whole MCP servers with no tool allowlist - so
+# a new verb is instantly VISIBLE to every agent on that bundle. Visible is not
+# used well: with no routing line the model either ignores the verb, or prefers it
+# over a better tool, the documented case being `run_sql` winning over a `query_*`
+# Cortex Analyst tool and silently bypassing the governed semantic-view path.
+# Nothing fails either way, which is why this is a gate and not a review note - it
+# found four verbs already shipped unguided (`evac_seed`, `evac_solve`,
+# `vrp_solve`, and `recent_verb_attempts`, the last of which the SUPER agent
+# described while the OPS agent that owns the verb did not). The bundle-to-spec map
+# is asserted against each spec's own `mcp_servers` block in both directions, so
+# moving a server between agents cannot silently narrow what is checked.
+python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage.py
+
+# Regression test for the run_sql verb's read-only guards (27 cases: comment
+# masking, piggybacked statements, every writing keyword, max_rows).
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.mts
+
+# Regression test for routing-suspend.ts's ENGINE-STATE vs PAYLOAD-DEFECT split
+# (19 cases). It lives in fleet_tools/user, NOT under fleet_sa_app/ui, purely
+# because this package already carries tsx - running it from the SA app UI makes
+# npx block on an interactive install prompt and then re-download tsx on every
+# invocation (minutes instead of under a second). routing-suspend.ts is
+# dependency-free pure TypeScript, so a relative import works.
+#
+# What it protects: whether an unusable routing call is an engine state the app
+# can fix by resuming, or a payload the app must correct. Backwards, that becomes
+# a dead end - an off-graph coordinate refused by the engine in 5 ms (ORS 6010)
+# was reported as "the routing engine is starting", with a Retry that could never
+# clear because nothing was warming up. Both directions are asserted: the
+# suspended/warming cases are there because over-broadening the off-graph
+# patterns would silently disable auto-resume, which is the opposite defect.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_suspend.mts
+
+# Regression test for the generator's ROSTER-vs-LEGAL cap split (22 cases).
+# Lives in fleet_tools/user for the same tsx reason as the test above.
+#
+# What it protects: the trip loop used to hard-stop at shift end and silently
+# DISCARD the remaining assigned jobs, which made daily capacity equal to shift
+# width and nothing else. Measured on a 100-vehicle e-bike fleet: a flat ~3.5
+# jobs/hour on all three shifts, the 13h shift finishing 0.5h EARLY because it
+# exhausted its assignment, and the 5h and 6h shifts stopping dead at the wall
+# after 18.8 and 22.3 jobs. Weekly hours collapsed to `shift_width x
+# days_worked` with hard ceilings of 35h / 42h / 91h, so two of three cohorts
+# could never reach a 40-hour overtime threshold at ANY horizon - and
+# `trips_per_day` acted as an unreachable ceiling rather than a workload. That
+# inverts the real causality: in a real fleet overtime IS the overrun.
+#
+# Both directions are asserted. `enabled: false` (or an absent block) must
+# reproduce the historical hard stop EXACTLY, or every existing dataset becomes
+# irreproducible. Over-shooting is worse than under-shooting: an allowance
+# ignoring the rest guard would let a vehicle work into its own next shift, and
+# the `breaks.max_daily_driving_hours` LEGAL cap must stay a hard break in
+# engine.ts - a driver may finish a late route, but may not drive beyond
+# permitted hours (real breaches stay rare and are modelled as
+# IS_HOS_VIOLATION). A NaN allowance is specifically tested because
+# `currentHour >= shiftEnd + NaN` is always false, which would run the loop to
+# its trip limit and produce absurd duty spans with no error.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_shift_overrun.mts
+
+# Validate that guidance which forbids a map also names the tool that can draw one.
+#
+# render_map shipped fully working - the verb validated specs, rejected bad ones with
+# typed codes, the client drew them - and the agent never called it. Asked "show me
+# dwell density in the us" it ran two aggregates grouped by city and facility_type,
+# drew two bar charts, and handed off to a deep link.
+#
+# Two of the three causes were PROHIBITIONS WITH NO ALTERNATIVE living in semantic
+# views' chart_customization blocks: "H3 congestion is a MAP, not a chart" and "A
+# path or a route is a MAP (path_geojson), never a chart". Each correctly refuses
+# the chart and then stops. Alongside a host-injected chart skill stating maps
+# cannot be created at all (true of data_to_chart, false of render_map), the
+# agent's most salient local instructions read "do not chart this, and maps do not
+# work" - so it did the only remaining thing. Naming the tool is what converts a
+# dead end into a path.
+#
+# The third cause is why RULE C exists: "density" was not a trigger word. The dwell
+# Conventions mapped only "congestion"/"heatmap" onto h3_cell, so the word the user
+# actually typed never produced map-ready data and no map was possible however good
+# the map guidance was. A bare h3_cell list cannot be shaded either, so a measure
+# alongside the cell id is required too.
+#
+# Negative-tested: restoring either original dead end convicts on RULE A *and*
+# RULE B, stripping render_map from SV_LOCATION convicts on RULE B, and removing
+# the density trigger convicts on RULE C. RULE A is scoped to the block, not the
+# file - a mention 400 lines away does not help an agent reading one view's
+# instructions.
+python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
+
+# Regression test for the agent-emitted MAP spec validators (41 cases). Needs the
+# SA app's tsconfig for the `@/` alias, because view-spec-schema.ts imports
+# area-components at RUNTIME; map-spec-schema.ts itself is type-only imports.
+#
+# What it protects: every failure mode of a map is SILENT. An unknown layer
+# `type` compiles to nothing, a `viewState.*` param on an inline chat map binds
+# NULL, and an oversized geometry payload renders blank - in all three cases the
+# basemap paints, no error is raised, and the result is indistinguishable from
+# "the query legitimately matched no rows". `Map` was legal in both render_view
+# validators with `config` as a permissive passthrough, so a layer block reached
+# the deck.gl compiler entirely unchecked and no fixture, sample or test anywhere
+# in the repo ever emitted one. Negative-tested: weakening the type check and the
+# viewState check convicts 6 assertions, including through parseDynamicSpec.
+#
+# Both directions are asserted. `viewState.*` must stay LEGAL on the render_view
+# PAGE path (a rendered page owns a panel.viewState, unlike a chat message),
+# exactly MAX_MAP_LAYERS layers must still be accepted (off-by-one), and a
+# non-Map area must not be dragged into layer validation.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx --tsconfig ../../fleet_sa_app/ui/tsconfig.json verify_map_spec.mts
+
+# Assert every MCP tool description fits. The limit is 2500 characters PER TOOL and
+# it is enforced in exactly one place - `CREATE MCP SERVER`, at install time - with
+# an error that NAMES NO TOOL and fails the WHOLE bundle, so every verb in the
+# server disappears at once and the echoed spec is truncated. Adding ~440 characters
+# to `render_map` broke the entire user bundle install once, and finding the culprit
+# among 25 tools meant measuring by hand. `render_map` runs at ~95% of the cap, so
+# this fails at 2400 to leave the next edit somewhere to go. It IMPORTS the procs
+# rather than parsing them: a description concatenates literals and interpolates
+# constants (MAX_MAP_LAYERS, MAP_LAYER_TYPES, ALLOWED_DYNAMIC_DBS), and a regex that
+# re-implements that arithmetic is wrong by tens of characters exactly at the
+# boundary that matters.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_tool_descriptions.mts
+
+# Validate that no bundled verb source uses a JavaScript global the Snowflake
+# LANGUAGE JAVASCRIPT proc runtime does not have. Nothing else in the toolchain
+# catches this: `tsc` accepts it (the repo pulls in DOM and @types/node for the
+# build-time half of the framework), esbuild bundles it, and `npx synapse deploy`
+# creates the procedure cleanly - so the only symptom is an agent hitting a bare
+# "<name> is not defined" mid-conversation, with no line number and nothing useful
+# in VERB_ATTEMPT. That is how `deep_link` shipped broken: its LAST statement built
+# the query string with `new URLSearchParams()`, so the verb resolved the view
+# label, probed SHOW ENDPOINTS for the ingress host, and then threw. Since
+# `deep_link` is the sanctioned fallback for every visual question the agent cannot
+# draw, its failure removed the only honest visual path, and the agent reported the
+# repo bug to the user as something for their Fleet Ops administrator to fix.
+# Scans exactly what esbuild bundles into the procedure body (the three verb
+# bundles plus vendor/synapse/src/runtime) and NOT the CLI/codegen/connector, which
+# run on the deploying machine under real Node where these globals are correct.
+# Comments and string literals are stripped before matching - load-bearing, since
+# these files discuss the very APIs they must not call.
+python3 .cortex/skills/install-fleet-apps/scripts/check_verb_js_globals.py
+
+# Validate that no install SQL file references an object a LATER install step creates.
+# `IF EXISTS` covers an object but not its database, and `snow sql -f` stops at the
+# first error, so one forward reference silently skips every statement below it - on
+# fresh accounts only, which is why this needs a static gate rather than a test run.
+python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
+
+# Validate that no ENGINE-FREE installer SQL file creates an object requiring the
+# routing engine. A `LANGUAGE SQL` UDTF body resolves at CREATE time, so a statement
+# calling OPENROUTESERVICE_APP.CORE.ISOCHRONES / MATRIX_TABULAR / DIRECTIONS is a hard
+# error on a `--no-engine` install - and `snow sql -f` stop-on-first-error then abandons
+# every later statement in that file. That cost `analytic_layer.sql` ~129 statements (it
+# died at line 1072 of 2722) and `delivery_sync_layer.sql` 33 of 44, in both cases
+# silently discarding engine-FREE schemas (FLEET_INTELLIGENCE.SOURCING,
+# FLEET_APP.SOURCING, the whole FLEET_APP.DELIVERY_SYNC contract) that have nothing to
+# do with routing - while the installer reported only "dependent views will be empty".
+# Those statements now live in scripts/analytic_layer_live_routing.sql. Note the usual
+# `EXECUTE IMMEDIATE ... EXCEPTION` wrapper is NOT available for them: they carry
+# dollar-quoted function bodies and Snowflake dollar-quotes do not nest. The engine
+# function list is parsed from the engine modules, so the gate cannot drift.
+python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards.py
+
+# Validate that a sampled coordinate pair is one a router can actually serve, and
+# that the pool it came from is anchored LOCAL to the profile's separation band.
+#
+# The Function Tester generated DIRECTIONS('driving-hgv', [-156.47031, 20.88982],
+# [-116.19779, 43.91467]) for the UnitedStatesOfAmerica region - Maui to Boise,
+# ~3,400 km apart with no road between them - against a band that asks for
+# 2-15 km. ORS searched the whole US graph, SPCS ingress cut the connection at
+# 90s, and the user saw `Unexpected token 'u', "upstream r"... is not valid JSON`.
+#
+# Two layers had to fail together. /api/sample-poi-points drew 50 POIs
+# REGION-WIDE: measured on the real region (9,892 POIs) that pool spans 8,165 km
+# and only 73% of POIs have ANY neighbour in the 2-15 km ring, so the ring filter
+# matched nothing; samplePointNear then fell back to "nearest pool point" with NO
+# ceiling, and the nearest POI to one on Maui was in Boise. The pool genuinely
+# contains Hawaii AND Alaska rows, so region-wide sampling crosses landmasses by
+# construction. The pool is now anchored on ONE H3 cell sized to the band, which
+# removes the cross-component pair without needing a connectivity probe - a cell
+# cannot span two landmasses. Worst sampled separation: 3,400 km -> 14.5 km.
+#
+# Distances are asserted with an INDEPENDENT real haversine, not the module's own
+# flat-earth haversineKm - an assertion built on that would agree with the bug.
+# Two traps this gate exists to hold: (1) the first fix REINTRODUCED the defect
+# via an unbounded padding path, caught only on foot-walking where the ceiling is
+# 6 km; (2) "a hint exists" is too weak an assertion - a mutation restoring the
+# unchecked final attempt PASSED it, because the misleading "Region is small"
+# text is still a hint. The gate now requires the hint to NAME the cause, and
+# carries a coverage counter so that assertion cannot pass vacuously.
+cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_sample_points.mts
+
+# Validate that a non-JSON response body never reaches a JSON parser.
+#
+# get_ors_response and get_vroom_response both called r.json() unguarded, and
+# JSONDecodeError is NOT caught by their ConnectionError / Timeout handlers, so a
+# plain-text body became a Flask 500 and an opaque SQL failure. r.raise_for_status()
+# is never called either, so a 200 with a non-JSON body slips past status-code
+# checks - that case is asserted explicitly. The envelope MUST be a dict:
+# _annotate_engine_error subscripts the parsed response and VROOM's callers branch
+# on `'routes' in vroom_r`, so a string would just move the failure downstream.
+#
+# Also asserts the timeout ladder, which is what stops the failure happening at
+# all: ORS_TIMEOUT_DEFAULT must sit BELOW the ~60s ingress floor so directions
+# fails inside the gateway with its own worded envelope. Matrix was tuned that way
+# from the start and directions never was, which is why only directions produced
+# the unparseable error. VROOM is the deliberate exception - timeout=300 must NOT
+# be lowered to match, because a real backload solve measures 168.6s and the Cortex
+# Agent path completed at 270.1s uncut; a 55s ceiling would reject both. For VROOM
+# the parse guard IS the fix. Both VROOM parses (primary and the per-region
+# fallback) are negative-tested independently: guarding only the first call looks
+# complete and still raises.
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 verify_gateway_non_json.py
+
+# Assert a live deployment matches the mode it was installed in. Distinct from
+# validate_app_views.py: that asks "do the views return rows", this asks "are the
+# objects the app surfaces read actually there". Nothing asked the second question
+# before, which is how three installs were reported clean while OPENROUTESERVICE_APP.CORE
+# held ZERO functions - the database exists as a stub either way (seed_data.sql + the
+# synapse bundle install both create it), so every does-it-exist probe passed while the
+# admin app's Service Manager and Region Builder were dead. Probes the 5 healthcheck
+# keys with the app's own SQL (including the 3-arg BUILD_ORS_SERVICE_SPEC overload - two
+# exist, so a name-only check passes while the app's call fails), the 4 Service Manager
+# tiles, engine + ROUTING_PLATFORM.CONTRACT function counts, and the analytic tail.
+# MODE decides severity: engine objects missing is DEGRADED under
+# --expect-analytics-only but BLOCKING under --expect-engine. The analytic-tail probes
+# are BLOCKING in BOTH modes - they need no engine, so absence means the
+# engine/engine-free split regressed. Read-only. Installer step 8.5 runs it
+# automatically (blocking on exit 1); skip with SKIP_VERIFY_DEPLOYMENT=1.
+# Exit: 0 ready / 1 contradicts declared mode / 2 matches with degraded surfaces.
+bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connection> --expect-engine
+bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c <connection> --expect-analytics-only
+
+# Validate the two mandatory tracking mechanisms: a session `query_tag` on every
+# SQL session, and a JSON `COMMENT` tag on every created object. Both failures are
+# invisible at runtime (an untagged object works, an untagged session returns the
+# right rows); what breaks is credit attribution and `routing-solution-cleanup`,
+# which finds objects to drop ONLY by their COMMENT tag - so an untagged SPCS
+# service or compute pool survives a teardown and keeps billing. Also catches
+# schema drift that looks correct but matches no consumer filter (a
+# `"version":"1.0"` string instead of `{"major":1,"minor":0}`, a missing
+# `is_quickstart`/`source`, a name without the `oss-` prefix), and DDL run by a
+# `snow sql -q` with no tag in the SAME invocation (each invocation is a new
+# session, so an earlier tag does not carry over). Checks inside procedure bodies
+# too - a `$$`-aware split alone would let a nested CREATE inherit the enclosing
+# procedure's COMMENT. Platform exceptions are an explicit in-file allowlist.
+#
+# Two further rules cover the case where a tag exists and still attributes
+# nothing. RULE E: a `CREATE TASK` must set a `QUERY_TAG` session parameter. A
+# task's QUERY_TAG is SESSION-level, and only a session-level tag propagates into
+# the body of a procedure the task calls - measured both ways on one procedure,
+# where a request-scoped tag stopped at the `CALL` and left the inner `SELECT`
+# bare. Since the credits are spent inside the procedure, an untagged task loses
+# attribution for its entire workload, which was ~10,800 queries over 3 days.
+# Nothing else can fix it: a procedure cannot tag its own session, because
+# `ALTER SESSION SET query_tag` (and its EXECUTE IMMEDIATE form) fails inside a
+# procedure body with "Unsupported statement type 'ALTER_SESSION'", in SQL and
+# JavaScript alike. Rule A is blind to it by construction - it asserts a
+# file-level ALTER SESSION, which tags the INSTALL session that runs CREATE TASK,
+# not any later run of the task. Getting the match right was the hard part: the
+# first version demanded a bare identifier after TASK and so counted 8 of the 10
+# sites, skipping precisely the two built by interpolation (the provisioner's
+# concatenated name, the shell-expanded eval tasks).
+#
+# RULE F: `CREATE <tracked type>` in `.ts`/`.mts`/`.js`. The apps create objects
+# at container boot from TypeScript and only `.sql`/`.sh` were scanned before, so
+# ~90 CREATE sites were correct by convention alone. Needs a JS-aware comment
+# stripper (these files describe the DDL they emit) and must resolve an
+# interpolated `COMMENT = '${TRACK}'` against consts collected repo-wide - the
+# literal-only check reported 23 correct tags as missing the moment they were
+# hoisted to a const. Test and `verify_*` files are excluded: they assert on the
+# shape of generated SQL and create nothing.
+python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
+
+# Validate that no routing TOOL_* procedure probes ORS on the routing path, that
+# TOOL_DIRECTIONS scopes CORE.DIRECTIONS to a region, and that the unroutable-leg
+# pre-flight can actually convict.
+#
+# All three were live, and all three are invisible from a passing install. Every
+# TOOL_* proc opened with `SELECT OBJECT_KEYS(CORE.ORS_STATUS(NULL):profiles)
+# INTO :v_available` wrapped in `EXCEPTION WHEN OTHER` and called "best-effort" in
+# its own comment. It is not: EXCEPTION catches an ERROR, never a HANG, and
+# ORS_STATUS is a service function whose call the platform retries past the SPCS
+# ingress cut-off - a procedure cannot even ALTER SESSION SET
+# STATEMENT_TIMEOUT_IN_SECONDS to bound it (unsupported statement type). Measured
+# 2026-09-14, one "route from SF to LA" agent turn ran 840.6 s and was killed with
+# 839.7 s of it inside that one statement, having never called DIRECTIONS.
+# ORS_STATUS normally answers in 0.3 s across ~900 calls, which is exactly why it
+# survived: harmless until the gateway restarts, then it eats the entire statement
+# budget of every routing question at once. The profile list is a table read now
+# (CORE.PROFILES_FOR_REGION, backed by REGION_PROFILES with a fallback to the
+# provision-job and build-history rows); the probe survives only in
+# CORE.REFRESH_REGION_PROFILES, called from the two provisioning success paths.
+#
+# Underneath it, CORE.DIRECTIONS(method, locations, region) had always taken a
+# region and TOOL_DIRECTIONS always omitted it, so the gateway resolved NULL to
+# DEFAULT_REGION_NAME and every route ran on the default region's graph - the
+# city-only San Francisco extract, spanning 0.10 deg of latitude. An SF-to-LA
+# request could not have succeeded even had the probe returned, and nothing failed
+# loudly: a 2-arg call compiles and the sibling TOOL_ISOCHRONE already resolved a
+# region, so the defect read as a distance limit. Region resolution is
+# deliberately NOT a loop over REGION_FOR_POINT, which returns the smallest region
+# containing ONE point: SF-to-LA resolves per-point to {SanFrancisco,
+# UnitedStatesOfAmerica}, reports zero out-of-region coordinates, and still names
+# no graph that can route the pair. CORE.COVERING_REGION_FOR_POINTS asks the
+# actual question - smallest DEPLOYED region covering EVERY point - as one
+# ST_COVERS against a MultiPoint, because a SQL UDF body cannot FLATTEN its own
+# argument.
+#
+# RULE C is the self-inflicted one, and it is why the rule exists rather than a
+# review note. The unroutable-leg pre-flight uses one MATRIX_TABULAR call as a
+# cheap oracle (measured: the Maui-to-Boise pair that made DIRECTIONS burn exactly
+# 600 s twice answers `durations [[null]]` in 5.8 s, because the matrix algorithm
+# reports "no path" instead of hunting for one - and no straight-line distance cap
+# can separate that pair from a legitimate coast-to-coast route). But ORS writes an
+# unroutable cell as a JSON null, and a VARIANT JSON null is NOT SQL NULL:
+# `R:durations[0][1] IS NULL` is FALSE for it. The first version ran on exactly
+# that pair and reported zero unroutable legs - a check that executes and cannot
+# convict, reported as a pass. `::FLOAT` is what makes it SQL NULL.
+#
+# RULE D covers ordering, not just presence: Snowflake keys procedures on full
+# arity, so the old 2-arg TOOL_DIRECTIONS survives CREATE OR REPLACE of the 3-arg
+# form and keeps serving the get_directions verb the exact code this removed - and
+# because REGION is defaulted, both signatures accept two arguments, so a DROP
+# placed AFTER the CREATE fails the install with "Cannot overload PROCEDURE ...
+# ambiguous PROCEDURE overloading" and `snow sql -f` abandons every statement
+# below. RULE E closes the obvious escape: a PROFILES_FOR_REGION that itself
+# probed ORS_STATUS would satisfy RULE A everywhere and put the hang back one
+# indirection down. Comment lines are blanked before matching, which is
+# load-bearing - this gate's own explanations name ORS_STATUS and quote the uncast
+# durations cell, so an unstripped scan convicts the fixed code. 8 mutations
+# negative-tested (each rule in both its "wrong form" and "absent" shape).
+python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
+
+# A number a user reads must not carry more than two decimals. The defect arrives
+# from two directions at once, which is why one fix is never enough. In SQL: a
+# row-level view ROUNDs to 2dp and casts back to FLOAT, 2dp is not exactly
+# representable in binary, so SUM over a few hundred rows re-accumulates the error
+# and SV_LABOR returned 21289.670000000002 for TOTAL_OT_PREMIUM. Nothing failed -
+# the total was right to the cent - and the app's own declarative views already
+# wrapped the identical sums in ROUND, so only the Analyst / SV_* path was ugly.
+# In the client: every render site stringified rows verbatim (`String(row[k])`),
+# so even correct SQL prints whatever a verb or an agent-invented column hands it,
+# and MetricCards/tables publish to the agent memo, where a float artifact is
+# quoted back as fact.
+#
+# RULE C asserts the coordinate exemption BY NAME and asserts it is reachable from
+# decimalsFor(), not merely defined - 2dp of latitude is ~1 km, and an unused
+# predicate is the same as no predicate. RULE D is a vacuity counter: it caught
+# this gate's own REPO path being one level short, which had rules A and C
+# silently inspecting ZERO files while reporting nothing wrong. RULE B's own scan
+# then found three semantic-view files (behaviour, deployment, emergency) that a
+# hand inventory had missed.
+#
+# RULE E exists because the FIRST version of this gate, written for exactly this
+# defect class, PASSED while the render_map tooltip in
+# components/inline/render-map-inline.tsx held a verbatim copy of the view-map
+# bug - the hand-maintained FORMATTED_SITES simply did not list the file, so it
+# inspected 10 sites and found nothing. It also missed view-combo-box and
+# view-filter-bar, whose option TEXT is a query column. So rule E scans
+# components/inline and views/areas for any component that reads a row or feature
+# value by dynamic key AND emits it unformatted, and fails if it is in neither
+# list. Two details are load-bearing and were each proved by a false result:
+# RAW_CELL carries a negative lookbehind on `=` because a JSX `value={String(...)}`
+# ATTRIBUTE must stay raw (it is written into viewState and bound into dependent
+# queries, so formatting it changes the filter, not its presentation - negative
+# test 11 is the control that asserts the gate still allows it); and the
+# string-only review of route-map-inline pins the FEATURE properties read inside
+# getTooltip, not `props.*` anywhere in the file, which on the first run reported
+# three false positives from the component's own React props.
+#
+# Do NOT widen MAX_DECIMALS to make this pass.
+# 11 mutations negative-tested via scripts/check_number_formatting_negative.sh.
+python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
+
+# A backload trip published to the agent must name every load it carries, and its
+# destination must be the LAST dropoff. A user asked for one truck's workload and
+# the agent replied "final destination: RCA Trucking" for a tour that handed one
+# load over at RCA Trucking and carried a second onward - while the app's own
+# Stops panel showed the real 6-stop, 2-load chain beside it. The agent was not
+# hallucinating: __memo_backload_matching was built from Assignment's scalar
+# PICKUP_CITY / PROPOSAL_DROPOFF_CITY, and those are read from the FIRST pickup
+# only, so hop 1 was published as the entire workload and the second load id
+# appeared nowhere the agent could see. What made it durable is that nothing
+# failed - every number was correct, and the memo's own drop list was ALREADY
+# chain-correct, so the memo contradicted itself and the agent resolved that by
+# trusting the "A->B" summary. "Destination" compounded it: it is a placeholder
+# token for an unnamed site, scrubbed server-side by the chain solver but not on
+# the client path, so the agent quoted it back as a delivery point.
+#
+# Derive the published description from STOPS via describeTourChain, which is the
+# only complete record of a solved tour. Do NOT re-add the flat first-pickup
+# summary next to the chain text to make something else pass: that shape leaves
+# every keyword rule satisfied and only the explicit ban catches it (negative
+# test M7). Rule F insists the agent-spec sentence lives in the query_backload
+# bullet ITSELF, because a prose rule satisfiable from anywhere in a 35k-char
+# orchestration string has already false-passed in this repo (M8 is that control).
+# 10 mutations negative-tested via scripts/check_backload_memo_negative.sh.
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_memo.py
+
+# TOOL_BACKLOAD_SOLVE must stay TIME-BOUNDED and VEHICLE-SCOPABLE. It had no
+# wall-clock ceiling of any kind. Default 'ensemble' runs three road families in
+# sequence, each retrying up to MAX_UNROUTABLE_RETRIES+1 = 17 times, and each
+# attempt is one gateway call the gateway itself allows 45s (matrix pre-compute)
+# + 300s (VROOM): an upper bound near 4.9 HOURS, against the account-default
+# STATEMENT_TIMEOUT_IN_SECONDS of 172800. Nothing cancelled it, so an agent turn
+# that asked for a backload simply never came back. Measured warm runs are
+# already 75.8s / 168.6s / 270.1s, and a COLD continental graph misses the 45s
+# pre-compute and drops into the gateway's per-leg fallback - which that source
+# file itself calls "a multi-minute apparent hang at the OPTIMIZATION TVF
+# caller". That is why the failure looked state-dependent: running the cockpit
+# first warmed the graph, so the same question answered in 75s.
+#
+# The second half is correctness, not latency. There was no way to ask about a
+# NAMED vehicle: `max_vehicles=1` is ordered by free time, so it returns the
+# LONGEST-IDLE vehicle and answers about a different truck without saying so.
+# P_TRAILER_ID scopes the feed to that vehicle and to the loads it is eligible
+# for, which also collapses the 280-location / 280x280-matrix default.
+#
+# Both regressions leave a proc that COMPILES and returns correct numbers on a
+# small warm region, and they pass every other gate here - hence a gate. Rule B
+# insists the deadline is checked INSIDE solveWithShear and BEFORE the engine
+# call: a between-families check alone is not a ceiling (one family owns the
+# 17-attempt loop), and a check after the call cannot prevent the overrun it
+# reports. Rule D covers the eligible-pairs read, which was account-wide
+# (measured 29,047 rows across two regions) while the trailer and load feeds
+# were already scoped. Rule F requires the trailer_id guidance inside the
+# backload_solve bullet ITSELF, same reason as the memo gate above.
+# 15 mutations negative-tested via scripts/check_backload_budget_negative.py,
+# two of which convicted this gate's own first draft (the in-loop check was
+# satisfiable from the family loop, and `args.trailer_id` was satisfiable from
+# the cache-key params while the CALL passed a literal null).
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative.py
+
+# The Backload map's road geometry has exactly ONE producer: an ORS DIRECTIONS
+# pass run after the solve, because the solve itself sets VROOM options.g=false
+# to stay under the 20MB _OPTIMIZATION_RAW cap. That pass lived INSIDE solve(),
+# and a plan collected from an agent solve (`?solve_key=...`, via
+# lib/backload-rehydrate.ts) never runs solve() - so the deep link the agent
+# hands the user rendered the stop markers, the assignment card and every
+# distance correctly with NOTHING joining the stops. Nothing threw, no note said
+# a thing was missing, and the honest reading of that screen is that the route
+# failed to plan. The invariant is therefore not "geometry is fetched" but "the
+# fetch is SHARED": one producer at component scope, called by both the local
+# solve and a rehydrate-facing effect keyed on REHYDRATED assignments. A gate on
+# the fetch merely existing would have passed for the entire life of the bug -
+# which is why rule B checks the second call site is keyed off the collected
+# plan (negative test M4 is that control) and rule C forbids any second,
+# unshared geometry write (M5).
+#
+# Rule E is the same failure class one layer up: the memo published
+# `rev $0 cost $0 net +$1432` for a collected plan, because it coerced an absent
+# breakdown with `|| 0`. Revenue is NOT derivable for an external offer - the
+# proposal carries no per-offer price - so the breakdown is omitted rather than
+# invented, and the rule bans the coercion that made an absence look measured.
+# Rule F is why the plan claimed INTERNAL provenance it did not have: SOURCE is a
+# channel label carrying the literal word INTERNAL on 75 of 300 external offers
+# still live in VW_LOADS, so internal-vs-external must come from IS_INTERNAL.
+# Rules G-K came from the CoWork deep link: the same "one producer, two entry
+# points" bug in the BASELINE pass (G) - so a collected card lost
+# BASELINE_EMPTY_KM, "deadhead avoided" and its tooltip while looking complete -
+# plus three gaps that all rendered as nothing at all. H: 316 of 800 internal
+# loads have no delivery city and 235 no pickup city (2,621 trip POI ids exist in
+# no POI table), and a raw column made that data gap look like a broken renderer.
+# I: 35 of 89 USA vehicles are parked at their own end point and carry the HIGHEST
+# margins, so the top card of a collected plan usually has no baseline line to
+# draw - which must be stated, not left blank. J: `(EMPTY_BACK_KM ?? 0) > 0` is
+# the SOLVER's statement that a tour repositions; a proposal makes none, so a
+# collected plan never fetched its return leg. K: cleanWaypoints deduped with
+# `===`, so a pair differing in the 15th decimal reached DIRECTIONS and failed as
+# a one-point LineString (3 calls in QUERY_HISTORY).
+# 25 mutations negative-tested via scripts/check_backload_rehydrate_geometry_negative.py,
+# one of which convicted this gate's own first draft: rule D checked that
+# REHYDRATED was MENTIONED in the rehydrate module, which commenting out the one
+# line that sets it survives untouched. Anchor mutations WITHOUT leading
+# whitespace - an indentation-sensitive anchor turned a neighbouring refactor into
+# a harness that aborted mid-run instead of testing anything.
+# M14 convicted the SECOND draft the same way: the REHYDRATED-keying rules matched
+# the COMMENT that explains the keying, so removing the `a.REHYDRATED` predicate
+# passed. The keying checks now strip comments and require the predicate itself.
+# Two anchors also rotted here - `block_of` matched the inline object TYPE in a
+# callback's parameters instead of its body, and M8's anchor was a comment another
+# session had reworded. Anchor on code, not prose.
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
+
+# A dashed deck.gl layer must stay dashed at every zoom. `getDashArray` is
+# [dash, gap] RELATIVE TO THE PATH WIDTH, in the layer's width units, and those
+# default to METRES (`widthUnits` on PathLayer, `lineWidthUnits` on GeoJsonLayer).
+# The Backload empty legs therefore had a 16 m dash period in WORLD space: dashed
+# when zoomed in, a single solid grey stroke at country zoom, where it was also
+# indistinguishable from the 150-grey no-backload baseline. `lineWidthMinPixels:
+# 6` was present and clamps the STROKE WIDTH only - it has no effect on the dash
+# period - which is exactly why the units looked handled. Three layers across two
+# apps shared the defect, so the gate DISCOVERS dash sites by scanning instead of
+# listing them, and asserts the units on the SAME layer literal found by brace
+# matching: an earlier proximity draft was satisfied by a neighbouring layer that
+# happened to set pixels. Rules also strip comments first - rule C false-passed on
+# the very comment that documents this trap, because the prose contains the words
+# `getDashArray` and `widthUnits`. 8 mutations negative-tested.
+python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
+
+# The ORS metrics windows must be timezone-correct, and the gateway must not
+# amplify an error that retrying cannot fix. Three silent defects, all found by
+# reading OBSERVABILITY.ORS_REQUEST_LOG after an Observability page full of
+# errors. (1) REQUEST_TS is TIMESTAMP_LTZ and the windows used SYSDATE(), which
+# returns the UTC wall clock as NTZ: comparing them reads that time as LOCAL and
+# pushes every cutoff forward by the session UTC offset. Measured, the "last
+# hour" cutoff sat 360 minutes in the FUTURE, so that panel was unconditionally
+# empty and printed "No metrics yet" above a populated 24h event list, while
+# "last 24h" really covered 17h. Three copies of the predicate. (2) The retry
+# loop keyed off HTTP status alone, so ORS 6099 - whose only remedy is the
+# chunked matrix fallback, reachable only AFTER get_ors_response returns - was
+# re-sent twice at full size: 44 logical calls produced 119 error events. (3) A
+# 5xx that ENDED the loop fell through to _breaker_on_success, so the attempt
+# that proved the host unwell cleared the counter the previous two had built; the
+# breaker had never opened, which the data confirms (119 5xx events, ZERO 503
+# circuit_open rows). Rules strip comments first because the fixes DOCUMENT the
+# banned patterns verbatim, rule A asserts the correct predicate is PRESENT per
+# file (a mutation that only removed it survived the bad-pattern-only draft), and
+# rule D scopes to the emitted `matrix:` block because `maximum_search_radius` is
+# also legal under `match:` - an unscoped regex matched the wrong block and
+# reported a misleading cause. 11 mutations negative-tested; the retry/breaker
+# harness drives the real function with a stubbed transport and COUNTS attempts,
+# because "the code mentions 6099" passes on the comment and "a breaker call
+# exists" passed on the buggy version too.
+python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
+python3 .cortex/skills/install-fleet-apps/scripts/mutate_ors_observability.py
+
+# A continental region must still get a land clip. Europe's Function Tester read
+# "[routable_boundary: UNAVAILABLE: land clip could not be computed for Europe
+# (GEOGRAPHY too large)]" and then sampled every point from the raw Geofabrik
+# extract - 21,110,196 km2, less than half of it land - so ORS answered code 2010
+# for anything at sea. The statement that overflows is ST_UNION_AGG, NOT
+# ST_INTERSECTION: Europe matches 1,324 Overture region polygons carrying
+# 10,286,175 vertices, against 96 and 1,421,517 for the US, which unions fine.
+# That is why the obvious fix is wrong and why RULE A asserts the ST_SIMPLIFY sits
+# inside the aggregate's ARGUMENT on the per-row d.GEOMETRY - decimating the
+# union's output cannot help, because that geometry is never built (mutation M1 is
+# exactly that fix). Pre-union at 1,000 m: 231,563 input vertices, a
+# 185,107-vertex clip of 9,607,243 km2, 44.3% kept. The tolerance is derived from
+# a MEASURED vertex count because area does not predict vertices (Europe is 2/3
+# the US extract area with 7x the vertices), and it must stay a bind: a fixed
+# kilometre would straighten SanFrancisco's coast into water, the exact failure
+# the mask prevents. Two further silent shapes: metres do not bound an
+# archipelago, since ST_SIMPLIFY thins a ring but never drops one (Europe at the
+# old 500 m cap = 92,079 vertices / 4.28 MB shipped to the browser per region on
+# page load, against 3,510 / 165 KB for the US), so the browser copy is escalated
+# against a vertex budget that must be RE-MEASURED in the loop (M5 keeps the loop
+# and drops the measurement); and an uncast ST_NPOINTS assignment POISONS its
+# variable - the SELECT INTO succeeds and the next READ raises "Numeric value '5'
+# is out of range", measured on a five-vertex square, reported against the reading
+# line and not catchable by an enclosing EXCEPTION handler, so it aborts the proc
+# after the expensive clip is already computed. 7 mutations negative-tested; M7 is
+# the false-pass shape (code deleted, explanatory comments left), which is why the
+# rules strip comments first. Wired into provision_engine.sh step 5 as well as the
+# hook, because that loop is what ships the module and core.hooksPath is unset.
+python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify_mutations.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 verify_gateway_retry_policy.py
+cd .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway && python3 mutate_gateway_retry_policy.py
+
+# An optional semantic view that fails to deploy must not be REPORTED as a
+# fresh-install skip. SV_OFFERS carried a one-line syntax error - a DIMENSIONS
+# entry with its name and its source expression the wrong way round, so the RHS
+# named no column and the whole file aborted with `invalid identifier` - and the
+# view therefore existed in no account. What kept it invisible for so long was
+# not the typo but the reporting: the installer mapped EVERY non-zero exit of
+# semantic_views_marketplace.sql to "FLEET_INTELLIGENCE.MARKETPLACE not present
+# yet (expected on a fresh install)". That attribution was unconditional, so a
+# permanent defect and a genuine ordering skip produced byte-identical output on
+# every single run, and the deploy being best-effort meant nothing downstream
+# failed either - the view was simply absent, exactly as SV_BACKLOAD_MATCHING
+# once was. The verdict is now read from the log, and this test is what stops it
+# regressing to a constant: case 2 is that exact failure, and the pre-fix
+# unconditional form fails 4 of the 5 cases.
+#
+# A STATIC gate was written first and rejected by its own evidence. The rule was
+# "a bare-identifier RHS must not contain the dimension name", which is precisely
+# the SV_OFFERS shape - and it produced 7 false positives on the clean tree and
+# zero true ones. `sessions.h3_cell AS H3_CELL_R7` deploys and returns rows (the
+# output column is H3_CELL, the LHS), so a shorter invented name over a longer
+# real column is legal and containment in either direction is fine. Nothing
+# static separates the two; proving the RHS names a real column needs the live
+# table. So the deploy is the only sound oracle, and the thing worth gating is
+# whether the deploy tells the truth about what it found.
+bash .cortex/skills/install-fleet-apps/scripts/check_semantic_verdict_negative.sh
+
+# Execute EVERY SA app view's queries with the binds the runtime actually sends and
+# report OK / EMPTY / ERROR per area. This is the only check that answers "will the
+# pages have data?" - every other gate verifies objects were CREATED, not that they
+# RETURN anything, and an empty panel passes all of them. Two passes: first render
+# (nothing selected) then a seeded-selection pass that exercises the drill-downs.
+# Legitimately-empty panels are declared in scripts/view-expectations.yaml with a
+# reason; an undeclared empty result fails. Read-only unless --repair is passed.
+# Needs snowflake-connector-python + PyYAML, and a live deployed stack.
+python3 .cortex/skills/install-fleet-apps/scripts/validate_app_views.py -c <connection>
+python3 .cortex/skills/install-fleet-apps/scripts/validate_app_views.py -c <connection> --repair
+# Installer step 9 runs it automatically, non-blocking; skip with SKIP_VERIFY=1.
+
+# Before a flush + fresh install on an account that has never run this stack:
+# probes Overture listing acquisition, ORS services, privileges, pre-existing fleet
+# objects and the harness's own dependencies. Exit 0 ready / 1 blocking / 2 degraded.
+bash .cortex/skills/install-fleet-apps/scripts/preflight_new_account.sh -c <connection>
+
+# Create the four Snowsight-visible agent evaluation sets (one per agent) and, without
+# --no-run, run a baseline evaluation against each. BOTH Snowsight agent-readiness
+# checklist items ("Create the first eval set" and "Run an evaluation") are satisfied
+# only once a RUN exists - a dataset on its own clears neither, and the Evaluations tab
+# keeps showing its "create a dataset" starting points until the first run is recorded.
+# run_agent_evals.py above is a DIFFERENT harness that tests the MCP verb path, which
+# Snowsight evaluations cannot reach at all. Runs cost credits (47 agent invocations
+# plus an LLM judge per metric per row), so the installer creates eval DATASETS by
+# default but does NOT run baselines (opt in with RUN_AGENT_EVALS=1). Pass
+# SKIP_AGENT_EVALS=1 to skip step 6.6 entirely.
+# NOTE a wipe/reinstall destroys prior runs while leaving the datasets in place, so a
+# rebuilt account shows the checklist gap again until the baseline is re-run.
+bash .cortex/skills/install-fleet-apps/scripts/setup_agent_evals.sh <connection>
+bash .cortex/skills/install-fleet-apps/scripts/setup_agent_evals.sh <connection> --no-run
+
+# CI quality gate: compares the MEAN score per metric against per-metric thresholds.
+# Resolves the newest run per agent by itself; --run pins a specific one. An agent
+# with no evaluation run is a FAILURE, not a skip.
+python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py -c <connection>
+python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py -c <connection> --run <run-name>
 
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
-**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift):
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift, when an SA app view is missing its `useCase` block, when an authored view token sits on a path the renderer never interpolates or names a `{{group.key}}` the display config does not define, when a synapse verb has no routing guidance in an agent that can see it, when a verb uses a JavaScript global the Snowflake proc runtime lacks, and when a session or created object is missing its tracking tag):
 
 ```bash
 chmod +x .githooks/pre-commit
@@ -91,9 +810,9 @@ No global build/lint step - each skill is independently deployable via its own S
 | `setup-agent-playground` | demo-setup | Uploads `agent-demos.json` so the Agent Playground shows catchment/delivery/network scenarios. The 3 demo tools now source live region-scoped Overture POIs (no static `DEMO_*` needed); the legacy static seed in `references/deploy-demo-data.sql` is deprecated/optional. `install-fleet-apps` already uploads `agent-demos.json` (step 4.6). |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
-| `backload-matching` | demo | Neutral (industry-agnostic) backload demo. Two FLEET_SA_APP views over the synthetic `BACKLOAD_MATCHING` views, solving live via `/api/backload/solve`: **Backload Matching** (single internal-first VROOM solve, assignment cards + write-back) and **Backload Proposals** (advanced cockpit - Quick scan / Per-load VRP / Fleet 1:1 / Profit-max strategies fused by client-side ensemble scoring into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips from `VW_CANDIDATES_SCORED` + Cortex rationale + session-only Accept/Reject/Flag). `references/proposals-schema.sql` adds the cockpit layer (MATCH_PARAMS/VW_LOADS/VW_TRAILERS_GEO/VW_CANDIDATES[_SCORED]); the generic `vrp_solve` verb solves any prepared VROOM challenge. |
+| `backload-matching` | demo | Neutral (industry-agnostic) backload demo. Three FLEET_SA_APP views over the synthetic `BACKLOAD_MATCHING` views, solving live via `/api/backload/solve`: **Backload Matching** (single internal-first VROOM solve, assignment cards + write-back), **Backload Proposals** (advanced cockpit - Quick scan / Per-load VRP / Fleet 1:1 / Profit-max strategies fused by client-side ensemble scoring into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips from `VW_CANDIDATES_SCORED` + Cortex rationale + session-only Accept/Reject/Flag), and **Triangle Proposals** (CHAINED two-hop returns for the case where no single load brings a vehicle back: `VW_LEG1_CANDIDATES` + `VW_TRIANGLES` enumerate chains as a bounded load-to-load self-join, one live `MATRIX_TABULAR` call prices every leg, an internal-first cascade stops at the first acceptable rung, and each chain is shown against the cost of running home empty). `references/proposals-schema.sql` adds the cockpit + chain layer (MATCH_PARAMS/VW_LOADS/VW_TRAILERS_GEO/VW_CANDIDATES[_SCORED]/VW_LEG1_CANDIDATES/VW_TRIANGLES); `FLEET_APP.BACKLOAD_MATCHING.EXTERNAL_OFFER_SEARCH` is the swappable external-exchange seam; the generic `vrp_solve` verb solves any prepared VROOM challenge. |
 | `freight-exchange` | demo | Dispatcher-grade marketplace cockpit (parallel page to Backload Matching). Browse + filter + map of synthesized freight offers per active preset, with trust-score (credit/KYC/blacklist) and market-rate (vs. weekly p25/p50/p75 USD/km RATE_INDEX dynamic table) badges. Powered by FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data. |
-| `emergency-response` | demo | Single-page, multi-step evacuation-planning wizard. Step 1 colors a state's ZIP codes by FEMA NRI flood/wildfire risk; Step 2 seeds CareConnect PACE centers + Overture participant addresses sampled uniformly across the union of per-center drive-time isochrones (union drawn as a sanity overlay); Step 3 sets per-center vehicles/capacity + max trips per vehicle; Step 4 solves a capacitated multi-depot, multi-trip evacuation VRP (`OPTIMIZATION`, `pickup:[1]` jobs - each van expanded into up to maxTrips round trips) over participants at/above a chosen ZIP risk level, with a selectable trips list, numbered stop markers, and an overflow warning when the trip cap is exceeded. Fully client-driven via read-only `sfQuery`; risk = `V_ZIP_RISK` (NRI county risk joined to ZIP by county FIPS). States via `STATE_REGION_MAP` (CA/CO/PA). |
+| `emergency-response` | demo | Single-page, multi-step evacuation-planning wizard. Step 1 colors the region by procedural H3 hazard risk (wildfire / flood / composite - no licensed hazard dataset and no FEMA NRI share required); Step 2 seeds care centers + Overture participant addresses sampled uniformly across the union of per-center drive-time isochrones (union drawn as a sanity overlay); Step 3 sets per-center vehicles/capacity + max trips per vehicle; Step 4 solves a capacitated multi-depot, multi-trip evacuation VRP (`OPTIMIZATION`, `pickup:[1]` jobs - each van expanded into up to maxTrips round trips) over participants at/above a chosen risk band, with a selectable trips list, numbered stop markers, and an overflow warning when the trip cap is exceeded. Fully client-driven via read-only `sfQuery`. |
 | `sap-fleet-connector` | infrastructure | Binds landed SAP (EAM/SD/TM) + fleet telematics into the existing `FLEET_APP` neutral contract and `SV_FLEET_OPS`, so the dashboards, Cortex agent, and Cortex Analyst run on a customer's real SAP data with zero edits above the contract. Semantic-binding only (SAP+telematics assumed already landed via Fivetran/SLT/Datasphere). Maps EQUI/IFLOT/IMRG/AUFK/QMEL/LIKP+telematics to the neutral entities via a mandatory configurable `ASSET_CROSSWALK` (`native_serial`/`vin_2hop`/`vin_external`/`marine` + `normalize_serial`), dedupes CDC-landed tables to current rows, and repoints the `FLEET_APP.UNIFIED_FLEET` source seam. Config-driven via `sap-mapping.yaml` (generic strategy-archetype profiles). Users can discover bindable tables from the app UI: the chat agent's `introspect_sap` verb (wrapping read-only `ROUTING_TOOLS.TOOL_SAP_INTROSPECT`) scans a database's `INFORMATION_SCHEMA` and lists the SAP fleet objects, CDC fingerprint, telematics columns, and a suggested join strategy (`scripts/mock_sap_seed.sql` provides a demo `MOCK_SAP`/`MOCK_TELEMATICS`). Maintenance pack (AUFK/QMEL/IMRG -> new `fact_maintenance`) and SAP write-back are later phases. |
 
 ## Skill Conventions (Quick Reference)
@@ -134,6 +853,18 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 ## Commit Discipline
 
 **MANDATORY:** After each logical change is completed and verified, create a new git commit on the user's single shared branch AND push it immediately. Do not batch unrelated changes into a single commit, and do not leave commits unpushed at the end of a turn.
+
+### End-of-task checkpoint (MANDATORY)
+Finishing a task means: verified, committed, pushed. A turn that ends with uncommitted or unpushed work is an unfinished turn - say so explicitly if you could not push and why.
+
+**Be granular, because this working tree is shared by parallel sessions.** Several Cortex Code chats (and the human via GitHub Desktop) edit the same files at the same time, so every minute your work sits uncommitted is a window in which another session's `git checkout`, "Discard changes", or stale-buffer write can silently revert it.
+
+- Commit at the smallest verified unit - do not wait for the whole task to finish. One file, one fix, one gate, one doc section is a valid commit.
+- Push after every commit. Uncommitted work is at risk; unpushed commits are not (they survive a discard).
+- Stage explicitly by path. Never `git add .` and never `git add -A` in this repo - another session's in-flight edits live in the same tree.
+- Before staging, run `git diff --stat` and confirm every listed file is yours. If a file contains BOTH your edit and another session's, do not `git add` it - see `/memories/shared-tree-selective-commit.md` for the reconstruct-and-`commit-tree` procedure.
+- If a hunk is not separable, hold it back and say which part of the work is uncommitted rather than committing someone else's lines.
+- **If you reconstruct a file to isolate your work, assert `HEAD` did not move between reading the blob and committing.** Reading with `git show HEAD:<file>` and later parenting the commit on whatever `HEAD` has become produces the newer tree plus older blobs, which silently REVERTS anything another session committed in that window. Measured here: 96 seconds was enough, and the revert survived two further commits. It compiles, `tsc` is clean, and the deletions hide in hunks that also contain real additions - so **re-run the full gate suite AFTER committing** as well as before, and read a gate that was green before your commit and red after as a revert, not a flake.
 
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected - changes only land via merged PRs from `dev`.
@@ -253,6 +984,8 @@ If no friction was encountered, the log should still be created with "No frictio
   ```
 - **Assume ORS is running** - always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;` (all 5 services must be RUNNING)
 - **Precompute / materialize ORS output for demos** - do NOT cache isochrone polygons, travel-time matrices, or optimization results into tables and read them back in a view. Call `ISOCHRONES` / `MATRIX` / `MATRIX_TABULAR` / `OPTIMIZATION` live at interaction time (see Architecture Tenet 9). Precomputing non-ORS reference data (POI subsets, address/household density, synthetic facts) is fine.
+- **Scope a contract view to one region with a singleton `CONFIG` row.** A per-schema `CONFIG` table holds exactly ONE row, so `WHERE REGION = (SELECT REGION FROM ...CONFIG LIMIT 1)` does not filter a region - it makes every OTHER loaded region structurally invisible, while the view still returns rows and renders a populated panel. It is also writable at runtime (the `/api/region` promote path and the ops verb `set_active_context`, which an **agent** can call), so the same question returns different data at different times. Carry `REGION` and `VEHICLE_TYPE` through as ordinary dimensions and let the consumer choose the slice: a scope arg (`F_*_SCOPED`) for the app, a `WHERE` clause for Cortex Analyst. `CONFIG` is now a **default-selection hint only**. Two corollaries: (1) when you de-scope a layer, any per-region COMPUTATION inside it must be PARTITIONED rather than pre-filtered - a global `MAX(TRIP_START)` recency window lets the freshest region prune the others out entirely, an `AVG(LAT)`/`AVG(LNG)` home anchor across two regions lands in the ocean between them, a global `QUALIFY ... <= POOL_CAP` lets one region eat the whole cap, and any rollup missing `REGION` in its `GROUP BY` merges regions into one number; (2) a semantic view must expose BOTH the region key and a readable label, because region keys are CamelCase (`SanFrancisco`) and a filter on the phrase a person types (`'San Francisco'`) matches nothing. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_region_scoping.py` via `.githooks/pre-commit`.
+- **Convert an analytic, contract, or config table to a `HYBRID TABLE`** - hybrid tables support no dynamic tables, streams, data sharing, clustering keys, or result cache, and every candidate state table here is 1-43 rows, so there is no scan to remove and the warehouse round trip remains. `DIM_DATASETS` is the specific trap: it is joined by every `V_*_CURRENT` view, so making it hybrid disables the result cache on nearly every dashboard query. Hybrid is reserved for durable OLTP state and enforced constraints - today `verb_attempt` + `verb_claim` and `FLEET_INTELLIGENCE.CORE.JOB_STATE`. See Architecture Tenet 5b.
 - **Hardcode city/region** - skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** - all docs go in SKILL.md or `references/`
 - **Duplicate conventions** - point to `skill-optimiser` references instead of repeating rules
@@ -262,7 +995,24 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Commit directly to `main` or `dev`** - both are protected. All work goes on `feat/<GITHUB_LOGIN>-<feat-name>` with PRs targeting `dev`. Only humans promote `dev` → `main`.
 - **Hardcode the user branch name** - always derive the login from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-obielov-sa-synapse-app` into AGENTS.md, skill files, or scripts.
 - **Create a new branch per change** - there is one branch per user per feature (`feat/<GITHUB_LOGIN>-<feat-name>`). No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same feature branch.
-- **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
+- **Create any Snowflake object or run any query without tracking tags** - this is a hard requirement. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py` via `.githooks/pre-commit`.
+  - **The tag schema is part of the requirement, not decoration.** `version` must be `{"major":N,"minor":N}` (NOT a `"1.0"` string), `attributes` must carry `is_quickstart` and `source`, and `name` must be `oss-` prefixed. A tag missing these still parses and still looks right, so nothing fails - but every consumer filtering on `version.major` or `attributes.is_quickstart` silently matches none of those objects.
+  - **A `query_tag` must be SESSION-level to be worth anything, and only two mechanisms produce one.** A tag set as a REQUEST parameter (`parameters: { QUERY_TAG }` on a SQL REST call) tags only the statement you sent; it does NOT propagate into the body of a procedure that statement calls. A SESSION-level tag does. Measured on one procedure invoked two ways: called from a task carrying `QUERY_TAG = ...`, both the `CALL` and its inner `SELECT` were tagged; called with a request-scoped tag, the `CALL` was tagged and the inner `SELECT` was not. Since the work (and the warehouse credits) happens inside the procedure, a request-scoped tag attributes the cheap statement and loses the expensive one - 27,672 successful queries touching fleet objects over 3 days, of which ~10,800 were task-driven and ~6,400 came from the admin app.
+    - **You cannot fix this inside the procedure.** `ALTER SESSION SET query_tag` fails inside a procedure body with `Unsupported statement type 'ALTER_SESSION'`, and so does the `EXECUTE IMMEDIATE 'ALTER SESSION ...'` form, in `LANGUAGE SQL` and `LANGUAGE JAVASCRIPT` procedures alike. Do not spend time on it - it is not a privilege problem.
+    - So: **every `CREATE TASK` sets `QUERY_TAG`** (enforced by rule E of `check_tracking_tags.py`), and **an app calling a procedure over the REST API sends the tag as the first statement of a MULTI-STATEMENT request** (`ALTER SESSION SET query_tag = '...'; CALL ...` with `MULTI_STATEMENT_COUNT: '2'`, which is the SQL API docs' own example). A multi-statement response carries no rows - `data` is the string `Multiple statements executed successfully.` and the per-statement handles are in `statementHandles` - so the transport must unwrap to the LAST child handle, or callers silently read that string instead of the procedure's return value. `fleet_admin_app`'s `server/lib/sql.ts` does this for `CALL` statements only, on both the sync and async transports.
+    - **Known gap, deliberately not closed:** the SA app's one CALL site (`FLEET_APP.CORE.QUERY_DYNAMIC`) passes its SQL as a *binding*, and Snowflake does not support bindings in multi-statement requests. Inlining the SQL instead was rejected in that code on purpose, to avoid dollar-quoting hazards on agent-emitted text. That path's untagged volume is 134 queries over the same 3 days, so the trade is documented rather than forced.
+  - **Each `snow sql` invocation is a NEW session.** A `query_tag` set by a previous invocation does not carry over, so any `-q` payload that runs DDL/DML must include the tag itself. This is why the installer scripts define a `TRACK` / `TAG_SQL` pair and prepend it per call rather than tagging once up front. Note that prepending a statement makes the CLI emit a leading `status` / `Statement executed successfully.` result block, which breaks naive output parsing: `--format json` starts returning one result set PER statement (a list of lists), and the literal string `status` matches loose identifier filters like `^[a-z0-9_-]+$`. Fix the parse, do not drop the tag.
+  - **`attributes.source` names the surface that CREATED the object**, not the language the DDL happens to be written in: `app` for anything the admin/SA app's Node process issues at container boot or at runtime, `sql` for installer modules and shell-driven DDL, `notebook` for notebook cells. This is not cosmetic - a consumer asking "which objects did the app create" matched none of the 23 app-boot sites that claimed `sql`, and `ensure-tables.ts` contradicted itself (two `JOB_STATE` literals said `app`, the other 19 said `sql`). Hoist the tag to a module-level const rather than repeating the literal per statement, so the value cannot drift again.
+  - **Six documented platform exceptions**, where Snowflake itself makes the tag impossible. These are an explicit allowlist in the gate; adding a seventh must be a deliberate edit, never a silent pass:
+    - **Service functions** (`SERVICE=...`): reject both an inline COMMENT and `ALTER FUNCTION ... SET COMMENT`. Ensure the parent procedure carries a tag.
+    - **`CREATE SEMANTIC VIEW`**: has exactly ONE object-level COMMENT and it holds the Cortex Analyst model description that the agent reads. The two uses collide on one slot, so the JSON tag is deliberately omitted rather than degrading Analyst.
+    - **`CREATE DATABASE ... FROM LISTING` / `FROM SHARE`**: read-only share mounts accept no COMMENT clause and cannot be ALTERed afterwards.
+    - **`CREATE MCP SERVER`**: has no COMMENT clause at all; tracked via its JSON-tagged parent schema instead (see `fleet_tools/vendor/synapse/src/tracking.ts`).
+    - **The SPCS stage-volume `GET`**: declared by `volumes.source` in `fleet_sa_app_service.yaml`, so the platform issues a `GET @...FLEET_APP_STAGE/config` as the service user on every container start. No session exists for the app to tag, and the app only reads the mounted file off disk afterwards. Appears in `QUERY_HISTORY` as untagged `GET_FILES` from the app's user; not an app defect.
+    - **`CREATE CORTEX EXTENSION`** (`fleet_tools/vendor/synapse/src/cli/publish.ts`): its single COMMENT slot holds the plugin description a consumer reads when browsing the catalog - the same one-slot collision as `CREATE SEMANTIC VIEW`.
+  - Session-scoped `TEMP`/`TEMPORARY` objects are also exempt: they are dropped at session end, so they are never left behind for the cleanup skill to find and cannot accrue cost.
+
+- **Poll Snowflake from the browser with a raw `setInterval`** - warehouse credits are billed for the time a warehouse is UP, not for work done, so a loop that keeps ticking while the tab sits in the background holds an X-Small awake for output nobody is reading. Use `useVisiblePolling(cb, intervalMs, enabled)`, which pauses on `document.hidden` and refetches on visibility/focus regain. The `enabled` argument matters: almost all polling here is conditional (only while a build is running, only while a log panel is expanded), and before it existed six loops rolled their own `setInterval` purely to express that condition and lost the guard as a side effect. The two expensive ones ran for the entire duration of a region build - `useProvisionJobs` at 3s driving `GET_PROVISION_STATUS`, and `useBuildProgress` at 5s issuing an `ORS_STATUS` plus a **1000-line `SYSTEM$GET_SERVICE_LOGS` per building region per tick** (~2,300 ticks across a 3.2-hour build). Together they were why the interactive warehouse never reached its 60s idle. Cadences are now 10s and 15s: a build takes minutes to hours, so a faster tick buys no perceptible responsiveness on a progress bar. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_client_polling.py` via `.githooks/pre-commit`, which is **default-deny**: the obvious implementation (flag a `setInterval` whose body contains `fetch('/api/...')`) would have caught NONE of the six, because every one called an indirect helper. A genuine UI-only timer opts out with `// polling-gate: ui-only -- <reason>`; three do (an undo countdown, a relative-timestamp re-render, a slider animation). Server-side trees (`instrumentation.ts`, `server/`, SSE routes under `app/api/`) are deliberately out of scope - a React hook is meaningless there.
 
 ## Skill Dependency Graph
 
@@ -299,25 +1049,54 @@ graph TD
 ## Common Patterns
 
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
-- **Synapse verb procs need `IDEMPOTENCY_KEY ... DEFAULT NULL` + agents must be recreated after any bundle redeploy**: The Cortex Agent MCP server calls each verb with NAMED args and omits the optional `idempotency_key`, so the trailing proc arg MUST have `DEFAULT NULL` (emitted by `fleet_tools/vendor/synapse/dist/build/ddl.js`); without it Snowflake raises "named arguments [...] do not match any signature" before the body runs and the agent reports a generic "Error parsing response" with NO `VERB_ATTEMPT` row. Separately, `npx synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so any `install_synapse_bundles.sh` run (even out-of-band) MUST be followed by `create_agents.sh <connection>` - agents bind to the MCP server at creation time and go stale when it is replaced. Invariant: every agent `created_on` > its MCP server `created_on`. Full detail in `.cortex/skills/install-fleet-apps/references/synapse-bundles.md`.
+- **CoWork can draw maps via `data_to_map`, but it is host-injected, SI-only, and ONE LAYER per map**: `TOOL_DATA_TO_MAP` is registered server-side only when the account switch is on AND the request is a Snowflake Intelligence request, and it "never appears in `tool_inventory.json`" - so it CANNOT be declared in `agent-spec.json`, it exists in CoWork, and it does NOT exist in the SA app, in `DATA_AGENT_RUN`, or in an agent evaluation run. Agent instructions must therefore treat it as optional and fall back to `deep_link`, or the agent will claim a map nobody can see. `MapSpec.Layer` is a single struct, so the app's multi-layer maps (12 of 16 map areas, up to 8 layers) cannot be reproduced one-for-one; the workaround is a UNION into one geometry column plus a category column coloured `categorical`, since a `geojson` layer accepts mixed Point/LineString/Polygon geometry. Its source must be a prior **SQL/analyst** tool result passed as `tool_result_id`. Full contract, tested recipes and traps: `.cortex/skills/install-fleet-apps/references/cowork-integration.md`.
+- **Geometry reaches a map through map-ready DIMENSIONS, never GEOGRAPHY**: a semantic view cannot hold a GEOGRAPHY column, and `data_to_map` reads only lat/lon FLOATs, a GeoJSON STRING, or an H3 STRING. So the semantic views project geometry (`store_lat`/`store_lon`, `zip_geojson`, `hazard_geojson`, `lane_geojson`, `cell_h3`, `pickup_lat`/`pickup_lon`, ...) rather than excluding it. Two sizing rules learned by measurement: raw ZIP polygons are 100 KB each (7 KB at `ST_SIMPLIFY(GEOG, 100)`), and an oversized inline payload renders a **BLANK map with no error** - so simplify, filter, and suspect the payload first when a map comes up empty.
+- **The routing contract's table functions are the live-geometry seam**: `ROUTING_PLATFORM.CONTRACT.ISOCHRONES` and `OPTIMIZATION` return a `GEOJSON GEOGRAPHY` column, so a drive-time ring or a solved VRP tour is mappable from one SELECT with nothing materialised (Tenet 9 holds). Four traps, all observed: `ISOCHRONES`' `METHOD` is the **profile alone** (`'driving-car'`, not `'isochrones/driving-car'` - the wrong form returns a 404 in `RESPONSE` and a **NULL** geometry with no error); numeric literals must be cast `::FLOAT`; a bare `NULL` provider fails signature matching (use `NULL::VARCHAR`); and `OPTIMIZATION`'s challenge must be a **scalar subquery**, never a correlated column (`Unsupported subquery type cannot be evaluated`). `RANGE` on the scalar `ISOCHRONES` overload is MINUTES.
+- **Any writer that ALTERs a table under a `SELECT *` contract wrapper MUST recreate the wrapper in the same breath**: a Snowflake view freezes its column list at creation, so `ALTER TABLE ... ADD COLUMN` leaves the wrapper declaring fewer columns than its query produces and **every read fails** with `declared N column(s), but view query produces M column(s)`. This is not just drift on old deployments: packs run in install step 4 and the apps boot in step 7, so a wrapper is always created before the app's boot-time ALTERs run. It bit `FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS`, which made `SV_BACKLOAD_MATCHING` impossible to create and thereby removed `query_backload` from every agent - silently, because a missing semantic view just means a missing tool. Both writers (`fleet_admin_app` `init.ts` and `freight-exchange/references/bootstrap-enrichment.sql`) now recreate it.
+- **CoWork's chart support is a SUPERSET of the app's, so the gap was never chart TYPE - it was that nothing STEERED it**: `chart_customization` appeared zero times in this repo, so the same question rendered in the app's cyan-led palette and in CoWork's defaults, and CoWork chose chart shapes with no knowledge of which are honest for skewed data. It is now set at two levels with a deliberate split: the AGENT level (`instructions.orchestration`) carries the deterministic half - palette and fonts in a `vega_template` with `"usermeta": {"merge": "extend"}`, so the model keeps the field and type it chose and only GAINS the palette; the SEMANTIC-VIEW level (`AI_SQL_GENERATION`) carries FREE TEXT ONLY, because a template merges into EVERY chart from that view with no per-chart-type filtering, so an `encoding.y` written for a money bar chart also lands on a horizontal bar where y is the category. Three traps, all silent: only CSS generic families (`sans-serif`, `serif`, `monospace`) resolve - a named font is absent from the server-side render container; the block needs its OWN section header, or appending anything to the orchestration edits it instead (this happened twice, caught by the super-spec twin assertion); and a broken `vega_template` is reported nowhere. Contract: `.cortex/skills/install-fleet-apps/references/cowork-integration.md`.
+- **`code_execution` is what lets CoWork produce a FILE, and the tool declaration alone does not enable it**: all four agents declare the sandbox AND a `tool_resources.code_execution` entry with an explicit `permission_policy` - the pair is required, and `check_cowork_surfaces.py` RULE A fails a spec with one and not the other. It is mutually exclusive with `code_toolset_all`; this repo takes the narrower Python sandbox (numpy, pandas, matplotlib, plotly). No SQL runs in it - there is no warehouse and no session - so the pattern is always query first, then pass the result in. Unavailable under owner's rights, and state is thread-scoped. For an accelerator whose audience is field SEs, this is the difference between an answer and a leave-behind.
+- **A CoWork agent skill is matched on NAME AND DESCRIPTION ALONE, which makes it the right home for a use case**: 26 `SKILL.md` folders are GENERATED by `scripts/build_cowork_skills.py` from the same `useCase`/`agentKnowledge` blocks as the view catalog, so a skill cannot drift from its view, and the 26-entry `skills` array in `agent-spec.json` is generated too - a hand-maintained list of 26 stage paths matching 26 folder names is exactly the list that goes stale silently, and a dangling reference fails PER REQUEST. Skills are REFERENCED, never copied, and read at request time, so editing a `SKILL.md` and re-uploading needs no agent redeploy; `SKILL.md` must sit at the folder ROOT (Snowflake does not search subdirectories); the stage privilege is **READ, not USAGE** (the docs say USAGE, which is the external-stage form, and an internal stage rejects it outright), and with no grant the agent lists 26 skills while every one fails to load. `scripts/deploy_cowork_skills.sh` must run BEFORE `create_agents.sh` (installer step 5.7). Attached to the consumer and super agents ONLY: the ops and admin agents hold no `query_*` tool, so 26 analytics workflows they could match and then fail to execute would be worse than none.
+- **A verified query must return ROWS, not merely compile**: all 11 semantic views carry an `AI_VERIFIED_QUERIES` clause whose question is the view catalog's headline `businessQuestion`, so CoWork's fast path covers exactly what an SE demonstrates. The SQL is GENERATED by Cortex Analyst from the question rather than hand-written, which keeps it idiomatic per view (some answer best through `SEMANTIC_VIEW(...)`, others through the physical contract view). Source of truth is `scripts/verified_queries.py`; the clause goes after `COMMENT` and `AI_SQL_GENERATION`, before `COPY GRANTS`; `VERIFIED_AT` is a FIXED epoch because `SYSDATE()` would make the DDL non-deterministic and every install would look like a change. The rows rule earned its keep immediately - the first backload query aggregated match decisions, which is legitimately empty until a user accepts a match in the app.
+- **A non-owner role needs REFERENCES *and* SELECT on a semantic view to use it through an agent**: all eight grants issued SELECT alone, and the failure mode is invisible from an admin seat - the agents are owned by ACCOUNTADMIN, so every spec validates and every question answers when an admin asks it. Cortex Analyst runs as the CALLER, so an ordinary `FLEET_APP_USER` in CoWork would have the `query_*` tool resolve and then fail at query time, which reads as a broken agent rather than a missing grant.
+- **CoWork automations are gated on `EXECUTE AGENT TASK`, which is granted to PUBLIC by default, and the finest cadence is HOURLY**: `role_binding.sql` grants it to the three app roles anyway, for the account where an administrator has revoked it from PUBLIC - there the Automations tab still lets a user create one and then tells them access is disabled, so the failure surfaces to the user rather than to whoever configured the account. Granting to the app roles rather than back to PUBLIC leaves that decision intact for every other role. Each run executes under the REQUESTING USER's role, so a report cannot show data they could not query themselves; anything wanted more often than hourly is a dashboard, not a report. The ops guidance is deliberately NOT a twin of the consumer guidance: digests are worth scheduling and platform actions are not, because an automation runs unattended and there is nobody to confirm a suspend or a delete with. And an automation whose question omits region or asset mode silently mixes them on EVERY run.
+- **The travel-matrix subsystem was the one capability with NO verb AND NO instruction, which is the combination that invites an invented answer**: 16 admin-app routes and no SQL entry point. It now has `matrix_status`, `matrix_build` (launch-only) and `region_diagnostics`, plus `OPENROUTESERVICE_APP.CORE.START_MATRIX_BUILD` - a schedule-less TASK plus `EXECUTE TASK`, mirroring `START_REGION_PROVISION`, because a procedure cannot fire-and-forget the way the app's Node process can, with `USER_TASK_TIMEOUT_MS` set explicitly (the default is one hour). It deliberately differs from the app's own launch path in three ways: it REFUSES a region with no bounding box instead of defaulting to San Francisco (the app's swallowed `try/catch` fallback is untidy for a human clicking a picker and a correctness hazard for an agent, which would tessellate San Francisco and report success for "build the matrix for UsTexas"), it takes one resolution rather than an array, and it refuses a duplicate build for the same region/profile/resolution. Everything that remains app-only - dataset generation, matrix cancel and restore, region cancel, catalog refresh, config edits, image builds - is now NAMED in an `APP-ONLY CAPABILITIES` section with the instruction to hand over the admin app page via `open_admin_app`, because an instruction to point at a page with no tool to produce its URL is what makes a model construct one.
+- **Deep Research, file upload and the mobile client are deliberately NOT wired, and the reasons matter**: Deep Research needs no per-agent configuration, so there is nothing to do beyond knowing it takes a different, costlier path than a single Analyst call. File upload is available and the sandbox can read an attachment, but no use case depends on one: every use case here answers from governed data in Snowflake, and a workflow resting on a spreadsheet a user happens to attach cannot be demonstrated reproducibly or governed - the honest handover for "here is my own fleet data" is Data Studio or a real ingestion path. The mobile client needs no configuration but is why the instructions favour a short answer plus a `deep_link` over a wide table: a 12-column result is unreadable on a phone.
+- **Four agents, and the super agent's isolation lives in the GRANT**: `create_agents.sh` creates `FLEET_AGENT` (ROUTING_MCP), `FLEET_OPS_AGENT` (FLEET_OPS_MCP), `FLEET_ADMIN_AGENT` (FLEET_ADMIN_MCP) and `FLEET_SUPER_AGENT` (all three). The super agent exists because a Cowork / Snowflake Intelligence user cannot hand off between agents mid-conversation. It does NOT weaken Tenet 3, because the boundary is `role_binding.sql` granting it to `FLEET_APP_ADMIN` ONLY - never `FLEET_APP_USER`, which would hand every app user service suspension and region deletion. `super-agent-spec.json` is GENERATED from `agent-spec.json` by `scripts/build_super_agent_spec.py`; do not hand-edit it, and re-run the generator (or `--check`) after any consumer-spec change.
+- **An agent is invisible in Snowflake CoWork until it is added to the CoWork object**: once an account has a `SNOWFLAKE INTELLIGENCE` object (created automatically the first time anyone opens the CoWork settings page), an agent that is not in it can only be reached by direct link or the Snowsight UI - it does not appear in the CoWork agent list, and Snowsight's per-agent setup checklist flags "Connect to Snowflake CoWork" as undone. `fleet_sa_app/app/cowork_binding.sql` (install step 6.5) adds all four agents and grants USAGE on the object to the three app roles (without that USAGE a role sees an EMPTY agent list, not an error). `ALTER ... ADD AGENT` is NOT idempotent - a repeat raises `400203 ... is already present` - so each statement sits in its own exception handler; `snow sql -f` would otherwise abort the whole file on a re-run. Adding `FLEET_SUPER_AGENT` does not weaken Tenet 3: CoWork filters by the caller's privileges and `role_binding.sql` grants it to `FLEET_APP_ADMIN` only. Registration survives `CREATE OR REPLACE AGENT`, so unlike `create_agents.sh` it does not need re-running after a bundle deploy - but dropping an agent does NOT remove it from the object, so a teardown must `DROP AGENT` from the CoWork object explicitly.
+- **Cortex Agent evaluations DO invoke this stack's MCP verbs, despite the docs saying they cannot**: the documentation states evaluations "don't currently support MCP servers as tools" and that "the agent doesn't call any MCP server tool during the run". Measured on 2026-09-01 that is false here - baseline runs invoked `fleet_ops_mcp_service_inventory`, `fleet_ops_mcp_cost_control`, `fleet_ops_mcp_describe_deployment`, `fleet_admin_mcp_describe_deployment` and `routing_mcp_run_sql`, with matching `ACTOR = SYSTEM` rows in `SYNAPSE_OPS`/`SYNAPSE_ADMIN.VERB_ATTEMPT`. Two consequences. (1) **Never write ground truth that expects zero tool calls for an operational question** - four cases did, and scored a deterministic `tool_selection_accuracy` 0 for CORRECT behaviour (on "Suspend every routing service right now" the agent read `service_inventory` and `cost_control` with `action=status`, suspended nothing, and asked for confirmation, exactly as its rubric demanded). Action cases now expect the read-only inspection verbs and keep "executing before confirmation is a failure" in `ground_truth_output`. (2) **A mutating verb could fire during a run**, so an eval dataset is not a safe place for a destructive request unless the rubric forbids execution. `evals/ops_agent.yaml` and `evals/admin_agent.yaml` still omit `answer_correctness`, but that is now a metric-set-stability CHOICE (adding a metric restarts the Snowsight trend charts, and operational answers drift with live state), not a platform limitation. `run_agent_evals.py` stays complementary because it asserts the `VERB_ATTEMPT` audit envelope, which an evaluation run does not inspect. Also note the run YAMLs carry no `dataset:` block (with one present, every re-run tries to recreate the dataset and fails), pin explicit metric versions (scores from different metric versions are not comparable and Snowsight charts each version separately), and pin `agent_version: "DEFAULT"` - `LAST` binds to the mutable live/draft spec, and anything rewriting that draft ORPHANS the run ("Run ... does not exist" for a run that was in progress, losing its scores).
+- **An eval DATASET must live in the agent's own schema**: Snowsight's "Create the first eval set" readiness item is scoped to the schema holding the agent. With all four datasets in `FLEET_INTELLIGENCE.EVALS` the item stayed unchecked on every agent even after four COMPLETED runs (which did tick "Run an evaluation" - the two items have different sources of truth). Creating the same dataset in `FLEET_INTELLIGENCE.SYNAPSE_USER` ticked it immediately with no new run. `setup_agent_evals.sh` now targets `AGENT_SCHEMA` for the dataset objects while the input tables, config stage, file format and scheduled tasks stay in `EVALS`. Separately, a wipe/reinstall destroys RUNS while leaving datasets intact, so a rebuilt account reports "already exists - reusing" for every dataset and still shows the readiness gap until the baseline is re-run.
+- **`SV_FLEET_DEPLOYMENT` lives in `SEMANTIC_OPS`, not `SEMANTIC`**: `role_binding.sql` grants `FLEET_APP_USER` SELECT on ALL *and FUTURE* semantic views in `FLEET_INTELLIGENCE.SEMANTIC`, so anything landed there reaches every consumer automatically. The ops/admin deployment-history view gets its own schema so the grant can stop at `FLEET_APP_OPS`. Cortex Analyst runs as the CALLER, so the ops role also needs base-table SELECT on the `OPENROUTESERVICE_APP` telemetry tables - without it the tool compiles and then fails at query time, which reads to a user as a broken agent.
+- **`build_super_agent_spec.py` UNIONS native tools across all three role specs**: it used to copy the consumer spec's tools verbatim, which meant a tool added only to `ops-agent-spec.json` / `admin-agent-spec.json` (today `query_deployment`) was silently missing from the superuser agent. Instructions are still consumer-spec-derived plus the generator's suffixes - do not merge those.
+- **A new synapse verb is auto-discovered, but the agent will not use it well until a spec tells it to**: procs are found by a directory walk of `src/procs/`, so no registration is needed for the MCP server. The agent is different: without a routing line in `instructions.orchestration` it either ignores the verb or prefers it over a better tool. The case that actually bites is `run_sql` being chosen ahead of a `query_*` Cortex Analyst tool, silently bypassing the governed semantic-view path - which is why every spec carries an explicit "prefer a query_* tool whenever one models the data" rule.
+- **Dataset generation has no SQL entry point**: it runs inside the admin app's Node process (`startGeneration`: in-memory job map, SSE, thousands of live routing calls), so no stored procedure or synapse verb can host it. `OPENROUTESERVICE_APP.CORE.STUDIO_START_JOB` looks like one and is not - it launches a job service from an `ors_studio_worker` image that is built nowhere in this repo, has no tag in `image-versions.env`, and is called by nothing. Do not wrap it: the result reports "launched" and generates nothing. `list_datasets` + `activate_dataset` cover the SQL-reachable half.
+- **Region provisioning is launched, not awaited**: `OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION` uses a schedule-less TASK plus `EXECUTE TASK`, because a build runs for hours and cannot be awaited inside a proc, while merely enqueuing a job row does nothing. Anything reporting a launched build as ready is a defect. Two things follow from the task being the unit of execution. (1) **`USER_TASK_TIMEOUT_MS` must be set explicitly** - it defaults to 3600000 (1 HOUR), which silently capped every build at 60 minutes while `PROVISION_REGION_WRAPPER` believed it had a 1320-poll (~11h) ceiling. Measured: the wrapper was cancelled at poll 113 with "Statement reached its statement or warehouse timeout of 3,600 second(s)" while the PBF download was at 91%, leaving the job row `RUNNING` forever with nobody driving it. The launch task now sets 12h. (2) **`RESCUE_PENDING_PROVISIONS` does now launch work, in exactly one bounded case**: a job whose procedure died or gave up during `DOWNLOADING` is relaunched (it was previously true that the reconciler only ever FINALIZED). Eligibility lives entirely in `CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES` - stale `HEARTBEAT_AT` (written every poll cycle by the download loop) or a terminal download failure, capped at 3 relaunches per region per 24h, and only when resumable state is on the stage. `HEARTBEAT_AT IS NOT NULL` is a load-bearing safety gate: a pre-heartbeat job can never look alive, and relaunching a LIVE build starts a second one for the same region, where "the loser corrupts the winner's graph". The relaunch MUST pass the dead job's `PROFILES` and `COMPUTE_SIZE` through, or `START_REGION_PROVISION`'s defaults silently turn a single-profile build into a three-profile one. (3) **Routing the app's provisioning call through `START_REGION_PROVISION` is NOT a cost saving - do not "optimise" it that way.** The app's `/api/regions/provision` calls `PROVISION_REGION_WRAPPER` directly via `submitSqlAsync`, which holds a warehouse for the whole build; the task path looks like the fix, but the task body is literally `AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(...)`, i.e. the SAME sleeping procedure. Switching would not remove one second of sleeping, it would move it onto serverless task compute at a higher credit multiplier. Measured on a real account: **97.5% of a provisioning CALL's duration is spent sleeping** (191.1 of 196.1 minutes), and every `SYSTEM$WAIT` sits INSIDE its parent CALL window - so the waits are not incremental credits either, and deleting them alone saves nothing. The only real fix is decomposing the wrapper into a step-wise reconciler-driven state machine so nothing sleeps while holding compute; that is a large change against the machinery documented in (1) and (2), for ~1.65 credits/day on a heavy dev account and near zero on a customer install doing one to three builds. Weigh it against the SPCS line first: over one 10-day window `SNOWPARK_CONTAINER_SERVICES` was 268.8 credits against 295.2 for ALL warehouses combined.
+- **A synapse verb runs inside a `LANGUAGE JAVASCRIPT` stored procedure, so it has no browser and no Node host APIs**: `JSON`, `Math`, `Date`, `Promise` and `encodeURIComponent` are there; `URLSearchParams`, `URL`, `fetch`, `Buffer`, `process`, timers and WebCrypto are not. Every layer above the runtime accepts the bad code - `tsc` (the repo pulls in DOM and `@types/node` for the build-time half of the framework), esbuild, and `npx synapse deploy`, which creates the procedure without complaint - so the first symptom is an agent hitting a bare `<name> is not defined` mid-conversation, with no line number and no useful `VERB_ATTEMPT` payload. `deep_link` shipped this way: its final statement built the query string with `new URLSearchParams()`, so it resolved the view label and probed `SHOW ENDPOINTS IN SERVICE` for the ingress host and only then threw. Because `deep_link` is the sanctioned fallback for every visual question the agent cannot draw, that removed the only honest visual path, and the agent presented a repo bug to the user as something for their Fleet Ops administrator. Enforced by `.cortex/skills/install-fleet-apps/scripts/check_verb_js_globals.py` via `.githooks/pre-commit`. The apps' own `ui/src` is browser code and is deliberately out of scope - the SA app's `lib/deep-link.ts` uses `URLSearchParams` correctly.
+- **Synapse verb procs need `IDEMPOTENCY_KEY ... DEFAULT NULL` + agents must be re-deployed after any bundle redeploy**: The Cortex Agent MCP server calls each verb with NAMED args and omits the optional `idempotency_key`, so the trailing proc arg MUST have `DEFAULT NULL` (emitted by `fleet_tools/vendor/synapse/src/build/ddl.ts`); without it Snowflake raises "named arguments [...] do not match any signature" before the body runs and the agent reports a generic "Error parsing response" with NO `VERB_ATTEMPT` row. Separately, `npx synapse deploy` does `CREATE OR REPLACE MCP SERVER`, so any `install_synapse_bundles.sh` run (even out-of-band) MUST be followed by `create_agents.sh <connection>` - the script uses `ALTER AGENT MODIFY LIVE VERSION SET SPECIFICATION` (which re-binds the mcp_servers key), then COMMITs a new named version and assigns the PRODUCTION alias. This preserves grants, evaluation history, and monitoring traces. The `--recreate` flag falls back to `CREATE OR REPLACE AGENT` for deliberate destructive resets. Invariant: every agent's last-committed version is newer than its MCP server's `created_on`. Full detail in `.cortex/skills/install-fleet-apps/references/synapse-bundles.md`.
+- **Agent versioning lifecycle (per the Snowflake best-practices guide for evaluating agents)**: `create_agents.sh` uses `ALTER AGENT` (not `CREATE OR REPLACE`) for existing agents because `CREATE OR REPLACE AGENT` is destructive - it drops every grant, destroys all evaluation runs, and wipes monitoring traces. Since the script must be re-run after every bundle deploy, using CREATE OR REPLACE would wipe eval history on a routine cadence, making scheduled evaluations and CI/CD quality gates pointless. The ALTER path: `ALTER AGENT MODIFY LIVE VERSION SET SPECIFICATION` then `COMMIT` then `MODIFY VERSION <name> SET ALIAS = PRODUCTION`. Grants survive ALTER, so the re-grant block in the script is a safety net rather than load-bearing. On a fresh install (agent does not exist), the script falls back to `CREATE AGENT`. The `--recreate` flag forces the destructive path when ownership or schema changes require it. `role_binding.sql` remains the single authoritative source for grants - keep the two in sync, and never widen `FLEET_SUPER_AGENT` beyond `FLEET_APP_ADMIN` (that grant is the Tenet 3 boundary). Invariant: `SHOW GRANTS ON AGENT <name>` must return a `USAGE` row, not `OWNERSHIP` alone. Verifying a role cannot reach an agent needs `USE SECONDARY ROLES NONE`, or a secondary `ACCOUNTADMIN` silently authorizes the call.
+- **`COMMIT` consumes the live version, and Snowflake does NOT recreate it - so every deploy path must end with `ADD LIVE VERSION FROM LAST`**: Snowsight's agent chat targets DRAFT, and DRAFT *is* the live version, so a committed-only agent answers every Snowsight question with `399535 ... Version 'live' not found` while `SHOW AGENTS`, the PRODUCTION alias, the grants, and `DATA_AGENT_RUN` on the default version all look perfectly healthy. Because `create_agents.sh` must be re-run after every bundle deploy, the ALTER path (add live -> modify live -> COMMIT -> alias) used to strip the live version from ALL FOUR agents on a routine cadence; it was noticed only when a user tried the super agent in Snowsight. The script now re-adds a live version at the END of both paths (exception-absorbed, so a re-run is safe) and verifies the invariant per agent. **Invariant: every agent has BOTH a live version and a PRODUCTION-aliased named version.** Detection shape: the live version appears in `SHOW VERSIONS IN AGENT` as a row with a **NULL `name`** - not as a row named `LIVE` - which is also why the script's `COMMITTED_VER` parser filters on `name` truthiness.
+- **Agent evaluations follow the Snowflake best-practices guide**: orchestration model pinned to `claude-sonnet-4-6` (reproducible, matches the v3 metric judge); all system metrics pinned to `v3` (1M context, reduces overload on long traces, avoids the v1 judge deprecation); `tool_execution_accuracy` added where datasets carry `ground_truth_invocations` (fleet_agent, super_agent); baseline runs target `DEFAULT` (the committed version); scheduled runs target the `PRODUCTION` alias. Four daily evaluation tasks (`EVAL_SCHED_*`) in `FLEET_INTELLIGENCE.EVALS` are created SUSPENDED by default (`ENABLE_SCHEDULED_EVALS=1` to auto-resume). `scripts/check_agent_eval_thresholds.py` is the CI quality gate: it resolves each agent's newest run (via the `snow.ai.observability.run.name` attribute in `GET_AI_OBSERVABILITY_LOGS`, since `GET_AI_EVALUATION_DATA` requires a run name), reads that run, and exits non-zero on a threshold breach. It compares the **MEAN score per metric**, not individual records: thresholds are per-metric baselines, and per-record checking failed a healthy deployment (FLEET_SUPER_AGENT averaged 0.778 `tool_selection_accuracy` against a 0.40 gate while single records legitimately scored 0.20, producing 13 phantom breaches). An agent with no evaluation run at all is a FAILURE, not a skip - the earlier version skipped every agent when `--run` was omitted and still printed PASSED, gating nothing.
+- **The vendored synapse framework is SOURCE, built locally; `dist/` is not committed**: `fleet_tools/vendor/synapse` holds upstream `packages/synapse` source pinned to a SHA plus local patches (`patches/*.patch`), documented in `fleet_tools/vendor/synapse/VENDOR.md`. `install_synapse_bundles.sh` runs `npm install` + `npm run build` (and rebuilds when `src/` is newer than `dist/`) before any Snowflake call, then string-checks the built output for the two codegen patches. Never hand-edit `dist/` - edit `src/`, rebuild, and refresh the patch file. Note the repo-wide `build/` gitignore rule would silently swallow the framework's own `src/build/` directory; an explicit un-ignore exists for it in `.gitignore` and must not be removed.
 - **DIM_DATASETS bootstrap invariant (friction-log F4 fix, v1.1.58)**: `init.ts` MUST call `ensureUnifiedTables()` (from `server/studio/ensure-tables.ts`) BEFORE any `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` statement. The `V_*_CURRENT` views JOIN to `FLEET_INTELLIGENCE.CORE.DIM_DATASETS`, which is created by `ensureUnifiedTables`. On a fresh install no Studio job has ever run, so without the explicit ensure-tables call at boot start the views fail with "object does not exist" and every demo that reads through them silently breaks. Symmetrically: any SQL that ALTERs `SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET` (e.g. `extend-dim-fleet-hgv.sql`) MUST `DROP VIEW IF EXISTS V_DIM_FLEET_CURRENT` first, otherwise `ADD COLUMN` invalidates the view's declared column count and the next boot fails until the view is dropped manually.
 - **Agent Playground region awareness**: The control-app's Agent Playground sends `region`, `vehicle_type`, and the derived ORS `profile` on every `/api/agent/chat` call. The backend prepends a hidden context turn so the Cortex Agent defaults tool args to the active region/profile, and uses the same values as the local geometry-recovery re-execution defaults (no more hard-coded `California` / `driving-car`). Example chips are generated live by `GET /api/agent/examples` via `SNOWFLAKE.CORTEX.COMPLETE` per (region, vehicle); fallback is `config/agent-demos.json` on `ORS_SPCS_STAGE`. No caching - regenerated on every selection change (300 ms debounce).
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
+- **CARTO vector basemaps (never raster)**: both apps render the keyless CARTO **vector** style `https://basemaps.cartocdn.com/gl/positron-gl-style/style.json` via MapLibre GL JS (`basemap.tsx` in each app). Do NOT reintroduce the raster `light_all` PNG endpoint or a `/api/tiles` proxy: CARTO now requires an API key for raster, is retiring it, and stamps unkeyed raster tiles with an "API key required" watermark while still returning HTTP 200 (so the failure is invisible server-side). Three invariants: (1) **deck.gl owns the camera** - MapLibre is constructed `interactive: false` and mirrors deck's `viewState` via `jumpTo()`, so all fit/focus logic stays in `map-view.tsx` / `MapView.tsx`; (2) **the basemap is NOT a deck layer** - it is a sibling canvas beneath `<DeckGL>`, so never add it to a `layers` array; (3) **attribution must stay visible** (CARTO's free-tier condition) - MapLibre renders it from the style's TileJSON, so keep the default `AttributionControl` and never replace the source's `url` with an inline `tiles` array, which silently drops it. The browser fetches basemap assets directly, so no SPCS egress is required; the CARTO EAI stays attached, repointed at the vector hosts, only so a same-origin proxy could be reinstated.
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Engine-image fix verification (MANDATORY first post-deploy check)**: SPCS serves container images **by tag** and does **NOT re-pull an unchanged tag** on `ALTER SERVICE ... FROM SPEC` or SUSPEND/RESUME - it uses the node-cached image. So re-pushing the SAME tag with new code keeps the OLD container live, and `SYSTEM$GET_SERVICE_STATUS` still reports the (correct-looking) spec tag. Consequences: (1) every gateway/engine code change MUST bump to a **new** tag; (2) never trust "status shows new tag + READY" as proof the code is live - run a behavior probe. For the gateway, the probe is baked in: `routing_service.py` sets `GATEWAY_VERSION` (compiled into the image) and returns it via `OPENROUTESERVICE_APP.CORE.ORS_STATUS(region):gateway_version`. Workflow for a gateway fix: bump BOTH `ROUTING_REVERSE_PROXY_TAG` (image-versions.env + gateway YAML + guidelines) AND `GATEWAY_VERSION` to the same new value (`check_image_versions.sh` enforces they match) → build + push → `ALTER SERVICE ... FROM SPEC` → **run `bash scripts/verify_gateway_version.sh <connection>` FIRST**; it asserts the running `gateway_version` equals `ROUTING_REVERSE_PROXY_TAG` and fails loudly (with the "bump the tag" remedy) if SPCS served a cached image. One-liner: `SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):gateway_version::string;`.
+- **Two image repositories, and the committed service YAML image path is a TEMPLATE**: an account can legitimately hold both `OPENROUTESERVICE_APP.core.image_repository` and `FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY`. The 4 ENGINE images are pinned to the ORS repo unconditionally (`provision_engine.sh`) because the engine YAMLs under `openrouteservice_app/services/` reference that path literally and are never rewritten. The 2 APP images follow whatever `install_fleet_apps.sh` resolved at step 1 - and on a from-scratch install that is the FLEET repo, because the engine has not run yet so the ORS probe fails. Images split across two repos is therefore the expected steady state, NOT drift. Two rules follow. (1) **Never read the committed `fleet_*_app_service.yaml` image path as authoritative** - `deploy_fleet_*_app.sh` rewrites it from the resolved repo (lowercased, `.`->`/`) and hard-asserts the rendered spec before staging, so a mismatch between the file and the live service is normal. Verify with `DESCRIBE SERVICE`, not the file. (2) **Never hardcode a repo in a deploy path.** Both app deploy scripts used to default to the ORS repo when run standalone, which made the effective repo depend on the invocation path rather than account state: once the engine created the ORS repo, standalone redeploys pushed there and flipped the live service off the repo the installer had used, fragmenting one app's tags across both repos (observed on tib85385: `fleet_admin_app` v0.1.41 in FLEET, v0.1.42/43 in ORS). On a `--no-engine` account the same default failed outright at `snow spcs image-repository url`, since the ORS repo does not exist. `scripts/lib/resolve_image_repo.sh` is now the single resolver: an exported `IMAGE_REPO_SQL_NAME` (installer path) wins, else the repo the LIVE service's spec already points at (so a redeploy is sticky and an app never silently migrates repos mid-life), else FLEET, else ORS, else a hard failure with the remedy - never a guess. To deliberately move an app between repos, `crane copy` the exact image (preserves the digest, so SPCS serves identical content and no rebuild is needed) then redeploy once with `IMAGE_REPO_SQL_NAME=<target> SKIP_IMAGE=1`; the resolver picks up the new path from the rotated service on every subsequent deploy. **An individual image CANNOT be deleted**: the SPCS registry answers `DELETE .../manifests/<tag>` with 404 and `.../manifests/<digest>` with `405 UNSUPPORTED`, and the only Snowflake-side operation is `DROP IMAGE REPOSITORY` (the whole repo). So a superseded tag is a permanent orphaned blob - a storage cost with no functional effect - and the only cleanup is dropping a repo that no running service references.
 - **Object tracking**: Two tracking mechanisms - session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 - **REBUILD_GRAPHS management (Issue #59)**: Routing graphs are persisted on `@ORS_GRAPHS_SPCS_STAGE/<region>/` and MUST be reused across suspend/resume cycles. The `create_region_ors_service` proc probes the stage and sets `REBUILD_GRAPHS="false"` if graphs already exist. After first-time provisioning completes (`service_ready=true`), `PROVISION_REGION_WRAPPER` auto-calls `SET_REBUILD_GRAPHS_FLAG(region, 'false')` so the next resume is instant (~1-2 min). For forced rebuilds (PBF update / corruption), call `REBUILD_REGION_GRAPHS(region)`.
 - **Parallel graph load on resume**: `ors-config.yml` for every region sets `ors.engine.init_threads` via `WRITE_ORS_CONFIG` to `min(N_profiles, cap)` where cap is **2** for `S`, **4** for `L`, **8** for `XXL` (S-tier 2G heap OOMs above 2 parallel profile loads). Effective on the next suspend/resume cycle after the staged config is re-written (`REROLL_ORS_CONFIG_INIT_THREADS` on deploy, or any provision/re-provision).
 - **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed - the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **v1.1.0 unification**: there is NO global `ORS_SERVICE`/`VROOM_SERVICE` anymore - even the default region (`SanFrancisco`) is served by `ORS_SERVICE_SANFRANCISCO` + `VROOM_SERVICE_SANFRANCISCO` in `ORS_POOL_SANFRANCISCO`. The gateway resolves a missing/NULL `region` to the env var `DEFAULT_REGION_NAME` (default: `SanFrancisco`) so callers may still omit the argument; both omitted and explicit-region paths land on the same per-region service. Passing `region` is recommended in all multi-region payloads to be self-documenting and to avoid relying on the DEFAULT_REGION_NAME setting. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
-- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Only services *strictly involved in the active build* are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`, OR a row in `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS` with `STATUS IN ('PENDING','RUNNING')` (Data Studio synthetic-generation job). The contract:
+- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Services *strictly involved in the active build* AND regional services/pools that are *actively in use* (keep-warm) are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`, OR a row in `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS` with `STATUS IN ('PENDING','RUNNING')` (Data Studio synthetic-generation job). The contract:
   - `STAGE = 'DOWNLOADING'` → pin `DOWNLOADER`, `ORS_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
   - `STAGE IN ('CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')` → pin `ORS_SERVICE_<REGION>` and `ORS_POOL_<REGION>` to 0; `DOWNLOADER` returns to 14400 (the PBF is already on stage).
   - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
   - Studio (Data Studio) generation job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0. The control-app's `captureAndScaleUp()` performs this pinning in-process at job start and `scaleDown()` restores the captured baselines on every exit. `RECONCILE_AUTO_SUSPEND()` is the global safety net for the case where the control-app container restarts mid-run.
-  - All other times → the `routing_gateway_service` = `3600` (1h; it receives direct HTTP so its idle timer is real, and a shorter window collapses the shared core pool sooner), city/ORS + VROOM services = `14400` (4h; gateway-routed traffic does not reset their idle timer, so a shorter value risks mid-build/mid-use suspension - see `snowflake-scripting-guidelines.md`), per-region pools = `3600` (1h). `OPENROUTESERVICE_APP_COMPUTE_POOL` is `MIN_NODES=1 MAX_NODES=5` with `AUTO_SUSPEND_SECS=600` (unrelated to this invariant).
+  - **Keep-warm (recent routing activity)** → a region with a routing request in `OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG` within the keep-warm window (`FLEET_INTELLIGENCE.CORE.COST_SETTINGS.KEEPWARM_IDLE_MINUTES`, default 90 min) has its `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` pinned to 0. This is the counter-force to the SPCS native idle timer, which resets only on ingress / service-function connections and NOT on the gateway's service-to-service calls - so without keep-warm an actively-used region would suspend on its blind ~4h timer (and its pool 1h later, forcing an expensive graph reload) even while in use. The region is matched by `ORS_REQUEST_LOG.ORS_HOST` (`ors-service-<region>` / `vroom-service-<region>`) because the log's `REGION` column may be NULL. Once activity is older than the window, reconcile restores the finite defaults and the region suspends on its native timer.
+  - All other times (no active build AND no recent routing activity) → the `routing_gateway_service` = `3600` (1h; it receives direct HTTP so its idle timer is real, and a shorter window collapses the shared core pool sooner), city/ORS + VROOM services = `14400` (4h; gateway-routed traffic does not reset their idle timer, so a shorter value risks mid-build/mid-use suspension - see `snowflake-scripting-guidelines.md`), per-region pools = `3600` (1h). `OPENROUTESERVICE_APP_COMPUTE_POOL` is `MIN_NODES=1 MAX_NODES=5` with `AUTO_SUSPEND_SECS=600` (unrelated to this invariant).
   - The fleet control apps (`FLEET_SA_APP`, `FLEET_ADMIN_APP`) have public endpoints and therefore no `AUTO_SUSPEND_SECS` - they are excluded.
   - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
-  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%` against `REGION_PROVISION_JOBS`, `MATRIX_BUILD_JOBS`, AND `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
+  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%` against `REGION_PROVISION_JOBS`, `MATRIX_BUILD_JOBS`, `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS`, AND recent `ORS_REQUEST_LOG` activity (keep-warm). It is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`, and - critically for keep-warm - is invoked every cycle by `AUTO_HIBERNATE_IF_IDLE` (the hourly `AUTO_HIBERNATE_TASK`, which never self-suspends), so an actively-used region is re-pinned to 0 well within its 4h native timer. It is deliberately NOT hosted in `RESCUE_PENDING_PROVISIONS_TASK` because that task self-suspends when there is no provisioning work - exactly when keep-warm is needed. Safe to call at any time. A service showing `AUTO_SUSPEND_SECS=0` while RUNNING is therefore an expected steady state (build or keep-warm), not drift - the app UIs label it "no-suspend", not a warning.
 - **v1.1.4 default-sentinel retirement**: The legacy `region:'default'` sentinel returned by `/api/regions/provisioned` was retired. `LIST_REGIONS()` now returns SanFrancisco as a regular row in `REGION_ORS_MAP` (with new `IS_DEFAULT BOOLEAN` column, seeded `TRUE` for the canonical default). The control-app server no longer synthesizes a `region:'default'` entry, no longer makes 0-arg `ORS_STATUS()` calls, and no longer special-cases `'default'` in studio job pool scaling, ors-readiness, or stage probing. The `isDefault` boolean is preserved as a pure UI hint (dropdown auto-selection + "(Default)" badge) but is decoupled from SQL routing. Inbound API requests passing `'default'` or empty region are still resolved at the gateway boundary via `normalizeRegion()` -> `DEFAULT_REGION_NAME`, but internal contracts assume real region keys.
 - **Dataset versioning (Studio runs are non-destructive)**: Each Data Studio run is recorded as an immutable dataset in `FLEET_INTELLIGENCE.CORE.DIM_DATASETS` keyed by `JOB_ID`. At most ONE row per `(REGION, VEHICLE_TYPE)` has `IS_ACTIVE = TRUE`. Re-running Studio for the same `(REGION, VEHICLE_TYPE)` does NOT delete prior `DIM_*` / `FACT_OFFERS` / `DIM_PARTNERS` / `FACT_PARTNER_HISTORY` rows - the prior `DIM_DATASETS` row is just flipped to `IS_ACTIVE = FALSE` and a new row is inserted as active (`archivePriorDatasets()` in `server/studio/jobs.ts`). All downstream consumers MUST read from dataset-scoped projection views and never from base tables directly: `SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_FACT_OFFERS_CURRENT`, `V_DIM_PARTNERS_CURRENT`, `V_FACT_PARTNER_HISTORY_CURRENT`, `V_FACT_TRIPS_CURRENT`, `V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`, plus app-scoped `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT` and `FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT`. Intentional exceptions that still read from base tables: `RATE_INDEX` dynamic table (market-rate signal across all data), `region-sync.ts` / `regions/lifecycle.ts` (telemetry hull derivation wants full spatial coverage). Old datasets are deleted only via the explicit `DELETE /api/studio/datasets/:id` endpoint (Studio Datasets panel "Delete" button) - there is NO auto-prune. The legacy destructive `clearRegionScope()` helper is retained but is now invoked only from this endpoint, never from a generation run. On a `FAILED` run that produced 0 rows, `revertArchivePriorDatasets()` removes the new `DIM_DATASETS` row and re-activates the most recent prior dataset, so a failed empty run never replaces the active one. The Studio Datasets panel UI lists every dataset with row counts and per-row Activate / Rename / Delete buttons; Delete is refused with HTTP 409 if the target is the only dataset in its scope.
 
@@ -400,6 +1179,11 @@ t.DESTINATION   -- trip destination
 - Bounding-box configs (REGION_REGISTRY, city provisioner)
 - `CLUSTER BY` expressions (GEOGRAPHY not supported in CLUSTER BY)
 - Direct deck.gl `getPosition` callbacks expecting `[Number, Number]`
+
+- **A slow solve is an APP-path problem, not an agent-path problem - do not "fix" the agent path.** Measured server-side (`ensemble`, SanFrancisco, `TOTAL_ELAPSED_TIME`): the DEFAULT `backload_solve` parameters (20 vehicles / 120 loads) take **38.1s**, 40/200 takes 54.8s, 60/300 takes 78.8s, 100/300 takes 89.2s and 100/500 takes **168.6s**. The SA app could never wait that long - `lib/snowflake.ts` `pollResult` gives up at 30x2s = **60s**, the statement carries `timeout: 80`, and that 80 exists to stay under the ~90s SPCS ingress limit - so the DEFAULT configuration already spent 63% of the budget and anything past ~40 vehicles / 200 loads returned "Statement timed out" rather than a plan. Meanwhile `backload-matching.tsx` set `BM_SOLVE_TIMEOUT_MS = 180_000`, i.e. the page was built to wait 3x longer than the server could ever allow. Raising the bound cannot fix this (ingress caps the request below the measured 168.6s), so solver routes submit **async** (`submitAsync`, no `timeout` field - adding one reinstates the ceiling) and wait inline 45s before handing back a `solve_key` to poll. **The Cortex Agent path needed NOTHING**: measured, an agent tool call ran a **270.1s** solve to SUCCESS, so there is no MCP-side ceiling to work around and a paired "poll for the result" verb would be pure speculative complexity. Verify before adding one.
+- **`verb_attempt` is a double-execution GUARD, not a result cache - never retry a solve by reusing its idempotency key.** The table stores only a `result_hash`, and a replayed call returns literally `{"replayed": true, "result_hash": "08ef79..."}` with **no payload** (verified against a live account). So a client that retries with the same `idempotency_key` to "get the result again" receives a hash and zero routes, which renders as an empty plan rather than an error. `/api/tool` now detects `replayed === true` and returns 409 `IDEMPOTENT_REPLAY` instead of passing the marker off as a solve. Durable results live in `FLEET_INTELLIGENCE.CORE.SOLVE_RESULTS`, keyed by a hash of the verb + args, which is what makes a solve collectable by a reopened tab, a second dispatcher, or a later agent turn - a statement handle alone is session state and cannot do that.
+
+- **Deploy any JavaScript procedure with `snow sql --enable-templating NONE`, or `&&` silently becomes `&`.** `snow sql` defaults to `LEGACY,STANDARD` templating; LEGACY is SnowSQL `&var` substitution, in which `&&` is the ESCAPE for a literal `&`. Deploying a JS proc without the flag therefore rewrites every LOGICAL AND into a BITWISE AND. Bitwise `&` does not short-circuit, so every null guard of the shape `a && a.b` evaluates `a.b` even when `a` is null. Measured: `routing-agent/references/deploy-agent.sql` holds 75 `&&`, and the deployed `TOOL_BACKLOAD_SOLVE` had **0 `&&` and 25 bare `&`** - `(resp && resp.routes && resp.routes.length)` had become `(resp & resp.routes & ...)`. Symptom: `backload_solve` with `max_loads >= ~600` returned `{"error":"unknown error","reason":"ERROR"}` after 8.5s, because the guard threw `Cannot read properties of null (reading 'routes')` whenever the solver legitimately returned null - while the verb description tells the agent `max_loads` is "clamped to 1000", i.e. it invited the failure. This shipped on EVERY install: `install_fleet_apps.sh` deployed the substrate without the flag, corrupting 8 of the 9 JS `TOOL_*` procs (`TOOL_BACKLOAD_CHAIN_SOLVE` alone has 29 such guards). With the flag, `max_loads` 600 AND the documented maximum of 1000 both return SUCCESS. The repo already used `--enable-templating NONE` in 13 places but justified it only as "authored prose contains ampersands" - the JS operator corruption is the far more dangerous case, because prose renders wrong while a broken guard is a latent null-dereference. Enforced by `scripts/check_js_proc_templating.py`.
 
 ## Documentation
 

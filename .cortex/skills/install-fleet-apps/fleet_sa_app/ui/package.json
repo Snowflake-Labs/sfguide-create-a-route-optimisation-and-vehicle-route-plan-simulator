@@ -6,10 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "verify:charts": "tsx scripts/verify-chart-spec.mts",
+    "verify:views": "tsx scripts/verify-app-views.mts"
   },
   "dependencies": {
-    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
     "@deck.gl/aggregation-layers": "~9.2.11",
     "@deck.gl/core": "~9.2.11",
     "@deck.gl/extensions": "~9.2.11",
@@ -18,14 +19,19 @@
     "@deck.gl/mesh-layers": "~9.2.11",
     "@deck.gl/react": "~9.2.11",
     "@deck.gl/widgets": "~9.2.11",
+    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
     "h3-js": "^4.1.0",
     "js-yaml": "^4.1.1",
+    "maplibre-gl": "^5.14.0",
     "next": "^15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.0",
     "recharts": "^2.15.4",
     "remark-gfm": "^4.0.0",
+    "vega": "^5.33.1",
+    "vega-interpreter": "^2.3.2",
+    "vega-lite": "^5.23.0",
     "zundo": "^2.3.0",
     "zustand": "^5.0.0"
   },
@@ -37,6 +43,7 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.3.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.0"
   }
 }

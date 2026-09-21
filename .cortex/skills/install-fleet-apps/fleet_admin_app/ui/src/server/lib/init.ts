@@ -1,12 +1,11 @@
 // Boot-time idempotent init for Backload Matching (BACKLOAD_MATCHING schema +
 // projection views over UNIFIED) and Asset Velocity (ROUTE_OPTIMIZATION views
-// over DWELL_ANALYSIS DTs). Mirrors the contents of:
+// over the installer's FLEET_APP.DWELL view chain). Mirrors the contents of:
 //   .cortex/skills/backload-matching/references/bootstrap.sql
 //   .cortex/skills/route-optimization/references/asset-velocity-views.sql
 // so a fresh install of install-fleet-apps makes both demos work without
 // requiring a manual `snow sql -f` step.
 
-import { currentRegionScalar } from './region';
 import { log } from '../diagnostics';
 import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables';
 import { ensureVehicleProfileCatalog } from '../studio/vehicle-profile-catalog';
@@ -50,29 +49,41 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_VEHICLES
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        last_session AS (
+        WITH last_session AS (
           SELECT
             e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID, e.LOCATION_NAME,
             e.CITY, e.FACILITY_TYPE, e.LOC_TYPE, e.SESSION_START, e.SESSION_END,
             e.DWELL_MINUTES, e.AVG_POINT, e.HOME_BASE_NAME, e.OPERATING_MODE,
             e.DRIVER_PROFILE,
             ROW_NUMBER() OVER (PARTITION BY e.VEHICLE_ID ORDER BY e.SESSION_END DESC) AS RN
-          FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED e
+          -- Dwell sessions come from the INSTALLER's own view chain
+          -- (FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY -> VW_STATE_CHANGES ->
+          -- VW_SESSIONS_RAW -> VW_DWELL_SESSIONS), created by the fleet/dwell
+          -- pack, so Asset Velocity works on every standard install.
+          --
+          -- Do NOT point this back at FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_*.
+          -- Those dynamic tables compute the same thing but are owned by the
+          -- SEPARATE, OPT-IN dwell-analysis skill, so on an account that only
+          -- ran the installer they do not exist and this whole view was skipped
+          -- - the page then rendered empty with no error anywhere. SV_DWELL
+          -- already treats VW_DWELL_SESSIONS as the canonical dwell source, so
+          -- this keeps the semantic layer and the page on one source.
+          --
+          -- Tradeoff: this chain sessionizes telemetry on every read rather than
+          -- reading a materialized table. If that becomes too slow, materialize
+          -- it inside the installer; do not reintroduce the optional dependency.
+          FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS e
           WHERE (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
             AND COALESCE(UPPER(e.STATUS), '') NOT LIKE '%MAINTENANCE%'
             AND COALESCE(UPPER(e.DRIVER_PROFILE), 'COMPLIANT') <> 'OUTLIER'
         ),
         fleet AS (
           SELECT f.VEHICLE_ID, f.REGION, f.HOME_LOCATION_ID, f.DRIVER_PROFILE
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
-          WHERE f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND f.REGION       = cfg.REGION
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
         )
         SELECT
           ls.VEHICLE_ID, f.REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)                                     AS REGION_LABEL,
           ls.LOCATION_ID                                                            AS LAST_LOCATION_ID,
           ls.LOCATION_NAME                                                          AS LAST_LOCATION_NAME,
           ls.LOC_TYPE                                                               AS LAST_LOCATION_TYPE,
@@ -95,21 +106,16 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        window_bounds AS (
-          SELECT MAX(t.TRIP_START) AS MAX_TS
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, cfg
-          WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND t.REGION       = cfg.REGION
+        WITH window_bounds AS (
+          SELECT t.REGION, MAX(t.TRIP_START) AS MAX_TS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+          GROUP BY t.REGION
         ),
         recent_trips AS (
           SELECT t.*
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, window_bounds w, cfg
-          WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
-            AND t.REGION       = cfg.REGION
-            AND t.TRIP_START   >= DATEADD('day', -30, w.MAX_TS)
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+          JOIN window_bounds w ON w.REGION = t.REGION
+          WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
         ),
         flows AS (
           SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
@@ -125,6 +131,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
         SELECT
           p.LOCATION_ID                                       AS TERMINAL_ID,
           p.REGION,
+          FLEET_APP.CORE.REGION_LABEL(p.REGION)               AS REGION_LABEL,
           p.NAME                                              AS TERMINAL_NAME,
           p.LOCATION_TYPE,
           p.POINT_GEOM                                        AS TERMINAL_GEOM,
@@ -145,13 +152,9 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_VEHICLE_PROFILE
         COMMENT = ${TRACK_RO_AV}
         AS
-        WITH cfg AS (
-          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        ),
-        filtered AS (
+        WITH filtered AS (
           SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
-          WHERE f.REGION = cfg.REGION AND f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
           QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
         )
         SELECT
@@ -209,9 +212,9 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
 }
 
 // Lazy self-heal for the Asset Velocity page. Called at boot AND by
-// POST /api/asset-velocity/ensure. Gated on DWELL_ANALYSIS.DT_DWELL_ENRICHED
-// existing (Snowflake validates referenced objects at CREATE VIEW time), so on
-// a fresh install where dwell-analysis is deployed AFTER the container boots,
+// POST /api/asset-velocity/ensure. Gated on the fleet/dwell pack's
+// FLEET_APP.DWELL.VW_DWELL_SESSIONS existing (Snowflake validates referenced
+// objects at CREATE VIEW time), so on a boot that races the packs install step
 // the first page visit recreates the views without a restart. Log-only; never
 // throws to the caller.
 export async function ensureAssetVelocityViews(
@@ -242,15 +245,23 @@ export async function ensureAssetVelocityViews(
     log('WARN', 'Init', `asset-velocity CONFIG guard failed: ${e?.message?.slice(0, 200)}`);
   }
 
-  // Gate on the dwell-analysis dependency. If absent, skip cleanly so the page
-  // keeps its empty state instead of surfacing a SQL error.
+  // Gate on the dwell dependency. This probes the INSTALLER's dwell view, which
+  // the fleet/dwell pack always creates (packs are install step 4, apps step 7,
+  // so it normally exists well before boot). It still skips cleanly rather than
+  // throwing, because the pack can legitimately be absent - SKIP_PACKS=1, or a
+  // boot racing the packs step - and the page should keep its empty state
+  // instead of surfacing a SQL error.
+  //
+  // This used to probe FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED,
+  // which belongs to the optional dwell-analysis skill. That made the whole page
+  // silently dead on every install that did not also run that separate skill.
   try {
     await sqlFn(
-      `SELECT 1 FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED LIMIT 1`,
-      'FLEET_INTELLIGENCE', 'DWELL_ANALYSIS',
+      `SELECT 1 FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS LIMIT 1`,
+      'FLEET_APP', 'DWELL',
     );
   } catch {
-    return { ensured: false, reason: 'dwell-not-deployed' };
+    return { ensured: false, reason: 'dwell-pack-not-installed' };
   }
 
   for (const { sql, db, schema } of assetVelocityStmts()) {
@@ -330,6 +341,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    // Dispatch state (ghost window). See the DIM_FLEET CREATE TABLE in
+    // studio/ensure-tables.ts for why this is persisted. Legacy rows stay NULL,
+    // which the dwell contract treats as "unknown, assume dispatched" so an
+    // un-regenerated dataset keeps its current behaviour rather than silently
+    // reclassifying every vehicle as parked.
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS IS_GHOST BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_START_DAY INT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_END_DAY INT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     // Recreate V_DIM_FLEET_CURRENT right after the ADD COLUMN migration that
     // dropped it (line above). This is the SAME canonical definition used by
     // the main V_*_CURRENT projection block further down - kept here (earlier)
@@ -387,6 +406,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
         WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
           VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.PAYLOAD_KG_TYP, src.PAYLOAD_KG_MAX, src.SHIPMENT_KG_MIN, src.SHIPMENT_KG_MAX, src.AVG_SPEED_KMH, src.COST_EUR_PER_KM, src.COST_EUR_PER_HR, src.ENFORCE_BREAK, src.HOME_RANGE_KM, src.LABEL_NOUN)`,
       db: 'OPENROUTESERVICE_APP', schema: 'CORE',
+    },
+    {
+      // SOLVE_RESULTS. Also in scripts/seed_data.sql for fresh installs; created
+      // here so an ALREADY-DEPLOYED account gets it on the next restart rather
+      // than needing a reinstall.
+      //
+      // Solves exceed what the SA app can wait for. Measured server-side
+      // (`ensemble`, SanFrancisco): the DEFAULT 20 vehicles / 120 loads takes
+      // 38.1s, 40/200 takes 54.8s, 100/500 takes 168.6s - against a transport
+      // that gives up at 60s and a statement capped at 80s to stay under the
+      // ~90s SPCS ingress limit. Slow solves are therefore submitted async and
+      // land here.
+      //
+      // Not reusable from the verb audit table: `verb_attempt` stores only a
+      // result_hash and an idempotent replay returns
+      // `{"replayed": true, "result_hash": "..."}` with no payload, so it cannot
+      // serve a result to a caller that reconnects.
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.SOLVE_RESULTS (
+        SOLVE_KEY        VARCHAR       NOT NULL PRIMARY KEY,
+        VERB             VARCHAR,
+        STATEMENT_HANDLE VARCHAR,
+        STATUS           VARCHAR       NOT NULL,
+        RESULT           VARIANT,
+        ERROR_MESSAGE    VARCHAR,
+        ACTOR            VARCHAR,
+        PARAMS_JSON      VARIANT,
+        SUBMITTED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        COMPLETED_AT     TIMESTAMP_NTZ
+      ) COMMENT = ${TRACK}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'CORE',
     },
     {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING COMMENT = ${TRACK}`,
@@ -451,20 +500,30 @@ export async function ensureBackloadAndAssetVelocityObjects(
         COMMENT = ${TRACK}
         AS
         WITH last_drop AS (
+          -- Picks the latest trip ROW per vehicle rather than aggregating each
+          -- column independently. MAX_BY cannot take a GEOGRAPHY argument
+          -- (measured: "Invalid argument types for function 'MAX_BY':
+          -- (GEOGRAPHY, TIMESTAMP_NTZ)"), so carrying the stored DESTINATION
+          -- geometry requires a row pick. It is also strictly safer than the
+          -- per-column MAX_BY it replaces: on a TRIP_END tie those could each
+          -- resolve to a DIFFERENT trip and yield a lon/lat pair that belongs
+          -- to no single drop-off. Verified to return the same 100 vehicles and
+          -- the same coordinates as the MAX_BY form.
           SELECT VEHICLE_ID,
-                 MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
-                 MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
-                 MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
-                 MAX(TRIP_END) AS LAST_TRIP_END
+                 DESTINATION_LON    AS DROPOFF_LON,
+                 DESTINATION_LAT    AS DROPOFF_LAT,
+                 DESTINATION        AS DROPOFF_GEOM,
+                 DESTINATION_POI_ID AS DROPOFF_POI_ID,
+                 TRIP_END           AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-          GROUP BY VEHICLE_ID
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
         ),
+        -- Home anchor is grouped BY REGION. Averaging POI coordinates across two
+        -- regions puts the fallback depot in the ocean between them.
         home_anchor AS (
-          SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
+          SELECT REGION, AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          GROUP BY REGION
         ),
         -- Collapse DIM_POIS to one row per LOCATION_ID. The base table can have
         -- multiple rows per LOCATION_ID (POI name variants, regen overlap),
@@ -474,9 +533,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME,
                  ANY_VALUE(LAT)  AS LAT,
-                 ANY_VALUE(LNG)  AS LNG
+                 ANY_VALUE(LNG)  AS LNG,
+                 ANY_VALUE(POINT_GEOM) AS POINT_GEOM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         -- Collapse DIM_FLEET to one row per VEHICLE_ID for the same reason
@@ -488,40 +547,54 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  ANY_VALUE(HOME_LOCATION_ID)   AS HOME_LOCATION_ID,
                  ANY_VALUE(BATTERY_RANGE_KM)   AS BATTERY_RANGE_KM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
-        ),
-        -- Resolve the active vehicle_type to its class profile. If the
-        -- vehicle_type isn't in VEHICLE_CLASS_PROFILE the JOIN returns 0 rows
-        -- so the view is empty - the React page surfaces this as a precise
-        -- "Unknown vehicle_type - add a row to VEHICLE_CLASS_PROFILE" error.
-        cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
           f.REGION                                            AS OPERATING_COUNTRY,
+          f.REGION                                            AS REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)               AS REGION_LABEL,
           COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
-          COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
-          COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+          COALESCE(h.LNG, ha.HOME_LON)                        AS HOME_LON,
+          COALESCE(h.LAT, ha.HOME_LAT)                        AS HOME_LAT,
+          -- The depot POI's stored point where there is one. The region-average
+          -- fallback has no stored geometry (it is an AVG of many POIs), so it
+          -- is still constructed - and only in that fallback case.
+          COALESCE(h.POINT_GEOM, ST_MAKEPOINT(ha.HOME_LON, ha.HOME_LAT)) AS HOME_GEOM,
           f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
-          COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+          -- A location NAME or nothing. These *_CITY values are read straight
+          -- into the agent's answer and onto the backload map as stop labels, so
+          -- a placeholder like 'Drop-off' or 'Origin' reads as a real place and
+          -- the reader cannot tell it apart from one. 16.2% of trips (2807 of
+          -- 17342) point at a POI id outside the ACTIVE dataset, so this fires
+          -- often and is a genuine gap, not a formatting nicety. NULL says
+          -- "unknown" honestly; consumers already fall back to blank.
+          d.NAME                                              AS DROPOFF_CITY,
           ld.DROPOFF_LON                                      AS DROPOFF_LON,
           ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+          ld.DROPOFF_GEOM                                     AS DROPOFF_GEOM,
           ld.LAST_TRIP_END                                    AS ETA_TS,
           DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
           'IN_TRANSIT'                                        AS STATUS,
           FALSE                                               AS HAZMAT_CERT,
-          (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+          -- Synthetic equipment fit. Assigned deterministically per vehicle from
+          -- the same vocabulary the offer pool uses, so ENFORCE_EQUIPMENT_FIT is
+          -- demonstrable end to end. Seeded OFF: a real fleet supplies this from
+          -- its own asset master, and gating on a fabricated value would reject
+          -- real loads for no reason.
+          ARRAY_CONSTRUCT('TAUTLINER','BOX','REEFER','MEGA','FLATBED')[
+            MOD(ABS(HASH(f.VEHICLE_ID)), 5)]::VARCHAR         AS VEHICLE_EQUIPMENT,
+          c.PAYLOAD_KG_TYP::NUMBER                            AS MAX_PAYLOAD_KG,
           NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
         FROM fleet f
         JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+        -- Class profile resolved per VEHICLE, not from one CONFIG value, so a
+        -- mixed-mode fleet gets the right payload band. An unknown vehicle_type
+        -- drops that vehicle (what the old EXISTS-on-cls guard did globally).
+        JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = f.VEHICLE_TYPE
+        LEFT JOIN home_anchor ha ON ha.REGION = f.REGION
         LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)`,
+        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -535,7 +608,6 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         trips AS (
@@ -545,53 +617,132 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- VROOM shipments under different INT-NNNNN ids.
           SELECT t.TRIP_ID,
                  t.TRIP_START,
+                 t.REGION, t.VEHICLE_TYPE,
                  t.ORIGIN_LON, t.ORIGIN_LAT,
                  t.DESTINATION_LON, t.DESTINATION_LAT,
+                 -- FACT_TRIPS stores ORIGIN/DESTINATION as GEOGRAPHY alongside
+                 -- the numerics; carry them so the internal pool can hand a
+                 -- real geometry to VW_LOADS instead of making it rebuild one.
+                 t.ORIGIN, t.DESTINATION,
                  t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
-          WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-            AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
         ),
-        cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-        )
-        SELECT
-          'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
-          COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
-          t.ORIGIN_LON                                                                AS PICKUP_LON,
-          t.ORIGIN_LAT                                                                AS PICKUP_LAT,
-          COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
-          t.DESTINATION_LON                                                           AS DROPOFF_LON,
-          t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-          -- Future-aware pickup window: anchor at "now + 30..630 min" so the
-          -- vehicle's shift (which can never start in the past) can always
-          -- overlap. Old behaviour anchored at TRIP_START which is in the past
-          -- on fresh installs and produced no overlap with the shift window.
-          GREATEST(
-            t.TRIP_START,
-            DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
-          )                                                                           AS PICKUP_FROM_TS,
-          DATEADD(hour, 4,
+        p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4)    AS LEAD_DAYS,
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_POOL_CAP',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5000) AS POOL_CAP,
+            COALESCE(MAX(IFF(PARAM_KEY='INTERNAL_LOADS_PER_TRAILER', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LOADS_PER_TRAILER,
+            -- Spread pickups over the horizon the CONSUMERS filter on. See the
+            -- long note on PICKUP_FROM_TS below.
+            GREATEST(
+              COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+              COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+            )                                                                                         AS PICKUP_SPREAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Fleet population per region. Same basis as the FLEET_APP copy of this
+        -- view in packs/fleet/backload_matching/data-model.yaml - keep the two in
+        -- step, this file is the RUNTIME owner and overwrites on every boot.
+        fleet_size AS (
+          SELECT REGION, COUNT(DISTINCT VEHICLE_ID) AS TRAILERS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+          GROUP BY REGION
+        ),
+        -- Same-lane same-weight dedupe, applied BEFORE the pool bound. The app
+        -- used to do this in the browser, so the number on screen was smaller
+        -- than the pool the solver got and no SQL consumer benefited. Deduping
+        -- after the bound would reproduce that gap, since duplicates would
+        -- consume rank slots and leave the pool under its target.
+        deduped AS (
+          SELECT
+            -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+            o.NAME                                                                      AS PICKUP_CITY,
+            t.ORIGIN_LON                                                                AS PICKUP_LON,
+            t.ORIGIN_LAT                                                                AS PICKUP_LAT,
+            t.ORIGIN                                                                    AS PICKUP_GEOM,
+            d.NAME                                                                      AS DROPOFF_CITY,
+            t.DESTINATION_LON                                                           AS DROPOFF_LON,
+            t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
+            t.DESTINATION                                                               AS DROPOFF_GEOM,
+            -- Future-aware pickup window, spread across PICKUP_SPREAD_DAYS - the
+            -- wider of PLANNING_LEAD_DAYS and MAX_PICKUP_HORIZON_DAYS - rather
+            -- than the next ~10 hours. Vehicle availability is now forward-looking
+            -- too (VW_TRAILERS_GEO), so a pickup pool bunched into today would be
+            -- reachable only by the handful of vehicles free today and would
+            -- silently starve every later vehicle of candidates.
+            --
+            -- The spread must be the CONSUMER's horizon, not the lead time.
+            -- MEASURED with a 4-day spread: all 1,100 pool rows sat inside
+            -- now..now+4d, and because VW_TRIANGLES requires a hop-2 pickup at or
+            -- after the hop-1 delivery ETA - which lands at the far end of that
+            -- same window after 500-1,000 km of loaded running - VW_TRIANGLES was
+            -- empty ACCOUNT-WIDE. On UnitedStatesOfAmerica, 9 of 10,990 pairs
+            -- cleared both geometry filters and all 9 missed the sequence check by
+            -- 8 to 106 hours. MAX_PICKUP_HORIZON_DAYS (7) is what VW_CANDIDATES
+            -- and VW_TRIANGLES already permit, so generate out to it.
+            --
+            -- Kept UNIFORM rather than shifted later, so ~4/7 of pickups still
+            -- fall inside the old window and near-term single-hop candidates are
+            -- not traded away for chains.
             GREATEST(
               t.TRIP_START,
-              DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
-            )
-          )                                                                           AS PICKUP_TO_TS,
-          -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
-          (
-            (SELECT SHIPMENT_KG_MIN FROM cls)
-            + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
-          )::NUMBER                                                                   AS WEIGHT_KG,
-          'B2B pallets'                                                               AS PRODUCT,
-          FALSE                                                                       AS HAZMAT
-        FROM trips t
-        LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)
-        QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
+              DATEADD('minute',
+                MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
+            )                                                                           AS PICKUP_FROM_TS,
+            DATEADD(hour, 4,
+              GREATEST(
+                t.TRIP_START,
+                DATEADD('minute',
+                  MOD(ABS(HASH(t.TRIP_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
+                  CURRENT_TIMESTAMP())
+              )
+            )                                                                           AS PICKUP_TO_TS,
+            -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
+            (
+              c.SHIPMENT_KG_MIN
+              + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0)
+            )::NUMBER                                                                   AS WEIGHT_KG,
+            'B2B pallets'                                                               AS PRODUCT,
+            FALSE                                                                       AS HAZMAT,
+            t.REGION                                                                    AS REGION,
+            t.TRIP_START                                                                AS TRIP_START,
+            COALESCE(fs.TRAILERS, 0)                                                    AS TRAILERS
+          FROM trips t
+          -- Class band resolved from the TRIP's own vehicle type. An unknown
+          -- vehicle_type drops those trips, which is what the old global
+          -- EXISTS-on-cls guard did for the single active type.
+          JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
+          LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
+          LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+          LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
+          QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY t.REGION,
+                                 t.ORIGIN_LON, t.ORIGIN_LAT,
+                                 t.DESTINATION_LON, t.DESTINATION_LAT,
+                                 (c.SHIPMENT_KG_MIN
+                                  + ABS(HASH(t.TRIP_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))
+                    ORDER BY t.TRIP_START DESC) = 1
+        )
+        SELECT
+          'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY TRIP_START)::VARCHAR, 5, '0') AS ID,
+          PICKUP_CITY, PICKUP_LON, PICKUP_LAT, PICKUP_GEOM,
+          DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, DROPOFF_GEOM,
+          PICKUP_FROM_TS, PICKUP_TO_TS,
+          WEIGHT_KG, PRODUCT, HAZMAT
+        FROM deduped
+        -- Pool size derived from the fleet, not truncated to a constant. See the
+        -- long note on the FLEET_APP copy: a flat INTERNAL_POOL_CAP made this
+        -- count the CAP in a busy region (16,535 SanFrancisco trips -> exactly
+        -- 5,000) and the TRUE trip count in a quiet one (332 Europe). The cap is
+        -- now an absolute ceiling only. GREATEST(1, ...) keeps a region with
+        -- trips but no countable vehicles from emptying the page.
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY TRIP_START DESC)
+                <= LEAST(
+                     (SELECT POOL_CAP FROM p),
+                     GREATEST(1, CEIL(TRAILERS * (SELECT LOADS_PER_TRAILER FROM p)))
+                   )`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -621,7 +772,6 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
         offers AS (
@@ -630,49 +780,124 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- newest by POSTED_AT (and PICKUP_FROM_TS as tiebreaker).
           SELECT *
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
-          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           QUALIFY ROW_NUMBER() OVER (
             PARTITION BY OFFER_ID
             ORDER BY POSTED_AT DESC NULLS LAST, PICKUP_FROM_TS DESC NULLS LAST
           ) = 1
         ),
+        -- Each region's class band is resolved through that region's OWN active
+        -- dataset, since an offer carries a REGION but no VEHICLE_TYPE.
+        reg_vt AS (
+          SELECT REGION, VEHICLE_TYPE
+          FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+          WHERE IS_ACTIVE
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION ORDER BY CREATED_AT DESC) = 1
+        ),
         cls AS (
-          SELECT vcp.*
-          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
-          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          SELECT rv.REGION, vcp.*
+          FROM reg_vt rv
+          JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+            ON vcp.VEHICLE_TYPE = rv.VEHICLE_TYPE
+        ),
+        p AS (
+          -- Same spread as the internal pool: an external offer is a legitimate
+          -- hop-2 (cascade rungs 2 and 4), so rebasing every offer into the next
+          -- few days leaves it unable to follow a hop-1 delivery.
+          SELECT GREATEST(
+                   COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS',       TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4),
+                   COALESCE(MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 7)
+                 ) AS PICKUP_SPREAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Rebase each offer's pickup window onto the live planning horizon,
+        -- preserving its own window LENGTH. The generated timestamps are
+        -- relative to generation time, so on any dataset older than a day they
+        -- are already in the past - and once vehicle availability became
+        -- forward-looking, a past pickup can never be served, which would empty
+        -- the external half of the pool without any error.
+        shifted AS (
+          SELECT
+            f.* EXCLUDE (SOURCE, LISTING_TEXT),
+            -- CHANNEL REMAP, idempotent. Already-generated rows carry
+            -- SOURCE='INTERNAL' from a four-label round robin (measured 75 of
+            -- 300 external offers), and EVERY row in this view is external - it
+            -- reaches VW_LOADS with IS_INTERNAL=FALSE. The literal therefore
+            -- made internal-vs-external unreadable from SOURCE while looking
+            -- perfectly well-formed. The generator no longer emits it; this
+            -- repairs rows already on disk so no dataset needs regenerating.
+            -- LISTING_TEXT is a STORED string here (not derived), and it is fed
+            -- to AISQL and quoted in agent prose, so its leading channel token
+            -- is rewritten too.
+            IFF(f.SOURCE = 'INTERNAL', 'BROKER', f.SOURCE) AS SOURCE,
+            IFF(LEFT(f.LISTING_TEXT, 9) = 'INTERNAL ',
+                'BROKER' || SUBSTR(f.LISTING_TEXT, 9),
+                f.LISTING_TEXT) AS LISTING_TEXT,
+            GREATEST(
+              f.PICKUP_FROM_TS,
+              DATEADD('minute',
+                MOD(ABS(HASH(f.OFFER_ID)), GREATEST(1, ((SELECT PICKUP_SPREAD_DAYS FROM p) * 1440)::INT)) + 30,
+                CURRENT_TIMESTAMP())
+            ) AS PICKUP_FROM_TS_ADJ,
+            GREATEST(60, COALESCE(DATEDIFF('minute', f.PICKUP_FROM_TS, f.PICKUP_TO_TS), 240)) AS WINDOW_MIN
+          FROM offers f
         )
         SELECT
           f.OFFER_ID,
           f.SOURCE,
+          -- SOURCE is a CHANNEL label whose values mix internal and external
+          -- SOURCE is a CHANNEL label (DISPATCH / MARKETPLACE / PARTNER_APP /
+          -- BROKER), so it cannot answer "did this come from outside" - every
+          -- row here is external regardless of channel. IS_INTERNAL is the
+          -- structural answer; SOURCE_SYSTEM is the system identity: a real
+          -- integration replaces the literal with its own system key and no
+          -- consumer changes. Vendor-free, and no longer containing the word
+          -- INTERNAL.
+          'EXTERNAL_EXCHANGE'                      AS SOURCE_SYSTEM,
+          COALESCE(f.VEHICLE_EQUIPMENT, 'ANY')     AS VEHICLE_EQUIPMENT,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
           COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
-          COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above. LISTING_TEXT
+          -- keeps its own fallbacks, being one sentence that would go wholly NULL.
+          p2.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON,
           f.PICKUP_LAT,
-          COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+          -- Carry the STORED GEOGRAPHY through rather than letting consumers
+          -- rebuild it. FACT_OFFERS already persists PICKUP_GEOM/DROPOFF_GEOM
+          -- next to the numerics, and dropping them here is what forced every
+          -- downstream reader (VW_LOADS, EXTERNAL_OFFER_SEARCH) to re-derive
+          -- the same point with ST_MAKEPOINT - five times per row in the
+          -- search function's filter + projection + ORDER BY. Verified
+          -- identical to ST_MAKEPOINT(lon, lat) over all 300 rows (0
+          -- mismatches, max deviation 6.9e-05 m, i.e. float noise), so this is
+          -- a pass-through and not a change of value. The numerics stay: the
+          -- ORS engine needs JSON numbers and a semantic view cannot hold a
+          -- GEOGRAPHY column at all.
+          f.PICKUP_GEOM,
+          d.NAME                                   AS DROPOFF_CITY,
           f.DROPOFF_LON,
           f.DROPOFF_LAT,
-          f.PICKUP_FROM_TS,
-          f.PICKUP_TO_TS,
+          f.DROPOFF_GEOM,
+          f.PICKUP_FROM_TS_ADJ                     AS PICKUP_FROM_TS,
+          DATEADD('minute', f.WINDOW_MIN, f.PICKUP_FROM_TS_ADJ) AS PICKUP_TO_TS,
           -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
-          -- (which is HGV-shaped at the table level) into the active class's
-          -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
-          -- never gets 25t shipments.
+          -- (which is HGV-shaped at the table level) into the offer region's
+          -- own class [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so an ebike
+          -- region never gets 25t shipments.
           LEAST(
-            (SELECT SHIPMENT_KG_MAX FROM cls),
+            c.SHIPMENT_KG_MAX,
             GREATEST(
-              (SELECT SHIPMENT_KG_MIN FROM cls),
-              ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+              c.SHIPMENT_KG_MIN,
+              (c.SHIPMENT_KG_MIN + ABS(HASH(f.OFFER_ID)) % NULLIF((c.SHIPMENT_KG_MAX - c.SHIPMENT_KG_MIN), 0))::NUMBER
             )
           )                                       AS WEIGHT_KG,
           f.PRODUCT,
           f.PRICE_USD                              AS PRICE_EUR,
           f.HAZMAT,
           f.LISTING_TEXT
-        FROM offers f
-        LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-        WHERE EXISTS (SELECT 1 FROM cls)`,
+        FROM shifted f
+        JOIN cls c ON c.REGION = f.REGION
+        LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------
@@ -734,6 +959,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
               ADD COLUMN IF NOT EXISTS BUNDLE_ID VARCHAR`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
+    // MANDATORY after the four ALTERs above. FLEET_APP.BACKLOAD_MATCHING.
+    // VW_PROPOSAL_DECISIONS is a `SELECT *` wrapper created by the backload_matching
+    // pack in install step 4; a Snowflake view FREEZES its column list at creation, so
+    // adding a column to the base table leaves the wrapper declaring 10 columns while
+    // its query produces 14. Every read then fails with
+    //   "declared 10 column(s), but view query produces 14 column(s)"
+    // and SV_BACKLOAD_MATCHING cannot even be created, which silently removes the
+    // query_backload Cortex Analyst tool from every agent.
+    //
+    // This is a FRESH-INSTALL bug, not just a drift on old deployments: packs run in
+    // step 4 and the apps boot in step 7, so the wrapper is always created before these
+    // ALTERs run. Recreating it here - in the same place that mutates the base table -
+    // is what keeps the two in step.
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_APP.BACKLOAD_MATCHING.VW_PROPOSAL_DECISIONS
+              COMMENT = ${TRACK} AS
+            SELECT * FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
     // ---------------------------------------------------------------
     // Backload Proposals COCKPIT layer (neutral, synthetic-backed).
     // Co-owned SoT with .cortex/skills/backload-matching/references/proposals-schema.sql
@@ -766,7 +1010,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('MAX_PICKUP_HORIZON_DAYS',   '7',     'number', 'core',   TRUE,  'Only consider loads with a pickup within N days of the vehicle free time.'),
           ('DISTANCE_BASIS',            'road',  'string', 'core',   TRUE,  'road = ORS driving distance; great_circle = straight-line. Falls back to great_circle if ORS is unavailable.'),
           ('PREFILTER_BUFFER_PCT',      '40',    'number', 'core',   TRUE,  'Great-circle prefilter radius = MAX_EMPTY_KM * (1 + pct/100).'),
-          ('MAX_PROPOSALS_PER_TRAILER', '3',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+          ('MAX_PROPOSALS_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked load proposals to keep per vehicle.'),
+          ('MAX_CANDIDATE_PAIRS_PER_TRAILER', '50', 'number', 'core',   TRUE,  'How many eligible (vehicle, load) candidate pairs the solver materialises PER VEHICLE, nearest pickup first. Bounds the candidate read, which is not covered by the solver time budget. Distinct from MAX_PROPOSALS_PER_TRAILER, which caps OUTPUT per vehicle.'),
           ('INTERNAL_PRIORITY',         '100',   'number', 'core',   TRUE,  'VROOM priority applied to internal (own) waiting loads.'),
           ('EXTERNAL_PRIORITY',         '10',    'number', 'core',   TRUE,  'VROOM priority applied to external freight-exchange offers.'),
           ('COST_PER_EMPTY_KM',         '1.20',  'number', 'core',   TRUE,  'Cost per empty km, for the savings KPI.'),
@@ -775,24 +1020,87 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('ENFORCE_WEIGHT_FIT',        'true',  'bool',   'core',   TRUE,  'Reject pairs where vehicle MAX_PAYLOAD_KG < load WEIGHT_KG + WEIGHT_FIT_MARGIN_KG.'),
           ('WEIGHT_FIT_MARGIN_KG',      '0',     'number', 'core',   TRUE,  'Safety margin (kg) added to load weight when checking ENFORCE_WEIGHT_FIT.'),
           ('REQUIRE_HAZMAT_CERT',       'true',  'bool',   'core',   TRUE,  'Hazmat loads must go on a hazmat-certified vehicle.'),
-          ('MAX_CANDIDATE_TRUCKS',      '8',     'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver.'),
+          ('MAX_CANDIDATE_TRUCKS',      '50',    'number', 'core',   TRUE,  'Per load, how many nearest free vehicles (great-circle) to hand the VROOM solver.'),
           ('MAX_TRUCKS_PER_ORDER',      '3',     'number', 'core',   TRUE,  'How many ranked vehicle recommendations to keep per load in VRP mode.'),
           ('VRP_CONCURRENCY',           '4',     'number', 'core',   TRUE,  'Per-load best fit (road): how many loads to solve in parallel per chunk.'),
           ('PICKUP_WINDOW_HRS',         '12',    'number', 'core',   TRUE,  'Plus/minus tolerance (hours) around the requested pickup time.'),
-          ('CLUSTER_CAP',               '250',   'number', 'core',   TRUE,  'Max stops per VROOM cluster before a dense component is spatially sub-split.'),
+          ('CLUSTER_CAP',               '600',   'number', 'core',   TRUE,  'Max stops per VROOM cluster before a dense component is spatially sub-split.'),
           ('BPMP_MAX_STOPS',            '4',     'number', 'core',   TRUE,  'Max loads consolidated onto one vehicle in the profit-max backhaul plan.'),
           ('BPMP_MAX_DEADHEAD_KM',      '250',   'number', 'core',   TRUE,  'Hard cap on a vehicle total DEADHEAD (empty) km across the whole return tour.'),
           ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (km).'),
           ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor: shipment priority = clamp(round(loaded-km revenue / scale), 1..100).'),
           ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy builder.'),
+          ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival.'),
+          ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.'),
+          ('INTERNAL_LOADS_PER_TRAILER','4',     'number', 'core',   TRUE,  'Waiting internal loads per idle trailer. Sizes the internal pool relative to the fleet so it means the same thing in every region.'),
+          ('TRIANGLE_ENABLED',          'true',  'bool',   'core',   TRUE,  'Enable chained two-hop matching: hop 1 carries the vehicle part-way, hop 2 carries it toward the target region.'),
+          ('TRIANGLE_MAX_LEGS',         '2',     'number', 'core',   TRUE,  'Loaded legs per chain. 2 = the classic triangle (empty -> load A -> load B -> target).'),
+          ('TRIANGLE_MIN_PROGRESS_PCT', '5',     'number', 'core',   TRUE,  'Leg 1 must close at least this pct of the great-circle gap to the target.'),
+          ('TRIANGLE_MIN_PROGRESS_RATIO','1.0',   'number', 'core',   TRUE,  'Leg 1 must return at least this many km of progress toward the target per empty km driven to reach it. 1.0 = the empty run must at least pay for itself.'),
+          ('TRIANGLE_MAX_LEG1_DETOUR_KM','400',  'number', 'core',   TRUE,  'Hard cap on how far leg 1 may leave the direct empty->target corridor (km).'),
+          ('TRIANGLE_MAX_TOTAL_EMPTY_KM','250',  'number', 'core',   TRUE,  'Cap on total empty km across the whole chain.'),
+          ('TRIANGLE_LEG1_OPTIONS',     '12',    'number', 'core',   TRUE,  'Top N leg-1 loads kept per vehicle before the load-to-load self-join.'),
+          ('MAX_TRIANGLES_PER_TRAILER', '5',     'number', 'core',   TRUE,  'How many ranked chains to keep per vehicle.'),
+          ('TARGET_MODE',               'home_depot','string','core', TRUE,  'home_depot = chain toward the vehicle home depot; dispatcher_choice = chain toward a target supplied per request.'),
+          ('TARGET_RADIUS_KM',          '250',   'number', 'core',   TRUE,  'Leg 2 must deliver within this distance of the target to count as a completed chain (km).'),
+          ('CASCADE_GRADE_THRESHOLD',   '70',    'number', 'core',   TRUE,  'Composite score at which the internal-first cascade stops widening.'),
+          ('ENFORCE_EQUIPMENT_FIT',     'false', 'bool',   'core',   TRUE,  'Reject pairs whose load requires equipment the vehicle does not carry.'),
+          ('EQUIPMENT_STRICT',          'false', 'bool',   'core',   TRUE,  'true = a load with no stated equipment requirement still needs an exact match.'),
           ('TRADELANE_INCLUDE',         '',      'string', 'future', FALSE, 'Comma list of allowed pickup->delivery country lanes.'),
           ('TRADELANE_EXCLUDE',         '',      'string', 'future', FALSE, 'Comma list of forbidden country lanes.'),
-          ('RETURN_TO_HOME_REGION',     'false', 'bool',   'future', FALSE, 'Prefer loads that route the vehicle back toward its home depot (triangle trips).')
+          ('RETURN_TO_HOME_REGION',     'true',  'bool',   'core',   TRUE,  'Score loads by the progress they make toward the target region (see TARGET_MODE).')
         AS v(PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
       ) src
       ON tgt.PARAM_KEY = src.PARAM_KEY
       WHEN NOT MATCHED THEN INSERT (PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENABLED, DESCRIPTION)
         VALUES (src.PARAM_KEY, src.PARAM_VALUE, src.PARAM_TYPE, src.CATEGORY, src.ENABLED, src.DESCRIPTION)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    // The MERGE above is insert-only so a dispatcher's tuning survives a boot.
+    // That alone would pin an EXISTING deployment to the old demo-scale defaults
+    // forever, and would leave RETURN_TO_HOME_REGION disabled - which makes the
+    // whole chained-matching path silently inert (params present, no behaviour).
+    // Converge those rows, but ONLY while they still hold their exact seeded
+    // value, so a deliberate override is never overwritten.
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '50', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'MAX_CANDIDATE_TRUCKS' AND PARAM_VALUE = '8'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '600', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'CLUSTER_CAP' AND PARAM_VALUE = '250'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '5', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'MAX_PROPOSALS_PER_TRAILER' AND PARAM_VALUE = '3'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = '5', UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'TRIANGLE_MIN_PROGRESS_PCT' AND PARAM_VALUE = '15'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET PARAM_VALUE = 'true', CATEGORY = 'core', ENABLED = TRUE,
+                  DESCRIPTION = 'Score loads by the progress they make toward the target region (see TARGET_MODE).',
+                  UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'RETURN_TO_HOME_REGION'
+              AND PARAM_VALUE = 'false' AND CATEGORY = 'future'`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+              SET CATEGORY = 'core', ENABLED = TRUE,
+                  DESCRIPTION = 'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.',
+                  UPDATED_AT = SYSDATE()
+            WHERE PARAM_KEY = 'INTERNAL_POOL_CAP' AND PARAM_VALUE = '5000'`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -817,6 +1125,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // Drop dependents before recreate (column-count invariant on re-run).
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
     { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
@@ -826,26 +1136,30 @@ export async function ensureBackloadAndAssetVelocityObjects(
         AS
         SELECT
           iv.ID AS LOAD_ID, TRUE AS IS_INTERNAL, 'INTERNAL' AS SOURCE,
+          'INTERNAL' AS SOURCE_SYSTEM,
+          'ANY' AS REQUIRED_EQUIPMENT,
           iv.PICKUP_CITY, iv.PICKUP_LON, iv.PICKUP_LAT,
-          ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT) AS PICKUP_GEOM,
+          iv.PICKUP_GEOM,
           iv.DROPOFF_CITY AS DELIVERY_CITY, iv.DROPOFF_LON AS DELIVERY_LON, iv.DROPOFF_LAT AS DELIVERY_LAT,
-          ST_MAKEPOINT(iv.DROPOFF_LON, iv.DROPOFF_LAT) AS DELIVERY_GEOM,
+          iv.DROPOFF_GEOM AS DELIVERY_GEOM,
           iv.PICKUP_FROM_TS AS REQUESTED_PICKUP_TS, iv.PICKUP_TO_TS AS LATEST_PICKUP_TS,
           iv.WEIGHT_KG, iv.PRODUCT, iv.HAZMAT, NULL::NUMBER AS PRICE_USD,
-          ST_DISTANCE(ST_MAKEPOINT(iv.PICKUP_LON, iv.PICKUP_LAT), ST_MAKEPOINT(iv.DROPOFF_LON, iv.DROPOFF_LAT)) / 1000.0 AS APPROX_DISTANCE_KM,
+          ST_DISTANCE(iv.PICKUP_GEOM, iv.DROPOFF_GEOM) / 1000.0 AS APPROX_DISTANCE_KM,
           'Internal load: ' || iv.PICKUP_CITY || ' -> ' || iv.DROPOFF_CITY AS LISTING_TEXT
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES iv
         WHERE iv.PICKUP_LON IS NOT NULL AND iv.PICKUP_LAT IS NOT NULL
         UNION ALL
         SELECT
           eo.OFFER_ID AS LOAD_ID, FALSE AS IS_INTERNAL, eo.SOURCE,
+          eo.SOURCE_SYSTEM,
+          COALESCE(eo.VEHICLE_EQUIPMENT, 'ANY') AS REQUIRED_EQUIPMENT,
           eo.PICKUP_CITY, eo.PICKUP_LON, eo.PICKUP_LAT,
-          ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT) AS PICKUP_GEOM,
+          eo.PICKUP_GEOM,
           eo.DROPOFF_CITY AS DELIVERY_CITY, eo.DROPOFF_LON AS DELIVERY_LON, eo.DROPOFF_LAT AS DELIVERY_LAT,
-          ST_MAKEPOINT(eo.DROPOFF_LON, eo.DROPOFF_LAT) AS DELIVERY_GEOM,
+          eo.DROPOFF_GEOM AS DELIVERY_GEOM,
           eo.PICKUP_FROM_TS AS REQUESTED_PICKUP_TS, eo.PICKUP_TO_TS AS LATEST_PICKUP_TS,
           eo.WEIGHT_KG, eo.PRODUCT, eo.HAZMAT, eo.PRICE_EUR AS PRICE_USD,
-          ST_DISTANCE(ST_MAKEPOINT(eo.PICKUP_LON, eo.PICKUP_LAT), ST_MAKEPOINT(eo.DROPOFF_LON, eo.DROPOFF_LAT)) / 1000.0 AS APPROX_DISTANCE_KM,
+          ST_DISTANCE(eo.PICKUP_GEOM, eo.DROPOFF_GEOM) / 1000.0 AS APPROX_DISTANCE_KM,
           eo.LISTING_TEXT
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS eo
         WHERE eo.PICKUP_LON IS NOT NULL AND eo.PICKUP_LAT IS NOT NULL`,
@@ -855,16 +1169,43 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO
         COMMENT = ${TRACK}
         AS
+        WITH p AS (
+          SELECT
+            COALESCE(MAX(IFF(PARAM_KEY='PLANNING_LEAD_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 4) AS LEAD_DAYS
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        )
         SELECT
           t.TRAILER_ID, t.OPERATING_COUNTRY, t.HOME_DEPOT, t.HOME_LON, t.HOME_LAT,
           t.DROPOFF_CITY AS EMPTY_CITY, t.DROPOFF_LON AS EMPTY_LON, t.DROPOFF_LAT AS EMPTY_LAT,
-          ST_MAKEPOINT(t.DROPOFF_LON, t.DROPOFF_LAT) AS EMPTY_GEOM,
-          DATEADD('minute', -1 * MOD(ABS(HASH(t.TRAILER_ID)), 720), CURRENT_TIMESTAMP()) AS EMPTY_FROM_TS,
+          t.DROPOFF_GEOM AS EMPTY_GEOM,
+          -- Dispatch-time availability. A vehicle whose trip is still running is
+          -- plannable NOW for the moment it frees up, so its free time is that
+          -- future arrival - this is what lets a return leg be planned at
+          -- dispatch time instead of on arrival.
+          CASE
+            WHEN t.ETA_TS > CURRENT_TIMESTAMP() THEN t.ETA_TS
+            ELSE DATEADD('minute',
+                   MOD(ABS(HASH(t.TRAILER_ID)), GREATEST(1, (COALESCE(p.LEAD_DAYS, 4) * 1440)::INT)),
+                   CURRENT_TIMESTAMP())
+          END AS EMPTY_FROM_TS,
+          -- 'eta' = a real future arrival drove the free time. 'projected' = the
+          -- synthetic drop-off is already in the past, so the free time is spread
+          -- deterministically across the lead-time horizon to keep the demo shaped
+          -- like a live fleet. Surface this rather than hiding the synthesis.
+          IFF(t.ETA_TS > CURRENT_TIMESTAMP(), 'eta', 'projected') AS AVAILABILITY_BASIS,
           t.ETA_TS AS LAST_DROPOFF_TS,
-          ST_MAKEPOINT(t.HOME_LON, t.HOME_LAT) AS NEXT_START_GEOM,
+          t.HOME_GEOM AS NEXT_START_GEOM,
           t.HOME_LON AS NEXT_START_LON, t.HOME_LAT AS NEXT_START_LAT, t.HOME_DEPOT AS NEXT_START_LOCATION_TEXT,
-          t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.EV_RANGE_KM
+          -- Chain target. TARGET_MODE=home_depot resolves to the home depot;
+          -- dispatcher_choice overrides these per request at query time (a view
+          -- cannot hold a per-request target), and falls back to the depot.
+          t.HOME_LON AS TARGET_LON, t.HOME_LAT AS TARGET_LAT,
+          t.HOME_GEOM AS TARGET_GEOM,
+          t.HOME_DEPOT AS TARGET_LABEL,
+          ST_DISTANCE(t.DROPOFF_GEOM, t.HOME_GEOM) / 1000.0 AS TARGET_GAP_KM,
+          t.MAX_PAYLOAD_KG, t.HAZMAT_CERT, t.VEHICLE_EQUIPMENT, t.EV_RANGE_KM
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS t
+        JOIN p ON TRUE
         WHERE t.DROPOFF_LON IS NOT NULL AND t.DROPOFF_LAT IS NOT NULL`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -943,11 +1284,253 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * 3 * 1000)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
+    // ---------------------------------------------------------------
+    // Chained (two-hop) matching. VW_LEG1_CANDIDATES finds first hops that
+    // carry a vehicle CLOSER to its target (not all the way, which is what
+    // single-hop matching already covers); VW_TRIANGLES joins a second hop
+    // onto each and keeps only chains that finish the return. Must stay after
+    // VW_LOADS / VW_TRAILERS_GEO above.
+    // Co-owned with .cortex/skills/backload-matching/references/proposals-schema.sql.
+    // ---------------------------------------------------------------
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES
+        COMMENT = ${TRACK}
+        AS
+        WITH p AS (
+          SELECT
+            MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',             TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+            MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+            MAX(IFF(PARAM_KEY='PICKUP_DATE_SLACK_HRS',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS SLACK_HRS,
+            MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+            MAX(IFF(PARAM_KEY='ENFORCE_PICKUP_DATE',      LOWER(PARAM_VALUE)='true', NULL))  AS ENFORCE_DATE,
+            MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+            MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',     TRY_TO_DOUBLE(PARAM_VALUE), 0))            AS WEIGHT_MARGIN,
+            MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+            MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_PCT', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5) AS MIN_PROGRESS_PCT,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MIN_PROGRESS_RATIO', TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.0) AS MIN_PROGRESS_RATIO,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_LEG1_OPTIONS',     TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 12) AS LEG1_OPTIONS,
+            COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        -- Average speed per REGION, resolved through that region's own active
+        -- dataset vehicle type. A single scalar would apply one asset mode's
+        -- speed to every region's chain timings.
+        spd AS (
+          SELECT d.REGION,
+                 GREATEST(1, COALESCE(MAX(vcp.AVG_SPEED_KMH), 60)) AS AVG_SPEED_KMH
+          FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          LEFT JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+            ON vcp.VEHICLE_TYPE = d.VEHICLE_TYPE
+          WHERE d.IS_ACTIVE
+          GROUP BY d.REGION
+        ),
+        base AS (
+          SELECT
+            t.TRAILER_ID, t.OPERATING_COUNTRY, t.VEHICLE_EQUIPMENT, t.MAX_PAYLOAD_KG, t.HAZMAT_CERT,
+            t.EMPTY_CITY, t.EMPTY_LON, t.EMPTY_LAT, t.EMPTY_GEOM, t.EMPTY_FROM_TS, t.AVAILABILITY_BASIS,
+            t.TARGET_LABEL, t.TARGET_LON, t.TARGET_LAT, t.TARGET_GEOM, t.TARGET_GAP_KM,
+            l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.SOURCE_SYSTEM, l.REQUIRED_EQUIPMENT,
+            l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.PICKUP_GEOM,
+            l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.DELIVERY_GEOM,
+            l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.HAZMAT, l.PRICE_USD, l.PRODUCT, l.APPROX_DISTANCE_KM,
+            ST_DISTANCE(t.EMPTY_GEOM, l.PICKUP_GEOM) / 1000.0        AS APPROACH_KM,
+            ST_DISTANCE(l.DELIVERY_GEOM, t.TARGET_GEOM) / 1000.0     AS RESIDUAL_GAP_KM,
+            -- Straight-line ETA at the class cruise speed, plus 40 min of handling.
+            -- Deliberately an ESTIMATE: it only has to order the two hops correctly.
+            -- Road time comes from the live matrix call before anything is proposed.
+            DATEADD('minute',
+              ROUND(l.APPROX_DISTANCE_KM / COALESCE(sp.AVG_SPEED_KMH, 60) * 60) + 40,
+              l.REQUESTED_PICKUP_TS)                                 AS LEG1_DELIVERY_ETA_TS,
+            p.MIN_PROGRESS_PCT, p.MIN_PROGRESS_RATIO, p.LEG1_OPTIONS, p.TARGET_RADIUS_KM, p.MAX_EMPTY_KM, p.ENF_EQUIP
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO t
+          JOIN p ON TRUE
+          -- Cruise speed for the trailer's OWN region (spd is per-region now).
+          LEFT JOIN spd sp ON sp.REGION = t.OPERATING_COUNTRY
+          JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l
+            ON ST_DWITHIN(t.EMPTY_GEOM, l.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+           AND (NOT p.ENFORCE_DATE
+                OR t.EMPTY_FROM_TS <= DATEADD('hour', p.SLACK_HRS, l.REQUESTED_PICKUP_TS))
+           AND l.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, t.EMPTY_FROM_TS)
+           AND (NOT p.ENF_WEIGHT OR COALESCE(t.MAX_PAYLOAD_KG, 1e12) >= COALESCE(l.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+           AND (NOT p.REQ_HAZMAT OR NOT COALESCE(l.HAZMAT, FALSE) OR COALESCE(t.HAZMAT_CERT, FALSE))
+           AND (NOT p.ENF_EQUIP
+                OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+                OR COALESCE(l.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(t.VEHICLE_EQUIPMENT, 'ANY'))
+        ),
+        scored AS (
+          SELECT
+            b.*,
+            b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM                                    AS PROGRESS_KM,
+            100.0 * (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / NULLIF(b.TARGET_GAP_KM, 0) AS PROGRESS_PCT,
+            (b.TARGET_GAP_KM - b.RESIDUAL_GAP_KM) / GREATEST(1, b.APPROACH_KM)     AS PROGRESS_PER_EMPTY_KM,
+            -- A first hop that already lands inside the target radius is not a chain,
+            -- it is a direct return, and single-hop matching already proposes it.
+            -- Excluding it keeps this view and VW_CANDIDATES non-overlapping and makes
+            -- a chain mean exactly what was asked for: the case where no direct load
+            -- back existed.
+            (b.RESIDUAL_GAP_KM > b.TARGET_RADIUS_KM)                               AS NEEDS_SECOND_HOP
+          FROM base b
+        )
+        SELECT
+          s.*,
+          (s.PROGRESS_KM > 0
+           AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+           AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT) AS PROGRESS_CHECK
+        FROM scored s
+        WHERE s.NEEDS_SECOND_HOP
+          AND s.PROGRESS_KM > 0
+          AND s.PROGRESS_KM >= s.APPROACH_KM * s.MIN_PROGRESS_RATIO
+          AND s.PROGRESS_PCT >= s.MIN_PROGRESS_PCT
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY s.TRAILER_ID
+          ORDER BY s.PROGRESS_PER_EMPTY_KM DESC, s.APPROACH_KM ASC
+        ) <= s.LEG1_OPTIONS`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES
+        COMMENT = ${TRACK}
+        AS
+        WITH p AS (
+          SELECT
+            MAX(IFF(PARAM_KEY='MAX_EMPTY_KM',            TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS MAX_EMPTY_KM,
+            MAX(IFF(PARAM_KEY='PREFILTER_BUFFER_PCT',    TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS BUFFER_PCT,
+            MAX(IFF(PARAM_KEY='MAX_PICKUP_HORIZON_DAYS', TRY_TO_DOUBLE(PARAM_VALUE), NULL)) AS HORIZON_DAYS,
+            MAX(IFF(PARAM_KEY='ENFORCE_WEIGHT_FIT'   AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_WEIGHT,
+            MAX(IFF(PARAM_KEY='WEIGHT_FIT_MARGIN_KG',    TRY_TO_DOUBLE(PARAM_VALUE), 0))             AS WEIGHT_MARGIN,
+            MAX(IFF(PARAM_KEY='REQUIRE_HAZMAT_CERT'  AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS REQ_HAZMAT,
+            MAX(IFF(PARAM_KEY='ENFORCE_EQUIPMENT_FIT' AND ENABLED, LOWER(PARAM_VALUE)='true', FALSE)) AS ENF_EQUIP,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_ENABLED',           LOWER(PARAM_VALUE)='true', NULL)), TRUE) AS TRIANGLE_ENABLED,
+            COALESCE(MAX(IFF(PARAM_KEY='TARGET_RADIUS_KM',           TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS TARGET_RADIUS_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_TOTAL_EMPTY_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 250) AS MAX_TOTAL_EMPTY_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='TRIANGLE_MAX_LEG1_DETOUR_KM',TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 400) AS MAX_LEG1_DETOUR_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='MAX_TRIANGLES_PER_TRAILER',  TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 5)   AS MAX_PER_TRAILER,
+            COALESCE(MAX(IFF(PARAM_KEY='COST_PER_EMPTY_KM',          TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.20) AS COST_PER_EMPTY_KM,
+            COALESCE(MAX(IFF(PARAM_KEY='REVENUE_PER_LOADED_KM',      TRY_TO_DOUBLE(PARAM_VALUE), NULL)), 1.10) AS REV_PER_LOADED_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS
+        ),
+        pairs AS (
+          SELECT
+            a.TRAILER_ID, a.OPERATING_COUNTRY, a.VEHICLE_EQUIPMENT, a.MAX_PAYLOAD_KG, a.HAZMAT_CERT,
+            a.EMPTY_CITY, a.EMPTY_LON, a.EMPTY_LAT, a.EMPTY_FROM_TS, a.AVAILABILITY_BASIS,
+            a.TARGET_LABEL, a.TARGET_LON, a.TARGET_LAT, a.TARGET_GAP_KM,
+        
+            a.LOAD_ID       AS LEG1_LOAD_ID,
+            a.IS_INTERNAL   AS LEG1_IS_INTERNAL,
+            a.SOURCE        AS LEG1_SOURCE,
+            a.SOURCE_SYSTEM AS LEG1_SOURCE_SYSTEM,
+            a.PICKUP_CITY   AS LEG1_PICKUP_CITY,
+            a.PICKUP_LON    AS LEG1_PICKUP_LON,
+            a.PICKUP_LAT    AS LEG1_PICKUP_LAT,
+            a.DELIVERY_CITY AS LEG1_DELIVERY_CITY,
+            a.DELIVERY_LON  AS LEG1_DELIVERY_LON,
+            a.DELIVERY_LAT  AS LEG1_DELIVERY_LAT,
+            a.REQUESTED_PICKUP_TS   AS LEG1_PICKUP_TS,
+            a.LEG1_DELIVERY_ETA_TS,
+            a.WEIGHT_KG     AS LEG1_WEIGHT_KG,
+            a.PRICE_USD     AS LEG1_PRICE_USD,
+            a.PRODUCT       AS LEG1_PRODUCT,
+            a.APPROACH_KM   AS LEG1_EMPTY_KM,
+            a.APPROX_DISTANCE_KM AS LEG1_LOADED_KM,
+            a.PROGRESS_KM   AS LEG1_PROGRESS_KM,
+            a.PROGRESS_PCT  AS LEG1_PROGRESS_PCT,
+            a.RESIDUAL_GAP_KM AS GAP_AFTER_LEG1_KM,
+        
+            b.LOAD_ID       AS LEG2_LOAD_ID,
+            b.IS_INTERNAL   AS LEG2_IS_INTERNAL,
+            b.SOURCE        AS LEG2_SOURCE,
+            b.SOURCE_SYSTEM AS LEG2_SOURCE_SYSTEM,
+            b.PICKUP_CITY   AS LEG2_PICKUP_CITY,
+            b.PICKUP_LON    AS LEG2_PICKUP_LON,
+            b.PICKUP_LAT    AS LEG2_PICKUP_LAT,
+            b.DELIVERY_CITY AS LEG2_DELIVERY_CITY,
+            b.DELIVERY_LON  AS LEG2_DELIVERY_LON,
+            b.DELIVERY_LAT  AS LEG2_DELIVERY_LAT,
+            b.REQUESTED_PICKUP_TS AS LEG2_PICKUP_TS,
+            b.WEIGHT_KG     AS LEG2_WEIGHT_KG,
+            b.PRICE_USD     AS LEG2_PRICE_USD,
+            b.PRODUCT       AS LEG2_PRODUCT,
+            ST_DISTANCE(a.DELIVERY_GEOM, b.PICKUP_GEOM) / 1000.0 AS LEG2_EMPTY_KM,
+            b.APPROX_DISTANCE_KM AS LEG2_LOADED_KM,
+            ST_DISTANCE(b.DELIVERY_GEOM, a.TARGET_GEOM) / 1000.0 AS FINAL_GAP_KM,
+        
+            -- Cascade rung: which pools this chain drew on. The ladder stops at the
+            -- first rung that produces an acceptable chain, so recording the rung is
+            -- what lets the UI say "no internal-only chain existed" instead of quietly
+            -- showing an external one.
+            CASE
+              WHEN a.IS_INTERNAL AND b.IS_INTERNAL           THEN 1
+              WHEN a.IS_INTERNAL AND NOT b.IS_INTERNAL       THEN 2
+              WHEN NOT a.IS_INTERNAL AND b.IS_INTERNAL       THEN 3
+              ELSE 4
+            END AS CASCADE_RUNG,
+        
+            p.TARGET_RADIUS_KM, p.MAX_TOTAL_EMPTY_KM, p.MAX_LEG1_DETOUR_KM,
+            p.MAX_PER_TRAILER, p.COST_PER_EMPTY_KM, p.REV_PER_LOADED_KM
+          FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LEG1_CANDIDATES a
+          JOIN p ON p.TRIANGLE_ENABLED
+          JOIN FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS b
+            ON b.LOAD_ID <> a.LOAD_ID
+           -- hop 2 starts near where hop 1 ended
+           AND ST_DWITHIN(a.DELIVERY_GEOM, b.PICKUP_GEOM, p.MAX_EMPTY_KM * (1 + p.BUFFER_PCT/100.0) * 1000)
+           -- hop 2 actually finishes the return
+           AND ST_DWITHIN(b.DELIVERY_GEOM, a.TARGET_GEOM, p.TARGET_RADIUS_KM * 1000)
+           -- hop 2 cannot be collected before hop 1 is delivered
+           AND b.REQUESTED_PICKUP_TS >= a.LEG1_DELIVERY_ETA_TS
+           AND b.REQUESTED_PICKUP_TS <= DATEADD('day', p.HORIZON_DAYS, a.EMPTY_FROM_TS)
+           AND (NOT p.ENF_WEIGHT OR COALESCE(a.MAX_PAYLOAD_KG, 1e12) >= COALESCE(b.WEIGHT_KG, 0) + p.WEIGHT_MARGIN)
+           AND (NOT p.REQ_HAZMAT OR NOT COALESCE(b.HAZMAT, FALSE) OR COALESCE(a.HAZMAT_CERT, FALSE))
+           AND (NOT p.ENF_EQUIP
+                OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = 'ANY'
+                OR COALESCE(b.REQUIRED_EQUIPMENT, 'ANY') = COALESCE(a.VEHICLE_EQUIPMENT, 'ANY'))
+        ),
+        enriched AS (
+          SELECT
+            q.*,
+            q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM                     AS TOTAL_EMPTY_KM,
+            -- Every empty kilometre the chain actually incurs, INCLUDING the
+            -- residual run from the hop-2 delivery to the target (FINAL_GAP_KM,
+            -- allowed up to TARGET_RADIUS_KM). TOTAL_EMPTY_KM above stays the
+            -- two-leg subtotal because TOTAL_EMPTY_CHECK / MAX_TOTAL_EMPTY_KM
+            -- are calibrated against it, and redefining it would silently
+            -- re-prune the candidate set. Use THIS column for anything compared
+            -- against the direct-return baseline: that baseline is the FULL run
+            -- home, so leaving the residual out compares a partial chain cost
+            -- against a complete one and overstates the saving.
+            q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM    AS TOTAL_EMPTY_WITH_RESIDUAL_KM,
+            q.LEG1_LOADED_KM + q.LEG2_LOADED_KM                   AS TOTAL_LOADED_KM,
+            q.LEG1_EMPTY_KM + q.LEG1_LOADED_KM
+              + q.LEG2_EMPTY_KM + q.LEG2_LOADED_KM
+              + q.FINAL_GAP_KM                                    AS TOTAL_KM,
+            -- The chain's own economics. NET_BENEFIT is the figure a dispatcher weighs
+            -- against doing nothing; the direct-return baseline it is compared with is
+            -- computed alongside the proposal, not here. Costed on the residual-
+            -- inclusive empty distance for the reason given above.
+            ROUND((q.LEG1_LOADED_KM + q.LEG2_LOADED_KM) * q.REV_PER_LOADED_KM
+              - (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM + q.FINAL_GAP_KM) * q.COST_PER_EMPTY_KM, 2) AS NET_BENEFIT_USD,
+            (q.LEG1_EMPTY_KM + q.LEG2_EMPTY_KM) <= q.MAX_TOTAL_EMPTY_KM   AS TOTAL_EMPTY_CHECK,
+            q.LEG1_EMPTY_KM <= q.MAX_LEG1_DETOUR_KM                       AS LEG1_DETOUR_CHECK,
+            q.FINAL_GAP_KM <= q.TARGET_RADIUS_KM                          AS TARGET_CHECK,
+            q.LEG2_PICKUP_TS >= q.LEG1_DELIVERY_ETA_TS                    AS SEQUENCE_CHECK
+          FROM pairs q
+        )
+        SELECT
+          e.*,
+          (e.TOTAL_EMPTY_CHECK AND e.LEG1_DETOUR_CHECK AND e.TARGET_CHECK AND e.SEQUENCE_CHECK) AS ELIGIBLE
+        FROM enriched e
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY e.TRAILER_ID
+          -- internal-first, then most value, then least empty running
+          ORDER BY e.CASCADE_RUNG ASC, e.NET_BENEFIT_USD DESC, e.TOTAL_EMPTY_KM ASC
+        ) <= e.MAX_PER_TRAILER`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
     // Asset Velocity views (ROUTE_OPTIMIZATION) are NOT created here. They are
     // owned by ensureAssetVelocityViews(), invoked after this loop (and lazily
     // by POST /api/asset-velocity/ensure), because they reference
-    // DWELL_ANALYSIS.DT_DWELL_ENRICHED which Snowflake validates at CREATE VIEW
-    // time and may not exist yet on a fresh boot.
+    // FLEET_APP.DWELL.VW_DWELL_SESSIONS which Snowflake validates at CREATE VIEW
+    // time and may not exist yet on a boot that races the packs install step.
     // ---------------------------------------------------------------
     // Freight Exchange (Phase A/B): MARKETPLACE schema + projection views
     // over SYNTHETIC_DATASETS.UNIFIED.{FACT_OFFERS, DIM_PARTNERS,
@@ -1144,7 +1727,13 @@ $$`,
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
-        SELECT p.*
+        -- NAME is normalised, not passed through. See projection_views.sql for
+        -- the full note: the Overture sampler landed NAMES:primary as its
+        -- VARIANT JSON form, so every POI name carries literal double quotes,
+        -- and those names are stop labels on the backload map and cities in the
+        -- agent's answer. The sampler is fixed; this TRIM repairs already-landed
+        -- data without a regenerate, and is idempotent on clean names.
+        SELECT p.* EXCLUDE NAME, TRIM(p.NAME, '"') AS NAME
         FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = p.JOB_ID
@@ -1383,7 +1972,17 @@ $$`,
           VEHICLE_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, ORS_PROFILE VARCHAR, SHIFT_TYPE VARCHAR,
           SHIFT_START_HOUR NUMBER, SHIFT_END_HOUR NUMBER, HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR,
           OPERATING_MODE VARCHAR, BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT, JOB_ID VARCHAR,
-          WEIGHT_TONS NUMBER, HEIGHT_M NUMBER, LENGTH_M NUMBER, WIDTH_M NUMBER, AXLELOAD_T NUMBER,
+          -- Scales MUST match the physical DIM_FLEET columns (WEIGHT_TONS
+          -- NUMBER(6,2), the rest NUMBER(4,2)). A bare NUMBER is NUMBER(38,0)
+          -- and TRUNCATES: an e-bike's 0.10 t arrives as 0 and a 3.5 t van
+          -- arrives as 4, which fuzzes the 4.536 t (10,000 lb) FLSA
+          -- small-vehicle boundary that FLEET_APP.LABOR uses to decide whether
+          -- overtime is owed. This function is the UPSTREAM half of a two-owner
+          -- pair: FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED (in
+          -- scoped_contract.sql) is a SELECT * over this one, so widening only
+          -- that copy is silently undone the next time the app boots and
+          -- recreates this one.
+          WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2), WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2),
           HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR
         )
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
@@ -1424,12 +2023,13 @@ $$`,
           IF (:v_region IS NULL) THEN
             RETURN 'ERROR: dataset not found: ' || :P_DATASET_ID;
           END IF;
+          -- One statement establishes "exactly one IS_ACTIVE per (REGION,
+          -- VEHICLE_TYPE)". Two UPDATEs (demote peers, then promote target) can
+          -- interleave with a concurrent activation and leave two active rows or
+          -- none, which silently doubles or blanks every V_*_CURRENT consumer.
           UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-             SET IS_ACTIVE = FALSE
-           WHERE REGION = :v_region AND VEHICLE_TYPE = :v_vehicle AND IS_ACTIVE = TRUE;
-          UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
-             SET IS_ACTIVE = TRUE
-           WHERE DATASET_ID = :P_DATASET_ID;
+             SET IS_ACTIVE = (DATASET_ID = :P_DATASET_ID)
+           WHERE REGION = :v_region AND VEHICLE_TYPE = :v_vehicle;
           RETURN 'OK: activated ' || :P_DATASET_ID || ' for ' || :v_region || '/' || :v_vehicle;
         END;
         $$`,
@@ -1439,16 +2039,14 @@ $$`,
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT
         COMMENT = ${TRACK_RO}
         AS
-        WITH cfg AS (
-          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
-        )
+        -- Multi-region: bound to the ACTIVE dataset per region (which is what
+        -- makes this a _CURRENT view) but no longer pinned to the single CONFIG
+        -- region, so places for every loaded region are visible.
         SELECT p.*
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES p
-        JOIN cfg ON p.REGION = cfg.REGION
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = p.JOB_ID
-         AND d.REGION = cfg.REGION
-         AND d.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+         AND d.REGION = p.REGION
          AND d.IS_ACTIVE = TRUE`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
@@ -1471,9 +2069,10 @@ $$`,
           f.JOB_ID,
           f.SOURCE,
           f.PARTNER_ID,
-          COALESCE(p.NAME, 'Pickup')              AS PICKUP_CITY,
+          -- NULL, not a placeholder: see the DROPOFF_CITY note above.
+          p.NAME                                  AS PICKUP_CITY,
           f.PICKUP_LON, f.PICKUP_LAT, f.PICKUP_GEOM,
-          COALESCE(d.NAME, 'Dropoff')             AS DROPOFF_CITY,
+          d.NAME                                  AS DROPOFF_CITY,
           f.DROPOFF_LON, f.DROPOFF_LAT, f.DROPOFF_GEOM,
           f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
           f.WEIGHT_KG, f.PRODUCT, f.PRICE_USD, f.HAZMAT,
@@ -1481,12 +2080,13 @@ $$`,
           f.VEHICLE_EQUIPMENT,
           f.DISTANCE_KM, f.PRICE_PER_KM_USD,
           COALESCE(f.STATUS, 'OPEN')              AS STATUS,
+          f.REGION,
+          FLEET_APP.CORE.REGION_LABEL(f.REGION)   AS REGION_LABEL,
+          f.VEHICLE_TYPE,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-        WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1494,6 +2094,9 @@ $$`,
         COMMENT = ${TRACK_FX}
         AS
         SELECT PARTNER_ID, NAME, COUNTRY,
+               REGION,
+               FLEET_APP.CORE.REGION_LABEL(REGION) AS REGION_LABEL,
+               VEHICLE_TYPE,
                CREDIT_SCORE, PAYMENT_DAYS_AVG, KYC_STATUS,
                BLACKLIST_FLAG, FOUNDED_YEAR,
                CASE
@@ -1502,9 +2105,7 @@ $$`,
                  WHEN CREDIT_SCORE < 70 OR KYC_STATUS = 'PENDING' THEN 'YELLOW'
                  ELSE 'GREEN'
                END AS TRUST_BADGE
-        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
-        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1512,10 +2113,11 @@ $$`,
         COMMENT = ${TRACK_FX}
         AS
         SELECT PARTNER_ID, ORIGIN_COUNTRY, DEST_COUNTRY,
+               REGION,
+               FLEET_APP.CORE.REGION_LABEL(REGION) AS REGION_LABEL,
+               VEHICLE_TYPE,
                VEHICLE_EQUIPMENT, SHIPPED_AT, COST_PER_KM, OUTCOME
-        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
-        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
-          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1542,21 +2144,28 @@ $$`,
             h.PARTNER_ID,
             h.VEHICLE_EQUIPMENT,
             h.SHIPPED_AT,
-            o.PICKUP_LON, o.PICKUP_LAT,
-            o.DROPOFF_LON, o.DROPOFF_LAT
+            o.PICKUP_LON, o.PICKUP_LAT, o.PICKUP_GEOM,
+            o.DROPOFF_LON, o.DROPOFF_LAT, o.DROPOFF_GEOM
           FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY h
           LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
             ON o.PARTNER_ID = h.PARTNER_ID
         )
         SELECT
+          -- Lane midpoint from the STORED endpoint geometry rather than an
+          -- arithmetic average of four numerics. A midpoint is genuinely derived
+          -- (no stored column holds it), but its ENDPOINTS are stored, so this
+          -- reads them instead of rebuilding both points first.
+          -- MEASURED equivalent on the 300-offer pool: 0 of 300 H3 cells change
+          -- and the two midpoints differ by at most 2.35 m, against res-5 cells
+          -- ~250 km across.
           H3_POINT_TO_CELL_STRING(
-            ST_MAKEPOINT((PICKUP_LON + DROPOFF_LON) / 2, (PICKUP_LAT + DROPOFF_LAT) / 2),
+            ST_CENTROID(ST_MAKELINE(PICKUP_GEOM, DROPOFF_GEOM)),
             5
           ) AS H3_CELL,
           VEHICLE_EQUIPMENT,
           COUNT(*) AS SHIPMENT_COUNT
         FROM lane_midpoints
-        WHERE PICKUP_LON IS NOT NULL AND DROPOFF_LON IS NOT NULL
+        WHERE PICKUP_GEOM IS NOT NULL AND DROPOFF_GEOM IS NOT NULL
         GROUP BY 1, 2`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
@@ -1691,10 +2300,10 @@ $$`,
     }
   }
 
-  // Create the Asset Velocity views via the shared self-heal path (gated on
-  // DT_DWELL_ENRICHED). On a fresh boot before dwell-analysis is deployed this
-  // returns { ensured:false } and the page stays in its empty state until the
-  // first visit re-triggers it via POST /api/asset-velocity/ensure.
+  // Create the Asset Velocity views via the shared self-heal path (gated on the
+  // fleet/dwell pack's FLEET_APP.DWELL.VW_DWELL_SESSIONS). If the packs step has
+  // not run, this returns { ensured:false } and the page stays in its empty state
+  // until the first visit re-triggers it via POST /api/asset-velocity/ensure.
   try {
     const av = await ensureAssetVelocityViews(sqlFn);
     log('INFO', 'Init', `asset-velocity ensure at boot: ${JSON.stringify(av)}`);
@@ -1708,7 +2317,7 @@ $$`,
   // partial init can leave the app "healthy" with broken pages. These probes
   // turn the two highest-impact silent failures into diagnosable ERROR lines:
   //   * Asset Velocity views missing (e.g. CREATE VIEW threw because
-  //     DWELL_ANALYSIS.DT_DWELL_ENRICHED did not exist yet at boot).
+  //     FLEET_APP.DWELL.VW_DWELL_SESSIONS did not exist yet at boot).
   //   * MARKETPLACE.CONFIG empty -> VW_OFFER_ENRICHED filters to 0 rows.
   // -----------------------------------------------------------------
   try {
@@ -1804,6 +2413,12 @@ export async function ensureObservabilityObjects(
       db: 'OPENROUTESERVICE_APP', schema: 'OBSERVABILITY',
     },
     {
+      // Second copy of 08_observability.sql's V_ORS_METRICS_SUMMARY, issued at
+      // container boot. The window cutoffs use CURRENT_TIMESTAMP() because
+      // REQUEST_TS is TIMESTAMP_LTZ and SYSDATE() is the UTC wall clock as NTZ:
+      // comparing them shifted every cutoff forward by the session UTC offset,
+      // which made the "1h" window unconditionally empty and "24h" cover 17h.
+      // Keep both copies in step - see the full note in 08_observability.sql.
       sql: `CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY
         COMMENT = ${TRACK_OBS}
         AS
@@ -1822,9 +2437,9 @@ export async function ensureObservabilityObjects(
           FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
         ),
         windowed AS (
-          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, SYSDATE())
+          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
           UNION ALL
-          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, SYSDATE())
+          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
         )
         SELECT
           WINDOW_NAME,

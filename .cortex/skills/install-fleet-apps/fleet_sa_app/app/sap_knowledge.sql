@@ -78,7 +78,7 @@ FROM VALUES
 CREATE OR REPLACE CORTEX SEARCH SERVICE FLEET_INTELLIGENCE.SEMANTIC.SAP_BINDING_SEARCH
   ON CHUNK_TEXT
   ATTRIBUTES DOC, SECTION
-  WAREHOUSE = MY_WH
+  WAREHOUSE = ROUTING_ANALYTICS
   TARGET_LAG = '1 hour'
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS

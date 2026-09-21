@@ -12,6 +12,7 @@ import { useRegionsCatalog } from '@/components/region-builder/hooks/useRegionsC
 import { useProvisionJobs } from '@/components/region-builder/hooks/useProvisionJobs';
 import { useBuildProgress } from '@/components/region-builder/hooks/useBuildProgress';
 import { useBuildHistory } from '@/components/region-builder/hooks/useBuildHistory';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 import { useDiagnostics } from '@/components/region-builder/hooks/useDiagnostics';
 
 import HealthBanner from '@/components/region-builder/sections/HealthBanner';
@@ -54,12 +55,17 @@ export function RegionBuilderPage() {
 
   // While anything is in flight we also want to refresh the regions list so
   // service-status badges update in lockstep with provision-job polling.
-  useEffect(() => {
+  //
+  // Uses useVisiblePolling rather than a raw setInterval: the raw version kept
+  // hitting Snowflake while the tab was hidden, and a region build runs for
+  // minutes to hours, so a 3s cadence on a 2-row table bought no responsiveness
+  // (~1200 warehouse round trips/hour per open tab). 10s + pause-when-hidden.
+  const refreshRegions = useCallback(() => {
     if (!jobs.hasActiveJobs) return;
-    const id = setInterval(() => { cat.fetchRegions(); }, 3000);
-    return () => clearInterval(id);
+    cat.fetchRegions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs.hasActiveJobs]);
+  useVisiblePolling(refreshRegions, 10000);
 
   const toggleProfile = useCallback((profileId: string) => {
     setSelectedProfiles((prev) =>
@@ -111,7 +117,14 @@ export function RegionBuilderPage() {
       setSelectedRegion(match);
       const profiles = job.profiles ? job.profiles.split(',').map((p) => p.trim()).filter(Boolean) : DEFAULT_PROFILES;
       setSelectedProfiles(profiles);
-      setComputeSize(recommendComputeSize(match.level));
+      // Reuse the size the failed job ran with, matching onRerunHistory below.
+      // Recomputing from the region level silently downgraded a deliberate XXL
+      // choice on every retry, so the retry did not reproduce the failed build.
+      if (job.compute_size === 'S' || job.compute_size === 'L' || job.compute_size === 'XXL') {
+        setComputeSize(job.compute_size);
+      } else {
+        setComputeSize(recommendComputeSize(match.level));
+      }
     }
   }, [cat.catalog]);
 

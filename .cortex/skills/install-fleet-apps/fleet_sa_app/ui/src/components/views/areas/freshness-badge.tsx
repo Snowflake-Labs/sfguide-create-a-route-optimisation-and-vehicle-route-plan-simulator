@@ -17,6 +17,8 @@ function relative(fetchedAt: number, now: number): string {
 
 export function FreshnessBadge({ fetchedAt }: { fetchedAt: number | null }) {
   const [now, setNow] = useState(() => Date.now());
+  // polling-gate: ui-only -- re-renders a relative timestamp ('3m ago') from a
+  // prop; fetches nothing. The data behind it is refreshed elsewhere.
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(t);

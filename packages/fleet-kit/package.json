@@ -9,7 +9,8 @@
     ".": "./dist/index.js",
     "./sf-auth": "./dist/sf-auth/index.js",
     "./sql-utils": "./dist/sql-utils/index.js",
-    "./map": "./dist/map/index.js"
+    "./map": "./dist/map/index.js",
+    "./map-react": "./dist/map-react/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -23,7 +24,13 @@
     "@deck.gl/core": "~9.2.11",
     "@deck.gl/layers": "~9.2.11",
     "@deck.gl/geo-layers": "~9.2.11",
-    "h3-js": "^4.1.0"
+    "h3-js": "^4.1.0",
+    "maplibre-gl": "^5.14.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "maplibre-gl": { "optional": true },
+    "react": { "optional": true }
   },
   "devDependencies": {
     "@deck.gl/core": "~9.2.11",
@@ -31,7 +38,10 @@
     "@deck.gl/geo-layers": "~9.2.11",
     "@types/geojson": "^7946.0.14",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
     "h3-js": "^4.1.0",
+    "maplibre-gl": "^5.14.0",
+    "react": "^19.0.0",
     "typescript": "^5.7.0"
   }
 }

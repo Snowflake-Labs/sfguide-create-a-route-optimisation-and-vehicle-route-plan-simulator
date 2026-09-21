@@ -4,9 +4,11 @@
 -- bundle. Run as ACCOUNTADMIN (or a role with MANAGE GRANTS + ownership).
 --
 -- Role model:
---   FLEET_APP_USER  -> consumer: dashboards + FLEET_AGENT + Cortex Analyst (10 SVs) + ROUTING_MCP verbs (OPENROUTESERVICE_APP.ROUTING)
+--   FLEET_APP_USER  -> consumer: dashboards + FLEET_AGENT + Cortex Analyst (the
+--                      FLEET_INTELLIGENCE.SEMANTIC semantic views) + ROUTING_MCP
+--                      verbs (OPENROUTESERVICE_APP.ROUTING)
 --   FLEET_APP_OPS   -> operator: FLEET_OPS_AGENT + FLEET_OPS_MCP (service lifecycle / region / health)
---   FLEET_APP_ADMIN -> installer: FLEET_ADMIN_MCP (substrate checks / region)
+--   FLEET_APP_ADMIN -> installer: FLEET_ADMIN_MCP (substrate checks / region) + FLEET_SUPER_AGENT
 -- Hierarchy: ADMIN inherits OPS inherits USER.
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"role-binding"}}';
@@ -25,7 +27,29 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_USER;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_OPS;
 
 -- Compute + database/schema usage (consumer).
-GRANT USAGE ON WAREHOUSE MY_WH TO ROLE FLEET_APP_USER;
+-- TWO warehouses, split by workload (see scripts/warehouses.sql):
+--   FLEET_APPS_WH     - every interactive read from both apps.
+--   ROUTING_ANALYTICS - long batch work (provisioning, matrix, dynamic tables).
+-- Both are granted because the admin app legitimately uses both: its dashboard
+-- reads go to FLEET_APPS_WH, while `PROVISION_REGION_WRAPPER` -- which runs as
+-- the app itself for up to 6.5 hours in a SINGLE statement -- must stay on
+-- ROUTING_ANALYTICS. Sharing one warehouse is what caused Data Studio to render
+-- "Total Points 0": the provisioning statement and its `SYSTEM$WAIT(30)` poll
+-- loop saturated an X-Small whose MAX_CONCURRENCY_LEVEL is 8, dashboard reads
+-- queued past their timeout, and the API routes reported the failure as an
+-- empty result set.
+-- Guarded so a missing warehouse cannot abort the rest of this file: `snow sql
+-- -f` stops at the first failing statement, and one bare grant here previously
+-- killed ~25 later grants including the SA app endpoint binding.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON WAREHOUSE FLEET_APPS_WH TO ROLE FLEET_APP_USER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (warehouse absent): USAGE ON WAREHOUSE FLEET_APPS_WH -> ' || SQLERRM;
+END;
+$$;
+GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE FLEET_APP_USER;
 GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO ROLE FLEET_APP_USER;
 GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO ROLE FLEET_APP_USER;
 GRANT USAGE ON DATABASE SYNTHETIC_DATASETS TO ROLE FLEET_APP_USER;
@@ -36,9 +60,35 @@ GRANT USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_APP_USER;
 -- step 4.5 (BEFORE this role binding in step 6), so these grants resolve on a
 -- fresh install. USAGE on the schema is also covered by the ALL SCHEMAS grant
 -- above; FUTURE keeps a later-added SV grantable without re-running this file.
+--
+-- REFERENCES is granted alongside SELECT, and it is load-bearing rather than
+-- belt-and-braces: a role that does NOT OWN a semantic view needs BOTH
+-- REFERENCES and SELECT to use it through a Cortex Agent. Cortex Analyst runs
+-- as the CALLER, so with SELECT alone the agent's query_* tool resolves at
+-- spec-validation time (the agent owner does hold ownership) and then fails at
+-- query time for an ordinary FLEET_APP_USER in CoWork - which reads to that
+-- user as a broken agent rather than a missing grant.
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
-GRANT SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
-GRANT SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
+GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
+GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_USER;
+
+-- CoWork agent SKILLS live on a stage and are READ AT REQUEST TIME by the
+-- caller's role, so USAGE on that stage is what makes them work. Without it the
+-- agent still lists 26 skills and every one of them fails to load - a
+-- per-request failure that looks like a broken agent, not a missing grant. The
+-- The privilege is READ, not USAGE: the skills documentation says USAGE, but
+-- that is the EXTERNAL-stage form, and an internal stage rejects it outright
+-- ("Cannot grant or revoke USAGE on an internal staging location; use READ
+-- and/or WRITE instead"). The wrong verb fails LOUDLY at install, which is the
+-- good case - but it was silent here until the exception handler was checked.
+-- stage is created by scripts/deploy_cowork_skills.sh, which runs before
+-- create_agents.sh, so this resolves on a fresh install; IF EXISTS keeps a
+-- --no-skills install from aborting the file.
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT READ ON STAGE FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS TO ROLE FLEET_APP_USER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped: ' || SQLERRM;
+END;$$;
 GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.DWELL_ANALYSIS TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL VIEWS  IN SCHEMA FLEET_INTELLIGENCE.DWELL_ANALYSIS TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.ROUTE_DEVIATION TO ROLE FLEET_APP_USER;
@@ -125,7 +175,17 @@ CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-render-view","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 GRANT ROLE FLEET_APP_DYNAMIC_READER TO ROLE SYSADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_DYNAMIC_READER;
-GRANT USAGE ON WAREHOUSE MY_WH TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE FLEET_APP_DYNAMIC_READER;
+-- The dynamic reader serves interactive `QUERY_DYNAMIC` reads from the app, so
+-- it needs the interactive warehouse too. Guarded (see the FLEET_APP_USER note).
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON WAREHOUSE FLEET_APPS_WH TO ROLE FLEET_APP_DYNAMIC_READER;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (warehouse absent): USAGE ON WAREHOUSE FLEET_APPS_WH -> ' || SQLERRM;
+END;
+$$;
 GRANT USAGE ON DATABASE FLEET_APP TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.CORE              TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.FLEET_OPS         TO ROLE FLEET_APP_DYNAMIC_READER;
@@ -133,6 +193,14 @@ GRANT USAGE ON SCHEMA FLEET_APP.UNIFIED_FLEET     TO ROLE FLEET_APP_DYNAMIC_READ
 GRANT USAGE ON SCHEMA FLEET_APP.DWELL             TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.CATCHMENT         TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE ON SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO ROLE FLEET_APP_DYNAMIC_READER;
+-- LABOR: paid hours / overtime contract. Needed here, not just in labor_layer.sql,
+-- because that file grants FLEET_APP_USER/OPS/ADMIN while agent-emitted
+-- (dynamic:true) queries execute through FLEET_APP.CORE.QUERY_DYNAMIC as THIS
+-- role. Without it a dynamic labour query fails with "Unknown user-defined table
+-- function FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED" - which reads as a broken
+-- agent rather than a missing grant, and is invisible to validate_app_views.py
+-- because that runs as the operator's own role.
+GRANT USAGE ON SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
 -- Contract UDTFs (owner's-rights): USAGE is sufficient, no underlying-source grants.
 GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.CORE          TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE          TO ROLE FLEET_APP_DYNAMIC_READER;
@@ -140,6 +208,8 @@ GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.FLEET_OPS     TO ROLE FLEET
 GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.FLEET_OPS     TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.UNIFIED_FLEET TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.UNIFIED_FLEET TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.LABOR         TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.LABOR         TO ROLE FLEET_APP_DYNAMIC_READER;
 -- Plain contract views (CORE exposes some views too; DWELL/CATCHMENT/ROUTE_OPTIMIZATION are view-only).
 GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.CORE              TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.CORE              TO ROLE FLEET_APP_DYNAMIC_READER;
@@ -153,6 +223,72 @@ GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO ROLE FLEE
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT SELECT ON ALL DYNAMIC TABLES    IN SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO ROLE FLEET_APP_DYNAMIC_READER;
 GRANT SELECT ON FUTURE DYNAMIC TABLES IN SCHEMA FLEET_APP.ROUTE_OPTIMIZATION TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
+-- LABOR_CONFIG is a policy TABLE (thresholds, week start, gap), not a view, and a
+-- dynamic query asking "what is the overtime limit" reads it directly.
+GRANT SELECT ON ALL TABLES    IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA FLEET_APP.LABOR             TO ROLE FLEET_APP_DYNAMIC_READER;
+-- ROUTING seam for agent-authored maps. `render_map` (and a render_view Map area)
+-- runs each layer query through QUERY_DYNAMIC as THIS role, and the agent specs
+-- tell the agent a layer may draw LIVE geometry from the routing contract
+-- (DIRECTIONS / ISOCHRONES / OPTIMIZATION each project a GEOJSON GEOGRAPHY
+-- column). That instruction was false in both directions until now: the
+-- api/query allowlist refused the database, and this role held NO grant on it -
+-- so a live-routing map surfaced in the browser as "Some layers could not be
+-- drawn" next to a correct map from the routing tool that had already answered.
+-- Mirrors the FLEET_APP_USER block above. The contract functions are
+-- owner's-rights wrappers, so USAGE is the whole grant: no OPENROUTESERVICE_APP
+-- or provider-table privilege travels with it. ADMIN.V_REGIONS is deliberately
+-- NOT granted - the reader needs the routing functions, not the region registry.
+-- FUTURE so a regenerated contract stays callable without re-granting (Tenet 8).
+--
+-- Consequence to state plainly: agent-authored SQL can now spend routing-engine
+-- time. It is bounded by MAX_MAP_LAYERS (4 queries per map) and the per-layer row
+-- cap. Keep in sync with ALLOWED_DYNAMIC_DBS in api/query/route.ts and codes.ts;
+-- asserted by scripts/check_dynamic_allowlist.py.
+GRANT USAGE ON DATABASE ROUTING_PLATFORM                                TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON SCHEMA ROUTING_PLATFORM.CONTRACT                         TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON ALL FUNCTIONS    IN SCHEMA ROUTING_PLATFORM.CONTRACT     TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA ROUTING_PLATFORM.CONTRACT     TO ROLE FLEET_APP_DYNAMIC_READER;
+
+-- LIVE_* routing UDTFs on the contract's own schemas. These are the OTHER live
+-- routing entry points an agent-authored map reaches for, and they were the last
+-- half of the gap closed above: CATCHMENT had its VIEWS granted but not its
+-- FUNCTIONS (LIVE_CATCHMENT / _CATEGORIES / _COMPETITORS are UDTFs), and
+-- LOCATION / SOURCING / DELIVERY_SYNC / EMERGENCY_RESPONSE were not granted at
+-- all. Measured on this account: 34 functions across those five schemas, 27 of
+-- them LIVE_*.
+--
+-- The symptom is identical to the ROUTING_PLATFORM one and just as misleading:
+-- "Unknown user-defined table function FLEET_APP.LOCATION.LIVE_CANNIBALISATION",
+-- which reads as a hallucinated object name - so the natural response is to
+-- correct the agent rather than the grant. Owner's-rights wrappers again, so
+-- USAGE is the whole grant and no provider-table privilege travels with it.
+-- FUTURE so a regenerated layer stays callable (Tenet 8).
+GRANT USAGE ON SCHEMA FLEET_APP.LOCATION            TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON SCHEMA FLEET_APP.SOURCING            TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON SCHEMA FLEET_APP.DELIVERY_SYNC       TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE ON SCHEMA FLEET_APP.EMERGENCY_RESPONSE  TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.CATCHMENT          TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CATCHMENT          TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.LOCATION           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.LOCATION           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.SOURCING           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.SOURCING           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.DELIVERY_SYNC      TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.DELIVERY_SYNC      TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON ALL FUNCTIONS    IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT USAGE  ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_DYNAMIC_READER;
+-- Their plain views/tables too, so a layer can join a LIVE_* result to context.
+GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.LOCATION           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.LOCATION           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.SOURCING           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.SOURCING           TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.DELIVERY_SYNC      TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.DELIVERY_SYNC      TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON ALL VIEWS    IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_DYNAMIC_READER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.EMERGENCY_RESPONSE TO ROLE FLEET_APP_DYNAMIC_READER;
 
 -- Owner's-rights execution boundary for agent-emitted (dynamic:true) queries.
 -- The SQL API `role` override does NOT disable the caller's secondary roles, so a
@@ -195,12 +331,223 @@ GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_OPS_AGENT TO ROLE FLE
 GRANT USAGE ON MCP SERVER FLEET_INTELLIGENCE.SYNAPSE_OPS.FLEET_OPS_MCP TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON ALL PROCEDURES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_OPS TO ROLE FLEET_APP_OPS;
 
+-- Deployment-history semantic view (SV_FLEET_DEPLOYMENT, semantic_views_deployment.sql).
+-- Backs the ops/admin agents' query_deployment Cortex Analyst tool: routing-call
+-- volume / error rate / latency per region, build outcomes and durations, and the
+-- audited verb attempts. HISTORY only - live run-state stays behind the ops verbs
+-- and DESCRIBE_DEPLOYMENT, so this widens the READ surface, not the action surface.
+--
+-- It lives in its own schema (SEMANTIC_OPS) precisely so these grants can stop at
+-- FLEET_APP_OPS: FLEET_INTELLIGENCE.SEMANTIC has ALL + FUTURE semantic views granted
+-- to FLEET_APP_USER, so a view landed there would reach every consumer by default.
+-- Do NOT grant SEMANTIC_OPS to FLEET_APP_USER.
+--
+-- Cortex Analyst runs as the CALLER, so base-table SELECT on the ORS control-app
+-- telemetry is required, not optional - without it the tool compiles and then
+-- fails at query time, which reads to a user as the agent being broken.
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
+GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
+GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_OPS;
+-- ---------------------------------------------------------------------------
+-- Engine (OPENROUTESERVICE_APP) reads for the ops role - INDIVIDUALLY GUARDED.
+-- ---------------------------------------------------------------------------
+-- A `--no-engine` install never runs scripts/provision_engine.sh, so most of the
+-- objects below do not exist when this file runs at install step 8. What DOES
+-- exist on such an account: the database + CORE schema + CORE.REGION_CATALOG
+-- (scripts/seed_data.sql), the OBSERVABILITY schema + ORS_REQUEST_LOG (admin app
+-- boot, step 7), and the ROUTING schema + VERB_ATTEMPT (synapse bundles install
+-- inert). Absent: the whole TRAVEL_MATRIX schema (provision_engine.sh) plus
+-- REGION_ORS_MAP / REGION_PROVISION_JOBS / PBF_MIRRORS /
+-- V_DOWNLOAD_RELAUNCH_PENDING / _CANDIDATES / MATRIX_BUILD_JOBS (engine modules
+-- 03/05/06, loaded only by provision_engine.sh).
+--
+-- `snow sql -f` ABORTS on the first failing statement (measured: exit 1, later
+-- statements never execute). Left bare, the TRAVEL_MATRIX grant below therefore
+-- truncated the rest of this file on every `--no-engine` install, silently
+-- dropping ~25 grants including FLEET_SA_APP!ALL_ENDPOINTS_USAGE (app users
+-- could not open the app URL at all) and the FLEET_SUPER_AGENT grant that IS the
+-- Tenet 3 isolation boundary. Step 8 reported only a soft WARN.
+--
+-- ONE grant per block, deliberately: a shared block would raise on the first
+-- missing object, the handler would swallow it, and every later grant in that
+-- block would be skipped - the same bug, just relocated (see the same warning
+-- on the idempotent ALTERs in openrouteservice_app/app/modules/
+-- 03_region_management.sql). The handler RETURNs the reason rather than NULL so a
+-- `--no-engine` install leaves evidence in /tmp/ifa_roles.log of exactly which
+-- grants were skipped; a bare `WHEN OTHER THEN NULL` has hidden two real defects
+-- in this repo before.
+--
+-- Guarding is scoped to THIS block. The FLEET_INTELLIGENCE, agent, MCP-server and
+-- service-role grants below stay bare on purpose: their objects exist in every
+-- install mode, so a failure there is a real defect and must abort loudly.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.CORE TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA CORE -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.OBSERVABILITY TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA OBSERVABILITY -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT USAGE ON SCHEMA OPENROUTESERVICE_APP.TRAVEL_MATRIX TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): USAGE ON SCHEMA TRAVEL_MATRIX -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_ORS_MAP -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_CATALOG TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_CATALOG -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.REGION_PROVISION_JOBS -> ' || SQLERRM;
+END;
+$$;
+-- PBF download failover config + the reconciler's relaunch queue. Needed for the
+-- ops agent's run_sql verb: without them "which mirror is configured" or "is a
+-- build waiting to be relaunched" fails with `does not exist or not authorized`,
+-- which reads to a user as a MISSING FEATURE rather than a missing grant. Kept
+-- per-object like the lines above rather than a blanket ALL/FUTURE on
+-- OPENROUTESERVICE_APP.CORE, which would hand the ops role every engine table.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.CORE.PBF_MIRRORS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.PBF_MIRRORS -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.V_DOWNLOAD_RELAUNCH_PENDING -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): OBSERVABILITY.ORS_REQUEST_LOG -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): TRAVEL_MATRIX.MATRIX_BUILD_JOBS -> ' || SQLERRM;
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT SELECT ON TABLE OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT TO ROLE FLEET_APP_OPS;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'SKIPPED (engine object absent): ROUTING.VERB_ATTEMPT -> ' || SQLERRM;
+END;
+$$;
+
 -- Admin bundle. FLEET_ADMIN_AGENT (created in SYNAPSE_USER) attaches the admin
 -- MCP, making the previously-dormant FLEET_ADMIN_MCP reachable by an agent.
 GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SYNAPSE_ADMIN TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON MCP SERVER FLEET_INTELLIGENCE.SYNAPSE_ADMIN.FLEET_ADMIN_MCP TO ROLE FLEET_APP_ADMIN;
 GRANT USAGE ON ALL PROCEDURES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_ADMIN TO ROLE FLEET_APP_ADMIN;
+
+-- FLEET_SUPER_AGENT: the one agent that attaches ALL THREE MCP servers.
+--
+-- THIS GRANT IS THE TENET 3 BOUNDARY. The super agent's SPEC deliberately has no
+-- role isolation - that is the point of it - so isolation is enforced here, by
+-- granting it to FLEET_APP_ADMIN ONLY. Do NOT add FLEET_APP_USER (or PUBLIC): the
+-- role hierarchy is ADMIN inherits OPS inherits USER, so an admin already holds
+-- every MCP server the agent attaches, whereas granting it to FLEET_APP_USER
+-- would hand every app user the ability to suspend services and delete regions
+-- through the agent, with nothing else in the stack stopping them.
+--
+-- It exists because a Cowork / Snowflake Intelligence user cannot hand off between
+-- agents mid-conversation, so an operator working there needs one assistant that
+-- can both answer analytics questions and operate the platform.
+GRANT USAGE ON AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SUPER_AGENT TO ROLE FLEET_APP_ADMIN;
+
+-- The super agent's Cortex Analyst tools run as the caller, so the admin role
+-- needs the semantic views directly rather than only by inheritance (inheritance
+-- covers it today, but an explicit grant keeps the agent working if the hierarchy
+-- is ever flattened). FUTURE covers semantic views added later, including SV_OFFERS
+-- when the marketplace layer is installed after this file runs.
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC TO ROLE FLEET_APP_ADMIN;
+
+-- CoWork AUTOMATIONS (scheduled recurring reports) work by granting
+-- EXECUTE AGENT TASK, which Snowflake grants to PUBLIC by default - so on most
+-- accounts this is already true and these statements are a no-op. They exist for
+-- the account where an administrator has revoked it from PUBLIC to restrict the
+-- feature: without the privilege the Automations tab still appears and still
+-- lets a user create one, then explains that access is disabled, so the failure
+-- surfaces to the user rather than to whoever configured the account.
+--
+-- Granting to the three app roles rather than back to PUBLIC keeps that
+-- administrator's decision intact for every other role in the account.
+-- Exception-wrapped because the grant needs ACCOUNTADMIN and this file may be
+-- run by a role that only owns the fleet objects.
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_USER;
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_OPS;
+  GRANT EXECUTE AGENT TASK ON ACCOUNT TO ROLE FLEET_APP_ADMIN;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped (needs ACCOUNTADMIN): ' || SQLERRM;
+END;$$;
+EXECUTE IMMEDIATE $$BEGIN
+  GRANT READ ON STAGE FLEET_INTELLIGENCE.SEMANTIC.COWORK_SKILLS TO ROLE FLEET_APP_ADMIN;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped: ' || SQLERRM;
+END;$$;
+-- Same reasoning for the ops-only deployment-history view the super agent also
+-- attaches (query_deployment). ADMIN inherits OPS today, so this is belt-and-braces.
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT REFERENCES, SELECT ON ALL SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT REFERENCES, SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.SEMANTIC_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FLEET_APP_ADMIN;
 
 -- SPCS endpoint access: only these roles can open the app URL.
 GRANT SERVICE ROLE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP!ALL_ENDPOINTS_USAGE TO ROLE FLEET_APP_USER;

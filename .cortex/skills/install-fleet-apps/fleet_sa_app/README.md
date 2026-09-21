@@ -69,7 +69,7 @@ AGENT_SCHEMA=SYNAPSE_USER \
 AGENT_NAME=FLEET_AGENT \
 SNOWFLAKE_ACCOUNT_URL=https://pm-fleet-test.snowflakecomputing.com \
 SNOWFLAKE_PAT=<pat> \
-SNOWFLAKE_WAREHOUSE=MY_WH \
+SNOWFLAKE_WAREHOUSE=ROUTING_ANALYTICS \
 SNOWFLAKE_ROLE=ACCOUNTADMIN \
 npm run dev
 ```
@@ -93,5 +93,5 @@ tool results render as deck.gl maps in chat via the inline registry (`get_direct
 - Region/vehicle refetch (hybrid): each area's `data.params` references `context.region` + `context.vehicle_type`; changing the contextBar updates the store (auto-refetch) AND POSTs `/api/region` to update server-side CONFIG. Params absent from SQL are harmless and still trigger refetch.
 
 ### Map area (deck.gl)
-- Pure layers ported from the control app: `ui/src/lib/map/{layer-spec,layer-compiler,map-fit}.ts`. Runtime: `areas/map-view.tsx` (DeckGL + CARTO basemap via `/api/tiles`), `areas/view-map.tsx` (SA area, per-layer `useViewData`).
+- Pure layers ported from the control app: `ui/src/lib/map/{layer-spec,layer-compiler,map-fit}.ts`. Runtime: `areas/map-view.tsx` (DeckGL over a CARTO vector basemap rendered by MapLibre GL JS in `areas/basemap.tsx`), `areas/view-map.tsx` (SA area, per-layer `useViewData`).
 - Requires the full deck.gl 9.2.x suite (core, layers, geo-layers, mesh-layers, aggregation-layers, extensions, react, widgets) + `h3-js` - all public npm.

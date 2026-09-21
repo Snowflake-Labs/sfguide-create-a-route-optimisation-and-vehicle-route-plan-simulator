@@ -3,6 +3,10 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { buildTableMemo, useAgentMemo } from '@/lib/agent-memo';
+import { formatCellValue } from '@/lib/format-number';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 // Row metrics for the `fitRows` height cap: sticky header + N data rows, then scroll.
 const HEADER_PX = 38;
@@ -23,29 +27,25 @@ interface ViewTableAreaProps {
       fitRows?: number;
     };
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this table's agent memo so sibling tables in one view do not clobber it.
+  areaName?: string;
 }
 
-function formatCell(value: unknown): string {
-  if (value === null || value === undefined) return '-';
-  if (typeof value === 'number') {
-    if (Math.abs(value) < 1 && value !== 0) return value.toFixed(4);
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
-  }
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
-    const d = new Date(value);
-    if (!isNaN(d.getTime())) return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-  }
-  return String(value);
+// Decimal policy, compaction and ISO-date handling all live in lib/format-number
+// so this grid, the chat grid and the map tooltips cannot drift apart. The column
+// name is passed through because it is what exempts coordinates from the 2dp cap.
+function formatCell(value: unknown, column?: string): string {
+  return formatCellValue(value, { column, grouping: true, compact: true });
 }
 
 function isNumericColumn(rows: Record<string, unknown>[], key: string): boolean {
   return rows.slice(0, 10).every((r) => r[key] === null || r[key] === undefined || typeof r[key] === 'number');
 }
 
-export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+export function ViewTableArea({ areaConfig, areaName }: ViewTableAreaProps) {
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const display = useDisplayConfig();
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -69,6 +69,27 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
       return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [data, sortKey, sortDir]);
+
+  // Agent grounding: republish the rendered slice so the chat agent can answer
+  // about this table instead of re-querying and drifting from what is on screen
+  // (these tables are commonly scoped to a replay instant). Built from sortedRows
+  // so the sample follows the user's current ordering.
+  useAgentMemo(
+    areaName,
+    useMemo(
+      () =>
+        buildTableMemo({
+          columns: data?.columns ?? [],
+          rows: sortedRows,
+          totalRows: data?.totalRows,
+          sortKey,
+          sortDir,
+          formatCell,
+        }),
+      [data?.columns, data?.totalRows, sortedRows, sortKey, sortDir],
+    ),
+    'table',
+  );
 
   const handleHover = useCallback((index: number | null) => setHoveredIndex(index), []);
 
@@ -94,6 +115,10 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
         ))}
       </div>
     );
+  }
+
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} />;
   }
 
   if (error) {
@@ -131,7 +156,7 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
                   zIndex: 1,
                 }}
               >
-                {col.label}
+                {interpolateTokens(col.label, display)}
                 {sortKey === col.key && (
                   <span style={{ marginLeft: '4px', fontSize: '10px' }}>
                     {sortDir === 'asc' ? '▲' : '▼'}
@@ -165,7 +190,7 @@ export function ViewTableArea({ areaConfig }: ViewTableAreaProps) {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {formatCell(row[col.key])}
+                  {formatCell(row[col.key], col.key)}
                 </td>
               ))}
             </tr>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import {
   MapPin, Wrench, Grid3X3, Database, Activity, LineChart, Stethoscope,
   SlidersHorizontal, ChevronDown, ChevronRight,
@@ -9,13 +9,25 @@ import { useRegionProvider, RegionContext } from '@/hooks/useRegion';
 import { useVehicleTypeProvider, VehicleTypeContext } from '@/hooks/useVehicleType';
 import { DiagnosticsPage } from '@/components/pages/diagnostics';
 import { ServiceManagerPage } from '@/components/pages/service-manager';
-import { FunctionTesterPage } from '@/components/pages/function-tester';
-import { MatrixViewerPage } from '@/components/pages/matrix-viewer';
-import { RegionBuilderPage } from '@/components/pages/region-builder';
 import { MatrixBuilderPage } from '@/components/pages/matrix-builder';
 import { RoutingLimitsPage } from '@/components/pages/routing-limits';
 import { ObservabilityPage } from '@/components/pages/observability';
 import { FleetDataStudioPage } from '@/components/pages/fleet-data-studio';
+
+// The three map-bearing pages load on demand. deck.gl + maplibre-gl is the
+// largest dependency this app carries and only these pages draw a map, but this
+// shell is a single route that statically imported all nine pages, so every page
+// paid for it. Lazy here rather than inside each page: the import must not be
+// reachable from this module's own graph, which a static import would make it.
+const FunctionTesterPage = lazy(() =>
+  import('@/components/pages/function-tester').then((m) => ({ default: m.FunctionTesterPage })),
+);
+const MatrixViewerPage = lazy(() =>
+  import('@/components/pages/matrix-viewer').then((m) => ({ default: m.MatrixViewerPage })),
+);
+const RegionBuilderPage = lazy(() =>
+  import('@/components/pages/region-builder').then((m) => ({ default: m.RegionBuilderPage })),
+);
 
 interface SubPage { key: string; label: string; }
 interface NavGroup {
@@ -89,6 +101,9 @@ function Placeholder({ tab }: { tab: string }) {
 }
 
 // Tab -> page component. Pages are added as they are ported (tasks 3-9).
+// The lazy map pages are wrapped in one Suspense boundary at the call site in
+// AppShell, so a tab switch shows the loading state rather than suspending the
+// whole shell (which would unmount the nav).
 function renderPage(tab: string) {
   switch (tab) {
     case 'services': return <ServiceManagerPage />;
@@ -197,7 +212,21 @@ export function AppShell() {
             <header className="app-header">
               <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{headerLabel(activeTab)}</span>
             </header>
-            <main className="app-main">{renderPage(activeTab)}</main>
+            <main className="app-main">
+              {/* Scoped to <main> so a suspending map page leaves the sidebar and
+                  header mounted; keyed by tab so switching pages shows the
+                  fallback again rather than holding the previous page's tree. */}
+              <Suspense
+                key={activeTab}
+                fallback={
+                  <div style={{ padding: 24, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>
+                    Loading...
+                  </div>
+                }
+              >
+                {renderPage(activeTab)}
+              </Suspense>
+            </main>
           </div>
         </div>
       </VehicleTypeContext.Provider>

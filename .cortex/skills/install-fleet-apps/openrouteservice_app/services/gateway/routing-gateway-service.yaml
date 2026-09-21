@@ -3,7 +3,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.9
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.16
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000
@@ -38,6 +38,14 @@ spec:
         ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS: "1000"
         # Fail matrix calls before SPCS ingress upstream timeout (~60s).
         ORS_TIMEOUT_MATRIX: "55"
+        # Same reason for directions. The code default is 120s, which is LONGER
+        # than the ingress timeout, so a slow directions call had ingress cut the
+        # connection first and return a plain-text 'upstream request timeout'
+        # instead of this gateway's structured timeout envelope. Measured: a
+        # disconnected coordinate pair (Maui -> Boise) failed at 90s with an
+        # unparseable body. Matrix was already tuned under ingress; directions
+        # was not.
+        ORS_TIMEOUT_DEFAULT: "55"
   endpoints:
     - name: gateway
       port: 8000

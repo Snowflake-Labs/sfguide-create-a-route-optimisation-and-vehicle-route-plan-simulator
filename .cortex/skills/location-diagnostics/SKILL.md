@@ -13,14 +13,16 @@ metadata:
 
 Region-agnostic store-location intelligence for retail site decisions, covering the two highest-value workstreams from the customer's "Location Diagnostics" brief:
 
-- **Cannibalisation / transfer modelling** - for a candidate new site, how much revenue and EBITDA it draws from the existing estate, by drive-time band and by existing store, split by interaction type (Home Visit / Sample / Walk-in).
+- **Cannibalisation / transfer modelling** - for a candidate new site, how much revenue and EBITDA it draws from the existing estate, by drive-time band and by existing store, split by interaction type (Home Visit / Sample / Walk-in). Demand is allocated by a **Huff gravity model over live drive times** (`LIVE_HUFF_ALLOCATION`): each store's share of a household cell is its attractiveness over drive-minutes to the power beta, across the whole choice set of our stores, competitor stores and the candidate. Solving with and without the candidate makes the transfer a **difference** rather than an assumption, and splitting it by store role separates **cannibalisation** (taken from us) from **net new** revenue (taken from competitors) - which is the number a site decision actually turns on, together with payback against the site's rent and rates (`LIVE_SITE_VERDICT`).
 - **Closure modelling** - if an existing store closes, which surviving store inherits its households and sales via the next-closest-store (drive-time) approach.
 
 Everything is built from data already present in the accelerator: a deterministic subset of `FLEET_INTELLIGENCE.CATCHMENT.POIS` (the region's most spatially-spread retail category) becomes the **store estate** (OWNED existing + CANDIDATE proposed sites) and `CATCHMENT.REGIONAL_ADDRESSES` is the **household proxy** (H3 cells). The estate's commercial figures (revenue, EBITDA, HV/Sample/Walk-in mix, sqft, rent) are **synthetic, deterministic proxies** - a stand-in for a customer's first-party sales, not real data. To plug in richer branded first-party data, see [references/data-studio-extension.md](references/data-studio-extension.md).
 
 **Live routing (Architecture Tenet 9).** Drive-time catchments are NOT precomputed. Each time the user picks a candidate site / band (or a store to close), the app view calls `OPENROUTESERVICE_APP.CORE.ISOCHRONES` live and attributes households at interaction time. The build only materializes non-ORS reference data (estate, household grid, synthetic facts). This means every interaction shows the actual routing engine at work - and **the region's ORS service must be RESUMED** or the views return an embedded error until it warms up.
 
-> Deferred to a follow-on slice (not built here): gap / penetration analysis, competitor & catchment analytics, property benchmarking, retail-park intelligence. The `FLEET_INTELLIGENCE.LOCATION` layer and `SV_LOCATION` are designed to extend to those.
+> Deferred to a follow-on slice (not built here): gap / penetration analysis, property benchmarking, retail-park intelligence. The `FLEET_INTELLIGENCE.LOCATION` layer and `SV_LOCATION` are designed to extend to those.
+>
+> **Also not built, and blocked rather than skipped:** a candidate LEAGUE TABLE (all candidates ranked in one panel). ORS SQL functions reject a correlated per-row argument, so `FROM candidates c, TABLE(LIVE_SITE_VERDICT(c.STORE_ID, ...))` fails with `Unsupported subquery type cannot be evaluated`, and pricing every candidate in ONE shared matrix call forces the anchor grid so coarse (measured: H3 res 5, one anchor per candidate inside a 20-minute band) that the trade area disappears. Rank candidates by switching the candidate picker, or `UNION ALL` one `LIVE_SITE_VERDICT` call per candidate outside the app.
 
 ## Prerequisites
 
@@ -50,8 +52,10 @@ CRITICAL: Verify these before starting:
 | Region | active dataset (`FLEET_INTELLIGENCE.CATCHMENT.CONFIG`) | Region whose estate is built; must have an ORS graph |
 | Owned stores | 10 | Existing estate size (one per H3 res-6 cell of the primary category) |
 | Candidate sites | 3 | Proposed new sites |
+| Competitor stores | 12 | Third-party estate competing for the same households. Required for net new revenue: without competitors in the choice set, 100% of a candidate's demand is cannibalisation by construction. |
 | Drive-time bands | 10,15,20,25,30,45,60 (min) | `FLEET_INTELLIGENCE.LOCATION.BANDS` |
-| Capture rate | 0.5 | Share of overlapping demand a candidate captures (cannibalisation) |
+| Capture rate | 0.5 | Calibration multiplier on the modelled Huff share, not the model itself |
+| Distance decay (beta) | 2.0 | Huff exponent in `attractiveness / drive_minutes ^ beta`. 2.0 is the conventional retail value. |
 
 To change owned/candidate counts or bands, edit `BUILD_LOCATION_DIAGNOSTICS` / the `BANDS` seed in `scripts/analytic_layer.sql` and re-run the build.
 

@@ -27,17 +27,25 @@ DEFAULT_AGENT_SCHEMA = "SYNAPSE_USER"
 DEFAULT_AGENT_NAME = "FLEET_AGENT"
 
 
-def resolve_account_url() -> str:
+def resolve_account_url(connection: str | None = None) -> str:
     """Return the https base URL for the account.
 
-    Prefers SNOWFLAKE_ACCOUNT_URL; otherwise derives it from the active snow
+    Prefers SNOWFLAKE_ACCOUNT_URL; otherwise derives it from the given snow
     connection via CURRENT_ORGANIZATION_NAME / CURRENT_ACCOUNT_NAME.
+
+    `connection` is REQUIRED to be threaded through by the caller. It used to be
+    omitted here while every other query in the run received it, so the URL was
+    built from whichever connection the CLI defaults to. Pointed at one account
+    and run with --connection for another, that produced a URL for the DEFAULT
+    account and the run died on an SSL hostname mismatch that reads like a
+    certificate problem rather than a wiring one.
     """
     env_url = os.environ.get("SNOWFLAKE_ACCOUNT_URL")
     if env_url:
         return env_url.rstrip("/")
     rows = sf.query(
-        "SELECT CURRENT_ORGANIZATION_NAME() AS ORG, CURRENT_ACCOUNT_NAME() AS ACCT"
+        "SELECT CURRENT_ORGANIZATION_NAME() AS ORG, CURRENT_ACCOUNT_NAME() AS ACCT",
+        connection=connection,
     )
     if not rows:
         raise AgentError(

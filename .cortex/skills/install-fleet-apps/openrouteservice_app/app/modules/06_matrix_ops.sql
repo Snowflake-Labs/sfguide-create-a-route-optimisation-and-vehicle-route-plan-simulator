@@ -14,7 +14,7 @@ CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_BUILD_STATUS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -77,7 +77,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_MATRIX_INVENTORY()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -118,7 +118,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DELETE_MATRIX_CONFIG(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -147,7 +147,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.CANCEL_MATRIX_BUILD(P_JOB_ID VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -171,7 +171,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESTORE_MATRIX_DATA(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR, P_OFFSET_SECONDS INTEGER DEFAULT 300)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -231,7 +231,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_LIVE_TABLE_COUNT(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -279,7 +279,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -296,7 +296,7 @@ BEGIN
         ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, ' ||
         'TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ) ' ||
         'CLUSTER BY (ORIGIN_H3) ' ||
-        'COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix"}}''';
+        'COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}''';
     EXECUTE IMMEDIATE 'TRUNCATE TABLE IF EXISTS ' || matrix_table;
 
     EXECUTE IMMEDIATE 'COPY INTO ' || matrix_table ||
@@ -371,7 +371,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ESTIMATE_MATRIX_COST(P_REGION VARCHAR, P_RESOLUTION INT)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"matrix","feature":"cost-estimate"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","feature":"cost-estimate"}}'
 EXECUTE AS OWNER
 AS
 $$

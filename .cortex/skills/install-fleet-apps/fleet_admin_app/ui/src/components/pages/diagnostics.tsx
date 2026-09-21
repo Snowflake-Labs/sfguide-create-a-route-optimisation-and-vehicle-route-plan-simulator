@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { Activity, RefreshCw, Trash2, CheckCircle, XCircle, Clock, Server, Cpu, Database } from 'lucide-react';
+import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
 interface EnvInfo {
   version: string;
@@ -85,11 +86,11 @@ export function DiagnosticsPage() {
     if (tab === 'logs') fetchLogs();
   }, [tab]);
 
-  useEffect(() => {
-    if (!autoRefresh || tab !== 'logs') return;
-    const iv = setInterval(fetchLogs, 5000);
-    return () => clearInterval(iv);
-  }, [autoRefresh, tab, fetchLogs]);
+  // Guarded for consistency with every other poll in the app, though note this
+  // one is NOT a warehouse cost: /api/diagnostics/logs reads the in-process ring
+  // buffer in server/diagnostics.ts and issues no SQL. The saving here is
+  // browser and container CPU, not credits.
+  useVisiblePolling(fetchLogs, 5000, autoRefresh && tab === 'logs');
 
   const tags = [...new Set(logs.map(l => l.tag))];
 

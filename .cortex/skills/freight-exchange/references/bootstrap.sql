@@ -125,9 +125,12 @@ SELECT
   f.OFFER_ID,
   f.SOURCE,
   f.PARTNER_ID,
-  COALESCE(p.NAME, 'Pickup')  AS PICKUP_CITY,
+  -- A location NAME or nothing. These *_CITY values become stop labels on a map
+  -- and place names in an agent's answer, so a placeholder reads as a real place
+  -- and cannot be told apart from one. NULL says "unknown" honestly.
+  p.NAME      AS PICKUP_CITY,
   f.PICKUP_LON, f.PICKUP_LAT, f.PICKUP_GEOM,
-  COALESCE(d.NAME, 'Dropoff') AS DROPOFF_CITY,
+  d.NAME      AS DROPOFF_CITY,
   f.DROPOFF_LON, f.DROPOFF_LAT, f.DROPOFF_GEOM,
   f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
   f.WEIGHT_KG, f.PRODUCT, f.PRICE_USD, f.HAZMAT,

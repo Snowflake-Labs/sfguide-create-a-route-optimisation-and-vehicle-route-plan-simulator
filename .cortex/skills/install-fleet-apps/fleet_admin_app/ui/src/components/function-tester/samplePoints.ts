@@ -31,7 +31,7 @@ export interface SampledPoints {
   hint?: string;
 }
 
-interface ProfileConstraints {
+export interface ProfileConstraints {
   minKm: number;
   maxKm: number;
 }
@@ -59,14 +59,25 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function getProfileConstraints(profile: string, maxSpan: number): ProfileConstraints {
+// Uncapped separation band for a profile. Exported so the coordinate-pool
+// fetch can ask the server for a pool that is dense enough to populate this
+// band - a pool drawn without reference to the band is the defect that let a
+// Maui/Boise pair through. Callers that sample also apply the maxSpan cap
+// below; the pool query must not, since maxSpan is derived from the region
+// bbox and for the USA that rectangle is -180..180.
+export function getProfileBand(profile: string): ProfileConstraints {
   if (profile.startsWith('driving')) {
-    return { minKm: 2, maxKm: Math.min(15, maxSpan) };
+    return { minKm: 2, maxKm: 15 };
   }
   if (profile.startsWith('cycling')) {
-    return { minKm: 1, maxKm: Math.min(8, maxSpan) };
+    return { minKm: 1, maxKm: 8 };
   }
-  return { minKm: 0.3, maxKm: Math.min(3, maxSpan) };
+  return { minKm: 0.3, maxKm: 3 };
+}
+
+function getProfileConstraints(profile: string, maxSpan: number): ProfileConstraints {
+  const band = getProfileBand(profile);
+  return { minKm: band.minKm, maxKm: Math.min(band.maxKm, maxSpan) };
 }
 
 function isBBoxValid(bbox: BBox): boolean {
@@ -120,6 +131,18 @@ function randomPointInBBox(bbox: BBox, rand: () => number, shrink = 0): [number,
 // Rejection sample inside the boundary polygon, falling back to bbox
 // after a maxAttempts cap (e.g. degenerate boundary, very thin region).
 const BOUNDARY_REJECT_MAX_ATTEMPTS = 50;
+
+// Count of bbox fallbacks taken during the current samplePoints() call.
+//
+// Exhausting the rejection cap used to be completely silent, which is how an
+// unusable sample looked like a normal one: the fallback returns a RAW bbox
+// point, and for a continental region the bbox is far larger than the polygon
+// (the US catalog bbox is -180..180 by 15.9..73), so the returned point can be
+// anywhere on the planet at those latitudes. Module-level rather than threaded
+// through eight sampler signatures; samplePoints() is synchronous, so the counter
+// cannot interleave between calls.
+let boundaryFallbacks = 0;
+
 function randomPointInBoundary(
   boundary: BoundaryGeoJson,
   bbox: BBox,
@@ -130,6 +153,7 @@ function randomPointInBoundary(
     const pt = randomPointInBBox(bbox, rand, shrink);
     if (pointInBoundary(pt[0], pt[1], boundary)) return pt;
   }
+  boundaryFallbacks++;
   return randomPointInBBox(bbox, rand, shrink);
 }
 
@@ -188,6 +212,15 @@ function meetsSepConstraints(points: [number, number][], minKm: number, maxKm: n
   return true;
 }
 
+// Hard ceiling on the nearest-neighbour fallback, as a multiple of the profile's
+// maxKm. The fallback exists so both ends stay on real roads, but it used to
+// return the nearest pool points at ANY distance: with a region-wide pool on the
+// USA the nearest POI to one on Maui was in Boise, 3,400 km away with no road
+// between them, and ORS then searched the whole US graph until SPCS ingress
+// timed the request out. A local pair slightly outside the band is a fine
+// sample; a cross-continent pair is not a sample at all.
+const FALLBACK_MAX_MULTIPLE = 2;
+
 function samplePointNear(anchor: [number, number], minKm: number, maxKm: number, bbox: BBox, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): [number, number] {
   if (roadPoints && roadPoints.length > 0) {
     const candidates = roadPoints.filter(rp => {
@@ -213,13 +246,19 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
     const pool = (filtered.length > 0 ? filtered : roadPoints);
     const sorted = pool
       .map(rp => ({ rp, d: haversineKm(anchor, rp) }))
-      .filter(x => x.d > 0.01)
+      .filter(x => x.d > 0.01 && x.d <= maxKm * FALLBACK_MAX_MULTIPLE)
       .sort((a, b) => a.d - b.d);
     if (sorted.length > 0) {
       const top = sorted.slice(0, Math.min(5, sorted.length));
       const choice = top[Math.floor(rand() * top.length)];
       return [+choice.rp[0].toFixed(5), +choice.rp[1].toFixed(5)];
     }
+    // Every pool point is beyond the ceiling. Fall through to the angular offset
+    // below rather than reaching for the nearest point at any distance. The
+    // offset is bounded by minKm/maxKm, so the result is LOCAL by construction;
+    // it may land off-road, which costs a fast, clearly-worded PointNotFound.
+    // The alternative - a pair on two landmasses - costs a 90s router search
+    // and an unparseable ingress timeout, so local wins even when imperfect.
   }
   const midLat = (bbox.min_lat + bbox.max_lat) / 2;
   const latRange = bbox.max_lat - bbox.min_lat;
@@ -237,12 +276,30 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
     const dLon = (targetKm * Math.sin(angle)) / degToKmLon(midLat);
     lat = anchor[1] + dLat;
     lon = anchor[0] + dLon;
-    lat = Math.max(bbox.min_lat + latRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lat - latRange * MIN_EDGE_MARGIN, lat));
-    lon = Math.max(bbox.min_lon + lonRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lon - lonRange * MIN_EDGE_MARGIN, lon));
+    // Keep the point off the bbox edge - but never at the cost of the distance
+    // band. MIN_EDGE_MARGIN is a FRACTION of the bbox, so on a continent-scale
+    // rectangle it is enormous: for a box spanning Hawaii to Alaska the 5%
+    // latitude margin is 2.35 deg, and clamping a Kauai anchor's offset to it
+    // moved the point ~94 km north - a "3 km walk" that no router can serve.
+    // Clamp only while the result stays within maxKm of the anchor.
+    const clampedLat = Math.max(bbox.min_lat + latRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lat - latRange * MIN_EDGE_MARGIN, lat));
+    const clampedLon = Math.max(bbox.min_lon + lonRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lon - lonRange * MIN_EDGE_MARGIN, lon));
+    if (haversineKm(anchor, [clampedLon, clampedLat]) <= maxKm) {
+      lat = clampedLat;
+      lon = clampedLon;
+    }
     if (!boundary || pointInBoundary(lon, lat, boundary)) break;
   }
   return [+lon.toFixed(5), +lat.toFixed(5)];
 }
+
+// Reported when the pool cannot satisfy the profile's band even after the
+// relaxed attempt. The old message here blamed the region's size, which sent
+// the reader looking in the wrong place: the cause is pool sparsity relative to
+// the band, not a small region.
+const SPARSE_POOL_HINT = 'Seed points are too sparse for this profile\'s distance band - '
+  + 'the sampled pair may be closer or further apart than intended. Reshuffle, '
+  + 'switch profile, or edit the coordinates.';
 
 function sampleWithSeparation(
   count: number,
@@ -263,12 +320,16 @@ function sampleWithSeparation(
       return { points: pts };
     }
   }
+  // Relaxed final attempt: halve the lower bound, keep the upper one. Unlike
+  // before, the result is still CHECKED - returning a pair that violates the
+  // band without saying so is what put a 3,400 km pair into a DIRECTIONS call.
   const first = sampleOne(bbox, rand, roadPoints, shrink, boundary);
   const pts: [number, number][] = [first];
   for (let i = 1; i < count; i++) {
     pts.push(samplePointNear(first, constraints.minKm * 0.5, constraints.maxKm, bbox, rand, roadPoints, boundary));
   }
-  return { points: pts, hint: 'Region is small - using reduced sample distances.' };
+  const ok = meetsSepConstraints(pts, constraints.minKm * 0.5, constraints.maxKm);
+  return { points: pts, hint: ok ? 'Region is small - using reduced sample distances.' : SPARSE_POOL_HINT };
 }
 
 function sampleDirections(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
@@ -286,6 +347,42 @@ function sampleMatrix(bbox: BBox, constraints: ProfileConstraints, rand: () => n
 
 function sampleMatrixTabular(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
   return sampleWithSeparation(4, bbox, constraints, rand, roadPoints, 0, boundary);
+}
+
+// SNAP is only interesting when the input point is NOT already on a road: the
+// whole point of the function is the nearest-edge correction, so a pool point
+// used verbatim would return SNAPPED_DISTANCE ~ 0 and an invisible delta.
+// Nudge each sampled point 20-60 m in a random bearing so the snap is visible.
+const SNAP_JITTER_MIN_M = 20;
+const SNAP_JITTER_MAX_M = 60;
+
+function jitterPoint(pt: [number, number], rand: () => number, minM: number, maxM: number): [number, number] {
+  const meters = minM + rand() * (maxM - minM);
+  const angle = rand() * 2 * Math.PI;
+  const dLat = (meters / 1000) * Math.cos(angle) / DEG_TO_KM_LAT;
+  const dLon = (meters / 1000) * Math.sin(angle) / degToKmLon(pt[1]);
+  return [+(pt[0] + dLon).toFixed(5), +(pt[1] + dLat).toFixed(5)];
+}
+
+function sampleSnap(bbox: BBox, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  const count = 5;
+  const pts: [number, number][] = [];
+  for (let i = 0; i < count; i++) {
+    const base = sampleOne(bbox, rand, roadPoints, 0.1, boundary);
+    pts.push(jitterPoint(base, rand, SNAP_JITTER_MIN_M, SNAP_JITTER_MAX_M));
+  }
+  return {
+    points: pts,
+    hint: 'Sample points are deliberately offset 20-60 m off the road so the snap correction is visible.',
+  };
+}
+
+// MATCH / MATCH_PATH need a trajectory that plausibly follows roads, not
+// scattered points - the HMM matcher rejects an implausible track. Sample only
+// the two route endpoints here; the page turns them into a real trajectory by
+// running DIRECTIONS and decimating + jittering the returned geometry.
+function sampleTrajectorySeed(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  return sampleWithSeparation(2, bbox, constraints, rand, roadPoints, 0, boundary);
 }
 
 function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
@@ -347,22 +444,63 @@ export function samplePoints(input: SamplePointsInput): SampledPoints | null {
   const maxSpan = Math.min(bboxWidthKm, bboxHeightKm) * 0.6;
   const constraints = getProfileConstraints(profile, maxSpan);
 
-  switch (fnName) {
-    case 'DIRECTIONS':
-      return sampleDirections(bbox, constraints, rand, roadPoints, boundary);
-    case 'ISOCHRONES':
-      return sampleIsochrones(bbox, rand, roadPoints, boundary);
-    case 'MATRIX':
-      return sampleMatrix(bbox, constraints, rand, roadPoints, boundary);
-    case 'MATRIX_TABULAR':
-      return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
-    case 'OPTIMIZATION':
-      return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
-    default:
-      return null;
+  boundaryFallbacks = 0;
+  const sampled = ((): SampledPoints | null => {
+    switch (fnName) {
+      case 'DIRECTIONS':
+        return sampleDirections(bbox, constraints, rand, roadPoints, boundary);
+      case 'ISOCHRONES':
+        return sampleIsochrones(bbox, rand, roadPoints, boundary);
+      case 'MATRIX':
+        return sampleMatrix(bbox, constraints, rand, roadPoints, boundary);
+      case 'MATRIX_TABULAR':
+        return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
+      case 'OPTIMIZATION':
+        return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
+      case 'SNAP_POINTS':
+        return sampleSnap(bbox, rand, roadPoints, boundary);
+      case 'MATCH':
+      case 'MATCH_PATH':
+        return sampleTrajectorySeed(bbox, constraints, rand, roadPoints, boundary);
+      default:
+        return null;
+    }
+  })();
+
+  if (sampled && boundaryFallbacks > 0) {
+    const note = `${boundaryFallbacks} point(s) fell back to bbox sampling after `
+      + `${BOUNDARY_REJECT_MAX_ATTEMPTS} rejected attempts - they may be off the region `
+      + `or in water. Reshuffle, or edit the coordinates.`;
+    return { ...sampled, hint: sampled.hint ? `${sampled.hint} ${note}` : note };
   }
+  return sampled;
 }
 
-export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION'];
+export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION', 'SNAP_POINTS', 'MATCH', 'MATCH_PATH'];
+
+// Functions whose SQL needs a road-following trajectory rather than loose points.
+export const TRAJECTORY_FUNCTIONS = ['MATCH', 'MATCH_PATH'];
+
+// Decimate a route geometry down to `count` roughly evenly spaced coordinates and
+// add GPS-like noise, producing the kind of noisy track a telematics feed emits.
+export function buildNoisyTrajectory(
+  routeCoords: [number, number][],
+  count: number,
+  jitterMeters: number,
+  seed?: number,
+): [number, number][] {
+  const clean = routeCoords.filter(
+    (p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]),
+  );
+  if (clean.length === 0) return [];
+  const n = Math.max(2, Math.min(count, clean.length));
+  const rand = mulberry32(seed ?? 1);
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round((i * (clean.length - 1)) / (n - 1));
+    out.push(jitterPoint(clean[idx], rand, jitterMeters * 0.4, jitterMeters));
+  }
+  return out;
+}
 
 export { haversineKm, isBBoxValid, mulberry32, getProfileConstraints, pointInBoundary };

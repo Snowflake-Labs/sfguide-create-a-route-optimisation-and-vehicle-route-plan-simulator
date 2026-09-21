@@ -1,14 +1,13 @@
 'use client';
 
-// deck.gl map canvas with a CARTO raster basemap and data-driven camera fit.
+// deck.gl map canvas with a CARTO vector basemap and data-driven camera fit.
 // Ported from the control app's shared/MapView.tsx; changes: 'use client' and
 // the map-fit import path.
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import DeckGL from '@deck.gl/react';
-import { BitmapLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
 import type { Layer } from '@deck.gl/core';
+import Basemap from './basemap';
 import {
   fitBoundsToData,
   coordsSignature,
@@ -33,6 +32,32 @@ interface FitToOptions {
   // change so it lands on the new (narrowed) coords, not the stale set still
   // showing during an in-flight refetch.
   focusKey?: string;
+  // Soften the focusKey fit: still wait for the narrowed coords, but leave the
+  // camera alone when those coords are ALREADY fully in view. Opt-in, because
+  // the default (always re-frame) is what a table-row-to-map gesture wants. Set
+  // it where a selection is one of many on a map the user is reading as a whole
+  // - re-framing there feels like the map jumping away from what they were
+  // looking at, even though the newly selected object was on screen the whole
+  // time. An off-screen selection still forces the fit.
+  focusOnlyIfOffscreen?: boolean;
+  // Fit once on load (plus a short settle window while the remaining layers
+  // report their coords), then stop auto-fitting entirely: selections, layer
+  // toggles and periodic refetches never move the camera. A regionKey change
+  // still re-arms the initial fit, and an explicit recenter still works.
+  lockAfterFirstFit?: boolean;
+  // One-shot camera focus on a single point, independent of the coords fit. When
+  // the point changes the camera pans to it (and zooms, when `zoom` is given).
+  // Deliberately bypasses lockAfterFirstFit: it is an explicit user gesture (a
+  // table row click), not an automatic re-frame, and it does not re-arm the
+  // auto-fit machinery.
+  focusPoint?: { lng: number; lat: number; zoom?: number } | null;
+  // Bounding-box corners of the ACTIVE region (2 coords is enough). Used to frame
+  // the region immediately when regionKey changes, before that region's layer
+  // data has arrived - and to keep framing it when a view has no rows for the
+  // region at all (otherwise the camera would sit on the previous region, or at
+  // world zoom on first load). This is a provisional fit: the real data fit is
+  // still forced once fresh coords arrive, so the final framing is unchanged.
+  regionCoords?: LngLat[] | null;
 }
 
 interface MapViewProps {
@@ -49,25 +74,10 @@ interface MapViewProps {
 }
 
 const DEFAULT_VIEW: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
-const CARTO_TILES = '/api/tiles/{z}/{x}/{y}';
 
-function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap',
-    data: CARTO_TILES,
-    minZoom: 0,
-    maxZoom: 19,
-    tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, {
-        data: undefined,
-        image: props.data,
-        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
-      });
-    },
-  });
-}
+// Grace period after the first fit during which a locked camera still accepts
+// fits, so late-arriving layers widen the initial frame before it freezes.
+const LOCK_SETTLE_MS = 2000;
 
 function isValidViewState(vs: any): boolean {
   return vs &&
@@ -106,7 +116,16 @@ export default function MapView({
   const lastFocusRef = useRef<string | undefined>(fitTo?.focusKey);
   const focusPendingRef = useRef(false);
   const focusBaselineSigRef = useRef<string>('');
-  const basemap = useMemo(() => cartoBasemap(), []);
+  // Wall-clock of the first successful fit, used by lockAfterFirstFit to keep
+  // accepting fits until the async layer loads have settled (a lock applied on
+  // the very first layer's coords would freeze a partial bounding box).
+  const firstFitAtRef = useRef<number>(0);
+  // A region change (or first mount) is pending a real data fit. Kept armed until
+  // coords that differ from the ones showing at the moment of the change arrive,
+  // so the forced fit lands on the NEW region's data and not on the stale set
+  // still rendered during the refetch.
+  const regionPendingRef = useRef(true);
+  const regionBaselineSigRef = useRef<string>('');
 
   useEffect(() => {
     const el = containerRef.current;
@@ -140,12 +159,21 @@ export default function MapView({
   const fitMaxZoom = fitTo?.maxZoom;
   const fitRegionKey = fitTo?.regionKey;
   const fitFocusKey = fitTo?.focusKey;
+  const fitFocusOnlyIfOffscreen = fitTo?.focusOnlyIfOffscreen ?? false;
+  const fitLocked = fitTo?.lockAfterFirstFit ?? false;
+  const focusPoint = fitTo?.focusPoint ?? null;
+  const regionCoords = fitTo?.regionCoords ?? null;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
 
   if (lastRegionRef.current !== fitRegionKey) {
     lastRegionRef.current = fitRegionKey;
     hasFittedRef.current = false;
     userMovedRef.current = false;
+    firstFitAtRef.current = 0;
+    // Arm the region handling: frame the region bbox right away, and force the
+    // next data fit even if the (still stale) coords happen to be in view.
+    regionPendingRef.current = true;
+    regionBaselineSigRef.current = fitSig;
   }
 
   // A selection became active or changed: mark a pending forced fit and capture
@@ -155,7 +183,7 @@ export default function MapView({
   // (empty focusKey) records the change but does NOT pend a fit - camera stays.
   if (lastFocusRef.current !== fitFocusKey) {
     lastFocusRef.current = fitFocusKey;
-    if (fitFocusKey) {
+    if (fitFocusKey && !fitLocked) {
       focusPendingRef.current = true;
       focusBaselineSigRef.current = fitSig;
       userMovedRef.current = false;
@@ -164,14 +192,68 @@ export default function MapView({
 
   useEffect(() => {
     if (!dims) return;
-    if (!fitTo || !fitCoords || fitCoords.length === 0) return;
+    if (!fitTo) return;
+    // No coords at all: either this view's layers returned nothing for the active
+    // scope, or their data has not arrived yet. Returning here used to leave the
+    // camera on the world fallback (lon 0 / lat 30 / zoom 2), which on a wide
+    // window renders as a whole-hemisphere frame with a couple of stray features
+    // in the corner - indistinguishable from a broken map. The region bbox is a
+    // FLOOR: frame the region instead, and deliberately leave regionPendingRef
+    // armed and hasFittedRef unset so the real data fit still supersedes this the
+    // moment coords arrive.
+    if (!fitCoords || fitCoords.length === 0) {
+      if (!regionCoords || regionCoords.length === 0) return;
+      if (hasFittedRef.current || userMovedRef.current) return;
+      const floor = fitBoundsToData({
+        width: dims.width,
+        height: dims.height,
+        coords: regionCoords,
+        padding: fitPadding ?? DEFAULT_PADDING,
+        minZoom: fitMinZoom,
+        maxZoom: fitMaxZoom,
+      });
+      if (floor && isValidViewState(floor)) setViewState(prev => ({ ...prev, ...floor }));
+      return;
+    }
+    const explicitRecenter = forceFitRef.current;
+    // Locked: only the initial fit (and the settle window right after it) may
+    // move the camera; everything later is the user's own view.
+    if (
+      fitLocked &&
+      !explicitRecenter &&
+      hasFittedRef.current &&
+      Date.now() - firstFitAtRef.current > LOCK_SETTLE_MS
+    ) {
+      focusPendingRef.current = false;
+      return;
+    }
     const forcedByFocus = focusPendingRef.current && fitSig !== focusBaselineSigRef.current;
-    const firstFit = !hasFittedRef.current || forceFitRef.current || forcedByFocus;
+    // focusOnlyIfOffscreen: the narrowed coords have arrived, but they are all
+    // already on screen, so there is nothing to reveal - disarm and leave the
+    // camera exactly where the user had it. Disarming matters: leaving the flag
+    // set would fire this fit later, on some unrelated coords change.
+    if (
+      forcedByFocus &&
+      fitFocusOnlyIfOffscreen &&
+      !explicitRecenter &&
+      coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)
+    ) {
+      focusPendingRef.current = false;
+      return;
+    }
+    const forcedByRegion = regionPendingRef.current && fitSig !== regionBaselineSigRef.current;
+    const firstFit = !hasFittedRef.current || explicitRecenter || forcedByFocus || forcedByRegion;
     if (!firstFit) {
       if (userMovedRef.current) return;
       if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
     }
 
+    // No `fallback` on purpose. Passing fallbackViewState here made a FAILED fit
+    // (degenerate bounds, a fitBounds throw) look like a successful one: the
+    // world view was written to the camera and hasFittedRef was set, so every
+    // later attempt took the "already fitted / coords within view" path and the
+    // map stayed at world zoom permanently. With no fallback a failure yields
+    // null, the camera is left alone, and the next coords change retries.
     const next = fitBoundsToData({
       width: dims.width,
       height: dims.height,
@@ -179,15 +261,66 @@ export default function MapView({
       padding: fitPadding ?? DEFAULT_PADDING,
       minZoom: fitMinZoom,
       maxZoom: fitMaxZoom,
-      fallback: fallbackViewState,
     });
     if (next && isValidViewState(next)) {
+      if (!hasFittedRef.current) firstFitAtRef.current = Date.now();
       hasFittedRef.current = true;
       forceFitRef.current = false;
       if (forcedByFocus) focusPendingRef.current = false;
+      if (forcedByRegion) regionPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fallbackViewState, fitTo, recenterTick]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fitFocusOnlyIfOffscreen, fitLocked, fallbackViewState, fitTo, recenterTick, regionCoords]);
+
+  // Provisional region framing. Declared AFTER the data fit on purpose: in the
+  // commit where the region changed, the data fit above still sees the previous
+  // region's coords, so this must run last to win. It intentionally does NOT set
+  // hasFittedRef / firstFitAtRef - the forced data fit still follows (and starts
+  // the lock settle window), so a locked camera is unaffected. When the view has
+  // no data for the region, regionPendingRef stays armed and this stays as the
+  // final camera instead of the stale or world-zoom view.
+  const lastRegionPrefitRef = useRef<string>('');
+  useEffect(() => {
+    if (!dims) return;
+    if (!regionCoords || regionCoords.length === 0) return;
+    if (!regionPendingRef.current) return;
+    const sig = `${fitRegionKey ?? ''}|${coordsSignature(regionCoords)}`;
+    if (lastRegionPrefitRef.current === sig) return;
+    lastRegionPrefitRef.current = sig;
+    const next = fitBoundsToData({
+      width: dims.width,
+      height: dims.height,
+      coords: regionCoords,
+      padding: fitPadding ?? DEFAULT_PADDING,
+      minZoom: fitMinZoom,
+      maxZoom: fitMaxZoom,
+    });
+    if (next && isValidViewState(next)) {
+      setViewState(prev => ({ ...prev, ...next }));
+    }
+  }, [dims, regionCoords, fitRegionKey, fitPadding, fitMinZoom, fitMaxZoom, fallbackViewState]);
+
+  // Explicit one-shot focus (row click). Keyed on the point signature so it
+  // fires once per new point and never fights the user's own panning after.
+  const focusSig = focusPoint
+    ? `${focusPoint.lng},${focusPoint.lat},${focusPoint.zoom ?? ''}`
+    : '';
+  const lastFocusPointRef = useRef<string>(focusSig);
+  useEffect(() => {
+    if (!focusPoint || !focusSig) return;
+    if (lastFocusPointRef.current === focusSig) return;
+    lastFocusPointRef.current = focusSig;
+    if (!Number.isFinite(focusPoint.lng) || !Number.isFinite(focusPoint.lat)) return;
+    // Treat as a user-driven move so the auto-fit does not immediately pull the
+    // camera back to the data extent on the next data change.
+    userMovedRef.current = true;
+    setViewState((prev) => ({
+      ...prev,
+      longitude: focusPoint.lng,
+      latitude: focusPoint.lat,
+      ...(focusPoint.zoom != null ? { zoom: focusPoint.zoom } : {}),
+    }));
+  }, [focusSig, focusPoint]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||
@@ -221,23 +354,24 @@ export default function MapView({
     if (onRecenterReady) onRecenterReady(recenter);
   }, [onRecenterReady, recenter]);
 
-  const allLayers = useMemo(() => [basemap, ...layers], [basemap, layers]);
-
   return (
     <div ref={containerRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
       {dims && (
-        <DeckGL
-          width={dims.width}
-          height={dims.height}
-          viewState={viewState}
-          onViewStateChange={handleViewStateChange}
-          layers={allLayers}
-          controller={true}
-          onClick={onClick}
-          onHover={onHover}
-          getTooltip={getTooltip}
-          style={{ position: 'absolute', top: '0', left: '0', width: `${dims.width}px`, height: `${dims.height}px` }}
-        />
+        <>
+          <Basemap viewState={viewState} />
+          <DeckGL
+            width={dims.width}
+            height={dims.height}
+            viewState={viewState}
+            onViewStateChange={handleViewStateChange}
+            layers={layers}
+            controller={true}
+            onClick={onClick}
+            onHover={onHover}
+            getTooltip={getTooltip}
+            style={{ position: 'absolute', top: '0', left: '0', width: `${dims.width}px`, height: `${dims.height}px` }}
+          />
+        </>
       )}
       {children}
     </div>

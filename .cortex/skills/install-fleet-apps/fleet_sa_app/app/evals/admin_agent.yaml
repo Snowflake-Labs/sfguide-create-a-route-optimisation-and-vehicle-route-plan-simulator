@@ -1,0 +1,32 @@
+# Agent evaluation run config - FLEET_ADMIN_AGENT (installer).
+#
+# answer_correctness and tool_execution_accuracy are omitted for the same reason as
+# the ops agent - and note that reason is METRIC-SET STABILITY, not the documented
+# "evaluations never invoke MCP verbs" limitation, which does NOT hold on this
+# account: baseline runs invoked fleet_admin_mcp_describe_deployment with matching
+# ACTOR = SYSTEM rows in SYNAPSE_ADMIN.VERB_ATTEMPT. See ops_agent.yaml for the
+# reasoning and agent_evals.sql for the evidence, and fleet_agent.yaml for why there
+# is no dataset: block.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT"
+    agent_type: "CORTEX AGENT"
+    # DEFAULT, not LAST - see fleet_agent.yaml for why binding a run to the mutable
+    # live/draft spec silently destroys it.
+    agent_version: "DEFAULT"
+  run_params:
+    label: "Fleet admin agent baseline"
+    description: "Deployment-history tool selection and orchestration consistency. answer_correctness omitted because MCP verbs are not invoked during evaluations."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_ADMIN_AGENT"
+
+# METRIC VERSIONS. Pinned to v3 per the Snowflake best-practices guide. See
+# fleet_agent.yaml for the full rationale (1M context, deprecating v1 judge).
+metrics:
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"

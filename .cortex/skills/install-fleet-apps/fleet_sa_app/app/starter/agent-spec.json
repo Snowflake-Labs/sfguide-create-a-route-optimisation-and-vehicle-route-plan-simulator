@@ -27,7 +27,7 @@
       "semantic_view": "STARTER_APP.SEMANTIC.SV_STARTER",
       "execution_environment": {
         "type": "warehouse",
-        "warehouse": "MY_WH"
+        "warehouse": "ROUTING_ANALYTICS"
       }
     }
   }

@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { useAppStore } from '@/lib/store';
+import { throwIfSuspended, isRoutingSuspendedError, type SuspendedInfo } from '@/lib/routing-suspend';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
 
 interface WorkflowDetailAreaProps {
   database: string;
@@ -131,6 +133,7 @@ export function WorkflowDetailArea({ database, schema }: WorkflowDetailAreaProps
   const [row, setRow] = useState<WorkflowRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -138,14 +141,18 @@ export function WorkflowDetailArea({ database, schema }: WorkflowDetailAreaProps
 
   const fetchInstance = useCallback(async () => {
     if (!selectedInstanceId) return;
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setSuspended(null);
     try {
       const sql = `SELECT wi.instance_id, wi.workflow_type, wi.status, wi.current_step_index, wi.gate_context::VARCHAR AS gate_context, wi.started_by, wi.created_at, wi.updated_at, wi.step_outputs::VARCHAR AS step_outputs, wd.definition::VARCHAR AS definition FROM ${fqn}.WORKFLOW_INSTANCES wi LEFT JOIN ${fqn}.WORKFLOW_DEFINITIONS wd ON wd.workflow_type = wi.workflow_type WHERE wi.instance_id = :instance_id`;
       const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, params: { instance_id: selectedInstanceId } }) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = await res.json();
+      const body = await res.json().catch(() => ({}));
+      // Typed 503 first: a suspended payload has no `error` key.
+      throwIfSuspended(res.status, body);
+      if (!res.ok) throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      const result = body as { rows?: unknown[] };
       setRow((result.rows?.[0] ?? null) as WorkflowRow | null);
     } catch (e) {
+      if (isRoutingSuspendedError(e)) { setSuspended(e.info); return; }
       setError(e instanceof Error ? e.message : 'Failed to load instance');
     } finally {
       setLoading(false);
@@ -189,6 +196,7 @@ export function WorkflowDetailArea({ database, schema }: WorkflowDetailAreaProps
   }
 
   if (loading) return <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-secondary, #9ca3af)', fontSize: '13px' }}>Loading…</div>;
+  if (suspended) return <RoutingSuspendedNotice info={suspended} onRetry={fetchInstance} />;
   if (error) return <div style={{ padding: '24px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   if (!row) return <div style={{ padding: '24px', color: 'var(--text-secondary, #9ca3af)', fontSize: '13px' }}>Instance not found.</div>;
 

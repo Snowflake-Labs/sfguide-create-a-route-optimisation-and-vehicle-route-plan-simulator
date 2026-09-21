@@ -3,9 +3,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/lib/store';
 import { DYNAMIC_VIEW_ID } from '@/lib/load-views';
+import { isSuspendedBody, type SuspendedInfo } from '@/lib/routing-suspend';
 
 interface QueryResult {
-  columns: Array<{ key: string; label: string }>;
+  // `type` is the declared Snowflake type from result metadata (lowercased by
+  // /api/query), e.g. 'geography' | 'text' | 'fixed'. Optional because the
+  // suspended/empty paths below synthesize a result with no metadata. Carried so
+  // a map layer can bind to a GEOGRAPHY column on the declared type rather than
+  // by sniffing values.
+  columns: Array<{ key: string; label: string; type?: string }>;
   rows: Array<Record<string, unknown>>;
   totalRows: number;
 }
@@ -14,6 +20,9 @@ interface UseViewDataResult {
   data: QueryResult | null;
   loading: boolean;
   error: string | null;
+  // Set when the query failed because the region's routing engine is suspended
+  // (server has already triggered a resume). Views render RoutingSuspendedNotice.
+  suspended: SuspendedInfo | null;
   refetch: () => void;
   // Epoch ms when the current data last arrived (for freshness indicators); null until first load.
   fetchedAt: number | null;
@@ -37,19 +46,38 @@ function resolveParamValue(
   return ref;
 }
 
+export interface UseViewDataOptions {
+  /** Force the owner's-rights dynamic query boundary (/api/query dynamic:true)
+   *  regardless of which view is active.
+   *
+   *  Normally `dynamic` is derived from the panel showing the ephemeral
+   *  agent-emitted page (DYNAMIC_VIEW_ID). An inline chat map is the case that
+   *  breaks that derivation: its SQL is equally agent-authored and equally
+   *  untrusted, but it renders in the chat stream while the panel still shows the
+   *  user's own trusted dashboard - so the active view id says "trusted" and
+   *  would run agent SQL with the app's full privileges. */
+  forceDynamic?: boolean;
+}
+
 export function useViewData(
   query: string | undefined,
   paramRefs?: Record<string, string>,
+  options?: UseViewDataOptions,
 ): UseViewDataResult {
   const viewState = useAppStore((s) => s.panel.viewState);
   const context = useAppStore((s) => s.context);
   const viewsVersion = useAppStore((s) => s.viewsVersion);
   // Queries for the ephemeral agent-emitted page run through the owner's-rights
   // dynamic boundary (/api/query dynamic:true). Trusted shipped views do not.
-  const isDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
+  // A caller may force it (see UseViewDataOptions.forceDynamic).
+  const activeIsDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
+  const isDynamic = options?.forceDynamic === true || activeIsDynamic;
+  const beginFetch = useAppStore((s) => s.beginFetch);
+  const endFetch = useAppStore((s) => s.endFetch);
   const [data, setData] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedInfo | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -61,8 +89,42 @@ export function useViewData(
 
   const paramsKey = JSON.stringify(resolvedParams);
 
+  // Region hint for the suspended-engine handler. Several routing errors (a
+  // gateway failure, 'matrix pre-compute failed', a bare 'service_unreachable')
+  // carry NO 'ors-service-<region>' token, so without this the server falls back
+  // to its hardcoded default and would resume the wrong region while telling the
+  // user it resumed that default. `context.region` is written by the dataset
+  // picker and is the region every view query is scoped to.
+  const regionHint = typeof context.region === 'string' && context.region ? context.region : null;
+
+  // Does this query depend on a required filter that currently has no options?
+  //
+  // If so it MUST NOT be issued. The bind would go out as NULL, and several of
+  // these queries pass it into a table-function argument where the SQL-side
+  // `COALESCE(:bind,(SELECT ...))` fallback cannot be evaluated at all - Snowflake
+  // raises "Unsupported subquery type cannot be evaluated", so the panel shows a
+  // SQL error rather than being empty. Skipping yields an empty result instead,
+  // which is both honest and the state every consumer already renders; the filter
+  // itself explains why (see view-filter-bar.tsx).
+  const blockedBinds = useAppStore((s) => s.blockedBinds);
+  const blockedBy = paramRefs
+    ? Object.values(paramRefs)
+        .filter((ref) => ref.startsWith('viewState.'))
+        .map((ref) => blockedBinds[ref.slice('viewState.'.length)])
+        .find((label) => label !== undefined) ?? null
+    : null;
+
   const fetchData = useCallback(async () => {
     if (!query) return;
+    // Gated BEFORE beginFetch so the in-flight count stays balanced - an early
+    // return after incrementing would strand the counter and stall replay.
+    if (blockedBy !== null) {
+      setData({ columns: [], rows: [], totalRows: 0 });
+      setLoading(false);
+      setError(null);
+      setSuspended(null);
+      return;
+    }
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -70,17 +132,33 @@ export function useViewData(
 
     setLoading(true);
     setError(null);
+    setSuspended(null);
+
+    // Global in-flight accounting. The replay Slider gates its auto-advance on
+    // the count reaching zero, so this MUST be paired 1:1 with the endFetch() in
+    // the finally below. Every exit path from here on (success, abort, HTTP
+    // error, thrown error, and the early return on the suspended-503) has to
+    // decrement exactly once: a leak leaves the count above zero forever and
+    // permanently stalls playback. The decrement therefore lives OUTSIDE the
+    // `!aborted` guard, because an aborted request is still a finished request.
+    beginFetch();
 
     try {
       const res = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: query, params: resolvedParams, dynamic: isDynamic }),
+        body: JSON.stringify({ sql: query, params: resolvedParams, dynamic: isDynamic, region: regionHint }),
         signal: controller.signal,
       });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        // A suspended routing engine returns a typed 503; surface it as a
+        // friendly notice (resume already triggered) instead of a raw error.
+        if (res.status === 503 && isSuspendedBody(body)) {
+          if (!controller.signal.aborted) setSuspended(body);
+          return;
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
@@ -95,17 +173,19 @@ export function useViewData(
         setError(err instanceof Error ? err.message : 'Query failed');
       }
     } finally {
+      // Unconditional: balances beginFetch() on every path, including aborts.
+      endFetch();
       if (!controller.signal.aborted) {
         setLoading(false);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, paramsKey, viewsVersion, isDynamic]);
+  }, [query, paramsKey, viewsVersion, isDynamic, regionHint, blockedBy]);
 
   useEffect(() => {
     fetchData();
     return () => abortRef.current?.abort();
   }, [fetchData]);
 
-  return { data, loading, error, refetch: fetchData, fetchedAt };
+  return { data, loading, error, suspended, refetch: fetchData, fetchedAt };
 }

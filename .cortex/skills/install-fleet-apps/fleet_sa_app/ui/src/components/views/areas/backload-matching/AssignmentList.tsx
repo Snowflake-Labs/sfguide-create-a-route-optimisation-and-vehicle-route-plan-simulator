@@ -1,7 +1,8 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Assignment, ROUTE_COLORS } from './helpers';
+import { Assignment, ROUTE_COLORS, placeLabel, isAtEndBaseline } from './helpers';
+import InfoTip from './InfoTip';
 
 interface Props {
   assignments: Assignment[];
@@ -47,7 +48,11 @@ export default function AssignmentList({
               <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c.join(',')})`, flexShrink: 0 }} />
               <b style={{ fontSize: 12 }}>{a.TRAILER_ID}</b>
               <span style={{ fontSize: 10, color: 'var(--text-secondary, #6b7280)' }}>&middot; {a.OFFER_ID}</span>
-              <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: a.SOURCE === 'INTERNAL' ? 'rgba(41,181,232,0.18)' : 'rgba(200,200,200,0.4)' }}>
+              {/* Badge colour keys off IS_INTERNAL (structural), not SOURCE: an
+                  external offer whose channel label read INTERNAL was painted
+                  with the internal colour. SOURCE is still the TEXT shown, since
+                  the channel is what the dispatcher wants to read. */}
+              <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: a.IS_INTERNAL ? 'rgba(41,181,232,0.18)' : 'rgba(200,200,200,0.4)' }}>
                 {a.SOURCE}
               </span>
               {net !== undefined && (
@@ -56,11 +61,18 @@ export default function AssignmentList({
                 </span>
               )}
             </div>
+            {/* placeLabel, never the raw column: an unnamed POI renders as an
+                empty string, and "A -> " (or a bare "->") reads as a rendering
+                failure rather than as the data gap it is. 316 of 800 internal
+                loads have no delivery city on the live pool. */}
             <div style={{ fontSize: 11, color: 'var(--text-secondary, #6b7280)', marginTop: 2 }}>
-              {a.PICKUP_CITY} -&gt; {a.PROPOSAL_DROPOFF_CITY}
+              {placeLabel(a.PICKUP_CITY, a.OFFER_ID)} -&gt; {placeLabel(a.PROPOSAL_DROPOFF_CITY, a.OFFER_ID)}
             </div>
             <div style={{ fontSize: 11, marginTop: 2 }}>
-              empty {Math.round(a.EMPTY_KM)} km &middot; loaded {Math.round(a.LOADED_KM)} km &middot; {a.PRODUCT}
+              empty {Math.round(a.EMPTY_KM)} km
+              {a.EMPTY_OUT_KM !== undefined && (a.EMPTY_BACK_KM ?? 0) > 0
+                ? ` (${Math.round(a.EMPTY_OUT_KM)} out + ${Math.round(a.EMPTY_BACK_KM as number)} back)` : ''}
+              {' '}&middot; loaded {Math.round(a.LOADED_KM)} km &middot; {a.PRODUCT}
             </div>
             {(a.REVENUE_USD !== undefined || a.COST_USD !== undefined) && (
               <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
@@ -69,9 +81,29 @@ export default function AssignmentList({
                 {a.WAIT_SEC ? ` \u00b7 wait ${Math.round(a.WAIT_SEC / 60)} min` : ''}
               </div>
             )}
-            {a.DETOUR_KM !== undefined && (
+            {/* Already standing at the point it would have repositioned to, so
+                its no-backload baseline is 0 km and there is nothing to draw on
+                the map. MEASURED: 35 of 89 vehicles in the live USA pool, and
+                because a zero approach is cheap they carry the highest margins -
+                so this is usually the TOP card of a collected plan, and the
+                missing grey line reads as a broken map. Taking a load here adds
+                empty km; it avoids no deadhead, which is why SAVED_KM is absent
+                rather than zero. */}
+            {isAtEndBaseline(a) && (
               <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
-                detour +{Math.round(a.DETOUR_KM)} km vs direct{a.SAVED_KM ? ` \u00b7 empty saved ~${Math.round(a.SAVED_KM)} km` : ''}
+                already at its end point - no reposition to avoid, so this backload
+                adds {Math.round(a.EMPTY_KM)} km empty
+              </div>
+            )}
+            {(a.DETOUR_KM !== undefined || a.SAVED_KM !== undefined) && (
+              <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
+                {a.DETOUR_KM !== undefined ? `detour +${Math.round(a.DETOUR_KM)} km vs reposition baseline` : ''}
+                {a.SAVED_KM !== undefined
+                  ? `${a.DETOUR_KM !== undefined ? ' \u00b7 ' : ''}deadhead avoided ~${Math.round(a.SAVED_KM)} km`
+                  : ''}
+                {a.BASELINE_EMPTY_KM !== undefined && (
+                  <InfoTip text={`Baseline = the ${Math.round(a.BASELINE_EMPTY_KM)} km this vehicle would have driven empty anyway from its idle location to its end point (source: ${a.BASELINE_SOURCE ?? 'unknown'}). Deadhead avoided = baseline minus the ${Math.round(a.EMPTY_KM)} km actually driven empty on this tour, so it can never exceed the reposition it replaces.`} />
+                )}
               </div>
             )}
             {isSel && (

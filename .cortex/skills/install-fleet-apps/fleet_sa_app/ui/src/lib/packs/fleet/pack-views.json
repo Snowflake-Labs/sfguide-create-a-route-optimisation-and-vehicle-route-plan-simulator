@@ -1,0 +1,394 @@
+{
+  "vrp_simulator": {
+    "label": "Route Optimization Simulator",
+    "description": "Plan multi-stop vehicle routes from a depot and view them on the map.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Turn a depot and a pile of stops into a solved, drivable multi-vehicle route plan in one click.",
+      "businessQuestion": "What is the cheapest set of routes that covers all of today's stops with the vehicles we actually have?",
+      "audience": [
+        "Transport planner",
+        "Dispatcher",
+        "Operations manager",
+        "Supply chain lead"
+      ],
+      "industries": [
+        "Distribution",
+        "Last-mile delivery",
+        "Field service",
+        "Waste and municipal fleets"
+      ],
+      "talkTrack": [
+        "Set the depot, the number of vehicles and the stop count, then solve.",
+        "Show the solved tours on the map, one colour per vehicle, following real roads.",
+        "Read the per-route distance and duration, and point out that the stop order was chosen by the solver, not by us.",
+        "Change the vehicle count and re-solve, so the trade-off between fleet size and distance is visible live.",
+        "Make the platform point: the optimizer runs inside Snowflake, so the plan is a query result rather than an export to a planning tool."
+      ],
+      "snowflakeCapabilities": [
+        "Vehicle routing solved by the VROOM optimizer running on Snowpark Container Services, called from SQL",
+        "Road distances and geometry from OpenRouteService on the same platform, with no third-party routing API and no data leaving the account",
+        "Optimization as a governed, audited tool the Cortex agent can also invoke"
+      ],
+      "dataRequired": [
+        "Depot location",
+        "Stop or order locations for the planning horizon",
+        "Vehicle count and capacity",
+        "A provisioned routing region covering the stops"
+      ],
+      "valueDrivers": [
+        "Cut planned distance and vehicle count against a manually built plan",
+        "Replan in seconds when the order book changes",
+        "Keep planning next to the data instead of exporting to a separate optimizer"
+      ],
+      "method": "Stops and vehicles are assembled into a routing problem and solved live by the optimizer against the region road graph. Distances and the drawn geometry come from the routing engine, not from straight lines.",
+      "caveats": "A demonstration of the solver rather than a production planning system: it does not model time windows negotiated with customers, driver hours rules, or multi-day horizons. All stops must sit inside one provisioned routing region."
+    },
+    "agentKnowledge": {
+      "keyMetrics": [
+        "number of solved routes returned by the optimizer, one per assigned vehicle",
+        "the depot, vehicle count and stop count the user set before solving",
+        "per-route distance and duration as returned by the routing engine",
+        "stops the solver could not assign"
+      ],
+      "exampleQuestions": [
+        "how many routes did the optimizer produce?",
+        "plan routes for 4 vehicles from the depot",
+        "why were some stops left unassigned?",
+        "what is the total distance of the solved plan?"
+      ],
+      "gotchas": "The plan is solved client-side in this view via a live optimizer call after the user presses Solve, and nothing exists until then. This view publishes NO per-route agent memo - only a run-log line naming how many routes were returned - so do not claim to know individual stop sequences, per-route km, or durations from panel context here; if the user wants those, either read them from the on-screen route list or re-run the optimization yourself with the optimize_routes verb, which returns the full solved plan. Every number changes when the depot, vehicle count or stop count changes. Requires the active region routing and optimizer services to be running."
+    }
+  },
+  "emergency_response": {
+    "label": "Emergency Response",
+    "description": "Plan a capacitated multi-depot evacuation for the active region: hazard-zone risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Plan the evacuation of people who cannot evacuate themselves: hazard exposure, who is inside the risk zone, and a solved multi-depot van plan.",
+      "businessQuestion": "If this hazard escalates, who do we collect first, with which vehicles, and how many trips does it actually take?",
+      "audience": [
+        "Emergency management director",
+        "Public health and care operations",
+        "Transport coordinator",
+        "Resilience planner"
+      ],
+      "industries": [
+        "Public sector and emergency management",
+        "Healthcare and paratransit",
+        "Utilities",
+        "Insurance and reinsurance"
+      ],
+      "talkTrack": [
+        "Step 1: colour the region by hazard risk and pick wildfire or flood, so exposure is visible before anyone talks about vehicles.",
+        "Step 2: seed care centers and the people who depend on them, sampled inside the live drive-time reach of those centers.",
+        "Step 3: set vehicles, seats and the maximum trips per vehicle - the real-world constraint that makes this hard.",
+        "Step 4: solve, then walk the trip list grouped by care center and step through the numbered stops on the map.",
+        "Raise the risk threshold and re-solve to show how the plan changes as the emergency escalates.",
+        "Call out the overflow warning: it names exactly how many people cannot be seated with the fleet on hand, which is the resourcing ask."
+      ],
+      "snowflakeCapabilities": [
+        "Capacitated multi-depot, multi-trip routing solved live on Snowpark Container Services",
+        "Drive-time isochrones used to seed a realistic dependent population rather than a random scatter",
+        "Procedural H3 hazard modelling that works in any region, with no licensed hazard dataset required",
+        "A Cortex agent that answers questions about the solved plan, including specific addresses and per-center rosters"
+      ],
+      "dataRequired": [
+        "Care center, shelter or muster point locations",
+        "The dependent population to collect (addresses; in production a client or patient register)",
+        "Vehicle count, seat capacity and a realistic trip cap",
+        "A provisioned routing region covering the affected area"
+      ],
+      "valueDrivers": [
+        "Know before the event whether the fleet on hand can actually clear the at-risk population",
+        "Turn an evacuation annex from a document into an executable, testable plan",
+        "Quantify the resourcing gap in vehicles and trips, not in adjectives"
+      ],
+      "method": "Hazard risk is a procedural H3 hex model (wildfire, flood and a composite), so it is granular and works worldwide without a licensed dataset. Participants are sampled inside the union of the care centers' live drive-time isochrones. The plan is a capacitated multi-depot vehicle routing problem where each van is expanded into up to the configured number of round trips, solved live over people at or above the selected risk band.",
+      "caveats": "The hazard model is procedural, not an official hazard map, and the participants are synthetic addresses - in production both would be replaced by the customer's authoritative sources. The plan is computed in this view and is not persisted, so re-seeding produces a different set. Solving requires the region routing and optimizer services to be running."
+    },
+    "agentKnowledge": {
+      "keyMetrics": [
+        "evacuees and evacuated (assigned) counts",
+        "number of trips, completion time in minutes, and total/longest route distance in km (total_km, longest_trip_km)",
+        "per-risk-band participant counts for the active hazard (risk_bands) and the other hazard (other_hazard_bands), plus high_on_both_hazards",
+        "participant addresses grouped by risk band for the active hazard (addresses_by_band)",
+        "hazard zones (counties) with both wildfire and flood risk levels (hazard_zones) and per-county participant rollup (participants_by_county)",
+        "per-care-center workload (centers_workload) and van seat utilization (seat_utilization)",
+        "unassigned / overflow participants that could not be seated"
+      ],
+      "exampleQuestions": [
+        "how many evacuation trips are there, and what is the total distance in km?",
+        "list the evacuation trips and their stops",
+        "give me all trips and stops for a specific care center",
+        "what are the addresses of the Very High risk participants?",
+        "which counties are Very High wildfire risk?",
+        "which county has the most at-risk participants?",
+        "how many participants are high risk for both flood and wildfire?",
+        "which care center is handling the most evacuees?",
+        "what is on the map right now, and is any layer blank?"
+      ],
+      "gotchas": "The evacuation plan is computed client-side in this view and lives in the panel context. Trip roster: trips_detail is GROUPED BY CARE CENTER, centers ordered busiest-first (matching centers_workload); each center block reads \"Center (N evacuees, N trips, N vans): T<n> Vehicle <n> <mins>m [load/capacity]: <stop addresses> [bN]...\" so per-center \"all trips and stops for X\" questions are answerable directly. Risk<->address join: addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop carries a \"[bN]\" risk-band marker matching the risk_bands legend (b5 = Very High). Area risk: hazard_zones lists each county with BOTH wildfire and flood band levels (WF bN/FL bN), and participants_by_county rolls up seeded vs at/above-threshold counts per county. Cross-hazard: risk_bands is the ACTIVE hazard, other_hazard_bands is the other one, and high_on_both_hazards counts people at/above threshold for both. Plan rollups: centers_workload (per depot), seat_utilization, total_km/longest_trip_km (null if the router did not return distance). If a center block or the trip list ends with \"(+N more)\", those trips/centers exceeded the display cap - the full breakdown is in the on-screen plan panel and the map routes layer; do not invent the remainder. There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, risk bands, or distances. Re-seeding or changing the risk threshold or hazard updates the numbers."
+    }
+  },
+  "backload_matching": {
+    "label": "Backload Matching",
+    "description": "Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Fill the empty return leg: match idle vehicles to waiting internal loads first, then to external freight offers, and price the result.",
+      "businessQuestion": "Our vehicles run back empty. Which waiting loads could they carry instead, and what is that worth?",
+      "audience": [
+        "Dispatcher",
+        "Head of transport",
+        "Freight buyer",
+        "CFO"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Bulk and industrial transport"
+      ],
+      "talkTrack": [
+        "Frame the problem in one line: an empty return leg is fuel, driver hours and tyres spent on no revenue.",
+        "Set the sliders - how many vehicles, how many loads from the internal pool, how many external offers, and how much detour is acceptable.",
+        "Solve, then read the headline: trips in the plan, internal versus external matches, net benefit and deadhead avoided.",
+        "Open an assignment card and walk its tour on the map: the dashed empty legs, then the numbered loaded stops.",
+        "Stress internal-first: filling your own waiting load beats buying an external one, and the solver is told so.",
+        "Turn on Hide unprofitable to show the honest subset a dispatcher would actually accept."
+      ],
+      "snowflakeCapabilities": [
+        "Live vehicle routing solved by the VROOM optimizer on Snowpark Container Services, called from the app in one round trip",
+        "Real road distances from OpenRouteService used for both the plan and the deadhead baseline, so the saving is not a straight-line estimate",
+        "Internal loads and external marketplace offers evaluated together in one governed model, without sending either to a third-party platform"
+      ],
+      "dataRequired": [
+        "Idle vehicle locations with availability windows",
+        "Waiting internal loads, modelled from trip history (origin, destination, time window, weight)",
+        "External freight offers, if the customer subscribes to any exchange",
+        "Rate or revenue per load and a cost per empty km",
+        "A provisioned routing region covering the lanes"
+      ],
+      "valueDrivers": [
+        "Convert empty running into revenue-earning or cost-avoiding movement",
+        "Fill your own waiting loads before paying an exchange for someone else's",
+        "Give the dispatcher a priced, ranked recommendation instead of a phone-around"
+      ],
+      "method": "Idle vehicles, internal loads and external offers are assembled into one routing problem and solved live. Empty km covers both deadhead legs (idle location to first pickup, and last stop to tour end). Deadhead avoided is the vehicle's reposition baseline, the real road distance from its idle location to its end point, minus the empty km actually driven, so it can never exceed that baseline.",
+      "caveats": "Vehicles, loads and offers are synthetic, and the economics use the rates configured on screen. Nothing is computed until Solve is pressed, and the plan is not written back to a TMS - it is a recommendation. Requires the region routing and optimizer services to be running."
+    },
+    "agentKnowledge": {
+      "preferredTool": "backload_solve",
+      "keyMetrics": [
+        "assignments_count (trips in the plan), internal_matched, internal_pct, net_benefit_usd, unassigned_count, empty_km_total, deadhead_avoided_km_total",
+        "trailers / internal_volumes / external_offers loaded for the active preset, and selected_trailer. internal_volumes is a BOUNDED PLANNING POOL, not a real backlog: each row is a historical trip reinterpreted as an open order, and the pool is sized at INTERNAL_LOADS_PER_TRAILER (default 4) x the region's vehicle count, capped by INTERNAL_POOL_CAP. So it scales with fleet size and is NOT a count of orders anyone placed - do not present it as demand, and do not compare it across regions as though it measured activity",
+        "the full per-trip list is published as __memo_backload_matching: trailer id, source (INTERNAL/external), the loads carried, first pickup, final dropoff, the ordered stop chain with the load id at every stop, where the tour ends, the delivery points (dropoff cities), delivery count, empty km split into out + back legs, loaded km, deadhead avoided versus the reposition baseline, and the economics. The economics differ by how the plan got here: a plan solved on this page carries rev / cost / net USD per trip, while a plan collected from your own backload_solve (solve_key) carries only the solver MARGIN per trip - the proposals hold no per-offer price, so revenue does not exist for those trips, on screen or anywhere else. Each entry says which it is; never quote a revenue for a trip whose entry only states a margin, and never offer to open the card to reveal one",
+        "REVENUE IS NOT THE SORT KEY. The list is ordered by NET benefit descending, so the top entry is the best NET trip, not necessarily the highest-revenue one. Asked which assignment yields the most revenue: answer from the memo, name the trailer and the figure, and if the entries carry margins rather than revenue say that revenue per trip is unavailable for a collected plan and answer on the highest margin instead - do not query a table for it and do not tell the user to click a row",
+        "ONE TRIP MAY CARRY SEVERAL LOADS. A trip whose memo entry says CHAINED tour visits the loads in sequence: the first dropoff is a handover where the next load is picked up, NOT the destination. The destination is the FINAL dropoff, and the tour then ends at the depot, which is not a delivery. Describe such a trip as one chained workload over N loads and name every load id, never as a single match"
+      ],
+      "exampleQuestions": [
+        "give me a list of assignments with delivery and revenue details for each",
+        "which trips deliver where?",
+        "how much net benefit does the plan reclaim?",
+        "how much deadhead did the plan avoid?",
+        "how many internal vs external loads were matched?",
+        "which trailer has the most profitable backload?"
+      ],
+      "gotchas": "Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. ONE EXCEPTION: if you have just run backload_solve yourself, follow it with show_view carrying selection='solve_key=<the key it returned>' and this page will display YOUR plan instead of solving again - the on-screen trips are then the ones you already reported, and the page says so. Opening it without the key makes it run a second, different solve whose numbers may not match yours. A rehydrated plan starts with straight-line distances and refines to road distance a moment later, and a proposal for a vehicle outside the page's current pool is dropped and counted rather than drawn. The query_backload semantic view models the INPUTS (idle trailers, external offers, proposal decisions), NOT the live solved plan, so use it for questions about what is available to match and answer questions about THIS solve only from the injected __memo_backload_matching / summary panel context - never invent trailer ids, offers, cities, km, or dollars. A trip may hold more than one load: read the loads and the ordered stop chain from the memo entry and report the FINAL dropoff as the destination, never the first one, and never describe a CHAINED tour as a single match. Unnamed sites appear as \"unnamed site for <load id>\"; the bare tokens Destination, Origin, Dropoff and Depot are placeholders, not place names, so never present one as a city or a delivery point. Empty km covers BOTH deadhead legs (idle location -> first pickup, and last task stop -> tour end); \"deadhead avoided\" is the vehicle's reposition baseline (real ORS distance from its idle location to its end point) minus the empty km actually driven, so it can never exceed that baseline, and it is omitted entirely for open-ended tours where no baseline exists. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The solver only ever sees the slider's worth of loads (max internal defaults to 30, ceiling 80), so it never sees the whole internal pool and a change in pool size does NOT by itself change the solved plan - say which of the two a number describes. The load subset is ranked by straight-line proximity to the nearest idle trailer and by nothing else, so it ignores the pickup window, weight fit and revenue; the trailer subset is not ranked at all, just the first N by id. The list is capped at the top 12 net-desc trips AND at a character budget, so it may end in \"(+N more trips, not listed)\" or \"(+N more)\" - treat it as a top-N slice of assignments_count, never as the whole plan. Requires the active region routing/VROOM service to be running."
+    }
+  },
+  "backload_proposals": {
+    "label": "Backload Proposals",
+    "description": "Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Four backhaul strategies run side by side and fused into one graded recommendation per vehicle, with the reasons a load was rejected shown on the card.",
+      "businessQuestion": "Which backhaul should this vehicle take, how confident are we, and why was the obvious-looking load actually ineligible?",
+      "audience": [
+        "Head of transport",
+        "Dispatch supervisor",
+        "Network optimization lead",
+        "Freight buyer"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Third-party logistics"
+      ],
+      "talkTrack": [
+        "Explain why there are four strategies: quick scan, per-load routing, fleet-wide one-to-one, and profit-max all answer the same question differently.",
+        "Run ensemble mode and read the grade per vehicle plus how many of the four strategies agree - agreement is the confidence signal.",
+        "Open a proposal card and walk the constraint chips: distance, pickup time, horizon, capacity, hazmat.",
+        "Pick a rejected pairing and show exactly which constraint failed, which is the question a dispatcher always asks.",
+        "Read the Cortex rationale as the plain-language justification a planner could forward.",
+        "Switch to a single strategy and show the recommendation change, to make the point that ensemble is doing real work."
+      ],
+      "snowflakeCapabilities": [
+        "Several optimizer runs orchestrated against the same live routing engine on Snowpark Container Services",
+        "Constraint eligibility evaluated in SQL over the neutral contract views, so every pass or fail is explainable",
+        "Cortex generating the recommendation rationale next to the data, with no external LLM call"
+      ],
+      "dataRequired": [
+        "Idle vehicle locations with availability and capability (capacity, hazmat)",
+        "Candidate loads and offers with time windows and weight",
+        "Revenue per load and cost per empty km",
+        "A provisioned routing region covering the lanes"
+      ],
+      "valueDrivers": [
+        "Higher-quality backhaul decisions than any single heuristic gives",
+        "Explainable rejections, which is what earns dispatcher trust in an optimizer",
+        "A defensible margin number per proposal rather than a gut call"
+      ],
+      "method": "Quick scan is a great-circle nearest-load pass with no solve. Per-load routing, fleet one-to-one and profit-max each call the routing engine once. Ensemble mode fuses all four with configurable ranking weights into a graded proposal per vehicle, and the constraint chips come from the scored candidate view.",
+      "caveats": "Synthetic vehicles and loads. Everything is null until Run is pressed, and Accept, Reject and Flag are session-only rather than persisted. The routing strategies require the region routing and optimizer services to be running."
+    },
+    "agentKnowledge": {
+      "preferredTool": "backload_solve",
+      "keyMetrics": [
+        "vehicles_matched, internal_matched, total_empty_km, total_margin_usd (revenue minus empty-leg cost across the plan), avg_composite (0-100 ensemble score)",
+        "per-vehicle graded proposal (trailer -> load), its strategy family, and how many of the 4 strategies agree",
+        "eligible_pairs (trailer/load pairs passing distance/pickup-time/horizon/capacity/hazmat), and accepted/rejected counts (session-only)",
+        "the top ranked proposals are published as __memo_backload (trailer->load, grade, strategy, pickup->delivery cities, empty km, loaded km, margin USD, internal/external)"
+      ],
+      "exampleQuestions": [
+        "which vehicles have the best backload proposals?",
+        "how many empty km does the plan reclaim?",
+        "how many internal loads were filled versus external offers?",
+        "why is a load ineligible for a vehicle?",
+        "give me a list of proposals with delivery and revenue details for each",
+        "what is on the map right now?"
+      ],
+      "gotchas": "Proposals are computed in this view (client-side) after Run: Quick scan is great-circle nearest-load (no solve); Per-load VRP / Fleet 1:1 / Profit-max each call the routing engine once via /api/backload/solve, and ensemble mode fuses all four. ONE EXCEPTION: if you have just run backload_solve at PAIR granularity, follow it with show_view carrying selection='solve_key=<the key it returned>' and this cockpit displays YOUR graded pairs instead of solving again, with the weight sliders re-ranking them locally. Pass the key only for a pair-granularity solve - a vehicle-granularity result has no pairs to rank, and the page will say so rather than render an empty grid. Numbers are null until Run and change with the strategy, max vehicles/loads, and (in ensemble mode) the ranking weights. Accept/Reject/Flag is session-only and not persisted. The query_backload semantic view models the candidate INPUTS and recorded proposal decisions, not this live cockpit run, so answer questions about the current proposals from the injected __memo_backload / summary context and never invent trailer ids, loads, grades, or km. Requires the active region routing/VROOM service to be running for the VRP strategies."
+    }
+  },
+  "ops_console": {
+    "label": "Ops Console",
+    "description": "Operator controls: suspend/resume services, set the active region, and check platform health.",
+    "category": "Admin",
+    "tags": [
+      "ops",
+      "admin"
+    ],
+    "roles": [
+      "ops"
+    ],
+    "useCase": {
+      "headline": "Operator controls for the platform behind the demos: service lifecycle, the active region, and health at a glance.",
+      "businessQuestion": "Is the routing platform healthy, which region is active, and what do I resume before a demo or suspend after one?",
+      "audience": [
+        "Solution Engineer",
+        "Platform operator",
+        "Snowflake account team"
+      ],
+      "industries": [
+        "Internal enablement"
+      ],
+      "talkTrack": [
+        "Before presenting, check service health here so a suspended region is never discovered mid-demo.",
+        "Resume the region you are about to show, and give the graph time to load before opening a routing view.",
+        "Confirm the active region matches the dataset the demo expects.",
+        "After the session, suspend so the environment stops accruing cost."
+      ],
+      "snowflakeCapabilities": [
+        "Container service lifecycle driven from the app through audited operator verbs, with no console access needed",
+        "Role-scoped controls: this page is gated to the operator role and its tool bundle is separate from the consumer one",
+        "Cost control by suspending compute the moment it is idle"
+      ],
+      "dataRequired": [
+        "No customer data - this operates the deployment itself"
+      ],
+      "valueDrivers": [
+        "A demo that starts warm instead of failing on a cold service",
+        "Idle compute suspended deliberately rather than forgotten"
+      ],
+      "method": "Actions call the operator verb bundle, which is a separate role-scoped tool surface from the one the consumer agent uses. Every call flows through the audited envelope.",
+      "caveats": "Operator-facing, not a customer demo. Resuming a large region loads its road graph and is not instant, so resume well before you need it."
+    },
+    "agentKnowledge": {
+      "keyMetrics": [
+        "live service inventory with per-service status (RUNNING / SUSPENDED) and the compute pool each runs in",
+        "the active routing region and the active dashboard context (region, asset mode)",
+        "healthcheck rollup: ORS CORE function count, TOOL_* procedure count, routing gateway status",
+        "the synapse verb audit trail (recent_verb_attempts): verb, outcome, error code, timestamp"
+      ],
+      "exampleQuestions": [
+        "which services are running right now?",
+        "resume the routing service for the active region",
+        "suspend everything so we stop accruing cost",
+        "is the platform healthy?",
+        "show me the recent verb calls and any that failed"
+      ],
+      "gotchas": "This page drives the OPERATOR verb bundle, which is role-gated to FLEET_APP_OPS and is a separate tool surface from the consumer agent's. A service reading SUSPENDED is the NORMAL idle state, not a fault - say so and offer to resume rather than reporting a problem. A service showing no-suspend (AUTO_SUSPEND_SECS=0) is also expected: it means an active build or the keep-warm window is deliberately pinning it. Resuming a region reloads its road graph and is not instant, so a RUNNING status does not by itself mean routing is answerable yet. Suspending the SA or admin app itself is blocked deliberately."
+    }
+  },
+  "triangle_proposals": {
+    "label": "Triangle Proposals",
+    "description": "Chained two-hop backhaul: when no single load brings a vehicle back, carry one load part of the way and a second load the rest. Internal loads are exhausted before an outside exchange is consulted, every leg is costed live on the road network, and each chain is shown against the cost of simply running home empty.",
+    "category": "Optimization",
+    "useCase": {
+      "headline": "Recovers return trips that single-hop matching cannot see, by chaining two loads through an intermediate drop and pricing the chain against the cost of running home empty.",
+      "businessQuestion": "There is no load from here back to where this vehicle is needed. Is there a pair of loads that gets it home via an intermediate stop, and is that chain actually better than running empty?",
+      "audience": [
+        "Head of transport",
+        "Dispatch supervisor",
+        "Network optimization lead",
+        "Freight buyer"
+      ],
+      "industries": [
+        "Road freight and haulage",
+        "Trailer and container operators",
+        "Retail and grocery distribution",
+        "Third-party logistics"
+      ],
+      "talkTrack": [
+        "Start with the gap this fills: single-hop matching asks 'is there a load from here to my target'. A chain asks 'is there a load that gets me CLOSER', which is a far larger candidate set.",
+        "Show the cascade rung on a card. Rung 1 means both hops came from our own loads and the external exchange was never queried - that ordering is a policy, not a scoring nudge.",
+        "Press Cost legs on road network and point out that one matrix call prices every leg of every candidate chain live, with nothing precomputed. The selected chain then gets a DIRECTIONS call per leg, so the drawn route follows real roads.",
+        "Walk the status-quo line on a card: chain empty km against the empty run home, and net against doing nothing. This is the number a planner argues with. Note that the chain's empty total INCLUDES the residual run from the second delivery to the target - the baseline is a complete run home, so anything less would overstate the saving.",
+        "Show a chain flagged as not beating the baseline, or one that runs MORE empty km than driving straight home, and make the point that the tool says so rather than presenting it as a win.",
+        "Read the constraint chips: total empty km, first-hop detour, reaches target, hop order. Hop order is enforced structurally so a chain can never be delivered out of sequence.",
+        "Tighten a constraint slider or edit the per-km rates and show the grades, eligibility and net re-derive instantly - no re-solve and no routing call, because the road distances are already in hand.",
+        "Open the Legend and point at the leg colours: only the two hops earn revenue, and the three dashed legs (to hop 1, between hops, and the residual to target) are empty running.",
+        "If the active dataset is a single metro area, explain that the page correctly reports no chain is needed, because every load already delivers within the target radius. Chaining is a long-haul pattern."
+      ],
+      "snowflakeCapabilities": [
+        "Chain enumeration as a bounded load-to-load self-join in SQL over the neutral contract views, so the candidate set is explainable rather than a black box",
+        "One live travel-time matrix call against the routing engine on Snowpark Container Services prices every leg of every candidate chain at interaction time, including the residual run to the target",
+        "A live DIRECTIONS call per leg of the selected chain returns the road geometry, so the map shows the driven route rather than straight lines between stops",
+        "The outside-load lookup sits behind a contract table function, so a real freight-exchange integration replaces one function body with no change to this page"
+      ],
+      "dataRequired": [
+        "Vehicle locations with a forward-looking availability time and a return target",
+        "Own waiting loads and external offers with pickup windows, weight and geography",
+        "Revenue per loaded km and cost per empty km",
+        "A provisioned routing region covering the lanes in the chain"
+      ],
+      "valueDrivers": [
+        "Return trips recovered that a direct-match search structurally cannot find",
+        "Own capacity used before money is spent on an outside exchange",
+        "A defensible comparison against running empty, which is what earns planner trust"
+      ],
+      "method": "Chain skeletons are enumerated in SQL: first hops are loads that carry the vehicle CLOSER to its target (a first hop that already arrives is a direct return and is excluded), kept only when progress toward the target at least pays for the empty km spent reaching it, and bounded to the best few per vehicle before a second hop is joined on. Hop ordering is enforced by an estimated first-leg delivery time because the solver has no precedence constraint. Surviving chains are then costed on the live road network with a single matrix call, scored on utilisation, how completely they close the return, and empty km saved, and filtered by an internal-first cascade that stops at the first rung meeting the acceptance score.",
+      "caveats": "Vehicles, loads and offers are synthetic, and revenue per loaded km and cost per empty km are stated assumptions rather than source data - both are editable on the page for what-if purposes only. Vehicle equipment is synthesized and the equipment constraint is seeded off. Many load endpoints have no upstream place name, so cards fall back to a coordinate label. Constraint sliders can only tighten inside the envelope the chain view already pruned at, since chains outside it were never enumerated. Chaining only applies over long distances: on a single-metro dataset the page correctly reports that no chain is needed. Read-only - nothing is written back. Requires the region routing services to be running."
+    },
+    "agentKnowledge": {
+      "preferredTool": "backload_chain_solve",
+      "keyMetrics": [
+        "chains (costed two-hop candidates), vehicles covered, and the cascade rung the ladder stopped at (1 own-loads-only .. 4 external-on-both-hops)",
+        "per chain: both hops as pickup -> delivery with own/external on each, the three empty legs (to hop 1, between hops, residual to target), loaded km, grade and eligibility",
+        "empty km per chain INCLUDES the residual run from the second delivery to the target, so it is directly comparable with the empty-run-home baseline",
+        "status-quo comparison per chain: chain empty km against the empty run home, chain net against doing nothing, and whether the chain beats that baseline (a chain can beat it on net while still running more empty km, because it earns revenue)",
+        "the on-screen chains are published as __memo_triangle_proposals (trailer, rung, both hops, empty incl. residual and loaded km, net vs baseline, beats-baseline, grade)"
+      ],
+      "exampleQuestions": [
+        "which vehicles have a two-hop chain home?",
+        "did we need to go to an external exchange for any of these chains?",
+        "which chains do not beat simply running home empty?",
+        "why is there no chain for this vehicle?",
+        "how much empty running does the best chain save?"
+      ]
+    }
+  }
+}

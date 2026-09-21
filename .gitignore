@@ -42,10 +42,13 @@ dist-server/
 build/
 *.egg-info/
 
-# Vendored synapse framework (tier-C self-containment): ship its built dist so a
-# fresh clone can `synapse materialize` from public npm with no external path.
-!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/dist/
-!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/dist/**
+# Vendored synapse framework: we now vendor SOURCE and build it locally with tsc
+# (see fleet_tools/vendor/synapse/VENDOR.md), so `dist/` is generated output and
+# stays ignored by the global rule above. The framework's own `src/build/` module
+# would otherwise be swallowed by the generic `build/` rule, so un-ignore it
+# explicitly - it holds the patched ddl.ts and its loss is silent.
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/src/build/
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/src/build/**
 
 # Shared UI kit (@fleet-kit/core): ship its built dist so both apps can consume it
 # from a fresh clone via a relative file: dependency.

@@ -119,10 +119,52 @@ AS $$
   return { requested: reqRaw, used: used, substituted: substituted, reason: reason, note: note, available: avail };
 $$;
 
+-- The 2-arg signature is dropped, not left alongside: TOOL_DIRECTIONS gained a
+-- REGION argument, and Snowflake keys procedures on full arity, so the old
+-- (VARCHAR, VARCHAR) body would otherwise survive a CREATE OR REPLACE and keep
+-- serving every 2-arg caller - including the synapse get_directions verb - with
+-- exactly the code this fix removes. It must be dropped BEFORE the CREATE, not
+-- after: with REGION defaulted, both signatures accept two arguments and
+-- Snowflake refuses the CREATE outright with 'Cannot overload PROCEDURE
+-- TOOL_DIRECTIONS as it would cause ambiguous PROCEDURE overloading'. Only
+-- OWNERSHIP is held on this procedure, so no grant is lost.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
+--
+-- Two defects fixed here on 2026-09-14, both found by decomposing one hung
+-- "show me the route from SF to LA" agent turn in QUERY_HISTORY:
+--
+-- 1. The proc opened with an ORS_STATUS(NULL) profile probe wrapped in
+--    EXCEPTION WHEN OTHER and described as "best-effort". EXCEPTION catches an
+--    ERROR, never a HANG, and ORS_STATUS is a service function the platform
+--    retries past the SPCS ingress cut-off. That statement ran 839.7 s and was
+--    killed with its parent, so the question spent its whole budget before
+--    DIRECTIONS was ever called. It is now a pure table read
+--    (CORE.PROFILES_FOR_REGION), and the probe lives in the explicitly-called
+--    CORE.REFRESH_REGION_PROFILES maintenance procedure instead.
+--
+-- 2. CORE.DIRECTIONS takes a region as its third argument and this proc never
+--    passed one, so the gateway resolved NULL to DEFAULT_REGION_NAME
+--    ('SanFrancisco') for EVERY call. The San Francisco graph spans
+--    lat 37.71-37.81 / lon -122.51--122.37, so Los Angeles is off-graph and the
+--    route could not have succeeded even had the probe returned. The region is
+--    now resolved from the geocoded coordinates.
+--
+-- Region resolution is deliberately NOT a loop over REGION_FOR_POINT: that
+-- returns the smallest region containing ONE point, so SF-to-LA resolves to
+-- {SanFrancisco, UnitedStatesOfAmerica}, reports zero out-of-region
+-- coordinates, and still names no graph that can route the pair. See
+-- CORE.COVERING_REGION_FOR_POINTS.
+--
+-- Only catalog-sourced region values are ever inlined into the dynamic SQL
+-- below: an explicit REGION argument is validated against REGION_ORS_MAP first
+-- and otherwise discarded, so the string cannot carry caller text (same reason
+-- PROFILE goes through the whitelist CASE).
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE SQL
@@ -134,7 +176,7 @@ DECLARE
     res RESULTSET;
     v_locations VARIANT;
     v_coords VARIANT;
-    v_profile VARCHAR;
+    v_coord_count INT;
     v_distance_raw FLOAT;
     v_duration_raw FLOAT;
     v_segments VARIANT;
@@ -146,6 +188,20 @@ DECLARE
     v_available ARRAY;
     v_res VARIANT;
     v_used VARCHAR;
+    v_region VARCHAR;
+    v_region_obj VARIANT;
+    v_region_requested VARCHAR;
+    v_region_source VARCHAR;
+    v_unroutable_legs INT;
+    v_first_bad_leg INT;
+    v_snap_radius FLOAT;
+    v_far_snap_count INT;
+    v_first_far_coord INT;
+    v_far_snap_m FLOAT;
+    v_unsnapped_count INT;
+    v_first_unsnapped INT;
+    v_suggested_region VARCHAR;
+    v_forced_region_hint VARCHAR;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -167,17 +223,6 @@ BEGIN
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
         ELSE 'driving-car'
     END;
-
-    -- Resolve the requested profile against the profiles actually built in the
-    -- region (best-effort; ORS_STATUS failure -> NULL -> rename-only behavior).
-    -- DIRECTIONS uses the default region, so query the default region's profiles.
-    BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
 
     -- Step 1: Geocode. Pull locations + coords array out as bound variables
     -- so step 2 can pass them to DIRECTIONS without inlining a CTE-derived
@@ -202,15 +247,27 @@ BEGIN
     OPEN c;
     FETCH c INTO v_locations, v_coords;
     CLOSE c;
-    v_profile := v_safe_profile;
 
     IF (v_locations IS NULL OR v_coords IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
     END IF;
 
+    v_coord_count := ARRAY_SIZE(:v_coords);
+    IF (v_coord_count < 2) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', 'ROUTING FAILED: a route needs at least two places, but only '
+                     || COALESCE(v_coord_count::VARCHAR, '0')
+                     || ' was geocoded from the description. Name both an origin and a destination.',
+            'locations_requested', v_locations,
+            'status', 'FAILED'
+        );
+    END IF;
+
     -- Step 1b: Region validation (best-effort; non-fatal). Done as a
     -- separate, simple FLATTEN that calls REGION_FOR_POINT per coord.
-    -- Failures here just leave the region info NULL.
+    -- Failures here just leave the region info NULL. This is DIAGNOSTIC only -
+    -- it reports which region each point falls in individually, which is not
+    -- the same question as which single graph can route the whole sequence.
     BEGIN
         LET val_sql VARCHAR := 'WITH pts AS (
             SELECT
@@ -235,7 +292,345 @@ BEGIN
             v_total_coords := 0;
     END;
 
-    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter.
+    -- Step 1c: resolve the ONE graph to route on. An explicit REGION argument
+    -- wins, but only after it is confirmed DEPLOYED - honouring an unprovisioned
+    -- name would send the request to a service that is not there, and silently
+    -- dropping it would route somewhere the caller did not ask for.
+    v_region_requested := NULLIF(TRIM(COALESCE(REGION, '')), '');
+    IF (v_region_requested IS NOT NULL) THEN
+        SELECT REGION INTO :v_region
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE UPPER(REGION) = UPPER(:v_region_requested) AND STATUS = 'DEPLOYED'
+        LIMIT 1;
+        IF (v_region IS NULL) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', 'ROUTING FAILED: region ''' || v_region_requested
+                         || ''' is not provisioned. Provisioned regions: '
+                         || COALESCE((SELECT ARRAY_AGG(REGION)::VARCHAR FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE STATUS = 'DEPLOYED'), '[]')
+                         || '. Omit the region to have it resolved from the places themselves.',
+                'error_code', 'REGION_NOT_PROVISIONED',
+                'locations_requested', v_locations,
+                'status', 'FAILED'
+            );
+        END IF;
+        v_region_source := 'caller';
+    ELSE
+        SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords) INTO :v_region_obj;
+        v_region := v_region_obj:lookup_name::STRING;
+        v_region_source := 'covering_region';
+    END IF;
+
+    -- No single provisioned graph covers every point. Refuse with the per-point
+    -- detail rather than falling through to the default region: that fallback is
+    -- what silently sent a San Francisco-to-Los Angeles request at the
+    -- city-only San Francisco graph.
+    IF (v_region IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT(
+                'ROUTING FAILED: no single provisioned routing region covers all ',
+                v_coord_count::VARCHAR,
+                ' places in this route. Per-point regions: ',
+                COALESCE(v_detected_regions::VARCHAR, '[]'),
+                '. A route can only be computed inside ONE routing graph, so a wider region (for example the country) must be provisioned, or the LLM geocoded a place to the wrong city of the same name - try naming the country.'
+            ),
+            'error_code', 'NO_COVERING_REGION',
+            'locations_requested', v_locations,
+            'detected_regions', v_detected_regions,
+            'out_of_region_count', v_out_of_region_count,
+            'total_coords', v_total_coords,
+            'status', 'FAILED'
+        );
+    END IF;
+
+    -- Step 1c-bis: a caller-supplied region is the one refusal case with a known
+    -- remedy, so resolve it here rather than leaving the caller with a dead end.
+    -- COVERING_REGION_FOR_POINTS is already the resolver used when no region is
+    -- passed; on the forced path it was simply never consulted, so every refusal
+    -- below read as final even when another provisioned graph covers every point.
+    -- Measured: region 'UnitedStatesOfAmerica' forced by the SA app's active
+    -- dashboard context refused an SFO-to-Civic-Center route that the
+    -- SanFrancisco graph this lookup names routes in 1435 s. Wrapped so a failure
+    -- here cannot break the refusal path it is only annotating, and silent when
+    -- the suggestion equals the region already in use (nothing to retry).
+    IF (v_region_source = 'caller') THEN
+        BEGIN
+            SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords):lookup_name::STRING
+              INTO :v_suggested_region;
+        EXCEPTION WHEN OTHER THEN
+            v_suggested_region := NULL;
+        END;
+        IF (v_suggested_region IS NOT NULL AND UPPER(v_suggested_region) <> UPPER(v_region)) THEN
+            v_forced_region_hint := CONCAT(
+                ' The region ''', v_region, ''' was supplied by the caller, not resolved from the places; ''',
+                v_suggested_region, ''' covers all of them. Retry once with the region omitted.'
+            );
+        END IF;
+    END IF;
+
+    -- Step 1d: resolve the requested profile against the profiles actually built
+    -- in the region that will serve this route. Table-only lookup (see
+    -- CORE.PROFILES_FOR_REGION) - no service call, so it cannot stall the
+    -- routing call the way the old ORS_STATUS probe did. An unknown region
+    -- yields NULL, which RESOLVE_PROFILE reads as "make no availability claim",
+    -- i.e. the pre-existing rename-only behaviour.
+    --
+    -- This is load-bearing, not cosmetic: measured on this deployment the
+    -- SanFrancisco graph has {driving-car, cycling-electric} and the
+    -- UnitedStatesOfAmerica graph has {driving-hgv} alone, so an intercity
+    -- request for 'driving-car' MUST be substituted to 'driving-hgv' or the
+    -- engine answers 2003 'profile unknown'. Resolving against the default
+    -- region (as before) would have claimed driving-car was available.
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 1e: pre-flight every consecutive leg with ONE travel-matrix call.
+    -- An unroutable pair is the case that made this proc look like a hang even
+    -- once the region was right: DIRECTIONS searches for a path that does not
+    -- exist and burns the whole statement timeout (measured twice at exactly
+    -- 600 s for a Maui-to-Boise pair on the US graph, which no straight-line
+    -- distance cap can separate from a legitimate coast-to-coast route). The
+    -- same pair through MATRIX_TABULAR answers durations [[null]] in 5.8 s,
+    -- because the matrix algorithm reports "no path" instead of hunting for one.
+    -- So the matrix is the cheap oracle and it also snaps the points, which is
+    -- why this replaces a separate SNAP gate rather than adding to it.
+    --
+    -- Advisory by construction: a NULL duration convicts, but a matrix that
+    -- errors or is unavailable leaves v_unroutable_legs NULL and routing
+    -- proceeds. Skipped above 25 places, where n x n approaches the per-region
+    -- matrix pair ceiling and the pre-flight would cost more than it saves.
+    --
+    -- SECS is cast ::FLOAT deliberately. ORS writes an unroutable cell as a JSON
+    -- null, and a VARIANT JSON null is NOT SQL NULL - `R:durations[0][1] IS NULL`
+    -- returns FALSE for it. The first version of this gate used the uncast form,
+    -- ran on the very Maui-to-Boise pair it was written for, and reported zero
+    -- unroutable legs: a check that executes and cannot convict. The cast turns
+    -- the JSON null into a SQL NULL (verified: IS_NULL_VALUE TRUE, cast IS NULL
+    -- TRUE). DUR_ROWS separates "no route" from "no matrix" - without it a
+    -- failed matrix has no durations key at all, every cell reads NULL, and a
+    -- perfectly routable request would be refused.
+    --
+    -- A NULL duration is NOT the only way the pair can fail, and this is the
+    -- second half of the same lesson. ORS snaps MATRIX coordinates with
+    -- endpoints.matrix.maximum_search_radius and ROUTING coordinates with
+    -- profile_default.service.maximum_snapping_radius, and until the config
+    -- change alongside this the matrix radius was the larger of the two. A point
+    -- 1-2 km off the graph therefore snapped for the matrix, returned a finite
+    -- duration, passed this gate, and then made DIRECTIONS answer 404/2010
+    -- "could not find routable point within a radius". Measured in
+    -- OBSERVABILITY.ORS_REQUEST_LOG: every 2010 was preceded within one second
+    -- by a matrix 200 on the same profile and host - the oracle passing the
+    -- exact case it exists for, a second time. So the gate also reads the
+    -- snapped distance the matrix reports per coordinate and convicts anything
+    -- beyond the region's ROUTING radius. The SA app's backload pre-filter
+    -- (helpers.ts findUnroutablePoints) already had to do this for VROOM code 3;
+    -- this is the same check for the same reason.
+    --
+    -- A NULL snapped_distance deliberately does NOT convict. The defect being
+    -- closed always produces a PRESENT and large value, so a missing one is an
+    -- absence of evidence, not evidence of absence - and treating it as a
+    -- refusal would let one degraded matrix response reject a good route.
+    -- `SNAP_M > ?` is null-safe for the same reason (NULL > x is NULL, so
+    -- COUNT_IF does not count it).
+    -- Resolved in three separate statements, not one COALESCE over a scalar
+    -- subquery: Snowflake Scripting rejects `SELECT COALESCE((SELECT ...)) INTO
+    -- :var` with "INTO clause is not allowed in this context". Each step is
+    -- wrapped so an older deploy missing REGION_ORS_LIMITS or
+    -- ORS_LIMIT_DEFAULTS falls back to the 1000 m default rather than failing
+    -- the whole route.
+    --
+    -- This value is what the config SAYS, which can lag what the running engine
+    -- is USING until the region's container restarts. Measured on this
+    -- deployment: config resolved 1000 while the live SanFrancisco service
+    -- answered "within a radius of 400.0 meters" - it was still serving the
+    -- static bootstrap ors-config.yml, which set no snapping radius at all and
+    -- so took the ORS default. A configured value that is too HIGH under-
+    -- convicts (a point at 500 m passes this gate and still 2010s), and
+    -- guessing lower would refuse good routes, so the 2010 branch after the
+    -- DIRECTIONS call is the deliberate backstop for exactly that window
+    -- rather than a redundant second check.
+    v_snap_radius := NULL;
+    BEGIN
+        SELECT LIMITS:maximum_snapping_radius::FLOAT INTO :v_snap_radius
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
+         WHERE UPPER(REGION) = UPPER(:v_region)
+         LIMIT 1;
+    EXCEPTION WHEN OTHER THEN
+        v_snap_radius := NULL;
+    END;
+    IF (v_snap_radius IS NULL OR v_snap_radius <= 0) THEN
+        BEGIN
+            SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS():maximum_snapping_radius::FLOAT
+              INTO :v_snap_radius;
+        EXCEPTION WHEN OTHER THEN
+            v_snap_radius := NULL;
+        END;
+    END IF;
+    IF (v_snap_radius IS NULL OR v_snap_radius <= 0) THEN
+        v_snap_radius := 1000;
+    END IF;
+
+    IF (v_coord_count <= 25) THEN
+        BEGIN
+            LET pf_sql VARCHAR := 'WITH m AS (
+                SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+                    ''' || v_used || ''', PARSE_JSON(?), PARSE_JSON(?), ''' || v_region || ''') AS R
+            ),
+            legs AS (
+                SELECT s.INDEX AS LEG_IDX,
+                       m.R:durations[s.INDEX][s.INDEX + 1]::FLOAT AS SECS,
+                       COALESCE(ARRAY_SIZE(m.R:durations), 0) AS DUR_ROWS
+                FROM m, LATERAL FLATTEN(INPUT => PARSE_JSON(?)) s
+                WHERE s.INDEX < ARRAY_SIZE(PARSE_JSON(?)) - 1
+            ),
+            snaps AS (
+                SELECT s.INDEX AS CIDX,
+                       m.R:destinations[s.INDEX]:snapped_distance::FLOAT AS SNAP_M,
+                       -- A null destination ENTRY is a different signal from a
+                       -- missing snapped_distance: ORS writes the whole element as
+                       -- JSON null when it could not snap that coordinate to the
+                       -- graph AT ALL. Measured on this deployment for San
+                       -- Francisco International Airport against the
+                       -- UnitedStatesOfAmerica long-haul HGV graph:
+                       -- destinations = [null, {..., snapped_distance: 60.79}].
+                       -- SNAP_M is then NULL, which the far-snap gate below
+                       -- deliberately does not convict on (absence of evidence),
+                       -- so the request fell through to the leg check and was
+                       -- refused as UNROUTABLE_LEG - "separated by water" for two
+                       -- points 20 km apart in one city. IS_NULL_VALUE is required
+                       -- and a bare `IS NULL` is WRONG here for exactly the reason
+                       -- the ::FLOAT cast above documents: verified
+                       -- `destinations[0] IS NULL` -> FALSE,
+                       -- `IS_NULL_VALUE(destinations[0])` -> TRUE.
+                       IS_NULL_VALUE(m.R:destinations[s.INDEX]) AS UNSNAPPED
+                FROM m, LATERAL FLATTEN(INPUT => PARSE_JSON(?)) s
+            ),
+            leg_agg AS (
+                SELECT IFF(MAX(DUR_ROWS) > 0, COUNT_IF(SECS IS NULL), NULL) AS BAD_LEGS,
+                       IFF(MAX(DUR_ROWS) > 0, MIN(IFF(SECS IS NULL, LEG_IDX, NULL)), NULL) AS FIRST_BAD
+                FROM legs
+            ),
+            snap_agg AS (
+                SELECT COUNT_IF(SNAP_M > ?)               AS FAR_COUNT,
+                       MIN(IFF(SNAP_M > ?, CIDX, NULL))   AS FIRST_FAR,
+                       MAX(IFF(SNAP_M > ?, SNAP_M, NULL)) AS FAR_M,
+                       COUNT_IF(UNSNAPPED)                AS UNSNAPPED_COUNT,
+                       MIN(IFF(UNSNAPPED, CIDX, NULL))    AS FIRST_UNSNAPPED
+                FROM snaps
+            )
+            SELECT l.BAD_LEGS, l.FIRST_BAD, s.FAR_COUNT, s.FIRST_FAR, s.FAR_M,
+                   s.UNSNAPPED_COUNT, s.FIRST_UNSNAPPED
+            FROM leg_agg l, snap_agg s';
+            LET pf_coords VARCHAR := v_coords::STRING;
+            res := (EXECUTE IMMEDIATE :pf_sql USING (
+                pf_coords, pf_coords, pf_coords, pf_coords, pf_coords,
+                v_snap_radius, v_snap_radius, v_snap_radius));
+            LET cp CURSOR FOR res;
+            OPEN cp;
+            FETCH cp INTO v_unroutable_legs, v_first_bad_leg, v_far_snap_count, v_first_far_coord, v_far_snap_m,
+                          v_unsnapped_count, v_first_unsnapped;
+            CLOSE cp;
+        EXCEPTION
+            WHEN OTHER THEN
+                v_unroutable_legs := NULL;
+                v_far_snap_count := NULL;
+                v_unsnapped_count := NULL;
+        END;
+
+        -- Ordered BEFORE the leg check on purpose. A coordinate the graph could
+        -- not snap at all nulls every leg that touches it, so leg-based wording
+        -- ("no road route exists between A and B ... usually separated by water")
+        -- is guaranteed to be wrong whenever this is true, and it names the wrong
+        -- remedy: the fix is a graph that covers the place, not a different pair.
+        IF (v_unsnapped_count IS NOT NULL AND v_unsnapped_count > 0) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: place ', (COALESCE(v_first_unsnapped, 0) + 1)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_unsnapped, 0)]:name::STRING, 'unknown'), ')',
+                    ' is not present on the ', v_region, ' ', v_used,
+                    ' road graph at all - the routing engine could not snap it to any road. ',
+                    v_unsnapped_count::VARCHAR, ' of ', v_coord_count::VARCHAR,
+                    ' places are off this graph. Route on a region whose graph covers it, or name a nearby street address.',
+                    COALESCE(v_forced_region_hint, '')
+                ),
+                'error_code', 'OFF_GRAPH_PLACE',
+                'locations_requested', v_locations,
+                'region', v_region,
+                'region_source', v_region_source,
+                'suggested_region', v_suggested_region,
+                'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+                'profile', v_used,
+                'off_graph_places', v_unsnapped_count,
+                'first_off_graph_place', v_first_unsnapped,
+                'unsnappable', TRUE,
+                'status', 'FAILED'
+            );
+        END IF;
+
+        IF (v_unroutable_legs IS NOT NULL AND v_unroutable_legs > 0) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: no road route exists between place ',
+                    (COALESCE(v_first_bad_leg, 0) + 1)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_bad_leg, 0)]:name::STRING, 'unknown'), ')',
+                    ' and place ', (COALESCE(v_first_bad_leg, 0) + 2)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_bad_leg, 0) + 1]:name::STRING, 'unknown'), ')',
+                    ' on the ', v_region, ' ', v_used, ' graph. ',
+                    v_unroutable_legs::VARCHAR, ' of ', (v_coord_count - 1)::VARCHAR,
+                    ' legs are unroutable - the places are usually separated by water or sit on a disconnected part of the road network.',
+                    COALESCE(v_forced_region_hint, '')
+                ),
+                'error_code', 'UNROUTABLE_LEG',
+                'locations_requested', v_locations,
+                'region', v_region,
+                'region_source', v_region_source,
+                'suggested_region', v_suggested_region,
+                'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+                'profile', v_used,
+                'unroutable_legs', v_unroutable_legs,
+                'first_unroutable_leg', v_first_bad_leg,
+                'status', 'FAILED'
+            );
+        END IF;
+
+        -- Far-snap refusal. Same class as UNROUTABLE_LEG (the place is not on
+        -- the road graph this region built) but a different measurement, so it
+        -- names the place and the distance instead of the leg: this is the case
+        -- where a route WOULD have been reported as an opaque ORS 2010.
+        IF (v_far_snap_count IS NOT NULL AND v_far_snap_count > 0) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: place ', (COALESCE(v_first_far_coord, 0) + 1)::VARCHAR,
+                    ' (', COALESCE(v_locations[COALESCE(v_first_far_coord, 0)]:name::STRING, 'unknown'), ')',
+                    ' is ', ROUND(COALESCE(v_far_snap_m, 0))::VARCHAR, ' m from the nearest road on the ',
+                    v_region, ' ', v_used, ' graph, beyond this region''s ',
+                    ROUND(v_snap_radius)::VARCHAR, ' m snapping radius. ',
+                    v_far_snap_count::VARCHAR, ' of ', v_coord_count::VARCHAR,
+                    ' places are off-graph. Name a nearby street address instead, or provision a region whose graph covers it.',
+                    COALESCE(v_forced_region_hint, '')
+                ),
+                'error_code', 'OFF_GRAPH_PLACE',
+                'locations_requested', v_locations,
+                'region', v_region,
+                'region_source', v_region_source,
+                'suggested_region', v_suggested_region,
+                'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+                'profile', v_used,
+                'off_graph_places', v_far_snap_count,
+                'first_off_graph_place', v_first_far_coord,
+                'snapped_distance_m', v_far_snap_m,
+                'snapping_radius_m', v_snap_radius,
+                'status', 'FAILED'
+            );
+        END IF;
+    END IF;
+
+    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter, against
+    -- the resolved region.
     LET dir_sql VARCHAR := 'SELECT
             d.RESPONSE:features[0]:properties:summary:distance::FLOAT,
             d.RESPONSE:features[0]:properties:summary:duration::FLOAT,
@@ -244,7 +639,8 @@ BEGIN
             d.RESPONSE:error
         FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
             ''' || v_used || ''',
-            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT)) d';
+            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT,
+            ''' || v_region || ''')) d';
 
     LET v_coords_str2 VARCHAR := v_coords::STRING;
     res := (EXECUTE IMMEDIATE :dir_sql USING (v_coords_str2));
@@ -253,33 +649,68 @@ BEGIN
     FETCH c2 INTO v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
     CLOSE c2;
 
-    IF (v_locations IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('ROUTING FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'locations_requested', v_locations, 'status', 'FAILED');
+        -- ORS 2010 is "could not find routable point within a radius of N
+        -- meters of specified coordinate K" - the SAME off-graph condition the
+        -- pre-flight above convicts, reaching here only when the pre-flight was
+        -- skipped (more than 25 places) or declined to claim (matrix errored, or
+        -- reported no snapped_distance). Before this branch existed it fell
+        -- through to the generic dump below, which stringifies the whole error
+        -- VARIANT: the caller got `{"code":2010,"message":"..."}` and no
+        -- indication that the fix is to name a different place rather than to
+        -- retry. ORS's own message carries the coordinate index and the radius,
+        -- so it is surfaced verbatim rather than paraphrased. Classified with
+        -- the same error_code as the pre-flight refusal so a caller has one
+        -- condition to handle, not two.
+        IF (v_ors_error:code::INT = 2010) THEN
+            RETURN OBJECT_CONSTRUCT(
+                'error', CONCAT(
+                    'ROUTING FAILED: at least one place is not on the ', v_region, ' ', v_used,
+                    ' road graph, so no route could start or end there. The routing engine reported: ',
+                    COALESCE(v_ors_error:message::STRING, v_ors_error::VARCHAR),
+                    ' Name a nearby street address instead, or provision a region whose graph covers it.',
+                    COALESCE(v_forced_region_hint, '')
+                ),
+                'error_code', 'OFF_GRAPH_PLACE',
+                'ors_code', 2010,
+                'ors_message', v_ors_error:message::STRING,
+                'locations_requested', v_locations,
+                'region', v_region,
+                'region_source', v_region_source,
+                'suggested_region', v_suggested_region,
+                'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+                'profile', v_used,
+                'snapping_radius_m', v_snap_radius,
+                'status', 'FAILED'
+            );
+        END IF;
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT('ROUTING FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR,
+                            COALESCE(v_forced_region_hint, '')),
+            'locations_requested', v_locations,
+            'region', v_region,
+            'region_source', v_region_source,
+            'suggested_region', v_suggested_region,
+            'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+            'profile', v_used,
+            'status', 'FAILED'
+        );
     END IF;
 
     IF (v_distance_raw IS NULL OR v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error',
-              CASE
-                WHEN v_out_of_region_count > 0 THEN
-                  CONCAT(
-                    'ROUTING FAILED: ', v_out_of_region_count::VARCHAR, ' of ', v_total_coords::VARCHAR,
-                    ' geocoded coordinates fell outside every provisioned region (detected: ',
-                    COALESCE(v_detected_regions::VARCHAR, '[]'),
-                    '). The LLM may have geocoded to the wrong city of the same name, or the destination is not in any provisioned region. Try specifying the country or region in your prompt.'
-                  )
-                ELSE
-                  CONCAT(
-                    'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. Detected regions: ',
-                    COALESCE(v_detected_regions::VARCHAR, '[]'),
-                    '. The locations are inside known regions but no routing graph is loaded that covers them all. Provision the necessary region(s) and retry.'
-                  )
-              END,
+            'error', CONCAT(
+                'ROUTING FAILED: the ', v_region, ' routing graph accepted the request but returned no route for profile ',
+                v_used, '. Detected regions: ', COALESCE(v_detected_regions::VARCHAR, '[]'),
+                '. Confirm the region''s ORS service is RUNNING and that its graphs finished loading, then retry.',
+                COALESCE(v_forced_region_hint, '')
+            ),
             'locations_requested', v_locations,
+            'region', v_region,
+            'region_source', v_region_source,
+            'suggested_region', v_suggested_region,
+            'retry_without_region', IFF(v_forced_region_hint IS NOT NULL, TRUE, FALSE),
+            'profile', v_used,
             'detected_regions', v_detected_regions,
             'out_of_region_count', v_out_of_region_count,
             'total_coords', v_total_coords,
@@ -298,6 +729,9 @@ BEGIN
         'duration_mins', ROUND(DIV0(v_duration_raw, 60), 1),
         'segments', v_segments,
         'geometry', v_geometry,
+        'region', v_region,
+        'region_source', v_region_source,
+        'available_profiles', v_available,
         'detected_regions', v_detected_regions,
         'status', 'SUCCESS'
     );
@@ -307,7 +741,291 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- TOOL_SNAP: snap free-text coordinates/places to the nearest routable road edge
+-- (per-point nearest-edge snapping via ORS /snap, NOT trajectory map matching).
+--
+-- This procedure failed on EVERY call until 2026-09-14, with a raw SQL
+-- compilation error handed straight to the user, on two independent argument-type
+-- defects in ONE line. CORE.SNAP_POINTS is declared
+-- (VARCHAR, ARRAY, NUMBER, DEFAULT VARCHAR) and it was called with:
+--   * PARSE_JSON(?), which is VARIANT, not ARRAY -> needs ::ARRAY
+--   * a bare NULL for the region -> an untyped NULL does not match a VARCHAR
+--     parameter, so ::VARCHAR (or a real region) is required. This trap is
+--     already documented repo-wide for the routing contract's provider argument.
+-- Both are needed: ::ARRAY alone still fails on the NULL, and NULL::VARCHAR alone
+-- still fails on the VARIANT. Verified separately against a live SNAP_POINTS.
+--
+-- Nothing caught this because no eval case exercised snap_to_road at all, and
+-- "the tool errored" reads like an engine problem rather than a call that could
+-- never have compiled.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    RADIUS_METERS NUMBER DEFAULT 350,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_radius INT;
+    v_points VARIANT;
+    v_unsnapped INT;
+    v_total INT;
+    v_region VARCHAR;
+    v_region_lit VARCHAR;
+BEGIN
+    v_radius := COALESCE(:RADIUS_METERS, 350)::INT;
+    IF (v_radius <= 0) THEN
+        v_radius := 350;
+    END IF;
+
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    -- Cycling variants + ebike map to the only built cycling graph (see TOOL_DIRECTIONS).
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    -- Step 1: geocode the free-text description to a coords array [[lon,lat], ...].
+    -- Deliberately BEFORE profile resolution: the profiles that exist differ per
+    -- region (measured here, SanFrancisco carries no driving-hgv and
+    -- UnitedStatesOfAmerica carries no driving-car), so resolving against the
+    -- default region claims availability on a graph that may not have it.
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract all locations/coordinates from this description and return their coordinates. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    IF (v_coords IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'SNAP FAILED: Could not parse any coordinates from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Resolve the ONE graph that covers every point, then resolve the profile
+    -- against THAT region's built profiles (table-only lookup - the ORS_STATUS
+    -- probe this replaced was a service call that could not be bounded from SQL
+    -- and once stalled a caller for 839.7 s; see the TOOL_DIRECTIONS header).
+    -- A NULL region is not fatal here: snapping is diagnostic, so it still runs
+    -- against the engine default, and the region actually used is reported back.
+    SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords):lookup_name::STRING INTO :v_region;
+    v_region_lit := IFF(:v_region IS NULL, 'NULL::VARCHAR', '''' || :v_region || '''');
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: snap each point to the nearest routable edge. v_radius is a validated
+    -- INT and v_region comes from the catalog, so both are safe to inline; coords
+    -- are passed as a bound parameter and cast ::ARRAY to match the declared
+    -- signature.
+    LET snap_sql VARCHAR := 'SELECT
+            ARRAY_AGG(OBJECT_CONSTRUCT_KEEP_NULL(
+                ''idx'', s.IDX,
+                ''input_lon'', ST_X(s.INPUT_GEOG),
+                ''input_lat'', ST_Y(s.INPUT_GEOG),
+                ''snapped_lon'', ST_X(s.SNAPPED_GEOG),
+                ''snapped_lat'', ST_Y(s.SNAPPED_GEOG),
+                ''snapped_distance_m'', s.SNAPPED_DISTANCE,
+                ''name'', s.NAME
+            )) WITHIN GROUP (ORDER BY s.IDX),
+            COUNT_IF(s.SNAPPED_GEOG IS NULL),
+            COUNT(*)
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(''' || v_used || ''', PARSE_JSON(?)::ARRAY, ' || v_radius || ', ' || v_region_lit || ')) s';
+
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :snap_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_points, v_unsnapped, v_total;
+    CLOSE c2;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'radius_meters', v_radius,
+        'points', v_points,
+        'unsnapped_count', v_unsnapped,
+        'total_points', v_total,
+        'region', v_region,
+        'available_profiles', v_available,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_SNAP failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SNAP(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- TOOL_MATCH: map-match a free-text/coordinate trajectory to the road network and
+-- return the matched road segments as GeoJSON (HMM map matching via ORS /match,
+-- geometry resolved via /export). This is trajectory map matching, unlike TOOL_SNAP.
+--
+-- Failed on EVERY call until 2026-09-14 for the same two reasons as TOOL_SNAP:
+-- CORE.MATCH_PATH is declared (VARCHAR, ARRAY, DEFAULT VARCHAR) and was called
+-- with a VARIANT PARSE_JSON(?) and a bare untyped NULL region. See the TOOL_SNAP
+-- header - both casts are required, and neither alone is sufficient.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(
+    LOCATIONS_DESCRIPTION VARCHAR,
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_locations VARIANT;
+    v_coords VARIANT;
+    v_coord_count INT;
+    v_resp VARIANT;
+    v_geojson VARIANT;
+    v_matched_edges INT;
+    v_region VARCHAR;
+    v_region_lit VARCHAR;
+BEGIN
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    -- Step 1: geocode the free-text trajectory into an ORDERED coords array.
+    -- Before profile resolution, which needs the region the trajectory falls in:
+    -- the built profiles differ per region, so resolving against the default one
+    -- claims availability on a graph that may not have it.
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract the ordered sequence of points/coordinates that form this trajectory or path and return their coordinates in order. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        )
+        SELECT
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_coords;
+    CLOSE c;
+
+    v_coord_count := COALESCE(ARRAY_SIZE(v_coords), 0);
+    IF (v_coords IS NULL OR v_coord_count < 2) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'MATCH FAILED: A trajectory needs at least 2 ordered points; could not parse enough from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Resolve the graph covering the whole trajectory, then the profile against
+    -- that region. Catalog-sourced, so safe to inline; NULL falls back to the
+    -- engine default and is reported back rather than hidden.
+    SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(:v_coords):lookup_name::STRING INTO :v_region;
+    v_region_lit := IFF(:v_region IS NULL, 'NULL::VARCHAR', '''' || :v_region || '''');
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: map-match the trajectory and resolve matched edges to geometry.
+    LET match_sql VARCHAR := 'SELECT mp.RESPONSE, ST_ASGEOJSON(mp.GEOJSON)::VARIANT, mp.MATCHED_EDGES
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.MATCH_PATH(''' || v_used || ''', PARSE_JSON(?)::ARRAY, ' || v_region_lit || ')) mp';
+    LET v_coords_str VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :match_sql USING (v_coords_str));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_resp, v_geojson, v_matched_edges;
+    CLOSE c2;
+
+    IF (v_resp:error IS NOT NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('MATCH FAILED: OpenRouteService returned an error: ', v_resp:error::VARCHAR), 'locations_requested', v_locations, 'status', 'FAILED');
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT(
+        'locations', v_locations,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
+        'matched_geometry', v_geojson,
+        'matched_edges', v_matched_edges,
+        'edge_ids', v_resp:edge_ids,
+        'graph_timestamp', v_resp:graph_timestamp,
+        'region', v_region,
+        'available_profiles', v_available,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_MATCH failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_MATCH(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
@@ -330,6 +1048,9 @@ DECLARE
     v_geometry VARIANT;
     v_ors_error VARIANT;
     v_detected_region OBJECT;
+    v_region VARCHAR;
+    v_lon FLOAT;
+    v_lat FLOAT;
     v_available ARRAY;
     v_res VARIANT;
     v_used VARCHAR;
@@ -353,17 +1074,16 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the region
-    -- (best-effort). Surfaces requested vs used + a note when they differ.
-    BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
-    -- First attempt: try with detected region (clips to region boundary).
+    -- Step 1: geocode and resolve the region the point falls in. This is a
+    -- SEPARATE statement from the isochrone call on purpose. Previously the
+    -- geocode, the region lookup and ISOCHRONES_CLIPPED were one statement, so
+    -- the profile had to be inlined BEFORE the region was known and was therefore
+    -- resolved against the DEFAULT region. Measured: the profiles built per region
+    -- are disjoint here (SanFrancisco has no driving-hgv, UnitedStatesOfAmerica
+    -- has no driving-car), so a Dallas isochrone requesting driving-car was told
+    -- the profile existed, clipped correctly to UnitedStatesOfAmerica, and got
+    -- ORS 3003 "Parameter 'profile' has incorrect value of 'unknown'" back. It
+    -- worked only inside the default region, which is where every test ran.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -371,45 +1091,61 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 1000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
-        ),
-        validated AS (
-            -- Resolve LLM-extracted coord to a region; the isochrone is then
-            -- clipped to that region''s boundary so it doesn''t extend into
-            -- foreign territory or water.
-            SELECT geocoded_result,
-                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
-                     geocoded_result:longitude::FLOAT,
-                     geocoded_result:latitude::FLOAT) AS detected_region
-            FROM geocoded
-        ),
-        isochrone AS (
-            SELECT v.geocoded_result AS geo,
-                   v.detected_region,
-                   i.RESPONSE AS iso_result,
-                   i.GEOJSON AS clipped_geom
-            FROM validated v,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_used || ''',
-                     v.geocoded_result:longitude::FLOAT,
-                     v.geocoded_result:latitude::FLOAT,
-                     ?::NUMBER,
-                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
         )
         SELECT
-            geo AS center,
-            ?::NUMBER AS range_minutes,
-            ''' || v_used || ''' AS profile,
-            iso_result:features[0]:properties:area::FLOAT AS area_raw,
-            iso_result:features[0]:geometry AS geometry,
-            iso_result:error AS ors_error,
-            detected_region AS detected_region
-        FROM isochrone';
+            geocoded_result,
+            geocoded_result:longitude::FLOAT,
+            geocoded_result:latitude::FLOAT,
+            OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+              geocoded_result:longitude::FLOAT,
+              geocoded_result:latitude::FLOAT)
+        FROM geocoded';
 
-    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error, v_detected_region;
+    FETCH c INTO v_center, v_lon, v_lat, v_detected_region;
     CLOSE c;
+
+    IF (v_center IS NULL OR v_lon IS NULL OR v_lat IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
+    END IF;
+
+    v_region := v_detected_region:lookup_name::STRING;
+
+    -- Resolve the requested profile against the profiles built in THAT region,
+    -- read from the catalog rather than probed (see the TOOL_DIRECTIONS header).
+    -- Surfaces requested vs used + a note when they differ.
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: isochrone, clipped to the detected region's boundary so it does not
+    -- extend into foreign territory or water. Region is catalog-sourced, so it is
+    -- safe to inline; the coordinates and range are bound.
+    v_sql := 'SELECT
+            i.RESPONSE:features[0]:properties:area::FLOAT,
+            i.RESPONSE:features[0]:geometry,
+            i.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+            ''' || v_used || ''',
+            ?::FLOAT,
+            ?::FLOAT,
+            ?::NUMBER,
+            ''' || COALESCE(v_region, '') || ''')) i';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (v_lon, v_lat, RANGE_MINUTES));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_area_raw, v_geometry, v_ors_error;
+    CLOSE c2;
+
+    v_profile := v_used;
+    v_range_minutes := RANGE_MINUTES;
 
     -- If the gateway returned service_unreachable, the resolved region's ORS
     -- service is suspended or not provisioned. Surface an actionable error
@@ -431,12 +1167,8 @@ BEGIN
         );
     END IF;
 
-    IF (v_center IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('ISOCHRONE FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('ISOCHRONE FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'region', v_region, 'profile', v_used, 'status', 'FAILED');
     END IF;
 
     IF (v_geometry IS NULL) THEN
@@ -469,6 +1201,8 @@ BEGIN
         'area_km2', ROUND(DIV0(v_area_raw, 1000000), 2),
         'geometry', v_geometry,
         'detected_region', v_detected_region,
+        'region', v_region,
+        'available_profiles', v_available,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -506,6 +1240,7 @@ DECLARE
     v_center_lat FLOAT;
     v_ors_error VARIANT;
     v_detected_region OBJECT;
+    v_region VARCHAR;
     v_pois VARIANT;
     v_poi_count NUMBER;
     v_available ARRAY;
@@ -531,17 +1266,11 @@ BEGIN
         ELSE 'driving-car'
     END;
 
-    -- Resolve the requested profile against the profiles built in the region
-    -- (best-effort). Surfaces requested vs used + a note when they differ.
-    BEGIN
-        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
-    EXCEPTION WHEN OTHER THEN
-        v_available := NULL;
-    END;
-    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
-    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
-
-    -- Step 1: Geocode + isochrone (clipped to detected region)
+    -- Step 1: geocode and resolve the region. Split from the isochrone call for
+    -- the same reason as TOOL_ISOCHRONE: the profile must be resolved against the
+    -- region that will serve the call, not the default one, or a request outside
+    -- the default region asks a graph for a profile it does not carry and gets
+    -- ORS 3003 back. See the TOOL_ISOCHRONE header.
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -549,40 +1278,55 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 1000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
-        ),
-        validated AS (
-            SELECT geocoded_result,
-                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
-                     geocoded_result:longitude::FLOAT,
-                     geocoded_result:latitude::FLOAT) AS detected_region
-            FROM geocoded
-        ),
-        isochrone AS (
-            SELECT v.geocoded_result AS geo,
-                   v.detected_region,
-                   i.RESPONSE AS iso_result
-            FROM validated v,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_used || ''',
-                     v.geocoded_result:longitude::FLOAT,
-                     v.geocoded_result:latitude::FLOAT,
-                     ?::NUMBER,
-                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
         )
         SELECT
-            geo AS center,
-            ?::NUMBER AS range_minutes,
-            ''' || v_used || ''' AS profile,
-            iso_result:features[0]:geometry AS iso_geojson,
-            iso_result:error AS ors_error,
-            detected_region AS detected_region
-        FROM isochrone';
+            geocoded_result,
+            geocoded_result:longitude::FLOAT,
+            geocoded_result:latitude::FLOAT,
+            OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+              geocoded_result:longitude::FLOAT,
+              geocoded_result:latitude::FLOAT)
+        FROM geocoded';
 
-    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_iso_geojson, v_ors_error, v_detected_region;
+    FETCH c INTO v_center, v_center_lon, v_center_lat, v_detected_region;
     CLOSE c;
+
+    IF (v_center IS NULL OR v_center_lon IS NULL OR v_center_lat IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'POI SEARCH FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
+    END IF;
+
+    v_region := v_detected_region:lookup_name::STRING;
+
+    BEGIN
+        SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:v_region) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
+
+    -- Step 2: isochrone clipped to the detected region.
+    v_sql := 'SELECT
+            i.RESPONSE:features[0]:geometry,
+            i.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+            ''' || v_used || ''',
+            ?::FLOAT,
+            ?::FLOAT,
+            ?::NUMBER,
+            ''' || COALESCE(v_region, '') || ''')) i';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (v_center_lon, v_center_lat, RANGE_MINUTES));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_iso_geojson, v_ors_error;
+    CLOSE c2;
+
+    v_profile := v_used;
+    v_range_minutes := RANGE_MINUTES;
 
     -- If the gateway returned service_unreachable, the resolved region's ORS
     -- service is suspended or not provisioned. Surface an actionable error
@@ -603,12 +1347,8 @@ BEGIN
         );
     END IF;
 
-    IF (v_center IS NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', 'POI SEARCH FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
-    END IF;
-
     IF (v_ors_error IS NOT NULL) THEN
-        RETURN OBJECT_CONSTRUCT('error', CONCAT('POI SEARCH FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('POI SEARCH FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'region', v_region, 'profile', v_used, 'status', 'FAILED');
     END IF;
 
     IF (v_iso_geojson IS NULL) THEN
@@ -630,11 +1370,10 @@ BEGIN
         );
     END IF;
 
-    -- Step 2: Find Overture POIs inside the isochrone polygon, matching category.
+    -- Step 3: Find Overture POIs inside the isochrone polygon, matching category.
     -- Match against BASIC_CATEGORY and CATEGORIES:primary (case-insensitive).
+    -- v_center_lon / v_center_lat were already resolved in step 1.
     v_category := LOWER(POI_CATEGORY);
-    v_center_lon := v_center:longitude::FLOAT;
-    v_center_lat := v_center:latitude::FLOAT;
     v_iso_geojson_str := v_iso_geojson::STRING;
     LET v_max_results NUMBER := COALESCE(MAX_RESULTS, 25);
     IF (v_max_results > 200) THEN
@@ -696,6 +1435,8 @@ BEGIN
             'profile_note', v_res:note,
             'category', POI_CATEGORY,
             'detected_region', v_detected_region,
+            'region', v_region,
+            'available_profiles', v_available,
             'geometry', v_iso_geojson,
             'pois', ARRAY_CONSTRUCT(),
             'count', 0,
@@ -714,6 +1455,8 @@ BEGIN
         'profile_note', v_res:note,
         'category', POI_CATEGORY,
         'detected_region', v_detected_region,
+        'region', v_region,
+        'available_profiles', v_available,
         'geometry', v_iso_geojson,
         'pois', v_pois,
         'count', v_poi_count,
@@ -1075,6 +1818,22 @@ def _escape_sql_string(s: str) -> str:
     """Escape single quotes for safe SQL string interpolation."""
     return s.replace("'", "''")
 
+# Suspended-engine detection: a suspended regional ORS/VROOM makes the gateway
+# return an embedded error / thrown error naming an unresolvable service host.
+# Mirrors SUSPEND_SIGNATURES in the SA app's lib/routing-suspend.ts so the chat
+# layer can resume + show a friendly notice instead of a raw connection error.
+def _ors_suspended(txt) -> bool:
+    t = str(txt or '').lower()
+    sigs = ['failed to resolve', 'nameresolutionerror', 'max retries exceeded',
+            'name or service not known', 'matrix pre-compute failed',
+            'matrix precompute failed', 'matrix_precompute_failed',
+            'service_unreachable', 'connection refused', 'optimization_unavailable']
+    return any(s in t for s in sigs)
+
+def _vroom_svc(region) -> str:
+    import re
+    return 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + re.sub(r'[^A-Z0-9_]', '', str(region).upper())
+
 def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
         # An explicit NULL region bind from the verb bypasses the SQL DEFAULT, so
@@ -1119,11 +1878,13 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             })
 
         # Resolve the requested profile against the profiles actually built in
-        # the target region (best-effort; ORS_STATUS failure -> [] -> rename-only
-        # behavior). The SQL UDF is the single resolver + substitution detector.
+        # the target region, read from the catalog rather than probed live: an
+        # ORS_STATUS probe here cannot be bounded and once stalled a caller for
+        # 839.7 s (see the TOOL_DIRECTIONS header). Empty -> [] -> rename-only
+        # behavior. The SQL UDF is the single resolver + substitution detector.
         try:
             avail_raw = session.sql(
-                "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) AS K",
+                "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?) AS K",
                 params=[region],
             ).collect()[0]['K']
             available = json.loads(avail_raw) if isinstance(avail_raw, str) else (avail_raw or [])
@@ -1161,10 +1922,27 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             '{region}'
         ))
         """
-        opt_result = session.sql(opt_query).collect()[0]['RESULT']
+        _opt_rows = session.sql(opt_query).collect()
+        if not _opt_rows:
+            # The OPTIMIZATION TVF flattens resp:routes; a suspended/cold VROOM
+            # returns an empty/error body -> 0 rows. Surface a typed reason so the
+            # chat layer resumes the engine and shows a friendly notice (indexing
+            # [0] here would otherwise throw a generic "list index out of range").
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.'
+            }
+        opt_result = _opt_rows[0]['RESULT']
         opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
 
         if 'error' in opt_data:
+            if _ors_suspended(opt_data['error']):
+                return {
+                    'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                    'vroom_service': _vroom_svc(region),
+                    'error': f'Route optimization service for {region} is not responding (it may be suspended or starting). Resume it and retry.'
+                }
             return {
                 'error': f"OPTIMIZATION FAILED: OpenRouteService returned an error: {opt_data['error']}",
                 'deliveries_requested': delivery_data.get('locations', []),
@@ -1209,6 +1987,12 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
     except KeyError as e:
         return {'error': f'OPTIMIZATION FAILED: Missing expected field in geocoding response: {str(e)}', 'status': 'FAILED'}
     except Exception as e:
+        if _ors_suspended(str(e)):
+            return {
+                'status': 'FAILED', 'region': region, 'reason': 'OPTIMIZATION_UNAVAILABLE',
+                'vroom_service': _vroom_svc(region),
+                'error': f'Route optimization service for {region} is not responding ({str(e)}). Resume it and retry.'
+            }
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
@@ -1254,7 +2038,7 @@ function resolveActiveRegion() {
 function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        var a = execScalar("SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", [region]);
         available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
     var res = {};
@@ -1354,8 +2138,14 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails, region: region,
-                 requested_profile: PROFILE, used_profile: usedProfile,
+        // Zero rows here usually means the region's VROOM/ORS engine is suspended
+        // or cold-starting (a suspended engine makes the gateway return an
+        // empty/error body). Surface a typed reason so the chat layer resumes it
+        // and shows a friendly notice instead of a blank plan.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
+                 jobs: jobDetails, requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
     var rawResp = optRes.getColumnValue(1);
@@ -1403,7 +2193,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1448,12 +2244,14 @@ function resolveActiveRegion() {
     return 'SanFrancisco';
 }
 function resolveProfileFor(profile, region) {
-    // Best-effort: resolve the requested profile against the profiles actually
-    // built in the region. ORS_STATUS failure -> [] -> rename-only behavior.
+    // Resolve the requested profile against the profiles actually built in the
+    // region, read from the catalog rather than probed live: an ORS_STATUS probe
+    // here cannot be bounded and once stalled a caller for 839.7 s (see the
+    // TOOL_DIRECTIONS header). Empty -> [] -> rename-only behavior.
     var available = [];
     try {
         var avRs = snowflake.createStatement({
-            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", binds: [region]
+            sqlText: "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", binds: [region]
         }).execute();
         if (avRs.next()) { var a = avRs.getColumnValue(1); available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : []; }
     } catch(e) { available = []; }
@@ -1552,7 +2350,11 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', region: region,
+        // Suspended/cold engine returns an empty/error body -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (it may be suspended or starting) or returned no routable result. Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1571,7 +2373,13 @@ try {
         geometry: geojson
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 vroom_service: 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'Route optimization service for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1611,7 +2419,7 @@ function resolveActiveRegion() {
 function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        var a = execScalar("SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", [region]);
         available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
     var res = {};
@@ -1659,7 +2467,11 @@ try {
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
-        return { error: 'Isochrone returned no results for this location', status: 'FAILED',
+        // A suspended/cold regional ORS returns no isochrone -> typed reason so
+        // the chat layer resumes it and shows a friendly notice.
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (it may be suspended or starting). Resume it and retry.',
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1752,7 +2564,13 @@ try {
         }
     };
 } catch(err) {
-    return { error: err.message, status: 'FAILED' };
+    var _m = err && err.message ? err.message : String(err);
+    if (/failed to resolve|nameresolutionerror|max retries exceeded|name or service not known|matrix pre-?compute failed|matrix_precompute_failed|service_unreachable|connection refused|optimization_unavailable/i.test(_m)) {
+        return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
+                 ors_service: 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' + String(region || 'SanFrancisco').toUpperCase().replace(/[^A-Z0-9_]/g, ''),
+                 error: 'The routing engine for ' + region + ' is not responding (' + _m + '). Resume it and retry.' };
+    }
+    return { error: _m, status: 'FAILED' };
 }
 $$;
 
@@ -1810,7 +2628,7 @@ try {
         var prs = snowflake.createStatement({ sqlText:
           "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(" +
           "  (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1)," +
-          "  (SELECT ARRAY_AGG(f.KEY) FROM LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) f)" +
+          "  OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)" +
           "):used::STRING", binds: [region] }).execute();
         if (prs.next()) { var p = prs.getColumnValue(1); if (p) profile = p; }
     } catch(eProf) { profile = 'driving-car'; }
@@ -2224,6 +3042,1769 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-sap-fleet-connector","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
+-- TOOL_BACKLOAD_SOLVE: internal-first backload matching, end to end.
+--
+-- The single implementation of what the Backload Matching / Backload Proposals
+-- cockpit does: read the region's idle vehicles and open loads, build a VROOM
+-- challenge per optimizer strategy, solve it live on the region's road graph,
+-- parse the routes into (vehicle, load) proposals, score every pair on seven
+-- dimensions, and rank them. Both the app (via /api/tool) and the agent (via the
+-- backload_solve verb) call THIS proc, so there is one copy of the maths rather
+-- than two that drift.
+--
+-- Strategies (P_STRATEGY):
+--   baseline  quick scan, nearest eligible load by great-circle. No solve.
+--   vrp       per-load VRP - one load per vehicle, road distances.
+--   fleet     fleet-wide 1:1 assignment, road distances.
+--   bpmp      profit-max backhaul - consolidates up to BPMP_MAX_STOPS loads,
+--             priority derived from revenue rather than internal-first.
+--   ensemble  all four, fused: one row per (vehicle, load) pair, keeping the
+--             cheapest variant and recording how many strategies agreed.
+--
+-- Region scoping is NOT optional here. VW_TRAILERS_GEO and VW_LOADS do not
+-- project REGION (their region-bearing sources do), so reading them directly
+-- mixes every loaded region into one pool - measured on tib85385 as 191 vehicles
+-- and 5,632 loads across all regions against 100 and 5,300 for San Francisco.
+-- A cross-region pair is not merely noise: it proposes a backload the vehicle
+-- physically cannot reach, and it scores well because the empty leg is computed
+-- from coordinates that are perfectly valid in isolation. Both feeds are
+-- therefore filtered through the FLEET_APP contract views, which do carry REGION.
+--
+-- Live routing per Tenet 9: the solve calls ROUTING_PLATFORM.CONTRACT.
+-- _DISPATCH_OPTIMIZATION (the neutral seam, RAW scalar form) at request time.
+-- Nothing is precomputed, and the engine is never named. The RAW form is used
+-- rather than the OPTIMIZATION table function because the TVF's LATERAL FLATTEN
+-- over resp:routes yields ZERO ROWS when a solve returns no routes or a
+-- structured error, which is indistinguishable from "no backload exists".
+--
+-- Returns { status, region, vehicle_type, strategy, counts, proposals[], totals }
+-- on success, or { status:'FAILED', reason, ... } with a typed reason:
+--   OPTIMIZATION_UNAVAILABLE  the region's routing services are suspended or
+--                             still cold-starting. Resume and retry.
+--   NO_FEED                   no vehicles or no loads for this region.
+--   DATA_NOT_PROVISIONED      the cockpit views do not exist for this dataset.
+--   VEHICLE_NOT_FOUND         P_TRAILER_ID names no vehicle in this region.
+--   TIME_BUDGET_EXCEEDED      the wall-clock budget ran out before anything solved.
+--
+-- TWO THINGS BOUND THE RUNTIME, and both exist because this proc used to have
+-- NO ceiling at all. Default 'ensemble' runs three road families in sequence,
+-- each retrying up to MAX_UNROUTABLE_RETRIES+1 times, and each attempt is one
+-- gateway call the gateway itself allows 45s (matrix pre-compute) + 300s
+-- (VROOM). That is an upper bound near 4.9 HOURS, against a warehouse
+-- STATEMENT_TIMEOUT_IN_SECONDS of 172800 - so nothing cancelled it and the
+-- caller simply hung. Measured warm runs are 75.8s / 168.6s / 270.1s, all of
+-- them past any interactive patience.
+--   1. P_TIME_BUDGET_S is a wall-clock deadline checked before each family AND
+--      before each attempt inside the shear loop. Between-family only is not
+--      enough: one family can burn the whole budget by itself.
+--      SCOPE, stated because it is not what the name implies: it bounds the time
+--      spent CALLING THE OPTIMIZER, which is the unbounded part. The feed reads
+--      and the great-circle baseline scan run BEFORE the first check, so total
+--      elapsed can exceed the budget - measured 25.8s against a 15s budget at
+--      200 vehicles / 1000 loads. That cost is bounded and engine-free, and
+--      checking the deadline ahead of the baseline scan would throw away the one
+--      family that still answers when the engine is down. elapsed_s is returned
+--      next to time_budget_s so the difference is visible rather than implied.
+--   2. P_TRAILER_ID answers a question about ONE named vehicle by solving ONE
+--      vehicle. Without it a single-truck question paid a full region solve -
+--      20 vehicles x 120 loads is up to 280 unique locations, a 280x280 matrix
+--      on a continental graph - and there was no way to narrow it, because
+--      max_vehicles=1 takes the LONGEST-IDLE vehicle, not the named one.
+----------------------------------------------------------------------
+-- Drop the previous 5- and 6-argument signatures before recreating. All
+-- arguments are defaulted, so CREATE OR REPLACE with an extra defaulted
+-- argument does NOT replace them: Snowflake keeps both and rejects the new one
+-- with "Cannot overload PROCEDURE ... as it would cause ambiguous PROCEDURE
+-- overloading". Without this drop the file fails on every account that already
+-- has an earlier version, which is every account installed before this change.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(
+    P_STRATEGY     VARCHAR DEFAULT NULL,
+    P_MAX_VEHICLES FLOAT   DEFAULT NULL,
+    P_MAX_LOADS    FLOAT   DEFAULT NULL,
+    P_REGION       VARCHAR DEFAULT NULL,
+    P_LIMIT        FLOAT   DEFAULT NULL,
+    P_GRANULARITY  VARCHAR DEFAULT NULL,
+    P_TRAILER_ID   VARCHAR DEFAULT NULL,
+    P_TIME_BUDGET_S FLOAT  DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+var region = P_REGION;
+var vroomSvc = null;
+
+function q(sql, binds) {
+    return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute();
+}
+function rowsOf(sql, binds, cols) {
+    var rs = q(sql, binds);
+    var out = [];
+    while (rs.next()) {
+        var o = {};
+        for (var i = 0; i < cols.length; i++) o[cols[i]] = rs.getColumnValue(i + 1);
+        out.push(o);
+    }
+    return out;
+}
+var num = function (v) { var n = Number(v); return isFinite(n) ? n : 0; };
+var finite = function (v) { return v !== null && v !== undefined && isFinite(Number(v)); };
+var okPt = function (lon, lat) { return isFinite(lon) && isFinite(lat) && !(lon === 0 && lat === 0); };
+function clamp(v, lo, hi) {
+    if (lo === undefined) lo = 0;
+    if (hi === undefined) hi = 100;
+    return Math.max(lo, Math.min(hi, v));
+}
+function haversineKm(lon1, lat1, lon2, lat2) {
+    var R = 6371, toRad = function (x) { return (x * Math.PI) / 180; };
+    var dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+    var a = Math.pow(Math.sin(dLat / 2), 2)
+          + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.pow(Math.sin(dLon / 2), 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function greatCircleKm(lon1, lat1, lon2, lat2) {
+    if (!finite(lon1) || !finite(lat1) || !finite(lon2) || !finite(lat2)) return null;
+    return Math.round(haversineKm(Number(lon1), Number(lat1), Number(lon2), Number(lat2)) * 10) / 10;
+}
+function percentile(vals, p) {
+    if (!vals.length) return 0;
+    var arr = vals.slice().sort(function (a, b) { return a - b; });
+    var idx = clamp(p, 0, 1) * (arr.length - 1);
+    var lo = Math.floor(idx), hi = Math.ceil(idx);
+    if (lo === hi) return arr[lo];
+    return arr[lo] + (arr[hi] - arr[lo]) * (idx - lo);
+}
+// Coordinate identity at ~11 m, matching the epsilon VROOM echoes its failing
+// location with. Used to shear an unroutable point out of a retry.
+function coordKey(lon, lat) { return Number(lon).toFixed(4) + ',' + Number(lat).toFixed(4); }
+function locMatches(loc, lon, lat) {
+    return loc && loc.length === 2
+        && Math.abs(Number(loc[0]) - lon) < 1e-4 && Math.abs(Number(loc[1]) - lat) < 1e-4;
+}
+function toGrade(s) {
+    if (s === null || !isFinite(s)) return null;
+    if (s >= 90) return 'A';
+    if (s >= 80) return 'B+';
+    if (s >= 70) return 'B';
+    if (s >= 60) return 'C+';
+    if (s >= 50) return 'C';
+    if (s >= 40) return 'D';
+    return 'F';
+}
+function familyOf(basis) {
+    var b = String(basis || '').toLowerCase();
+    if (b.indexOf('vrp') === 0) return 'vrp';
+    if (b.indexOf('fleet') === 0) return 'fleet';
+    if (b.indexOf('bpmp') === 0) return 'bpmp';
+    return 'baseline';
+}
+
+var DIMENSIONS = ['costEff', 'revenue', 'margin', 'feasibility', 'utilization', 'consolidation', 'urgency'];
+// Balanced preset - the same default the cockpit's weight sliders start from.
+var WEIGHTS = { costEff: 0.12, revenue: 0.13, margin: 0.20, feasibility: 0.18,
+                utilization: 0.15, consolidation: 0.10, urgency: 0.12 };
+var COST_SCALE = 100;
+var MAX_UNROUTABLE_RETRIES = 16;
+// Wall-clock ceiling for the WHOLE proc. 90s is above a measured warm
+// single-region ensemble (75.8s) and below the point where every caller has
+// given up. The floor is 15s because one gateway attempt can legitimately take
+// that long; the cap is 600s for a deliberate large batch run.
+var DEFAULT_TIME_BUDGET_S = 90;
+var MIN_TIME_BUDGET_S = 15;
+var MAX_TIME_BUDGET_S = 600;
+var START_MS = Date.now();
+var timeBudgetMs = DEFAULT_TIME_BUDGET_S * 1000;
+function elapsedS() { return Math.round((Date.now() - START_MS) / 100) / 10; }
+function budgetExhausted() { return (Date.now() - START_MS) >= timeBudgetMs; }
+
+try {
+    // ---------------------------------------------------------------- region
+    if (!region) {
+        try {
+            var cr = q("SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (cr.next()) region = cr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) {
+        try {
+            var dr = q("SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1");
+            if (dr.next()) region = dr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) region = 'SanFrancisco';
+    vroomSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_'
+             + String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+
+    var strategy = String(P_STRATEGY || 'ensemble').toLowerCase();
+    var VALID = ['ensemble', 'baseline', 'vrp', 'fleet', 'bpmp'];
+    if (VALID.indexOf(strategy) < 0) {
+        return { status: 'FAILED', reason: 'BAD_STRATEGY', region: region,
+                 error: 'strategy must be one of ' + VALID.join(', ') + ' (got ' + strategy + ')' };
+    }
+    // Upper clamps live HERE, not in the verb's arg schema: the framework's
+    // t.number() carries no bounds, so an agent asking for 100000 vehicles would
+    // otherwise reach the feed SQL. Both caps are concatenated into that SQL
+    // (LIMIT cannot be a bind), so integer-and-bounded is also the injection
+    // guarantee.
+    // 'vehicle' (default) returns the dispatcher's answer: the single best pair per
+    // vehicle. 'pair' returns EVERY graded pair with its per-dimension scores, which
+    // is what the cockpit needs - it shows several candidate loads per vehicle, and
+    // it re-ranks locally when a weight slider moves. Emitting only the per-vehicle
+    // best would make the app's Loads and Ensemble perspectives impossible and
+    // would force a server round trip per slider drag.
+    var granularity = String(P_GRANULARITY || 'vehicle').toLowerCase();
+    if (granularity !== 'vehicle' && granularity !== 'pair') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'vehicle' or 'pair' (got " + granularity + ")" };
+    }
+    var maxVehicles = finite(P_MAX_VEHICLES) && Number(P_MAX_VEHICLES) > 0 ? Math.min(200,  Math.floor(Number(P_MAX_VEHICLES))) : 20;
+    var maxLoads    = finite(P_MAX_LOADS)    && Number(P_MAX_LOADS)    > 0 ? Math.min(1000, Math.floor(Number(P_MAX_LOADS)))    : 120;
+    var outLimit    = finite(P_LIMIT)        && Number(P_LIMIT)        > 0 ? Math.min(200,  Math.floor(Number(P_LIMIT)))        : 25;
+    // Math.floor'd above because LIMIT cannot be a bind in Snowflake, so these two
+    // are string-concatenated into the feed SQL. Integer-only, hence injection-safe.
+    // The budget is clamped the same way and for the same reason as the caps: the
+    // verb's t.number() carries no bounds, so an agent asking for 86400 would
+    // otherwise reinstate the unbounded behaviour this argument exists to remove.
+    var timeBudgetS = finite(P_TIME_BUDGET_S) && Number(P_TIME_BUDGET_S) > 0
+        ? Math.max(MIN_TIME_BUDGET_S, Math.min(MAX_TIME_BUDGET_S, Math.floor(Number(P_TIME_BUDGET_S))))
+        : DEFAULT_TIME_BUDGET_S;
+    timeBudgetMs = timeBudgetS * 1000;
+    // Scope to ONE named vehicle. Trimmed and length-checked rather than
+    // concatenated: it is bound, but a 10KB id would still reach the feed SQL.
+    var trailerId = (P_TRAILER_ID === null || P_TRAILER_ID === undefined)
+        ? null : String(P_TRAILER_ID).trim();
+    if (trailerId !== null && (trailerId === '' || trailerId.length > 64)) trailerId = null;
+
+    // ------------------------------------------------------------ feed reads
+    // VEHICLE TYPE COMES FROM THE REGION BEING SOLVED, NOT FROM CONFIG.
+    // CONFIG holds exactly ONE row (measured: hgv / UnitedStatesOfAmerica), so
+    // reading it unconditionally described the WRONG FLEET for every other
+    // region: a SanFrancisco solve over 100 ebikes reported vehicle_type 'hgv',
+    // resolved profile 'driving-hgv' and priced the VROOM objective at 0.85/km
+    // instead of 0.08/km. Nothing threw - the class lookup succeeded, the solve
+    // returned, and every number was internally consistent with a fleet that
+    // was not there.
+    //
+    // VW_TRAILERS is the right source because it is the SAME scoped set the
+    // trailer feed below reads, so the reported profile can never describe a
+    // fleet this solve does not contain. Ordered by count then name so a MIXED
+    // fleet yields the dominant type deterministically rather than whichever
+    // row the engine returned first; FLEET_MIX reports the whole distribution
+    // so the collapse to a single mode is visible instead of silent.
+    //
+    // CONFIG survives only as a FALLBACK for the case where the region yields
+    // no trailer at all. It must stay AFTER the region read, and the basis is
+    // reported, so "which fleet was this costed as" is answerable from the
+    // response. Guarded by check_region_scoping.py RULE 5.
+    var vehicleType = null;
+    var vehicleTypeBasis = 'default';
+    var fleetMix = [];
+    try {
+        var fmRows = rowsOf(
+            "SELECT CURRENT_LOAD AS VEHICLE_TYPE, COUNT(*) AS N "
+          + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS "
+          + "WHERE REGION = ? AND CURRENT_LOAD IS NOT NULL "
+          + "GROUP BY 1 ORDER BY N DESC, VEHICLE_TYPE",
+            [region], ['VEHICLE_TYPE', 'N']);
+        for (var fmi = 0; fmi < fmRows.length; fmi++) {
+            fleetMix.push({ vehicle_type: String(fmRows[fmi].VEHICLE_TYPE),
+                            vehicles: num(fmRows[fmi].N) });
+        }
+        if (fleetMix.length) {
+            vehicleType = fleetMix[0].vehicle_type;
+            vehicleTypeBasis = 'region_fleet';
+        }
+    } catch (e) { /* fall through to CONFIG */ }
+    if (!vehicleType) {
+        try {
+            var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (vr.next()) {
+                var cfgVt = vr.getColumnValue(1);
+                if (cfgVt) { vehicleType = String(cfgVt); vehicleTypeBasis = 'config_fallback'; }
+            }
+        } catch (e) { /* default below */ }
+    }
+    if (!vehicleType) { vehicleType = 'hgv'; vehicleTypeBasis = 'default'; }
+
+    // COST_PER_KM, not COST_EUR_PER_KM. The cockpit's VehicleClass interface
+    // declares the latter and reads the view with SELECT *, so its per-km cost is
+    // ALWAYS undefined and falls back to 0.85 - which happens to equal the hgv
+    // rate, hiding the bug, while a van (0.55) or ebike (0.08) run is costed as a
+    // truck. Deliberately NOT wrapped in try/catch: a renamed column must fail
+    // loudly here rather than degrade to "class profile missing".
+    var clsRows = rowsOf(
+        "SELECT ORS_PROFILE, PAYLOAD_KG_TYP, COST_PER_KM, LABEL_NOUN "
+      + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
+        [vehicleType], ['ORS_PROFILE', 'PAYLOAD_KG_TYP', 'COST_PER_KM', 'LABEL_NOUN']);
+    var cls = clsRows.length ? clsRows[0] : null;
+    if (!cls) {
+        return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                 error: 'No vehicle class profile for vehicle type ' + vehicleType
+                      + '. The backload layer is provisioned by the admin app boot from an active dataset.' };
+    }
+    var profile = String(cls.ORS_PROFILE || 'driving-hgv');
+    var classCapacityKg = num(cls.PAYLOAD_KG_TYP) || 1000;
+    var effPerKm = num(cls.COST_PER_KM) || 0.85;
+
+    var params = {};
+    try {
+        var pr = rowsOf("SELECT PARAM_KEY, PARAM_VALUE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS",
+                        [], ['PARAM_KEY', 'PARAM_VALUE']);
+        for (var pi = 0; pi < pr.length; pi++) params[String(pr[pi].PARAM_KEY)] = pr[pi].PARAM_VALUE;
+    } catch (e) { /* defaults below */ }
+    function param(key, dflt) {
+        var v = Number(params[key]);
+        return isFinite(v) ? v : dflt;
+    }
+    var costEmpty  = param('COST_PER_EMPTY_KM', 1.2);
+    var revLoaded  = param('REVENUE_PER_LOADED_KM', 1.10);
+    var econBasis  = 'match_params';
+    // PER-VEHICLE-CLASS ECONOMICS.
+    //
+    // margin_usd used BOTH of the params above for every vehicle type in every
+    // region. They are truck-scale (1.2 empty / 1.10 loaded), so an ebike fleet
+    // was costed as a fleet of trucks - a separate defect from the profile bug
+    // above, and one that survives fixing it, because the class per-km cost was
+    // only ever the VROOM objective and never reached the margin.
+    //
+    // The split is deliberate and is the one modelling choice here:
+    //   * EMPTY COST per km is a VEHICLE ATTRIBUTE, so it comes straight from
+    //     the class row (ebike 0.08, hgv 0.85).
+    //   * LOADED REVENUE per km is a MARKET rate, NOT a vehicle attribute, so
+    //     it cannot be read from the class table at all. It is scaled by the
+    //     class/hgv cost ratio, which keeps REVENUE_PER_LOADED_KM as the hgv
+    //     baseline it already is and keeps the margin SIGN meaningful across
+    //     vehicle types: a rate left at the truck value would make every ebike
+    //     proposal look wildly profitable purely because its costs are lower.
+    // HGV_BASELINE_COST_PER_KM is read from the same table rather than being
+    // hardcoded, so re-rating the fleet does not silently rescale revenue.
+    var hgvCostPerKm = 0.85;
+    try {
+        var hb = rowsOf(
+            "SELECT COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS "
+          + "WHERE VEHICLE_TYPE = 'hgv' LIMIT 1", [], ['COST_PER_KM']);
+        if (hb.length && num(hb[0].COST_PER_KM)) hgvCostPerKm = num(hb[0].COST_PER_KM);
+    } catch (e) { /* keep the literal baseline */ }
+    var classCostPerKm = num(cls.COST_PER_KM);
+    if (classCostPerKm && hgvCostPerKm > 0) {
+        costEmpty = classCostPerKm;
+        revLoaded = revLoaded * (classCostPerKm / hgvCostPerKm);
+        econBasis = 'vehicle_class';
+    }
+    var maxEmptyKm = Math.max(1, param('MAX_EMPTY_KM', 100));
+    // Candidate-pair cap for the eligible read, PER TRAILER. A new key rather
+    // than reusing MAX_PROPOSALS_PER_TRAILER: that one caps OUTPUT per vehicle,
+    // this one caps how much of the candidate set is materialised, and
+    // overloading it would make one number answer two questions. Math.floor'd
+    // and bounded for the same reason as maxVehicles/maxLoads - it is
+    // concatenated into the feed SQL because a QUALIFY bound cannot be a bind,
+    // so integer-and-bounded is also the injection guarantee.
+    var maxPairsPerTrailer = Math.max(1, Math.min(2000,
+        Math.floor(param('MAX_CANDIDATE_PAIRS_PER_TRAILER', 50))));
+    var maxStops   = Math.max(2, param('BPMP_MAX_STOPS', 4));
+    var IDEAL_SLACK_HRS = 24;
+
+    // Region-scoped feeds. Deterministic ORDER BY so the same request returns the
+    // same subset when the caps bite - the cockpit relied on the view's natural
+    // order, which makes a capped run irreproducible.
+    //
+    // When trailerId is set every feed narrows to that ONE vehicle and to the
+    // loads it is actually eligible for. That is what makes a single-truck
+    // question cheap: the region default builds up to 280 unique locations
+    // (20 vehicles + 120 loads, both doubled into pickup/delivery tasks) and a
+    // 280x280 matrix, where one vehicle builds 2 + 2*eligible.
+    var trailers, loads, eligible;
+    try {
+        trailers = rowsOf(
+            "SELECT g.TRAILER_ID, g.OPERATING_COUNTRY, g.EMPTY_CITY, g.EMPTY_LON, g.EMPTY_LAT, "
+          + "       g.EMPTY_FROM_TS, g.NEXT_START_LON, g.NEXT_START_LAT, g.MAX_PAYLOAD_KG, g.HAZMAT_CERT "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO g "
+          + "WHERE g.TRAILER_ID IN ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + (trailerId ? "AND g.TRAILER_ID = ? " : "")
+          + "ORDER BY g.EMPTY_FROM_TS NULLS LAST, g.TRAILER_ID "
+          + "LIMIT " + maxVehicles,
+            trailerId ? [region, trailerId] : [region],
+            ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',
+             'EMPTY_FROM_TS', 'NEXT_START_LON', 'NEXT_START_LAT', 'MAX_PAYLOAD_KG', 'HAZMAT_CERT']);
+        // A named vehicle that resolves to nothing is its OWN failure. Folding it
+        // into NO_FEED below would report a typo, or a vehicle parked in another
+        // region, as "this region has no idle vehicles" - which sends the caller
+        // to look at the fleet instead of at the id they passed.
+        if (trailerId && !trailers.length) {
+            return { status: 'FAILED', reason: 'VEHICLE_NOT_FOUND', region: region,
+                     vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, trailer_id: trailerId,
+                     error: 'No vehicle ' + trailerId + ' among the idle vehicles for region ' + region
+                          + '. Check the id and the region: a vehicle is only in this feed when it is '
+                          + 'idle or has a future free time, and it is scoped to one region.' };
+        }
+        // The region-scoped id set MUST be a CTE joined in, not an IN (...) with a
+        // UNION ALL inside it: Snowflake rejects that with "Unsupported subquery
+        // type cannot be evaluated".
+        loads = rowsOf(
+            "WITH scoped AS ("
+          + "  SELECT ID AS LOAD_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES WHERE REGION = ? "
+          + "  UNION ALL "
+          + "  SELECT OFFER_ID AS LOAD_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS WHERE REGION = ?) "
+          + "SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, "
+          + "       l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.REQUESTED_PICKUP_TS, "
+          + "       l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS l "
+          + "JOIN scoped s ON s.LOAD_ID = l.LOAD_ID "
+          // Prefilter to the loads THIS vehicle can actually take. Without it a
+          // one-vehicle solve still carries the region's whole load book into the
+          // matrix, which is the expensive half of the request.
+          + (trailerId
+              ? "WHERE l.LOAD_ID IN (SELECT c.LOAD_ID "
+              + "                    FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
+              + "                    WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID = ?) "
+              : "")
+          + "ORDER BY l.IS_INTERNAL DESC, l.REQUESTED_PICKUP_TS NULLS LAST, l.LOAD_ID "
+          + "LIMIT " + maxLoads,
+            trailerId ? [region, region, trailerId] : [region, region],
+            ['LOAD_ID', 'IS_INTERNAL', 'SOURCE', 'PICKUP_CITY', 'PICKUP_LON', 'PICKUP_LAT',
+             'DELIVERY_CITY', 'DELIVERY_LON', 'DELIVERY_LAT', 'REQUESTED_PICKUP_TS',
+             'WEIGHT_KG', 'PRODUCT', 'HAZMAT', 'PRICE_USD', 'APPROX_DISTANCE_KM']);
+        // REGION-SCOPED, unlike every earlier version of this read. VW_CANDIDATES_SCORED
+        // spans every loaded region, so an unfiltered ELIGIBLE = TRUE returned the whole
+        // account - measured 29,047 rows across two regions - and pulled another region's
+        // eligibility chips into this plan's baseline scan. The trailer and load feeds
+        // above were already scoped, so this one read was the leak.
+        //
+        // CAPPED PER TRAILER, and the cap is per trailer ON PURPOSE. This was the
+        // only uncapped feed (the trailer and load reads have carried LIMITs for
+        // some time): measured 28,716 rows for SanFrancisco, ~12s of the run just
+        // to materialise them into this proc. A GLOBAL limit would let one vehicle
+        // eat it - measured max 404 pairs for a single trailer against an average
+        // of 287 - which is the same starvation failure the internal pool has a
+        // comment about. Ranked by GREAT_CIRCLE_KM ASC because that is exactly what
+        // baselineProposals() minimises, so a truncated tail can only ever drop
+        // pairs the baseline scan would never have selected; IS_INTERNAL DESC first
+        // keeps internal-first parity with the loads feed above.
+        //
+        // NOTE the window function is NOT redundant with the QUALIFY. COUNT(*) OVER
+        // is evaluated BEFORE the cap, so every surviving row still carries its
+        // trailer's TRUE pair count and the uncapped total is recoverable exactly,
+        // with no second query and no second scan of the view. That matters because
+        // counts.eligible_pairs is a REPORTED number: capping it silently would give
+        // one field two meanings depending on how big the region happened to be.
+        eligible = rowsOf(
+            "WITH scoped_t AS ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + "SELECT c.TRAILER_ID, c.LOAD_ID, c.DIST_CHECK, c.TIME_CHECK, c.HORIZON_CHECK, c.CAP_CHECK, c.HAZMAT_CHECK, "
+          + "       COUNT(*) OVER (PARTITION BY c.TRAILER_ID) AS TRAILER_PAIRS_TOTAL "
+          + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
+          + "JOIN scoped_t s ON s.TRAILER_ID = c.TRAILER_ID "
+          + "WHERE c.ELIGIBLE = TRUE "
+          + (trailerId ? "AND c.TRAILER_ID = ? " : "")
+          + "QUALIFY ROW_NUMBER() OVER (PARTITION BY c.TRAILER_ID "
+          + "                           ORDER BY c.IS_INTERNAL DESC, c.GREAT_CIRCLE_KM ASC NULLS LAST) <= "
+          + maxPairsPerTrailer,
+            trailerId ? [region, trailerId] : [region],
+            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK',
+             'TRAILER_PAIRS_TOTAL']);
+    } catch (e) {
+        var m = e && e.message ? String(e.message) : 'unknown error';
+        if (/does not exist or not authorized/i.test(m)) {
+            return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                     error: 'The backload cockpit views are not provisioned for the active dataset. '
+                          + 'The admin app recreates them at boot from a generated dataset.' };
+        }
+        throw e;
+    }
+    if (!trailers.length || !loads.length) {
+        return { status: 'FAILED', reason: 'NO_FEED', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix,
+                 vehicles: trailers.length, loads: loads.length,
+                 trailer_id: trailerId,
+                 error: trailerId
+                     ? 'Vehicle ' + trailerId + ' has no eligible open load in region ' + region
+                       + '. It is idle but nothing in the load book passes the distance, pickup-time, '
+                       + 'horizon, capacity and hazmat checks for it.'
+                     : 'No idle vehicles or no open loads for region ' + region + '.' };
+    }
+
+    var eligibleSet = {}, chipsByPair = {};
+    // Uncapped total, recovered from the pre-QUALIFY window count carried on
+    // each surviving row. Every trailer with at least one eligible pair returns
+    // at least one row (the cap is >= 1), so summing one value per DISTINCT
+    // trailer reproduces the true total exactly rather than estimating it.
+    var pairsTotalByTrailer = {};
+    for (var ei = 0; ei < eligible.length; ei++) {
+        var ec = eligible[ei];
+        var ekey = String(ec.TRAILER_ID) + '::' + String(ec.LOAD_ID);
+        eligibleSet[ekey] = true;
+        pairsTotalByTrailer[String(ec.TRAILER_ID)] = num(ec.TRAILER_PAIRS_TOTAL) || 0;
+        chipsByPair[ekey] = { distance: ec.DIST_CHECK === true, pickup_time: ec.TIME_CHECK === true,
+                              horizon: ec.HORIZON_CHECK === true, capacity: ec.CAP_CHECK === true,
+                              hazmat: ec.HAZMAT_CHECK === true };
+    }
+    // eligible_pairs keeps meaning "how many pairs passed every constraint" -
+    // unchanged by the cap - and eligible_pairs_used reports how many of them
+    // this run actually considered. Reporting only one of the two is what would
+    // make the figure ambiguous.
+    var eligibleUsed = Object.keys(eligibleSet).length;
+    var eligibleCount = 0;
+    for (var tk in pairsTotalByTrailer) {
+        if (Object.prototype.hasOwnProperty.call(pairsTotalByTrailer, tk)) eligibleCount += pairsTotalByTrailer[tk];
+    }
+    var eligibleCapped = eligibleCount > eligibleUsed;
+    // FEED COST, REPORTED SEPARATELY. P_TIME_BUDGET_S bounds optimizer calls
+    // only: the first budgetExhausted() check happens after every read above, so
+    // a feed that takes longer than the whole budget cannot be interrupted and
+    // does not show up as budget pressure - measured 25.8s of feed against a 15s
+    // budget at 200 vehicles / 1000 loads. Folding it into elapsed_s hides it, so
+    // it is timed here, where the reads are provably finished.
+    var feedElapsedS = elapsedS();
+
+    // ------------------------------------------------ challenge construction
+    // A shipment is TWO VROOM tasks (pickup + delivery), so max_tasks is the
+    // per-vehicle LOAD count doubled. Passing the load count straight through
+    // makes the 'vrp' family (1 load) unable to admit any shipment at all, and
+    // silently caps 'bpmp' at 2 loads instead of BPMP_MAX_STOPS - both return
+    // plausible-looking results, so the loss never surfaces.
+    function buildChallenge(fam, badKeys) {
+        var maxLoadsPerVehicle = (fam === 'bpmp') ? maxStops : 1;
+        var isBad = function (lon, lat) { return badKeys ? badKeys[coordKey(lon, lat)] === true : false; };
+        var idToTrailer = {}, vehicles = [];
+        for (var i = 0; i < trailers.length; i++) {
+            var t = trailers[i];
+            if (isBad(num(t.EMPTY_LON), num(t.EMPTY_LAT))) continue;
+            if (isBad(num(t.NEXT_START_LON), num(t.NEXT_START_LAT))) continue;
+            var vid = vehicles.length + 1;
+            idToTrailer[vid] = t;
+            vehicles.push({
+                id: vid, profile: profile,
+                start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
+                end: [num(t.NEXT_START_LON), num(t.NEXT_START_LAT)],
+                capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
+                skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
+                max_tasks: maxLoadsPerVehicle * 2,
+                costs: { fixed: 140 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) }
+            });
+        }
+        var idToLoad = {}, shipments = [], nextId = 1000;
+        for (var j = 0; j < loads.length; j++) {
+            var l = loads[j];
+            if (isBad(num(l.PICKUP_LON), num(l.PICKUP_LAT))) continue;
+            if (isBad(num(l.DELIVERY_LON), num(l.DELIVERY_LAT))) continue;
+            var lid = nextId++;
+            idToLoad[lid] = l;
+            var kg = Math.min(num(l.WEIGHT_KG), classCapacityKg);
+            var priority = l.IS_INTERNAL ? 90 : 10;
+            if (fam === 'bpmp') {
+                var rev = (l.PRICE_USD !== null && l.PRICE_USD !== undefined)
+                        ? num(l.PRICE_USD) : num(l.APPROX_DISTANCE_KM) * 1.1;
+                priority = Math.max(1, Math.min(100, Math.round(rev / 25)));
+            }
+            var skills = l.HAZMAT ? (l.IS_INTERNAL ? [1, 3] : [2, 3]) : (l.IS_INTERNAL ? [1] : [2]);
+            shipments.push({
+                pickup:   { id: lid, location: [num(l.PICKUP_LON),   num(l.PICKUP_LAT)],   service: 1800 },
+                delivery: { id: lid, location: [num(l.DELIVERY_LON), num(l.DELIVERY_LAT)], service: 600 },
+                amount: [kg], skills: skills, priority: priority
+            });
+        }
+        // g:false - do NOT request per-route road geometry. On a continental
+        // region the geometry for many long routes pushes the response past the
+        // external-function 20MB cap (Snowflake 100335) and the whole solve is
+        // lost. The solve is unaffected (VROOM sources its matrix from the
+        // routing engine internally); a caller that needs a drawn line fetches
+        // DIRECTIONS for the one selected pair.
+        return { vehicles: vehicles, shipments: shipments, idToTrailer: idToTrailer, idToLoad: idToLoad };
+    }
+
+    // -------------------------------------------------------------- the solve
+    // VROOM code 3 aborts the ENTIRE solve when a single location cannot be
+    // routed (a point snapped onto a disconnected road component), and it names
+    // only ONE offending coordinate per attempt. Shear that point and re-solve;
+    // the cap stops a pathological dataset looping forever. On cap-exhaust this
+    // yields nothing for the family rather than failing the whole request, so
+    // one bad family cannot take its siblings down.
+    var suspendedSeen = null;
+    // Set by the deadline check in solveWithShear or the family loop. Reported the
+    // same way suspendedSeen is: a truncated run is a DEGRADED run, not a clean one.
+    var budgetHit = false;
+    function solveOnce(vehicles, shipments) {
+        var challenge = JSON.stringify({ vehicles: vehicles, shipments: shipments, options: { g: false } });
+        var rs = q("SELECT ROUTING_PLATFORM.CONTRACT._DISPATCH_OPTIMIZATION(PARSE_JSON(?), ?, NULL) AS RESP",
+                   [challenge, region]);
+        var raw = rs.next() ? rs.getColumnValue(1) : null;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { /* leave */ } }
+        return raw;
+    }
+    // Every no-result path carries a REASON. Previously they all returned a bare
+    // null and the family loop dropped the family silently, so an 'ensemble' run
+    // whose three road strategies all failed came back as status:'SUCCESS' with
+    // strategies_run:['baseline'] and degraded:null - a great-circle scan that
+    // reads as a live road-graph solve. The `!mm` branch was the worst of them:
+    // it threw away the engine's own error text, the one thing that explains why.
+    function solveWithShear(vehicles, shipments) {
+        var workV = vehicles, workS = shipments, dropped = {}, excluded = 0;
+        for (var attempt = 0; attempt <= MAX_UNROUTABLE_RETRIES; attempt++) {
+            if (!workV.length || !workS.length) {
+                return { result: null, excluded: excluded,
+                         reason: 'nothing left to solve after removing unroutable points' };
+            }
+            // The deadline is checked HERE, not only between families. A single
+            // family can consume the entire budget by itself: 17 attempts at the
+            // gateway's own 45s matrix + 300s VROOM ceilings is over 90 minutes,
+            // and the shear loop had no notion of elapsed time at all. Checking
+            // BEFORE the call is what makes the ceiling real - after the call the
+            // time is already spent.
+            if (budgetExhausted()) {
+                budgetHit = true;
+                return { result: null, excluded: excluded,
+                         reason: 'time budget of ' + timeBudgetS + 's exhausted after '
+                               + elapsedS() + 's, on attempt ' + (attempt + 1)
+                               + ' of ' + (MAX_UNROUTABLE_RETRIES + 1) };
+            }
+            var res = solveOnce(workV, workS);
+            if (!res) return { result: null, excluded: excluded, reason: 'the routing engine returned no response' };
+            if (!res.error) return { result: res, excluded: excluded, reason: null };
+            var msg = (typeof res.message === 'string') ? res.message : String(res.error);
+            // A suspended engine reaches us as a DNS/connection failure inside the
+            // gateway. Record it so the caller gets a resume-able reason instead
+            // of an empty plan that reads as "no backload exists".
+            if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(msg)) {
+                suspendedSeen = msg;
+                return { result: null, excluded: excluded, reason: 'routing engine unreachable: ' + msg };
+            }
+            var mm = /location\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/i.exec(msg);
+            if (!mm) return { result: null, excluded: excluded, reason: msg };
+            var bad = { lon: Number(mm[1]), lat: Number(mm[2]) };
+            var bk = coordKey(bad.lon, bad.lat);
+            if (dropped[bk]) {
+                return { result: null, excluded: excluded,
+                         reason: 'the same unroutable point was reported twice: ' + msg };
+            }
+            dropped[bk] = true;
+            var nv = [], ns = [];
+            for (var vi = 0; vi < workV.length; vi++) {
+                var v = workV[vi];
+                if (!locMatches(v.start, bad.lon, bad.lat) && !locMatches(v.end, bad.lon, bad.lat)) nv.push(v);
+            }
+            for (var si = 0; si < workS.length; si++) {
+                var s = workS[si];
+                if (!locMatches(s.pickup.location, bad.lon, bad.lat)
+                 && !locMatches(s.delivery.location, bad.lon, bad.lat)) ns.push(s);
+            }
+            excluded += (workV.length - nv.length) + (workS.length - ns.length);
+            workV = nv; workS = ns;
+        }
+        return { result: null, excluded: excluded,
+                 reason: 'gave up after ' + MAX_UNROUTABLE_RETRIES
+                       + ' attempts to remove unroutable points' };
+    }
+
+    // ------------------------------------------------------- parse into rows
+    function parseSolve(resp, fam, idToTrailer, idToLoad) {
+        var basis = fam === 'vrp' ? 'vrp_road' : fam === 'fleet' ? 'fleet_vrp' : fam === 'bpmp' ? 'bpmp' : 'great_circle';
+        var routes = (resp && resp.routes && resp.routes.length) ? resp.routes : [];
+        var out = [];
+        for (var ri = 0; ri < routes.length; ri++) {
+            var route = routes[ri];
+            var t = idToTrailer[Number(route.vehicle)];
+            if (!t) continue;
+            var steps = route.steps && route.steps.length ? route.steps : [];
+            var seq = 0;
+            for (var si2 = 0; si2 < steps.length; si2++) {
+                if (steps[si2].type !== 'pickup') continue;
+                var l = idToLoad[Number(steps[si2].id)];
+                if (!l) continue;
+                seq += 1;
+                var emptyKm  = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
+                var loadedKm = haversineKm(num(l.PICKUP_LON), num(l.PICKUP_LAT), num(l.DELIVERY_LON), num(l.DELIVERY_LAT));
+                var nextKm   = haversineKm(num(l.DELIVERY_LON), num(l.DELIVERY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+                var baseKm   = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+                var totalKm  = emptyKm + loadedKm + nextKm;
+                out.push({
+                    PROPOSAL_ID: fam + ':' + t.TRAILER_ID + ':' + l.LOAD_ID,
+                    TRAILER_ID: t.TRAILER_ID, LOAD_ID: l.LOAD_ID, DISTANCE_BASIS: basis,
+                    EMPTY_KM: emptyKm, LOADED_KM: loadedKm,
+                    DETOUR_KM: Math.max(0, totalKm - loadedKm - baseKm), TOTAL_KM: totalKm,
+                    PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: (fam === 'bpmp' ? seq : null),
+                    PICKUP_LON: num(l.PICKUP_LON), PICKUP_LAT: num(l.PICKUP_LAT),
+                    DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
+                    PICKUP_CITY: l.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
+                    DELIVERY_CITY: l.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
+                    IS_INTERNAL: l.IS_INTERNAL === true, SOURCE: l.SOURCE,
+                    PRODUCT: l.PRODUCT
+                });
+            }
+        }
+        return out;
+    }
+    // Quick scan: nearest ELIGIBLE load per vehicle by great-circle. No solve, so
+    // it is the one family that still answers when the engine is down.
+    function baselineProposals() {
+        var out = [];
+        for (var i = 0; i < trailers.length; i++) {
+            var t = trailers[i], best = null;
+            for (var j = 0; j < loads.length; j++) {
+                var l = loads[j];
+                // eligibleUsed, NOT eligibleCount: this gate asks "is the set
+                // populated", so it must be sized on the SET that is actually in
+                // memory. eligibleCount is now the pre-cap total and would claim
+                // membership could be checked against pairs never fetched.
+                if (eligibleUsed && !eligibleSet[String(t.TRAILER_ID) + '::' + String(l.LOAD_ID)]) continue;
+                var km = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(l.PICKUP_LON), num(l.PICKUP_LAT));
+                if (!best || km < best.km) best = { l: l, km: km };
+            }
+            if (!best) continue;
+            var bl = best.l;
+            var loadedKm = haversineKm(num(bl.PICKUP_LON), num(bl.PICKUP_LAT), num(bl.DELIVERY_LON), num(bl.DELIVERY_LAT));
+            out.push({
+                PROPOSAL_ID: 'baseline:' + t.TRAILER_ID + ':' + bl.LOAD_ID,
+                TRAILER_ID: t.TRAILER_ID, LOAD_ID: bl.LOAD_ID, DISTANCE_BASIS: 'great_circle',
+                EMPTY_KM: best.km, LOADED_KM: loadedKm, DETOUR_KM: null, TOTAL_KM: best.km + loadedKm,
+                PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: null,
+                PICKUP_LON: num(bl.PICKUP_LON), PICKUP_LAT: num(bl.PICKUP_LAT),
+                DELIVERY_LON: num(bl.DELIVERY_LON), DELIVERY_LAT: num(bl.DELIVERY_LAT),
+                PICKUP_CITY: bl.PICKUP_CITY, PICKUP_COUNTRY: t.OPERATING_COUNTRY,
+                DELIVERY_CITY: bl.DELIVERY_CITY, EMPTY_CITY: t.EMPTY_CITY,
+                IS_INTERNAL: bl.IS_INTERNAL === true, SOURCE: bl.SOURCE,
+                PRODUCT: bl.PRODUCT
+            });
+        }
+        return out;
+    }
+
+    // -------------------------------------------------------------- run them
+    var families = (strategy === 'ensemble') ? ['baseline', 'vrp', 'fleet', 'bpmp'] : [strategy];
+    // ROAD_FAMILIES are the ones that actually call the optimizer. 'baseline' is a
+    // great-circle scan, so a run that keeps only baseline has not touched the road
+    // graph at all and must not be reported as though it had.
+    var ROAD_FAMILIES = { vrp: true, fleet: true, bpmp: true };
+    var all = [], excludedTotal = 0, familiesRun = [], familiesSkipped = [];
+    function skip(fam, reason) { familiesSkipped.push({ family: fam, reason: reason }); }
+
+    // ------------------------------------------------------- engine preflight
+    // Read the region's run-state BEFORE spending the budget on a solve that
+    // cannot succeed. The cockpit already had this (it auto-resumes and offers a
+    // Retry); the verb path did not, which is why the first call after an idle
+    // period behaved like a hang: a cold continental graph does not answer the
+    // gateway's 45s matrix pre-compute, and the fallback path then routes leg by
+    // leg for minutes. SHOW SERVICES is METADATA ONLY and never wakes a service,
+    // and SHOW + RESULT_SCAN must be two sequential statements on this session -
+    // do not wrap them in EXECUTE IMMEDIATE.
+    //
+    // The probe FAILS OPEN on purpose. If it cannot read the status (no MONITOR,
+    // renamed service, a region whose services live elsewhere) we proceed and let
+    // the budget bound the bad case. A probe that guessed SUSPENDED would break
+    // every working solve, which is a worse failure than the one being fixed.
+    var engineState = null;
+    function engineNotRunning() {
+        var svcRegion = String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+        try {
+            q("SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE");
+            var sr = rowsOf(
+                "SELECT \"name\" AS NAME, \"status\" AS STATUS FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) "
+              + "WHERE \"name\" IN (?, ?)",
+                ['ORS_SERVICE_' + svcRegion, 'VROOM_SERVICE_' + svcRegion],
+                ['NAME', 'STATUS']);
+            if (!sr.length) return null;
+            var bad = [];
+            for (var si3 = 0; si3 < sr.length; si3++) {
+                var st = String(sr[si3].STATUS || '').toUpperCase();
+                if (st !== 'RUNNING') bad.push(String(sr[si3].NAME) + ' is ' + st);
+            }
+            engineState = bad.length ? bad.join(', ') : 'RUNNING';
+            return bad.length ? engineState : null;
+        } catch (e) {
+            return null;
+        }
+    }
+    var wantsRoad = false;
+    for (var wf = 0; wf < families.length; wf++) if (ROAD_FAMILIES[families[wf]]) wantsRoad = true;
+    var enginePreflight = wantsRoad ? engineNotRunning() : null;
+
+    for (var fi = 0; fi < families.length; fi++) {
+        var fam = families[fi];
+        if (fam === 'baseline') {
+            var bp = baselineProposals();
+            if (bp.length) { familiesRun.push(fam); all = all.concat(bp); }
+            else skip(fam, 'no eligible pair survived the great-circle scan');
+            continue;
+        }
+        // Refuse the road families up front rather than discovering it per family:
+        // three identical connection failures cost three gateway round trips and
+        // report the same thing three times.
+        if (enginePreflight) {
+            skip(fam, 'routing engine not running for ' + region + ': ' + enginePreflight
+                    + ' (resume it and retry; strategy "baseline" answers without it)');
+            continue;
+        }
+        // Between-family deadline check. The in-loop check inside solveWithShear
+        // catches a family that overruns; this one stops the NEXT family from
+        // starting a fresh multi-minute attempt on a budget that is already spent.
+        if (budgetExhausted()) {
+            budgetHit = true;
+            skip(fam, 'not attempted: time budget of ' + timeBudgetS + 's exhausted after ' + elapsedS() + 's');
+            continue;
+        }
+        var built = buildChallenge(fam, null);
+        if (!built.vehicles.length || !built.shipments.length) {
+            skip(fam, 'no challenge to solve: ' + built.vehicles.length + ' vehicles, '
+                    + built.shipments.length + ' shipments after eligibility filtering');
+            continue;
+        }
+        var solved = solveWithShear(built.vehicles, built.shipments);
+        excludedTotal = Math.max(excludedTotal, solved.excluded);
+        var parsed = parseSolve(solved.result, fam, built.idToTrailer, built.idToLoad);
+        if (parsed.length) { familiesRun.push(fam); all = all.concat(parsed); }
+        else if (solved.reason) skip(fam, solved.reason);
+        else skip(fam, 'the optimizer returned a plan with no usable assignments');
+    }
+    // A road family that was ASKED FOR and produced nothing is the degradation the
+    // caller has to be told about, whether or not any family succeeded. Without
+    // this, 'ensemble' silently collapses to baseline and the answer presents
+    // great-circle estimates as a live solve.
+    var roadAsked = [], roadLost = [];
+    for (var rf = 0; rf < families.length; rf++) {
+        if (!ROAD_FAMILIES[families[rf]]) continue;
+        roadAsked.push(families[rf]);
+        if (familiesRun.indexOf(families[rf]) === -1) roadLost.push(families[rf]);
+    }
+    var degradedNote = null;
+    if (suspendedSeen) {
+        degradedNote = 'Some strategies could not solve: the routing engine was unreachable.';
+    } else if (enginePreflight && roadLost.length) {
+        // Named cause first. "No road-graph strategy produced a plan" is true here
+        // but useless: it reads as "no backload exists" when the real answer is
+        // that nobody resumed the engine.
+        degradedNote = 'The routing engine is not running for ' + region + ' (' + enginePreflight
+                     + '), so ' + roadLost.join(', ') + ' did not run and these figures are '
+                     + 'GREAT-CIRCLE estimates from the baseline scan, not a live road solve. '
+                     + 'Resume the region and retry for road distances.';
+    } else if (budgetHit && roadLost.length) {
+        degradedNote = 'The ' + timeBudgetS + 's time budget ran out after ' + elapsedS() + 's, so '
+                     + roadLost.join(', ') + ' did not finish. '
+                     + (roadLost.length === roadAsked.length
+                         ? 'These figures are GREAT-CIRCLE estimates from the baseline scan, not a live road solve. '
+                         : 'Fewer strategies agreed on each pair than requested. ')
+                     + 'Scope to one vehicle with trailer_id, ask for a single strategy, or raise time_budget_s.';
+    } else if (roadAsked.length && roadLost.length === roadAsked.length) {
+        degradedNote = 'No road-graph strategy produced a plan (' + roadLost.join(', ')
+                     + '), so these figures are GREAT-CIRCLE estimates from the baseline scan, '
+                     + 'not a live road solve. First reason: '
+                     + ((familiesSkipped.length && familiesSkipped[familiesSkipped.length - 1].reason) || 'unknown') + '.';
+    } else if (roadLost.length) {
+        degradedNote = 'Ran without ' + roadLost.join(', ')
+                     + ': fewer strategies agreed on each pair than requested.';
+    }
+    if (!all.length) {
+        if (suspendedSeen || enginePreflight) {
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     vroom_service: vroomSvc, elapsed_s: elapsedS(),
+                     error: 'Route optimization for ' + region + ' is not responding (it may be suspended '
+                          + 'or starting). Resume it and retry. Detail: ' + (suspendedSeen || enginePreflight) };
+        }
+        // Nothing solved AND the clock ran out: that is a budget failure, not an
+        // empty load book. Reporting it as SUCCESS-with-no-proposals would tell the
+        // caller no backload exists for a plan that was never actually attempted.
+        if (budgetHit) {
+            return { status: 'FAILED', reason: 'TIME_BUDGET_EXCEEDED', region: region,
+                     vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, trailer_id: trailerId,
+                     time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
+                     strategies_run: familiesRun, families_skipped: familiesSkipped,
+                     error: 'Nothing finished inside the ' + timeBudgetS + 's budget (' + elapsedS() + 's elapsed). '
+                          + 'This is a size problem, not a data problem: scope to one vehicle with trailer_id, '
+                          + 'ask for a single strategy instead of the ensemble, lower max_vehicles/max_loads, '
+                          + 'or raise time_budget_s.' };
+        }
+        return { status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
+                 counts: { vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
+                           proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
+                 proposals: [], totals: {},
+                 strategies_run: familiesRun, families_skipped: familiesSkipped,
+                 degraded: degradedNote, elapsed_s: elapsedS(),
+                 note: 'No proposals were produced. Every candidate pair was either ineligible or unroutable.' };
+    }
+
+    // ------------------------------------------------------------- scoring
+    // De-duplicate to one pair per (vehicle, load), keeping the cheapest variant,
+    // and record how many strategies independently picked it. Identical maths to
+    // the cockpit's ensemble so a graded answer from the agent matches the screen.
+    var rowCost = function (r) {
+        if (finite(r.DETOUR_KM)) return Number(r.DETOUR_KM);
+        if (finite(r.EMPTY_KM)) return Number(r.EMPTY_KM);
+        return Infinity;
+    };
+    var nowMs = Date.now();
+    var idleHrsByTrailer = {}, idleValues = [];
+    for (var ti = 0; ti < trailers.length; ti++) {
+        var tt = trailers[ti];
+        if (!tt.EMPTY_FROM_TS) continue;
+        var ms = Date.parse(String(tt.EMPTY_FROM_TS));
+        if (!isFinite(ms)) continue;
+        var hrs = Math.max(0, (nowMs - ms) / 3600000);
+        idleHrsByTrailer[tt.TRAILER_ID] = hrs;
+        idleValues.push(hrs);
+    }
+    idleValues.sort(function (a, b) { return a - b; });
+    function idlePercentile(hrs) {
+        if (!idleValues.length) return 50;
+        var countLe = 0;
+        for (var k = 0; k < idleValues.length; k++) { if (idleValues[k] <= hrs) countLe++; else break; }
+        return clamp((countLe / idleValues.length) * 100);
+    }
+    // Consolidation is a VEHICLE property (how many stops its tour reached), so it
+    // is keyed by vehicle and only the bpmp family produces it.
+    var trailerStops = {};
+    for (var ai = 0; ai < all.length; ai++) {
+        var ar = all[ai];
+        if (familyOf(ar.DISTANCE_BASIS) === 'bpmp' && finite(ar.STOP_SEQ)) {
+            trailerStops[ar.TRAILER_ID] = Math.max(trailerStops[ar.TRAILER_ID] || 0, Number(ar.STOP_SEQ));
+        }
+    }
+    var bestLoadForTrailer = {}, bestTrailerForLoad = {};
+    var bestCostFamTrailer = {}, bestCostFamLoad = {};
+    var famsPerTrailer = {}, famsPerLoad = {};
+    for (var bi = 0; bi < all.length; bi++) {
+        var br = all[bi], bfam = familyOf(br.DISTANCE_BASIS), bc = rowCost(br);
+        if (!famsPerTrailer[br.TRAILER_ID]) famsPerTrailer[br.TRAILER_ID] = {};
+        famsPerTrailer[br.TRAILER_ID][bfam] = true;
+        if (!famsPerLoad[br.LOAD_ID]) famsPerLoad[br.LOAD_ID] = {};
+        famsPerLoad[br.LOAD_ID][bfam] = true;
+        var tkey = bfam + '::' + br.TRAILER_ID;
+        if (!(tkey in bestCostFamTrailer) || bc < bestCostFamTrailer[tkey]) {
+            bestCostFamTrailer[tkey] = bc;
+            bestLoadForTrailer[tkey] = br.LOAD_ID;
+        }
+        var lkey = bfam + '::' + br.LOAD_ID;
+        if (!(lkey in bestCostFamLoad) || bc < bestCostFamLoad[lkey]) {
+            bestCostFamLoad[lkey] = bc;
+            bestTrailerForLoad[lkey] = br.TRAILER_ID;
+        }
+    }
+    var groups = {};
+    for (var gi = 0; gi < all.length; gi++) {
+        var gr = all[gi], gkey = gr.TRAILER_ID + '::' + gr.LOAD_ID;
+        if (!groups[gkey]) groups[gkey] = [];
+        groups[gkey].push(gr);
+    }
+    var pairs = [];
+    var gkeys = Object.keys(groups);
+    for (var ki = 0; ki < gkeys.length; ki++) {
+        var rows = groups[gkeys[ki]];
+        var best = rows[0];
+        for (var ri2 = 1; ri2 < rows.length; ri2++) if (rowCost(rows[ri2]) < rowCost(best)) best = rows[ri2];
+        var famSet = {};
+        for (var ri3 = 0; ri3 < rows.length; ri3++) famSet[familyOf(rows[ri3].DISTANCE_BASIS)] = true;
+        var famList = Object.keys(famSet);
+        var pick = function (sel, mode) {
+            var vals = [];
+            for (var x = 0; x < rows.length; x++) { var v = sel(rows[x]); if (finite(v)) vals.push(Number(v)); }
+            if (!vals.length) return null;
+            return mode === 'max' ? Math.max.apply(null, vals) : Math.min.apply(null, vals);
+        };
+        var emptyKm  = pick(function (r) { return r.EMPTY_KM; }, 'min');
+        var loadedKm = pick(function (r) { return r.LOADED_KM; }, 'max');
+        var detourKm = pick(function (r) { return r.DETOUR_KM; }, 'min');
+        var totalKm  = pick(function (r) { return r.TOTAL_KM; }, 'min');
+        var slack    = pick(function (r) { return r.PICKUP_SLACK_HRS; }, 'max');
+        var anyTrue = false, anyFalse = false;
+        for (var ri4 = 0; ri4 < rows.length; ri4++) {
+            if (rows[ri4].FEASIBLE === true) anyTrue = true;
+            if (rows[ri4].FEASIBLE === false) anyFalse = true;
+        }
+        var feasible = anyTrue ? true : (anyFalse ? false : null);
+        var tCons = 0, tConsOf = 0, lCons = 0, lConsOf = 0;
+        var tf = famsPerTrailer[best.TRAILER_ID] || {};
+        var tfk = Object.keys(tf); tConsOf = tfk.length;
+        for (var c1 = 0; c1 < tfk.length; c1++) if (bestLoadForTrailer[tfk[c1] + '::' + best.TRAILER_ID] === best.LOAD_ID) tCons++;
+        var lf = famsPerLoad[best.LOAD_ID] || {};
+        var lfk = Object.keys(lf); lConsOf = lfk.length;
+        for (var c2 = 0; c2 < lfk.length; c2++) if (bestTrailerForLoad[lfk[c2] + '::' + best.LOAD_ID] === best.TRAILER_ID) lCons++;
+        var loadedKmEst = greatCircleKm(best.PICKUP_LON, best.PICKUP_LAT, best.DELIVERY_LON, best.DELIVERY_LAT);
+        pairs.push({
+            key: gkeys[ki], trailerId: best.TRAILER_ID, loadId: best.LOAD_ID,
+            bestSource: familyOf(best.DISTANCE_BASIS), agreement: famList.length, families: famList,
+            trailerConsensus: tCons, trailerConsensusOf: tConsOf,
+            loadConsensus: lCons, loadConsensusOf: lConsOf,
+            emptyKm: emptyKm, loadedKm: loadedKm, loadedKmEst: loadedKmEst,
+            detourKm: detourKm, totalKm: totalKm, pickupSlackHrs: slack,
+            maxStopSeq: (best.TRAILER_ID in trailerStops) ? trailerStops[best.TRAILER_ID] : null,
+            idleHours: (best.TRAILER_ID in idleHrsByTrailer) ? idleHrsByTrailer[best.TRAILER_ID] : null,
+            feasible: feasible, isInternal: best.IS_INTERNAL === true, source: best.SOURCE,
+            product: best.PRODUCT,
+            pickupCity: best.PICKUP_CITY, pickupCountry: best.PICKUP_COUNTRY,
+            deliveryCity: best.DELIVERY_CITY, emptyCity: best.EMPTY_CITY,
+            pickupLon: best.PICKUP_LON, pickupLat: best.PICKUP_LAT,
+            deliveryLon: best.DELIVERY_LON, deliveryLat: best.DELIVERY_LAT,
+            scores: {}, grades: {}
+        });
+    }
+    var econLoaded = function (p) {
+        return finite(p.loadedKm) ? Number(p.loadedKm) : (finite(p.loadedKmEst) ? Number(p.loadedKmEst) : null);
+    };
+    var econMargin = function (p) {
+        var L = econLoaded(p);
+        if (L === null) return null;
+        return finite(p.emptyKm) ? L * revLoaded - Number(p.emptyKm) * costEmpty : L * revLoaded;
+    };
+    var revenues = [], margins = [];
+    for (var pi2 = 0; pi2 < pairs.length; pi2++) {
+        var L2 = econLoaded(pairs[pi2]);
+        if (L2 !== null) revenues.push(L2 * revLoaded);
+        var m2 = econMargin(pairs[pi2]);
+        if (m2 !== null) margins.push(m2);
+    }
+    var revP90 = percentile(revenues, 0.90);
+    var marginMin = margins.length ? Math.min.apply(null, margins) : 0;
+    var marginMax = margins.length ? Math.max.apply(null, margins) : 0;
+    for (var pi3 = 0; pi3 < pairs.length; pi3++) {
+        var p = pairs[pi3];
+        p.scores.costEff = finite(p.emptyKm) ? clamp(100 - (Number(p.emptyKm) / maxEmptyKm) * 100) : null;
+        var eL = econLoaded(p);
+        var rev2 = (eL !== null) ? eL * revLoaded : null;
+        p.scores.revenue = (rev2 !== null && revP90 > 0) ? clamp((rev2 / revP90) * 100) : null;
+        var mg = econMargin(p);
+        p.scores.margin = (mg !== null && marginMax > marginMin)
+            ? clamp(((mg - marginMin) / (marginMax - marginMin)) * 100)
+            : (mg !== null ? 60 : null);
+        if (p.feasible === false) p.scores.feasibility = 0;
+        else if (finite(p.pickupSlackHrs)) p.scores.feasibility = clamp((Number(p.pickupSlackHrs) / IDEAL_SLACK_HRS) * 100);
+        else p.scores.feasibility = (p.feasible === true) ? 70 : null;
+        p.scores.utilization = (eL !== null && finite(p.emptyKm) && (eL + Number(p.emptyKm)) > 0)
+            ? clamp((eL / (eL + Number(p.emptyKm))) * 100) : null;
+        if (finite(p.maxStopSeq)) {
+            var st = Number(p.maxStopSeq);
+            p.scores.consolidation = (st <= 1) ? 50 : clamp((st / maxStops) * 100);
+        } else p.scores.consolidation = null;
+        p.scores.urgency = finite(p.idleHours) ? idlePercentile(Number(p.idleHours)) : null;
+        for (var di = 0; di < DIMENSIONS.length; di++) p.grades[DIMENSIONS[di]] = toGrade(p.scores[DIMENSIONS[di]]);
+        // Composite. Weights are relative and renormalized per pair, so a pair
+        // missing a dimension is not penalised for the absence.
+        var wSum = 0, acc = 0;
+        for (var dj = 0; dj < DIMENSIONS.length; dj++) {
+            var d = DIMENSIONS[dj], sc = p.scores[d], w = Math.max(0, Number(WEIGHTS[d]) || 0);
+            if (sc === null || w === 0) continue;
+            acc += sc * w; wSum += w;
+        }
+        p.composite = wSum > 0 ? acc / wSum : 0;
+        p.grade = toGrade(p.composite) || 'F';
+    }
+    pairs.sort(function (a, b) {
+        return (b.composite - a.composite)
+            || (b.agreement - a.agreement)
+            || ((a.emptyKm === null ? Infinity : a.emptyKm) - (b.emptyKm === null ? Infinity : b.emptyKm));
+    });
+
+    // One entry per vehicle: its best-scoring pair. This is the dispatcher's
+    // answer ("what should this vehicle do"), and the per-vehicle totals below
+    // must be computed from it - summing every graded pair would count the same
+    // vehicle many times.
+    var bestByTrailer = {}, perVehicle = [];
+    for (var qi = 0; qi < pairs.length; qi++) {
+        var pp = pairs[qi];
+        if (bestByTrailer[pp.trailerId]) continue;
+        bestByTrailer[pp.trailerId] = pp;
+        perVehicle.push(pp);
+    }
+    var totalEmpty = 0, totalMargin = 0, internalMatched = 0, compositeSum = 0;
+    for (var vi2 = 0; vi2 < perVehicle.length; vi2++) {
+        var pv = perVehicle[vi2];
+        totalEmpty += finite(pv.emptyKm) ? Number(pv.emptyKm) : 0;
+        var mv = econMargin(pv);
+        totalMargin += (mv === null) ? 0 : mv;
+        if (pv.isInternal) internalMatched++;
+        compositeSum += pv.composite;
+    }
+
+    // Pair granularity: every graded pair, in the shape the cockpit's ranker
+    // consumes. The per-dimension scores travel with each row so weights stay a
+    // CLIENT concern - that is what keeps a slider drag instant.
+    if (granularity === 'pair') {
+        var pairRows = [];
+        for (var yi = 0; yi < Math.min(outLimit, pairs.length); yi++) {
+            var y = pairs[yi];
+            pairRows.push({
+                key: y.key, trailerId: y.trailerId, loadId: y.loadId,
+                bestProposalId: y.bestSource + ':' + y.trailerId + ':' + y.loadId,
+                bestSource: y.bestSource, agreement: y.agreement, families: y.families,
+                trailerConsensus: y.trailerConsensus, trailerConsensusOf: y.trailerConsensusOf,
+                loadConsensus: y.loadConsensus, loadConsensusOf: y.loadConsensusOf,
+                emptyKm: y.emptyKm, loadedKm: y.loadedKm, loadedKmEst: y.loadedKmEst,
+                detourKm: y.detourKm, totalKm: y.totalKm, marginUsd: econMargin(y),
+                pickupSlackHrs: y.pickupSlackHrs, maxStopSeq: y.maxStopSeq, idleHours: y.idleHours,
+                feasible: y.feasible, isInternal: y.isInternal, source: y.source, product: y.product,
+                pickupCity: y.pickupCity, pickupCountry: y.pickupCountry,
+                deliveryCity: y.deliveryCity, emptyCity: y.emptyCity,
+                pickupLon: y.pickupLon, pickupLat: y.pickupLat,
+                deliveryLon: y.deliveryLon, deliveryLat: y.deliveryLat,
+                scores: y.scores, grades: y.grades,
+                constraints: chipsByPair[y.trailerId + '::' + y.loadId] || null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
+            granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
+            strategies_run: familiesRun,
+            trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
+            counts: {
+                vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
+                graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
+                pairs_returned: pairRows.length, excluded_unroutable: excludedTotal
+            },
+            weights: WEIGHTS,
+            pairs: pairRows,
+            families_skipped: familiesSkipped,
+            degraded: degradedNote
+        };
+    }
+
+    // Vehicle granularity is the DISPATCHER answer: one row, the decision, and the
+    // numbers behind it. The seven per-dimension `scores` and the five `constraints`
+    // chips are deliberately NOT here - they belong to granularity 'pair', which
+    // exists precisely so a caller that re-ranks client-side gets them. Carrying
+    // them here roughly tripled the row for an answer that never reads them, and the
+    // only consumer of this shape, AgentProposal in ui/src/lib/backload-rehydrate.ts,
+    // declares neither. Keep detour_km and stops: that interface DOES read both.
+    var outRows = [];
+    for (var oi = 0; oi < Math.min(outLimit, perVehicle.length); oi++) {
+        var o = perVehicle[oi];
+        outRows.push({
+            vehicle_id: o.trailerId, load_id: o.loadId,
+            grade: o.grade, composite: Math.round(o.composite * 10) / 10,
+            best_strategy: o.bestSource, strategies_agreeing: o.agreement, strategies: o.families,
+            is_internal: o.isInternal, source: o.source,
+            // What is being moved. Read by the cockpit's assignment card, which
+            // showed "loaded 1221 km \u00b7" with nothing after the separator for
+            // every collected plan while the same tour solved locally read
+            // "B2B pallets" - the feed always had l.PRODUCT, the proposal row
+            // simply dropped it.
+            product: o.product,
+            empty_km: (o.emptyKm === null) ? null : Math.round(o.emptyKm * 10) / 10,
+            loaded_km: (econLoaded(o) === null) ? null : Math.round(econLoaded(o) * 10) / 10,
+            detour_km: (o.detourKm === null) ? null : Math.round(o.detourKm * 10) / 10,
+            // 2dp, not integer. Whole dollars were adequate while every margin
+            // was priced at truck rates; on ebike rates a real 0.28 USD margin
+            // rounds to 0 and the column reads as though the economics were
+            // switched off. The repo's display convention is 2dp anyway.
+            margin_usd: (econMargin(o) === null) ? null : Math.round(econMargin(o) * 100) / 100,
+            idle_hours: (o.idleHours === null) ? null : Math.round(o.idleHours * 10) / 10,
+            stops: o.maxStopSeq,
+            empty_city: o.emptyCity, pickup_city: o.pickupCity, delivery_city: o.deliveryCity,
+            pickup_lon: o.pickupLon, pickup_lat: o.pickupLat,
+            delivery_lon: o.deliveryLon, delivery_lat: o.deliveryLat
+        });
+    }
+
+    return {
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, strategy: strategy,
+        granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
+        strategies_run: familiesRun,
+        // Echoed so the caller can see the run was scoped and how much of the
+        // budget it used. elapsed_s next to time_budget_s is what makes a
+        // truncated run legible without reading families_skipped.
+        trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
+        counts: {
+            vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
+                 eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
+            graded_pairs: pairs.length, vehicles_matched: perVehicle.length,
+            proposals_returned: outRows.length, excluded_unroutable: excludedTotal
+        },
+        totals: {
+            internal_matched: internalMatched,
+            total_empty_km: Math.round(totalEmpty * 10) / 10,
+            total_margin_usd: Math.round(totalMargin * 100) / 100,
+            // A headline number whose BASIS can change must report that basis,
+            // or one tile carries two meanings across runs (the same lesson
+            // INTERNAL_POOL_CAP is commented with). The two rates are echoed
+            // because they are what makes total_margin_usd reproducible.
+            econ_basis: econBasis,
+            cost_per_empty_km: costEmpty,
+            revenue_per_loaded_km: Math.round(revLoaded * 10000) / 10000,
+            avg_composite: perVehicle.length ? Math.round(compositeSum / perVehicle.length) : null
+        },
+        weights: WEIGHTS,
+        proposals: outRows,
+        // A partially-degraded run is still a SUCCESS, but the caller must be able
+        // to say so rather than presenting a thinner plan as complete. families_skipped
+        // names each strategy that produced nothing and why, so "ensemble" quietly
+        // collapsing to a great-circle baseline is visible instead of implied.
+        families_skipped: familiesSkipped,
+        degraded: degradedNote
+    };
+} catch (err) {
+    // Never report 'unknown error'. Measured: max_loads >= ~600 on SanFrancisco
+    // failed here in 8.5s with error:'unknown error', reason:'ERROR' - an
+    // exception whose .message was falsy, so the ONE piece of information the
+    // caller needed was discarded. The agent is told max_loads is "clamped to
+    // 1000", i.e. it is actively invited into this failure and then given nothing
+    // to act on. Include code/state, and fall back to serialising the object.
+    var em = (function () {
+        if (!err) return 'unknown error (no exception object)';
+        var parts = [];
+        if (err.message) parts.push(String(err.message));
+        if (err.code) parts.push('code=' + String(err.code));
+        if (err.state) parts.push('state=' + String(err.state));
+        if (err.stackTraceTxt) parts.push('stack=' + String(err.stackTraceTxt).slice(0, 300));
+        if (!parts.length) {
+            try { parts.push('raw=' + JSON.stringify(err)); }
+            catch (e2) { parts.push('raw=' + String(err)); }
+        }
+        return parts.join(' | ');
+    })();
+    if (/Name or service not known|Temporary failure in name resolution|connection refused|circuit_open|service_unreachable/i.test(em)) {
+        return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                 vroom_service: vroomSvc,
+                 error: 'Route optimization for ' + region + ' is not responding (' + em + '). Resume it and retry.' };
+    }
+    return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+----------------------------------------------------------------------
+-- TOOL_BACKLOAD_CHAIN_SOLVE: two-hop (chained) return planning.
+--
+-- The case single-hop matching structurally cannot answer: a vehicle empties a
+-- long way from where it must get back to, and NO single load makes the return.
+-- A chain does it in two hops - carry load A part of the way, then load B the
+-- rest. This is the same computation the Triangle Proposals cockpit performs, so
+-- app and agent share one implementation.
+--
+-- Three things make a chain actionable rather than merely clever, and all three
+-- are load-bearing here:
+--
+--  1. INTERNAL-FIRST CASCADE. Own loads are exhausted before an outside exchange
+--     is consulted. The ladder is explicit (rung 1 own/own .. rung 4
+--     external/external) and stops at the LOWEST rung producing an eligible
+--     chain at or above the acceptance score, so the answer can say "no
+--     internal-only chain existed" instead of quietly returning an external one.
+--     Note the counter-intuitive consequence, which must be reported rather than
+--     hidden: if NO rung clears the mark the cascade cut is not applied at all,
+--     so RAISING the acceptance score can return MORE chains, not fewer.
+--
+--  2. LIVE ROAD COST. VW_TRIANGLES enumerates and prunes chain skeletons in SQL
+--     on great-circle distance; every leg of every surviving chain is then priced
+--     by ONE live MATRIX_TABULAR call (Tenet 9 - routing output is never cached
+--     into a table). Grading and the cascade are applied ONLY on road figures,
+--     because stopping the cascade on a straight-line estimate would commit to a
+--     rung on data the road network may contradict. cost_basis='great_circle'
+--     skips the call and deliberately returns ungraded skeletons.
+--
+--  3. A STATUS-QUO BASELINE. Every chain is reported against what the planner
+--     would otherwise do: run empty to the target. The chain's empty distance
+--     MUST therefore include the residual run from the hop-2 delivery to the
+--     target (TOTAL_EMPTY_WITH_RESIDUAL_KM), because the baseline is a COMPLETE
+--     run home. Comparing a complete baseline against the two-leg subtotal
+--     overstated every saving on this page - one chain read as 173 km better
+--     while actually running 44 km further. TOTAL_EMPTY_KM stays the two-leg
+--     subtotal because the constraint checks are calibrated against it.
+--
+-- Region scoping: VW_TRIANGLES does not project REGION, so chains are filtered
+-- by the region's own vehicles via the FLEET_APP contract. Without this a chain
+-- can be proposed for a vehicle on another continent.
+--
+-- Returns { status, region, cost_basis, cascade, acceptance_score, counts,
+--           totals, chains[] } or { status:'FAILED', reason, error }.
+----------------------------------------------------------------------
+-- Drop the previous 5-argument signature first: every argument is defaulted, so
+-- adding a 6th defaulted one does not replace it, and Snowflake rejects the new
+-- procedure with "Cannot overload PROCEDURE ... ambiguous PROCEDURE overloading".
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT);
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(
+    P_REGION           VARCHAR DEFAULT NULL,
+    P_COST_BASIS       VARCHAR DEFAULT NULL,
+    P_ACCEPTANCE_SCORE FLOAT   DEFAULT NULL,
+    P_MAX_PER_VEHICLE  FLOAT   DEFAULT NULL,
+    P_LIMIT            FLOAT   DEFAULT NULL,
+    P_GRANULARITY      VARCHAR DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+var region = P_REGION;
+
+function q(sql, binds) {
+    return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute();
+}
+var num = function (v) { var n = Number(v); return isFinite(n) ? n : 0; };
+var finite = function (v) { return v !== null && v !== undefined && isFinite(Number(v)); };
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function toGrade(s) {
+    if (s >= 90) return 'A';
+    if (s >= 80) return 'B+';
+    if (s >= 70) return 'B';
+    if (s >= 60) return 'C+';
+    if (s >= 50) return 'C';
+    if (s >= 40) return 'D';
+    return 'F';
+}
+// Upstream POI names arrive wrapped in literal double quotes (every row of
+// DIM_POIS.NAME), and the load pool falls back to the bare words Origin /
+// Destination whenever a trip endpoint was never a POI - the majority of rows.
+// Reported verbatim a chain reads "Origin -> Destination", so unwrap the quotes
+// and fall back to the coordinate, which at least locates the stop.
+var PLACEHOLDERS = { 'origin': 1, 'destination': 1, 'drop-off': 1, 'dropoff': 1, 'unknown': 1, 'depot': 1 };
+function place(s, lon, lat) {
+    var t = s ? String(s).trim() : '';
+    if (t.length >= 2 && t.charAt(0) === '"' && t.charAt(t.length - 1) === '"') t = t.slice(1, -1).trim();
+    if (t && !PLACEHOLDERS[t.toLowerCase()]) return t;
+    if (isFinite(lon) && isFinite(lat) && !(lon === 0 && lat === 0)) {
+        return 'near ' + Number(lat).toFixed(2) + ', ' + Number(lon).toFixed(2);
+    }
+    return t || 'unknown';
+}
+var RUNG_LABEL = { 1: 'Own loads only', 2: 'Own load, then external',
+                   3: 'External, then own load', 4: 'External on both hops' };
+var RUNG_NOTE = { 1: 'Both hops came from our own waiting loads.',
+                  2: 'No own load completed the return, so the second hop is external.',
+                  3: 'No own load started the return, so the first hop is external.',
+                  4: 'No own load fitted either hop; both come from outside.' };
+// The gateway guards locations per matrix call and the engine caps the resulting
+// route count. This ceiling sits far below both; a chain contributes at most 6
+// points, so it admits ~25 chains per costing run.
+var MAX_MATRIX_POINTS = 150;
+
+try {
+    if (!region) {
+        try {
+            var cr = q("SELECT REGION FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (cr.next()) region = cr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) {
+        try {
+            var dr = q("SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1");
+            if (dr.next()) region = dr.getColumnValue(1);
+        } catch (e) { /* fall through */ }
+    }
+    if (!region) region = 'SanFrancisco';
+
+    var costBasis = String(P_COST_BASIS || 'road').toLowerCase();
+    if (costBasis !== 'road' && costBasis !== 'great_circle') {
+        return { status: 'FAILED', reason: 'BAD_COST_BASIS', region: region,
+                 error: "cost_basis must be 'road' or 'great_circle' (got " + costBasis + ")" };
+    }
+    // 'chain' (default) returns the reported, human-readable chain. 'raw' additionally
+    // returns each chain's source row and its per-leg ROAD distances, which is what
+    // lets a caller re-grade locally when a constraint slider or a rate box moves -
+    // grading is a pure function of (chain, road legs, constraints, rates), so
+    // re-running the matrix for a slider drag would be pure waste.
+    var granularity = String(P_GRANULARITY || 'chain').toLowerCase();
+    if (granularity !== 'chain' && granularity !== 'raw') {
+        return { status: 'FAILED', reason: 'BAD_GRANULARITY', region: region,
+                 error: "granularity must be 'chain' or 'raw' (got " + granularity + ")" };
+    }
+    var maxPerVehicle = finite(P_MAX_PER_VEHICLE) && Number(P_MAX_PER_VEHICLE) > 0
+        ? Math.min(20, Math.floor(Number(P_MAX_PER_VEHICLE))) : null;
+    var outLimit = finite(P_LIMIT) && Number(P_LIMIT) > 0 ? Math.min(200, Math.floor(Number(P_LIMIT))) : 25;
+
+    // --------------------------------------------------------- class + params
+    // Region-resolved, for the same reason as TOOL_BACKLOAD_SOLVE: CONFIG is a
+    // ONE-ROW table, so reading it unconditionally resolved an hgv profile for
+    // an ebike region and every chain leg was routed as a truck. VW_TRAILERS is
+    // the scoped set this proc already reads its chains against, so the profile
+    // cannot describe a fleet that is not in the solve. CONFIG stays as a
+    // fallback only, and must stay AFTER the region read
+    // (check_region_scoping.py RULE 5).
+    var vehicleType = null, profile = 'driving-car';
+    var vehicleTypeBasis = 'default';
+    var fleetMix = [];
+    try {
+        var fm = q("SELECT CURRENT_LOAD AS VEHICLE_TYPE, COUNT(*) AS N "
+                 + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS "
+                 + "WHERE REGION = ? AND CURRENT_LOAD IS NOT NULL "
+                 + "GROUP BY 1 ORDER BY N DESC, VEHICLE_TYPE", [region]);
+        while (fm.next()) {
+            fleetMix.push({ vehicle_type: String(fm.getColumnValue(1)),
+                            vehicles: Number(fm.getColumnValue(2)) });
+        }
+        if (fleetMix.length) { vehicleType = fleetMix[0].vehicle_type; vehicleTypeBasis = 'region_fleet'; }
+    } catch (e) { /* fall through to CONFIG */ }
+    if (!vehicleType) {
+        try {
+            var vr = q("SELECT VEHICLE_TYPE FROM FLEET_APP.BACKLOAD_MATCHING.VW_CONFIG LIMIT 1");
+            if (vr.next()) {
+                var cfgVt = vr.getColumnValue(1);
+                if (cfgVt) { vehicleType = String(cfgVt); vehicleTypeBasis = 'config_fallback'; }
+            }
+        } catch (e) { /* default below */ }
+    }
+    if (!vehicleType) { vehicleType = 'hgv'; vehicleTypeBasis = 'default'; }
+    var pr = q("SELECT ORS_PROFILE, COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
+               [vehicleType]);
+    var classCostPerKm = 0;
+    if (pr.next()) {
+        profile = String(pr.getColumnValue(1) || 'driving-car');
+        classCostPerKm = Number(pr.getColumnValue(2)) || 0;
+    }
+    var hgvCostPerKm = 0.85;
+    try {
+        var hb = q("SELECT COST_PER_KM FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = 'hgv' LIMIT 1");
+        if (hb.next() && Number(hb.getColumnValue(1))) hgvCostPerKm = Number(hb.getColumnValue(1));
+    } catch (e) { /* keep the literal baseline */ }
+
+    var params = {};
+    try {
+        var prm = q("SELECT PARAM_KEY, PARAM_VALUE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS");
+        while (prm.next()) params[String(prm.getColumnValue(1))] = prm.getColumnValue(2);
+    } catch (e) { /* defaults below */ }
+    function param(key, dflt) {
+        var v = Number(params[key]);
+        return isFinite(v) ? v : dflt;
+    }
+    var targetRadiusKm  = param('TARGET_RADIUS_KM', 250);
+    var maxTotalEmptyKm = param('TRIANGLE_MAX_TOTAL_EMPTY_KM', 250);
+    var maxLeg1DetourKm = param('TRIANGLE_MAX_LEG1_DETOUR_KM', 400);
+    if (maxPerVehicle === null) maxPerVehicle = Math.max(1, param('MAX_TRIANGLES_PER_TRAILER', 5));
+    var threshold = finite(P_ACCEPTANCE_SCORE) ? Math.max(0, Math.min(100, Number(P_ACCEPTANCE_SCORE)))
+                                               : param('CASCADE_GRADE_THRESHOLD', 70);
+
+    // ----------------------------------------------------------- chain feed
+    var chains = [];
+    try {
+        var cs = q(
+            "SELECT t.* FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES t "
+          + "WHERE t.TRAILER_ID IN ("
+          + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
+          + "ORDER BY t.TRAILER_ID, t.CASCADE_RUNG, t.NET_BENEFIT_USD DESC", [region]);
+        var cols = cs.getColumnCount();
+        var names = [];
+        for (var ci = 1; ci <= cols; ci++) names.push(cs.getColumnName(ci));
+        while (cs.next()) {
+            var row = {};
+            for (var cj = 0; cj < names.length; cj++) row[names[cj]] = cs.getColumnValue(cj + 1);
+            chains.push(row);
+        }
+    } catch (e) {
+        var em0 = e && e.message ? String(e.message) : 'unknown error';
+        if (/does not exist or not authorized/i.test(em0)) {
+            return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
+                     error: 'The chain layer (VW_TRIANGLES) is not provisioned for the active dataset.' };
+        }
+        throw e;
+    }
+    if (!chains.length) {
+        // Not an error, and specifically not "no data". Chains are a LONG-HAUL
+        // pattern: in a metro region every load already delivers inside the
+        // target radius, so a direct return exists and no chain is needed.
+        return { status: 'SUCCESS', region: region, cost_basis: costBasis, chains: [],
+                 counts: { skeletons: 0, graded: 0, returned: 0 },
+                 note: 'No chain is needed for ' + region + ': every load already delivers within the '
+                     + 'target radius, so a direct single-hop return exists. Chains are a long-haul '
+                     + 'pattern - a wide-area region shows them.' };
+    }
+
+    // Rates. A rate of 0 would silently zero the economics, so take the first
+    // STRICTLY POSITIVE of: match params, the rate the view itself costed with,
+    // the documented default.
+    function rate(a, b, dflt) {
+        if (isFinite(a) && a > 0) return a;
+        if (isFinite(b) && b > 0) return b;
+        return dflt;
+    }
+    var costPerEmptyKm = rate(Number(params['COST_PER_EMPTY_KM']), num(chains[0].COST_PER_EMPTY_KM), 1.2);
+    var revPerLoadedKm = rate(Number(params['REVENUE_PER_LOADED_KM']), num(chains[0].REV_PER_LOADED_KM), 1.1);
+    // Same per-class re-rating as TOOL_BACKLOAD_SOLVE, applied for the same
+    // reason and by the same rule (empty cost is a vehicle attribute, loaded
+    // revenue is a market rate scaled by the class/hgv cost ratio). It has to
+    // be here too: a chain and a single-leg answer for the SAME region priced
+    // on two different bases would disagree about whether a chain is worth it.
+    var econBasis = 'match_params';
+    if (classCostPerKm > 0 && hgvCostPerKm > 0) {
+        costPerEmptyKm = classCostPerKm;
+        revPerLoadedKm = revPerLoadedKm * (classCostPerKm / hgvCostPerKm);
+        econBasis = 'vehicle_class';
+    }
+
+    function chainKey(c) { return c.TRAILER_ID + '::' + c.LEG1_LOAD_ID + '::' + c.LEG2_LOAD_ID; }
+
+    // ------------------------------------------------------- live road costing
+    // ONE matrix call over every distinct point in the candidate set; each leg is
+    // then a lookup. The same matrix yields the baseline (empty straight to
+    // target) AND the residual run, so the comparison is road-against-road rather
+    // than one road figure against one straight line.
+    // MATRIX_TABULAR takes (profile, ORIGIN coords, DESTINATION coords, region)
+    // and derives sources/destinations from the two arrays' LENGTHS, so a square
+    // matrix means passing the same list twice. Distances come back in metres.
+    var roadByKey = {}, deferred = 0, costed = 0;
+    if (costBasis === 'road') {
+        var idx = {}, pts = [], mapped = [];
+        var add = function (lon, lat) {
+            var k = Number(lon).toFixed(5) + ',' + Number(lat).toFixed(5);
+            if (k in idx) return idx[k];
+            var i = pts.length;
+            pts.push([Number(lon), Number(lat)]);
+            idx[k] = i;
+            return i;
+        };
+        for (var mi = 0; mi < chains.length; mi++) {
+            var mc = chains[mi];
+            // A chain contributes at most 6 points; stop BEFORE overshooting.
+            // Truncating the matrix instead would return short rows and silently
+            // mis-cost the legs that fell off the end.
+            if (pts.length + 6 > MAX_MATRIX_POINTS) { deferred += 1; continue; }
+            mapped.push({
+                c: mc,
+                iEmpty: add(num(mc.EMPTY_LON), num(mc.EMPTY_LAT)),
+                iP1: add(num(mc.LEG1_PICKUP_LON), num(mc.LEG1_PICKUP_LAT)),
+                iD1: add(num(mc.LEG1_DELIVERY_LON), num(mc.LEG1_DELIVERY_LAT)),
+                iP2: add(num(mc.LEG2_PICKUP_LON), num(mc.LEG2_PICKUP_LAT)),
+                iD2: add(num(mc.LEG2_DELIVERY_LON), num(mc.LEG2_DELIVERY_LAT)),
+                iTgt: add(num(mc.TARGET_LON), num(mc.TARGET_LAT))
+            });
+        }
+        var parts = [];
+        for (var pi = 0; pi < pts.length; pi++) parts.push('ARRAY_CONSTRUCT(' + pts[pi][0] + ', ' + pts[pi][1] + ')');
+        var coords = 'ARRAY_CONSTRUCT(' + parts.join(', ') + ')';
+        var dist = null;
+        try {
+            var ms = q("SELECT TO_VARCHAR(M:distances) AS D FROM (SELECT "
+                     + "OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, " + coords + ", " + coords + ", ?) AS M)",
+                       [profile, region]);
+            var draw = ms.next() ? ms.getColumnValue(1) : null;
+            if (draw) { try { dist = JSON.parse(draw); } catch (e) { dist = null; } }
+        } catch (e) {
+            var em1 = e && e.message ? String(e.message) : 'unknown error';
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     error: 'The routing engine could not price the chain legs for ' + region
+                          + ' (' + em1 + '). It may be suspended or starting - resume it and retry, '
+                          + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+        }
+        if (!dist || !dist.length || !dist[0] || !dist[0].length) {
+            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                     error: 'The routing engine returned no distance matrix, so chain legs cannot be '
+                          + 'priced on the road network. Check that the region services are running, '
+                          + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+        }
+        var km = function (a, b) {
+            var v = (dist[a] && dist[a][b] !== undefined) ? dist[a][b] : null;
+            return (typeof v === 'number' && isFinite(v)) ? v / 1000 : null;
+        };
+        for (var xi = 0; xi < mapped.length; xi++) {
+            var mp = mapped[xi];
+            roadByKey[chainKey(mp.c)] = {
+                e1: km(mp.iEmpty, mp.iP1), loaded1: km(mp.iP1, mp.iD1),
+                e2: km(mp.iD1, mp.iP2), loaded2: km(mp.iP2, mp.iD2),
+                residual: km(mp.iD2, mp.iTgt), baseline: km(mp.iEmpty, mp.iTgt)
+            };
+        }
+        costed = mapped.length;
+    }
+
+    // ------------------------------------------------------------- grade them
+    var graded = [];
+    for (var gi = 0; gi < chains.length; gi++) {
+        var c = chains[gi];
+        var r = roadByKey[chainKey(c)] || null;
+        var roadE1 = r ? r.e1 : null, roadL1 = r ? r.loaded1 : null;
+        var roadE2 = r ? r.e2 : null, roadL2 = r ? r.loaded2 : null;
+        var roadRes = r ? r.residual : null;
+        var roadEmpty = (roadE1 !== null && roadE2 !== null && roadRes !== null) ? roadE1 + roadE2 + roadRes : null;
+        var roadLoaded = (roadL1 !== null && roadL2 !== null) ? roadL1 + roadL2 : null;
+
+        // Residual-INCLUSIVE, because the baseline is a complete run home.
+        var emptyKm = (roadEmpty !== null) ? roadEmpty : num(c.TOTAL_EMPTY_WITH_RESIDUAL_KM);
+        var loadedKm = (roadLoaded !== null) ? roadLoaded : num(c.TOTAL_LOADED_KM);
+        var residualKm = (roadRes !== null) ? roadRes : num(c.FINAL_GAP_KM);
+        var baselineEmptyKm = (r && r.baseline !== null) ? r.baseline : num(c.TARGET_GAP_KM);
+
+        var netUsd = loadedKm * revPerLoadedKm - emptyKm * costPerEmptyKm;
+        // The status quo earns nothing and still burns the empty run home.
+        var baselineNetUsd = -baselineEmptyKm * costPerEmptyKm;
+
+        // TOTAL_EMPTY_CHECK is defined on the TWO-LEG subtotal, which is what
+        // MAX_TOTAL_EMPTY_KM was calibrated against. Keep it that way, or the
+        // chips re-prune against a figure they were never set for.
+        var twoLegEmpty = (roadE1 !== null && roadE2 !== null) ? roadE1 + roadE2 : num(c.TOTAL_EMPTY_KM);
+        var totalEmptyOk = twoLegEmpty <= maxTotalEmptyKm;
+        var leg1DetourOk = ((roadE1 !== null) ? roadE1 : num(c.LEG1_EMPTY_KM)) <= maxLeg1DetourKm;
+        var targetOk = residualKm <= targetRadiusKm;
+        // Hop ordering is structural (enforced by the join), so it cannot be
+        // relaxed here - carry the view's verdict through unchanged.
+        var sequenceOk = c.SEQUENCE_CHECK === true;
+        var eligible = totalEmptyOk && leg1DetourOk && targetOk && sequenceOk;
+
+        var util = loadedKm / Math.max(1, loadedKm + emptyKm);
+        var saved = baselineEmptyKm > 0 ? clamp01((baselineEmptyKm - emptyKm) / baselineEmptyKm) : 0;
+        var closed = clamp01((num(c.TARGET_GAP_KM) - residualKm) / Math.max(1, num(c.TARGET_GAP_KM)));
+        var score = Math.max(0, Math.min(100, 100 * (0.45 * util + 0.35 * closed + 0.20 * saved)));
+
+        graded.push({
+            c: c, key: chainKey(c), rung: num(c.CASCADE_RUNG),
+            emptyKm: emptyKm, loadedKm: loadedKm, residualKm: residualKm,
+            twoLegEmptyKm: twoLegEmpty,
+            baselineEmptyKm: baselineEmptyKm, emptySavedKm: baselineEmptyKm - emptyKm,
+            netUsd: netUsd, baselineNetUsd: baselineNetUsd, beatsBaseline: netUsd > baselineNetUsd,
+            totalEmptyOk: totalEmptyOk, leg1DetourOk: leg1DetourOk,
+            targetOk: targetOk, sequenceOk: sequenceOk, eligible: eligible,
+            score: score, grade: (costBasis === 'road') ? toGrade(score) : null,
+            costedOnRoad: r !== null
+        });
+    }
+
+    // ----------------------------------------------------------- the cascade
+    // Applied ONLY on road figures: stopping the ladder on a straight-line
+    // estimate would commit to a rung the road network may contradict.
+    var rungReached = null;
+    if (costBasis === 'road') {
+        for (var rr = 1; rr <= 4; rr++) {
+            for (var ri2 = 0; ri2 < graded.length; ri2++) {
+                if (graded[ri2].eligible && graded[ri2].rung === rr && graded[ri2].score >= threshold) {
+                    rungReached = rr; break;
+                }
+            }
+            if (rungReached !== null) break;
+        }
+    }
+    var shown = [];
+    for (var si = 0; si < graded.length; si++) {
+        if (rungReached !== null && graded[si].rung > rungReached) continue;
+        shown.push(graded[si]);
+    }
+    shown.sort(function (a, b) {
+        return String(a.c.TRAILER_ID).localeCompare(String(b.c.TRAILER_ID))
+            || (a.rung - b.rung) || (b.score - a.score) || (b.netUsd - a.netUsd);
+    });
+    // Per-vehicle cap applies to the RANKED chains, so lowering it keeps each
+    // vehicle's best rather than an arbitrary slice.
+    var seen = {}, capped = [];
+    for (var ki = 0; ki < shown.length; ki++) {
+        var vid = String(shown[ki].c.TRAILER_ID);
+        var n = (seen[vid] || 0) + 1;
+        seen[vid] = n;
+        if (n <= maxPerVehicle) capped.push(shown[ki]);
+    }
+
+    // Raw granularity: the caller grades. Chains are returned UNFILTERED by the
+    // cascade and the per-vehicle cap, because those are policy the caller applies
+    // itself once it has re-graded against its own sliders - applying them here
+    // would silently discard rows the caller may then be unable to show.
+    if (granularity === 'raw') {
+        var rawRows = [];
+        for (var wi = 0; wi < Math.min(outLimit, graded.length); wi++) {
+            var w = graded[wi];
+            var wr = roadByKey[w.key] || null;
+            rawRows.push({
+                key: w.key, chain: w.c,
+                road_legs: wr ? { e1: wr.e1, loaded1: wr.loaded1, e2: wr.e2,
+                                  loaded2: wr.loaded2, residual: wr.residual, baseline: wr.baseline }
+                              : null
+            });
+        }
+        return {
+            status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, profile: profile,
+            cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
+            counts: { skeletons: chains.length, graded: graded.length, returned: rawRows.length,
+                      costed_on_road: costed, deferred_over_matrix_limit: deferred },
+            economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
+            envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
+                        max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
+            raw: rawRows
+        };
+    }
+
+    var out = [], beats = 0, savingEmpty = 0, sumSaved = 0, sumNet = 0;
+    for (var oi = 0; oi < capped.length; oi++) {
+        var g = capped[oi], gc = g.c;
+        if (g.beatsBaseline) beats++;
+        if (g.emptySavedKm > 0) savingEmpty++;
+        sumSaved += g.emptySavedKm;
+        sumNet += g.netUsd;
+        if (out.length >= outLimit) continue;
+        out.push({
+            vehicle_id: gc.TRAILER_ID,
+            cascade_rung: g.rung, cascade_rung_label: RUNG_LABEL[g.rung] || null,
+            grade: g.grade, score: Math.round(g.score * 10) / 10,
+            eligible: g.eligible, costed_on_road: g.costedOnRoad,
+            availability_basis: gc.AVAILABILITY_BASIS,
+            from: place(gc.EMPTY_CITY, num(gc.EMPTY_LON), num(gc.EMPTY_LAT)),
+            target: place(gc.TARGET_LABEL, num(gc.TARGET_LON), num(gc.TARGET_LAT)),
+            target_gap_km: Math.round(num(gc.TARGET_GAP_KM)),
+            hop1: {
+                load_id: gc.LEG1_LOAD_ID, is_internal: gc.LEG1_IS_INTERNAL === true,
+                source: gc.LEG1_SOURCE_SYSTEM,
+                pickup: place(gc.LEG1_PICKUP_CITY, num(gc.LEG1_PICKUP_LON), num(gc.LEG1_PICKUP_LAT)),
+                delivery: place(gc.LEG1_DELIVERY_CITY, num(gc.LEG1_DELIVERY_LON), num(gc.LEG1_DELIVERY_LAT)),
+                empty_km: Math.round(num(gc.LEG1_EMPTY_KM)), loaded_km: Math.round(num(gc.LEG1_LOADED_KM))
+            },
+            hop2: {
+                load_id: gc.LEG2_LOAD_ID, is_internal: gc.LEG2_IS_INTERNAL === true,
+                source: gc.LEG2_SOURCE_SYSTEM,
+                pickup: place(gc.LEG2_PICKUP_CITY, num(gc.LEG2_PICKUP_LON), num(gc.LEG2_PICKUP_LAT)),
+                delivery: place(gc.LEG2_DELIVERY_CITY, num(gc.LEG2_DELIVERY_LON), num(gc.LEG2_DELIVERY_LAT)),
+                empty_km: Math.round(num(gc.LEG2_EMPTY_KM)), loaded_km: Math.round(num(gc.LEG2_LOADED_KM))
+            },
+            // empty_km is residual-inclusive and is the figure comparable with
+            // baseline_empty_km. two_leg_empty_km is the subtotal the constraint
+            // checks use; never compare THAT with the baseline.
+            empty_km: Math.round(g.emptyKm), two_leg_empty_km: Math.round(g.twoLegEmptyKm),
+            loaded_km: Math.round(g.loadedKm), residual_km: Math.round(g.residualKm),
+            baseline_empty_km: Math.round(g.baselineEmptyKm),
+            empty_saved_km: Math.round(g.emptySavedKm),
+            net_usd: Math.round(g.netUsd), baseline_net_usd: Math.round(g.baselineNetUsd),
+            beats_baseline: g.beatsBaseline,
+            constraints: { total_empty: g.totalEmptyOk, leg1_detour: g.leg1DetourOk,
+                           target: g.targetOk, sequence: g.sequenceOk }
+        });
+    }
+
+    var cascadeNote;
+    if (costBasis !== 'road') {
+        cascadeNote = 'Not applied: chains are still on straight-line estimates. Re-run with '
+                    + "cost_basis='road' to grade them and apply the internal-first cascade.";
+    } else if (rungReached === null) {
+        cascadeNote = 'No rung reached the acceptance score of ' + threshold + ', so the cascade cut was '
+                    + 'NOT applied and every rung is returned as a near miss. Raising the score can '
+                    + 'therefore return MORE chains, not fewer.';
+    } else {
+        cascadeNote = 'Stopped at rung ' + rungReached + ' (' + RUNG_LABEL[rungReached] + '). '
+                    + RUNG_NOTE[rungReached];
+    }
+
+    return {
+        status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, profile: profile,
+        cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
+        cascade: { rung_reached: rungReached, label: rungReached ? RUNG_LABEL[rungReached] : null,
+                   note: cascadeNote },
+        counts: { skeletons: chains.length, graded: graded.length, after_cascade: shown.length,
+                  after_per_vehicle_cap: capped.length, returned: out.length,
+                  costed_on_road: costed, deferred_over_matrix_limit: deferred },
+        totals: { chains_beating_baseline: beats, chains_saving_empty_km: savingEmpty,
+                  total_empty_saved_km: Math.round(sumSaved), total_net_usd: Math.round(sumNet) },
+        economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
+        envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
+                    max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
+        chains: out
+    };
+} catch (err) {
+    // Never report 'unknown error'. Measured: max_loads >= ~600 on SanFrancisco
+    // failed here in 8.5s with error:'unknown error', reason:'ERROR' - an
+    // exception whose .message was falsy, so the ONE piece of information the
+    // caller needed was discarded. The agent is told max_loads is "clamped to
+    // 1000", i.e. it is actively invited into this failure and then given nothing
+    // to act on. Include code/state, and fall back to serialising the object.
+    var em = (function () {
+        if (!err) return 'unknown error (no exception object)';
+        var parts = [];
+        if (err.message) parts.push(String(err.message));
+        if (err.code) parts.push('code=' + String(err.code));
+        if (err.state) parts.push('state=' + String(err.state));
+        if (err.stackTraceTxt) parts.push('stack=' + String(err.stackTraceTxt).slice(0, 300));
+        if (!parts.length) {
+            try { parts.push('raw=' + JSON.stringify(err)); }
+            catch (e2) { parts.push('raw=' + String(err)); }
+        }
+        return parts.join(' | ');
+    })();
+    return { status: 'FAILED', reason: 'ERROR', region: region, error: em };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_CHAIN_SOLVE(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
@@ -2232,4 +4813,6 @@ UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.
 UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
 UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_CATCHMENT'
-UNION ALL SELECT 'TOOL_SAP_INTROSPECT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_SAP_INTROSPECT';
+UNION ALL SELECT 'TOOL_SAP_INTROSPECT', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_SAP_INTROSPECT'
+UNION ALL SELECT 'TOOL_BACKLOAD_SOLVE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_BACKLOAD_SOLVE'
+UNION ALL SELECT 'TOOL_BACKLOAD_CHAIN_SOLVE', 'PROCEDURE' FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_BACKLOAD_CHAIN_SOLVE';

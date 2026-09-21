@@ -1,5 +1,9 @@
 -- Asset Velocity views for Non-Moving Vehicle Detection & Action Engine
--- Reuses FLEET_INTELLIGENCE.DWELL_ANALYSIS Dynamic Tables (must be deployed via dwell-analysis skill)
+-- Reads the INSTALLER's dwell view chain (FLEET_APP.DWELL.VW_DWELL_SESSIONS,
+-- created by the fleet/dwell pack), NOT the FLEET_INTELLIGENCE.DWELL_ANALYSIS
+-- Dynamic Tables. Those DTs compute the same thing but belong to the separate,
+-- opt-in dwell-analysis skill, so depending on them made this whole page
+-- silently empty on any install that did not also run that skill.
 -- Source telemetry must exist in SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT / V_FACT_TRIPS_CURRENT / V_DIM_FLEET_CURRENT / V_DIM_POIS_CURRENT
 --
 -- IMPORTANT: The control app's `server/lib/init.ts` ALSO bootstraps these views
@@ -52,7 +56,7 @@ last_session AS (
     e.OPERATING_MODE,
     e.DRIVER_PROFILE,
     ROW_NUMBER() OVER (PARTITION BY e.VEHICLE_ID ORDER BY e.SESSION_END DESC) AS RN
-  FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED e
+  FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS e
   WHERE (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
     AND COALESCE(UPPER(e.STATUS), '') NOT LIKE '%MAINTENANCE%'
     AND COALESCE(UPPER(e.DRIVER_PROFILE), 'COMPLIANT') <> 'OUTLIER'

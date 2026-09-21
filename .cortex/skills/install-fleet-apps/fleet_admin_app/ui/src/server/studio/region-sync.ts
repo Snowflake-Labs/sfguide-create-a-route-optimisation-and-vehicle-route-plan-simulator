@@ -10,16 +10,43 @@ import { regionCatalogMatch } from '../lib/region-catalog-match';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
-const FLEET_CONFIG_SCHEMAS = [
-  'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
-  'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
-  'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR',
-  'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE',
-  'FLEET_INTELLIGENCE.CATCHMENT',
-  'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
-  'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
-  'FLEET_INTELLIGENCE.MARKETPLACE',
-];
+// The dashboard CONFIG schemas are DISCOVERED, not listed.
+//
+// There used to be three hardcoded lists in three separately-deployed packages -
+// this one carried 8 schemas while the SA app's /api/region and the ops verb
+// set_active_context carried 3 - so a region promote moved HALF the account and
+// left the rest wherever the last Data Studio run had put it. Measured on
+// tib85385: three domains on SanFrancisco, three on Europe, so a cross-domain
+// question silently mixed San Francisco e-bikes with European trucks. The lists
+// live in different npm packages, so any list-based fix drifts again.
+//
+// Discovery keys off the SHAPE of the table (a CONFIG table carrying both REGION
+// and VEHICLE_TYPE), so a seventh domain is picked up with no code change.
+// Schema names come from INFORMATION_SCHEMA and are re-validated against an
+// identifier pattern before interpolation.
+const CONFIG_DB = 'FLEET_INTELLIGENCE';
+const IDENT_RE = /^[A-Z_][A-Z0-9_]*$/;
+
+async function discoverConfigSchemas(snowSql: SnowSqlFn): Promise<string[]> {
+  try {
+    const rows = await snowSql(
+      `SELECT TABLE_SCHEMA
+         FROM ${CONFIG_DB}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'CONFIG'
+          AND COLUMN_NAME IN ('REGION', 'VEHICLE_TYPE')
+        GROUP BY TABLE_SCHEMA
+       HAVING COUNT(DISTINCT COLUMN_NAME) = 2
+        ORDER BY TABLE_SCHEMA`,
+    );
+    return (rows ?? [])
+      .map((r: any) => String(Object.values(r)[0] ?? '').toUpperCase())
+      .filter((s: string) => IDENT_RE.test(s))
+      .map((s: string) => `${CONFIG_DB}.${s}`);
+  } catch (e) {
+    log('WARN', 'RegionSync', `CONFIG schema discovery failed: ${(e as Error).message}`);
+    return [];
+  }
+}
 
 export async function syncRegionRegistryAndConfig(
   region: string,
@@ -127,9 +154,13 @@ export async function syncRegionRegistryAndConfig(
     log('WARN', 'Studio', `SET_ACTIVE_REGION failed for ${region}: ${e.message?.slice(0, 200)}`, { jobId });
   }
 
-  // 3. Update all 6 CONFIG tables so projection views immediately filter to
-  //    the freshly generated (region, vehicleType).
-  for (const schema of FLEET_CONFIG_SCHEMAS) {
+  // 3. Update EVERY discovered CONFIG table so the app's default context is
+  //    consistent across all domains. Since the contract views no longer FILTER
+  //    on CONFIG, this is a default-selection hint rather than a data filter -
+  //    but leaving the tables disagreeing still gives the app (and an agent
+  //    reading the active context) contradictory answers per domain.
+  const configSchemas = await discoverConfigSchemas(snowSql);
+  for (const schema of configSchemas) {
     try {
       await snowSql(
         `UPDATE ${schema}.CONFIG SET VEHICLE_TYPE='${safeVehicleType}', REGION='${safeRegion}'`,

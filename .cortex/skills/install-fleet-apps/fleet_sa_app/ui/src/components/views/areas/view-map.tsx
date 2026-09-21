@@ -11,10 +11,20 @@ import MapView from './map-view';
 import type { LngLat } from '@/lib/map/map-fit';
 import type { LayerSpec, MapAreaConfig, LegendItem, MapToggleItem, MapClickEmits } from '@/lib/map/layer-spec';
 import { compileLayerWithFit, layerFitCoords } from '@/lib/map/layer-compiler';
+import { rebindLayerGeometry } from '@fleet-kit/core/map';
+// Pure spec helper (no deck.gl): names the columns a layer reads, for the
+// 'returned rows but drew nothing' notice.
+import { encodingColumns } from '@/lib/map/inline-legend';
 import { useViewData } from '@/hooks/use-view-data';
+import { useRegionCamera } from '@/hooks/use-region-camera';
 import { useAppStore } from '@/lib/store';
 import { escapeHtml } from '@/lib/html';
+import { formatCellValue } from '@/lib/format-number';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+import type { SuspendedInfo } from '@/lib/routing-suspend';
 import type { MapStateDescriptor, MapLayerDescriptor } from '@/lib/types';
+import { buildMapLayerMemo, joinBounded, useAgentMemo, MEMO_MAX_LEN } from '@/lib/agent-memo';
 
 interface ViewMapAreaProps {
   areaConfig: {
@@ -23,6 +33,8 @@ interface ViewMapAreaProps {
   // viewState keys that represent a user selection (from ViewRenderer). When one
   // is active, the camera focuses on the selected object's coords only.
   selectionKeys?: string[];
+  // Area key from the view config, used to namespace this map's agent memo.
+  areaName?: string;
 }
 
 interface LayerFetcherProps {
@@ -41,7 +53,17 @@ interface LayerFetcherProps {
     fitSel: LngLat[],
     template: string | undefined,
     count: number,
+    /** Rows that carried every column the layer needs to place a feature.
+     *  `count > 0 && drawn === 0` is a naming error, not an empty result - see
+     *  the notice in the parent. */
+    drawn: number,
   ) => void;
+  // Report a suspended routing engine (or null when clear) so the parent can
+  // overlay a single friendly notice for the whole map.
+  onSuspended: (index: number, info: SuspendedInfo | null, retry: () => void) => void;
+  // Report this layer's agent memo (empty when it declares no agentSummary, is
+  // toggled off, or has no rows) so the parent can publish one combined memo.
+  onSummary: (index: number, summary: string) => void;
 }
 
 /**
@@ -100,26 +122,50 @@ function selectionFit(
  * so it is a non-urgent update. This keeps the basemap and UI responsive even
  * when a layer carries multi-MB route geometry.
  */
-function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult }: LayerFetcherProps) {
+function LayerFetcher({ index, layer, viewState, selectionKeys, hovered, visible, onResult, onSuspended, onSummary }: LayerFetcherProps) {
   // Skip the fetch entirely when the layer is toggled off (undefined query
   // short-circuits useViewData) - avoids wasted (and sometimes expensive, e.g.
   // live-ORS) queries for hidden layers.
-  const { data } = useViewData(visible ? layer.data.query : undefined, layer.data.params);
+  const { data, suspended, refetch } = useViewData(visible ? layer.data.query : undefined, layer.data.params);
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
+  // A suspended region (live-ORS layer) no longer fails silently: report it up
+  // so the map shows the shared resume notice instead of an empty basemap.
+  useEffect(() => {
+    onSuspended(index, visible ? suspended : null, refetch);
+  }, [index, visible, suspended, refetch, onSuspended]);
+  // Grounding Channel A for the map: publish the rows themselves (bounded), not
+  // just the count the descriptor already carries. Derived from `rows` rather
+  // than the compiled deck layer so column names are the raw query columns.
+  const summarySpec = layer.agentSummary;
+  useEffect(() => {
+    if (!summarySpec || !visible) {
+      onSummary(index, '');
+      return;
+    }
+    onSummary(index, buildMapLayerMemo({
+      layerId: layer.id ?? `layer-${index}`,
+      rows,
+      ...summarySpec,
+    }));
+  }, [index, rows, visible, summarySpec, layer.id, onSummary]);
   useEffect(() => {
     if (!visible) {
-      onResult(index, null, [], [], undefined, 0);
+      onResult(index, null, [], [], undefined, 0, 0);
       return;
     }
     let cancelled = false;
     const run = () => {
       if (cancelled) return;
       // Single parse: layer data + full fit coords derived from one pass.
-      const { layer: compiled, fitCoords } = compileLayerWithFit(layer, rows, viewState, index, hovered);
+      // Rebind first: a geometry encoding naming a column absent from the result
+      // compiles to an empty layer with no error (see rebind-geometry.ts). No-op
+      // when the declared column resolves, which is the normal case.
+      const { layer: bound } = rebindLayerGeometry(layer, data?.columns, rows);
+      const { layer: compiled, fitCoords, drawn } = compileLayerWithFit(bound, rows, viewState, index, hovered);
       const fitFull = fitCoords as LngLat[];
-      const fitSel = selectionFit(layer, rows, viewState, selectionKeys, fitFull);
+      const fitSel = selectionFit(bound, rows, viewState, selectionKeys, fitFull);
       startTransition(() => {
-        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length);
+        if (!cancelled) onResult(index, compiled, fitFull, fitSel, layer.tooltip, rows.length, drawn);
       });
     };
     const ric = (typeof window !== 'undefined'
@@ -158,7 +204,11 @@ function renderTooltip(template: string, object: Record<string, any>): string {
     }
     // Escaped: this string is returned in a deck.gl tooltip `html` field
     // (rendered via innerHTML), and column values can be arbitrary free text.
-    return v == null ? '' : escapeHtml(v);
+    // Formatted first: a tooltip is the densest numeric surface on the map, and
+    // a raw FLOAT sum used to print all 17 digits of 21289.670000000002. The
+    // token name is the column, so {LATITUDE} keeps its 5dp exemption.
+    if (v == null) return '';
+    return escapeHtml(formatCellValue(v, { column: String(col), grouping: true, empty: '' }));
   });
 }
 
@@ -248,6 +298,12 @@ function OverlayCard({
 function MapLegend({
   items, title = 'Legend', corner = 'bottom-left',
 }: { items: LegendItem[]; title?: string; corner?: 'bottom-left' | 'top-right' | 'bottom-right' }) {
+  // Legend text is authored in app-views.json alongside every other on-screen
+  // string, so it carries the same neutral {{labels.x}} tokens and must be
+  // interpolated. Rendering it raw is the defect that printed
+  // "{{labels.operator_plural}}" in chart legends.
+  const display = useDisplayConfig();
+  const tr = (t?: string) => (t ? interpolateTokens(t, display) : t);
   const rgba = (c: LegendItem['color']) =>
     c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${(c[3] ?? 255) / 255})` : 'transparent';
   return (
@@ -255,7 +311,7 @@ function MapLegend({
       {items.map((it, i) =>
         it.gradient?.length ? (
           <div key={i} style={{ padding: '4px 0' }}>
-            <div style={{ marginBottom: '3px' }}>{it.label}</div>
+            <div style={{ marginBottom: '3px' }}>{tr(it.label)}</div>
             <div
               style={{
                 width: '124px', height: '10px', borderRadius: '3px',
@@ -265,8 +321,8 @@ function MapLegend({
             />
             {it.minLabel || it.maxLabel ? (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px', fontSize: '10px', opacity: 0.8 }}>
-                <span>{it.minLabel ?? ''}</span>
-                <span>{it.maxLabel ?? ''}</span>
+                <span>{tr(it.minLabel) ?? ''}</span>
+                <span>{tr(it.maxLabel) ?? ''}</span>
               </div>
             ) : null}
           </div>
@@ -277,7 +333,7 @@ function MapLegend({
             ) : (
               <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: rgba(it.color), flex: '0 0 auto' }} />
             )}
-            <span>{it.label}</span>
+            <span>{tr(it.label)}</span>
           </div>
         ),
       )}
@@ -291,6 +347,7 @@ function MapLegend({
 function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
+  const display = useDisplayConfig();
   // Seed each toggle's default into viewState once so gated layers have a value.
   useEffect(() => {
     const seed: Record<string, unknown> = {};
@@ -313,7 +370,7 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
               onChange={(e) => updateViewState({ [t.key]: e.target.checked })}
               style={{ cursor: 'pointer', width: '14px', height: '14px' }}
             />
-            <span>{t.label}</span>
+            <span>{interpolateTokens(t.label, display)}</span>
           </label>
         );
       })}
@@ -321,8 +378,11 @@ function MapToggles({ toggles }: { toggles: MapToggleItem[] }) {
   );
 }
 
-export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps) {
+export function ViewMapArea({ areaConfig, selectionKeys = [], areaName }: ViewMapAreaProps) {
   const config = areaConfig.config;
+  // Tooltip templates and the empty-state message are authored strings, so they
+  // carry {{labels.x}} tokens and are interpolated before rendering.
+  const display = useDisplayConfig();
   const specs = config.layers ?? [];
 
   const panelViewState = useAppStore((s) => s.panel.viewState);
@@ -336,11 +396,28 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     [context, panelViewState],
   );
 
+  const regionKey = String(context.region ?? '');
+  // Bbox of the active region: frames the map on the region the moment the
+  // context dropdown changes, before this view's data for that region arrives
+  // (and instead of world zoom when the view has no rows for it). Also used to
+  // discard stale foreign coords from the fit union - see boxFrom below.
+  const regionCoords = useRegionCamera(regionKey);
+
   const [layers, setLayers] = useState<Record<number, Layer | null>>({});
   const [counts, setCounts] = useState<Record<number, number>>({});
+  // Rows that could actually be PLACED, per layer. Distinct from `counts`, which
+  // is rows fetched: the gap between them is a column-name error, and it used to
+  // be completely silent (see the parallel notice in RenderMapInline).
+  const [drawnCounts, setDrawnCounts] = useState<Record<number, number>>({});
   const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
   const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
+  // Per-layer suspended-engine state (any live-ORS layer over a suspended region).
+  const [suspendedLayers, setSuspendedLayers] = useState<Record<number, SuspendedInfo>>({});
+  // Per-layer agent memos, keyed by layer index; only layers declaring
+  // `agentSummary` ever contribute a non-empty entry.
+  const [summaries, setSummaries] = useState<Record<number, string>>({});
+  const retryRef = useRef<Record<number, () => void>>({});
   // Path hovered in the map -> widen the matching journey (see compileLayer).
   const [hovered, setHovered] = useState<{ layerId: string; value: unknown } | null>(null);
   // Attributes of the last map-picked feature, surfaced to the chat agent so it
@@ -373,6 +450,14 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     if (info?.object && clickEmits.object) {
       const src = info.object.properties && typeof info.object.properties === 'object'
         ? { ...info.object, ...info.object.properties } : info.object;
+      // DELIBERATELY case-tolerant, and deliberately NOT normalized upstream:
+      // objectColumn is the one clickEmits field that indexes a row, and this
+      // three-way probe already resolves any casing (the third arm lowercases,
+      // and /api/query lowercases every row key it returns, so that arm always
+      // matches). Adding it to the spec-level lowercasing pass would be dead
+      // code, and gating authored specs on its case would fail specs that work.
+      // Do not "simplify" this to src[col] - GeoJSON properties can arrive with
+      // the casing the source file used rather than the query's.
       const val = src[col] ?? src[col.toUpperCase()] ?? src[col.toLowerCase()];
       if (val != null) {
         const patch: Record<string, unknown> = { [clickEmits.object]: val };
@@ -395,9 +480,10 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   }, [clickEmits, updateViewState]);
 
   const onResult = useCallback(
-    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined, count: number) => {
+    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined, count: number, drawn: number) => {
       setLayers((prev) => ({ ...prev, [index]: layer }));
       setCounts((prev) => (prev[index] === count ? prev : { ...prev, [index]: count }));
+      setDrawnCounts((prev) => (prev[index] === drawn ? prev : { ...prev, [index]: drawn }));
       setFitsFull((prev) => ({ ...prev, [index]: fitFull }));
       setFitsSel((prev) => ({ ...prev, [index]: fitSel }));
       if (template) {
@@ -408,6 +494,77 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     [],
   );
 
+  const onSuspended = useCallback(
+    (index: number, info: SuspendedInfo | null, retry: () => void) => {
+      retryRef.current[index] = retry;
+      setSuspendedLayers((prev) => {
+        if (!info) {
+          if (!(index in prev)) return prev;
+          const next = { ...prev };
+          delete next[index];
+          return next;
+        }
+        if (prev[index]) return prev;
+        return { ...prev, [index]: info };
+      });
+    },
+    [],
+  );
+
+  const onSummary = useCallback((index: number, summary: string) => {
+    setSummaries((prev) => (prev[index] === summary ? prev : { ...prev, [index]: summary }));
+  }, []);
+
+  // One memo for the whole map area rather than one per layer: layer count is
+  // data-driven, and route.ts ranks/drops memos whole-panel, so a map that added
+  // a layer must not start evicting another panel's memo.
+  const layerMemo = useMemo(() => {
+    const parts = specs
+      .map((_, i) => summaries[i])
+      .filter((s): s is string => !!s);
+    return parts.length ? joinBounded(parts, MEMO_MAX_LEN * 2, ' | ') : '';
+  }, [specs, summaries]);
+  useAgentMemo(areaName, layerMemo, 'map');
+
+  const suspendedInfo = useMemo<SuspendedInfo | null>(() => {
+    const vals = Object.values(suspendedLayers);
+    return vals.length ? vals[0] : null;
+  }, [suspendedLayers]);
+
+  const retryAllLayers = useCallback(() => {
+    for (const fn of Object.values(retryRef.current)) {
+      try { fn(); } catch { /* ignore */ }
+    }
+  }, []);
+
+  // Every layer has reported and none produced a feature. Worth saying out loud:
+  // an empty map raises no error and still renders a basemap, so a filter that
+  // matched nothing looks exactly like a broken view. Keyed on `counts` having an
+  // entry per spec, which is what distinguishes "loaded and empty" from "still
+  // loading" (a gated layer reports 0 too, which is correct - it draws nothing).
+  const isEmpty = useMemo(() => {
+    if (!specs.length) return false;
+    if (Object.keys(counts).length < specs.length) return false;
+    // Measured on FEATURES, not rows. A layer whose encoding column does not match
+    // the result set returns rows and draws nothing, so a row-based test reported
+    // "not empty" over a blank basemap - the exact silence this message exists to
+    // break. `undrawable` below then says WHY, since "no features match your
+    // filter" would be a wrong explanation for a naming error.
+    return specs.every((_, i) => (drawnCounts[i] ?? 0) === 0);
+  }, [specs, counts, drawnCounts]);
+
+  // Layers that returned data nobody could place. Named with the columns they
+  // read, because that IS the fix.
+  const undrawable = useMemo(
+    () => specs
+      .map((ls, i) => ({ ls, i }))
+      .filter(({ i }) => (counts[i] ?? 0) > 0 && (drawnCounts[i] ?? 0) === 0)
+      .map(({ ls, i }) =>
+        `${ls.id ?? `layer ${i}`}: ${counts[i]} rows, none drawable`
+        + ` (checked ${encodingColumns(ls).join(', ') || 'its encoding columns'})`),
+    [specs, counts, drawnCounts],
+  );
+
   const orderedLayers = useMemo<Layer[]>(
     () => specs.map((_, i) => layers[i]).filter((l): l is Layer => !!l),
     [specs, layers],
@@ -415,7 +572,42 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
 
   // When a selection is active, focus on the selected object's coords only
   // (excluding context layers); otherwise frame the full set of all layers.
+  //
+  // INVARIANT (do not "simplify" this back to one union): per-layer fit coords
+  // are keyed by layer index and SURVIVE a region change, because each layer
+  // refetches independently. So mid-switch the union can span the old region and
+  // the new one - Singapore plus New Jersey unions to lon -75..119, whose centre
+  // is mid-Atlantic off Africa, and once that box is fitted the "coords already
+  // in view" check keeps the camera there. Hence two unions in one pass: coords
+  // inside the active region (padded) and all coords. Prefer the region-local
+  // box when it exists, which drops the stale foreign coords.
+  //
+  // The fallback to the full union is equally load-bearing: 32 map layers across
+  // Sourcing Optimizer, Mix Sourcing, Catchment, Site Impact, Closure Impact,
+  // Asset Velocity and Dwell SLA are deliberately NOT region-scoped. For those,
+  // nothing is ever inside the active region, and clipping would frame an empty
+  // region while their data sat elsewhere.
   const fitCoords = useMemo<LngLat[]>(() => {
+    // Region clip window: the region bbox padded by 25% of its span (min 1 deg)
+    // so genuinely region-local geometry that overruns the boundary - drive-time
+    // isochrones, routes crossing a border - is not treated as foreign.
+    let clip: { minLng: number; minLat: number; maxLng: number; maxLat: number } | null = null;
+    if (regionCoords && regionCoords.length >= 2) {
+      const lngs = regionCoords.map((c) => c[0]);
+      const lats = regionCoords.map((c) => c[1]);
+      const rMinLng = Math.min(...lngs), rMaxLng = Math.max(...lngs);
+      const rMinLat = Math.min(...lats), rMaxLat = Math.max(...lats);
+      if ([rMinLng, rMaxLng, rMinLat, rMaxLat].every((v) => Number.isFinite(v))) {
+        const padLng = Math.max(1, (rMaxLng - rMinLng) * 0.25);
+        const padLat = Math.max(1, (rMaxLat - rMinLat) * 0.25);
+        clip = {
+          minLng: rMinLng - padLng,
+          maxLng: rMaxLng + padLng,
+          minLat: rMinLat - padLat,
+          maxLat: rMaxLat + padLat,
+        };
+      }
+    }
     // Collapse every layer's coords into a single bounding box (2 corner
     // points) without spreading large arrays into push() - spreading
     // data-sized arrays overflows the call stack. Downstream fit helpers
@@ -423,6 +615,9 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
     const boxFrom = (source: Record<number, LngLat[]>): LngLat[] => {
       let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
       let seen = false;
+      // Second accumulator, filled only with coords inside the clip window.
+      let iMinLng = Infinity, iMinLat = Infinity, iMaxLng = -Infinity, iMaxLat = -Infinity;
+      let seenInside = false;
       for (const key of Object.keys(source)) {
         const arr = source[Number(key)];
         if (!arr) continue;
@@ -435,15 +630,23 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
           if (lat < minLat) minLat = lat;
           if (lat > maxLat) maxLat = lat;
           seen = true;
+          if (clip && lng >= clip.minLng && lng <= clip.maxLng && lat >= clip.minLat && lat <= clip.maxLat) {
+            if (lng < iMinLng) iMinLng = lng;
+            if (lng > iMaxLng) iMaxLng = lng;
+            if (lat < iMinLat) iMinLat = lat;
+            if (lat > iMaxLat) iMaxLat = lat;
+            seenInside = true;
+          }
         }
       }
+      if (seenInside) return [[iMinLng, iMinLat], [iMaxLng, iMaxLat]];
       if (!seen) return [];
       return [[minLng, minLat], [maxLng, maxLat]];
     };
     const sel = boxFrom(fitsSel);
     if (sel.length) return sel;
     return boxFrom(fitsFull);
-  }, [fitsSel, fitsFull]);
+  }, [fitsSel, fitsFull, regionCoords]);
 
   // Changes whenever a tracked selection value changes; drives MapView's
   // one-shot focus fit. Empty when nothing is selected (camera stays on clear).
@@ -520,20 +723,39 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object || !layer) return null;
     const tpl = templates[layer.id];
-    if (!tpl) return null;
-    // GeoJsonLayer picks return a Feature; the source row columns live under
+    if (!tpl) return null;    // GeoJsonLayer picks return a Feature; the source row columns live under
     // `object.properties`, so resolve tokens against properties first, then the
     // object itself (scatterplot/path picks carry columns on the object).
     const src = object.properties && typeof object.properties === 'object'
       ? { ...object, ...object.properties }
       : object;
     return {
-      html: renderTooltip(tpl, src),
+      html: renderTooltip(interpolateTokens(tpl, display), src),
       style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
     };
-  }, [templates]);
+  }, [templates, display]);
 
-  const regionKey = String(context.region ?? '');
+  // Views that opt into a locked camera frame once on load and then stay put:
+  // no selection focus fit, no refit when a layer toggle or a periodic refetch
+  // changes the data extent.
+  const lockCamera = !!config.lockCamera;
+
+  // One-shot focus point (config.focusOn): a row click writes lng/lat into
+  // viewState and the camera pans/zooms there once. Works while lockCamera is
+  // on because it is an explicit gesture, not an automatic re-frame.
+  const focusOn = config.focusOn;
+  const focusPoint = useMemo(() => {
+    if (!focusOn) return null;
+    const rawLng = viewState[focusOn.lngKey];
+    const rawLat = viewState[focusOn.latKey];
+    // Guard null/'' explicitly: Number(null) is 0, which is a finite (and very
+    // wrong) coordinate, so a deselect that clears the keys must not focus 0,0.
+    if (rawLng == null || rawLng === '' || rawLat == null || rawLat === '') return null;
+    const lng = Number(rawLng);
+    const lat = Number(rawLat);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    return { lng, lat, zoom: focusOn.zoom };
+  }, [focusOn, viewState]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
@@ -544,17 +766,39 @@ export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps
         const v = key ? viewState[key] : undefined;
         const visible = !key || (v !== false && v !== 'false');
         return (
-          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} />
+          <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} hovered={hovered} visible={visible} onResult={onResult} onSuspended={onSuspended} onSummary={onSummary} />
         );
       })}
       <MapView
         layers={orderedLayers}
-        fitTo={{ coords: fitCoords, regionKey, focusKey }}
+        fitTo={{ coords: fitCoords, regionKey, focusKey: lockCamera ? '' : focusKey, lockAfterFirstFit: lockCamera, focusPoint, regionCoords }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
         onHover={onHover}
         onClick={onClick}
       />
+      {suspendedInfo ? (
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5 }}>
+          <RoutingSuspendedNotice info={suspendedInfo} onRetry={retryAllLayers} />
+        </div>
+      ) : null}
+      {!suspendedInfo && isEmpty ? (
+        <div
+          style={{
+            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 4, maxWidth: '360px', textAlign: 'center', padding: '10px 14px',
+            borderRadius: '8px', fontSize: '13px', lineHeight: 1.45,
+            backgroundColor: 'var(--surface-primary, #fff)',
+            border: '1px solid var(--border-default, #e5e7eb)',
+            color: 'var(--text-secondary, #6b7280)',
+            pointerEvents: 'none',
+          }}
+        >
+          {undrawable.length
+            ? `This map returned data it could not draw. ${undrawable.join('; ')}`
+            : interpolateTokens(config.emptyMessage ?? 'No features match the current selection.', display)}
+        </div>
+      ) : null}
       {config.legend?.length ? <MapLegend items={config.legend} /> : null}
       {config.categoryLegend?.length ? <MapLegend items={config.categoryLegend} title="Categories" corner="bottom-right" /> : null}
       {config.toggles?.length ? <MapToggles toggles={config.toggles} /> : null}

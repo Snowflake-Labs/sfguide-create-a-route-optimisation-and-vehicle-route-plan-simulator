@@ -1,10 +1,11 @@
 # Productisation Notes - Backload Matching Engine
 
-The deployed demo runs on a synthesized 80/120/300 dataset. To take this to production for a customer like DHL Freight, here is what changes.
+The deployed demo runs on a synthesized 80/120/300 dataset. To take this to production for a line-haul freight operator, here is what changes.
 
 ## 1. Live freight-exchange offers (5-minute latency)
 
-DHL's stated goal is real-time or 5-minute latency. The four exchanges (Timocom, WTransnet, Teleroute, B2P) all expose either REST APIs or paid CSV pulls. Pattern:
+Operators typically want real-time or 5-minute latency. External load boards
+generally expose either REST APIs or paid CSV pulls. Pattern:
 
 ```
 [Each exchange] -> Snowpipe Streaming -> EXTERNAL_OFFERS_RAW (raw json)
@@ -58,6 +59,12 @@ $$;
 CREATE OR REPLACE TASK TASK_BACKLOAD_RESCAN
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
+  -- QUERY_TAG here is a SESSION parameter, so it also attributes every
+  -- statement inside SP_SOLVE_REGION_BACKLOAD. The procedure cannot set it
+  -- itself (ALTER SESSION is rejected inside a procedure body), so leaving it
+  -- off the task means the whole solve is unattributed.
+  QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 INSERT INTO BACKLOAD_PLAN_HISTORY (REGION, VEHICLE, STEPS, DURATION)
 SELECT 'California', VEHICLE, STEPS, DURATION
@@ -98,16 +105,16 @@ Each batch becomes one OPTIMIZATION call. Snowflake's task graph can fan them ou
 
 ## 7. RBAC + multi-tenancy
 
-For DHL specifically:
+For a typical operator:
 - A `BACKLOAD_DISPATCHER` role with `USAGE` on the schema and `INSERT` on `PROPOSAL_DECISIONS` only.
 - A `BACKLOAD_ANALYST` role with `SELECT` on the audit views, no write access.
 - ORS function grants stay account-level (the existing `OPENROUTESERVICE_APP` install handles this).
 
-## 8. Going beyond DHL Freight
+## 8. Onboarding another operator
 
 The whole skill is **vendor-neutral by construction**. To onboard another carrier:
-1. Replace `EXTERNAL_OFFERS.SOURCE` enum (e.g. for North America: `DAT`, `Truckstop.com`, `Convoy`, `Uber Freight`).
-2. Re-run `python3 tools/gen_demo_data.py` with US/EU/APAC city tables.
+1. Keep `EXTERNAL_OFFERS.SOURCE` on the neutral channel vocabulary (`DISPATCH`, `MARKETPLACE`, `PARTNER_APP`, `BROKER`) and carry the originating system in `SOURCE_SYSTEM` instead, so no consumer hardcodes a provider.
+2. Regenerate the synthetic dataset for the target region via Data Studio.
 3. Switch `useRegion()` to the customer's provisioned ORS region.
 4. Adjust `CONFIG.HOME_LAT/LON` to the customer's home depot anchor.
 

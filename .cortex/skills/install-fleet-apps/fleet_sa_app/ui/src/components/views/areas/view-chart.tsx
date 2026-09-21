@@ -22,6 +22,20 @@ import {
 } from 'recharts';
 import { useViewData } from '@/hooks/use-view-data';
 import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
+import { buildChartMemo, useAgentMemo } from '@/lib/agent-memo';
+import { chartPlotDiagnostic } from '@/lib/chart-encodings';
+import { formatNumber, formatCellValue } from '@/lib/format-number';
+import { RoutingSuspendedNotice } from '@/components/views/RoutingSuspendedNotice';
+// Axis ticks and tooltips had NO formatter at all, so a FLOAT metric printed its
+// full binary expansion on hover. Both go through the shared decimal policy; the
+// tooltip passes the series name as the column so a coordinate axis keeps 5dp.
+const numericTick = (v: unknown) => formatNumber(v, { compact: true, grouping: true }) ?? String(v ?? '');
+const tooltipFormatter = (value: unknown, name: unknown): [string, string] => [
+  formatCellValue(value, { column: name == null ? undefined : String(name), grouping: true }),
+  String(name ?? ''),
+];
+
 
 interface SeriesConfig {
   type: string;
@@ -45,14 +59,29 @@ interface ViewChartAreaProps {
     };
     config: ChartConfig;
   };
+  // The area's own key in the view layout, supplied by the renderer. Namespaces
+  // this chart's agent memo so sibling charts in one view do not clobber it.
+  areaName?: string;
 }
 
-export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+export function ViewChartArea({ areaConfig, areaName }: ViewChartAreaProps) {
+  const { data, loading, error, suspended, refetch } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   // Chart palette comes from the centralized style config (app-config.json),
   // falling back to the bundled Snowflake-forward defaults.
   const CHART_COLORS = resolveChartPalette(useStyleConfig());
+  const display = useDisplayConfig();
+
+  // Series labels carry the same neutral {{labels.x}} / {{units.x}} tokens as
+  // every other authored string, but only the area TITLE was ever interpolated
+  // (view-renderer does that). So a titled chart read correctly while its legend
+  // and tooltip printed the raw token - e.g. "{{labels.operator_plural}}: 32".
+  // Resolved once here and used for every display name below; `field` is never
+  // touched, so data binding is unaffected.
+  const series = useMemo(
+    () => config.series.map((s) => ({ ...s, label: interpolateTokens(s.label, display) })),
+    [config.series, display],
+  );
 
   const chartData = useMemo(() => {
     if (!data?.rows) return [];
@@ -94,6 +123,56 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
     return { data: points, categories: Array.from(categories) };
   }, [data, config]);
 
+  // Checked against the raw rows, not chartData/groupedData: a grouped chart's
+  // point keys are category values, so the derived shape cannot distinguish a
+  // missing column from an absent category. Must sit above the early returns to
+  // keep hook order stable.
+  const undrawable = useMemo(
+    () => chartPlotDiagnostic({
+      xField: config.xAxis.field,
+      valueFields: config.series.map((s) => s.field),
+      groupBy: config.series.find((s) => s.groupBy)?.groupBy,
+      rows: data?.rows ?? [],
+    }),
+    [config, data],
+  );
+
+  // Agent grounding: a chart publishes no readable numbers anywhere else, and its
+  // shape IS the finding ("which site is worst", "is this trending up"), so
+  // summarize what is plotted. Chart-kind precedence mirrors the render branches
+  // below exactly (pie, scatter, area, grouped stacked bar, bar, else line) so the
+  // memo never claims a different chart than the one on screen.
+  useAgentMemo(
+    areaName,
+    useMemo(() => {
+      const kindOf = (): string => {
+        if (config.series.some((s) => s.type === 'pie')) return 'pie';
+        if (config.series.some((s) => s.type === 'scatter')) return 'scatter';
+        if (config.series.some((s) => s.type === 'area')) return 'area';
+        if (groupedData) return 'stacked bar';
+        if (config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar')) return 'bar';
+        return 'line';
+      };
+      const points = groupedData ? groupedData.data : chartData;
+      if (!points.length) return '';
+      // buildChartMemo drops the memo entirely when the plotted columns are not on
+      // the points - `points` is non-empty in that case (chartData copies every row
+      // verbatim), so an empty plot would otherwise be described as a real series.
+      // A grouped chart's yKey is a category VALUE, not a column, hence the flag.
+      return buildChartMemo({
+        chartType: kindOf(),
+        xKey: config.xAxis.field,
+        // A grouped chart has one value column per category, so report the first
+        // category as the y key and name the rest as series.
+        yKey: groupedData ? (groupedData.categories[0] ?? config.series[0].field) : config.series[0].field,
+        yKeyIsColumn: !groupedData,
+        points,
+        seriesNames: groupedData ? groupedData.categories : series.map((s) => s.label).filter(Boolean),
+      });
+    }, [chartData, groupedData, config, series]),
+    'chart',
+  );
+
   if (loading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
@@ -102,12 +181,27 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
     );
   }
 
+  if (suspended) {
+    return <RoutingSuspendedNotice info={suspended} onRetry={refetch} compact />;
+  }
+
   if (error) {
     return <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   }
 
   if (!chartData.length && !groupedData) {
     return <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
+  }
+
+  // Rows arrived but no series column is on them, so recharts would render axes
+  // with no marks and no explanation - indistinguishable from an empty filter.
+  // Say which column was looked for instead, the same way the maps now do.
+  if (undrawable) {
+    return (
+      <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>
+        This chart returned data it could not plot. {undrawable}
+      </div>
+    );
   }
 
   const hasBar = config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar');
@@ -122,7 +216,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
       <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             <Pie data={chartData} dataKey={valueField} nameKey={config.xAxis.field} outerRadius="80%" label>
               {chartData.map((_, i) => (
@@ -141,11 +235,11 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
-            <XAxis type="number" dataKey={config.xAxis.field} name={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis type="number" dataKey={config.series[0].field} name={config.series[0].label} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <XAxis type="number" dataKey={config.xAxis.field} name={config.xAxis.field} fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis type="number" dataKey={series[0].field} name={series[0].label} fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Scatter key={s.field} name={s.label} data={chartData} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </ScatterChart>
@@ -161,10 +255,10 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
           <AreaChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Area
                 key={s.field}
                 type="monotone"
@@ -189,8 +283,8 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
           <BarChart data={groupedData.data}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
             {groupedData.categories.map((cat, i) => (
               <Bar key={cat} dataKey={cat} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -208,10 +302,10 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
           <BarChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
             <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <YAxis fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            <YAxis fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
             <Legend wrapperStyle={{ fontSize: '12px' }} />
-            {config.series.map((s, i) => (
+            {series.map((s, i) => (
               <Bar key={s.field} dataKey={s.field} name={s.label} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </BarChart>
@@ -226,13 +320,13 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
         <LineChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
           <XAxis dataKey={config.xAxis.field} fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
-          <YAxis yAxisId="left" fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+          <YAxis yAxisId="left" fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
           {config.series.some((s) => s.yAxis === 'right') && (
-            <YAxis yAxisId="right" orientation="right" fontSize={11} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
+            <YAxis yAxisId="right" orientation="right" fontSize={11} tickFormatter={numericTick} tick={{ fill: 'var(--text-secondary, #6b7280)' }} />
           )}
-          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+          <Tooltip formatter={tooltipFormatter} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
           <Legend wrapperStyle={{ fontSize: '12px' }} />
-          {config.series.map((s, i) => (
+          {series.map((s, i) => (
             <Line
               key={s.field}
               type="monotone"

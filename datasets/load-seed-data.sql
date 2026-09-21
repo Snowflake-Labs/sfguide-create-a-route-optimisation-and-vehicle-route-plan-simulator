@@ -166,13 +166,31 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS (
   TRIP_END TIMESTAMP_NTZ,
   STATUS VARCHAR(20),
   ORS_PROFILE VARCHAR(30),
+  TRIP_KIND VARCHAR(16) DEFAULT 'LADEN',
   JOB_ID VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- No DEFAULT here on purpose: with a DEFAULT clause this raises "ambiguous
+-- column name 'TRIP_KIND'" once the column exists, which would abort the load.
+-- The CREATE TABLE above still carries the DEFAULT for fresh installs, and the
+-- contract COALESCEs the value anyway.
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_KIND VARCHAR(16);
+
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;
 
+-- Explicit column list (25 cols) is REQUIRED: the table carries TRIP_KIND at
+-- ordinal 25 (before JOB_ID) but the seed parquet has no TRIP_KIND field, so the
+-- SELECT supplies 25 values. Without a target column list Snowflake maps by
+-- position and expects all 26 columns, failing with "Insert value list does not
+-- match column list expecting 26 but got 25". Naming the 25 populated columns
+-- lets TRIP_KIND take its DEFAULT ('LADEN').
 COPY INTO SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+  (TRIP_ID, VEHICLE_ID, DRIVER_ID, VEHICLE_TYPE, REGION, ORIGIN_POI_ID,
+   DESTINATION_POI_ID, ORIGIN_LAT, ORIGIN_LON, ORIGIN, DESTINATION_LAT,
+   DESTINATION_LON, DESTINATION, ROUTE_GEOG, DISTANCE_KM, DURATION_MINUTES,
+   PLANNED_ROUTE_GEOG, PLANNED_DISTANCE_KM, IS_DETOUR, DETOUR_DISTANCE_KM,
+   TRIP_START, TRIP_END, STATUS, ORS_PROFILE, JOB_ID)
 FROM (
   SELECT
     $1:TRIP_ID::VARCHAR,
@@ -220,9 +238,49 @@ CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET (
   OPERATING_MODE VARCHAR(30),
   BASE_SPEED_KMH FLOAT,
   BATTERY_RANGE_KM FLOAT,
-  JOB_ID VARCHAR
+  JOB_ID VARCHAR,
+  -- Asset attributes and dispatch state. These MUST be declared here, not left
+  -- to the app's boot migration: the seed COPY runs at install step 4 and the
+  -- apps boot at step 7, and COPY ... MATCH_BY_COLUMN_NAME can only populate a
+  -- column the table already has. Omit them and the seeded fleet silently
+  -- arrives with NULL vehicle dimensions and NULL dispatch state, which is
+  -- exactly the state that made a parked asset indistinguishable from a busy one.
+  WEIGHT_TONS NUMBER(6,2),
+  HEIGHT_M NUMBER(4,2),
+  LENGTH_M NUMBER(4,2),
+  WIDTH_M NUMBER(4,2),
+  AXLELOAD_T NUMBER(4,2),
+  HAZMAT BOOLEAN,
+  VEHICLE_SUBTYPE VARCHAR(16),
+  IS_GHOST BOOLEAN,
+  GHOST_START_DAY INT,
+  GHOST_END_DAY INT
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- CREATE TABLE IF NOT EXISTS is a no-op on an account that already holds the
+-- older 13-column shape, so the columns are also added explicitly.
+--
+-- ONE STATEMENT PER COLUMN, AND NO DEFAULT CLAUSE - this is not stylistic.
+-- MEASURED on Snowflake: `ADD COLUMN IF NOT EXISTS` is idempotent ONLY for a
+-- single column with no DEFAULT. Add several at once and an already-present one
+-- raises "column 'X' already exists"; add one WITH a DEFAULT and it raises
+-- "ambiguous column name 'X'". Since `snow sql -f` aborts on the first failure,
+-- either form would kill every statement below it and silently leave the seed
+-- half-loaded on any re-install.
+--
+-- ADD COLUMN also leaves the `SELECT f.*` V_DIM_FLEET_CURRENT view stale, which
+-- the app's boot init drops and recreates at step 7; the loader never reads it.
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS NUMBER(6,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS LENGTH_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WIDTH_M NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16);
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS IS_GHOST BOOLEAN;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_START_DAY INT;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS GHOST_END_DAY INT;
 
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET;
 
@@ -877,6 +935,38 @@ SET TS = DATEADD('SECOND', $TS_OFFSET, TS);
 UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
 SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
     TRIP_END   = DATEADD('SECOND', $TS_OFFSET, TRIP_END);
+
+-- Planned schedule: shift onto the same window as the ACTUALS it is compared
+-- against. This was missed, and the miss is invisible until someone opens the
+-- page: the baked plan sat at 2026-06-01..06-08 while the shifted telemetry and
+-- trips sat at 2026-08-24..08-31, roughly 84 days apart. Because the context
+-- bar's date range is derived FROM THE DATA (trips), the window can never
+-- overlap the plan, so every work-item panel filtered on REQUESTED_START_TS
+-- returned nothing - the Dispatch / Execution board rendered an empty job list
+-- and an empty resource chart, and its KPI card showed 0/0/0/0 rather than
+-- erroring, because COUNT(*) over no rows is still one row. Same failure mode
+-- the FACT_OFFERS shift below already documents.
+--
+-- Anchored on MAX(TRIP_START) rather than on $TS_OFFSET so plan and actual stay
+-- aligned with each other (plan_vs_actual_performance compares them), and so
+-- re-running this loader is a no-op instead of shifting a second time.
+--
+-- COALESCE to 0 is load-bearing, not defensive noise. If either table is
+-- unexpectedly empty its MAX is NULL, the offset is NULL, and
+-- DATEADD('SECOND', NULL, PLANNED_START) returns NULL - which would blank all
+-- 13,721 planned timestamps and destroy the plan outright, strictly worse than
+-- the misalignment this block exists to fix. It would also be SILENT: the
+-- installer downgrades a loader error to a WARN and continues, so the only
+-- symptom would be an empty Dispatch board again. With 0 the UPDATE is a no-op.
+SET SCHED_TS_OFFSET = (
+  SELECT COALESCE(TIMESTAMPDIFF('SECOND',
+    (SELECT MAX(PLANNED_START) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE),
+    (SELECT MAX(TRIP_START)    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)), 0)
+);
+
+UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE
+SET PLANNED_START = DATEADD('SECOND', $SCHED_TS_OFFSET, PLANNED_START),
+    PLANNED_END   = DATEADD('SECOND', $SCHED_TS_OFFSET, PLANNED_END);
 
 -- Freight offers: shift so the newest offer = now. The Freight Exchange page
 -- defaults to a 24h "max age" filter; without this every seeded offer ages out

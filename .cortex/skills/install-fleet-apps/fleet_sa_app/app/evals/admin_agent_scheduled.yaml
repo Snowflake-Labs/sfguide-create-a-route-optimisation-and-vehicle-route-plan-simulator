@@ -1,0 +1,21 @@
+# Scheduled evaluation config - FLEET_ADMIN_AGENT (installer).
+# See admin_agent.yaml for why answer_correctness and tool_execution_accuracy are omitted.
+
+evaluation:
+  agent_params:
+    agent_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT"
+    agent_type: "CORTEX AGENT"
+    agent_version: "PRODUCTION"
+  run_params:
+    label: "Fleet admin agent scheduled"
+    description: "Daily cadence evaluation of the production admin agent."
+  source_metadata:
+    type: "dataset"
+    # SYNAPSE_USER, not EVALS - see fleet_agent.yaml (readiness probe is schema-scoped).
+    dataset_name: "FLEET_INTELLIGENCE.SYNAPSE_USER.EVAL_DS_FLEET_ADMIN_AGENT"
+
+metrics:
+  - name: "logical_consistency"
+    version: "v3"
+  - name: "tool_selection_accuracy"
+    version: "v3"

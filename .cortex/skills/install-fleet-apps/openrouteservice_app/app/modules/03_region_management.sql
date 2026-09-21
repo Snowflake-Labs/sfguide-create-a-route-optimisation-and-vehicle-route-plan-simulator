@@ -32,12 +32,569 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
     BOUNDARY_BAKED_AT  DATE,                     -- when the boundary snapshot was generated
     UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}';
+
+-- ---------------------------------------------------------------------------
+-- ROUTABLE_BOUNDARY: BOUNDARY clipped to land
+-- ---------------------------------------------------------------------------
+-- BOUNDARY is the PBF *extract* polygon (Geofabrik poly / BBBike bbox). An
+-- extract polygon is a download cut line, NOT a land outline, and Geofabrik's
+-- coastal cuts run well out to sea so the extract fully contains the coastline.
+-- Measured on this repo's own account: `UsTexas` BOUNDARY is 833,217 km2 while
+-- Texas is ~695,700 km2 of land - roughly 137,000 km2 of Gulf of Mexico inside
+-- a polygon every consumer treats as "the region".
+--
+-- That is not a cosmetic overshoot. Anything that tessellates BOUNDARY emits
+-- cells in open water, the routing graph has no data there, and ORS answers
+-- `6010 ... out of bounds`. The travel-time matrix build failed exactly this
+-- way: 526 of 2,897 RES5 cells (18.2%) sat offshore, and because
+-- BUILD_WORK_QUEUE chunks destinations by MOD(HASH(dest_h3), n) the water
+-- cells were spread across EVERY chunk. One out-of-bounds destination fails an
+-- entire ~1000-destination matrix call, so all 14,485 requests returned errors
+-- and the build produced zero rows - a total failure caused by an 18% defect.
+--
+-- ROUTABLE_BOUNDARY is BOUNDARY intersected with the union of the Overture
+-- DIVISION_AREA polygons that intersect it. Three properties matter:
+--   * It needs NO region-name lookup. The land mask is selected spatially, by
+--     what the boundary overlaps, so it works for any region on earth without
+--     a mapping table from region key to division name.
+--   * It keeps land in NEIGHBOURING divisions that legitimately falls inside
+--     the extract. Geofabrik cuts the PBF to this polygon, so a Louisiana
+--     sliver inside the Texas extract DOES have OSM data and is routable.
+--     Clipping to "Texas only" would wrongly discard it.
+--   * It uses admin polygons at `subtype = 'region'`, which INCLUDE internal
+--     waters (bays, lakes). San Francisco Bay therefore survives the clip.
+--     That is deliberate: this layer removes the catastrophic open-ocean case
+--     cheaply and in SQL, and leaves the fine-grained "no road within reach"
+--     judgement to the routability gate, which is the only thing that can
+--     actually answer it. Over-pruning here would silently delete valid cells.
+--
+-- Cached rather than recomputed per build: the clip is stable for the life of
+-- the boundary, and a matrix build runs it once per resolution.
+--
+-- NULL is a legitimate, safe value meaning "not clipped" - consumers must
+-- COALESCE back to BOUNDARY. It stays NULL when the Overture share is not
+-- mounted or the clip looks wrong, so a missing share degrades to today's
+-- behaviour instead of emptying a grid.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY GEOGRAPHY;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- Separate block per column, deliberately: sharing one block would skip every
+-- later column on any deployment that already has the first one (the first
+-- statement raises, the handler swallows it, the rest never run).
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_AREA_KM2 FLOAT;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_SOURCE VARCHAR;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_BAKED_AT TIMESTAMP_NTZ;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+-- ROUTABLE_BOUNDARY_SIMPLE: the same land clip, decimated for the browser.
+--
+-- The exact clip is far too heavy to ship to a client. MEASURED for the US:
+-- BOUNDARY is 418 vertices but its land clip is 68,987, and as GeoJSON that is
+-- 3.24 MB - which the Function Tester would fetch for every region on page load
+-- purely to run point-in-polygon tests. Simplifying to 500 m leaves 3,511
+-- vertices and 165 KB while losing 0.04% of the area (10,146,511 -> 10,142,357
+-- km2), and still rejects the open-ocean coordinate the exact clip rejects.
+--
+-- A metre tolerance alone does not bound the payload, because ST_SIMPLIFY thins
+-- rings but never drops one. MEASURED for Europe, whose clip is 185,107 vertices
+-- across thousands of islands and fjords: the 500 m cap leaves 92,079 vertices
+-- and 4.28 MB, so the tolerance is escalated against a vertex budget instead and
+-- settles at 8,000 m for 15,068 vertices and 702 KB. The US is already under
+-- budget at 500 m, so its copy is unchanged.
+--
+-- Cached in a column rather than simplified per request: /api/regions/provisioned
+-- enriches EVERY provisioned region on page load, so an inline ST_SIMPLIFY over a
+-- 69k-vertex polygon would be paid per region per load.
+--
+-- SQL consumers (matrix pipeline, anchor sampling) must keep using the exact
+-- ROUTABLE_BOUNDARY. This column exists only to bound a network payload.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        ADD COLUMN ROUTABLE_BOUNDARY_SIMPLE GEOGRAPHY;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
+$$;
+
+-- Compute + cache ROUTABLE_BOUNDARY for one region. Idempotent: returns
+-- immediately when already baked unless P_FORCE.
+--
+-- Every failure mode leaves ROUTABLE_BOUNDARY NULL so callers fall back to the
+-- unclipped BOUNDARY. Refusing to write is always safer than writing a bad
+-- clip, because a bad clip silently deletes routable area from every build.
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(P_REGION VARCHAR, P_FORCE BOOLEAN DEFAULT FALSE)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog","feature":"land-clip"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    match_count   INTEGER DEFAULT 0;
+    already_baked INTEGER DEFAULT 0;
+    orig_area     FLOAT;
+    clip_area     FLOAT;
+    land_polys    INTEGER DEFAULT 0;
+    ratio         FLOAT;
+    -- Below this share of the original area the clip is treated as broken
+    -- rather than tight. A land clip legitimately removes coastal water (Texas
+    -- measured 0.82); losing more than 80% of the region means the mask was
+    -- wrong (stale share, bad geometry, projection surprise), and silently
+    -- shrinking a region to a fifth of itself would be far worse than not
+    -- clipping at all.
+    min_ratio     FLOAT DEFAULT 0.20;
+    -- Pre-union decimation. ST_UNION_AGG, not ST_INTERSECTION, is what fails on a
+    -- continent: MEASURED for Europe, 1,324 Overture region polygons carry
+    -- 10,286,175 vertices and the union raises 'GEOGRAPHY too large' outright,
+    -- while the US (96 polygons, 1,421,517 vertices) unions fine. Simplifying each
+    -- polygon BEFORE the union at 1,000 m takes Europe to 231,563 input vertices,
+    -- a 190,120-vertex union and a 185,128-vertex clip of 9,607,243 km2 - 45.5% of
+    -- the 21,110,196 km2 extract, so still far above min_ratio.
+    --
+    -- The tolerance is derived from the MEASURED input size rather than applied
+    -- unconditionally, so every region that unions today keeps its exact mask
+    -- byte-for-byte (USA 1.42M, France 1.68M, Germany 1.19M, SanFrancisco 16,854
+    -- vertices all land on 0). Straightening a city-scale coastline by a kilometre
+    -- would push land points into water, which is the failure this mask exists to
+    -- prevent.
+    -- FLOAT, and every ST_NPOINTS result below is cast, deliberately. An
+    -- ST_NPOINTS value assigned INTO a scripting variable typed INTEGER poisons
+    -- that variable: the assignment succeeds and the next READ of it raises
+    -- EXPRESSION_ERROR 'Numeric value '5' is out of range' - MEASURED on a
+    -- 5-vertex square, so it is the binding, not the magnitude. The error is
+    -- reported against the reading line, which points away from the cause, and a
+    -- surrounding EXCEPTION handler does not catch it.
+    in_pts        FLOAT   DEFAULT 0;
+    clip_tol_m    FLOAT   DEFAULT 0;
+    attempt       INTEGER DEFAULT 0;
+    clip_ok       BOOLEAN DEFAULT FALSE;
+    last_err      VARCHAR DEFAULT '';
+    -- Vertex budget for the browser copy, and the tolerance that satisfies it.
+    simple_tol    FLOAT;
+    simple_pts    FLOAT   DEFAULT 0;
+    max_simple_pts FLOAT   DEFAULT 25000;
+    max_simple_tol FLOAT   DEFAULT 10000;
+BEGIN
+    -- REGION_NAME is included in all three predicates below so this procedure
+    -- accepts exactly the same region spellings as every consumer (the canonical
+    -- resolver matches REGION_KEY, LOOKUP_NAME and REGION_NAME). Without it a
+    -- caller passing the display name would get SKIPPED and silently keep the
+    -- unclipped extract polygon.
+    SELECT COUNT(*) INTO :match_count
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+           OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+           OR UPPER(REGION_NAME) = UPPER(:P_REGION));
+
+    IF (match_count = 0) THEN
+        RETURN 'SKIPPED: no REGION_CATALOG row with a BOUNDARY matched ' || :P_REGION;
+    END IF;
+
+    IF (NOT :P_FORCE) THEN
+        SELECT COUNT(*) INTO :already_baked
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        -- Both columns must be present to count as baked. A region clipped by an
+        -- earlier version has ROUTABLE_BOUNDARY but a NULL ROUTABLE_BOUNDARY_SIMPLE;
+        -- treating that as CACHED would leave the browser copy missing forever,
+        -- since nothing else populates it.
+        WHERE ROUTABLE_BOUNDARY IS NOT NULL
+          AND ROUTABLE_BOUNDARY_SIMPLE IS NOT NULL
+          AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+               OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+               OR UPPER(REGION_NAME) = UPPER(:P_REGION));
+        IF (already_baked > 0) THEN
+            RETURN 'CACHED: ROUTABLE_BOUNDARY already baked for ' || :P_REGION;
+        END IF;
+    END IF;
+
+    -- Measure the land input before assembling it. One aggregate over exactly the
+    -- predicate the clip uses, so the tolerance below is chosen from this region's
+    -- real vertex count instead of from its area (area does not predict vertices:
+    -- Europe is 2/3 the extract area of the US and carries 7x the vertices, almost
+    -- all of it Norwegian fjords and Aegean islands).
+    --
+    -- This also front-loads the 'Overture not shared / not authorized' failure, so
+    -- that mode still reports UNAVAILABLE rather than escalating a tolerance
+    -- against a table that cannot be read.
+    BEGIN
+        WITH src AS (
+            SELECT BOUNDARY AS B
+            FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE BOUNDARY IS NOT NULL
+              AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+                   OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+                   OR UPPER(REGION_NAME) = UPPER(:P_REGION))
+            ORDER BY CASE WHEN UPPER(REGION_KEY) = UPPER(:P_REGION) THEN 0
+                          WHEN UPPER(LOOKUP_NAME) = UPPER(:P_REGION) THEN 1
+                          ELSE 2 END,
+                     CASE LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+                                WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3
+                                ELSE 4 END,
+                     COALESCE(BOUNDARY_AREA_KM2, 0) DESC
+            LIMIT 1
+        )
+        SELECT COALESCE(SUM(ST_NPOINTS(d.GEOMETRY)), 0)::FLOAT INTO :in_pts
+        FROM OVERTURE_MAPS__DIVISIONS.CARTO.DIVISION_AREA d, src
+        WHERE d.SUBTYPE = 'region'
+          AND d.bbox:xmin::FLOAT <= ST_XMAX(src.B)
+          AND d.bbox:xmax::FLOAT >= ST_XMIN(src.B)
+          AND d.bbox:ymin::FLOAT <= ST_YMAX(src.B)
+          AND d.bbox:ymax::FLOAT >= ST_YMIN(src.B)
+          AND ST_INTERSECTS(d.GEOMETRY, src.B);
+    EXCEPTION WHEN OTHER THEN
+        RETURN 'UNAVAILABLE: land input could not be measured for ' || :P_REGION
+               || ' (' || SQLERRM || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END;
+
+    clip_tol_m := CASE WHEN :in_pts <= 2000000  THEN 0
+                       WHEN :in_pts <= 15000000 THEN 1000
+                       ELSE 3000 END;
+
+    -- At most two attempts. The second exists because the vertex thresholds above
+    -- are calibrated on the regions measured so far, and the next continent added
+    -- to the catalog will have its own profile; without it, a region just past a
+    -- threshold lands back on the silent NULL this whole block is here to avoid.
+    -- Escalating once is bounded, so it cannot turn a permanent error (missing
+    -- share, bad geometry) into an unbounded retry loop.
+    WHILE (attempt < 2 AND NOT clip_ok) DO
+    attempt := attempt + 1;
+    BEGIN
+        -- TEMP table so the (expensive) intersection is computed ONCE and can
+        -- be sanity-checked before it is committed to the catalog. Session
+        -- scoped, so it is exempt from the object COMMENT requirement.
+        CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP AS
+        WITH src AS (
+            SELECT BOUNDARY AS B, REGION_KEY AS RK
+            FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE BOUNDARY IS NOT NULL
+              AND (UPPER(REGION_KEY) = UPPER(:P_REGION)
+                   OR UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+                   OR UPPER(REGION_NAME) = UPPER(:P_REGION))
+            -- Canonical resolution, mirroring server/lib/region-catalog-match.ts:
+            -- exact REGION_KEY first (unique, authoritative for any deployed
+            -- region), then LOOKUP_NAME, then REGION_NAME; within a tier prefer
+            -- the broader admin level and the LARGER polygon. The previous
+            -- 'BOUNDARY_AREA_KM2 ASC' picked the SMALLEST same-name polygon,
+            -- which is the exact heuristic that once rendered the country Mexico
+            -- as Estado de Mexico. Consumers resolve with the canonical ranking,
+            -- so clipping a different row would bake a mask onto a polygon
+            -- nobody reads.
+            ORDER BY CASE WHEN UPPER(REGION_KEY) = UPPER(:P_REGION) THEN 0
+                          WHEN UPPER(LOOKUP_NAME) = UPPER(:P_REGION) THEN 1
+                          ELSE 2 END,
+                     CASE LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+                                WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3
+                                ELSE 4 END,
+                     COALESCE(BOUNDARY_AREA_KM2, 0) DESC
+            LIMIT 1
+        ),
+        land AS (
+            -- The Overture bbox columns are a partition prefilter only; without
+            -- them this scans the global divisions table. ST_INTERSECTS against
+            -- the real boundary is the authoritative filter.
+            --
+            -- The decimation is applied to each POLYGON here, inside the aggregate,
+            -- and not to the union or to the final clip: the union is the statement
+            -- that overflows, so simplifying its OUTPUT cannot help - that geometry
+            -- never gets built. clip_tol_m = 0 leaves the geometry untouched.
+            SELECT ST_UNION_AGG(IFF(:clip_tol_m > 0,
+                                    ST_SIMPLIFY(d.GEOMETRY, :clip_tol_m),
+                                    d.GEOMETRY)) AS G,
+                   COUNT(*) AS N
+            FROM OVERTURE_MAPS__DIVISIONS.CARTO.DIVISION_AREA d, src
+            WHERE d.SUBTYPE = 'region'
+              AND d.bbox:xmin::FLOAT <= ST_XMAX(src.B)
+              AND d.bbox:xmax::FLOAT >= ST_XMIN(src.B)
+              AND d.bbox:ymin::FLOAT <= ST_YMAX(src.B)
+              AND d.bbox:ymax::FLOAT >= ST_YMIN(src.B)
+              AND ST_INTERSECTS(d.GEOMETRY, src.B)
+        )
+        SELECT
+            ST_INTERSECTION(src.B, land.G) AS CLIPPED,
+            ST_AREA(src.B) / 1e6          AS ORIG_KM2,
+            land.N                        AS LAND_POLYS,
+            src.RK                        AS REGION_KEY
+        FROM src, land
+        WHERE land.G IS NOT NULL;
+
+        SELECT COUNT(*), MAX(ORIG_KM2), MAX(ST_AREA(CLIPPED) / 1e6), MAX(LAND_POLYS)
+          INTO :match_count, :orig_area, :clip_area, :land_polys
+        FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+        clip_ok := TRUE;
+    EXCEPTION WHEN OTHER THEN
+        -- 'GEOGRAPHY too large' from the union, or Overture geometry error. Record
+        -- and coarsen; the loop condition bounds this to one more try.
+        last_err := SQLERRM;
+        clip_tol_m := GREATEST(:clip_tol_m * 4, 2000);
+    END;
+    END WHILE;
+
+    IF (NOT clip_ok) THEN
+        -- Overture DIVISION_AREA geometry error, or a union still too large at the
+        -- escalated tolerance. Leave NULL: callers fall back to the unclipped
+        -- boundary.
+        RETURN 'UNAVAILABLE: land clip could not be computed for ' || :P_REGION
+               || ' after ' || :attempt || ' attempt(s) (' || COALESCE(:last_err, 'unknown')
+               || '). ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END IF;
+
+    IF (match_count = 0 OR clip_area IS NULL OR clip_area <= 0) THEN
+        RETURN 'UNAVAILABLE: land clip produced no geometry for ' || :P_REGION
+               || '. ROUTABLE_BOUNDARY left NULL; consumers use unclipped BOUNDARY.';
+    END IF;
+
+    ratio := clip_area / NULLIF(orig_area, 0);
+    IF (ratio IS NULL OR ratio < min_ratio) THEN
+        RETURN 'REJECTED: land clip kept only ' || ROUND(COALESCE(ratio, 0) * 100, 1)
+               || '% of ' || :P_REGION || ' (' || ROUND(clip_area) || ' of ' || ROUND(orig_area)
+               || ' km2), below the ' || ROUND(min_ratio * 100) || '% floor. Treating the mask as'
+               || ' wrong rather than the region as tiny; ROUTABLE_BOUNDARY left NULL.';
+    END IF;
+
+    -- Join on the REGION_KEY the clip was actually computed from, not on the
+    -- name predicate again. REGION_KEY is unique, so this writes the mask to
+    -- exactly the polygon it was derived from. Re-running the name match here
+    -- would fan the single clipped geometry onto every same-name row, giving
+    -- sibling regions a mask cut to a different polygon.
+    --
+    -- Tolerance for the browser copy scales with region size instead of being a
+    -- constant: sqrt(area)/6 metres, floored at 25 m and capped at 500 m. A
+    -- continental region lands on the cap (US: sqrt(10.1M)/6 = 531 -> 500 m,
+    -- 69k vertices -> 3.5k), while a city-scale region stays near the floor so
+    -- its coastline is not straightened into water. A fixed 500 m would be
+    -- reasonable for the US and actively harmful for San Francisco Bay.
+    --
+    -- That formula alone is not enough, because metres of tolerance do not bound
+    -- vertices: ST_SIMPLIFY thins a ring but never drops one, so an archipelago
+    -- keeps its ring count at any tolerance. MEASURED for Europe at the 500 m cap:
+    -- 91,976 vertices and 4.28 MB of GeoJSON, against 3,510 and 165 KB for the US.
+    -- So the tolerance is escalated until the result fits a vertex budget (Europe
+    -- settles around 25k vertices / 1.2 MB; 5,000 m costs 0.05% of the area,
+    -- 9,601,990 against 9,607,243 km2).
+    --
+    -- Coarsening THIS copy is safe in a way that coarsening ROUTABLE_BOUNDARY would
+    -- not be. Water rejection uses the exact mask (ROUTABLE_BOUNDARY_EXACT in
+    -- api/sample-road-points, the land-anchor query); this column is only shipped to
+    -- the browser and used per segment to drop roads reaching across a nearby
+    -- border - and roads are on land under either outline.
+    simple_tol := LEAST(500, GREATEST(25, SQRT(GREATEST(:clip_area, 0)) / 6));
+    SELECT MAX(ST_NPOINTS(ST_SIMPLIFY(CLIPPED, :simple_tol)))::FLOAT INTO :simple_pts
+    FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+    WHILE (:simple_pts > :max_simple_pts AND :simple_tol < :max_simple_tol) DO
+        simple_tol := LEAST(:max_simple_tol, :simple_tol * 2);
+        SELECT MAX(ST_NPOINTS(ST_SIMPLIFY(CLIPPED, :simple_tol)))::FLOAT INTO :simple_pts
+        FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP;
+    END WHILE;
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_CATALOG t
+    SET ROUTABLE_BOUNDARY = c.CLIPPED,
+        ROUTABLE_BOUNDARY_AREA_KM2 = ROUND(:clip_area, 4),
+        ROUTABLE_BOUNDARY_SOURCE = 'overture-division-area',
+        ROUTABLE_BOUNDARY_BAKED_AT = SYSDATE(),
+        ROUTABLE_BOUNDARY_SIMPLE = ST_SIMPLIFY(c.CLIPPED, :simple_tol)
+    FROM OPENROUTESERVICE_APP.CORE.TMP_ROUTABLE_CLIP c
+    WHERE t.REGION_KEY = c.REGION_KEY;
+
+    RETURN 'BAKED: ' || :P_REGION || ' land-clipped from ' || ROUND(orig_area) || ' to '
+           || ROUND(clip_area) || ' km2 (' || ROUND(ratio * 100, 1) || '% kept, '
+           || land_polys || ' division polygons, ' || ROUND(in_pts) || ' input vertices, '
+           || ROUND(clip_tol_m) || ' m pre-union tolerance, browser copy '
+           || ROUND(simple_pts) || ' vertices at ' || ROUND(simple_tol) || ' m).';
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- PBF_MIRRORS + PBF_MIRROR_URLS
+-- ---------------------------------------------------------------------------
+-- Alternate hosts to fall back to when the primary PBF origin is unreachable.
+-- On 2026-09-07 a Geofabrik outage stalled a 91.8%-complete continental build
+-- with no second host to try; ftp5.gwdg.de mirrors the same tree and was, at
+-- that moment, byte-identical (same published md5, same 34,940,824,103 total).
+--
+-- A table rather than a container env var so an operator can add or disable a
+-- mirror with one UPDATE - no image rebuild, no ALTER SERVICE, and the current
+-- list is visible to SQL and to the admin UI.
+--
+-- SOURCE_HOST is load-bearing, not descriptive: it scopes a mirror to the
+-- upstream it actually mirrors. Region PBF URLs in this catalog come from TWO
+-- independent sources (Geofabrik and BBBike), and gwdg mirrors only the former.
+-- Without this column a bbbike URL would be rewritten onto a gwdg path that
+-- does not exist, converting a working region into a 404.
+--
+-- PATH_REGEX is load-bearing for the same reason at file granularity: a
+-- "Geofabrik mirror" is usually a PARTIAL mirror. GWDG carries exactly three
+-- files (europe, germany, north-america), not the whole tree - measured, and
+-- the reason this column exists. Offering a mirror for a file it does not have
+-- is worse than having no mirror at all: the rotation would spend its failover
+-- on a guaranteed 404. Happily the covered files are the multi-hour continental
+-- transfers, which are precisely the ones where failover is worth anything;
+-- a small extract downloads in minutes and simply retries its origin.
+--
+-- PATH_REWRITE_FROM / PATH_REWRITE_TO exist because a mirror need not preserve
+-- the origin's LAYOUT. GWDG stores its files FLAT while Geofabrik nests Germany:
+-- the origin path is /europe/germany-latest.osm.pbf but the mirror has
+-- /germany-latest.osm.pbf. A pure host-prefix swap therefore cannot reach it,
+-- which is how the first version of this table shipped a `germany` alternative
+-- in PATH_REGEX that matched 0 of 555 catalog regions - inert config that read
+-- as working coverage. When the pair is NULL the path passes through unchanged,
+-- so the primary row and any path-preserving mirror are unaffected.
+--
+-- Priority 1 is the PRIMARY itself (mapped to its own host) so the whole
+-- ordered candidate list lives in one place and the failover order is readable
+-- without also reading code.
+--
+-- NOTE the deliberate asymmetry with the region catalog: mirrors are a
+-- DOWNLOAD-time concern only. The catalog scraper stays Geofabrik-authoritative,
+-- so PBF_URL keeps its canonical value and a mirror never leaks into stored
+-- metadata, build history, or the UI's notion of where a region comes from.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS (
+    PRIORITY     INT NOT NULL,        -- 1 = primary, ascending = failover order
+    SOURCE_HOST  VARCHAR NOT NULL,    -- upstream host this row applies to
+    MIRROR_BASE  VARCHAR NOT NULL,    -- scheme+host+path prefix replacing the origin
+    PATH_REGEX   VARCHAR,             -- NULL = every path; else only matching paths
+    PATH_REWRITE_FROM VARCHAR,        -- NULL = path passes through unchanged
+    PATH_REWRITE_TO   VARCHAR,        -- replacement applied to the origin path
+    ENABLED      BOOLEAN DEFAULT TRUE,
+    NOTE         VARCHAR,
+    UPDATED_AT   TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}';
+
+-- The table is CREATE ... IF NOT EXISTS, so a deployment that already has it
+-- would never gain the rewrite columns from the definition above. Add them
+-- explicitly; both are no-ops on a fresh install.
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_FROM VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.PBF_MIRRORS
+    ADD COLUMN IF NOT EXISTS PATH_REWRITE_TO VARCHAR;
+
+-- Seeded with MERGE, not INSERT: this module is re-run by every install and a
+-- bare INSERT would duplicate the rows on each pass (and duplicates would
+-- produce duplicate download candidates).
+--
+-- Ownership is SPLIT, and the WHEN MATCHED clause is where that is enforced:
+--   code-owned  - MIRROR_BASE, PATH_REGEX, PATH_REWRITE_*, NOTE. These describe
+--                 what a mirror factually carries, so a newer build must be able
+--                 to correct them. Insert-only was wrong: the first seed shipped
+--                 a PATH_REGEX matching 0 regions and a NOTE claiming three-file
+--                 coverage, and an already-seeded row would have kept both
+--                 forever while looking configured.
+--   operator-owned - ENABLED. Deliberately NOT in the UPDATE list, so a mirror an
+--                 operator switched off stays off across re-installs. Overwriting
+--                 it would silently re-enable a source they had rejected.
+MERGE INTO OPENROUTESERVICE_APP.CORE.PBF_MIRRORS t
+USING (
+    SELECT 1 AS PRIORITY, 'download.geofabrik.de' AS SOURCE_HOST,
+           'https://download.geofabrik.de' AS MIRROR_BASE,
+           NULL AS PATH_REGEX,
+           NULL AS PATH_REWRITE_FROM,
+           NULL AS PATH_REWRITE_TO,
+           'Primary origin. Serves the full tree.' AS NOTE
+    UNION ALL
+    SELECT 2, 'download.geofabrik.de',
+           'https://ftp5.gwdg.de/pub/misc/openstreetmap/download.geofabrik.de',
+           -- Exactly the three files the mirror carries. Germany is matched at
+           -- its ORIGIN path (nested under /europe/) and rewritten below;
+           -- matching it flat here is what made the branch dead.
+           '^/(europe|north-america)-latest\\.osm\\.pbf$|^/europe/germany-latest\\.osm\\.pbf$',
+           '^/europe/germany-latest\\.osm\\.pbf$',
+           '/germany-latest.osm.pbf',
+           'PARTIAL Geofabrik mirror (GWDG), FLAT layout. Carries exactly three '
+           || 'files: europe-latest, north-america-latest, germany-latest '
+           || '(verified 2026-09-07; africa-latest and europe/monaco 404). '
+           || 'Germany needs the path rewrite because the origin nests it under '
+           || '/europe/. Measured as fast as the origin, not faster, so this is '
+           || 'a FAILOVER not a preferred source. Note ftp2.de.freebsd.org is '
+           || 'NOT an independent alternative - it redirects here and its TLS '
+           || 'cert does not match its hostname.'
+) s
+ON t.PRIORITY = s.PRIORITY AND t.SOURCE_HOST = s.SOURCE_HOST
+WHEN MATCHED THEN UPDATE SET
+    MIRROR_BASE       = s.MIRROR_BASE,
+    PATH_REGEX        = s.PATH_REGEX,
+    PATH_REWRITE_FROM = s.PATH_REWRITE_FROM,
+    PATH_REWRITE_TO   = s.PATH_REWRITE_TO,
+    NOTE              = s.NOTE,
+    UPDATED_AT        = SYSDATE()
+WHEN NOT MATCHED THEN INSERT (PRIORITY, SOURCE_HOST, MIRROR_BASE, PATH_REGEX,
+                              PATH_REWRITE_FROM, PATH_REWRITE_TO, ENABLED, NOTE)
+    VALUES (s.PRIORITY, s.SOURCE_HOST, s.MIRROR_BASE, s.PATH_REGEX,
+            s.PATH_REWRITE_FROM, s.PATH_REWRITE_TO, TRUE, s.NOTE);
+
+-- Candidate download URLs for a PBF, in failover order.
+--
+-- Returns [P_PBF_URL] UNCHANGED when no enabled mirror matches the URL's host,
+-- so BBBike regions, manually entered URLs, and any future source behave
+-- exactly as they do today. That default is what keeps this change additive.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(P_PBF_URL VARCHAR)
+RETURNS ARRAY
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"pbf-mirrors"}}'
+AS
+$$
+    -- Guarded with ARRAY_SIZE, NOT COALESCE: ARRAY_AGG over zero matching rows
+    -- returns an EMPTY ARRAY rather than NULL, so a COALESCE default never
+    -- fires and every non-mirrored source (BBBike, manual URLs) silently gets
+    -- ZERO download candidates instead of its own URL back - measured, not
+    -- theoretical.
+    SELECT IFF(ARRAY_SIZE(cand) = 0, ARRAY_CONSTRUCT(P_PBF_URL), cand)
+    FROM (
+        SELECT COALESCE(
+            (
+                SELECT ARRAY_AGG(m.MIRROR_BASE
+                                 -- The path is REWRITTEN, not just re-hosted: a
+                                 -- mirror may flatten the origin's layout (GWDG
+                                 -- does). NULL rewrite = pass through.
+                                 || IFF(m.PATH_REWRITE_FROM IS NULL,
+                                        REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                        REGEXP_REPLACE(
+                                            REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                            m.PATH_REWRITE_FROM,
+                                            COALESCE(m.PATH_REWRITE_TO, ''))))
+                         WITHIN GROUP (ORDER BY m.PRIORITY)
+                FROM OPENROUTESERVICE_APP.CORE.PBF_MIRRORS m
+                WHERE m.ENABLED
+                  AND LOWER(m.SOURCE_HOST)
+                      = LOWER(REGEXP_SUBSTR(P_PBF_URL, '^https?://([^/]+)', 1, 1, 'e', 1))
+                  -- A partial mirror must not be offered for a file it does not
+                  -- carry, or the rotation spends its one failover on a certain
+                  -- 404. NULL means the source serves everything.
+                  AND (m.PATH_REGEX IS NULL
+                       OR RLIKE(REGEXP_SUBSTR(P_PBF_URL, '^https?://[^/]+(/.*)$', 1, 1, 'e', 1),
+                                m.PATH_REGEX))
+            ), ARRAY_CONSTRUCT()) AS cand
+    )
+$$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -49,7 +606,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"region-catalog"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"region-catalog"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -64,7 +621,13 @@ BEGIN
     END IF;
 
     EXECUTE IMMEDIATE '
-        COPY INTO OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        COPY INTO OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
+            CATALOG_ID, SOURCE, REGION_NAME, REGION_KEY, LOOKUP_NAME, HIERARCHY,
+            CONTINENT, COUNTRY, ISO_COUNTRY_A2, ISO_COUNTRY_A3, ISO_SUBDIVISION,
+            UN_M49, PBF_URL, PBF_SIZE_MB, LEVEL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON,
+            BOUNDARY, BOUNDARY_SOURCE, BOUNDARY_VERTICES, BOUNDARY_AREA_KM2,
+            BOUNDARY_BAKED_AT, UPDATED_AT
+        )
         FROM (
             SELECT
                 $1:CATALOG_ID::VARCHAR,
@@ -133,9 +696,24 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     -- Number of times the rescue task has downgraded this job ERROR->RUNNING.
     -- Bounds the "container alive but ORS dead" resurrection loop (see
     -- FINALIZE_PROVISION_ITER); beyond a cap the job is failed terminally.
-    RESCUE_DOWNGRADES INTEGER DEFAULT 0
+    RESCUE_DOWNGRADES INTEGER DEFAULT 0,
+    -- Liveness signal written by PROVISION_REGION_WRAPPER's download poll loop
+    -- every cycle. Without it a DEAD provisioner is indistinguishable from a
+    -- slow one (STARTED_AT alone cannot tell them apart), so nothing could
+    -- safely relaunch a build whose procedure died mid-download. Read by
+    -- V_DOWNLOAD_RELAUNCH_CANDIDATES. NULL means "this job predates the
+    -- heartbeat" and is deliberately treated as NOT eligible for relaunch.
+    HEARTBEAT_AT TIMESTAMP_NTZ,
+    -- The URL the download was ACTUALLY served from, which is not necessarily
+    -- PBF_URL: on an origin outage PROVISION_REGION_WRAPPER rotates to a mirror
+    -- from CORE.PBF_MIRRORS. PBF_URL keeps the canonical catalog value (what we
+    -- intended) and this keeps what delivered the bytes; overwriting PBF_URL
+    -- would destroy the former. Before this column the rotation lived only in a
+    -- procedure-local variable, so during the 2026-09-07 outage there was no way
+    -- to tell from the app which host was in use.
+    PBF_URL_USED VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}';
 
 -- Idempotent migration for pre-existing deployments (table created before the
 -- RESCUE_DOWNGRADES column existed). Wrapped in a swallow-on-exists block:
@@ -149,6 +727,264 @@ EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
 END;
 $$;
 
+-- Same idempotent migration for the download-liveness heartbeat. Separate block
+-- on purpose: sharing one block with the line above would skip this column on
+-- every deployment that already has RESCUE_DOWNGRADES (the first statement
+-- raises, the handler swallows it, and the second never runs).
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN HEARTBEAT_AT TIMESTAMP_NTZ;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- And again for the effective download URL. Own block for the same reason.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        ADD COLUMN PBF_URL_USED VARCHAR;
+EXCEPTION WHEN OTHER THEN NULL;  -- column already exists; nothing to do
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- IS_ORIGIN_OUTAGE_MSG
+-- ---------------------------------------------------------------------------
+-- Was this download failure the UPSTREAM PBF HOST's fault rather than ours or
+-- the region's? The answer selects which relaunch bound applies, and it must be
+-- computed from the job's own MESSAGE rather than from the ERROR_MSG token the
+-- reconciler stamps, for two reasons:
+--   1. Rows stamped before this classification existed carry the generic
+--      'download_relaunched' token, so a token-driven rule would count a
+--      historical origin outage against the build budget forever - permanently
+--      stranding the very build it is meant to rescue. The relaunch UPDATE
+--      preserves the dead job's text ("... Previous message: <original>"), so
+--      the signature survives and those rows reclassify themselves with no
+--      migration.
+--   2. One function, two call sites (the counted rows and the candidate row)
+--      means the bound is always evaluated against the same rule that stamped
+--      it. Two inline copies of this predicate would drift, which is the same
+--      hazard the candidate view's own header warns about.
+--
+-- Network-shaped failures are deliberately read as ORIGIN. The classes differ
+-- only in how many bounded, byte-free retries a region gets, so over-classifying
+-- costs a few cheap attempts while UNDER-classifying strands tens of GB of valid
+-- resume state - the exact defect observed on 2026-09-07.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MSG VARCHAR)
+RETURNS BOOLEAN
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+$$
+    COALESCE(MSG ILIKE '%probe inconclusive%'
+          OR MSG ILIKE '%refusing the single-stream%'
+          OR MSG ILIKE '%502%'
+          OR MSG ILIKE '%Read timed out%'
+          OR MSG ILIKE '%Max retries exceeded%'
+          OR MSG ILIKE '%Connection reset%'
+          OR MSG ILIKE '%Temporary failure in name resolution%', FALSE)
+$$;
+
+-- ---------------------------------------------------------------------------
+-- V_DOWNLOAD_RELAUNCH_PENDING
+-- ---------------------------------------------------------------------------
+-- Region builds whose PROVISIONING PROCEDURE is gone while the PBF download is
+-- still unfinished. Everything below the procedure already self-heals: the
+-- container retries a broken segment and resumes it from its on-disk offset,
+-- and the procedure's own poll loop re-triggers DOWNLOAD both on an error and
+-- on 'not_started' (no worker). What nothing covered is the procedure ITSELF
+-- dying - a killed task run, a lost session, the 11h poll ceiling, or an
+-- exhausted error budget - because RESCUE_PENDING_PROVISIONS only ever
+-- FINALIZED jobs and its cursor is scoped to BUILDING_GRAPH plus two specific
+-- graph ERROR_MSG values. The job then sits FAILED (or RUNNING with nobody
+-- home) on top of tens of GB of perfectly resumable segment files.
+--
+-- The predicate lives in a view, not inlined in the reconciler, because
+-- RESCUE_PENDING_PROVISIONS needs it TWICE: once to act on candidates and once
+-- in its self-suspend guard (a FAILED candidate matches none of the existing
+-- keep-awake conditions, so the task would sleep before ever seeing it). Two
+-- hand-maintained copies would drift, and the two failure modes are opposite
+-- and both bad: strand every candidate, or wedge the task permanently awake.
+--
+-- This view is the ELIGIBILITY half, shared by both consumers. The one thing
+-- the two consumers disagree about - a row still serving its backoff - is
+-- emitted as the COOLDOWN_ELAPSED flag and filtered by
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES alone, so there is still exactly one copy of
+-- the predicate.
+--
+-- Eligibility, and why each clause is load-bearing:
+--   STAGE = 'DOWNLOADING'      - the download failure/timeout handler updates
+--                                STATUS and MESSAGE but NOT STAGE, so this
+--                                selects the terminal cases too. Rows already
+--                                relaunched are moved to STAGE='ERROR' and so
+--                                cannot be reselected.
+--   HEARTBEAT_AT IS NOT NULL   - SAFETY GATE, do not relax. A job launched
+--                                before the heartbeat existed can never look
+--                                alive, and relaunching one that IS alive
+--                                starts a second build for the same region;
+--                                per the in-flight guard in
+--                                START_REGION_PROVISION, the two fight over
+--                                one service/pool/stage path and "the loser
+--                                corrupts the winner's graph". Pre-upgrade
+--                                jobs are therefore never eligible; they age
+--                                out instead.
+--   deaths < bound             - bound, and the bound DEPENDS ON THE FAILURE
+--                                CLASS. History IS the counter: each relaunch
+--                                stamps the dead row ERROR_MSG =
+--                                'download_relaunched' (build death) or
+--                                'download_relaunched_origin' (upstream PBF
+--                                host unreachable), and the row is COUNTED by
+--                                re-reading its MESSAGE through
+--                                IS_ORIGIN_OUTAGE_MSG, so rows written before
+--                                the split still land in the right bucket. A
+--                                counter COLUMN could not work at all, because
+--                                a relaunch creates a NEW job row that would
+--                                start from zero.
+--                                A build death gets 3, unchanged: repeated
+--                                deaths on a healthy origin mean the region
+--                                itself is the problem and a human should look.
+--                                An ORIGIN OUTAGE is not that, and counting it
+--                                the same way was a real defect: on 2026-09-07
+--                                a Geofabrik 502 burst consumed the entire
+--                                3-per-24h budget in under two hours across
+--                                three attempts that each probed, transferred
+--                                ZERO bytes, and died in ~17 minutes - leaving
+--                                29.9 GiB of valid resume state stranded with
+--                                auto-heal disabled for another 22 hours, for a
+--                                fault that was neither ours nor the region's
+--                                and might clear in minutes. An origin outage
+--                                therefore gets its own, wider bound; each
+--                                attempt is cheap precisely because it moves no
+--                                bytes, and the cooldown below is what keeps it
+--                                from thrashing.
+--   cooldown elapsed           - escalating backoff, keyed on how many
+--                                relaunches this region has already had. With
+--                                no wait at all the reconciler retried every
+--                                ~18 minutes and spent the whole budget inside
+--                                one outage; an unhealthy origin needs to be
+--                                given time to recover between attempts.
+--                                Emitted as the COOLDOWN_ELAPSED flag, NOT
+--                                filtered here: the two consumers need
+--                                different answers about a row in backoff. See
+--                                V_DOWNLOAD_RELAUNCH_CANDIDATES below.
+--   live count matches         - a RUNNING candidate counts itself (expect
+--                                exactly 1); a terminal candidate must see 0.
+--                                Either way there is no OTHER in-flight job
+--                                for the region.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+WITH deaths AS (
+    SELECT UPPER(REGION) AS R,
+           -- Classified from MESSAGE, not from the ERROR_MSG token, so a row
+           -- stamped before this split existed still lands in the right
+           -- bucket. See IS_ORIGIN_OUTAGE_MSG for why that matters.
+           COUNT_IF(NOT OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_BUILD,
+           COUNT_IF(OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(MESSAGE)) AS N_ORIGIN,
+           -- Last relaunch of EITHER class: the cooldown is about giving the
+           -- system (and the origin) a rest, so both classes reset it.
+           MAX(COALESCE(COMPLETED_AT, HEARTBEAT_AT)) AS LAST_AT
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE ERROR_MSG IN ('download_relaunched', 'download_relaunched_origin')
+      AND COALESCE(COMPLETED_AT, HEARTBEAT_AT) > DATEADD(HOUR, -24, SYSDATE())
+    GROUP BY UPPER(REGION)
+), live AS (
+    SELECT UPPER(REGION) AS R, COUNT(*) AS N
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE STATUS IN ('PENDING', 'RUNNING')
+    GROUP BY UPPER(REGION)
+)
+SELECT
+    j.JOB_ID,
+    j.REGION,
+    j.DISPLAY_NAME,
+    j.PROFILES,
+    j.COMPUTE_SIZE,
+    j.PBF_URL,
+    j.STATUS,
+    j.HEARTBEAT_AT,
+    COALESCE(d.N_BUILD, 0) + COALESCE(d.N_ORIGIN, 0) AS PRIOR_RELAUNCHES,
+    -- Classified HERE so the reconciler stamps the same verdict the bound was
+    -- evaluated against; the same function drives the counts in `deaths`.
+    OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(j.MESSAGE) AS IS_ORIGIN_OUTAGE,
+    -- Escalating backoff: 10 min after the first relaunch, doubling, capped at
+    -- 4 hours. POWER returns a FLOAT and DATEADD needs an integer, hence ::INT.
+    -- Exposed as a FLAG here and filtered on by only ONE of the two consumers
+    -- below; see V_DOWNLOAD_RELAUNCH_CANDIDATES for why that split is
+    -- load-bearing rather than cosmetic.
+    COALESCE(
+        d.LAST_AT IS NULL
+     OR SYSDATE() > DATEADD(
+            MINUTE,
+            LEAST(10 * POWER(2, COALESCE(d.N_BUILD, 0)
+                                + COALESCE(d.N_ORIGIN, 0)), 240)::INT,
+            d.LAST_AT), TRUE) AS COOLDOWN_ELAPSED,
+    IFF(j.STATUS = 'RUNNING', 'provisioner_died', 'download_terminal') AS REASON
+FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
+LEFT JOIN deaths d ON d.R = UPPER(j.REGION)
+LEFT JOIN live   l ON l.R = UPPER(j.REGION)
+WHERE j.STAGE = 'DOWNLOADING'
+  AND j.HEARTBEAT_AT IS NOT NULL
+  -- Class-specific bound. An origin outage moves no bytes, so 12 attempts
+  -- spread by the cooldown below is still a cheap way to ride out a multi-hour
+  -- upstream outage without human intervention.
+  AND COALESCE(d.N_BUILD, 0) < 3
+  AND COALESCE(d.N_ORIGIN, 0) < 12
+  AND (
+        -- the procedure stopped writing its heartbeat: it is gone. The loop
+        -- writes every 30-90s, so 15 minutes of silence is unambiguous.
+        (j.STATUS = 'RUNNING'
+         AND j.HEARTBEAT_AT < DATEADD(MINUTE, -15, SYSDATE()))
+        -- or it gave up: 11h poll ceiling, or the 3-retry error budget spent.
+     OR (j.STATUS IN ('FAILED', 'ERROR')
+         -- COALESCE, not COMPLETED_AT alone: the download failure handler
+         -- historically set only STATUS and MESSAGE, so rows written by an
+         -- older build have a NULL completion time and a bare comparison
+         -- would silently select NONE of them - disabling this entire half of
+         -- the feature with no error anywhere. HEARTBEAT_AT is non-NULL by the
+         -- clause above and is the last known sign of life.
+         AND COALESCE(j.COMPLETED_AT, j.HEARTBEAT_AT) > DATEADD(HOUR, -24, SYSDATE())
+         AND (j.MESSAGE ILIKE '%PBF download timed out%'
+           OR j.MESSAGE ILIKE '%PBF download failed%'))
+      )
+  AND COALESCE(l.N, 0) = IFF(j.STATUS = 'RUNNING', 1, 0);
+
+-- ---------------------------------------------------------------------------
+-- V_DOWNLOAD_RELAUNCH_CANDIDATES
+-- ---------------------------------------------------------------------------
+-- Rows the reconciler should act on RIGHT NOW: everything eligible, minus
+-- those still serving their backoff.
+--
+-- WHY THIS IS A SEPARATE VIEW FROM ..._PENDING, and why the cooldown is not
+-- just an extra clause in it: RESCUE_PENDING_PROVISIONS reads the eligibility
+-- predicate TWICE - once to act, and once in its self-suspend guard, because
+-- the task runs on a 2-minute serverless schedule and sleeps when there is no
+-- work. Those two consumers need DIFFERENT answers about a row in cooldown.
+-- The actor must skip it (that is the whole point of the backoff); the
+-- keep-awake guard must still SEE it, because nothing else re-arms the task -
+-- the re-arm paths are the provision enqueue endpoint and the prewarm procs,
+-- neither of which fires here. Filtering the cooldown in a single shared view
+-- would therefore have made the task suspend itself while a candidate sat
+-- waiting, and the backoff would never elapse from anyone's point of view:
+-- a 24h stall converted into a permanent one.
+--
+-- Columns are listed explicitly rather than SELECT *: a view freezes its
+-- column list at creation, so a `SELECT *` wrapper over a base view that later
+-- gains a column fails every read with "declared N column(s), but view query
+-- produces M". Both views live in this file and are recreated together, but an
+-- out-of-band recreate of the base alone would break the wrapper silently.
+--
+-- The bound still guarantees the task can sleep: once a region exhausts its
+-- class bound it drops out of ..._PENDING too, both counts return to 0, and
+-- there is no permanent wake-loop.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue"}}'
+AS
+SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE, PBF_URL, STATUS,
+       HEARTBEAT_AT, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE, COOLDOWN_ELAPSED, REASON
+FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING
+WHERE COOLDOWN_ELAPSED;
+
 -- Durable repair telemetry (survives REBUILD_REGION_GRAPHS stage purge).
 -- Used by REPAIR_STUCK_REGION_BUILDS for byte-growth stall detection and
 -- per-region repair rate-limiting so a false-positive cannot loop forever.
@@ -159,7 +995,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_REPAIR_LOG (
     LAST_GRAPH_BYTES NUMBER DEFAULT 0,
     LAST_PROBED_AT TIMESTAMP_NTZ
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"repair-log"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"repair-log"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
     P_JOB_ID VARCHAR,
@@ -173,7 +1009,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -196,6 +1032,21 @@ DECLARE
     pbf_gib FLOAT DEFAULT NULL;
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
+    dl_attempt INTEGER DEFAULT 0;
+    -- PBF host failover. dl_candidates is the ordered list from PBF_MIRROR_URLS
+    -- (candidate 0 is always the region's own PBF_URL); dl_host_i indexes it and
+    -- dl_url is the host currently being downloaded from. All three DOWNLOAD
+    -- trigger sites below use dl_url, never P_PBF_URL, so a rotation actually
+    -- takes effect - P_PBF_URL stays the canonical value for telemetry.
+    dl_candidates ARRAY DEFAULT ARRAY_CONSTRUCT();
+    dl_host_i INTEGER DEFAULT 0;
+    dl_url VARCHAR DEFAULT '';
+    dl_rotated BOOLEAN DEFAULT FALSE;
+    -- Completed passes over the candidate list. Bounds the wrap-back-to-primary
+    -- below so a total outage of every host cannot ping-pong for the entire 11h
+    -- poll ceiling: failing sooner hands the build to RESCUE_PENDING_PROVISIONS,
+    -- whose escalating backoff is the right tool for a multi-hour outage.
+    dl_cycles INTEGER DEFAULT 0;
 BEGIN
     -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
     -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
@@ -220,6 +1071,7 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=SYSDATE(),
+        HEARTBEAT_AT=SYSDATE(),
         MESSAGE='Inserting region metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
@@ -289,7 +1141,19 @@ BEGIN
         dl_failed := FALSE;
         BEGIN
             pbf_dl_status := '';
-            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+            dl_attempt := 0;
+            -- Resolve the host failover order once per build. Candidate 0 is the
+            -- region's own PBF_URL, so a region with no configured mirror gets a
+            -- single-element list and behaves exactly as before.
+            dl_candidates := OPENROUTESERVICE_APP.CORE.PBF_MIRROR_URLS(:P_PBF_URL);
+            dl_host_i := 0;
+            dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+            -- Record the effective host up front, so an in-flight job shows a
+            -- source rather than a blank until the first rotation.
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET PBF_URL_USED = :dl_url
+            WHERE JOB_ID = :P_JOB_ID;
+            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
 
             -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
             -- europe-latest ~34 GB) download at Geofabrik's per-client-IP
@@ -305,12 +1169,110 @@ BEGIN
 
                 IF (LOWER(TRIM(:pbf_dl_status)) = 'success') THEN
                     BREAK;
-                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')) THEN
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress')) THEN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...'
+                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...',
+                        HEARTBEAT_AT = SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) = 'not_started') THEN
+                    -- 'not_started' means NO worker thread owns this target.
+                    -- The downloader's job registry is in-memory, so any
+                    -- container restart (a spec redeploy, an OOM, a node move)
+                    -- erases it while the segment files and sidecar persist on
+                    -- the stage -- and _resolve_status then reports
+                    -- 'not_started' precisely so the next trigger resumes. This
+                    -- loop used to merely WAIT on that status, so a mid-flight
+                    -- restart left the job polling an idle downloader for the
+                    -- full 11h ceiling and then timing out with nothing running.
+                    -- Re-trigger instead: DOWNLOAD is idempotent (a live job is
+                    -- not restarted, a finished file returns 'success') and the
+                    -- resume skips completed segments.
+                    --
+                    -- Reuses the CURRENT dl_url rather than rotating: an idle
+                    -- worker is not a host failure, and rotating here would
+                    -- churn hosts on every container restart.
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET MESSAGE = 'PBF download idle (no worker); (re)starting resume at poll ' ||
+                                  :poll_i || '/1320...',
+                        HEARTBEAT_AT = SYSDATE()
+                    WHERE JOB_ID = :P_JOB_ID;
+                    EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
+                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
+                    -- The downloader reported an error. This is RETRYABLE, not
+                    -- terminal: for a transfer error the segment files and the
+                    -- .part.progress sidecar are left on the stage on purpose
+                    -- (they are the resume state), so re-triggering DOWNLOAD
+                    -- resumes -- completed segments are skipped and a partial
+                    -- segment continues from its on-disk offset. Failing on the
+                    -- first error abandoned tens of GB of good bytes with most
+                    -- of the poll budget still unspent.
+                    --
+                    -- HOST FAILOVER. A 4xx is terminal on the PRIMARY (a bad
+                    -- PBF_URL is a config error - trying mirrors would only
+                    -- hide a stale catalog entry behind a slower failure) but
+                    -- merely retires a MIRROR, because a 404 there means that
+                    -- mirror lacks the path, not that the region is wrong.
+                    -- Rotation is otherwise driven by IS_ORIGIN_OUTAGE_MSG,
+                    -- deliberately the SAME classifier the relaunch bound uses,
+                    -- so "the origin is unwell" has one definition in this
+                    -- codebase rather than two that drift.
+                    --
+                    -- Rotating does NOT discard the transfer: the downloader
+                    -- refuses to adopt resume state from a host serving a
+                    -- different snapshot and keeps every staged byte, so the
+                    -- worst case is that a mirror is rejected and the primary
+                    -- is retried later.
+                    dl_rotated := FALSE;
+                    IF (:dl_host_i + 1 < ARRAY_SIZE(:dl_candidates)
+                        AND (OPENROUTESERVICE_APP.CORE.IS_ORIGIN_OUTAGE_MSG(:pbf_dl_status)
+                             OR (POSITION('HTTP 4', :pbf_dl_status) > 0
+                                 AND :dl_host_i > 0))) THEN
+                        dl_host_i := :dl_host_i + 1;
+                        dl_url := GET(:dl_candidates, :dl_host_i)::VARCHAR;
+                        dl_rotated := TRUE;
+                        -- A fresh host gets a fresh error budget. Without this
+                        -- the retries already spent on a dead origin would be
+                        -- charged to the mirror, so a late rotation could get
+                        -- one attempt or none.
+                        dl_attempt := 0;
+                    ELSEIF (:dl_host_i > 0 AND :dl_cycles < 2) THEN
+                        -- Mirrors exhausted. Fall back to the PRIMARY rather
+                        -- than giving up on it: the primary is the authoritative
+                        -- source and its outage may already be over, whereas a
+                        -- mirror is partial by nature. Without this a mirror
+                        -- 404 ends the build outright, which is WORSE than
+                        -- having no mirror configured - the pre-mirror code
+                        -- would have kept retrying the origin.
+                        dl_cycles := :dl_cycles + 1;
+                        dl_host_i := 0;
+                        dl_url := COALESCE(GET(:dl_candidates, 0)::VARCHAR, :P_PBF_URL);
+                        dl_rotated := TRUE;
+                        dl_attempt := 0;
+                    END IF;
+
+                    IF (:dl_rotated
+                        OR (:dl_attempt < 3 AND POSITION('HTTP 4', :pbf_dl_status) = 0)) THEN
+                        dl_attempt := :dl_attempt + 1;
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = 'PBF download error; '
+                                      || IFF(:dl_rotated,
+                                             'switching to mirror ' || SPLIT_PART(:dl_url, '/', 3),
+                                             'resuming')
+                                      || ' (retry ' || :dl_attempt ||
+                                      ', poll ' || :poll_i || '/1320): ' ||
+                                      LEFT(COALESCE(:pbf_dl_status, ''), 200),
+                            -- Kept in step with dl_url so the UI's source column
+                            -- reflects the host now serving, not the first one.
+                            PBF_URL_USED = :dl_url,
+                            HEARTBEAT_AT = SYSDATE()
+                        WHERE JOB_ID = :P_JOB_ID;
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(60)';
+                        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :dl_url || ''')';
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                        CONTINUE;
+                    END IF;
                     BREAK;
                 END IF;
             END FOR;
@@ -327,7 +1289,7 @@ BEGIN
             LET dl_err STRING := CASE
                 WHEN LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')
                     THEN 'PBF download timed out after 1320 polls (~11h) (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
-                ELSE 'PBF download failed: ' || COALESCE(:pbf_dl_status, 'unknown status')
+                ELSE 'PBF download failed after ' || :dl_attempt || ' resume attempt(s): ' || COALESCE(:pbf_dl_status, 'unknown status')
             END;
             SYSTEM$LOG_INFO(dl_err);
             BEGIN
@@ -361,7 +1323,11 @@ BEGIN
                 EXCEPTION WHEN OTHER THEN NULL;
                 END;
             END IF;
-            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+            -- COMPLETED_AT is set here deliberately: this is a terminal state,
+            -- and leaving it NULL made every download failure invisible to any
+            -- recency-scoped consumer (V_DOWNLOAD_RELAUNCH_CANDIDATES bounds
+            -- eligibility to the last 24h).
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err, COMPLETED_AT=COALESCE(COMPLETED_AT, SYSDATE()) WHERE JOB_ID = :P_JOB_ID;
             -- Parity with timeout handler: reset REGION_ORS_MAP so the region is
             -- not stuck in PROVISIONING after a download failure (the per-region
             -- service was never created, so 'FAILED' marks it as a clean retry candidate).
@@ -559,6 +1525,64 @@ BEGIN
                         MESSAGE='Region provisioned - ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
                         COMPLETED_AT=SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
+                    -- Bake ROUTABLE_BOUNDARY (BOUNDARY clipped to Overture land)
+                    -- so every consumer that samples or clips against the region
+                    -- gets land, not the PBF extract cut line. Geofabrik extracts
+                    -- run well out to sea: the US extract is 31.4M km2 against
+                    -- 10.1M km2 of land, so two thirds of "in-region" points are
+                    -- ocean and ORS answers with code 2010 PointNotFound.
+                    --
+                    -- Deliberately AFTER the COMPLETE update, not before it like
+                    -- the route-opt seed above: that update overwrites MESSAGE
+                    -- outright, so a tag appended earlier is discarded. Running
+                    -- here keeps the diagnostic. Best-effort by design - the clip
+                    -- needs the Overture divisions share, and a region without it
+                    -- must still provision, falling back to the unclipped
+                    -- BOUNDARY. The procedure is idempotent (returns CACHED: when
+                    -- already baked), so resumes and re-provisions cost nothing.
+                    BEGIN
+                        CALL OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(:P_REGION);
+                        -- ENSURE_ROUTABLE_BOUNDARY RETURNS its failure modes
+                        -- ('UNAVAILABLE: ...', 'REJECTED: ...', 'SKIPPED: ...')
+                        -- instead of raising, so an EXCEPTION handler alone would
+                        -- report a silent success on the exact deployments this
+                        -- diagnostic exists for - a missing Overture share being
+                        -- the common one. Inspect the returned string as well.
+                        LET rb_msg VARCHAR := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+                        IF (rb_msg NOT LIKE 'BAKED:%' AND rb_msg NOT LIKE 'CACHED:%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                            SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary: ' || COALESCE(:rb_msg, 'unknown') || ']'
+                            WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+                        WHERE JOB_ID = :P_JOB_ID;
+                    END;
+                    -- Cache the profiles the freshly-built service actually
+                    -- serves. This is the ONE place a live ORS_STATUS probe
+                    -- belongs: the routing procs read the cached table instead,
+                    -- because a probe on the routing path cannot be bounded
+                    -- from SQL and once stalled a user's question for 839.7 s
+                    -- (see the TOOL_DIRECTIONS header in
+                    -- routing-agent/references/deploy-agent.sql). Best-effort:
+                    -- REFRESH_REGION_PROFILES reports failure by RETURN value
+                    -- rather than raising, so the string is inspected as well,
+                    -- and PROFILES_FOR_REGION falls back to this job's own
+                    -- PROFILES column when the cache stays empty.
+                    BEGIN
+                        LET rp_msg VARCHAR := '';
+                        CALL OPENROUTESERVICE_APP.CORE.REFRESH_REGION_PROFILES(:P_REGION) INTO :rp_msg;
+                        IF (:rp_msg NOT LIKE 'REFRESHED:%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                            SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles: ' || COALESCE(:rp_msg, 'unknown') || ']'
+                            WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+                        WHERE JOB_ID = :P_JOB_ID;
+                    END;
                     -- Best-effort peak RSS for telemetry; NULL on failure.
                     -- Inlined here because SYSTEM$GET_SERVICE_STATUS requires a
                     -- constant argument and cannot be wrapped in a reusable UDF.
@@ -762,7 +1786,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_PROVISION_STATUS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -772,6 +1796,16 @@ BEGIN
     SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
         'job_id', JOB_ID, 'region', REGION, 'display_name', COALESCE(DISPLAY_NAME, REGION),
         'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
+        -- COMPUTE_SIZE is emitted so a Retry can reuse the size the failed job
+        -- actually ran with. Without it the UI fell back to a recommendation
+        -- derived from the region's level, silently downgrading an operator's
+        -- deliberate choice (e.g. XXL) on every retry.
+        'compute_size', COALESCE(COMPUTE_SIZE, ''),
+        -- Both, deliberately: PBF_URL is the canonical catalog source and
+        -- PBF_URL_USED is the host that actually served the bytes. The UI shows
+        -- the latter and flags it as a mirror when the two differ.
+        'pbf_url', COALESCE(PBF_URL, ''),
+        'pbf_url_used', COALESCE(PBF_URL_USED, ''),
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
         'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
@@ -789,7 +1823,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DISMISS_PROVISION_JOB(P_JOB_ID VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"provisioner"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -822,7 +1856,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}';
 
 -- Idempotent backfill of GRAPHS_DATA_ACCESS for installs created before this
 -- column existed. Per the ADD COLUMN IF NOT EXISTS gotcha (it can raise a
@@ -883,7 +1917,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (
     FIRED_AT TIMESTAMP_LTZ DEFAULT SYSDATE(),
     REASON VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"cost-guard","action":"audit"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-guard","action":"audit"}}';
 
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
@@ -909,7 +1943,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"resolver"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"resolver"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -969,10 +2003,10 @@ CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.10.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
     CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
         WHEN 'HIGHMEM_X64_M'  THEN '16G'
         WHEN 'HIGHMEM_X64_L'  THEN '64G'
@@ -1010,7 +2044,7 @@ CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
     OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(P_REGION, P_COMPUTE_SIZE, P_REBUILD_GRAPHS, NULL)
@@ -1027,7 +2061,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(P_REGION VARCHAR, P_PROFILES VARCHAR)
 RETURNS BOOLEAN
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"artifact-complete"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"artifact-complete"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1095,7 +2129,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1290,14 +2324,14 @@ BEGIN
     EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
         ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
         ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
-        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","region":"' || :P_REGION || '"}}''';
 
     -- Pass the resolved instance_family so the spec's JVM heap matches the node
     -- RAM (coherent on downsized runtime families, not just the build tier).
     ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag, :instance_family);
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}''';
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
     -- If a family swap dropped the co-located VROOM service above, recreate it in
@@ -1332,7 +2366,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(P_REGION VARCHAR, P_REBUILD VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1368,7 +2402,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1392,11 +2426,55 @@ BEGIN
     LET wait_iters INTEGER := CASE UPPER(:compute_size)
         WHEN 'S' THEN 120 WHEN 'L' THEN 480 WHEN 'XXL' THEN 720 ELSE 480 END;  -- x 30s
 
+    -- Capture the CURRENT graph build date so the return value can prove the
+    -- graph was actually recomputed. Without this the proc reported success
+    -- purely on "profiles came up ready", which is also true of a reload of the
+    -- untouched old graph - exactly the failure the suspend-before-purge fix
+    -- below addresses. Best effort: NULL when the region is already down.
+    LET graph_date_before VARCHAR DEFAULT NULL;
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):engine:graph_date::STRING AS D');
+        LET c_gd CURSOR FOR rs;
+        FOR rg IN c_gd DO graph_date_before := rg.D; END FOR;
+    EXCEPTION WHEN OTHER THEN graph_date_before := NULL;
+    END;
+
     -- Forced rebuild WITHOUT REBUILD_GRAPHS=true: the spec is always
     -- REBUILD_GRAPHS=false, so we explicitly purge the persisted graph dir and
     -- cycle the service. On resume ORS sees an empty graph dir and rebuilds from
     -- the PBF. This keeps ORS's destructive in-container wipe semantics out of
     -- the codebase entirely (no path can wipe a dir out from under a reuse).
+    --
+    -- SUSPEND BEFORE PURGE - the order is load-bearing. The graph dir is a
+    -- stage-mounted volume (@ORS_GRAPHS_SPCS_STAGE/<region> in the service
+    -- spec), so a RUNNING container holds its own copy and re-flushes it to the
+    -- stage when it stops. Purging first therefore did nothing: the REMOVE
+    -- reported dozens of files removed, the container wrote every one of them
+    -- straight back on shutdown, ORS reloaded the identical graph, and the proc
+    -- still returned "Rebuild complete" because the profiles came up ready.
+    -- The only visible symptom was an unchanged graph_build_date, which nothing
+    -- checked. Suspend and WAIT for SUSPENDED first so no writer is left.
+    LET suspended VARCHAR DEFAULT 'UNKNOWN';
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    -- ALTER SERVICE ... SUSPEND is asynchronous (status passes through
+    -- SUSPENDING), so poll rather than assuming a fixed wait is enough.
+    FOR i IN 1 TO 20 DO
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            rs := (SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_susp CURSOR FOR rs;
+            FOR rsv IN c_susp DO suspended := rsv.S; END FOR;
+        EXCEPTION WHEN OTHER THEN suspended := 'UNKNOWN';
+        END;
+        IF (UPPER(COALESCE(:suspended, '')) IN ('SUSPENDED', 'UNKNOWN')) THEN
+            BREAK;
+        END IF;
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
+    END FOR;
+
     BEGIN
         EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
     EXCEPTION WHEN OTHER THEN NULL;
@@ -1459,7 +2537,24 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false';
+    -- Report whether the graph was genuinely recomputed. An unchanged
+    -- graph_date means the purge did not take effect and ORS reloaded the old
+    -- graph, which must not be reported as a successful rebuild.
+    LET graph_date_after VARCHAR DEFAULT NULL;
+    BEGIN
+        graph_date_after := (SELECT TRY_PARSE_JSON(:status_raw):engine:graph_date::STRING);
+    EXCEPTION WHEN OTHER THEN graph_date_after := NULL;
+    END;
+    IF (:graph_date_before IS NOT NULL AND :graph_date_after IS NOT NULL
+        AND :graph_date_before = :graph_date_after) THEN
+        RETURN 'Rebuild DID NOT recompute the graph for ' || :P_REGION
+               || ' - graph_date is unchanged (' || :graph_date_after || '), so the'
+               || ' persisted graph was reloaded rather than rebuilt. Check that the'
+               || ' service reached SUSPENDED before the graph stage was purged.';
+    END IF;
+
+    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false'
+           || ', graph_date ' || COALESCE(:graph_date_before, 'unknown') || ' -> ' || COALESCE(:graph_date_after, 'unknown');
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
@@ -1474,7 +2569,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_functions(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"2.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1496,7 +2591,7 @@ $$;
 -- ===========================================================================
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()
 RETURNS VARIANT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}'
 AS
 $$
     OBJECT_CONSTRUCT(
@@ -1513,7 +2608,9 @@ $$
         'isochrones_maximum_locations', 50,
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
-        'isochrones_maximum_range_time', 18000
+        'isochrones_maximum_range_time', 18000,
+        'snap_maximum_locations', 5000,
+        'match_maximum_search_radius', 2000
     )::VARIANT
 $$;
 
@@ -1522,7 +2619,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
     LIMITS     VARIANT,
     UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}';
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
@@ -1530,7 +2627,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 PACKAGES = ('snowflake-snowpark-python')
 HANDLER = 'run'
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1556,6 +2653,8 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'isochrones_maximum_intervals': 10,
         'isochrones_maximum_range_distance': 1500000,
         'isochrones_maximum_range_time': 18000,
+        'snap_maximum_locations': 5000,
+        'match_maximum_search_radius': 2000,
     }
     try:
         d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
@@ -1622,11 +2721,39 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'
     ]
 
+    # Per-profile default ext_storages (from ORS build config defaults) PLUS OsmId.
+    # OsmId is required so the /export TopoJSON exposes ors_ids, which MATCH_PATH uses
+    # to map matched edge ids back to road geometry. We re-declare each profile's
+    # defaults explicitly (rather than only adding OsmId) so that if ORS treats a
+    # config ext_storages block as a full replacement of the built-in defaults, we do
+    # not silently drop the storages that power avoid_features / HGV restrictions /
+    # trail difficulty. OsmId is compatible with any profile type.
+    default_ext_storages = {
+        'driving-car':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'driving-hgv':      ['WayCategory', 'WaySurfaceType', 'Tollways', 'RoadAccessRestrictions', 'HeavyVehicle'],
+        'cycling-regular':  ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-road':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-mountain': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'cycling-electric': ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-walking':     ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'foot-hiking':      ['WayCategory', 'WaySurfaceType', 'HillIndex', 'TrailDifficulty'],
+        'wheelchair':       ['WayCategory', 'WaySurfaceType', 'Wheelchair'],
+    }
+
     profile_lines = []
     for p in all_profiles:
         enabled = 'true' if p in profiles_list else 'false'
         profile_lines.append('      ' + p + ':')
         profile_lines.append('        enabled: ' + enabled)
+        # Only enabled profiles are built, so only they need the ext_storages block.
+        if enabled == 'true':
+            storages = list(default_ext_storages.get(p, ['WayCategory', 'WaySurfaceType']))
+            if 'OsmId' not in storages:
+                storages.append('OsmId')
+            profile_lines.append('        build:')
+            profile_lines.append('          ext_storages:')
+            for s in storages:
+                profile_lines.append('            ' + s + ':')
 
     all_profiles_str = ', '.join(all_profiles)
     # maximum_snapping_radius is explicit so it survives ORS engine version
@@ -1666,6 +2793,24 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_visited_nodes: ' + str(limits['matrix_maximum_visited_nodes']),
         '      maximum_routes: ' + str(limits['matrix_maximum_routes']),
         '      maximum_routes_flexible: ' + str(limits['matrix_maximum_routes']),
+        # Bound to maximum_snapping_radius ON PURPOSE, and read from the same
+        # dict entry so the two can never drift apart again. ORS snaps matrix
+        # coordinates with endpoints.matrix.maximum_search_radius (shipped
+        # default 2000) and routing coordinates with
+        # profile_default.service.maximum_snapping_radius (set to 1000 here), so
+        # while these differed MATRIX was strictly MORE PERMISSIVE than
+        # DIRECTIONS: a point 1-2 km off the graph resolved to a finite matrix
+        # duration and then made DIRECTIONS answer 404/2010 "could not find
+        # routable point". Measured on this deployment: every 2010 in
+        # OBSERVABILITY.ORS_REQUEST_LOG was preceded within one second by a
+        # matrix 200 on the same profile and host. That is what defeats the
+        # get_directions matrix pre-flight (deploy-agent.sql step 1e) and the
+        # VROOM code-3 pre-filter in the SA app's backload helpers.ts - both use
+        # the matrix as an oracle for a call with a tighter radius, so the
+        # oracle cannot convict the case it exists for. Equal radii make the
+        # oracle sound. This is a runtime cap: it applies on container restart,
+        # never a graph rebuild.
+        '      maximum_search_radius: ' + str(limits['maximum_snapping_radius']),
         '    isochrones:',
         '      maximum_locations: ' + str(limits['isochrones_maximum_locations']),
         '      maximum_intervals: ' + str(limits['isochrones_maximum_intervals']),
@@ -1675,6 +2820,12 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
         '          value: ' + str(limits['isochrones_maximum_range_time']),
+        '    snap:',
+        '      enabled: true',
+        '      maximum_locations: ' + str(limits['snap_maximum_locations']),
+        '    match:',
+        '      enabled: true',
+        '      maximum_search_radius: ' + str(limits['match_maximum_search_radius']),
         '',
     ])
 
@@ -1706,7 +2857,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.APPLY_ORS_LIMITS(P_REGION VARCHAR, P_LIMITS VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"ors-limits"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1735,7 +2886,8 @@ BEGIN
         REGION     VARCHAR NOT NULL,
         LIMITS     VARIANT,
         UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
-    );
+    )
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"ors-limits"}}';
 
     -- Upsert the per-region overrides (one row per region).
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS WHERE UPPER(REGION) = UPPER(:P_REGION);
@@ -1890,7 +3042,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region","action":"mmap-prewarm"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"mmap-prewarm"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2115,7 +3267,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2233,7 +3385,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2243,6 +3395,14 @@ BEGIN
     -- Region's VROOM service shares the same lifecycle as ORS - drop alongside.
     LET vroom_name VARCHAR := 'VROOM_SERVICE_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || vroom_name;
+    -- The schedule-less launch task created by START_REGION_PROVISION is
+    -- per-region, so it goes with the region. Best-effort: a missing task (the
+    -- region was provisioned by the admin app instead) is not an error.
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TASK IF EXISTS OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' ||
+                          REGEXP_REPLACE(UPPER(:P_REGION), '[^A-Z0-9_]', '');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
@@ -2260,7 +3420,7 @@ $$;
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_VROOM_SERVICE_SPEC(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 AS
 $$
     '{"spec":{"containers":[{"name":"vroom","image":"/openrouteservice_app/core/image_repository/vroom-docker:v1.0.4","env":{"VROOM_ROUTER":"ors","ORS_HOST":"ors-service-' ||
@@ -2271,7 +3431,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_vroom_service(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2290,7 +3450,7 @@ BEGIN
                   ' IN COMPUTE POOL ' || :pool_name ||
                   ' FROM SPECIFICATION ''' || :vroom_spec ||
                   ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 14400' ||
-                  ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}''';
+                  ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
     RETURN 'VROOM service ' || :svc_name || ' created in pool ' || :pool_name;
 END;
@@ -2299,7 +3459,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_vroom(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2321,7 +3481,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SOFT_SUSPEND_REGION(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"cost-guard"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"cost-guard"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2395,7 +3555,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LIST_REGIONS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2453,7 +3613,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUIL
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","action":"cost-guardrail"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2721,7 +3881,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY (
     OUTPUT_GRAPH_GIB FLOAT,
     LOG_URI          VARCHAR
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"telemetry"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"telemetry"}}';
 
 -- =============================================================================
 -- RECOMMEND_RETRY_STRATEGY
@@ -2739,7 +3899,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECOMMEND_RETRY_STRATEGY(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"telemetry","action":"retry-strategy"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"telemetry","action":"retry-strategy"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2802,7 +3962,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DIAGNOSE_REGION(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"diagnostic","action":"agent"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"diagnostic","action":"agent"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3280,7 +4440,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_PROVISION_ITER(P_REGION VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"finalize-iter"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"finalize-iter"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3575,6 +4735,42 @@ BEGIN
         COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :job_id;
 
+    -- Same land clip as the wrapper's success path. The rescue task is the OTHER
+    -- way a region reaches READY, so omitting it here would leave rescued regions
+    -- sampling against the raw PBF extract polygon. Best-effort; idempotent.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.ENSURE_ROUTABLE_BOUNDARY(:P_REGION);
+        -- See the wrapper's copy: this procedure reports failure by RETURN value,
+        -- not by raising, so the returned string has to be inspected too.
+        LET rb_msg VARCHAR := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        IF (rb_msg NOT LIKE 'BAKED:%' AND rb_msg NOT LIKE 'CACHED:%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary: ' || COALESCE(:rb_msg, 'unknown') || ']'
+            WHERE JOB_ID = :job_id;
+        END IF;
+    EXCEPTION WHEN OTHER THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        SET MESSAGE = COALESCE(MESSAGE, '') || ' [routable_boundary_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+        WHERE JOB_ID = :job_id;
+    END;
+
+    -- Same profile-cache refresh as the wrapper's success path. The rescue task
+    -- is the OTHER way a region reaches READY, so omitting it here would leave a
+    -- rescued region resolving profiles from its provision job row alone.
+    BEGIN
+        LET rp_msg VARCHAR := '';
+        CALL OPENROUTESERVICE_APP.CORE.REFRESH_REGION_PROFILES(:P_REGION) INTO :rp_msg;
+        IF (:rp_msg NOT LIKE 'REFRESHED:%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles: ' || COALESCE(:rp_msg, 'unknown') || ']'
+            WHERE JOB_ID = :job_id;
+        END IF;
+    EXCEPTION WHEN OTHER THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        SET MESSAGE = COALESCE(MESSAGE, '') || ' [region_profiles_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+        WHERE JOB_ID = :job_id;
+    END;
+
     -- Update the matching ORS_BUILD_HISTORY row (most recent IN_PROGRESS or
     -- TIMEOUT for this region, which is the row the wrapper opened).
     BEGIN
@@ -3635,7 +4831,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_DEFAULT_REGION_IF_READY()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"bootstrap","action":"finalize-default"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"bootstrap","action":"finalize-default"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -3779,7 +4975,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"rescue","action":"repair-stuck-build"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"repair-stuck-build"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4058,7 +5254,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS()
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"scan"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"scan"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4101,6 +5297,145 @@ BEGIN
     -- RUNNING before REPAIR evaluates its in-flight guards.
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- Relaunch region builds whose PROVISIONING PROCEDURE died (or gave up)
+    -- during PBF download. This is the ONE place this reconciler launches work
+    -- rather than only finalizing it: the layers below the procedure already
+    -- self-heal (the container resumes a broken segment from its on-disk
+    -- offset; the poll loop re-triggers DOWNLOAD on both an error and a
+    -- 'not_started' no-worker status), but nothing covered the procedure itself
+    -- disappearing on top of tens of GB of resumable segment files.
+    --
+    -- Eligibility (including the NULL-heartbeat safety gate and the 3-per-24h
+    -- bound) lives entirely in V_DOWNLOAD_RELAUNCH_CANDIDATES, which the
+    -- self-suspend guard below reads too - see that view's header.
+    BEGIN
+        LET rl_rs RESULTSET := (
+            SELECT JOB_ID, REGION, DISPLAY_NAME, PROFILES, COMPUTE_SIZE,
+                   STATUS, REASON, PRIOR_RELAUNCHES, IS_ORIGIN_OUTAGE
+            FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_CANDIDATES
+        );
+        LET rl_cur CURSOR FOR rl_rs;
+        FOR rl IN rl_cur DO
+            -- Per-candidate handler: one unresolvable region must not abort the
+            -- cycle for the others (matches FINALIZE_PROVISION_ITER above).
+            BEGIN
+                LET rl_job VARCHAR := rl.JOB_ID;
+                LET rl_region VARCHAR := rl.REGION;
+                LET rl_reason VARCHAR := rl.REASON;
+                -- Every cursor field used later MUST be copied into a local
+                -- variable: a cursor field reference is not a valid argument in
+                -- a CALL list ("invalid identifier 'RL.DISPLAY_NAME'").
+                LET rl_display VARCHAR := rl.DISPLAY_NAME;
+                LET rl_profiles VARCHAR := rl.PROFILES;
+                LET rl_compute VARCHAR := rl.COMPUTE_SIZE;
+                LET rl_prior INTEGER := rl.PRIOR_RELAUNCHES;
+                LET rl_resumable INTEGER DEFAULT 0;
+                -- Taken from the view, NOT re-derived: the bound was evaluated
+                -- against the view's verdict, so stamping a different one here
+                -- would corrupt the budget on every later cycle.
+                LET rl_origin BOOLEAN := rl.IS_ORIGIN_OUTAGE;
+                LET rl_token VARCHAR := IFF(:rl_origin,
+                                            'download_relaunched_origin',
+                                            'download_relaunched');
+
+                -- Only relaunch when there is something to resume. A full
+                -- re-download of a continental PBF is hours of transfer, which
+                -- is a cost decision for a human, not for a reconciler.
+                --
+                -- The probe reads the stage's DIRECTORY table, NOT LIST. LIST
+                -- is documented as usable inside an owner's rights procedure,
+                -- but in practice it raises "Unsupported statement type
+                -- 'LIST_FILES'" even via EXECUTE IMMEDIATE. The REFRESH is
+                -- required because the directory table is not updated by writes
+                -- that arrive through a mounted SPCS stage volume, which is
+                -- exactly how the downloader creates these files. Same pattern
+                -- as REPAIR_STUCK_REGION_BUILDS' graph-byte probe.
+                BEGIN
+                    ALTER STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE REFRESH;
+                    SELECT COUNT(*) INTO :rl_resumable
+                      FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE)
+                     WHERE RELATIVE_PATH ILIKE :rl_region || '/%'
+                       AND COALESCE(SIZE, 0) > 0
+                       AND (RELATIVE_PATH ILIKE '%.osm.pbf'
+                         OR RELATIVE_PATH ILIKE '%.seg%');
+                EXCEPTION WHEN OTHER THEN rl_resumable := 0;
+                END;
+
+                IF (:rl_resumable > 0) THEN
+                    -- Mark the dead job terminal FIRST: START_REGION_PROVISION
+                    -- refuses while a PENDING/RUNNING row exists for the region.
+                    -- ERROR_MSG is the relaunch counter (history is the bound;
+                    -- a counter column cannot survive into the new job row) and
+                    -- its VALUE selects which bound - see the candidate view.
+                    -- STAGE moves off DOWNLOADING so the row cannot reappear as
+                    -- its own candidate.
+                    --
+                    -- DISMISSED = TRUE because this row is not a failure a human
+                    -- can act on: it was deliberately superseded by its own
+                    -- successor, which carries the live state. Left visible, an
+                    -- outage that relaunched three times filled the admin app's
+                    -- "Failed Jobs" panel with three red 'download_relaunched'
+                    -- cards and pushed the one actionable row out of view. The
+                    -- audit trail is preserved in COST_GUARD_LOG below and the
+                    -- row itself is untouched apart from this flag.
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET STATUS = 'ERROR',
+                        STAGE = 'ERROR',
+                        COMPLETED_AT = SYSDATE(),
+                        ERROR_MSG = :rl_token,
+                        DISMISSED = TRUE,
+                        MESSAGE = 'Superseded by an automatic download resume ('
+                                  || :rl_reason || '). Previous message: '
+                                  || LEFT(COALESCE(MESSAGE, ''), 300)
+                    WHERE JOB_ID = :rl_job;
+
+                    -- PROFILES and COMPUTE_SIZE MUST be passed through:
+                    -- START_REGION_PROVISION defaults them to
+                    -- 'driving-car,driving-hgv,cycling-electric' and 'XXL', so
+                    -- omitting them would silently turn a single-profile build
+                    -- into a three-profile one. FALSE keeps the staged PBF and
+                    -- segment files, which is what makes this a resume.
+                    LET rl_out VARCHAR := '';
+                    CALL OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION(
+                        :rl_region,
+                        :rl_display,
+                        :rl_profiles,
+                        :rl_compute,
+                        FALSE
+                    ) INTO :rl_out;
+
+                    BEGIN
+                        INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG
+                            (REGION, ACTION, FIRED_AT, REASON)
+                        VALUES (:rl_region, 'download_relaunch', SYSDATE(),
+                                :rl_reason || '; class=' || :rl_token
+                                || '; prior_relaunches='
+                                || :rl_prior || '; dead_job=' || :rl_job
+                                || '; result=' || LEFT(COALESCE(:rl_out, ''), 300));
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+
+                    rescued := :rescued + 1;
+                END IF;
+            EXCEPTION WHEN OTHER THEN
+                -- Do NOT discard this. A bare `NULL` handler here hid two real
+                -- defects during development (an unsupported LIST statement and
+                -- a cursor field used as a CALL argument) and presented as the
+                -- reconciler simply doing nothing, with no error anywhere. The
+                -- handler still absorbs the failure so one bad region cannot
+                -- abort the cycle, but it leaves evidence.
+                BEGIN
+                    INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG
+                        (REGION, ACTION, FIRED_AT, REASON)
+                    VALUES (COALESCE(rl.REGION, '?'), 'download_relaunch_error',
+                            SYSDATE(), LEFT(SQLERRM, 400));
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+            END;
+        END FOR;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
@@ -4158,6 +5493,7 @@ BEGIN
     BEGIN
         LET jobs_left INTEGER := 0;
         LET prewarm_left INTEGER := 0;
+        LET relaunch_left INTEGER := 0;
         -- Snowflake Scripting requires SELECT ... INTO to have a FROM clause, so
         -- count each source separately (idiomatic pattern used elsewhere here)
         -- and sum, rather than a FROM-less SELECT of scalar subqueries.
@@ -4170,7 +5506,22 @@ BEGIN
         SELECT COUNT(*) INTO :prewarm_left
           FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
           WHERE NEEDS_PREWARM = TRUE;
-        IF ((:jobs_left + :prewarm_left) = 0) THEN
+        -- A download-relaunch candidate that is already FAILED/ERROR matches
+        -- NONE of the conditions above (its ERROR_MSG is not one of the two
+        -- graph values), so without this count the task would suspend itself
+        -- before ever acting on it.
+        --
+        -- Reads ..._PENDING, NOT ..._CANDIDATES: a row serving its backoff is
+        -- deliberately absent from CANDIDATES, so counting that view here would
+        -- put the task to sleep exactly while a rescue was waiting to become
+        -- due - and nothing would wake it, because the only re-arm paths are the
+        -- provision enqueue endpoint and the prewarm procs. The result would be
+        -- a permanent stall rather than a delayed retry. PENDING still respects
+        -- the per-class bound, so once a region is exhausted this returns to 0
+        -- and the task can sleep - no permanent wake-loop.
+        SELECT COUNT(*) INTO :relaunch_left
+          FROM OPENROUTESERVICE_APP.CORE.V_DOWNLOAD_RELAUNCH_PENDING;
+        IF ((:jobs_left + :prewarm_left + :relaunch_left) = 0) THEN
             ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
@@ -4183,7 +5534,18 @@ $$;
 CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
     SCHEDULE = 'USING CRON */2 * * * * UTC'
     USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"rescue","action":"task"}}'
+    -- A task's QUERY_TAG is a SESSION parameter, which is what makes it worth
+    -- setting: a session-level tag propagates into the body of every procedure
+    -- the task calls, so the CALL and all of its child statements land in
+    -- QUERY_HISTORY attributed. That propagation is measured, and it is the only
+    -- mechanism available here - a stored procedure cannot tag itself, because
+    -- both `ALTER SESSION SET query_tag` and the EXECUTE IMMEDIATE form of it
+    -- fail inside a procedure body with "Unsupported statement type
+    -- 'ALTER_SESSION'" (SQL and JavaScript alike). Without this line the task
+    -- and everything it drives is unattributed, which on this task means the
+    -- entire reconciler and provisioner-relaunch path.
+    QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"rescue","action":"task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
 
@@ -4223,7 +5585,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.0","attributes":{"component":"preflight"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"preflight"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4240,6 +5602,20 @@ DECLARE
     errors_arr     ARRAY DEFAULT ARRAY_CONSTRUCT();
     ok BOOLEAN DEFAULT TRUE;
 BEGIN
+    -- Degree-box area, DELIBERATELY without the cos(latitude) correction its
+    -- sibling in 06_matrix_ops.sql applies, and deliberately not ST_AREA.
+    --
+    -- Two reasons, both load-bearing:
+    --   1. No geometry is in scope. This procedure takes four bbox FLOATs and
+    --      no region key, so there is no BOUNDARY column to measure - unlike
+    --      ESTIMATE_MATRIX_COST, which resolves REGION_CATALOG.BOUNDARY_AREA_KM2
+    --      first and only falls back to a cos-corrected box.
+    --   2. The over-estimate is the safety margin. Away from the equator this
+    --      overstates the true area (~27% at SF's latitude), which feeds
+    --      est_pbf_gib -> est_graph_gib -> a LARGER recommended compute size.
+    --      Adding cos() here would shrink every estimate and recommend smaller
+    --      pods, so a graph build that currently gets warned about would
+    --      instead OOM. The heuristic errs toward warning on purpose.
     bbox_area_sqkm := ABS((P_MAX_LON - P_MIN_LON) * (P_MAX_LAT - P_MIN_LAT)) * 111.0 * 111.0;
     -- Inhabited-area heuristic: ~0.05 GiB per 2500 km^2 (Berlin / SF / Munich
     -- city extracts) climbing to ~10 GiB at continental scale. Coastal /
@@ -4325,16 +5701,28 @@ ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RE
 -- Idempotent migration: re-stage ors-config.yml with init_threads for every
 -- DEPLOYED region so the next suspend/resume loads profiles in parallel.
 -- Does not ALTER SERVICE - config is picked up on the next container start.
+--
+-- SCOPE WARNING: this is deliberately CONFIG-ONLY and must stay that way. The
+-- generated config also declares each profile's ext_storages (incl. OsmId), and
+-- an ext_storages delta only takes effect on a graph REBUILD, never on a plain
+-- restart. Do NOT add a rebuild here: this proc runs on every module load, so
+-- that would turn a routine redeploy into a continental graph rebuild. A region
+-- whose graph predates an ext_storages change must be repaired explicitly with
+-- REBUILD_REGION_GRAPHS(region).
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"migration","init_threads":true}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"migration","init_threads":true}}'
 EXECUTE AS OWNER
 AS
 $$
 DECLARE
     rs RESULTSET;
+    -- Separate resultset for the per-region profile probe below: the outer
+    -- cursor c_reg iterates over `rs`, so reusing it inside the loop would
+    -- re-point the cursor's own source mid-iteration.
+    rs_prof RESULTSET;
     regions_processed INTEGER DEFAULT 0;
     msg VARCHAR DEFAULT '';
     profiles VARCHAR DEFAULT '';
@@ -4374,9 +5762,29 @@ BEGIN
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            -- No job ever recorded profiles for this region. Skip rather than
-            -- guess: writing an empty profile set would produce a config with
-            -- every profile disabled (a broken graph on next resume).
+            -- Fallback for the bootstrapped default region, which has no
+            -- provision-job row at all: ask the running engine which profiles
+            -- it actually loaded. Without this the default region is skipped
+            -- forever and stays pinned to the static staged ors-config.yml,
+            -- which is how a default region shipped with no OsmId ext storage
+            -- (MATCH_PATH then returns MATCHED_EDGES > 0 but a NULL GEOJSON).
+            -- Mirrors the same fallback in APPLY_ORS_LIMITS and
+            -- DOWNSIZE_REGION_AFTER_BUILD.
+            BEGIN
+                rs_prof := (EXECUTE IMMEDIATE
+                    'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                    || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :reg || ''')::VARCHAR):profiles), '','') AS P');
+                LET c_prof CURSOR FOR rs_prof;
+                FOR rp IN c_prof DO profiles := rp.P; END FOR;
+            EXCEPTION WHEN OTHER THEN profiles := NULL;
+            END;
+        END IF;
+        IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            -- Neither a job row nor a reachable engine (e.g. the region is
+            -- suspended). Skip rather than guess: writing an empty profile set
+            -- would produce a config with every profile disabled (a broken
+            -- graph on next resume), and defaulting to 'driving-car' would
+            -- silently drop the region's other profiles.
             CONTINUE;
         END IF;
         pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
@@ -4387,7 +5795,8 @@ BEGIN
         regions_processed := regions_processed + 1;
         msg := msg || :reg || '; ';
     END FOR;
-    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg;
+    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg
+           || '(config only - an ext_storages change needs REBUILD_REGION_GRAPHS)';
 END;
 $$;
 
@@ -4415,7 +5824,7 @@ $$;
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"install-fleet-apps","version":"1.1","attributes":{"component":"bootstrap"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","component":"bootstrap"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -4447,3 +5856,215 @@ $$;
 
 CALL OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS();
 CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();
+
+-- ===========================================================================
+-- START_REGION_PROVISION - launch a region build ASYNCHRONOUSLY from SQL
+-- ---------------------------------------------------------------------------
+-- WHY THIS EXISTS
+-- Until now the only way to start a region build was the admin app's
+-- POST /api/regions/provision, which inserts the job row and then fires an
+-- UN-AWAITED submitSqlAsync() from the Node process, relying on the container's
+-- event loop to keep the multi-hour CALL alive. Nothing equivalent existed in
+-- SQL, so a stored procedure (and therefore a synapse verb, and therefore the
+-- agent) could not provision a region: calling PROVISION_REGION_WRAPPER
+-- directly BLOCKS for tens of minutes to hours, which no agent tool call can
+-- survive.
+--
+-- Enqueuing alone does not work either: RESCUE_PENDING_PROVISIONS only
+-- FINALIZES stuck jobs, it never launches a PENDING one, so a job row with no
+-- statement handle sits there forever.
+--
+-- HOW
+-- A schedule-less TASK plus EXECUTE TASK. A task created without a SCHEDULE can
+-- only ever be run manually, so it never fires on its own; EXECUTE TASK submits
+-- one run and returns immediately, which is the async launch primitive this
+-- needs. Same spirit as STUDIO_START_JOB, which launches an async one-shot SPCS
+-- job service rather than doing the work inline.
+--
+-- The task is named per region and created with CREATE OR REPLACE, so its
+-- cardinality is bounded by the number of regions - there is nothing to garbage
+-- collect, and re-provisioning the same region reuses the one task.
+--
+-- ASYNC (CALL ...) inside a scripting block was considered and rejected: this
+-- codebase only ever uses it with a matching AWAIT ALL (05_matrix_pipeline.sql),
+-- and an async child without an AWAIT is not guaranteed to outlive the parent
+-- block, which is exactly the guarantee a multi-hour build needs.
+--
+-- Inputs
+--   P_REGION            -- region name; must exist in REGION_CATALOG
+--   P_DISPLAY_NAME      -- optional label; defaults to the region name
+--   P_PROFILES          -- optional comma-separated ORS profiles
+--   P_COMPUTE_SIZE      -- optional S/M/L/XL/XXL; defaults to XXL
+--   P_FORCE_REDOWNLOAD  -- re-download the PBF even if it is already staged
+--
+-- Returns JSON: {status, job_id, region, pbf_url, compute_size, profiles, note}
+-- Errors return {status:'error', error:'...'} rather than raising, so a caller
+-- gets a readable reason instead of a SQL exception.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.START_REGION_PROVISION(
+    P_REGION           VARCHAR,
+    P_DISPLAY_NAME     VARCHAR DEFAULT NULL,
+    P_PROFILES         VARCHAR DEFAULT NULL,
+    P_COMPUTE_SIZE     VARCHAR DEFAULT NULL,
+    P_FORCE_REDOWNLOAD BOOLEAN DEFAULT FALSE
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"start-async"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    job_id        VARCHAR;
+    task_name     VARCHAR;
+    region_clean  VARCHAR;
+    display_name  VARCHAR;
+    profiles      VARCHAR;
+    compute_size  VARCHAR;
+    pbf_url       VARCHAR DEFAULT NULL;
+    min_lat       FLOAT DEFAULT NULL;
+    max_lat       FLOAT DEFAULT NULL;
+    min_lon       FLOAT DEFAULT NULL;
+    max_lon       FLOAT DEFAULT NULL;
+    found         INTEGER DEFAULT 0;
+    rs            RESULTSET;
+    call_sql      VARCHAR;
+BEGIN
+    -- Region name becomes part of a task identifier, so restrict it to
+    -- identifier-safe characters rather than quoting downstream.
+    region_clean := REGEXP_REPLACE(COALESCE(:P_REGION, ''), '[^A-Za-z0-9_]', '');
+    IF (region_clean = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region is required and must contain letters or digits')::STRING;
+    END IF;
+
+    -- Resolve the PBF URL and bounding box from the catalog so a caller never
+    -- has to supply them. A region with no PBF_URL (e.g. a natural-earth
+    -- supplemental row) cannot be built, and saying so is better than starting a
+    -- job that fails during download.
+    rs := (
+        SELECT PBF_URL AS U, MIN_LAT AS A, MAX_LAT AS B, MIN_LON AS C, MAX_LON AS D
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE (UPPER(REPLACE(LOOKUP_NAME, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_KEY, ' ', '')) = UPPER(:region_clean)
+               OR UPPER(REPLACE(REGION_NAME, ' ', '')) = UPPER(:region_clean))
+          AND PBF_URL IS NOT NULL
+        ORDER BY PBF_SIZE_MB NULLS LAST
+        LIMIT 1
+    );
+    LET c1 CURSOR FOR rs;
+    FOR r IN c1 DO
+        pbf_url := r.U; min_lat := r.A; max_lat := r.B; min_lon := r.C; max_lon := r.D;
+        found := 1;
+    END FOR;
+
+    IF (found = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has no downloadable PBF in REGION_CATALOG. ' ||
+                     'Check the spelling, or refresh the catalog with REFRESH_REGION_CATALOG().')::STRING;
+    END IF;
+
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'region ' || :region_clean || ' has an incomplete bounding box in REGION_CATALOG')::STRING;
+    END IF;
+
+    -- Refuse to start a second build for a region that already has one in
+    -- flight: two concurrent builds fight over the same service, pool and stage
+    -- path, and the loser corrupts the winner's graph.
+    SELECT COUNT(*) INTO :found
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE UPPER(REGION) = UPPER(:region_clean) AND STATUS IN ('PENDING', 'RUNNING');
+    IF (found > 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error',
+            'error', 'a build for ' || :region_clean || ' is already PENDING or RUNNING. ' ||
+                     'Poll it with GET_PROVISION_STATUS() instead of starting another.')::STRING;
+    END IF;
+
+    display_name := COALESCE(NULLIF(TRIM(:P_DISPLAY_NAME), ''), :region_clean);
+    profiles     := COALESCE(NULLIF(TRIM(:P_PROFILES), ''), 'driving-car,driving-hgv,cycling-electric');
+    compute_size := UPPER(COALESCE(NULLIF(TRIM(:P_COMPUTE_SIZE), ''), 'XXL'));
+    IF (compute_size NOT IN ('S', 'M', 'L', 'XL', 'XXL')) THEN
+        compute_size := 'XXL';
+    END IF;
+
+    job_id    := 'PROVISION_' || UPPER(:region_clean) || '_' ||
+                 TO_VARCHAR(DATE_PART(EPOCH_MILLISECOND, SYSDATE()));
+    task_name := 'OPENROUTESERVICE_APP.CORE.PROVISION_LAUNCH_' || UPPER(:region_clean);
+
+    INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE, COMPUTE_SIZE, MESSAGE)
+    VALUES
+        (:job_id, :region_clean, :display_name, :pbf_url, :profiles, 'PENDING', 'NOT_STARTED',
+         :compute_size, 'Queued by START_REGION_PROVISION; launching build task.');
+
+    -- Arm the self-gating rescue task so this build gets finalized even if the
+    -- wrapper's own wait loop times out. It suspends itself again once idle.
+    BEGIN
+        ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- Schedule-less task: never fires on its own, only via EXECUTE TASK below.
+    -- Numeric args are interpolated (they are FLOATs resolved from the catalog,
+    -- not caller input); the string args are single-quoted and were either
+    -- regex-sanitized or clamped to a fixed allowlist above.
+    call_sql :=
+        'CREATE OR REPLACE TASK ' || :task_name ||
+        ' USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = ''XSMALL''' ||
+        -- USER_TASK_TIMEOUT_MS defaults to 3600000 (1 HOUR), which silently
+        -- capped every build at 60 minutes: PROVISION_REGION_WRAPPER's own
+        -- ceiling is 1320 polls x 30s (~11h), but the task run was cancelled
+        -- long before that with "Statement reached its statement or warehouse
+        -- timeout of 3,600 second(s)". Measured on a continental build: the
+        -- wrapper died at poll 113 while the download was at 91%, leaving the
+        -- job row RUNNING forever with nobody driving it. 12h gives the
+        -- documented ceiling room to actually apply (max allowed is 24h).
+        ' USER_TASK_TIMEOUT_MS = 43200000' ||
+        -- Session-level QUERY_TAG so the whole build is attributed. This is the
+        -- highest-value tag in the repo: PROVISION_REGION_WRAPPER runs for
+        -- hours and drives the download, config, graph-build and service-start
+        -- statements, none of which could be attributed before, because a
+        -- procedure cannot tag its own session (ALTER SESSION is rejected
+        -- inside a procedure body) and the task had no tag to inherit.
+        ' QUERY_TAG = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"provisioner","action":"launch-task"}}''' ||
+        ' AS CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(' ||
+        '''' || :job_id || ''', ' ||
+        '''' || :region_clean || ''', ' ||
+        '''' || REPLACE(:display_name, '''', '''''') || ''', ' ||
+        '''' || REPLACE(:pbf_url, '''', '''''') || ''', ' ||
+        :min_lat || ', ' || :max_lat || ', ' || :min_lon || ', ' || :max_lon || ', ' ||
+        '''' || :profiles || ''', ' ||
+        '''' || :compute_size || ''', ' ||
+        IFF(:P_FORCE_REDOWNLOAD, 'TRUE', 'FALSE') || ')';
+    EXECUTE IMMEDIATE :call_sql;
+
+    -- EXECUTE TASK submits one run and returns; it does NOT wait for the build.
+    EXECUTE IMMEDIATE 'EXECUTE TASK ' || :task_name;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'launched',
+        'job_id', :job_id,
+        'region', :region_clean,
+        'pbf_url', :pbf_url,
+        'profiles', :profiles,
+        'compute_size', :compute_size,
+        'note', 'Build started asynchronously. A region build takes tens of minutes to several ' ||
+                'hours depending on size; the region is NOT usable until it completes. Poll with ' ||
+                'GET_PROVISION_STATUS().'
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        -- Do not leave a PENDING row behind for a launch that never happened:
+        -- it would block the next attempt on the in-flight guard above.
+        BEGIN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET STATUS = 'ERROR', STAGE = 'ERROR', COMPLETED_AT = SYSDATE(),
+                ERROR_MSG = 'launch failed: ' || :SQLERRM
+            WHERE JOB_ID = :job_id;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', :SQLERRM)::STRING;
+END;
+$$;
