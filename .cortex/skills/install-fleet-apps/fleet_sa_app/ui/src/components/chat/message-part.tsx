@@ -13,6 +13,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { stripCitationTags } from '@/lib/chart-citations';
 import { roundForDisplay } from '@/lib/format-number';
+import { remarkNumberFormat } from '@/lib/remark-number-format';
 
 // Raw tool-result viewer: still a surface a user reads, so numbers are capped at
 // the display precision here too. Applied as a JSON replacer rather than a string
@@ -127,7 +128,11 @@ function TextPart({ content }: { content: string }) {
   return (
     <div className="markdown-body" style={{ fontSize: '14px', lineHeight: '1.6' }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        // remarkNumberFormat is the THIRD layer of the decimal policy, and the
+        // only one that reaches the agent's own words. The React formatter cannot:
+        // an answer's numbers arrive inside a markdown table the model wrote, so
+        // a FLOAT sum from a semantic-view fact printed all 17 of its digits.
+        remarkPlugins={[remarkGfm, remarkNumberFormat]}
         urlTransform={(url) => (url.startsWith('view:') ? url : defaultUrlTransform(url))}
         components={{
           // A markdown table is the agent's own output format for verb and
