@@ -150,7 +150,10 @@ AREAS = {
             "xAxis": {"field": "week", "fieldType": "category"},
             "series": [
                 {"type": "bar", "field": "ot_premium", "label": "OT Premium"},
-                {"type": "line", "field": "at_risk_operators", "label": "At-Risk {{labels.operator_plural}}"},
+                # Headcount on its own axis. On a shared axis the dollar series
+                # sets the scale (measured 19,340 vs 22) and the count draws a
+                # bar 0.1% of plot height - present, hoverable, invisible.
+                {"type": "line", "field": "at_risk_operators", "label": "At-Risk {{labels.operator_plural}}", "yAxis": "right"},
             ],
         },
     },
@@ -190,7 +193,8 @@ AREAS = {
             "xAxis": {"field": "team", "fieldType": "category"},
             "series": [
                 {"type": "bar", "field": "ot_premium", "label": "OT Premium"},
-                {"type": "bar", "field": "at_risk_operators", "label": "At-Risk {{labels.operator_plural}}"},
+                # Same clash as the trend panel above, same remedy.
+                {"type": "line", "field": "at_risk_operators", "label": "At-Risk {{labels.operator_plural}}", "yAxis": "right"},
             ],
         },
     },
