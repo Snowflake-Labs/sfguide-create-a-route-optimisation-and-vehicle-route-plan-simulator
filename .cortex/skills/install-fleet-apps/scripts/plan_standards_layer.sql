@@ -147,6 +147,14 @@ WHEN NOT MATCHED THEN INSERT
 
 -- Resolved standard per region: the region's own row where it has one, the '*'
 -- row otherwise. Exposed as a view so consumers never reimplement the fallback.
+--
+-- The region list comes from DIM_DATASETS (the LOADED regions), deliberately NOT
+-- from VW_DIM_PLAN. Two reasons. A standard should exist for every loaded region,
+-- including one that has no plans yet, otherwise the app's region selector can
+-- land on a region with no resolvable thresholds. And VW_DIM_PLAN is a view over
+-- a chain of scoped TABLE FUNCTIONS, which a SQL UDF body cannot resolve with
+-- ownership alone - reading it here would have propagated that constraint into
+-- every future function that needs a threshold.
 CREATE OR REPLACE VIEW FLEET_APP.PLAN_STANDARDS.VW_STANDARDS_CONFIG
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-plan-standards","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
   AS
@@ -165,7 +173,7 @@ SELECT
   COALESCE(o.COST_PER_KM_USD, d.COST_PER_KM_USD)                 AS COST_PER_KM_USD,
   COALESCE(o.COST_PER_HOUR_USD, d.COST_PER_HOUR_USD)             AS COST_PER_HOUR_USD,
   (o.REGION IS NOT NULL)                                         AS IS_REGION_SPECIFIC
-FROM (SELECT DISTINCT REGION FROM FLEET_APP.CORE.VW_DIM_PLAN) r
+FROM (SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS) r
 LEFT JOIN FLEET_APP.PLAN_STANDARDS.STANDARDS o ON o.REGION = r.REGION
 CROSS JOIN (SELECT * FROM FLEET_APP.PLAN_STANDARDS.STANDARDS WHERE REGION = '*') d;
 
