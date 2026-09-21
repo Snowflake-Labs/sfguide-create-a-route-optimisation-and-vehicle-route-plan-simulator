@@ -324,8 +324,10 @@ if APPVIEWS.exists():
 eng = read(ENGINE, strip_slash_comments)
 if eng:
     checked += 1
-    # F1: the day-spill reservation is computed AFTER every time-advancing
-    #     emission, not inside the trip loop before them.
+    # F1: the day-spill reservation sits AFTER the return-to-base leg and BEFORE
+    #     the end-of-day idle. Both bounds guard a different failure, so both are
+    #     asserted - an earlier version of this rule checked only the lower bound
+    #     and would have passed the over-reserving arrangement.
     res = eng.find("busyUntilDayOffset = dayOffset + daysConsumed")
     idle = eng.find("'IDLE', currentOriginPoi")
     empty_leg = eng.find("emitEmptyLeg(member.home_poi)")
@@ -335,13 +337,22 @@ if eng:
         fail("RULE F1",
              "could not locate the post-loop return-to-base leg and end-of-day "
              "idle; the ordering assertion cannot be evaluated")
-    elif res < idle or res < empty_leg:
-        fail("RULE F1",
-             "the day-spill reservation is computed BEFORE the return-to-base "
-             "leg and/or the end-of-day idle. Both advance the clock and the "
-             "empty leg writes a trip row that can cross midnight, so "
-             "reserving first under-reserves and the next vehicle-day runs "
-             "concurrently with them - 42 overlapping trip pairs on UsTexas.")
+    else:
+        if res < empty_leg:
+            fail("RULE F1",
+                 "the day-spill reservation is computed BEFORE the "
+                 "return-to-base leg. That leg is real movement - it writes a "
+                 "trip row and can cross midnight - so reserving first "
+                 "under-reserves and the next vehicle-day runs concurrently with "
+                 "it: 42 overlapping trip pairs on UsTexas.")
+        if res > idle:
+            fail("RULE F1",
+                 "the day-spill reservation is computed AFTER the end-of-day "
+                 "idle. The idle is parked-at-base time, not work, and it is "
+                 "clamped so it cannot reach the next shift - counting it "
+                 "OVER-reserves. idle max_min is 20-30 min across the presets, "
+                 "so a day ending after ~23:30 pushes the clock past midnight "
+                 "and the whole NEXT operating day is silently skipped.")
 
     # F2: the shift-end test must read the clock in the same zone it was built in.
     if "getHours()" in eng:

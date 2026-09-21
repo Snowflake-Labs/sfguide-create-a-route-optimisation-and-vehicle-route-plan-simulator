@@ -563,6 +563,34 @@ export async function* generateTelemetry(
       }
     }
 
+    // Day-spill reservation: AFTER the return-to-base leg, BEFORE the idle.
+    // Both bounds are load-bearing, and they guard different failures.
+    //
+    // AFTER the empty leg, because that leg is real MOVEMENT - it writes a trip
+    // row and can cross midnight (or two midnights, once an OVERNIGHT rest is
+    // inserted mid-route). It used to be computed inside the trip loop, before
+    // this leg, so whatever the leg consumed was never reserved and the next
+    // vehicle-day started at shift_start and ran CONCURRENTLY with it: 42
+    // strictly overlapping trip pairs across 24 vehicles on UsTexas, the longest
+    // 1,030 minutes (UnitedStatesOfAmerica 38 / 20 / 1,787 min). Worked example
+    // V-DRI-00086, two trips alternating by timestamp 436 km apart, which
+    // produced 36 "visits" to one site on one day.
+    //
+    // BEFORE the idle, because the idle is PARKED-AT-BASE time, not work, and it
+    // is clamped below so it cannot reach the next shift. Counting it here
+    // over-reserves: idle max_min is 20-30 min across the presets, so a day
+    // ending after ~23:30 pushes the clock past midnight, daysConsumed becomes 1
+    // and the whole NEXT operating day is skipped - trading the overlap for
+    // silently missing data. The clamp and this ordering are therefore a pair:
+    // remove the clamp and an unbounded idle overlaps the next shift with nothing
+    // watching, because the reservation no longer looks at it.
+    const daysConsumed = Math.floor(
+      (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
+    );
+    if (daysConsumed > 0) {
+      busyUntilDayOffset = dayOffset + daysConsumed;
+    }
+
     // End-of-day idle heartbeat, CLAMPED to the next shift start.
     //
     // This emitter is trip-less and knows nothing about trip activity, and its
@@ -591,26 +619,6 @@ export async function* generateTelemetry(
         };
         points.push(...emitDwell(lifecycle, config, null, capped, 'IDLE', currentOriginPoi, memberRng));
       }
-    }
-
-    // Day-spill reservation, computed LAST so it covers every time-advancing
-    // emission of this vehicle-day.
-    //
-    // It used to be computed inside the trip loop, before the return-to-base EMPTY
-    // leg and before the idle dwell above - both of which advance
-    // lifecycle.currentTime, and the empty leg writes a real trip row that can
-    // cross midnight (or two midnights, once an OVERNIGHT rest is inserted
-    // mid-route). Whatever they consumed was therefore never reserved, so the next
-    // vehicle-day started at shift_start and ran CONCURRENTLY with them: 42
-    // strictly overlapping trip pairs across 24 vehicles on UsTexas, the longest
-    // 1,030 minutes of true concurrency (UnitedStatesOfAmerica 38 / 20 / 1,787
-    // min). Worked example V-DRI-00086, two trips alternating by timestamp 436 km
-    // apart, which produced 36 "visits" to one site on one day.
-    const daysConsumed = Math.floor(
-      (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
-    );
-    if (daysConsumed > 0) {
-      busyUntilDayOffset = dayOffset + daysConsumed;
     }
 
     return {

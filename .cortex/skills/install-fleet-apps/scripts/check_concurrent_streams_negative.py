@@ -207,23 +207,44 @@ def m14(tree):
     edit_json(tree, f)
 
 
-@mut("M15 generator reserves day spill BEFORE the post-loop legs", "RULE F1")
-def m15(tree):
-    p = tree / REL["engine"]
-    t = p.read_text()
-    block = """    const daysConsumed = Math.floor(
+RESERVATION = """    const daysConsumed = Math.floor(
       (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
     );
     if (daysConsumed > 0) {
       busyUntilDayOffset = dayOffset + daysConsumed;
     }
 """
-    if block not in t:
-        raise AssertionError("M15 anchor drifted")
-    t = t.replace(block, "")
-    anchor = "    const idleDwell = config.dwell.idle;"
-    t = t.replace(anchor, block + "\n" + anchor, 1)
+
+
+def move_reservation(tree, anchor: str, before: bool) -> None:
+    """Relocate the day-spill reservation block to a new anchor."""
+    p = tree / REL["engine"]
+    t = p.read_text()
+    if RESERVATION not in t:
+        raise AssertionError("reservation block anchor drifted")
+    t = t.replace(RESERVATION, "", 1)
+    if anchor not in t:
+        raise AssertionError("relocation anchor %r not found" % anchor[:60])
+    t = (t.replace(anchor, RESERVATION + "\n" + anchor, 1) if before
+         else t.replace(anchor, anchor + "\n" + RESERVATION, 1))
     p.write_text(t)
+
+
+@mut("M15 reservation moved BEFORE the return-to-base leg (under-reserves)",
+     "RULE F1")
+def m15(tree):
+    move_reservation(
+        tree,
+        "    if (emptyLegsEnabled && currentOriginPoi.location_id "
+        "!== member.home_poi.location_id) {",
+        before=True)
+
+
+@mut("M15b reservation moved AFTER the end-of-day idle (over-reserves, "
+     "silently skips a day)", "RULE F1")
+def m15b(tree):
+    move_reservation(tree, "    return {\n      vehicleId: member.vehicle_id, points, trips,",
+                     before=True)
 
 
 @mut("M16 generator reads the shift clock in container-local time", "RULE F2")
@@ -238,7 +259,7 @@ def m17(tree):
     p = tree / REL["engine"]
     t = p.read_text()
     start = t.index("    const idleDwell = config.dwell.idle;")
-    end = t.index("    const daysConsumed = Math.floor(", start)
+    end = t.index("    return {\n      vehicleId: member.vehicle_id, points, trips,")
     p.write_text(t[:start] + """    const idleDwell = config.dwell.idle;
     if (idleDwell && 'median_min' in idleDwell) {
       points.push(...emitDwell(lifecycle, config, null, idleDwell as DwellConfig, 'IDLE', currentOriginPoi, memberRng));
@@ -281,8 +302,12 @@ def main() -> int:
         try:
             try:
                 fn(tree)
-            except AssertionError as e:
-                bad.append("%s -> mutation could not be applied: %s" % (name, e))
+            except Exception as e:
+                # Catch broadly, not just AssertionError: a drifted anchor also
+                # surfaces as ValueError from str.index, and a mutation driver
+                # that CRASHES reports nothing about the rule it was testing.
+                bad.append("%s -> mutation could not be applied: %s: %s"
+                           % (name, type(e).__name__, e))
                 continue
             rc, out = run_gate(tree)
             if rc == 0:
