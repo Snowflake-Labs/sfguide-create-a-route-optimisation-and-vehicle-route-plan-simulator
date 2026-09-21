@@ -285,6 +285,56 @@ def m19(tree):
     p.write_text(t[:guard_start] + body + guard + t[ghost_end:])
 
 
+def clock_cfg(spec):
+    return spec["delivery_sync"]["areas"]["clock"]["config"]
+
+
+@mut("M20 replay clock loses defaultSource (back to a literal 09:00)", "RULE G")
+def m20(tree):
+    def f(spec):
+        clock_cfg(spec).pop("defaultSource")
+    edit_json(tree, f)
+
+
+@mut("M21 defaultSource present but empty (the silent no-op shape)", "RULE G")
+def m21(tree):
+    def f(spec):
+        clock_cfg(spec)["defaultSource"] = ""
+    edit_json(tree, f)
+
+
+@mut("M22 opening minute derived from arrivals only, not the on-site interval",
+     "RULE G")
+def m22(tree):
+    def f(spec):
+        c = clock_cfg(spec)
+        c["defaultSource"] = (
+            "SELECT CEIL(DATEDIFF('minute', SERVICE_DATE, ARRIVAL_TS)/10.0)*10 AS M "
+            "FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+            "WHERE REGION = :region AND ARRIVAL_TS IS NOT NULL "
+            "GROUP BY 1 ORDER BY COUNT(*) DESC, M LIMIT 1"
+        )
+    edit_json(tree, f)
+
+
+@mut("M23 defaultSource stops scoping to the region", "RULE G")
+def m23(tree):
+    def f(spec):
+        c = clock_cfg(spec)
+        c["defaultSource"] = c["defaultSource"].replace(
+            "WHERE REGION = :region", "WHERE 1=1").replace(
+            "WHERE s.REGION = :region", "WHERE 1=1")
+    edit_json(tree, f)
+
+
+@mut("M24 candidate minutes generated off the slider's grid", "RULE G")
+def m24(tree):
+    def f(spec):
+        c = clock_cfg(spec)
+        c["defaultSource"] = c["defaultSource"].replace("SEQ4() * 10", "SEQ4()")
+    edit_json(tree, f)
+
+
 def main() -> int:
     base = make_tree()
     try:

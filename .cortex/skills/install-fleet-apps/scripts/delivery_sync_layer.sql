@@ -128,6 +128,19 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC
 --    both had millions of pings. REST_STOP, DETOUR, IDLE and ADDRESS stay OUT
 --    on purpose: a fuel stop or a roadside idle is not a delivery, and adding
 --    REST_STOP would silently change the established HGV visit counts.
+--
+--    That exclusion has been re-examined once and UPHELD, so do not "fix" a
+--    thin-looking Delivery Sync page by adding REST_STOP here. On the
+--    regenerated UsTexas HGV dataset (30 vehicles, 209 trips, 2026-09-01..08)
+--    the stationary-ping population within 150 m of a POI splits REST_STOP 163
+--    vehicle-site pairs / 3,425 pings against WAREHOUSE 74 / 1,676. Whitelisting
+--    REST_STOP would therefore roughly TRIPLE the visit count - which looks like
+--    a fix and is actually a KPI-meaning regression, because 'Sites Ready' and
+--    'Unloads In Progress' would then be counting fuel stops as deliveries.
+--    A sparse page is a DATASET-DENSITY symptom (fewer vehicles, fewer trips per
+--    day), not a whitelist symptom. The correct levers are the generator config
+--    and the replay clock's data-derived default (see the clock area's
+--    defaultSource in add_delivery_sync_view.py), not this list.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS (
   MONITORED_SITE_TYPES   VARCHAR      DEFAULT 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION',

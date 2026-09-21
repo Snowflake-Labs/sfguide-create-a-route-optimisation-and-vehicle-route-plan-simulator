@@ -480,12 +480,47 @@ VIEW = {
             "config": {
                 "label": "Replay time",
                 # Minutes since midnight. 1430 is 23:50, the last clean 10-minute
-                # mark; 540 is 09:00. 144 positions at 400 ms sweeps a full day in
+                # mark; 540 is 09:00, kept only as the last-resort fallback for
+                # when defaultSource below returns nothing (a region with no
+                # visits at all). 144 positions at 400 ms sweeps a full day in
                 # about a minute.
                 "min": 0,
                 "max": 1430,
                 "step": 10,
                 "default": 540,
+                # Resolve the opening instant from the DATA. A literal 540 encodes
+                # a wall-clock assumption that does not survive a regenerated
+                # dataset: the Texas HGV fleet seeded 2026-09-01..08 has 40 visits
+                # spread over 24h, and on the resolved service date NOT ONE of
+                # them brackets 09:00 - across all eight days exactly one visit
+                # ever does. Every area then correctly returned zero and the page
+                # opened blank on wholly healthy data. This picks the 10-minute
+                # mark with the most vehicles concurrently on site, so the page
+                # opens on the busiest moment of the busiest day whatever the
+                # dataset's operating hours are.
+                #
+                # Region-only by necessity: view-slider.tsx binds just :region to
+                # defaultSource, so this cannot see the context date range and
+                # therefore uses SD's SECOND arm (the region's busiest day). When
+                # the range narrows to a different day the seed is merely
+                # suboptimal, never wrong - the slider stays scrubbable and the
+                # As Of card always states the instant actually being shown.
+                "defaultSource": (
+                    "WITH d AS ("
+                    "SELECT SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS "
+                    "WHERE REGION = :region GROUP BY 1 "
+                    "ORDER BY COUNT(*) DESC, SERVICE_DATE DESC LIMIT 1), "
+                    "v AS ("
+                    "SELECT s.ARRIVAL_TS, COALESCE(s.DEPARTURE_TS, s.ARRIVAL_TS) AS END_TS, "
+                    "s.SERVICE_DATE FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS s "
+                    "JOIN d ON d.SERVICE_DATE = s.SERVICE_DATE "
+                    "WHERE s.REGION = :region AND s.ARRIVAL_TS IS NOT NULL), "
+                    "g AS (SELECT SEQ4() * 10 AS M FROM TABLE(GENERATOR(ROWCOUNT => 144))) "
+                    "SELECT g.M FROM g JOIN v "
+                    "ON DATEADD('minute', g.M, v.SERVICE_DATE::TIMESTAMP_NTZ) "
+                    "BETWEEN v.ARRIVAL_TS AND v.END_TS "
+                    "GROUP BY g.M ORDER BY COUNT(*) DESC, g.M LIMIT 1"
+                ),
                 "format": "time_of_day",
                 "play": True,
                 # playIntervalMs is a MINIMUM frame time, not a period: Play waits
@@ -496,7 +531,10 @@ VIEW = {
                 "playIntervalMs": 400,
                 "playMaxWaitMs": 8000,
                 "info": (
-                    "Scrubs the service day in 10-minute steps. Everything on the page "
+                    "Scrubs the service day in 10-minute steps. Opens on the busiest "
+                    "moment of the busiest day rather than a fixed hour, so the page "
+                    "is never blank just because the fleet does not work 09:00. "
+                    "Everything on the page "
                     "is evaluated at this instant: site readiness, the notification feed "
                     "cutoff, and the live approach ring and inbound ETA. 10 minutes is "
                     "finer than the median time on site (about 12 minutes), so a typical "

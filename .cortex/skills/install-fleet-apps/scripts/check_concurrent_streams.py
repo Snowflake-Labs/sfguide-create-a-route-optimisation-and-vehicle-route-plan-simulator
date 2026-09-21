@@ -394,8 +394,71 @@ if eng:
              "manufacturing the exact artifact the reservation prevents.")
 
 # ---------------------------------------------------------------------------
-if checked < 6:
-    print("FAIL: only %d of 6 rule groups could be evaluated - the gate is "
+# RULE G - the replay clock opens on an instant the DATA actually has.
+#
+# Same failure family as the rest of this gate: silent, and self-consistently
+# wrong. A literal `default` is a wall-clock ASSUMPTION about when the fleet
+# works, and a regenerated dataset is free to violate it. Measured on the
+# regenerated UsTexas HGV dataset (30 vehicles, 209 trips, 2026-09-01..08): the
+# resolved service date 2026-09-08 holds 8 visits and NOT ONE brackets 09:00, and
+# across all eight days exactly ONE visit ever does. Every area then correctly
+# returned zero rows, the As Of card read "-", and the map reported "No features
+# match the current selection" - on wholly healthy data whose busiest minute was
+# 01:00. Nothing threw. The page simply described an empty moment accurately.
+#
+# `default` is allowed to REMAIN as the terminal fallback (a region with no
+# visits at all has no data-derived answer), so this asserts the presence of
+# defaultSource rather than the absence of 540.
+# ---------------------------------------------------------------------------
+if APPVIEWS.exists():
+    checked += 1
+    spec = json.loads(APPVIEWS.read_text())
+    ds = spec.get("delivery_sync") or {}
+    if not ds:
+        fail("RULE G", "delivery_sync view missing from app-views.json")
+    else:
+        clock = (ds["areas"].get("clock") or {}).get("config") or {}
+        src = clock.get("defaultSource") or ""
+        if not src:
+            fail("RULE G",
+                 "the replay clock must set defaultSource so its opening "
+                 "instant is resolved from the data. With only a literal "
+                 "`default` the page opens blank on any dataset whose "
+                 "operating hours do not contain that minute.")
+        else:
+            if "VW_SITE_VISITS" not in src:
+                fail("RULE G",
+                     "defaultSource must resolve the opening minute from "
+                     "VW_SITE_VISITS. Derived from anything that is not the "
+                     "visit population, it can select a minute with no visit "
+                     "on site and the page still opens empty.")
+            # The point of the query is CONCURRENCY at a candidate minute, which
+            # needs the arrival..departure interval, not just arrivals. Picking
+            # e.g. the median arrival minute lands between two short dwells.
+            if "ARRIVAL_TS" not in src or "DEPARTURE_TS" not in src:
+                fail("RULE G",
+                     "defaultSource must bracket the candidate minute between "
+                     "ARRIVAL_TS and DEPARTURE_TS. Selecting on arrivals alone "
+                     "can return a minute at which nothing is still on site.")
+            # Region-scoped: view-slider.tsx binds only :region, and an
+            # unscoped query would seed one region's clock from another's day.
+            if ":region" not in src:
+                fail("RULE G",
+                     "defaultSource must filter on :region - it is the only "
+                     "bind view-slider.tsx supplies, and unscoped it seeds the "
+                     "clock from a different region's operating hours.")
+            # Must land on the slider's own grid, else the seed is snapped and
+            # the opening instant silently differs from the one chosen.
+            step = clock.get("step")
+            if step and ("* %d" % step) not in src and ("*%d" % step) not in src:
+                fail("RULE G",
+                     "defaultSource must generate candidate minutes on the "
+                     "slider's %d-minute grid; an off-grid value is snapped on "
+                     "seed and can land back on an empty minute." % step)
+
+# ---------------------------------------------------------------------------
+if checked < 7:
+    print("FAIL: only %d of 7 rule groups could be evaluated - the gate is "
           "partly vacuous, which is worse than absent." % checked)
     for f in failures:
         print("  - %s" % f)
