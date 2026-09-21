@@ -169,6 +169,17 @@ def read(path: pathlib.Path, problems: list[str], rule: str) -> str:
     return path.read_text()
 
 
+def strip_comments(src: str) -> str:
+    """Source with `//` lines and `/* */` blocks removed.
+
+    Rules I and J assert on the presence of specific config keys, and the files
+    they read NAME every one of those keys in the comments explaining the defect.
+    Three earlier rules in this gate passed on exactly that - the prose describing
+    the trap, not the code avoiding it."""
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    return "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("//"))
+
+
 def main() -> int:
     problems: list[str] = []
 
@@ -398,6 +409,66 @@ def main() -> int:
             "component, nor suppressed, nor in RAW_JSON_ALLOWLIST, so their results "
             "render as a collapsed JSON blob - a legal, silent state that has already "
             "shipped four times: " + ", ".join(sorted(unhandled)))
+
+    # ---- RULE I: a discrete axis cannot draw its labels on top of each other --
+    # Comments stripped first. This gate has now been burned three times by a rule
+    # matching the sentence that DESCRIBES the defect (see RULE A/C/H above), and
+    # the theme file names every one of these keys in its own explanation.
+    theme_code = strip_comments(theme_src)
+    if "axisXDiscrete" not in theme_code:
+        problems.append(
+            "RULE I: lib/vega-theme.ts sets no axisXDiscrete config. Vega-Lite's "
+            "default labelOverlap for a DISCRETE axis is false, so every category "
+            "label is drawn whether or not it fits - a breakdown with more than a "
+            "handful of categories renders its names on top of each other. Nothing "
+            "errors; the chart is simply unreadable.")
+    else:
+        disc = re.search(r"axisXDiscrete:\s*\{([^}]*)\}", theme_code)
+        if not disc or "labelAngle" not in disc.group(1):
+            problems.append(
+                "RULE I: axisXDiscrete carries no labelAngle. Rotation is what keeps "
+                "ALL the categories readable - dropping labels instead hides rows of "
+                "the answer.")
+    # The angle must NOT be on the blanket axisX, which also governs quantitative
+    # and temporal axes where horizontal labels fit and read better. This is the
+    # mutation that looks equivalent and is not.
+    blanket = re.search(r"axisX:\s*\{([^}]*)\}", theme_code)
+    if blanket and "labelAngle" in blanket.group(1):
+        problems.append(
+            "RULE I: labelAngle is set on the blanket axisX. Scope it to "
+            "axisXDiscrete: a quantitative or temporal axis does not need rotating, "
+            "and tilting it is a regression dressed as a fix.")
+
+    # ---- RULE J: height grows with a ranked list instead of compressing it ----
+    spec_code = strip_comments(spec_src)
+    size_fn = re.search(r"export function sizeSpec\b(.*?)\n\}", spec_code, re.S)
+    if not size_fn:
+        problems.append("RULE J: lib/chart-spec.ts does not export sizeSpec")
+    else:
+        body = size_fn.group(1)
+        # A `step:` OBJECT actually assigned to height. Asserting on the substring
+        # "step" alone was satisfied by the `stepHeight` local, so reverting the
+        # assignment to a constant height left the rule passing - convicted by M5
+        # of check_chart_rendering_negative.py.
+        if not re.search(r"height\s*=\s*[^;\n]*\{\s*step:", body):
+            problems.append(
+                "RULE J: sizeSpec assigns a constant height. A fixed 260px split "
+                "across 20 categories is a 13px band, so a horizontal bar chart - the "
+                "shape the chart guidance asks for on every ranked list - draws its "
+                "bars and labels over one another. A discrete y axis needs "
+                "height: {step: N} so the plot grows with the category count.")
+        elif not re.search(r"(hasDiscreteY|discrete)\w*\s*\(", body):
+            problems.append(
+                "RULE J: sizeSpec uses a step height UNCONDITIONALLY. A step height on "
+                "a line or area chart makes it grow with its row count instead of "
+                "fitting the bubble - the step must be gated on the y channel being "
+                "discrete.")
+        elif "fit-x" not in body:
+            problems.append(
+                "RULE J: sizeSpec pairs a step height with a two-axis autosize. "
+                "Measured against the vega-lite compiler, a step-sized height makes it "
+                "discard fit-y and emit fit-x anyway, so state fit-x rather than "
+                "leaving a fit it will strip.")
 
     if problems:
         print("FAIL: the SA app cannot reliably render an agent chart:")
