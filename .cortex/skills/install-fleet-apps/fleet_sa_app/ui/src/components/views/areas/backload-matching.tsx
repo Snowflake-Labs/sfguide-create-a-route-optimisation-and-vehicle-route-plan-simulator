@@ -35,6 +35,7 @@ import {
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey, describeTourChain, realPlace, placeLabel,
+  fetchRegionBbox, pointOutsideBbox,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
   deriveSavedKm, applyBaseline, samePlace, backfillFromLoadPool,
@@ -86,12 +87,8 @@ const BM_SOLVE_TIMEOUT_MS = 180_000;
 // Cap the retries so a pathological dataset can never loop forever.
 const BM_MAX_UNROUTABLE_RETRIES = 16;
 
-// VROOM echoes the failing coordinate rounded to ~6dp, so match with a small
-// epsilon rather than exact equality.
-function coordNear(a: number, b: number): boolean { return Math.abs(a - b) < 1e-4; }
-function locMatchesCoord(loc: unknown, lon: number, lat: number): boolean {
-  return Array.isArray(loc) && coordNear(Number(loc[0]), lon) && coordNear(Number(loc[1]), lat);
-}
+// Coordinate matching for every exclusion path now goes through coordKey() (4dp,
+// ~11m), which absorbs the ~6dp VROOM echoes the old coordNear epsilon handled.
 
 function clampPayload(v: number, i: number, e: number, budget: number): { v: number; i: number; e: number; clamped: boolean } {
   const used = 2 * v + 2 * i + 2 * e;
@@ -854,11 +851,75 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     let workVehicles = vrpVehicles;
     let workShipments = vrpShipments;
 
+    // ONE shear for every exclusion path (bbox pre-flight, ORS probe, and the
+    // 422/code-3 loop below), operating on the CURRENT work sets. Three copies
+    // of this filter existed and each reassigned from the ORIGINAL vrp* arrays,
+    // so whichever ran last silently restored the points an earlier pass had
+    // already removed.
+    const shearByKeys = (badKeys: Set<string>): void => {
+      if (!badKeys.size) return;
+      const locBad = (loc: unknown): boolean =>
+        Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
+      workVehicles = workVehicles.filter((veh) => {
+        const hit = locBad(veh.start) || locBad(veh.end);
+        if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
+        return !hit;
+      });
+      workShipments = workShipments.filter((s) => {
+        const pu = (s.pickup as { location?: unknown } | undefined)?.location;
+        const dl = (s.delivery as { location?: unknown } | undefined)?.location;
+        const hitPickup = locBad(pu);
+        const hitDelivery = locBad(dl);
+        if (hitPickup || hitDelivery) {
+          const sid = Number((s.pickup as { id?: unknown } | undefined)?.id);
+          const ent = offerById.get(sid);
+          const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
+          excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
+        }
+        return !(hitPickup || hitDelivery);
+      });
+      for (const k of badKeys) if (!droppedCoords.includes(k)) droppedCoords.push(k);
+    };
+
+    // Graph-bbox pre-flight, BEFORE any ORS call.
+    //
+    // A point outside the graph bbox does not come back as a null duration - it
+    // fails the WHOLE ORS request with code 6010, so the MATRIX probe below
+    // cannot shear it (its batch throws and fails open) and the solve is refused
+    // outright. Measured on tib85385: one UsTexas trailer sat at 27.4475,
+    // -82.5730 (Florida, ~900 km past the Texas graph) and that single stop
+    // turned a 27-trailer solve into "the routing engine refused the request".
+    //
+    // This check is arithmetic on a bbox, so unlike the ORS probe its verdict
+    // needs no trust test - there is no degraded-engine reading of it.
+    let bboxRejected = 0;
+    const graphBox = await fetchRegionBbox(cfg.region, { signal: ac.signal });
+    if (graphBox) {
+      const outside = new Set<string>();
+      const addIfOutside = (loc: unknown) => {
+        if (Array.isArray(loc) && loc.length >= 2) {
+          const lon = Number(loc[0]);
+          const lat = Number(loc[1]);
+          if (pointOutsideBbox(graphBox, lon, lat)) outside.add(coordKey(lon, lat));
+        }
+      };
+      for (const v of workVehicles) { addIfOutside(v.start); addIfOutside(v.end); }
+      for (const s of workShipments) {
+        addIfOutside((s.pickup as { location?: unknown }).location);
+        addIfOutside((s.delivery as { location?: unknown }).location);
+      }
+      if (outside.size) {
+        bboxRejected = outside.size;
+        setSolverLog(`Excluding ${outside.size} stop(s) outside the ${cfg.region} road graph...`);
+        shearByKeys(outside);
+      }
+    }
+
     // Anchor for the routability probe: the trailer start with the most
     // neighbours within 300km (densest continental cluster centre) is on the
     // main road graph, so probing every point to/from it flags island /
     // off-road / disconnected points up front.
-    const vehStarts = vrpVehicles
+    const vehStarts = workVehicles
       .map((v) => (Array.isArray(v.start) ? (v.start as number[]) : null))
       .filter((s): s is number[] => s != null && s.length >= 2);
     let anchor: [number, number] | null = null;
@@ -884,8 +945,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           if (Number.isFinite(p[0]) && Number.isFinite(p[1])) uniq.set(coordKey(p[0], p[1]), p);
         }
       };
-      for (const v of vrpVehicles) { addPt(v.start); addPt(v.end); }
-      for (const s of vrpShipments) {
+      // Collected from the WORK sets, so the bbox pre-flight's rejections are
+      // not handed straight back to ORS - probing a known out-of-bbox point is
+      // exactly what makes its whole batch throw 6010 and fail open.
+      for (const v of workVehicles) { addPt(v.start); addPt(v.end); }
+      for (const s of workShipments) {
         addPt((s.pickup as { location?: unknown }).location);
         addPt((s.delivery as { location?: unknown }).location);
       }
@@ -894,29 +958,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal, stats: probe }); }
       catch { badKeys = new Set(); probe.backedOff = true; }
       probeTrustworthy = probe.clean > 0 && !probe.backedOff;
-      if (badKeys.size) {
-        const locBad = (loc: unknown): boolean =>
-          Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
-        workVehicles = vrpVehicles.filter((veh) => {
-          const hit = locBad(veh.start) || locBad(veh.end);
-          if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
-          return !hit;
-        });
-        workShipments = vrpShipments.filter((s) => {
-          const pu = (s.pickup as { location?: unknown }).location;
-          const dl = (s.delivery as { location?: unknown }).location;
-          const hitPickup = locBad(pu);
-          const hitDelivery = locBad(dl);
-          if (hitPickup || hitDelivery) {
-            const sid = Number((s.pickup as { id?: unknown }).id);
-            const ent = offerById.get(sid);
-            const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
-            excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
-          }
-          return !(hitPickup || hitDelivery);
-        });
-        for (const k of badKeys) droppedCoords.push(k);
-      }
+      shearByKeys(badKeys);
     }
 
     // A pre-filter that zeroes out the solve is either a bad probe or a genuinely
@@ -930,8 +972,12 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // answering): the rejections are real. Restoring them here is what used to
     // hand the engine coordinates it had just refused, turning a shear-and-solve
     // into a hard matrix pre-compute failure. Report it instead.
+    //
+    // A bbox rejection counts as trustworthy on its own: it is arithmetic
+    // against the graph extent, so there is no reading of it under which the
+    // points are routable and restoring them can only reproduce the refusal.
     if (!workVehicles.length || !workShipments.length) {
-      if (probeTrustworthy) {
+      if (probeTrustworthy || bboxRejected > 0) {
         const what = !workVehicles.length ? 'vehicle start/end locations' : 'load pickup/dropoff locations';
         setSolveError(
           `Every one of the ${what} in this selection is outside the ${cfg.region} road graph, ` +
@@ -962,7 +1008,13 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       setSolverLog(attempt === 0
         ? (excludedLabels.length ? `Excluded ${excludedLabels.length} unroutable stop(s); calling OPTIMIZATION...` : 'Calling OPTIMIZATION...')
         : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
-      let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
+      let body: {
+        ok?: boolean;
+        result?: unknown;
+        error?: string;
+        unroutable?: { lon: number; lat: number };
+        outOfGraphPoints?: { lon: number; lat: number }[];
+      };
       let ok = false;
       try {
         // postSolve handles the deferred case: the route answers 202 with a
@@ -1002,6 +1054,33 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
 
       if (ok) { respObj = body.result as Record<string, unknown>; break; }
 
+      // Out-of-graph (ORS 6010/2010): the 422 body NAMES the offending points in
+      // outOfGraphPoints. That field was already being sent and never read, and
+      // because outOfGraphMessage() contains no "location [lon,lat]" substring
+      // the parse below found nothing, so a single off-graph stop went straight
+      // to `fatal` on attempt 0 - the one error shape that names its own remedy
+      // was the one shape that could not be recovered. Shear and retry instead.
+      const offGraph = Array.isArray(body.outOfGraphPoints) ? body.outOfGraphPoints : [];
+      if (offGraph.length) {
+        const keys = new Set<string>();
+        for (const p of offGraph) {
+          const lon = Number(p?.lon);
+          const lat = Number(p?.lat);
+          if (Number.isFinite(lon) && Number.isFinite(lat)) {
+            const k = coordKey(lon, lat);
+            // No-progress guard: if every named point is already excluded,
+            // retrying sends the identical challenge and burns the cap.
+            if (!droppedCoords.includes(k)) keys.add(k);
+          }
+        }
+        if (keys.size) {
+          shearByKeys(keys);
+          if (!workVehicles.length) { fatal = `Every trailer start or end is outside the ${cfg.region} road graph. Check that the selected region matches the data, or regenerate the preset for this region.`; break; }
+          if (!workShipments.length) { fatal = `Every load pickup or dropoff is outside the ${cfg.region} road graph. Check that the selected region matches the data, or regenerate the preset for this region.`; break; }
+          continue;
+        }
+      }
+
       // Extract the unroutable coordinate (structured field, else parse the msg).
       let bad = body.unroutable ?? null;
       if (!bad && typeof body.error === 'string') {
@@ -1017,25 +1096,9 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       droppedCoords.push(badKey!);
 
       // Drop every vehicle (start/end) and shipment (pickup/delivery) that sits
-      // on the offending coordinate, recording a human label for each.
-      workVehicles = workVehicles.filter((veh) => {
-        const hit = locMatchesCoord(veh.start, bad!.lon, bad!.lat) || locMatchesCoord(veh.end, bad!.lon, bad!.lat);
-        if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
-        return !hit;
-      });
-      workShipments = workShipments.filter((s) => {
-        const pu = (s.pickup as { location?: unknown } | undefined)?.location;
-        const dl = (s.delivery as { location?: unknown } | undefined)?.location;
-        const hitPickup = locMatchesCoord(pu, bad!.lon, bad!.lat);
-        const hitDelivery = locMatchesCoord(dl, bad!.lon, bad!.lat);
-        if (hitPickup || hitDelivery) {
-          const sid = Number((s.pickup as { id?: unknown } | undefined)?.id);
-          const ent = offerById.get(sid);
-          const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
-          excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
-        }
-        return !(hitPickup || hitDelivery);
-      });
+      // on the offending coordinate, recording a human label for each. VROOM
+      // echoes the coordinate at ~6dp, so match through the shared 4dp key.
+      shearByKeys(new Set([coordKey(bad.lon, bad.lat)]));
 
       if (!workVehicles.length) { fatal = 'All trailers are at unroutable locations for this region. Regenerate the preset data or pick another region.'; break; }
       if (!workShipments.length) { fatal = 'Every load pickup/dropoff is unroutable for this region. Regenerate the preset data or pick another region.'; break; }
