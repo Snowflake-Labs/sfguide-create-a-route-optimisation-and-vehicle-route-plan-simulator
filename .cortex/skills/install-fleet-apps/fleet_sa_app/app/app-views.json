@@ -1870,7 +1870,8 @@
             {
               "type": "line",
               "field": "at_risk_operators",
-              "label": "At-Risk {{labels.operator_plural}}"
+              "label": "At-Risk {{labels.operator_plural}}",
+              "yAxis": "right"
             }
           ]
         }
@@ -1926,9 +1927,10 @@
               "label": "OT Premium"
             },
             {
-              "type": "bar",
+              "type": "line",
               "field": "at_risk_operators",
-              "label": "At-Risk {{labels.operator_plural}}"
+              "label": "At-Risk {{labels.operator_plural}}",
+              "yAxis": "right"
             }
           ]
         }
