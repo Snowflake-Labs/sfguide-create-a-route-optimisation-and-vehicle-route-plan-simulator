@@ -321,6 +321,36 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       fi
     fi
   fi
+
+  # A vehicle can emit TWO CONCURRENT POSITION STREAMS, and every consumer that
+  # assumes one has to keep its guard.
+  #
+  # Same silent class as the gates above, and the worst instance of it so far: a
+  # trip-less IDLE heartbeat pinned at the depot, interleaved into an active
+  # dwell, made Delivery Sync publish a DEPARTED notification for a vehicle that
+  # had not moved, shredded one 18-minute dwell into three visits, and plotted the
+  # dot 520 km from the site - so ON_SITE and JUST_LEFT, the two states the page
+  # exists to show, were BOTH unreachable at every instant tested. Nothing threw;
+  # every individual number was right about the wrong ping, and each surface
+  # looked internally consistent while disagreeing with the others.
+  #
+  # Its own opt-out, like every other gate here: the block above is about map
+  # SURFACES and this one is about telemetry streams, so sharing a switch would
+  # make disabling one silently disable the other.
+  if [ "${STREAM_VERIFY:-1}" != "0" ]; then
+    STREAM_GATE="$SKILL_DIR/scripts/check_concurrent_streams.py"
+    STREAM_NEG="$SKILL_DIR/scripts/check_concurrent_streams_negative.py"
+    if [ -f "$STREAM_GATE" ]; then
+      echo "[1/7] Verify concurrent-stream guards (detector, live status, map)..."
+      python3 "$STREAM_GATE" \
+        || { echo "ERROR: concurrent-stream gate failed (see above)."; exit 1; }
+      if [ -f "$STREAM_NEG" ]; then
+        python3 "$STREAM_NEG" >/dev/null \
+          || { echo "ERROR: concurrent-stream negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$STREAM_NEG'"; exit 1; }
+      fi
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
