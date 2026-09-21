@@ -37,6 +37,19 @@
 --      the previous ping was outside the geofence. That is exactly equivalent
 --      to `prev_inside = FALSE` and costs one window function.
 --
+--      The sequence stays per VEHICLE, deliberately NOT per trip. A single site
+--      visit legitimately SPANS ADJACENT TRIPS: the inbound trip ends at the site
+--      it served and the drive-out tail is the first leg of the next trip, so
+--      trips are sequential legs of one continuous motion, not independent
+--      streams. Measured on SanFrancisco V-CYC-00071 at 2026-09-15 11:58, a
+--      9-ping fence episode splits into 6 + 3 across that boundary; partitioning
+--      the sequence by TRIP_ID strands the drive-out tail, leaves the dwell's
+--      successor still inside the fence, and cost 1,728 of 3,752 genuine
+--      departures on that dataset alone. What the detector must reject is a
+--      CONCURRENT stream, not a sequential leg, and those are told apart by
+--      physical plausibility - see the trip-less IDLE exclusion on `pts` and the
+--      EXIT_TS gates.
+--
 --   2. GATES ARE INVERTED. A runway crossing is fast, short and straight
 --      (max_speed high, duration <= 300s, chord large). A vehicle DRIVING PAST
 --      a site produces that same signature, so inverting those gates is
@@ -123,6 +136,20 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS (
   MAX_STOP_SECONDS       NUMBER       DEFAULT 7200,
   MIN_STATIONARY_PINGS   NUMBER       DEFAULT 2,
   APPROACH_SECONDS       NUMBER       DEFAULT 900,
+  -- How long after the fence exit the NEXT ping of the same stream may arrive
+  -- and still count as evidence of departure. See the EXIT_TS note below: a
+  -- vehicle's telemetry can contain a second concurrent stream, and without an
+  -- upper bound the "next" ping was observed FOUR DAYS later and 256 km away
+  -- (UsTexas V-DRI-00084, visit 2026-09-04, exit ping 2026-09-07 18:09). The
+  -- measured real exit lag is a median 85 s and at most 201 s, so 900 s leaves
+  -- an order of magnitude of headroom for sparse OVERNIGHT-cadence pings while
+  -- still rejecting a cross-day jump.
+  EXIT_MAX_GAP_SECONDS   NUMBER       DEFAULT 900,
+  -- Ceiling on the implied speed from the fence to the candidate exit ping. The
+  -- gate that actually rejects a cross-stream point: 434 km in 4 s implies
+  -- 390,000 km/h. 200 km/h is comfortably above any HGV, car or ebike in these
+  -- datasets while being four orders of magnitude below the artifact.
+  MAX_IMPLIED_SPEED_KMH  FLOAT        DEFAULT 200,
   UPDATED_AT             TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -130,9 +157,54 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"ma
 -- Seed exactly one row (idempotent).
 INSERT INTO FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
   (MONITORED_SITE_TYPES, STATIONARY_SPEED_KMH, MIN_STOP_SECONDS, MAX_STOP_SECONDS,
-   MIN_STATIONARY_PINGS, APPROACH_SECONDS)
-SELECT 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION', 5, 180, 7200, 2, 900
+   MIN_STATIONARY_PINGS, APPROACH_SECONDS, EXIT_MAX_GAP_SECONDS, MAX_IMPLIED_SPEED_KMH)
+SELECT 'WAREHOUSE,STORE,DESTINATION,RESTAURANT,LOCATION', 5, 180, 7200, 2, 900, 900, 200
 WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS);
+
+-- Upgrade path for the two columns added above. CREATE TABLE IF NOT EXISTS is a
+-- no-op on an existing install, so a deployed account would otherwise keep a
+-- PARAMS table the Dynamic Table below cannot compile against.
+--
+-- TRAP: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS <c>` is NOT idempotent here.
+-- When the column already exists Snowflake does not skip it, it raises
+-- "002028 (42601): ambiguous column name '<c>'" - measured on this exact table.
+-- So the bare ALTER aborts the whole file on the SECOND run, which for an
+-- installer script means the DT and every view after it silently never deploy.
+-- The existence test therefore has to be explicit.
+EXECUTE IMMEDIATE $$
+DECLARE
+  n INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO :n
+    FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = 'DELIVERY_SYNC' AND TABLE_NAME = 'PARAMS'
+     AND COLUMN_NAME = 'EXIT_MAX_GAP_SECONDS';
+  IF (n = 0) THEN
+    ALTER TABLE FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
+      ADD COLUMN EXIT_MAX_GAP_SECONDS NUMBER DEFAULT 900;
+  END IF;
+
+  SELECT COUNT(*) INTO :n
+    FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = 'DELIVERY_SYNC' AND TABLE_NAME = 'PARAMS'
+     AND COLUMN_NAME = 'MAX_IMPLIED_SPEED_KMH';
+  IF (n = 0) THEN
+    ALTER TABLE FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
+      ADD COLUMN MAX_IMPLIED_SPEED_KMH FLOAT DEFAULT 200;
+  END IF;
+
+  -- ADD COLUMN with a DEFAULT backfills the existing row, but seed defensively in
+  -- case a hand-edited install left a NULL: a NULL gate would make the EXIT_TS
+  -- comparison UNKNOWN and silently strip every departure.
+  UPDATE FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS
+     SET EXIT_MAX_GAP_SECONDS  = COALESCE(EXIT_MAX_GAP_SECONDS, 900),
+         MAX_IMPLIED_SPEED_KMH = COALESCE(MAX_IMPLIED_SPEED_KMH, 200),
+         UPDATED_AT = CURRENT_TIMESTAMP()
+   WHERE EXIT_MAX_GAP_SECONDS IS NULL OR MAX_IMPLIED_SPEED_KMH IS NULL;
+
+  RETURN 'params upgraded';
+END
+$$;
 
 -- Upgrade already-deployed accounts. The seed above is a no-op wherever the row
 -- already exists, so without this an existing install keeps the old HGV-only
@@ -156,12 +228,44 @@ CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS
 AS
 WITH prm AS (
   SELECT MONITORED_SITE_TYPES, STATIONARY_SPEED_KMH, MIN_STOP_SECONDS,
-         MAX_STOP_SECONDS, MIN_STATIONARY_PINGS
+         MAX_STOP_SECONDS, MIN_STATIONARY_PINGS, EXIT_MAX_GAP_SECONDS,
+         MAX_IMPLIED_SPEED_KMH
   FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS LIMIT 1
 ),
 -- Every ping, with a per-vehicle monotonic sequence. The sequence is what
 -- lets us recover true outside->inside transitions after an inner join
 -- (adaptation 1 above).
+--
+-- TRIP-LESS IDLE IS EXCLUDED, and that exclusion is load-bearing. It is the
+-- end-of-day heartbeat (studio/engine.ts:552), pinned at the vehicle's own HOME
+-- POI, emitted with no trip id and with no knowledge of whether a trip is still
+-- running - so it lands in the MIDDLE of an active dwell. On UsTexas 1,204 such
+-- pings sit between two pings of one trip, 1,192 of them a >5 km jump from the
+-- previous ping. Worked example V-DRI-00096, whose home POI is
+-- 31.027434,-95.933739:
+--
+--   00:58:11  52355052...  27.8863,-98.5932  DWELL_DESTINATION  (on site)
+--   00:58:15  NULL         31.0274,-95.9337  IDLE               (434 km away)
+--   01:00:24  52355052...  27.8863,-98.5932  DWELL_DESTINATION  (still on site)
+--
+-- Interleaved into the sequence, that one ping is a SEQ discontinuity, so a
+-- single continuous dwell shreds into three "visits", and it becomes the ping at
+-- MAX(SEQ)+1 - i.e. the EXIT_TS evidence - so the feed published a DEPARTED
+-- notification, snapped the replay clock to it, and the map correctly drew the
+-- vehicle 520 km away at its depot. Nothing threw; every number was right about
+-- the wrong ping.
+--
+-- It can never be a delivery (a vehicle parked at base is the case the
+-- HOME_LOCATION_ID exclusion below already exists to reject), but it CAN fall
+-- inside some OTHER monitored site's fence when the home POI happens to sit
+-- within the radius - 4,089 such rows on UsTexas - so dropping it also removes a
+-- spurious visit source, not just a sequencing hazard.
+--
+-- Scoped to STATUS = 'IDLE' AND TRIP_ID IS NULL, not to TRIP_ID IS NULL alone:
+-- the ebike preset emits 20,789 trip-less DWELL_RECHARGE pings that are genuine
+-- stops and account for 411 SanFrancisco visits, and measured, NONE of the
+-- DWELL_RECHARGE or DWELL_REST rows interleaves with an active trip. IDLE is the
+-- only offending class.
 pts AS (
   SELECT
     t.REGION, t.VEHICLE_ID, t.TRIP_ID, t.TS, t.POINT_GEOM,
@@ -173,6 +277,7 @@ pts AS (
   FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT t
   JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
     ON f.VEHICLE_ID = t.VEHICLE_ID AND f.REGION = t.REGION
+  WHERE NOT (t.TRIP_ID IS NULL AND t.STATUS = 'IDLE')
 ),
 -- Monitored sites, with the geofence radius resolved per (vehicle type,
 -- site type). This is the first consumer of BUFFER_RADIUS_M, which was
@@ -232,20 +337,32 @@ inside AS (
             PARTITION BY p.REGION, p.VEHICLE_ID, p.SEQ
             ORDER BY ST_DISTANCE(p.POINT_GEOM, s.POINT_GEOM)) = 1
 ),
--- Entry edge = sequence discontinuity (previous ping was outside).
+-- Entry edge = sequence discontinuity (previous ping was outside), OR a time gap
+-- too large to be one continuous stop.
+--
+-- The TIME gap is a belt-and-braces guard on episode identity. The SEQ rule is
+-- exact only while the sequence is a faithful record of one vehicle's motion; if
+-- a future dataset ever again interleaves a foreign ping that the `pts` filter
+-- does not recognise, the SEQ rule would merge two stops that the clock plainly
+-- separates, and the MAX_STOP_SECONDS gate at the bottom would then reject the
+-- merged span and lose BOTH visits rather than one. It costs one extra LAG.
 edged AS (
   SELECT *,
-    LAG(SEQ) OVER (PARTITION BY REGION, VEHICLE_ID, LOCATION_ID ORDER BY SEQ) AS PREV_SEQ
+    LAG(SEQ) OVER (PARTITION BY REGION, VEHICLE_ID, LOCATION_ID ORDER BY SEQ) AS PREV_SEQ,
+    LAG(TS)  OVER (PARTITION BY REGION, VEHICLE_ID, LOCATION_ID ORDER BY SEQ) AS PREV_TS
   FROM inside
 ),
 -- Running sum over entry edges = visit id. A second visit to the same site
 -- later the same day becomes a separate episode rather than one smeared span.
 episoded AS (
-  SELECT *,
-    SUM(IFF(PREV_SEQ IS NULL OR SEQ - PREV_SEQ > 1, 1, 0)) OVER (
-      PARTITION BY REGION, VEHICLE_ID, LOCATION_ID
-      ORDER BY SEQ ROWS UNBOUNDED PRECEDING) AS EPISODE_NO
-  FROM edged
+  SELECT e.*,
+    SUM(IFF(e.PREV_SEQ IS NULL
+            OR e.SEQ - e.PREV_SEQ > 1
+            OR DATEDIFF('second', e.PREV_TS, e.TS) > prm.MAX_STOP_SECONDS,
+            1, 0)) OVER (
+      PARTITION BY e.REGION, e.VEHICLE_ID, e.LOCATION_ID
+      ORDER BY e.SEQ ROWS UNBOUNDED PRECEDING) AS EPISODE_NO
+  FROM edged e CROSS JOIN prm
 ),
 -- Collapse to one row per visit. ARRIVAL/DEPARTURE come from the STATIONARY
 -- core (adaptation 3); the containment span is kept for diagnostics.
@@ -263,10 +380,17 @@ agg AS (
     COUNT_IF(e.SPEED_KMH <= prm.STATIONARY_SPEED_KMH)             AS STATIONARY_PINGS,
     MIN(e.TS)                   AS FENCE_ENTRY_TS,
     MAX(e.TS)                   AS FENCE_EXIT_TS,
+    -- Position and time of the episode's LAST in-fence ping, which is the point a
+    -- departure must be measured FROM. See the EXIT_TS note for why the site
+    -- centroid is not usable here.
+    MAX_BY(e.LONGITUDE, e.SEQ) AS EXIT_FROM_LON,
+    MAX_BY(e.LATITUDE, e.SEQ)  AS EXIT_FROM_LAT,
+    MAX_BY(e.TS, e.SEQ)        AS EXIT_FROM_TS,
     -- The vehicle's NEXT ping after this episode. SEQ is a per-vehicle monotonic
-    -- row number over EVERY ping (see `pts`), and this episode owns a contiguous
-    -- SEQ run, so MAX(SEQ)+1 is by construction the first ping that is not part
-    -- of it. Resolved to a timestamp in the final SELECT - see EXIT_TS.
+    -- row number over every kept ping (see `pts`), and this episode owns a
+    -- contiguous SEQ run, so MAX(SEQ)+1 is by construction the first ping that is
+    -- not part of it. Resolved to a timestamp, and gated for plausibility, in the
+    -- final SELECT - see EXIT_TS.
     MAX(e.SEQ) + 1              AS EXIT_SEQ,
     COUNT(*)                    AS FENCE_PINGS,
     ROUND(MAX(e.SPEED_KMH), 1)  AS MAX_SPEED_IN_FENCE,
@@ -339,14 +463,52 @@ SELECT
   -- covers the case where that next ping is STILL inside the fence (7 of the 134
   -- - a sequence gap re-opened the same site as a new episode). Those claim no
   -- exit; the later episode supplies its own.
+  --
+  -- GATED FOR PHYSICAL PLAUSIBILITY. "MAX(SEQ)+1 is the first ping not in this
+  -- episode" is true, but that ping is only evidence of DEPARTURE if it is the
+  -- same vehicle continuing to move. A vehicle can carry a CONCURRENT second
+  -- stream, and then the next ping belongs to it - whereupon the NOT ST_DWITHIN
+  -- guard passes trivially, because such a point is hundreds of km outside a
+  -- 200 m fence. That guard was written for the opposite failure (next ping still
+  -- INSIDE) and cannot catch this one. Measured on UsTexas 2026-09-03 before the
+  -- fix: V-DRI-00096's exit ping was 433,892 m from the site, V-DRI-00086's
+  -- 436,459 m on 24 separate DEPARTED events, and V-DRI-00084's exit for a
+  -- 2026-09-04 visit landed on 2026-09-07 18:09, four days and 255,991 m away.
+  -- Every one published a DEPARTED notification for a vehicle that had not moved.
+  --
+  -- Two gates, both necessary:
+  --   EXIT_MAX_GAP_SECONDS  - the ping must arrive soon enough after the fence
+  --                           exit to be this departure at all. Rejects the
+  --                           four-days-later case.
+  --   MAX_IMPLIED_SPEED_KMH - the implied speed from the episode's LAST IN-FENCE
+  --                           POSITION to that ping must be physically possible.
+  --                           434 km in 4 s is 390,000 km/h. A distance threshold
+  --                           cannot do this job, because a legitimate exit ping
+  --                           may be far away if the gap is long, and a teleport
+  --                           may be near if the fence is large - only the RATIO
+  --                           separates them.
+  --
+  -- Measured FROM the last in-fence ping, never the site centroid. The centroid is
+  -- wrong by up to the fence radius, so a perfectly ordinary exit 110 m from the
+  -- centre of a 100 m fence one second later computes as ~400 km/h and is thrown
+  -- away. GREATEST(..., 250) floors the elapsed time at a quarter second: pings
+  -- can share a timestamp, a zero divisor would make the whole expression NULL
+  -- (reading as "no departure observed" rather than as the division error it is),
+  -- and a quarter second also absorbs the 2-3 m of GPS jitter the generator adds.
   IFF(x.TS IS NOT NULL
-      AND NOT ST_DWITHIN(x.POINT_GEOM, a.SITE_GEOG, a.GEOFENCE_RADIUS_M),
+      AND NOT ST_DWITHIN(x.POINT_GEOM, a.SITE_GEOG, a.GEOFENCE_RADIUS_M)
+      AND ST_DISTANCE(x.POINT_GEOM,
+                      ST_MAKEPOINT(a.EXIT_FROM_LON, a.EXIT_FROM_LAT)) / 1000.0
+          / (GREATEST(DATEDIFF('millisecond', a.EXIT_FROM_TS, x.TS), 250) / 3600000.0)
+          <= prm.MAX_IMPLIED_SPEED_KMH,
       x.TS, NULL) AS EXIT_TS,
   a.MAX_SPEED_IN_FENCE, a.CHORD_M, a.SOURCE_STATUS_HINT,
   TO_DATE(a.ARRIVAL_TS) AS SERVICE_DATE
 FROM agg a CROSS JOIN prm
 LEFT JOIN pts x
-  ON x.REGION = a.REGION AND x.VEHICLE_ID = a.VEHICLE_ID AND x.SEQ = a.EXIT_SEQ
+  ON x.REGION = a.REGION AND x.VEHICLE_ID = a.VEHICLE_ID
+ AND x.SEQ = a.EXIT_SEQ
+ AND DATEDIFF('second', a.FENCE_EXIT_TS, x.TS) BETWEEN 0 AND prm.EXIT_MAX_GAP_SECONDS
 LEFT JOIN dupnames d
   ON d.REGION = a.REGION AND d.NM = TRIM(a.SITE_NAME, '"')
 -- Per-vehicle minimum stop. PARAMS.MIN_STOP_SECONDS remains the account-wide
