@@ -226,7 +226,7 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     # Wired here as well as in .githooks/pre-commit because core.hooksPath is unset,
     # so the hook never runs and the deploy is the only real enforcement point.
     for GATE_NAME in check_chat_table_scroll.py check_chart_rendering.py \
-                     check_number_formatting.py; do
+                     check_number_formatting.py check_chart_dual_axis.py; do
       GATE_PATH="$SKILL_DIR/scripts/$GATE_NAME"
       if [ -f "$GATE_PATH" ]; then
         echo "[1/7] Verify chat presentation: $GATE_NAME ..."
@@ -234,6 +234,17 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
           || { echo "ERROR: $GATE_NAME failed (see above)."; exit 1; }
       fi
     done
+    # The dual-axis gate's central rules are about BRANCH ORDER and about which
+    # axis a mark is routed to - neither of which any passing run can demonstrate.
+    # Two of its mutations are the states that actually shipped (a count series as
+    # a second bar on a currency axis, and `type: "line"` authored with no second
+    # axis), so the mutations are the evidence and they run with the gate.
+    DUAL_AXIS_NEG="$SKILL_DIR/scripts/check_chart_dual_axis_negative.py"
+    if [ -f "$DUAL_AXIS_NEG" ]; then
+      echo "[1/7] Verify chat presentation: dual-axis mutation tests ..."
+      python3 "$DUAL_AXIS_NEG" \
+        || { echo "ERROR: dual-axis mutation tests failed (see above)."; exit 1; }
+    fi
   fi
   if [ "${FORCED_REGION_VERIFY:-1}" != "0" ]; then
     # The active dashboard context is injected into the user turn, and it used to

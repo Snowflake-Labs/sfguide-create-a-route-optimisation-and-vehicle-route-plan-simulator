@@ -171,6 +171,32 @@ if [ -f "$CHART_RENDER_CHECK" ] && staged_any \
   python3 "$CHART_RENDER_CHECK" || exit 1
 fi
 
+# ── 1b1b. A dashboard chart must not plot two scales on one axis ──────────────
+# The labor view drew an OT premium in dollars beside a count of at-risk drivers.
+# Measured 19,340 vs 22 on one week, so the count rendered as a bar 0.1% of plot
+# height: in the legend, in the tooltip, invisible in the plot - which reads as
+# "no at-risk drivers that week". Two defects, either of which alone keeps it
+# invisible: `hasBar` is a some(), so the bar branch won and mapped EVERY series
+# to <Bar> (the authored `type: "line"` had never drawn a line), and `yAxis` was
+# read only by <Line> in the line-only branch, so authoring it was a silent
+# no-op. Nothing errored and every number was correct, which is why it survived.
+# The mutations are the evidence here - two of them are the states that shipped.
+DUAL_AXIS_CHECK="$SKILL_DIR/scripts/check_chart_dual_axis.py"
+if [ -f "$DUAL_AXIS_CHECK" ] && staged_any \
+  "$SKILL_DIR/fleet_sa_app/ui/src/components/views/areas/view-chart.tsx" \
+  "$SKILL_DIR/fleet_sa_app/app/app-views.json" \
+  "$SKILL_DIR/scripts/restructure_labor_view.py" \
+  "$SKILL_DIR/scripts/check_chart_dual_axis.py" \
+  "$SKILL_DIR/scripts/check_chart_dual_axis_negative.py"; then
+  echo "pre-commit: dashboard chart dual-axis check..."
+  python3 "$DUAL_AXIS_CHECK" || exit 1
+  DUAL_AXIS_NEG="$SKILL_DIR/scripts/check_chart_dual_axis_negative.py"
+  if [ -f "$DUAL_AXIS_NEG" ]; then
+    echo "pre-commit: dual-axis mutation tests..."
+    python3 "$DUAL_AXIS_NEG" || exit 1
+  fi
+fi
+
 # ── 1b3. A forbidden map must name the tool that can draw one ───────────────────
 # render_map shipped fully working and the agent never called it: asked to show
 # dwell density it drew two facility-type bar charts and handed off to a link. Two
