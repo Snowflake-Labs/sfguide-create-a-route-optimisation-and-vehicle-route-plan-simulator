@@ -133,24 +133,41 @@ USING (
     ('UsTexas',                'Regional line-haul standard',
       1,  6,  26.0, 700.0, 1200.0, 4, 240, 1.45, 52.00),
     -- National multi-drop (beverage/FMCG distribution). Country FOOTPRINT but
-    -- urban route SHAPE, so the stop band and km-per-stop come from the metro
-    -- standard while the territory radius reflects real depot catchments.
+    -- urban route SHAPE, so this is a fourth shape the other rows do not cover.
     --
-    -- MAX_SHIFT_HOURS 11.0 is the EU/CH duty reality rather than the 9.0 metro
-    -- figure: 9 h daily driving + a 45 min mandatory break + loading. The
-    -- generation preset runs 10 h shift windows with a 0.35 overrun
-    -- probability, so 11.0 flags genuinely long days instead of convicting
-    -- every third route of a breach it cannot avoid.
+    -- CALIBRATED against the MEASURED distribution of the 1,017-route
+    -- Switzerland dataset, not from the generator's intent. Percentiles:
     --
-    -- WAREHOUSE_SESSION_START_HOUR 3 follows from the preset's earliest shift
-    -- starting at 04:00 - the warehouse has to be building an hour before the
-    -- first truck rolls. With PLAN_LEAD_TIME_MINUTES 180 that puts the plan
-    -- release deadline at midnight, which is a demanding but real ask and is
-    -- the point of the readiness view.
+    --                      P05    P25    P50    P75    P95
+    --   stops              8      13     16     18     20
+    --   plan hours         10.4   11.2   12.4   14.1   19.3
+    --   km per stop        6.6    11.0   15.0   26.0   77.2
+    --   depot radius km    12.7   24.2   36.0   63.1   201.0
+    --
+    -- Thresholds sit near P75 so that a meaningful MINORITY breaches. That is
+    -- the whole point of the view: a standard nothing violates measures nothing,
+    -- and one almost everything violates is noise rather than signal. The first
+    -- version of this row was guessed from the generator config before any data
+    -- existed and got two of them badly wrong - 11.0 h sits below P25 and
+    -- 14.0 km/stop below P50, so both would have convicted most routes of
+    -- breaches they could not avoid.
+    --
+    -- MAX_SHIFT_HOURS 14.0 is also legally defensible, not merely fitted: EU/CH
+    -- rules allow ~13 h duty with 11 h rest and up to 15 h with reduced rest
+    -- twice weekly, so 14.0 sits inside the real envelope.
+    --
+    -- km per stop is strongly right-skewed (mean 19.95 against median 15.0)
+    -- because long rural valley routes pull the tail to P95 77.2. 22.0 targets
+    -- the skew without punishing genuinely remote territories.
+    --
+    -- WAREHOUSE_SESSION_START_HOUR 3 follows from the earliest shift starting at
+    -- 04:00 - the warehouse must be building before the first truck rolls. With
+    -- PLAN_LEAD_TIME_MINUTES 180 that sets a midnight plan-release deadline,
+    -- which is the pressure the readiness view exists to show.
     --
     -- Costs are Swiss HGV: ~1.60/km all-in and ~65/h loaded driver cost.
     ('Switzerland',            'National multi-drop distribution standard',
-      15, 40,  11.0, 14.0, 50.0, 3, 180, 1.60, 65.00)
+      12, 22,  14.0, 22.0, 50.0, 3, 180, 1.60, 65.00)
   AS s (REGION, STANDARD_LABEL, MIN_STOPS, MAX_STOPS, MAX_SHIFT_HOURS,
         MAX_KM_PER_STOP, MAX_TERRITORY_KM, WAREHOUSE_SESSION_START_HOUR,
         PLAN_LEAD_TIME_MINUTES, COST_PER_KM_USD, COST_PER_HOUR_USD)
