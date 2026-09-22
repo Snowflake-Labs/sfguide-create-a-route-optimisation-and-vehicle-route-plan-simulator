@@ -17,6 +17,45 @@ function isoLit(d: Date): string {
   return `'${d.toISOString()}'`;
 }
 
+// ---------------------------------------------------------------------------
+// Watchdog heartbeats for the SETUP-phase inserters
+// ---------------------------------------------------------------------------
+// Every inserter here issues one SEQUENTIAL round-trip per batch, so a large
+// input becomes a long stretch of wall-clock time during which the caller emits
+// nothing. jobs.ts runs a no-progress watchdog at WATCHDOG_STALL_MS (15 min)
+// whose liveness is max(job.lastProgressAt, getRouteActivity()), and
+// broadcast(job, 'progress', ...) is what stamps the former.
+//
+// MEASURED consequence: a 72,849-row DIM_POIS insert spent 929 s emitting
+// nothing, the watchdog logged "possible ORS stall", set STALLED and
+// ABORT_REQUESTED, and the setup phase then went on to complete normally six
+// minutes later. The job was never stalled.
+//
+// getRouteActivity() only covers the TELEMETRY phase, so the three telemetry
+// inserters (telemetry/trip/trip-schedule) are already protected by it. The
+// inserters that run BEFORE any routing - POIs, offers, partners,
+// partner-history - have no second liveness source and are the ones that need
+// to beat. They all take an optional onProgress for that reason.
+//
+// ONE shared helper rather than the cadence inlined per inserter: four copies of
+// a threshold drift apart, and a beat that silently stops beating looks exactly
+// like a healthy run right up to the abort.
+const PROGRESS_ROWS = 10_000;
+
+/** Returns a per-batch callback that invokes onProgress about every 10k rows. */
+function makeProgressBeat(
+  total: number,
+  onProgress?: (inserted: number, total: number) => void,
+): (done: number) => void {
+  let lastReported = 0;
+  return (done: number) => {
+    if (onProgress && done - lastReported >= PROGRESS_ROWS) {
+      lastReported = done;
+      onProgress(done, total);
+    }
+  };
+}
+
 export async function insertTelemetryBatch(points: TelemetryPoint[], snowSql: SnowSqlFn, jobId: string): Promise<number> {
   if (points.length === 0) return 0;
   // 2000-row batches. Rows are emitted as a single VALUES table constructor and
@@ -207,23 +246,13 @@ export async function insertDimFleet(fleet: any[], config: GenerationConfig, sno
   }
 }
 
-// onProgress fires periodically DURING the insert, not just at the end. It
-// exists for the no-progress watchdog, not for cosmetics: this function issues
-// one sequential round-trip per 500 rows, so a large POI pool turns into a
-// single silent phase far longer than the 15 min WATCHDOG_STALL_MS. MEASURED, a
-// 72,849-POI pool spent 929 s here emitting nothing, and the watchdog aborted a
-// perfectly healthy job whose setup then went on to complete normally. The
-// broadcast() contract in jobs.ts already treats every 'progress' event as a
-// watchdog heartbeat, and every other setup INSERT reports on completion - this
-// one and insertDimFleet were the omissions in that pattern.
+// onProgress fires periodically DURING the insert, not just at the end - see the
+// makeProgressBeat comment above for the measured 929 s silence that made a
+// healthy job get aborted.
 export async function insertDimPois(pois: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string, onProgress?: (inserted: number, total: number) => void): Promise<void> {
   if (pois.length === 0) return;
   const batchSize = 500;
-  // Report about every 10k rows. Frequent enough that the gap between beats
-  // stays far below the 15 min threshold even if batches slow down, infrequent
-  // enough not to flood the event log on a 75k pool (~8 beats).
-  const reportEvery = 20 * batchSize;
-  let lastReported = 0;
+  const beat = makeProgressBeat(pois.length, onProgress);
   for (let i = 0; i < pois.length; i += batchSize) {
     const chunk = pois.slice(i, i + batchSize);
     const selects = chunk.map((p: any) =>
@@ -241,19 +270,16 @@ export async function insertDimPois(pois: any[], config: GenerationConfig, snowS
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }
-    const done = Math.min(i + batchSize, pois.length);
-    if (onProgress && done - lastReported >= reportEvery) {
-      lastReported = done;
-      onProgress(done, pois.length);
-    }
+    beat(Math.min(i + batchSize, pois.length));
   }
 }
 
-export async function insertFactOffers(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+export async function insertFactOffers(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string, onProgress?: (inserted: number, total: number) => void): Promise<number> {
   if (offers.length === 0) return 0;
   const vt = resolveVehicleType(config);
   const batchSize = 500;
   let inserted = 0;
+  const beat = makeProgressBeat(offers.length, onProgress);
   for (let i = 0; i < offers.length; i += batchSize) {
     const chunk = offers.slice(i, i + batchSize);
     const selects = chunk.map((o: any) =>
@@ -285,15 +311,17 @@ export async function insertFactOffers(offers: any[], config: GenerationConfig, 
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }
+    beat(inserted);
   }
   return inserted;
 }
 
-export async function insertDimPartners(partners: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+export async function insertDimPartners(partners: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string, onProgress?: (inserted: number, total: number) => void): Promise<number> {
   if (partners.length === 0) return 0;
   const vt = resolveVehicleType(config);
   const batchSize = 500;
   let inserted = 0;
+  const beat = makeProgressBeat(partners.length, onProgress);
   for (let i = 0; i < partners.length; i += batchSize) {
     const chunk = partners.slice(i, i + batchSize);
     const selects = chunk.map((p: any) =>
@@ -313,15 +341,17 @@ export async function insertDimPartners(partners: any[], config: GenerationConfi
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }
+    beat(inserted);
   }
   return inserted;
 }
 
-export async function insertFactPartnerHistory(rows: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+export async function insertFactPartnerHistory(rows: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string, onProgress?: (inserted: number, total: number) => void): Promise<number> {
   if (rows.length === 0) return 0;
   const vt = resolveVehicleType(config);
   const batchSize = 500;
   let inserted = 0;
+  const beat = makeProgressBeat(rows.length, onProgress);
   for (let i = 0; i < rows.length; i += batchSize) {
     const chunk = rows.slice(i, i + batchSize);
     const selects = chunk.map((r: any) =>
@@ -342,6 +372,7 @@ export async function insertFactPartnerHistory(rows: any[], config: GenerationCo
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }
+    beat(inserted);
   }
   return inserted;
 }

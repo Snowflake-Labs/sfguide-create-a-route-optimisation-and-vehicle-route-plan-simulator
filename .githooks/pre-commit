@@ -902,3 +902,25 @@ if [ -f "$LAND_CLIP_CHECK" ]; then
     exit 1
   }
 fi
+
+# ── Data Studio generation guards ─────────────────────────────────────────────
+# Two silent-failure defects in the synthetic-data generator. An ignored
+# config.poi_cap hands a small country a city-sized POI pool while every log
+# line and row count still looks plausible (MEASURED: San Francisco 839 km2 and
+# Switzerland 41,822 km2 both received 5,000 POIs, because poiCapForArea's first
+# tier spans a 300x area range). And a setup-phase inserter that emits no
+# progress lets the 15 min no-progress watchdog abort a HEALTHY run: a
+# 72,849-row DIM_POIS insert went 929 s without a beat, the watchdog blamed
+# "possible ORS stall", and the setup phase then finished normally six minutes
+# later. Only broadcast(job,'progress',...) refreshes that clock.
+#
+# broadcast()'s own comment already described this bug class and insertDimPois
+# shipped without a beat anyway, which is why this is a check and not a comment.
+STUDIO_GUARDS_CHECK="$SKILL_DIR/scripts/check_studio_generation_guards.py"
+if [ -f "$STUDIO_GUARDS_CHECK" ]; then
+  echo "pre-commit: Data Studio POI-cap + watchdog heartbeat check..."
+  python3 "$STUDIO_GUARDS_CHECK" || {
+    echo "pre-commit FAILED: the POI cap override or a setup-phase watchdog heartbeat was lost."
+    exit 1
+  }
+fi

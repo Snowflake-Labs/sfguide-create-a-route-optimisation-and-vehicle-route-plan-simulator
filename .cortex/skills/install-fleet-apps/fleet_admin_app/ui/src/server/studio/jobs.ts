@@ -1482,7 +1482,9 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertFactOffers(offers, config, snowSql, jobId);
+        const n = await insertFactOffers(offers, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} offers` });
+        });
         log('INFO', 'Studio', `Inserted ${n} offers`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} offers` });
       } catch (e: any) {
@@ -1490,7 +1492,9 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `FACT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertDimPartners(partners, config, snowSql, jobId);
+        const n = await insertDimPartners(partners, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} partners` });
+        });
         log('INFO', 'Studio', `Inserted ${n} partners`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} partners` });
       } catch (e: any) {
@@ -1498,7 +1502,9 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `DIM_PARTNERS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId);
+        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} partner-history rows` });
+        });
         log('INFO', 'Studio', `Inserted ${n} partner-history rows`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} partner-history rows` });
       } catch (e: any) {

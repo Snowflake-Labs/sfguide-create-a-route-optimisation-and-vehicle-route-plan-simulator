@@ -67,6 +67,23 @@ for tool in snow docker node npm; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: '$tool' not found."; exit 1; }
 done
 
+# Data Studio generation guards. This deploy is the ONLY enforcement point that
+# actually runs: core.hooksPath is unset in this repo, so .githooks/pre-commit
+# never fires. Both guarded defects fail SILENTLY once regressed - an ignored
+# config.poi_cap produces a default-sized POI pool with entirely plausible row
+# counts, and a missing setup-phase heartbeat lets the 15 min no-progress
+# watchdog abort a healthy run while blaming "possible ORS stall". Since the
+# generator runs INSIDE this image, shipping a regressed copy is exactly what
+# this check exists to prevent.
+STUDIO_GUARDS="$(dirname "${BASH_SOURCE[0]}")/check_studio_generation_guards.py"
+if [ "${SKIP_STUDIO_GUARDS:-0}" != "1" ] && [ -f "$STUDIO_GUARDS" ]; then
+  if ! python3 "$STUDIO_GUARDS"; then
+    echo "ERROR: Data Studio generation guards failed (see above)."
+    echo "       Set SKIP_STUDIO_GUARDS=1 to override deliberately."
+    exit 1
+  fi
+fi
+
 # shellcheck disable=SC1090
 source "$VERSION_FILE"
 IMAGE_TAG="${IMAGE_TAG:-${FLEET_ADMIN_APP_TAG:?FLEET_ADMIN_APP_TAG missing from image-versions.env}}"
