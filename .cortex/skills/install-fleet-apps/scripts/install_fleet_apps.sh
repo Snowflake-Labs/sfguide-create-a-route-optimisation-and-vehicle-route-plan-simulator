@@ -79,6 +79,7 @@ LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
 # is correct under --no-engine. The live optimizer comparison that prices a
 # non-standard plan lives in analytic_layer_live_routing.sql instead.
 PLAN_STANDARDS_SQL="$SCRIPTS/plan_standards_layer.sql"
+MULTIDROP_PRESET_SQL="$SCRIPTS/preset_national_multidrop.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
@@ -782,6 +783,33 @@ if [ "${SKIP_PLAN_STANDARDS:-0}" != "1" ]; then
     || { note "  WARN: plan-standards layer reported errors; see /tmp/ifa_plan_standards.log"; step "4.27 plan standards" WARN; }
 else
   step "4.27 plan standards" SKIPPED
+fi
+
+# ── 4.28 national multi-drop generation preset ────────────────────────────
+# Registers the 'national-multidrop-hgv' Data Studio profile as a catalog ROW
+# (IS_BUILTIN = FALSE), which is the documented way to onboard a generation mode
+# without rebuilding the admin image. Neither the admin app's boot MERGE
+# (WHEN MATCHED AND tgt.IS_BUILTIN = TRUE) nor its stale-builtin DELETE
+# (WHERE IS_BUILTIN = TRUE) can touch a non-builtin row, so this survives
+# restarts and the file is safe to re-run.
+#
+# Exists because the two shipped HGV/urban presets bracket a bottler without
+# hitting it: SanFrancisco/urban-ebike gives 28.1 stops per route in ONE city,
+# while regional-hgv gives 1.3-1.6 at country scale because it models line-haul.
+# This preset is country scale with urban trip density, which is what
+# route-plan standardization analytics need.
+#
+# Order only needs to be AFTER the admin app step that creates
+# GENERATION_PROFILE_CATALOG; it is data-only, touches no FLEET_APP object, and
+# nothing downstream in this installer reads it. Generation itself is always an
+# explicit operator action in Data Studio, never part of install.
+if [ "${SKIP_GENERATION_PRESETS:-0}" != "1" ]; then
+  note "[4.28/8] national multi-drop generation preset..."
+  snow sql -c "$CONNECTION" -f "$MULTIDROP_PRESET_SQL" --enable-templating NONE >/tmp/ifa_multidrop_preset.log 2>&1 \
+    && step "4.28 multidrop preset" OK \
+    || { note "  WARN: preset registration reported errors; see /tmp/ifa_multidrop_preset.log"; step "4.28 multidrop preset" WARN; }
+else
+  step "4.28 multidrop preset" SKIPPED
 fi
 
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────
