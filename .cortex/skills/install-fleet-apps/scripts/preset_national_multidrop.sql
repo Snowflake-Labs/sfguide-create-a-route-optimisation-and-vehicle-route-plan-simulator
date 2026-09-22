@@ -42,27 +42,54 @@
 --                     shopping_mall, shopping), impulse (gas_station) and
 --                     vending/cooler accounts (sport_or_fitness_facility, gym)
 --   hotels    6,021
---   depots   14,034   wholesaler, supplier_or_distributor, manufacturer,
---                     b2b_transportation_and_storage_service, storage_facility
---   TOTAL    83,548
+--   depots    2,602   wholesaler, b2b_transportation_and_storage_service,
+--                     storage_facility
 --
--- A NOTE ON HOW THIS LIST WAS ARRIVED AT, because the first attempt was wrong.
--- grocery_store, supermarket, pub, liquor_store and warehouse all measure ZERO
--- in Overture here, and the first version of this preset concluded from that
--- that Switzerland simply had no off-premise retail to deliver to. It does - the
--- category is named food_and_beverage_store (10,162), and the same mistake hid
--- casual_eatery (4,452), gas_station (3,635), supplier_or_distributor (4,473)
--- and manufacturer (6,959). Enumerating what the taxonomy DOES contain, rather
--- than probing for the names a bottler would use, doubled usable supply from
--- 41,936 to 83,548. Zero-count names are still deliberately omitted: a category
--- that does not exist contributes silently nothing.
+-- A NOTE ON HOW THIS LIST WAS ARRIVED AT, because two attempts were wrong.
 --
--- DENSITY IS THE BINDING CONSTRAINT, and it is why the cap is set near supply.
--- MEASURED on a 10-vehicle probe at poi_cap 35,000: 33,474 POIs, 0.80 POIs/km2,
--- and routes of 16.2 stops needing 14.77 km per stop - against a predicted
--- 9-10 km. Stops are drawn from a pool spread evenly over the whole country, so
--- when the H3 neighbourhood holds no outlet inside the 8 km short-leg band the
--- next stop lands further out. Doubling the pool is the direct lever on that.
+-- MISTAKE 1, too few categories. grocery_store, supermarket, pub, liquor_store
+-- and warehouse all measure ZERO in Overture here, and the first version
+-- concluded Switzerland had no off-premise retail to deliver to. It does - the
+-- category is named food_and_beverage_store (10,162), and the same error hid
+-- casual_eatery (4,452) and gas_station (3,635). Enumerating what the taxonomy
+-- DOES contain, rather than probing for the names a bottler would use, roughly
+-- doubled usable outlet supply.
+--
+-- MISTAKE 2, and the more instructive one: raw POI COUNT is not the lever, the
+-- DEPOT-to-outlet geometry is. That same sweep also added manufacturer (6,959)
+-- and supplier_or_distributor (4,473) to the WAREHOUSE map, on the reasoning
+-- that both are distribution-ish. Four 10-vehicle probes, MEASURED:
+--
+--   P1  cap 35k  33,474 POIs  0.80/km2  3 logistics depot cats  16.2 stops  14.8 km/stop  SD    -
+--   P3  cap 75k  72,850 POIs  1.74/km2  5 cats (+industrial)    13.6 stops  25.7 km/stop  SD 88.6
+--   P4  cap 70k  67,816 POIs  1.62/km2  3 logistics depot cats  16.4 stops  18.1 km/stop  SD 15.4
+--   P5  cap 55k  53,069 POIs  1.27/km2  3 logistics, clustered  15.6 stops  20.3 km/stop  SD153.9
+--
+-- P3 is the real finding: the two industrial categories took 82% of the depot
+-- pool (10,631 of 12,958) and pushed genuine logistics depots down to 18%, so
+-- vehicles started from factories scattered through rural industrial zones
+-- instead of from depots sited near customer clusters. Stops fell, km/stop rose
+-- 74%, and one route degenerated to a single stop. Both categories are therefore
+-- excluded from poi_categories ENTIRELY rather than merely unmapped - left
+-- listed, "_default": "STORE" would have made them beverage customers.
+--
+-- WHAT DID NOT REPLICATE, stated plainly because the first version of this
+-- comment asserted it: POI density is NOT the lever on km-per-stop. P1 has the
+-- LOWEST density of the four and the TIGHTEST routes. Across P1/P4/P5 - which
+-- differ only in outlet breadth, not in the depot fix - km/stop moves 14.8/18.1/
+-- 20.3 while SD swings 15.4 to 153.9. At 9-10 routes per probe that spread is
+-- dominated by where a handful of depots happened to land, so those three are
+-- not reliably distinguishable and the earlier density claim was reading noise.
+--
+-- The category set below is therefore chosen on DOMAIN grounds, not by picking
+-- the best probe number: the full on-premise / off-premise / impulse / vending
+-- mix a bottler actually serves, with logistics-only depots because that is the
+-- one effect large enough (P3) to be real. Over ~1,400 routes in the full run,
+-- depot-placement noise averages out in a way it cannot over 9.
+--
+-- The depot pool is deliberately SMALL (2,602 candidates) and purely logistics.
+-- 200 vehicles need a few hundred distinct depots at most; probes realised
+-- ~2,200-2,500 WAREHOUSE rows from these three categories.
 -- =====================================================================
 -- REGION IS NOT PINNED. region/bbox/region_area_km2 are resolved per RUN by the
 -- Data Studio job, so this preset is reusable for any region whose graph carries
@@ -145,12 +172,12 @@ USING (
         "food_and_beverage_store", "convenience_store", "gas_station",
         "shopping_mall", "shopping",
         "sport_or_fitness_facility", "gym",
-        "wholesaler", "supplier_or_distributor", "manufacturer",
+        "wholesaler",
         "b2b_transportation_and_storage_service", "storage_facility"
       ],
 
       "category_map": {
-        "WAREHOUSE": ["wholesaler", "supplier_or_distributor", "manufacturer", "b2b_transportation_and_storage_service", "storage_facility"],
+        "WAREHOUSE": ["wholesaler", "b2b_transportation_and_storage_service", "storage_facility"],
         "STORE": ["restaurant", "casual_eatery", "bar", "cafe", "coffee_shop", "fast_food_restaurant", "food_and_beverage_store", "convenience_store", "gas_station", "shopping_mall", "shopping", "sport_or_fitness_facility", "gym"],
         "DESTINATION": ["hotel"],
         "_default": "STORE"
@@ -158,7 +185,7 @@ USING (
 
       "home_location_types": ["WAREHOUSE"],
 
-      "poi_cap": 75000,
+      "poi_cap": 70000,
 
       "spatial_spread": { "enabled": true, "bin_deg": 0.5, "min_bins_required": 3 },
 
