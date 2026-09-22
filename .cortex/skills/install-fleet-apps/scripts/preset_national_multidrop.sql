@@ -245,7 +245,14 @@ WHEN MATCHED AND tgt.IS_BUILTIN = FALSE THEN UPDATE SET
   tgt.REGION_SCALE = src.REGION_SCALE,
   tgt.FEEDS = src.FEEDS,
   tgt.DEFAULT_CONFIG = src.DEFAULT_CONFIG,
-  tgt.UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+  -- SYSDATE() (UTC), NOT CURRENT_TIMESTAMP(), to match both the table's column
+  -- DEFAULT and the admin app's boot MERGE. CURRENT_TIMESTAMP() is session-local
+  -- (UTC-7 on this account), which wrote an UPDATED_AT seven hours BEHIND
+  -- CREATED_AT and made the row look as if it had been updated before it was
+  -- created. That column is the evidence you read to tell whether a boot MERGE
+  -- has touched a non-builtin row, so a skewed value undermines the one check
+  -- that proves this preset survives a restart.
+  tgt.UPDATED_AT = SYSDATE()
 WHEN NOT MATCHED THEN INSERT
   (TEMPLATE_ID, NAME, DESCRIPTION, VEHICLE_TYPE, ORS_PROFILE, REGION_SCALE, FEEDS, DEFAULT_CONFIG, IS_BUILTIN)
   VALUES (src.TEMPLATE_ID, src.NAME, src.DESCRIPTION, src.VEHICLE_TYPE, src.ORS_PROFILE, src.REGION_SCALE, src.FEEDS, src.DEFAULT_CONFIG, src.IS_BUILTIN);
