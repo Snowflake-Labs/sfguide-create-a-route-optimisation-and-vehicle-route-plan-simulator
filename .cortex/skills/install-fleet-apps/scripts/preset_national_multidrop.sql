@@ -34,17 +34,36 @@
 -- IMAGE THIS FIELD IS SILENTLY IGNORED and the pool is default-sized, so verify
 -- the generated POI count before trusting a run.
 --
--- SUPPLY, MEASURED from OVERTURE_MAPS__PLACES.CARTO.PLACE inside the Swiss bbox:
---   outlets  64,562  (restaurant 34,997, hotel 11,748, bar 8,891, cafe 3,690,
---                     coffee_shop 1,953, fast_food 1,639, convenience 1,006,
---                     shopping_mall 638)
---   depots    3,755  (wholesaler 1,579, b2b_transport_storage 1,193,
---                     storage_facility 983)
--- 34,997 restaurants IS a bottler's on-premise channel, not a proxy for one.
--- grocery_store / supermarket / pub / liquor_store / warehouse were all measured
--- at ZERO in Overture's taxonomy here and are deliberately NOT listed - a
--- non-existent category silently contributes nothing.
+-- SUPPLY, MEASURED inside the Swiss BOUNDARY (not the bbox - the bbox overstates
+-- by ~40% because it includes France, Germany and Italy):
+--   outlets  63,493   on-premise (restaurant, casual_eatery, bar, cafe,
+--                     coffee_shop, fast_food), off-premise
+--                     (food_and_beverage_store, convenience_store,
+--                     shopping_mall, shopping), impulse (gas_station) and
+--                     vending/cooler accounts (sport_or_fitness_facility, gym)
+--   hotels    6,021
+--   depots   14,034   wholesaler, supplier_or_distributor, manufacturer,
+--                     b2b_transportation_and_storage_service, storage_facility
+--   TOTAL    83,548
 --
+-- A NOTE ON HOW THIS LIST WAS ARRIVED AT, because the first attempt was wrong.
+-- grocery_store, supermarket, pub, liquor_store and warehouse all measure ZERO
+-- in Overture here, and the first version of this preset concluded from that
+-- that Switzerland simply had no off-premise retail to deliver to. It does - the
+-- category is named food_and_beverage_store (10,162), and the same mistake hid
+-- casual_eatery (4,452), gas_station (3,635), supplier_or_distributor (4,473)
+-- and manufacturer (6,959). Enumerating what the taxonomy DOES contain, rather
+-- than probing for the names a bottler would use, doubled usable supply from
+-- 41,936 to 83,548. Zero-count names are still deliberately omitted: a category
+-- that does not exist contributes silently nothing.
+--
+-- DENSITY IS THE BINDING CONSTRAINT, and it is why the cap is set near supply.
+-- MEASURED on a 10-vehicle probe at poi_cap 35,000: 33,474 POIs, 0.80 POIs/km2,
+-- and routes of 16.2 stops needing 14.77 km per stop - against a predicted
+-- 9-10 km. Stops are drawn from a pool spread evenly over the whole country, so
+-- when the H3 neighbourhood holds no outlet inside the 8 km short-leg band the
+-- next stop lands further out. Doubling the pool is the direct lever on that.
+-- =====================================================================
 -- REGION IS NOT PINNED. region/bbox/region_area_km2 are resolved per RUN by the
 -- Data Studio job, so this preset is reusable for any region whose graph carries
 -- driving-hgv. Switzerland is the first target because it is already provisioned
@@ -121,21 +140,25 @@ USING (
       "detour": { "probability": 0.10, "max_detour_factor": 1.4 },
 
       "poi_categories": [
-        "restaurant", "hotel", "bar", "cafe", "coffee_shop",
-        "fast_food_restaurant", "convenience_store", "shopping_mall",
-        "wholesaler", "b2b_transportation_and_storage_service", "storage_facility"
+        "restaurant", "casual_eatery", "bar", "cafe", "coffee_shop",
+        "fast_food_restaurant", "hotel",
+        "food_and_beverage_store", "convenience_store", "gas_station",
+        "shopping_mall", "shopping",
+        "sport_or_fitness_facility", "gym",
+        "wholesaler", "supplier_or_distributor", "manufacturer",
+        "b2b_transportation_and_storage_service", "storage_facility"
       ],
 
       "category_map": {
-        "WAREHOUSE": ["wholesaler", "b2b_transportation_and_storage_service", "storage_facility"],
-        "STORE": ["restaurant", "bar", "cafe", "coffee_shop", "fast_food_restaurant", "convenience_store", "shopping_mall"],
+        "WAREHOUSE": ["wholesaler", "supplier_or_distributor", "manufacturer", "b2b_transportation_and_storage_service", "storage_facility"],
+        "STORE": ["restaurant", "casual_eatery", "bar", "cafe", "coffee_shop", "fast_food_restaurant", "food_and_beverage_store", "convenience_store", "gas_station", "shopping_mall", "shopping", "sport_or_fitness_facility", "gym"],
         "DESTINATION": ["hotel"],
         "_default": "STORE"
       },
 
       "home_location_types": ["WAREHOUSE"],
 
-      "poi_cap": 35000,
+      "poi_cap": 75000,
 
       "spatial_spread": { "enabled": true, "bin_deg": 0.5, "min_bins_required": 3 },
 

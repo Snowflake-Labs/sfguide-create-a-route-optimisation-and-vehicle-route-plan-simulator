@@ -395,8 +395,9 @@ export interface GenerationConfig {
   // regeneration of the existing SanFrancisco and UnitedStatesOfAmerica
   // datasets produces. Presets that omit poi_cap reproduce byte-identically.
   //
-  // Supply is the real ceiling - Overture holds 64,562 qualifying outlet POIs
-  // inside the Swiss bbox, so a 35,000 cap is ~54% of what exists.
+  // Supply is the real ceiling. Measured inside the Swiss boundary, the category
+  // set the national-multidrop-hgv preset uses holds 83,548 qualifying POIs, so
+  // its 75,000 cap sits just under what actually exists rather than above it.
   poi_cap?: number | null;
   // Per-day fleet parallelism. Up to N vehicles run their ORS calls
   // concurrently within a single simulated day. Defaults to 8 - safe for the

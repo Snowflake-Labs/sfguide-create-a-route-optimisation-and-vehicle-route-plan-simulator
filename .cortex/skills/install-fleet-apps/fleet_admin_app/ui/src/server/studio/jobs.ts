@@ -1451,7 +1451,9 @@ export async function startGeneration(
       // flip DIM_DATASETS.IS_ACTIVE at the very end of this block. This keeps
       // the previously-active dataset visible to downstream demos (Backload
       // Matching, Freight Exchange, Fleet Intelligence, Asset Velocity) for
-      // the entire ~5-30s window during which the new data is being inserted,
+      // the entire window during which the new data is being inserted (seconds
+      // on a small pool, but MEASURED at ~15 min for a 72,849-POI pool, so do
+      // not assume this is brief),
       // and switches them atomically to the new dataset only once it is fully
       // populated. The new JOB_ID's rows live in the base tables but are
       // invisible to V_*_CURRENT views until the flip happens.
@@ -1460,13 +1462,21 @@ export async function startGeneration(
       const datasetLabel = `${presetName} @ ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
 
       try {
-        await insertDimPois(pois, config, snowSql, jobId);
+        // The onProgress beat is a watchdog heartbeat, not decoration: this
+        // insert is one round-trip per 500 rows, so a large pool is otherwise a
+        // single silent phase that can exceed WATCHDOG_STALL_MS and get a
+        // healthy job aborted. Measured at 929 s of silence on a 72,849-POI pool.
+        await insertDimPois(pois, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} POIs` });
+        });
+        broadcast(job, 'progress', { status: `Inserted ${pois.length} POIs` });
       } catch (e: any) {
         log('WARN', 'Studio', `DIM_POIS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `DIM_POIS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
         await insertDimFleet(fleet, config, snowSql, jobId);
+        broadcast(job, 'progress', { status: `Inserted ${fleet.length} fleet rows` });
       } catch (e: any) {
         log('WARN', 'Studio', `DIM_FLEET insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });

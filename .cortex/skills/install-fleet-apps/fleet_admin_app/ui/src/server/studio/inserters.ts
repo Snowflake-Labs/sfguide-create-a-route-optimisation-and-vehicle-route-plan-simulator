@@ -207,9 +207,23 @@ export async function insertDimFleet(fleet: any[], config: GenerationConfig, sno
   }
 }
 
-export async function insertDimPois(pois: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<void> {
+// onProgress fires periodically DURING the insert, not just at the end. It
+// exists for the no-progress watchdog, not for cosmetics: this function issues
+// one sequential round-trip per 500 rows, so a large POI pool turns into a
+// single silent phase far longer than the 15 min WATCHDOG_STALL_MS. MEASURED, a
+// 72,849-POI pool spent 929 s here emitting nothing, and the watchdog aborted a
+// perfectly healthy job whose setup then went on to complete normally. The
+// broadcast() contract in jobs.ts already treats every 'progress' event as a
+// watchdog heartbeat, and every other setup INSERT reports on completion - this
+// one and insertDimFleet were the omissions in that pattern.
+export async function insertDimPois(pois: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string, onProgress?: (inserted: number, total: number) => void): Promise<void> {
   if (pois.length === 0) return;
   const batchSize = 500;
+  // Report about every 10k rows. Frequent enough that the gap between beats
+  // stays far below the 15 min threshold even if batches slow down, infrequent
+  // enough not to flood the event log on a 75k pool (~8 beats).
+  const reportEvery = 20 * batchSize;
+  let lastReported = 0;
   for (let i = 0; i < pois.length; i += batchSize) {
     const chunk = pois.slice(i, i + batchSize);
     const selects = chunk.map((p: any) =>
@@ -226,6 +240,11 @@ export async function insertDimPois(pois: any[], config: GenerationConfig, snowS
       const msg = `DIM_POIS insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
+    }
+    const done = Math.min(i + batchSize, pois.length);
+    if (onProgress && done - lastReported >= reportEvery) {
+      lastReported = done;
+      onProgress(done, pois.length);
     }
   }
 }
