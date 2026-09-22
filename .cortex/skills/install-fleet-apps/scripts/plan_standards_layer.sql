@@ -131,7 +131,26 @@ USING (
     ('UnitedStatesOfAmerica',  'Long-haul line-haul standard',
       1,  6,  32.0, 900.0, 4000.0, 4, 240, 1.45, 52.00),
     ('UsTexas',                'Regional line-haul standard',
-      1,  6,  26.0, 700.0, 1200.0, 4, 240, 1.45, 52.00)
+      1,  6,  26.0, 700.0, 1200.0, 4, 240, 1.45, 52.00),
+    -- National multi-drop (beverage/FMCG distribution). Country FOOTPRINT but
+    -- urban route SHAPE, so the stop band and km-per-stop come from the metro
+    -- standard while the territory radius reflects real depot catchments.
+    --
+    -- MAX_SHIFT_HOURS 11.0 is the EU/CH duty reality rather than the 9.0 metro
+    -- figure: 9 h daily driving + a 45 min mandatory break + loading. The
+    -- generation preset runs 10 h shift windows with a 0.35 overrun
+    -- probability, so 11.0 flags genuinely long days instead of convicting
+    -- every third route of a breach it cannot avoid.
+    --
+    -- WAREHOUSE_SESSION_START_HOUR 3 follows from the preset's earliest shift
+    -- starting at 04:00 - the warehouse has to be building an hour before the
+    -- first truck rolls. With PLAN_LEAD_TIME_MINUTES 180 that puts the plan
+    -- release deadline at midnight, which is a demanding but real ask and is
+    -- the point of the readiness view.
+    --
+    -- Costs are Swiss HGV: ~1.60/km all-in and ~65/h loaded driver cost.
+    ('Switzerland',            'National multi-drop distribution standard',
+      15, 40,  11.0, 14.0, 50.0, 3, 180, 1.60, 65.00)
   AS s (REGION, STANDARD_LABEL, MIN_STOPS, MAX_STOPS, MAX_SHIFT_HOURS,
         MAX_KM_PER_STOP, MAX_TERRITORY_KM, WAREHOUSE_SESSION_START_HOUR,
         PLAN_LEAD_TIME_MINUTES, COST_PER_KM_USD, COST_PER_HOUR_USD)
