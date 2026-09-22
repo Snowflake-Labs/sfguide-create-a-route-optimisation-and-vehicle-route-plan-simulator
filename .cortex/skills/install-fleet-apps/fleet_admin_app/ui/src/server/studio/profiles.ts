@@ -378,6 +378,26 @@ export interface GenerationConfig {
     min_bins_required: number;    // small regions w/ < N populated bins fall back
   };
   region_area_km2?: number | null; // populated by routes.ts before generation
+  // Explicit POI pool size, overriding the area-derived default
+  // (poiCapForArea in engine/spatial.ts). Omit to keep the default.
+  //
+  // WHY AN OVERRIDE AND NOT A BIGGER DEFAULT. poiCapForArea's first tier is
+  // "< 250,000 km^2 -> 5,000", which spans a 300x area range: San Francisco
+  // (839 km^2) and Switzerland (41,822 km^2) receive the SAME 5,000 POIs, so
+  // the Swiss estate lands 50x sparser at 0.121 POIs/km^2 against 6.0. The
+  // H3 round-robin in loadPOIs then draws ~14 POIs per res-5 cell, so a Zurich
+  // origin finds ~14 outlets inside an 8 km band and a 25-stop route has to
+  // revisit the same handful. MEASURED consequence of sparse pools elsewhere:
+  // UnitedStatesOfAmerica averages 1.3 stops per route against SanFrancisco's
+  // 28.1, which makes multi-drop route-quality analytics impossible.
+  //
+  // Re-tiering the defaults was rejected: it would silently change what a
+  // regeneration of the existing SanFrancisco and UnitedStatesOfAmerica
+  // datasets produces. Presets that omit poi_cap reproduce byte-identically.
+  //
+  // Supply is the real ceiling - Overture holds 64,562 qualifying outlet POIs
+  // inside the Swiss bbox, so a 35,000 cap is ~54% of what exists.
+  poi_cap?: number | null;
   // Per-day fleet parallelism. Up to N vehicles run their ORS calls
   // concurrently within a single simulated day. Defaults to 8 - safe for the
   // 4-instance ORS_SERVICE_<REGION> + 8-instance ROUTING_GATEWAY_SERVICE

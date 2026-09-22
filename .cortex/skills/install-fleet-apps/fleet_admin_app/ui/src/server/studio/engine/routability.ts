@@ -265,7 +265,13 @@ export async function loadPOIs(
   // always fills to the cap when enough candidates exist, and inherently caps
   // dense metros with no tuning constant. Cell size adapts to region area.
   const h3Res = h3ResForArea(config.region_area_km2);
-  const poiCap = poiCapForArea(config.region_area_km2);
+  // config.poi_cap OVERRIDES the area-derived default. See the field comment in
+  // profiles.ts for why: the "< 250,000 km^2 -> 5,000" tier spans a 300x area
+  // range, so a small country gets a city's pool and the estate lands too sparse
+  // for multi-drop routing. `?? ` rather than `||` is load-bearing - a preset
+  // that explicitly sets 0 must not silently fall back to the default.
+  const poiCapDefault = poiCapForArea(config.region_area_km2);
+  const poiCap = config.poi_cap ?? poiCapDefault;
   const sql = `
     WITH region_boundary AS (
       SELECT BOUNDARY
@@ -301,7 +307,7 @@ export async function loadPOIs(
     ORDER BY _RN, RANDOM()
     LIMIT ${poiCap}`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
-    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, h3Res, poiCap, sql: sql.trim().replace(/\s+/g, ' ') },
+    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, h3Res, poiCap, poiCapDefault, poiCapSource: config.poi_cap == null ? 'area-derived' : 'config.poi_cap', sql: sql.trim().replace(/\s+/g, ' ') },
   });
   try {
     const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
