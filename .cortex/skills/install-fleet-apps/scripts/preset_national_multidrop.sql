@@ -90,6 +90,34 @@
 -- The depot pool is deliberately SMALL (2,602 candidates) and purely logistics.
 -- 200 vehicles need a few hundred distinct depots at most; probes realised
 -- ~2,200-2,500 WAREHOUSE rows from these three categories.
+--
+-- EVERY SIDE ENTITY IS ON, and two config keys exist only because of that.
+-- An earlier version disabled offers, demographics, hazard, demand and
+-- participants to shorten the run. That was a FALSE ECONOMY: a completed run
+-- flips DIM_DATASETS.IS_ACTIVE, and the SA app seeds context.region from the
+-- ACTIVE dataset row (contextBar reads DIM_DATASETS - NOT the per-domain CONFIG
+-- tables, which no declarative view query reads at all). The app therefore
+-- OPENED on a region where Backload Matching, Freight Exchange, Emergency
+-- Response and Catchment had zero rows. The generator's own completion message
+-- warns about precisely this.
+--
+-- MEASURED: none of the six side generators calls ORS - no isochrones, no
+-- matrix, no directions - so enabling them costs Snowflake-side insert time
+-- only. The ~91 min telemetry cost is unchanged.
+--
+-- anchor_limits is a COST guard, not a correctness one. HEALTH_FACILITY defaults
+-- to MAX_PER_TYPE = 2000, and generateParticipants then runs a residential
+-- ST_DWITHIN join at a 50 km radius around every one of those centres before
+-- ORDER BY RANDOM(). All three shipped presets pin it to 10; at country scale
+-- that matters more, not less.
+--
+-- partner_countries is set because countriesForRegion has no Switzerland branch
+-- and falls through to the North America default ['US','CA','MX'], which would
+-- put US haulier names on a Swiss dataset.
+--
+-- Note that generates_offers defaults to ON when absent (it is read as
+-- `!== false`), unlike the other five. It is stated explicitly here so the
+-- intent survives a future edit.
 -- =====================================================================
 -- REGION IS NOT PINNED. region/bbox/region_area_km2 are resolved per RUN by the
 -- Data Studio job, so this preset is reusable for any region whose graph carries
@@ -193,11 +221,15 @@ USING (
 
       "generates_anchors": true,
       "generates_places": true,
-      "generates_offers": false,
-      "generates_demographics": false,
-      "generates_hazard": false,
-      "generates_demand": false,
-      "generates_participants": false
+      "generates_offers": true,
+      "generates_demographics": true,
+      "generates_hazard": true,
+      "generates_demand": true,
+      "generates_participants": true,
+
+      "anchor_limits": { "HEALTH_FACILITY": 10 },
+
+      "partner_countries": ["CH", "DE", "FR", "IT", "AT"]
     }$$) AS DEFAULT_CONFIG,
     FALSE AS IS_BUILTIN
 ) src
