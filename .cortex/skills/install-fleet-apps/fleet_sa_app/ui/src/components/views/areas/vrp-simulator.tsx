@@ -50,7 +50,9 @@ export function VrpSimulatorView() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           verb: 'optimize_routes',
-          args: [stops, depot, vehicles, profile, null],
+          // Pass the active region: with null the solver defaulted to SanFrancisco
+          // and a Texas plan went to the SF VROOM.
+          args: [stops, depot, vehicles, profile, region ?? null],
           region,
         }),
       });
