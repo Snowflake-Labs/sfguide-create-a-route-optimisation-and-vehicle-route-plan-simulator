@@ -4868,7 +4868,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT NET_NEW_REVENUE AS net_new_rev, CANNIBALISATION_RATE_PCT AS cann_pct, CANNIBALISED_REVENUE AS transfer_rev, PAYBACK_YEARS AS payback, NET_NEW_EBITDA AS net_new_ebitda, CAPTURED_HH AS captured_hh, STORES_IMPACTED AS impacted, ANCHOR_RES AS anchor_res FROM TABLE(FLEET_APP.LOCATION.LIVE_SITE_VERDICT(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100,COALESCE(:beta,2)::FLOAT))",
+          "query": "SELECT NET_NEW_REVENUE AS net_new_rev, CANNIBALISATION_RATE_PCT AS cann_pct, CANNIBALISED_REVENUE AS transfer_rev, PAYBACK_YEARS AS payback, NET_NEW_EBITDA AS net_new_ebitda, CAPTURED_HH AS captured_hh, STORES_IMPACTED AS impacted, ANCHOR_RES AS anchor_res FROM TABLE(FLEET_APP.LOCATION.LIVE_SITE_VERDICT(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100,COALESCE(:beta,2)::FLOAT))",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -4950,7 +4950,7 @@
         },
         "emits": { "selected_store": "highlight" },
         "data": {
-          "query": "SELECT STORE_ID AS store_id, POI_NAME AS store, HOUSEHOLDS AS households, TRANSFER_PCT AS transfer_pct, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100,COALESCE(:beta,2)::FLOAT)) ORDER BY revenue DESC LIMIT 20",
+          "query": "SELECT STORE_ID AS store_id, POI_NAME AS store, HOUSEHOLDS AS households, TRANSFER_PCT AS transfer_pct, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CANNIBALISATION(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100,COALESCE(:beta,2)::FLOAT)) ORDER BY revenue DESC LIMIT 20",
           "params": {
             "region": "context.region",
             "selected_band": "viewState.selected_band",
@@ -5004,7 +5004,7 @@
               "pickable": true,
               "tooltip": "<b>ZIP {zip}</b><br/>Within {band_min} min drive<br/>Pop {population}",
               "data": {
-                "query": "SELECT ZIP AS zip, BAND_MIN AS band_min, POPULATION AS population, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(:selected_candidate,COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))))",
+                "query": "SELECT ZIP AS zip, BAND_MIN AS band_min, POPULATION AS population, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(TO_VARCHAR(:selected_candidate),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES))))",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate"
@@ -5022,7 +5022,7 @@
               "pickable": true,
               "tooltip": "<b>Overlap intensity</b><br/>Existing catchments overlapping here: {overlap_count}<br/>Households {households}<br/>Cannibalised revenue {cannibalised_revenue}",
               "data": {
-                "query": "SELECT H3 AS h3, HOUSEHOLDS AS households, OVERLAP_COUNT AS overlap_count, CANNIBALISED_REVENUE AS cannibalised_revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_CELLS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:capture_rate,50)::FLOAT/100))",
+                "query": "SELECT H3 AS h3, HOUSEHOLDS AS households, OVERLAP_COUNT AS overlap_count, CANNIBALISED_REVENUE AS cannibalised_revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_CELLS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:capture_rate,50)::FLOAT/100))",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
@@ -5042,7 +5042,7 @@
               "lineColor": [245, 158, 11, 255],
               "lineWidth": 4,
               "data": {
-                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
                 "params": {
                   "region": "context.region",
                   "selected_candidate": "viewState.selected_candidate",
@@ -5148,7 +5148,7 @@
         "component": "Table",
         "config": { "title": "ZIP codes by drive-time band from the candidate (real population)", "fitRows": 5 },
         "data": {
-          "query": "SELECT BAND_MIN AS drive_time_min, COUNT(*) AS zip_codes, SUM(POPULATION) AS population, SUM(HOUSEHOLDS) AS households, SUM(SUM(POPULATION)) OVER (ORDER BY BAND_MIN) AS cumulative_population FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(:selected_candidate,COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) GROUP BY BAND_MIN ORDER BY BAND_MIN",
+          "query": "SELECT BAND_MIN AS drive_time_min, COUNT(*) AS zip_codes, SUM(POPULATION) AS population, SUM(HOUSEHOLDS) AS households, SUM(SUM(POPULATION)) OVER (ORDER BY BAND_MIN) AS cumulative_population FROM TABLE(FLEET_APP.LOCATION.LIVE_ZIP_BANDS(TO_VARCHAR(:selected_candidate),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) GROUP BY BAND_MIN ORDER BY BAND_MIN",
           "params": {
             "region": "context.region",
             "selected_candidate": "viewState.selected_candidate"
@@ -5174,7 +5174,7 @@
         },
         "emits": { "selected_overlap": "selection" },
         "data": {
-          "query": "SELECT OVERLAP_ID AS overlap_id, OWNED_STORE AS owned_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) ORDER BY cannibalised_revenue DESC",
+          "query": "SELECT OVERLAP_ID AS overlap_id, OWNED_STORE AS owned_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) ORDER BY cannibalised_revenue DESC",
           "params": {
             "region": "context.region",
             "selected_candidate": "viewState.selected_candidate",
@@ -5189,7 +5189,7 @@
         "component": "Table",
         "config": { "title": "Postcodes (ZIPs) inside the overlap - centroid containment (select an overlap row to filter)", "fitRows": 5 },
         "data": {
-          "query": "SELECT OWNED_STORE AS existing_store, ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) WHERE (:selected_overlap IS NULL OR OVERLAP_ID = :selected_overlap) ORDER BY population DESC",
+          "query": "SELECT OWNED_STORE AS existing_store, ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) WHERE (:selected_overlap IS NULL OR OVERLAP_ID = :selected_overlap) ORDER BY population DESC",
           "params": {
             "region": "context.region",
             "selected_candidate": "viewState.selected_candidate",
@@ -5220,7 +5220,7 @@
             {
               "type": "related_table",
               "title": "Postcodes (ZIPs) inside this overlap",
-              "query": "SELECT ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) WHERE OVERLAP_ID = :selected_overlap ORDER BY population DESC",
+              "query": "SELECT ZIP AS zip, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAP_ZIPS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)))) WHERE OVERLAP_ID = :selected_overlap ORDER BY population DESC",
               "params": {
                 "region": "context.region",
                 "selected_candidate": "viewState.selected_candidate",
@@ -5237,7 +5237,7 @@
           ]
         },
         "data": {
-          "query": "SELECT OWNED_STORE AS owned_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(:selected_candidate,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+          "query": "SELECT OWNED_STORE AS owned_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, CANNIBALISED_REVENUE AS cannibalised_revenue, CANNIBALISED_EBITDA AS cannibalised_ebitda, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, CONFIDENCE AS confidence FROM TABLE(FLEET_APP.LOCATION.LIVE_OVERLAPS(TO_VARCHAR(:selected_candidate),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:capture_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
           "params": {
             "region": "context.region",
             "selected_candidate": "viewState.selected_candidate",
@@ -5905,7 +5905,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "WITH z AS (SELECT STATUS, HOUSEHOLDS, REVENUE FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100))) SELECT COALESCE(SUM(CASE WHEN STATUS='RETAINED' THEN REVENUE END),0) AS revenue_retained, COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN REVENUE END),0) AS revenue_at_risk, COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN HOUSEHOLDS END),0) AS hh_at_risk, ROUND(100 * COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN REVENUE END),0) / NULLIF(SUM(REVENUE),0),1) AS closure_risk_pct FROM z",
+          "query": "WITH z AS (SELECT STATUS, HOUSEHOLDS, REVENUE FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100))) SELECT COALESCE(SUM(CASE WHEN STATUS='RETAINED' THEN REVENUE END),0) AS revenue_retained, COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN REVENUE END),0) AS revenue_at_risk, COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN HOUSEHOLDS END),0) AS hh_at_risk, ROUND(100 * COALESCE(SUM(CASE WHEN STATUS='AT_RISK' THEN REVENUE END),0) / NULLIF(SUM(REVENUE),0),1) AS closure_risk_pct FROM z",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -5932,7 +5932,8 @@
             "label": "Store to close",
             "required": true,
             "data": {
-              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'OWNED' ORDER BY POI_NAME"
+              "query": "SELECT STORE_ID AS value, POI_NAME AS label FROM FLEET_APP.LOCATION.VW_STORE_FACTS WHERE STORE_ROLE = 'OWNED' AND REGION = COALESCE(CAST(:region AS VARCHAR), REGION) ORDER BY POI_NAME",
+              "params": { "region": "context.region" }
             },
             "emits": { "selected_closed": "selection" }
           },
@@ -5980,7 +5981,7 @@
         },
         "emits": { "selected_store": "highlight" },
         "data": {
-          "query": "SELECT GAIN_ID AS store_id, GAINING_STORE AS gaining_store, HOUSEHOLDS AS households, PCT_OF_CLOSED AS pct_of_closed, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
+          "query": "SELECT GAIN_ID AS store_id, GAINING_STORE AS gaining_store, HOUSEHOLDS AS households, PCT_OF_CLOSED AS pct_of_closed, REVENUE AS revenue, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_GAINERS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -6067,7 +6068,7 @@
               "pickable": true,
               "tooltip": "<b>{zip}</b> - {status}<br/>Population {population} | Households {households}<br/>Revenue {revenue}<br/>Nearest survivor {nearest_survivor}",
               "data": {
-                "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, REVENUE AS revenue, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100))",
+                "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, REVENUE AS revenue, ST_ASGEOJSON(GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100))",
                 "params": {
                   "region": "context.region",
                   "selected_closed": "viewState.selected_closed",
@@ -6089,7 +6090,7 @@
               "pickable": true,
               "tooltip": "<b>{status}</b><br/>Surviving stores reaching here: {survivor_count}<br/>Households {households}<br/>Nearest survivor {nearest_survivor}<br/>Retained revenue {retained_revenue}",
               "data": {
-                "query": "SELECT H3 AS h3, HOUSEHOLDS AS households, SURVIVOR_COUNT AS survivor_count, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, RETAINED_REVENUE AS retained_revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
+                "query": "SELECT H3 AS h3, HOUSEHOLDS AS households, SURVIVOR_COUNT AS survivor_count, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, RETAINED_REVENUE AS retained_revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_CELLS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:retention_rate,50)::FLOAT/100))",
                 "params": {
                   "region": "context.region",
                   "selected_closed": "viewState.selected_closed",
@@ -6108,7 +6109,7 @@
               "lineColor": [245, 158, 11, 255],
               "lineWidth": 4,
               "data": {
-                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+                "query": "SELECT ST_ASGEOJSON(OVERLAP_GEO)::STRING AS geo FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
                 "params": {
                   "region": "context.region",
                   "selected_closed": "viewState.selected_closed",
@@ -6210,7 +6211,7 @@
         },
         "emits": { "selected_overlap": "selection" },
         "data": {
-          "query": "SELECT OVERLAP_ID AS overlap_id, SURVIVING_STORE AS surviving_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, STATUS AS status FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY retained_revenue DESC",
+          "query": "SELECT OVERLAP_ID AS overlap_id, SURVIVING_STORE AS surviving_store, OVERLAP_AREA_SQKM AS overlap_area_sqkm, ZIP_COUNT AS zip_count, HOUSEHOLDS AS households, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in, ROUND(TRANSFER_PROB*100,1) AS transfer_pct, STATUS AS status FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY retained_revenue DESC",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -6225,7 +6226,7 @@
         "component": "Table",
         "config": { "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk (ZIP centroid containment)", "fitRows": 5 },
         "data": {
-          "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, REVENUE AS revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY status, revenue DESC",
+          "query": "SELECT ZIP AS zip, STATUS AS status, NEAREST_SURVIVOR AS nearest_survivor, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, REVENUE AS revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY status, revenue DESC",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
@@ -6260,7 +6261,7 @@
             {
               "type": "related_table",
               "title": "Postcodes (ZIPs) in the closed catchment - retained vs at-risk",
-              "query": "SELECT ZIP AS zip, STATUS AS status, POPULATION AS population, HOUSEHOLDS AS households, REVENUE AS revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY status, revenue DESC",
+              "query": "SELECT ZIP AS zip, STATUS AS status, POPULATION AS population, HOUSEHOLDS AS households, REVENUE AS revenue FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_ZIPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) ORDER BY status, revenue DESC",
               "params": {
                 "region": "context.region",
                 "selected_closed": "viewState.selected_closed",
@@ -6280,7 +6281,7 @@
           ]
         },
         "data": {
-          "query": "SELECT SURVIVING_STORE AS surviving_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in, ROUND(TRANSFER_PROB*100,1) AS transfer_pct FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(:selected_closed,COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
+          "query": "SELECT SURVIVING_STORE AS surviving_store, BAND_MIN || ' min band' AS band_label, OVERLAP_AREA_SQKM AS overlap_area_sqkm, HOUSEHOLDS AS households, ZIP_COUNT AS zip_count, POPULATION AS population, RETAINED_REVENUE AS retained_revenue, RETAINED_EBITDA AS retained_ebitda, HOME_VISIT AS home_visit, SAMPLE_REV AS sample_rev, WALK_IN AS walk_in, ROUND(TRANSFER_PROB*100,1) AS transfer_pct FROM TABLE(FLEET_APP.LOCATION.LIVE_CLOSURE_OVERLAPS(TO_VARCHAR(:selected_closed),COALESCE(TRY_TO_NUMBER(TO_VARCHAR(:selected_closed_band)),20),COALESCE(CAST(:region AS VARCHAR),(SELECT MAX(REGION) FROM FLEET_APP.LOCATION.VW_STORES)),COALESCE(:value_per_hh,500)::FLOAT,COALESCE(:ebitda_margin,20)::FLOAT/100,COALESCE(:retention_rate,50)::FLOAT/100)) WHERE OVERLAP_ID = :selected_overlap",
           "params": {
             "region": "context.region",
             "selected_closed": "viewState.selected_closed",
