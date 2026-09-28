@@ -1013,13 +1013,12 @@ BEGIN
 END;
 $$;
 
--- Zero-arg form kept for the installer and for callers that just want "the active
--- region". The region-parameterised form above exists because the estate is built
--- per region while CATCHMENT.CONFIG holds exactly ONE row: without it, bringing a
--- second loaded region up to date meant MUTATING that shared row, which every other
--- domain's default selection also reads. A stale region is not harmless here - it
--- keeps the pre-competitor estate, so Site Impact reports 100% cannibalisation for
--- every candidate, which is a plausible-looking wrong answer rather than an error.
+-- Zero-arg form kept for the installer. It builds EVERY region that has POIs:
+-- reading the one CATCHMENT.CONFIG row built only that region, so UsTexas and
+-- UnitedStatesOfAmerica had no estate at all and site_impact / closure_impact
+-- errored or rendered empty there while every other view worked. A stale region
+-- is not harmless either - it keeps the pre-competitor estate, so Site Impact
+-- reports 100% cannibalisation for every candidate.
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()
   RETURNS VARCHAR
   LANGUAGE SQL
@@ -1027,15 +1026,19 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTI
 AS
 $$
 DECLARE
-  rg VARCHAR;
   res VARCHAR;
+  out VARCHAR DEFAULT '';
+  c1 CURSOR FOR SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION IS NOT NULL ORDER BY 1;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
-  IF (rg IS NULL) THEN
-    RETURN 'no active region in CATCHMENT.CONFIG';
+  FOR r IN c1 DO
+    LET rg VARCHAR := r.REGION;
+    CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(:rg) INTO :res;
+    out := out || res || '; ';
+  END FOR;
+  IF (out = '') THEN
+    RETURN 'no region with POIs in CATCHMENT.POIS';
   END IF;
-  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(:rg) INTO :res;
-  RETURN res;
+  RETURN out;
 END;
 $$;
 
@@ -1059,7 +1062,7 @@ $$;
 -- with EXCEPTION so a fresh install without the two free listings (or a non-US region)
 -- simply skips enrichment instead of failing the whole analytic layer. ZIP_AREAS then
 -- stays empty and the ZIP drill/choropleth render nothing (the rest of LOCATION works).
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT()
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT(P_REGION VARCHAR)
   RETURNS VARCHAR
   LANGUAGE SQL
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -1069,9 +1072,9 @@ DECLARE
   rg VARCHAR;
   n INT DEFAULT 0;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  rg := :P_REGION;
   IF (rg IS NULL) THEN
-    RETURN 'no active region';
+    RETURN 'no region';
   END IF;
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS WHERE REGION = :rg;
   INSERT INTO FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS
@@ -1114,6 +1117,28 @@ BEGIN
 EXCEPTION
   WHEN OTHER THEN
     RETURN 'ZIP enrichment skipped (listings absent or non-US region): ' || SQLERRM;
+END;
+$$;
+
+-- Zero-arg form: every region with POIs, same reason as BUILD_LOCATION_DIAGNOSTICS().
+-- Each region is guarded inside the per-region proc, so a non-US region skips.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  res VARCHAR;
+  out VARCHAR DEFAULT '';
+  c1 CURSOR FOR SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION IS NOT NULL ORDER BY 1;
+BEGIN
+  FOR r IN c1 DO
+    LET rg VARCHAR := r.REGION;
+    CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT(:rg) INTO :res;
+    out := out || res || '; ';
+  END FOR;
+  RETURN out;
 END;
 $$;
 
