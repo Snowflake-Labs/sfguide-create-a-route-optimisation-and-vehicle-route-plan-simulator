@@ -4550,6 +4550,31 @@ try {
         }
         throw e;
     }
+    // Drop chains with any point outside the region's ROAD GRAPH. VW_TRIANGLES
+    // carries no region and TRAILER_ID is unique only within a region
+    // (V-DRI-00012 / 00025 exist in UsTexas AND UnitedStatesOfAmerica), so the
+    // id filter above also returned USA chains ending in Florida. One such point
+    // fails the WHOLE matrix call (ORS 6010), so Texas road costing always
+    // returned "no distance matrix". REGION_ORS_MAP is the bbox ORS enforces.
+    var offGraph = 0;
+    try {
+        var bb = q("SELECT MIN_LON, MAX_LON, MIN_LAT, MAX_LAT FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = ?", [region]);
+        if (bb.next() && bb.getColumnValue(1) !== null) {
+            var bx = [Number(bb.getColumnValue(1)), Number(bb.getColumnValue(2)),
+                      Number(bb.getColumnValue(3)), Number(bb.getColumnValue(4))];
+            var inBox = function (lon, lat) {
+                lon = Number(lon); lat = Number(lat);
+                return lon >= bx[0] && lon <= bx[1] && lat >= bx[2] && lat <= bx[3];
+            };
+            var pref = ['EMPTY', 'LEG1_PICKUP', 'LEG1_DELIVERY', 'LEG2_PICKUP', 'LEG2_DELIVERY', 'TARGET'];
+            chains = chains.filter(function (c) {
+                for (var pk = 0; pk < pref.length; pk++) {
+                    if (!inBox(c[pref[pk] + '_LON'], c[pref[pk] + '_LAT'])) { offGraph += 1; return false; }
+                }
+                return true;
+            });
+        }
+    } catch (e) { /* no bbox row: keep the chains, the matrix reports any off-graph point */ }
     if (!chains.length) {
         // Not an error, and specifically not "no data". Chains are a LONG-HAUL
         // pattern: in a metro region every load already delivers inside the
@@ -4595,47 +4620,96 @@ try {
     // matrix means passing the same list twice. Distances come back in metres.
     var roadByKey = {}, deferred = 0, costed = 0;
     if (costBasis === 'road') {
-        var idx = {}, pts = [], mapped = [];
-        var add = function (lon, lat) {
-            var k = Number(lon).toFixed(5) + ',' + Number(lat).toFixed(5);
-            if (k in idx) return idx[k];
-            var i = pts.length;
-            pts.push([Number(lon), Number(lat)]);
-            idx[k] = i;
-            return i;
-        };
-        for (var mi = 0; mi < chains.length; mi++) {
-            var mc = chains[mi];
-            // A chain contributes at most 6 points; stop BEFORE overshooting.
-            // Truncating the matrix instead would return short rows and silently
-            // mis-cost the legs that fell off the end.
-            if (pts.length + 6 > MAX_MATRIX_POINTS) { deferred += 1; continue; }
-            mapped.push({
-                c: mc,
-                iEmpty: add(num(mc.EMPTY_LON), num(mc.EMPTY_LAT)),
-                iP1: add(num(mc.LEG1_PICKUP_LON), num(mc.LEG1_PICKUP_LAT)),
-                iD1: add(num(mc.LEG1_DELIVERY_LON), num(mc.LEG1_DELIVERY_LAT)),
-                iP2: add(num(mc.LEG2_PICKUP_LON), num(mc.LEG2_PICKUP_LAT)),
-                iD2: add(num(mc.LEG2_DELIVERY_LON), num(mc.LEG2_DELIVERY_LAT)),
-                iTgt: add(num(mc.TARGET_LON), num(mc.TARGET_LAT))
-            });
+        // ORS refuses the WHOLE matrix (6010) when any point is off its graph,
+        // and a bbox cannot catch every such point: Lake Charles, LA sits inside
+        // the UsTexas bbox but outside the Texas extract. The 6010 message names
+        // the offending indices, so drop the chains that use them and re-query,
+        // a bounded number of times.
+        var banned = {}, dist = null, mapped = [], pts = [];
+        var pkey = function (lon, lat) { return Number(lon).toFixed(5) + ',' + Number(lat).toFixed(5); };
+        for (var attempt = 0; attempt < 4 && dist === null; attempt++) {
+            var idx = {};
+            pts = []; mapped = []; deferred = 0;
+            var add = function (lon, lat) {
+                var k = pkey(lon, lat);
+                if (k in idx) return idx[k];
+                var i = pts.length;
+                pts.push([Number(lon), Number(lat)]);
+                idx[k] = i;
+                return i;
+            };
+            for (var mi = 0; mi < chains.length; mi++) {
+                var mc = chains[mi];
+                var pk6 = [pkey(mc.EMPTY_LON, mc.EMPTY_LAT), pkey(mc.LEG1_PICKUP_LON, mc.LEG1_PICKUP_LAT),
+                           pkey(mc.LEG1_DELIVERY_LON, mc.LEG1_DELIVERY_LAT), pkey(mc.LEG2_PICKUP_LON, mc.LEG2_PICKUP_LAT),
+                           pkey(mc.LEG2_DELIVERY_LON, mc.LEG2_DELIVERY_LAT), pkey(mc.TARGET_LON, mc.TARGET_LAT)];
+                if (pk6.some(function (k) { return banned[k]; })) continue;
+                // A chain contributes at most 6 points; stop BEFORE overshooting.
+                // Truncating the matrix instead would return short rows and silently
+                // mis-cost the legs that fell off the end.
+                if (pts.length + 6 > MAX_MATRIX_POINTS) { deferred += 1; continue; }
+                mapped.push({
+                    c: mc,
+                    iEmpty: add(num(mc.EMPTY_LON), num(mc.EMPTY_LAT)),
+                    iP1: add(num(mc.LEG1_PICKUP_LON), num(mc.LEG1_PICKUP_LAT)),
+                    iD1: add(num(mc.LEG1_DELIVERY_LON), num(mc.LEG1_DELIVERY_LAT)),
+                    iP2: add(num(mc.LEG2_PICKUP_LON), num(mc.LEG2_PICKUP_LAT)),
+                    iD2: add(num(mc.LEG2_DELIVERY_LON), num(mc.LEG2_DELIVERY_LAT)),
+                    iTgt: add(num(mc.TARGET_LON), num(mc.TARGET_LAT))
+                });
+            }
+            if (!pts.length) break;
+            var parts = [];
+            for (var pi = 0; pi < pts.length; pi++) parts.push('ARRAY_CONSTRUCT(' + pts[pi][0] + ', ' + pts[pi][1] + ')');
+            var coords = 'ARRAY_CONSTRUCT(' + parts.join(', ') + ')';
+            var mres = null;
+            try {
+                var ms = q("SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, " + coords + ", " + coords + ", ?)) AS M",
+                           [profile, region]);
+                var mraw = ms.next() ? ms.getColumnValue(1) : null;
+                if (mraw) { try { mres = JSON.parse(mraw); } catch (e) { mres = null; } }
+            } catch (e) {
+                var em1 = e && e.message ? String(e.message) : 'unknown error';
+                return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
+                         error: 'The routing engine could not price the chain legs for ' + region
+                              + ' (' + em1 + '). It may be suspended or starting - resume it and retry, '
+                              + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+            }
+            var merr = mres && mres.error;
+            if (merr && Number(merr.code) === 6010) {
+                var named = String(merr.message || '').match(/\[([0-9, ]+)\]/g) || [];
+                var hit = 0;
+                named.forEach(function (grp) {
+                    grp.replace(/[\[\]]/g, '').split(',').forEach(function (n) {
+                        var pt = pts[Number(n)];
+                        if (pt && !banned[pkey(pt[0], pt[1])]) { banned[pkey(pt[0], pt[1])] = true; hit++; }
+                    });
+                });
+                if (!hit) break;
+                continue;
+            }
+            if (mres && mres.distances && mres.distances.length && mres.distances[0] && mres.distances[0].length) {
+                dist = mres.distances;
+            } else {
+                break;
+            }
         }
-        var parts = [];
-        for (var pi = 0; pi < pts.length; pi++) parts.push('ARRAY_CONSTRUCT(' + pts[pi][0] + ', ' + pts[pi][1] + ')');
-        var coords = 'ARRAY_CONSTRUCT(' + parts.join(', ') + ')';
-        var dist = null;
-        try {
-            var ms = q("SELECT TO_VARCHAR(M:distances) AS D FROM (SELECT "
-                     + "OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, " + coords + ", " + coords + ", ?) AS M)",
-                       [profile, region]);
-            var draw = ms.next() ? ms.getColumnValue(1) : null;
-            if (draw) { try { dist = JSON.parse(draw); } catch (e) { dist = null; } }
-        } catch (e) {
-            var em1 = e && e.message ? String(e.message) : 'unknown error';
-            return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
-                     error: 'The routing engine could not price the chain legs for ' + region
-                          + ' (' + em1 + '). It may be suspended or starting - resume it and retry, '
-                          + "or pass cost_basis='great_circle' for ungraded straight-line skeletons." };
+        var bannedChains = 0;
+        for (var bi = 0; bi < chains.length; bi++) {
+            var bc = chains[bi];
+            if ([pkey(bc.EMPTY_LON, bc.EMPTY_LAT), pkey(bc.LEG1_PICKUP_LON, bc.LEG1_PICKUP_LAT),
+                 pkey(bc.LEG1_DELIVERY_LON, bc.LEG1_DELIVERY_LAT), pkey(bc.LEG2_PICKUP_LON, bc.LEG2_PICKUP_LAT),
+                 pkey(bc.LEG2_DELIVERY_LON, bc.LEG2_DELIVERY_LAT), pkey(bc.TARGET_LON, bc.TARGET_LAT)]
+                 .some(function (k) { return banned[k]; })) bannedChains++;
+        }
+        if (bannedChains) {
+            offGraph += bannedChains;
+            chains = chains.filter(function (c) {
+                return ![pkey(c.EMPTY_LON, c.EMPTY_LAT), pkey(c.LEG1_PICKUP_LON, c.LEG1_PICKUP_LAT),
+                         pkey(c.LEG1_DELIVERY_LON, c.LEG1_DELIVERY_LAT), pkey(c.LEG2_PICKUP_LON, c.LEG2_PICKUP_LAT),
+                         pkey(c.LEG2_DELIVERY_LON, c.LEG2_DELIVERY_LAT), pkey(c.TARGET_LON, c.TARGET_LAT)]
+                         .some(function (k) { return banned[k]; });
+            });
         }
         if (!dist || !dist.length || !dist[0] || !dist[0].length) {
             return { status: 'FAILED', reason: 'OPTIMIZATION_UNAVAILABLE', region: region,
@@ -4762,7 +4836,8 @@ try {
             status: 'SUCCESS', region: region, vehicle_type: vehicleType, vehicle_type_basis: vehicleTypeBasis, fleet_mix: fleetMix, profile: profile,
             cost_basis: costBasis, granularity: granularity, acceptance_score: threshold,
             counts: { skeletons: chains.length, graded: graded.length, returned: rawRows.length,
-                      costed_on_road: costed, deferred_over_matrix_limit: deferred },
+                      costed_on_road: costed, deferred_over_matrix_limit: deferred,
+                      excluded_off_graph: offGraph },
             economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
             envelope: { target_radius_km: targetRadiusKm, max_total_empty_km: maxTotalEmptyKm,
                         max_leg1_detour_km: maxLeg1DetourKm, max_per_vehicle: maxPerVehicle },
@@ -4835,7 +4910,8 @@ try {
                    note: cascadeNote },
         counts: { skeletons: chains.length, graded: graded.length, after_cascade: shown.length,
                   after_per_vehicle_cap: capped.length, returned: out.length,
-                  costed_on_road: costed, deferred_over_matrix_limit: deferred },
+                  costed_on_road: costed, deferred_over_matrix_limit: deferred,
+                      excluded_off_graph: offGraph },
         totals: { chains_beating_baseline: beats, chains_saving_empty_km: savingEmpty,
                   total_empty_saved_km: Math.round(sumSaved), total_net_usd: Math.round(sumNet) },
         economics: { econ_basis: econBasis, cost_per_empty_km: costPerEmptyKm, revenue_per_loaded_km: Math.round(revPerLoadedKm * 10000) / 10000 },
