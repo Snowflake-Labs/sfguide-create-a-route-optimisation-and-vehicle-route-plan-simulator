@@ -835,6 +835,72 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS (
   POP_PER_SQMI  NUMBER(14,2)
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Household cells the region's OWN routing profile cannot reach. A cycling or foot
+-- matrix does not answer an unreachable source with a null cell: ORS fails the
+-- whole call (6099 -> all_chunks_failed) and the gateway breaker then 503s every
+-- call behind it. On SanFrancisco (cycling-electric) Treasure Island / Yerba Buena
+-- and Point Richmond cells did exactly that for any Site/Closure Impact band wide
+-- enough to reach them. Treasure Island is DRIVABLE over the Bay Bridge, so a
+-- driving probe cannot find them - the probe must use the region's profile.
+-- Driving profiles return null cells instead of failing, so they are skipped, which
+-- also keeps this off the multi-million-cell state and country grids.
+-- Probes 25 cells per call against the store nearest the household centre; a chunk
+-- that fails is re-probed one cell at a time. Fails OPEN: if more than half the
+-- cells look unroutable the engine is the likelier problem, so nothing is deleted.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS(P_REGION VARCHAR)
+  RETURNS VARCHAR
+  LANGUAGE JAVASCRIPT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  EXECUTE AS OWNER
+AS
+$$
+function q(sql, binds) { return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute(); }
+var pr = q("SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE WHERE REGION = ? LIMIT 1", [P_REGION]);
+var profile = pr.next() ? String(pr.getColumnValue(1) || '') : '';
+if (!profile || profile.indexOf('driving') === 0) return 'skipped: profile ' + (profile || 'unknown') + ' answers unreachable with null cells';
+var cnt = q("SELECT COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ?", [P_REGION]);
+cnt.next();
+if (Number(cnt.getColumnValue(1)) > 20000) return 'skipped: too many cells for a probe';
+var rf = q("SELECT s.LON, s.LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES s, "
+         + "(SELECT ST_MAKEPOINT(AVG(ST_X(CENTROID)), AVG(ST_Y(CENTROID))) g FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ?) h "
+         + "WHERE s.REGION = ? ORDER BY ST_DISTANCE(s.GEOG, h.g) LIMIT 1", [P_REGION, P_REGION]);
+if (!rf.next()) return 'skipped: no store to probe against';
+var ref = [[Number(rf.getColumnValue(1)), Number(rf.getColumnValue(2))]];
+// Probe a REAL ADDRESS per cell (the one nearest its centroid), as anchor_pts in
+// LIVE_HUFF_ALLOCATION does: a centroid is a mean and can sit in water.
+var cs = q("SELECT c.H3, ra.LONGITUDE, ra.LATITUDE FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c "
+         + "JOIN FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES ra "
+         + "  ON ra.REGION = c.REGION AND ra.GEOMETRY IS NOT NULL AND H3_POINT_TO_CELL_STRING(ra.GEOMETRY, 8) = c.H3 "
+         + "WHERE c.REGION = ? "
+         + "QUALIFY ROW_NUMBER() OVER (PARTITION BY c.H3 ORDER BY ST_DISTANCE(ra.GEOMETRY, c.CENTROID)) = 1", [P_REGION]);
+var cells = [];
+while (cs.next()) cells.push({ h3: cs.getColumnValue(1), p: [Number(cs.getColumnValue(2)), Number(cs.getColumnValue(3))] });
+// null = the call itself failed; otherwise one boolean per source
+function probe(batch) {
+  try {
+    var r = q("SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, PARSE_JSON(?)::ARRAY, PARSE_JSON(?)::ARRAY, ?))",
+              [profile, JSON.stringify(batch.map(function (c) { return c.p; })), JSON.stringify(ref), P_REGION]);
+    var m = r.next() ? JSON.parse(r.getColumnValue(1) || '{}') : {};
+    if (!m.durations || m.durations.length !== batch.length) return null;
+    return m.durations.map(function (row) { return row && typeof row[0] === 'number'; });
+  } catch (e) { return null; }
+}
+var bad = [];
+for (var i = 0; i < cells.length; i += 25) {
+  var batch = cells.slice(i, i + 25);
+  var ok = probe(batch);
+  if (ok === null) ok = batch.map(function (c) { var one = probe([c]); return one !== null && one[0]; });
+  for (var k = 0; k < batch.length; k++) if (!ok[k]) bad.push(batch[k].h3);
+}
+if (bad.length * 2 > cells.length) return 'not pruned: ' + bad.length + ' of ' + cells.length + ' cells failed, engine likely unavailable';
+for (var j = 0; j < bad.length; j += 500) {
+  var part = bad.slice(j, j + 500);
+  q("DELETE FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ? AND ARRAY_CONTAINS(H3::VARIANT, PARSE_JSON(?))",
+    [P_REGION, JSON.stringify(part)]);
+}
+return 'pruned ' + bad.length + ' of ' + cells.length + ' cells unroutable by ' + profile;
+$$;
+
 -- Build procedure: materializes the estate + household grid + synthetic facts for
 -- the active region. NO ORS calls (isochrones are computed live by the app views).
 -- Owner's rights. Idempotent per region.
@@ -950,6 +1016,11 @@ BEGIN
   FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
   WHERE REGION = :rg AND GEOMETRY IS NOT NULL
   GROUP BY 1, 2;
+
+  -- 3b. Drop household cells the region's own profile cannot route (see
+  --     PRUNE_UNROUTABLE_HH_CELLS). Every reader of HH_CELLS feeds live matrices.
+  LET prune_res VARCHAR;
+  CALL FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS(:rg) INTO :prune_res;
 
   -- 4. Synthetic store facts. Data-only, no ORS.
   --
