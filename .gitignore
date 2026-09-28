@@ -7,6 +7,8 @@
 # Per-run friction/error logs are local artifacts, not source. Keep README.md.
 **/logs/*.md
 !**/logs/README.md
+# Regression pass reports written by scripts/sa_regression/run_pass.sh.
+/logs/sa_regression/
 
 # Environment and secrets
 .env
