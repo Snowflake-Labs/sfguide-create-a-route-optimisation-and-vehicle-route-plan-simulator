@@ -77,6 +77,7 @@ import {
   MAP_SPEC_VERSION as VERB_MAP_SPEC_VERSION,
   REQUIRED_LAYER_ENCODINGS as VERB_REQUIRED_ENCODINGS,
   RENDER_COMPONENTS as VERB_RENDER_COMPONENTS,
+  MAP_SQL_COMPILE_ERROR_RE,
 } from './src/codes';
 // Geometry, the padding clamp and detection carry REAL runtime imports (h3-js),
 // unlike the type-only validators above, so this package declares h3-js as a
@@ -403,6 +404,18 @@ for (const [label, toolName, bare, want] of nameCases) {
     `matchesTool(${JSON.stringify(toolName)}, ${JSON.stringify(bare)}) === ${!want}`);
 }
 chk('toolname: undefined never matches', matchesTool(undefined, 'render_map') === false);
+
+// render_map's EXPLAIN gate: compile errors the agent can fix must convict, and a
+// grant/visibility error must not (EXECUTE AS OWNER cannot tell it from a typo).
+for (const [msg, want] of [
+  ["SQL compilation error: invalid identifier 'P.LONGITUDE'", true],
+  ["SQL compilation error: Invalid argument types for function 'GET': (GEOGRAPHY, VARCHAR(11))", true],
+  ['SQL compilation error: too many arguments for function [H3_POINT_TO_CELL_STRING(A, B, 9)]', true],
+  ['SQL compilation error: Unknown function H3_CELL_TO_PARENT_STRING', true],
+  ["SQL compilation error: Object 'FLEET_APP.X.Y' does not exist or not authorized.", false],
+] as const) {
+  chk(`compile gate: ${msg.slice(22, 70)}`, MAP_SQL_COMPILE_ERROR_RE.test(msg) === want);
+}
 
 // The registry must resolve the real name to the registered component. Dummy
 // components only: importing components/inline/index.ts would pull deck.gl,

@@ -161,6 +161,15 @@ export const REQUIRED_LAYER_ENCODINGS: Record<string, readonly string[]> = {
  *  every place that encodes it, the prose included. */
 export const ALLOWED_DYNAMIC_DBS = ['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM'] as const;
 
+/** Compile errors in an agent-emitted layer query that render_map's EXPLAIN gate
+ *  convicts, so the agent corrects the spec in the same turn. Function-signature
+ *  errors are included: a regression sweep saw `GET(GEOGRAPHY, VARCHAR)`,
+ *  `too many arguments for H3_POINT_TO_CELL_STRING` and unknown functions pass the
+ *  verb and then fail in the browser. Deliberately excludes "does not exist or not
+ *  authorized" - under EXECUTE AS OWNER that cannot tell a typo from a grant. */
+export const MAP_SQL_COMPILE_ERROR_RE =
+  /invalid identifier|syntax error|unexpected|invalid argument types|too many arguments|not enough arguments|unknown function|invalid (?:metric|type|expression)/i;
+
 // Layer types the SA app's deck.gl compiler implements. MUST stay in sync with
 // MAP_LAYER_TYPES in fleet_sa_app/ui/src/lib/map-spec-schema.ts (and the
 // LayerSpec union in packages/fleet-kit/src/map/layer-spec.ts). An unknown type

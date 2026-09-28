@@ -1,5 +1,5 @@
 import { defineProc, t } from '@snowflake/synapse';
-import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS, REQUIRED_LAYER_ENCODINGS } from '../codes.js';
+import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS, REQUIRED_LAYER_ENCODINGS, MAP_SQL_COMPILE_ERROR_RE } from '../codes.js';
 
 // Any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
 // `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))`. Same expression
@@ -264,7 +264,7 @@ export const render_map = defineProc({
         await ctx.conn.exec('EXPLAIN USING TEXT ' + probe);
       } catch (e) {
         const msg = (e as Error).message || String(e);
-        if (/invalid identifier|syntax error|unexpected/i.test(msg)) {
+        if (MAP_SQL_COMPILE_ERROR_RE.test(msg)) {
           ctx.fail(
             MapRenderCodes.INVALID_MAP_SPEC_SQL,
             `layer ${i} data.query does not compile: ${msg} ` +
