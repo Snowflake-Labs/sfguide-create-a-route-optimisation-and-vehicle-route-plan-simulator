@@ -36,7 +36,7 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Seven deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Eight deviations from upstream, plus three new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
 replayable record and are already applied to this tree. Patches 01-05 and 07 are scoped by
 FILE, not by concern, so `git apply` never has two of them editing the same file.
@@ -278,6 +278,30 @@ Trade-off: a future column addition now needs an explicit `ALTER TABLE`. That is
 way round for an append-only audit log - a migration statement is cheap, lost history is not.
 A re-vendor that silently drops this patch is caught by the `IF NOT EXISTS` assertion in
 `scripts/install_synapse_bundles.sh`.
+
+### patches/08-nullable-args-omittable.patch
+
+Files: `src/build/ddl.ts`, `src/build/mcp-server-sql.ts`, new `tests/unit/nullable-args.test.ts`.
+A diff of the post-07 tree (07 also touches `ddl.ts`, a different file), so it sorts last.
+
+Makes a `.nullable()` verb arg omittable by an MCP client. The Snowflake-managed MCP server
+rejects an explicit JSON `null` for any GENERIC-tool argument with
+`error building SQL query for generic tool <verb>: unsupported parameter type: <nil>`, and
+upstream advertised nullable args as `oneOf: [<T>, null]` AND listed every arg in `required`,
+so the model was told to send exactly the value the server refuses. Omitting the arg did not
+work either: the procedure declared no DEFAULT, so the call failed with "named arguments ... do
+not match any signature".
+
+Measured on tib85385, 2026-09-28, in one DATA_AGENT_RUN sweep (25 questions x 3 regions x 2
+agents): 50+ failed calls across `deep_link`, `show_view`, `backload_solve`,
+`backload_chain_solve`, `describe_data` and `catchment`, which is why backload and triangle
+answers never produced a map. Reproduced over the MCP REST endpoint: explicit null fails,
+omitted fails, empty string succeeds.
+
+The fix: every DDL arg from the first nullable one onward gets `DEFAULT NULL` (Snowflake
+requires defaults to be trailing, so a required arg after a nullable one is defaulted too; the
+runtime schema check still rejects it when it arrives null), and the MCP `input_schema`
+advertises a nullable arg as its plain type, omitted from `required`.
 
 ## Re-vendoring procedure
 
