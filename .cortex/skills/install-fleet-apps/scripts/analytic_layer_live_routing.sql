@@ -293,12 +293,17 @@ $$
   -- So read OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (the table the admin app's
   -- routing-limits panel already owns) and fall back to the SAFE value when the
   -- region has no recorded limit, since guessing high fails closed.
+  -- The safe value is PROFILE-dependent. Pairs are not the only cost: a cycling
+  -- matrix over long cross-bay routes is slow, and SanFrancisco (cycling-electric)
+  -- at band 30 sent ~150 x 16 pairs that ran past the gateway's 55 s matrix timeout
+  -- on every attempt, while the same pair count over short urban legs took 10 s.
+  -- 1000 pairs coarsens those bands one resolution and they complete.
   cap AS (
     SELECT COALESCE(
              (SELECT TRY_TO_NUMBER(TO_VARCHAR(LIMITS:matrix_maximum_routes))
                 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
                WHERE UPPER(REGION) = UPPER(P_REGION) LIMIT 1),
-             2400) AS maxpairs
+             (SELECT IFF(mph < 130000.0, 1000, 2400) FROM spd)) AS maxpairs
   ),
   chosen AS (
     -- Finest resolution satisfying BOTH caps: the region's engine pair ceiling and
