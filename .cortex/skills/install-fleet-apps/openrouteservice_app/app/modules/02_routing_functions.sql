@@ -77,11 +77,16 @@
       MAX_BATCH_ROWS = 1000
       AS '/download_status';
 
+   -- MAX_BATCH_ROWS 25, not 1000: one batch returns every row's route geometry in
+   -- a single response, and 30 continental USA legs (sourcing current lanes)
+   -- exceeded the 20 MB external-function response cap. Measured on 500 SF legs
+   -- the smaller batch is also FASTER (7.0 s -> 2.6 s) because the gateway's
+   -- instances serve the batches in parallel.
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._DIRECTIONS_TABULAR_RAW(method VARCHAR, jstart ARRAY, jend ARRAY, region VARCHAR)
       RETURNS VARIANT
       SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
       ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 1000
+      MAX_BATCH_ROWS = 25
       AS '/directions_tabular';
 
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._DIRECTIONS_RAW(method VARCHAR, locations VARIANT, region VARCHAR)
