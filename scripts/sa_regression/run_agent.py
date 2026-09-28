@@ -144,7 +144,7 @@ def check_render_map(conn, tool, ctx):
             cur.execute(sql.rstrip().rstrip(";"))
             row = cur.fetchone()
         except Exception as e:  # noqa: BLE001
-            return "layer %d query failed: %s" % (i, str(e)[:300])
+            return "layer %d query failed: %s | SQL: %s" % (i, str(e)[:300], sql[:400])
         if not row:
             return "layer %d query returned 0 rows" % i
     return None
