@@ -76,7 +76,7 @@
     "verbs": {
       "optimize_routes": 5,
       "compute_isochrone": 3,
-      "get_directions": 2,
+      "get_directions": 3,
       "find_poi": 5,
       "catchment": 3,
       "delivery_optimization": 1,

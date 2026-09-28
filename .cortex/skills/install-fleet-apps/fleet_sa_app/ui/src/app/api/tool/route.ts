@@ -24,7 +24,9 @@ const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_USER';
 const DEFAULT_VERBS: Record<string, number> = {
   optimize_routes: 5,
   compute_isochrone: 3,
-  get_directions: 2,
+  // 3: locations_description, profile, region. At 2 the trailing idempotency
+  // key was bound into REGION whenever a caller supplied one.
+  get_directions: 3,
   find_poi: 5,
   catchment: 3,
   delivery_optimization: 1,
