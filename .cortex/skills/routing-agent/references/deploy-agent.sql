@@ -1836,9 +1836,12 @@ def _vroom_svc(region) -> str:
 
 def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
-        # An explicit NULL region bind from the verb bypasses the SQL DEFAULT, so
-        # coalesce here too. The provisioned default region is SanFrancisco.
-        region = region or 'SanFrancisco'
+        # An explicit NULL region bind from the verb bypasses the SQL DEFAULT.
+        # Do NOT default to SanFrancisco here: the vrp_simulator page sends a
+        # NULL region, and Texas stops were solved on the SF VROOM ("not
+        # responding"). A missing region is resolved from the geocoded points
+        # below via COVERING_REGION_FOR_POINTS.
+        region = region or None
         safe_delivery = _escape_sql_string(delivery_locations)
         delivery_query = f"""
         SELECT AI_COMPLETE(
@@ -1876,6 +1879,16 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
                 'location': [loc['longitude'], loc['latitude']],
                 'description': loc['name']
             })
+
+        if not region:
+            try:
+                pts = [[depot_data['longitude'], depot_data['latitude']]] + [j['location'] for j in jobs]
+                region = session.sql(
+                    "SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(PARSE_JSON(?)):lookup_name::STRING AS R",
+                    params=[json.dumps(pts)]).collect()[0]['R']
+            except Exception:
+                region = None
+            region = region or 'SanFrancisco'
 
         # Resolve the requested profile against the profiles actually built in
         # the target region, read from the catalog rather than probed live: an
@@ -2431,15 +2444,15 @@ function resolveProfileFor(profile, region) {
     return res;
 }
 try {
-    var region = resolveActiveRegion();
+    // The region comes from the SITE, not from the CATCHMENT.CONFIG singleton:
+    // a Ferry Building ask while CONFIG named UnitedStatesOfAmerica ran the
+    // isochrone on the USA hgv graph, substituted the profile and returned
+    // "Isochrone geometry is null". Geocode first, then resolve the covering
+    // region; the active region is only the fallback for an uncovered point.
+    var region = null;
+    var usedProfile = null, profSubstituted = null, profNote = null;
 
-    var profRes = resolveProfileFor(PROFILE, region);
-    var usedProfile = profRes.used || 'driving-car';
-    var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
-    var profNote = (profRes.note === undefined) ? null : profRes.note;
-
-    var geoPrompt = 'Return ONLY a JSON object with the latitude and longitude of this location'
-        + (region ? (' in ' + region) : '') + '. Location: ';
+    var geoPrompt = 'Return ONLY a JSON object with the latitude and longitude of this location. Location: ';
     var geocodeSQL = "SELECT AI_COMPLETE(" +
         "'claude-sonnet-4-5'," +
         "CONCAT(?, ?)," +
@@ -2455,9 +2468,17 @@ try {
     var loc = (typeof rawGeo === 'string') ? JSON.parse(rawGeo) : rawGeo;
     if (!loc || !loc.latitude || !loc.longitude) {
         return { error: 'Could not geocode site location', status: 'FAILED',
-                 requested_profile: PROFILE, used_profile: usedProfile,
-                 profile_substituted: profSubstituted, profile_note: profNote };
+                 requested_profile: PROFILE };
     }
+    try {
+        region = execScalar("SELECT OPENROUTESERVICE_APP.CORE.COVERING_REGION_FOR_POINTS(PARSE_JSON(?)):lookup_name::STRING",
+                            [JSON.stringify([[loc.longitude, loc.latitude]])]);
+    } catch(e) { region = null; }
+    if (!region) region = resolveActiveRegion();
+    var profRes = resolveProfileFor(PROFILE, region);
+    usedProfile = profRes.used || 'driving-car';
+    profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
+    profNote = (profRes.note === undefined) ? null : profRes.note;
     var isoSQL = "SELECT ST_ASGEOJSON(d.GEOJSON) AS GEOJSON_STR, " +
                  "d.RESPONSE:features[0]:properties:area::FLOAT AS AREA_M2 " +
                  "FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, ?, ?, ?::NUMBER, ?)) d LIMIT 1";
@@ -2787,6 +2808,27 @@ try {
     // without re-deriving the name client-side.
     var vroomSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' +
                    String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+    // The wizard builds every van as driving-car, but HGV-only graphs (UsTexas,
+    // UnitedStatesOfAmerica) have no driving-car: VROOM then returns zero rows
+    // and the solve below misreported a RUNNING service as "not responding".
+    // Substitute any vehicle profile the region did not build.
+    var profNote = null;
+    try {
+        var pr = snowflake.createStatement({ sqlText: "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", binds: [region] }).execute();
+        var avail = [];
+        if (pr.next()) { var pa = pr.getColumnValue(1); avail = (typeof pa === 'string') ? JSON.parse(pa || '[]') : (pa || []); }
+        if (avail.length) {
+            var chObj = JSON.parse(CHALLENGE);
+            var fallback = avail.indexOf('driving-car') >= 0 ? 'driving-car' : avail[0];
+            (chObj.vehicles || []).forEach(function (v) {
+                if (v.profile && avail.indexOf(v.profile) < 0) {
+                    profNote = "Profile '" + v.profile + "' is not built in " + region + "; routed with '" + fallback + "'.";
+                    v.profile = fallback;
+                }
+            });
+            if (profNote) CHALLENGE = JSON.stringify(chObj);
+        }
+    } catch (e) { /* unparseable challenge: let OPTIMIZATION report it */ }
     // OPTIMIZATION flattens resp:routes -> one row per vehicle, each with that
     // vehicle's GEOJSON LineString. RESPONSE (full VROOM JSON: routes/unassigned/
     // summary) is identical on every row. Aggregate ALL per-vehicle geometries
@@ -2827,7 +2869,8 @@ try {
         status: 'SUCCESS', region: region,
         routes: response.routes || [], unassigned: response.unassigned || [],
         summary: response.summary || {},
-        geometry: { type: 'FeatureCollection', features: features }
+        geometry: { type: 'FeatureCollection', features: features },
+        profile_note: profNote
     };
 } catch(err) {
     // A thrown error here (gateway unreachable, service resolution failure) is
@@ -2870,6 +2913,25 @@ try {
     }
     var vroomSvc = 'OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' +
                    String(region).toUpperCase().replace(/[^A-Z0-9_]/g, '');
+    // Same profile substitution as TOOL_EVAC_SOLVE: an unbuilt vehicle profile
+    // makes VROOM return zero rows, misreported as "not responding".
+    var profNote = null;
+    try {
+        var pr = snowflake.createStatement({ sqlText: "SELECT OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(?)", binds: [region] }).execute();
+        var avail = [];
+        if (pr.next()) { var pa = pr.getColumnValue(1); avail = (typeof pa === 'string') ? JSON.parse(pa || '[]') : (pa || []); }
+        if (avail.length) {
+            var chObj = JSON.parse(CHALLENGE);
+            var fallback = avail.indexOf('driving-car') >= 0 ? 'driving-car' : avail[0];
+            (chObj.vehicles || []).forEach(function (v) {
+                if (v.profile && avail.indexOf(v.profile) < 0) {
+                    profNote = "Profile '" + v.profile + "' is not built in " + region + "; routed with '" + fallback + "'.";
+                    v.profile = fallback;
+                }
+            });
+            if (profNote) CHALLENGE = JSON.stringify(chObj);
+        }
+    } catch (e) { /* unparseable challenge: let OPTIMIZATION report it */ }
     var sql = "SELECT o.VEHICLE AS VID, o.RESPONSE AS RESP, ST_ASGEOJSON(o.GEOJSON) AS GJ " +
               "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o";
     var rs = snowflake.createStatement({ sqlText: sql, binds: [CHALLENGE, region] }).execute();
@@ -2899,7 +2961,8 @@ try {
         status: 'SUCCESS', region: region,
         routes: response.routes || [], unassigned: response.unassigned || [],
         summary: response.summary || {},
-        geometry: { type: 'FeatureCollection', features: features }
+        geometry: { type: 'FeatureCollection', features: features },
+        profile_note: profNote
     };
 } catch(err) {
     return { status: 'FAILED', region: region, reason: 'OPTIMIZATION_UNAVAILABLE',
