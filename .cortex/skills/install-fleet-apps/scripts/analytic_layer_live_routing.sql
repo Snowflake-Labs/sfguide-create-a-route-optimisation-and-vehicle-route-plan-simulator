@@ -1655,19 +1655,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  swap AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH swap AS (
     SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
     WHERE BEST_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
       AND ( (P_ONLY_CUSTOMER IS NULL AND SAVINGS_PER_LOAD > 0)
             OR (P_ONLY_CUSTOMER IS NOT NULL AND CUSTOMER_ID = P_ONLY_CUSTOMER) )
@@ -1676,12 +1672,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM swap s, reg, prof,
+  FROM swap s,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 -- Product-mix flow legs as road paths for the selected customer's order. Wraps
@@ -1696,19 +1692,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  flows AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH flows AS (
     SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
                  P_HANDLING_PER_TON, P_CUSTOMER_ID))
     WHERE FROM_LON IS NOT NULL AND FROM_LAT IS NOT NULL
       AND TO_LON IS NOT NULL AND TO_LAT IS NOT NULL
@@ -1718,12 +1710,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM flows f, reg, prof,
+  FROM flows f,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
                ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 -- Current-source lanes as road paths for EVERY customer (not just savings lanes).
@@ -1739,19 +1731,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  cur AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH cur AS (
     SELECT CUSTOMER_ID, CURRENT_PLANT_GEOG, CUSTOMER_GEOG
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
     WHERE CURRENT_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
       AND NOT (ST_X(CURRENT_PLANT_GEOG) = ST_X(CUSTOMER_GEOG)
                AND ST_Y(CURRENT_PLANT_GEOG) = ST_Y(CUSTOMER_GEOG))
@@ -1760,12 +1748,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM cur c, reg, prof,
+  FROM cur c,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(ST_X(c.CURRENT_PLANT_GEOG), ST_Y(c.CURRENT_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(c.CUSTOMER_GEOG), ST_Y(c.CUSTOMER_GEOG)),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;

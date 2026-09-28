@@ -5313,8 +5313,9 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COALESCE(SUM(CURRENT_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS current_freight, COALESCE(SUM(BEST_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS optimized_freight, COALESCE(SUM(ANNUAL_SAVINGS),0) AS annual_savings, COUNT(CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 END) AS customers_with_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+          "query": "SELECT COALESCE(SUM(CURRENT_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS current_freight, COALESCE(SUM(BEST_COST_PER_LOAD*ANNUAL_TRUCKLOADS),0) AS optimized_freight, COALESCE(SUM(ANNUAL_SAVINGS),0) AS annual_savings, COUNT(CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 END) AS customers_with_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5338,7 +5339,8 @@
             "label": "Product",
             "required": false,
             "data": {
-              "query": "SELECT value, label FROM (SELECT '' AS value, 'All products' AS label, 0 AS ord UNION ALL SELECT DISTINCT PRODUCT, PRODUCT, 1 FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))) ORDER BY ord, label"
+              "query": "SELECT value, label FROM (SELECT '' AS value, 'All products' AS label, 0 AS ord UNION ALL SELECT DISTINCT PRODUCT, PRODUCT, 1 FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND WHERE REGION=CAST(:region AS VARCHAR)) ORDER BY ord, label",
+              "params": { "region": "context.region" }
             },
             "emits": { "product_filter": "selection" }
           },
@@ -5347,7 +5349,8 @@
             "label": "Routing profile",
             "required": true,
             "data": {
-              "query": "SELECT ORS_PROFILE AS value, CASE ORS_PROFILE WHEN 'driving-hgv' THEN 'Truck (driving-hgv)' WHEN 'driving-car' THEN 'Car (driving-car)' WHEN 'cycling-electric' THEN 'E-bike (cycling-electric)' ELSE ORS_PROFILE END AS label FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE"
+              "query": "SELECT ORS_PROFILE AS value, CASE ORS_PROFILE WHEN 'driving-hgv' THEN 'Truck (driving-hgv)' WHEN 'driving-car' THEN 'Car (driving-car)' WHEN 'cycling-electric' THEN 'E-bike (cycling-electric)' ELSE ORS_PROFILE END AS label FROM FLEET_APP.CORE.VW_REGION_PROFILE WHERE REGION = CAST(:region AS VARCHAR)",
+              "params": { "region": "context.region" }
             },
             "emits": { "profile": "selection" }
           }
@@ -5383,8 +5386,9 @@
         },
         "emits": { "selected_customer": "selection" },
         "data": {
-          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) ORDER BY annual_savings DESC",
+          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) ORDER BY annual_savings DESC",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5416,8 +5420,9 @@
               "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_CURRENT_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5434,8 +5439,9 @@
               "widthMinPixels": 3,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,NULL::VARCHAR))",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,NULL::VARCHAR))",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5452,8 +5458,9 @@
               "widthMinPixels": 4,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,COALESCE(NULLIF(:selected_customer,''),'__NONE__')::VARCHAR))",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_SWAP_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR,COALESCE(NULLIF(:selected_customer,''),'__NONE__')::VARCHAR))",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5477,8 +5484,8 @@
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>Plant",
               "data": {
-                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))",
-                "params": {}
+                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=CAST(:region AS VARCHAR)",
+                "params": { "region": "context.region" }
               }
             },
             {
@@ -5506,8 +5513,9 @@
                 }
               },
               "data": {
-                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, PRODUCT AS product, ANNUAL_SAVINGS AS annual_savings, CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 ELSE 0 END AS has_savings, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
+                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, PRODUCT AS product, ANNUAL_SAVINGS AS annual_savings, CASE WHEN SAVINGS_PER_LOAD>0 THEN 1 ELSE 0 END AS has_savings, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR))",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5536,8 +5544,9 @@
           ]
         },
         "data": {
-          "query": "SELECT CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) WHERE CUSTOMER_ID = :selected_customer",
+          "query": "SELECT CUSTOMER_NAME AS customer, PRODUCT AS product, ANNUAL_TRUCKLOADS AS annual_truckloads, CURRENT_PLANT AS current_plant, CURRENT_COST_PER_LOAD AS current_cost, BEST_PLANT AS best_plant, BEST_COST_PER_LOAD AS best_cost, SAVINGS_PER_LOAD AS savings_per_load, ANNUAL_SAVINGS AS annual_savings FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,NULLIF(:product_filter,'')::VARCHAR)) WHERE CUSTOMER_ID = :selected_customer",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5610,8 +5619,9 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COALESCE(SUM(CASE WHEN SAVINGS>0 THEN SAVINGS END),0) AS total_savings, COUNT(CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 END) AS consolidate_orders, COUNT(CASE WHEN RECOMMENDATION='SHIP DIRECT' THEN 1 END) AS direct_orders, COALESCE(SUM(HANDLING_COST),0) AS total_handling FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
+          "query": "SELECT COALESCE(SUM(CASE WHEN SAVINGS>0 THEN SAVINGS END),0) AS total_savings, COUNT(CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 END) AS consolidate_orders, COUNT(CASE WHEN RECOMMENDATION='SHIP DIRECT' THEN 1 END) AS direct_orders, COALESCE(SUM(HANDLING_COST),0) AS total_handling FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5635,7 +5645,8 @@
             "label": "Routing profile",
             "required": true,
             "data": {
-              "query": "SELECT ORS_PROFILE AS value, CASE ORS_PROFILE WHEN 'driving-hgv' THEN 'Truck (driving-hgv)' WHEN 'driving-car' THEN 'Car (driving-car)' WHEN 'cycling-electric' THEN 'E-bike (cycling-electric)' ELSE ORS_PROFILE END AS label FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE"
+              "query": "SELECT ORS_PROFILE AS value, CASE ORS_PROFILE WHEN 'driving-hgv' THEN 'Truck (driving-hgv)' WHEN 'driving-car' THEN 'Car (driving-car)' WHEN 'cycling-electric' THEN 'E-bike (cycling-electric)' ELSE ORS_PROFILE END AS label FROM FLEET_APP.CORE.VW_REGION_PROFILE WHERE REGION = CAST(:region AS VARCHAR)",
+              "params": { "region": "context.region" }
             },
             "emits": { "profile": "selection" }
           }
@@ -5676,8 +5687,9 @@
         },
         "emits": { "selected_customer": "selection" },
         "data": {
-          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings, RECOMMENDATION AS recommendation FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR)) ORDER BY savings DESC",
+          "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS customer, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings, RECOMMENDATION AS recommendation FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR)) ORDER BY savings DESC",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5708,8 +5720,9 @@
               "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='DIRECT'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='DIRECT'",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5727,8 +5740,9 @@
               "widthMinPixels": 2,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='TRANSFER'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='TRANSFER'",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5746,8 +5760,9 @@
               "widthMinPixels": 3,
               "pickable": false,
               "data": {
-                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(NULL::VARCHAR,:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='OUTBOUND'",
+                "query": "SELECT ROUTE_GEOJSON AS route_geojson FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOW_ROUTES(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR))) WHERE LEG_KIND='OUTBOUND'",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5771,8 +5786,8 @@
               "pickable": true,
               "tooltip": "<b>{name}</b><br/>Plant",
               "data": {
-                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS))",
-                "params": {}
+                "query": "SELECT PLANT_ID AS plant_id, PLANT_NAME AS name, LON AS lng, LAT AS lat FROM FLEET_APP.SOURCING.VW_PLANTS WHERE REGION=CAST(:region AS VARCHAR)",
+                "params": { "region": "context.region" }
               }
             },
             {
@@ -5800,8 +5815,9 @@
                 }
               },
               "data": {
-                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, RECOMMENDATION AS recommendation, SAVINGS AS savings, CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 ELSE 0 END AS consolidate, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
+                "query": "SELECT CUSTOMER_ID AS customer_id, CUSTOMER_NAME AS name, RECOMMENDATION AS recommendation, SAVINGS AS savings, CASE WHEN RECOMMENDATION='CONSOLIDATE' THEN 1 ELSE 0 END AS consolidate, ST_X(CUSTOMER_GEOG) AS lng, ST_Y(CUSTOMER_GEOG) AS lat FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,NULL::VARCHAR))",
                 "params": {
+                  "region": "context.region",
                   "profile": "viewState.profile",
                   "rate_per_km": "viewState.rate_per_km",
                   "rate_per_ton_km": "viewState.rate_per_ton_km",
@@ -5831,8 +5847,9 @@
           ]
         },
         "data": {
-          "query": "SELECT CUSTOMER_NAME AS customer, RECOMMENDATION AS recommendation, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(COALESCE((SELECT REGION FROM FLEET_APP.SOURCING.VW_ACTIVE_REGION),(SELECT MAX(REGION) FROM FLEET_APP.SOURCING.VW_PLANTS)),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR)))",
+          "query": "SELECT CUSTOMER_NAME AS customer, RECOMMENDATION AS recommendation, PRODUCT_LINES AS product_lines, TOTAL_TONS AS total_tons, COST_MULTI_PLANT AS cost_multi_plant, COST_CONSOLIDATED AS cost_consolidated, BEST_HUB AS best_hub, HANDLING_COST AS handling_cost, SAVINGS AS savings FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_TRADEOFF(CAST(:region AS VARCHAR),:profile,COALESCE(:rate_per_km,1.5)::FLOAT,COALESCE(:rate_per_ton_km,0.05)::FLOAT,COALESCE(:handling_per_ton,15)::FLOAT,CAST(:selected_customer AS VARCHAR)))",
           "params": {
+            "region": "context.region",
             "profile": "viewState.profile",
             "rate_per_km": "viewState.rate_per_km",
             "rate_per_ton_km": "viewState.rate_per_ton_km",
