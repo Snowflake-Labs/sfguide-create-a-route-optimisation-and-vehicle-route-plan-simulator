@@ -865,8 +865,15 @@ BEGIN
   --    extra store therefore costs an anchor cell - i.e. spatial resolution - so
   --    raising this coarsens Site Impact rather than enriching it.
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = :rg;
-  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
-    (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
+  -- Reachability probe. Every store is a destination in every live matrix, and ONE
+  -- store the region's graph cannot reach fails the WHOLE call: SanFrancisco's spread
+  -- put two competitors in Richmond and Oakland, which the cycling-electric graph
+  -- cannot reach, so every Site Impact / Closure Impact panel failed with ORS 6099 /
+  -- all_chunks_failed and tripped the gateway breaker. A driving profile answers the
+  -- same question with a NULL cell instead of an error, so probe the spread with one
+  -- and keep only stores that reach the region's household centre. Fails OPEN: no
+  -- matrix (engine down at build time) keeps every candidate.
+  CREATE OR REPLACE TEMPORARY TABLE FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD AS
   WITH cat AS (
     SELECT BASIC_CATEGORY
     FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
@@ -881,10 +888,45 @@ BEGIN
     FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
     JOIN cat ON p.BASIC_CATEGORY = cat.BASIC_CATEGORY
     WHERE p.REGION = :rg AND p.LONGITUDE IS NOT NULL
+  )
+  SELECT POI_ID, POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY,
+         ROW_NUMBER() OVER (ORDER BY POI_ID) - 1 AS pidx
+  FROM ranked WHERE rn_cell = 1
+  QUALIFY ROW_NUMBER() OVER (ORDER BY POI_ID) <= 60;
+
+  LET probe_prof VARCHAR := (
+    SELECT COALESCE(
+      (SELECT f.value::STRING
+         FROM TABLE(FLATTEN(INPUT => OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:rg))) f
+        WHERE f.value::STRING LIKE 'driving%' LIMIT 1),
+      'driving-car'));
+  CREATE OR REPLACE TEMPORARY TABLE FLEET_INTELLIGENCE.LOCATION._STORE_REACH AS
+  WITH hub AS (
+    SELECT ST_MAKEPOINT(AVG(LONGITUDE), AVG(LATITUDE)) AS g
+    FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES WHERE REGION = :rg
   ),
-  spread AS (
-    SELECT *, ROW_NUMBER() OVER (ORDER BY POI_ID) AS gidx
-    FROM ranked WHERE rn_cell = 1
+  ref AS (
+    SELECT s.LONGITUDE, s.LATITUDE FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s, hub
+    ORDER BY ST_DISTANCE(s.GEOMETRY, hub.g) LIMIT 1
+  ),
+  m AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+             :probe_prof,
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE, LATITUDE)) WITHIN GROUP (ORDER BY pidx)
+                FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD),
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE, LATITUDE)) FROM ref),
+             :rg) AS M
+  )
+  SELECT s.POI_ID
+  FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s, m
+  WHERE m.M:durations IS NULL OR NOT IS_NULL_VALUE(m.M:durations[s.pidx][0]);
+
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
+    (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
+  WITH spread AS (
+    SELECT s.*, ROW_NUMBER() OVER (ORDER BY s.POI_ID) AS gidx
+    FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s
+    JOIN FLEET_INTELLIGENCE.LOCATION._STORE_REACH r ON r.POI_ID = s.POI_ID
   )
   SELECT :rg,
          'ST' || LPAD(gidx::VARCHAR, 4, '0'),
