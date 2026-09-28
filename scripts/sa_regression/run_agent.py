@@ -65,6 +65,14 @@ ASKS = [
 ]
 MAP_SUFFIX = " Show it on a map."
 
+_APP = __import__("pathlib").Path(__file__).resolve().parents[2] / \
+    ".cortex/skills/install-fleet-apps/fleet_sa_app/app/app-views.json"
+# Views that draw a map: every app-views.json view with a Map area, plus the
+# custom React pages whose own body is a map.
+MAP_VIEWS = {vid for vid, v in json.load(open(_APP)).items()
+             if any(a.get("component") == "Map" for a in (v.get("areas") or {}).values())} | {
+    "vrp_simulator", "emergency_response", "backload_matching", "triangle_proposals"}
+
 
 def connect(name):
     c = snowflake.connector.connect(connection_name=name)
@@ -167,12 +175,24 @@ def run_one(conn_name, surface, ctx, skill, question, wants_map):
             problems = []
             if not answer.strip():
                 problems.append("empty answer")
-            maps = [t for t in tools if short(t.get("name")) == "render_map"]
+            # Only a render_map the verb ACCEPTED reaches the renderer; a
+            # rejected first attempt the agent then corrected is not a map
+            # failure, so pair each call with its own result.
+            ok_ids = {r.get("tool_use_id") for r in results
+                      if str(r.get("status", "")).lower() == "success"}
+            maps = [t for t in tools if short(t.get("name")) == "render_map"
+                    and t.get("tool_use_id") in ok_ids]
             for t in maps:
                 p = check_render_map(conn, t, ctx)
                 if p:
                     problems.append("render_map: " + p)
-            has_map = bool(maps) or any(n in MAP_TOOLS for n in names)
+            # show_view moves the SA panel to the view itself (the backload and
+            # triangle cockpits draw the plan from a solve_key), so it is a map
+            # when the target view has one.
+            shown = [t for t in tools if short(t.get("name")) in ("show_view", "deep_link")
+                     and t.get("tool_use_id") in ok_ids
+                     and (t.get("input") or {}).get("view_id") in MAP_VIEWS]
+            has_map = bool(maps) or bool(shown) or any(n in MAP_TOOLS for n in names)
             if wants_map and not has_map:
                 problems.append("no map produced (tools=%s)" % names)
             # A verb that failed on the MCP transport (not on its own logic)
