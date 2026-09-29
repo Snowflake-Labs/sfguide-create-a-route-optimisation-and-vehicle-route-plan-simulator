@@ -180,6 +180,9 @@ export interface ViewDef {
   roles?: AppRole[];
   // Optional per-view grounding hint surfaced to the chat agent via panel context.
   agentKnowledge?: AgentKnowledge;
+  // viewState binds emitted by required filters, keyed to the filter label.
+  // Seeded into blockedBinds when the view opens (see store.showView).
+  requiredBinds?: Record<string, string>;
 }
 
 // Zero-code retargeting surface (agnostic-view report section 6.3). Every field is

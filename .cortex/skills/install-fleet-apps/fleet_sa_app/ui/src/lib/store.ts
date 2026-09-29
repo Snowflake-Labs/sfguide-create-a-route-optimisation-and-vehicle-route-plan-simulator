@@ -439,7 +439,15 @@ export const useAppStore = create<AppStore>()(
       },
 
       showView: (viewId: string, state?: Record<string, unknown>) => {
+        // Hold every required bind the caller did not supply, so no area of the
+        // new view fires with NULL before its filter seeds a value.
+        const required = viewRegistry.get(viewId)?.requiredBinds ?? {};
+        const seeded: Record<string, string> = {};
+        for (const [key, label] of Object.entries(required)) {
+          if ((state?.[key] ?? '') === '') seeded[key] = label;
+        }
         set((s) => ({
+          blockedBinds: { ...s.blockedBinds, ...seeded },
           panel: {
             ...s.panel,
             activeViewId: viewId,

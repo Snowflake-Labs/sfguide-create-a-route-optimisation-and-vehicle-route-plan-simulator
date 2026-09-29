@@ -71,11 +71,17 @@ function FilterSelect({
   // mistaken for "no options", and cleared on unmount so a blocked bind cannot
   // outlive the view that declared it.
   const isBlocked = Boolean(filter.required) && !loading && !suspended && options.length === 0;
+  // The bind is also held back while the options are still loading and the seed
+  // has not landed. Without this every dependent panel fires once with NULL and
+  // again with the seeded value; aborting the first fetch does not cancel its
+  // Snowflake statement, so a live-routing page doubled its engine load and
+  // tripped the gateway timeout on a healthy region.
+  const isUnset = Boolean(filter.required) && currentValue === '';
   useEffect(() => {
     if (!emitKey) return;
-    setBlockedBind(emitKey, isBlocked ? (filter.label || filter.name) : null);
+    setBlockedBind(emitKey, isBlocked || isUnset ? (filter.label || filter.name) : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emitKey, isBlocked, filter.label, filter.name]);
+  }, [emitKey, isBlocked, isUnset, filter.label, filter.name]);
   useEffect(() => {
     if (!emitKey) return;
     return () => setBlockedBind(emitKey, null);
