@@ -178,6 +178,11 @@ def evac_challenge(seed, centers, vans=4, cap=6, level=3):
     care centers (loaded on page mount) x vans, one pickup job per participant
     at or above the default wildfire risk level."""
     parts = [p for p in (seed.get("participants") or []) if (p.get("wf_lvl") or 0) >= level]
+    if not parts and seed.get("participants"):
+        # The page answers this with "No participants at or above level N - lower
+        # the threshold or re-seed"; do what the user would and lower it.
+        top = max((p.get("wf_lvl") or 0) for p in seed["participants"])
+        parts = [p for p in seed["participants"] if (p.get("wf_lvl") or 0) >= max(1, top)]
     if not parts or not centers:
         return None, "participants>=L%d=%d centers=%d" % (level, len(parts), len(centers))
     trips = max(1, -(-len(parts) // (len(centers) * vans * cap)))
