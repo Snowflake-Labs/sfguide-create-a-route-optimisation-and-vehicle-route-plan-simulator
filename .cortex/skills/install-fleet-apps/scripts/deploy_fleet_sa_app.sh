@@ -379,6 +379,22 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       fi
     fi
   fi
+  # Site Impact store-key gate: STORE_ID is not unique across regions, and a
+  # NULL selection must not reach ORS. Both shipped as page-open 500s.
+  if [ "${SITE_IMPACT_VERIFY:-1}" != "0" ]; then
+    SI_GATE="$SKILL_DIR/scripts/check_site_impact_store_keys.py"
+    SI_NEG="$SKILL_DIR/scripts/check_site_impact_store_keys_negative.py"
+    if [ -f "$SI_GATE" ]; then
+      echo "[1/7] Verify Site Impact store joins are region-keyed and null-safe..."
+      python3 "$SI_GATE" \
+        || { echo "ERROR: Site Impact store-key gate failed (see above)."; exit 1; }
+      if [ -f "$SI_NEG" ]; then
+        python3 "$SI_NEG" >/dev/null \
+          || { echo "ERROR: Site Impact negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$SI_NEG'"; exit 1; }
+      fi
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
