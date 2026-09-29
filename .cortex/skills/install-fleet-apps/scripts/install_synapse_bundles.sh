@@ -245,14 +245,17 @@ JSON
   #
   # Scoped to verbs whose arity has actually changed, listed explicitly rather
   # than derived, because dropping a signature is not something to do by pattern
-  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s).
+  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s);
+  # delivery_optimization / network_optimization went 1 -> 2 (region).
   if [ "$SRC" = "user" ]; then
     snow sql -c "$CONNECTION" -q "
       $TAG_SQL
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.DELIVERY_OPTIMIZATION(VARCHAR, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.NETWORK_OPTIMIZATION(VARCHAR, VARCHAR);
     " >/tmp/synapse_${SRC}_dropstale.log 2>&1 \
-      || { echo "ERROR: could not drop stale BACKLOAD_SOLVE wrapper signatures"; \
+      || { echo "ERROR: could not drop stale verb wrapper signatures"; \
            tail -20 /tmp/synapse_${SRC}_dropstale.log; exit 1; }
   fi
 

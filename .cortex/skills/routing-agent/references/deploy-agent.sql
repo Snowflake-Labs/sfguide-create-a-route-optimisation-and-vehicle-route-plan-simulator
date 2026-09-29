@@ -2020,8 +2020,12 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR
 -- a 3-vehicle VROOM payload. The active region comes from CATCHMENT.CONFIG. No
 -- static demo tables - works for any provisioned region with Overture coverage.
 ----------------------------------------------------------------------
+-- REGION is an optional trailing arg; the old one-arg signature is dropped first
+-- because a defaulted arg cannot distinguish an overload.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCHAR);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION  VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -2040,8 +2044,9 @@ function execScalarPair(sqlText, binds) {
 }
 function resolveActiveRegion() {
     var sqls = [
-        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
-        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+        "SELECT c.REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG c JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d "
+          + "ON d.REGION = c.REGION AND d.IS_ACTIVE LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE ORDER BY CREATED_AT DESC LIMIT 1"
     ];
     for (var i = 0; i < sqls.length; i++) {
         try { var v = execScalar(sqls[i]); if (v) return v; } catch(e) { /* next */ }
@@ -2063,7 +2068,8 @@ function resolveProfileFor(profile, region) {
     return res;
 }
 try {
-    var region = resolveActiveRegion();
+    // Caller's region first; the resolver only runs when none was supplied.
+    var region = REGION || resolveActiveRegion();
 
     var profRes = resolveProfileFor(PROFILE, region);
     var usedProfile = profRes.used || 'driving-car';
@@ -2216,7 +2222,7 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_DELIVERY_OPTIMIZATION: Region-scoped, domain-neutral delivery plan.
@@ -2226,8 +2232,12 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCH
 -- centroid, and runs a 3-vehicle VROOM solve. Active region from CATCHMENT.CONFIG.
 -- No static demo tables.
 ----------------------------------------------------------------------
+-- REGION is an optional trailing arg; the old one-arg signature is dropped first
+-- because a defaulted arg cannot distinguish an overload.
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(VARCHAR);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION  VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -2245,8 +2255,9 @@ function resolveActiveRegion() {
     // Active region from the neutral catchment config; fall back to the active
     // dataset, then the provisioned default. No hardcoded coords anywhere.
     var sqls = [
-        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
-        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+        "SELECT c.REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG c JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d "
+          + "ON d.REGION = c.REGION AND d.IS_ACTIVE LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE ORDER BY CREATED_AT DESC LIMIT 1"
     ];
     for (var i = 0; i < sqls.length; i++) {
         try {
@@ -2279,7 +2290,8 @@ function resolveProfileFor(profile, region) {
     return res;
 }
 try {
-    var region = resolveActiveRegion();
+    // Caller's region first; the resolver only runs when none was supplied.
+    var region = REGION || resolveActiveRegion();
 
     var profRes = resolveProfileFor(PROFILE, region);
     var usedProfile = profRes.used || 'driving-car';
@@ -2396,7 +2408,7 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_CATCHMENT: Area profile within a drive-time catchment of a site.

@@ -29,8 +29,9 @@ const DEFAULT_VERBS: Record<string, number> = {
   get_directions: 3,
   find_poi: 5,
   catchment: 3,
-  delivery_optimization: 1,
-  network_optimization: 1,
+  // 2: profile, region (region added so a caller can scope the site network).
+  delivery_optimization: 2,
+  network_optimization: 2,
   evac_seed: 4,
   evac_solve: 2,
   // Backload matching. These are the seam that keeps the cockpits and the agent on

@@ -139,8 +139,8 @@ def cases(region, vt, dataset_id):
         ("catchment", ROUTING, "CATCHMENT", [a, 10, p], True),
         # vrp_simulator page Run button: args [stops, depot, vehicles, profile, null]
         ("vrp_simulator.optimize_routes", ROUTING, "OPTIMIZE_ROUTES", [stops, a, 2, p, None], True),
-        ("delivery_optimization", ROUTING, "DELIVERY_OPTIMIZATION", [p], True),
-        ("network_optimization", ROUTING, "NETWORK_OPTIMIZATION", [p], True),
+        ("delivery_optimization", ROUTING, "DELIVERY_OPTIMIZATION", [p, region], True),
+        ("network_optimization", ROUTING, "NETWORK_OPTIMIZATION", [p, region], True),
         ("query_overture_places", ROUTING, "QUERY_OVERTURE_PLACES",
          [region, "restaurant", None, 50, None, None, None, None], True),
         ("query_overture_addresses", ROUTING, "QUERY_OVERTURE_ADDRESSES",

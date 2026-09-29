@@ -14,12 +14,16 @@ export const delivery_optimization = defineProc({
       .string({ max: 40 })
       .nullable()
       .describe('Routing profile or vehicle type: driving-car / car, driving-hgv / hgv, or ebike (cycling). Defaults to the active vehicle profile when null.'),
+    region: t
+      .string({ max: 80 })
+      .nullable()
+      .describe('Region whose site network and road graph to use. Pass the active region; defaults to it when omitted.'),
   },
   returns: {
     result: t.object({}).describe('Optimization response: optimized routes and summary metrics.'),
   },
   execute: async (args, ctx) => {
-    const result = await callTool(ctx.conn, Procs.deliveryOptimization, [args.profile]);
+    const result = await callTool(ctx.conn, Procs.deliveryOptimization, [args.profile, args.region]);
     return { result };
   },
 });
