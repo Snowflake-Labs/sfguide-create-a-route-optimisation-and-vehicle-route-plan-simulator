@@ -45,13 +45,15 @@ $$
   WITH iso AS (
     SELECT (f.value:properties:value::INT)/60 AS band_min,
            TO_GEOGRAPHY(f.value:geometry) AS g
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Row source, not scalar LON/LAT subqueries: a NULL store (page open)
+    -- made ORS reject the call (3003 -> 500); an empty row source calls nothing.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES
+           WHERE REGION = P_REGION AND STORE_ID = P_STORE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       (SELECT ARRAY_AGG(BAND_MIN*60) FROM FLEET_INTELLIGENCE.LOCATION.BANDS),
       'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
@@ -119,14 +121,14 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","versio
 AS
 $$
   SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-  FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+  -- Row source, not scalar LON/LAT subqueries: a NULL candidate made ORS
+  -- reject the call (3003 -> 500); an empty row source calls nothing.
+  FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+         WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+  TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
     COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
     ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
     -- ORS_FEATURES = suspended-engine guard: raises rather than yielding 0 rows.
     LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
@@ -655,13 +657,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
@@ -751,13 +756,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
@@ -805,13 +813,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
