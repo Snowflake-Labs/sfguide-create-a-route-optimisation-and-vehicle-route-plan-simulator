@@ -4507,7 +4507,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+          "query": "SELECT POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), CAST(:region AS VARCHAR)))",
           "params": {
             "region": "context.region",
             "selected_poi": "viewState.selected_poi",
@@ -4532,7 +4532,8 @@
             "name": "category",
             "label": "Category",
             "data": {
-              "query": "SELECT BASIC_CATEGORY AS value, BASIC_CATEGORY AS label FROM FLEET_APP.CATCHMENT.VW_POIS WHERE BASIC_CATEGORY IS NOT NULL GROUP BY BASIC_CATEGORY ORDER BY COUNT(*) DESC LIMIT 30"
+              "query": "SELECT BASIC_CATEGORY AS value, BASIC_CATEGORY AS label FROM FLEET_APP.CATCHMENT.VW_POIS WHERE BASIC_CATEGORY IS NOT NULL AND REGION = CAST(:region AS VARCHAR) GROUP BY BASIC_CATEGORY ORDER BY COUNT(*) DESC LIMIT 30",
+              "params": { "region": "context.region" }
             },
             "emits": {
               "selected_category": "selection"
@@ -4554,7 +4555,7 @@
           ]
         },
         "data": {
-          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, CITY AS city FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 200",
+          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, CITY AS city FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND REGION=CAST(:region AS VARCHAR) AND EXISTS (SELECT 1 FROM FLEET_APP.CORE.VW_REGION_GRAPH_BBOX g WHERE g.REGION = CAST(:region AS VARCHAR) AND LONGITUDE BETWEEN g.MIN_LON AND g.MAX_LON AND LATITUDE BETWEEN g.MIN_LAT AND g.MAX_LAT) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 200",
           "params": {
             "selected_category": "viewState.selected_category",
             "region": "context.region"
@@ -4608,7 +4609,7 @@
               "pickable": true,
               "tooltip": "Addresses: {addr}",
               "data": {
-                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES) GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
+                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND REGION=CAST(:region AS VARCHAR) GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
                 "params": { "region": "context.region" }
               }
             },
@@ -4623,7 +4624,7 @@
               "pickable": true,
               "tooltip": "<b>Within 15 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(900), CAST(:region AS VARCHAR)))",
                 "params": {
                   "region": "context.region",
                   "selected_poi": "viewState.selected_poi",
@@ -4643,7 +4644,7 @@
               "pickable": true,
               "tooltip": "<b>Within 10 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(600), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(600), CAST(:region AS VARCHAR)))",
                 "params": {
                   "region": "context.region",
                   "selected_poi": "viewState.selected_poi",
@@ -4663,7 +4664,7 @@
               "pickable": true,
               "tooltip": "<b>Within 5 min</b><br/>Pop {population} | HH {households} | Venues {venues}<br/>Median income ${median_income}",
               "data": {
-                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS)))",
+                "query": "SELECT ST_ASGEOJSON(GEO)::STRING AS geo, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300), CAST(:region AS VARCHAR)))",
                 "params": {
                   "region": "context.region",
                   "selected_poi": "viewState.selected_poi",
@@ -4703,7 +4704,7 @@
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category}",
               "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND REGION=CAST(:region AS VARCHAR) AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
                 "params": {
                   "selected_category": "viewState.selected_category",
                   "region": "context.region"
@@ -4745,7 +4746,7 @@
               "radiusMaxPixels": 18,
               "pickable": false,
               "data": {
-                "query": "SELECT LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE REGION=(SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS) AND POI_NAME=:selected_poi LIMIT 1",
+                "query": "SELECT LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE REGION=CAST(:region AS VARCHAR) AND POI_NAME=:selected_poi LIMIT 1",
                 "params": {
                   "selected_poi": "viewState.selected_poi",
                   "region": "context.region"
@@ -4771,7 +4772,7 @@
           ]
         },
         "data": {
-          "query": "SELECT BAND_MIN || ' min' AS drive_time, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, ADDRESSES AS addresses, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300,600,900), (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS))) ORDER BY area_km2",
+          "query": "SELECT BAND_MIN || ' min' AS drive_time, POPULATION AS population, HOUSEHOLDS AS households, MEDIAN_INCOME AS median_income, VENUES AS venues, ADDRESSES AS addresses, AREA_SQKM AS area_km2 FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, ARRAY_CONSTRUCT(300,600,900), CAST(:region AS VARCHAR))) ORDER BY area_km2",
           "params": {
             "region": "context.region",
             "selected_poi": "viewState.selected_poi",
@@ -4791,7 +4792,7 @@
           ]
         },
         "data": {
-          "query": "SELECT BASIC_CATEGORY AS category, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, 15, (SELECT MAX(REGION) FROM FLEET_APP.CATCHMENT.VW_POIS))) LIMIT 15",
+          "query": "SELECT BASIC_CATEGORY AS category, VENUES AS venues FROM TABLE(FLEET_APP.CATCHMENT.LIVE_CATCHMENT_CATEGORIES(TO_VARCHAR(:selected_poi), TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lng))::FLOAT, TRY_TO_DOUBLE(TO_VARCHAR(:anchor_lat))::FLOAT, 15, CAST(:region AS VARCHAR))) LIMIT 15",
           "params": {
             "region": "context.region",
             "selected_poi": "viewState.selected_poi",

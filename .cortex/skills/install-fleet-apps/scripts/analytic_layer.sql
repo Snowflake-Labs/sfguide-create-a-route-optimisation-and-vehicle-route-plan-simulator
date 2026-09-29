@@ -1374,6 +1374,17 @@ LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
   ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
 WHERE d.IS_ACTIVE;
 
+-- Region -> the bbox of its ROAD GRAPH (what ORS enforces), for views that offer a
+-- user-pickable routing anchor. A region's POI set is loaded with a padded extent,
+-- and SanFrancisco's reaches Oakland and Richmond: picking one of those ~2,000
+-- sites in Catchment failed every ring with ORS 3099 "Unable to build an
+-- isochrone map". Conservative by design - the graph can extend past its bbox.
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_GRAPH_BBOX
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT REGION, MIN_LON, MAX_LON, MIN_LAT, MAX_LAT
+FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
+
 -- FLATTEN input for the ISOCHRONES response. Returns the features array when the
 -- call succeeded; raises (carrying the suspend tokens) when it did not. A missing
 -- `features` array is treated as a failure: ORS always returns features for a

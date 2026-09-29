@@ -421,9 +421,14 @@ selection_seeds:
     # LIVE_CATCHMENT resolves the anchor by POI *NAME*, not id, and the three
     # binds must describe the SAME poi - seeding them independently anchors the
     # isochrone somewhere no poi exists.
+    # Seed from what the site list can actually offer (inside the region's graph
+    # bbox), or the harness exercises a click no user can make.
     selected_poi: >-
-      SELECT POI_NAME FROM FLEET_APP.CATCHMENT.VW_POIS
-      WHERE REGION = :region AND POI_NAME IS NOT NULL LIMIT 1
+      SELECT POI_NAME FROM FLEET_APP.CATCHMENT.VW_POIS p
+      WHERE REGION = :region AND POI_NAME IS NOT NULL
+        AND EXISTS (SELECT 1 FROM FLEET_APP.CORE.VW_REGION_GRAPH_BBOX g WHERE g.REGION = :region
+                    AND p.LONGITUDE BETWEEN g.MIN_LON AND g.MAX_LON AND p.LATITUDE BETWEEN g.MIN_LAT AND g.MAX_LAT)
+      ORDER BY POI_NAME LIMIT 1
     anchor_lat: >-
       SELECT LATITUDE FROM FLEET_APP.CATCHMENT.VW_POIS
       WHERE REGION = :region AND POI_NAME = :selected_poi LIMIT 1
