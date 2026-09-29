@@ -207,6 +207,17 @@ views:
       areas.closure_drawer:
         expect: may_be_empty
         reason: Needs a chosen overlap - see closure-selected-overlap-outline.
+      areas.overlaps:
+        expect: may_be_empty
+        regions: [UsTexas, UnitedStatesOfAmerica]
+        reason: >-
+          MEASURED, not assumed: a state or country estate spreads its 10 owned
+          stores hundreds of km apart, so the store and band the filters open on
+          (first store by POI_NAME, smallest band) have no surviving store in
+          reach: USA ST0002 overlaps at no band, UsTexas ST0006 only from 20 min.
+          Across all owned stores at bands 10/20/30 only 2 (USA) and 6 (UsTexas)
+          have any overlap. SanFrancisco's metro estate always overlaps and
+          stays required.
 
   mix_sourcing:
     areas:
@@ -340,9 +351,20 @@ code_views:
 # ---------------------------------------------------------------------------
 selection_seeds:
   live_asset_operations:
+    # breadcrumb_history draws the selected vehicle's EARLIER trips on its last
+    # active day, so a vehicle with one trip that day is legitimately empty. A bare
+    # LIMIT 1 picked such a vehicle on UsTexas / USA in some passes and not others;
+    # seed one whose last day in range has at least two laden trips with a path.
     selected_entity: >-
-      SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(:region, NULL::VARCHAR))
-      WHERE ENTITY_ID IS NOT NULL LIMIT 1
+      WITH j AS (
+        SELECT ENTITY_ID, START_TS FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+        WHERE ACTUAL_PATH_GEOG IS NOT NULL AND COALESCE(TRIP_KIND, 'LADEN') = 'LADEN'
+          AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ)
+          AND (:date_range_end IS NULL OR START_TS < DATEADD('day', 1, :date_range_end::TIMESTAMP_NTZ))),
+      last_day AS (SELECT ENTITY_ID, MAX(TO_DATE(START_TS)) AS d FROM j GROUP BY ENTITY_ID)
+      SELECT j.ENTITY_ID FROM j JOIN last_day l ON l.ENTITY_ID = j.ENTITY_ID AND TO_DATE(j.START_TS) = l.d
+      GROUP BY j.ENTITY_ID HAVING COUNT(*) >= 2
+      ORDER BY j.ENTITY_ID LIMIT 1
 
   dispatch_execution_board:
     selected_entity: >-
