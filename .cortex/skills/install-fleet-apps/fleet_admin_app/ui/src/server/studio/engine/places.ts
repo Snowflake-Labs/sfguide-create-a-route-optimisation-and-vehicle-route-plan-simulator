@@ -10,6 +10,9 @@
 // NO blanket region re-tag (which would steal PLACES from prior datasets and
 // break dataset versioning). Each run owns its own JOB_ID-tagged rows.
 //
+// Overture dropped the CATEGORIES column; the fine-grained category now lives
+// in TAXONOMY:primary (same vocabulary) and alternates in TAXONOMY:alternates.
+//
 // Design mirrors engine/anchors.ts: server-side INSERT...SELECT straight from
 // Overture, boundary-scoped via the shared region-source helpers, JOB_ID-stamped.
 
@@ -64,23 +67,23 @@ async function insertPlaces(
       ${sqlLit(config.region)},
       p.GEOMETRY,
       p.PHONES[0]::TEXT,
-      p.CATEGORIES:primary::TEXT,
+      p.TAXONOMY:primary::TEXT,
       p.NAMES:primary::TEXT,
       p.ADDRESSES[0],
-      COALESCE(p.CATEGORIES:alternate:list, ARRAY_CONSTRUCT()),
+      COALESCE(p.TAXONOMY:alternates, ARRAY_CONSTRUCT()),
       ${sqlLit(jobId)}
     FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
       LEFT JOIN region_boundary rb ON TRUE
     WHERE p.GEOMETRY IS NOT NULL
-      AND p.CATEGORIES:primary IS NOT NULL
+      AND p.TAXONOMY:primary IS NOT NULL
       AND ${spatialFilter('p.GEOMETRY', config.bbox)}
     QUALIFY ROW_NUMBER() OVER (
-              PARTITION BY p.CATEGORIES:primary::TEXT,
+              PARTITION BY p.TAXONOMY:primary::TEXT,
                            H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${h3Res})
               ORDER BY RANDOM()
             ) <= ${PLACES_CAP_PER_CATEGORY_CELL}
        AND ROW_NUMBER() OVER (
-              PARTITION BY p.CATEGORIES:primary::TEXT
+              PARTITION BY p.TAXONOMY:primary::TEXT
               ORDER BY RANDOM()
             ) <= ${PLACES_CAP_PER_CATEGORY}`;
   const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
