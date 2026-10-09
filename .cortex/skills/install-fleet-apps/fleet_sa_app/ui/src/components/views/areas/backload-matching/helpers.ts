@@ -78,6 +78,9 @@ export interface Assignment {
   // pickup (out) and last task stop -> tour end (back). EMPTY_KM is their sum.
   EMPTY_OUT_KM?: number;
   EMPTY_BACK_KM?: number;
+  // Proc-reported return km (last delivery -> tour end) on a collected plan,
+  // before the road refinement fills EMPTY_BACK_KM. Read via returnLegKm().
+  RETURN_KM?: number;
   // Reposition baseline the vehicle would have driven empty anyway (idle -> end),
   // from computeEmptyLegBaselines (real ORS matrix, haversine/fixed fallback).
   // SAVED_KM = max(0, BASELINE_EMPTY_KM - EMPTY_KM) and is only meaningful when
@@ -370,6 +373,30 @@ export type EmptyLegBaseline = {
 
 const FIXED_OPEN_KM = 200;
 
+/** Default absolute deviation allowance. Mirrors MATCH_PARAMS.DEVIATION_ALLOWANCE_KM. */
+export const DEVIATION_ALLOWANCE_KM_DEFAULT = 300;
+
+/**
+ * Per-vehicle VROOM tour caps. The SAME rule lives in TOOL_BACKLOAD_SOLVE's
+ * buildChallenge (check_backload_caps_parity.py keeps them together).
+ *
+ * A pure percentage of the baseline is undefined for a vehicle already at its
+ * end point (baseline 0): it collapsed to the old 10 km / 1800 s floors and the
+ * deviation slider did nothing for ~39% of the pool. The absolute allowance is
+ * what such a vehicle gets; everyone else gets percentage + allowance.
+ */
+export function vehicleTourCaps(
+  base: EmptyLegBaseline,
+  opts: { deviationPct: number; detourSlackHrs: number; allowanceKm: number; kmh: number },
+): { max_distance: number; max_travel_time: number } {
+  const allowanceKm = Math.max(0, opts.allowanceKm);
+  const speed = opts.kmh > 0 ? opts.kmh : KMH_DEFAULT;
+  return {
+    max_distance: Math.round(base.distMeters * (1 + opts.deviationPct / 100) + allowanceKm * 1000),
+    max_travel_time: Math.round(base.durSec + opts.detourSlackHrs * 3600 + (allowanceKm / speed) * 3600),
+  };
+}
+
 function fixedOpenBaseline(kmh = KMH_DEFAULT, homeRangeKm = FIXED_OPEN_KM): EmptyLegBaseline {
   const km = homeRangeKm > 0 ? homeRangeKm : FIXED_OPEN_KM;
   const speed = kmh > 0 ? kmh : KMH_DEFAULT;
@@ -444,7 +471,10 @@ export async function computeEmptyLegBaselines(
     const costRow = matrix.costs[spec.startIdx];
     const dur = durRow ? Number(durRow[spec.endIdx]) : NaN;
     const dist = costRow ? Number(costRow[spec.endIdx]) : NaN;
-    if (Number.isFinite(dur) && Number.isFinite(dist) && dur > 0 && dist > 0) {
+    // A vehicle already at its end point has a TRUE matrix cell of 0/0. That is
+    // a measurement, not a miss: rejecting it fell through to a haversine floor
+    // and the caps built on this baseline collapsed to their minimums.
+    if (Number.isFinite(dur) && Number.isFinite(dist) && dur >= 0 && dist >= 0) {
       out.set(spec.trailer, { durSec: Math.round(dur), distMeters: Math.round(dist), source: 'matrix' });
     } else {
       out.set(spec.trailer, haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat, kmh));
@@ -493,6 +523,16 @@ export function applyBaseline(a: Assignment, base: EmptyLegBaseline | undefined)
  * on arrival. Threshold matches `samePlace`, the same tolerance fetchBaselineLeg
  * uses to decide it has nothing to route.
  */
+/**
+ * Empty km from the last delivery to where the tour ends. The road-refined leg
+ * wins; a collected plan shows the solver's figure until it arrives. Named on
+ * the card so a mid-tour delivery never reads as the final destination.
+ */
+export function returnLegKm(a: Assignment): number | undefined {
+  if (a.EMPTY_BACK_KM !== undefined && a.EMPTY_BACK_KM > 0) return a.EMPTY_BACK_KM;
+  return a.RETURN_KM !== undefined && a.RETURN_KM > 0 ? a.RETURN_KM : undefined;
+}
+
 export function isAtEndBaseline(a: Assignment): boolean {
   if (a.END_LON === undefined || a.END_LAT === undefined) return false;
   return samePlace(

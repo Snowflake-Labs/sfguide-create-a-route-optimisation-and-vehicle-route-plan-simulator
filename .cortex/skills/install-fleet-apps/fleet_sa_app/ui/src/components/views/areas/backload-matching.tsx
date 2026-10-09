@@ -39,6 +39,7 @@ import {
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
   deriveSavedKm, applyBaseline, samePlace, backfillFromLoadPool,
+  vehicleTourCaps, DEVIATION_ALLOWANCE_KM_DEFAULT, returnLegKm,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
   type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
@@ -120,6 +121,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   const [maxStops, setMaxStops] = useState(2);
   const [detourSlackHrs, setDetourSlackHrs] = useState(4);
   const [deviationPct, setDeviationPct] = useState(200);
+  const [deviationAllowanceKm, setDeviationAllowanceKm] = useState(DEVIATION_ALLOWANCE_KM_DEFAULT);
   const [internalFirstWeight, setInternalFirstWeight] = useState(90);
   const [windowSlackHrs, setWindowSlackHrs] = useState(2);
   const [endMode, setEndMode] = useState<EndMode>('home');
@@ -561,11 +563,17 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // Claim before the await: this effect reruns on `assignments`, which the
     // enrichment itself replaces, and an unclaimed rerun would refetch forever.
     for (const a of pending) enrichedKeysRef.current.add(a.ASSIGNMENT_ID);
-    let cancelled = false;
+    // Commit UNCONDITIONALLY. This used to be skipped when the effect was
+    // cancelled, but `assignments` changes mid-fetch (the baseline pass and the
+    // load-pool backfill both replace the array), which cancelled this run, and
+    // the re-run returned early because the ids were already claimed. The legs
+    // were mutated onto the objects with no render after the LAST one landed -
+    // and the return leg is fetched last, so DIRECTIONS succeeded and the black
+    // dashed leg never appeared. Committing a copy is safe after a re-collection
+    // too: those are new objects, so the stale ones are not in `prev`.
     enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {
-      if (!cancelled) setAssignments((prev) => [...prev]);
+      setAssignments((prev) => [...prev]);
     });
-    return () => { cancelled = true; };
   }, [assignments, cfg, vehicleClass, enrichGeometry]);
 
   // Where a tour is required to finish, per the End radio group. Component scope
@@ -667,14 +675,13 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // effect reruns on `assignments`, which the enrichment itself replaces.
     if (retriedGeomRef.current.has(selectedAssignment)) return;
     retriedGeomRef.current.add(selectedAssignment);
-    let cancelled = false;
     setGeomRetrying(true);
+    // Unconditional commit, same reason as the rehydrate pass above: a cancel
+    // here dropped the render AND left geomRetrying stuck on true.
     enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {
-      if (cancelled) return;
       setGeomRetrying(false);
       setAssignments((prev) => [...prev]);
-    }).catch(() => { if (!cancelled) setGeomRetrying(false); });
-    return () => { cancelled = true; };
+    }).catch(() => { setGeomRetrying(false); });
   }, [selectedAssignment, assignments, cfg, vehicleClass, enrichGeometry]);
 
 
@@ -769,8 +776,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         // straight through made the slider's own "1 = pure backload" setting
         // unsatisfiable (one task cannot hold a pickup and its delivery).
         max_tasks: maxStops * 2,
-        max_travel_time: Math.max(1800, base.durSec + Math.round(detourSlackHrs * 3600)),
-        max_distance: Math.max(10_000, Math.round(base.distMeters * (1 + deviationPct / 100))),
+        ...vehicleTourCaps(base, { deviationPct, detourSlackHrs, allowanceKm: deviationAllowanceKm, kmh: speedKmh }),
         costs: { fixed: Math.round(fixedDispatchUsd * COST_SCALE), per_km: Math.round(effPerKmUsd * COST_SCALE) },
       };
       if (endPt) veh.end = endPt;
@@ -1262,7 +1268,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     const excludedNote = excludedLabels.length
       ? ` Excluded ${excludedLabels.length} unroutable stop(s): ${excludedLabels.slice(0, 6).join('; ')}${excludedLabels.length > 6 ? ` (+${excludedLabels.length - 6} more)` : ''}.`
       : '';
-    setSolverLog(`Sent ${workVehicles.length} vehicles, ${workShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external).${excludedNote} Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
+    setSolverLog(`Sent ${workVehicles.length} vehicles, ${workShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%+${deviationAllowanceKm}km, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external).${excludedNote} Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
 
     if (vroomError) {
       setSolveError(`Routing gateway / VROOM error: ${vroomError}`);
@@ -1281,7 +1287,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     setSolving(false);
   }, [
     trailers, internal, external, cfg, vehicleClass, vehicleClassError,
-    maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct,
+    maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct, deviationAllowanceKm,
     internalFirstWeight, windowSlackHrs, endMode, sharedDestLon, sharedDestLat,
     costPerHourUsd, costPerKmUsd, fixedDispatchUsd, costPerDeliveryUsd, internalRatePerKm,
     enforceDriverBreak, breakAfterHrs, breakLengthMin, enforceShift, shiftLengthHrs,
@@ -1498,7 +1504,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
             : (a.NET_BENEFIT_USD !== undefined
                 ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
                 : '');
-          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(returnLegKm(a) || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
         });
     // Bound by CHARACTERS, not by row count. MAX_TRIPS caps rows, but 12 rows of
     // tour prose measured 3,627 chars - over the consumer's whole-panel budget in
@@ -1846,6 +1852,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         {slider('Max loads per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks (set to 2x this value, since each shipment is a pickup task plus a delivery task)', maxStops, setMaxStops, 1, 6)}
         {slider('Detour budget', "Extra hours allowed on top of each trailer's empty drive home. Adds linearly per vehicle.\n\nVROOM field: vehicle.max_travel_time", detourSlackHrs, setDetourSlackHrs, 0, 12, 1, ' h', '+')}
         {slider('Allowed deviation', "Distance cap as a percentage above each trailer's empty drive home. 200% = tour may be up to 3x the empty distance.\n\nVROOM field: vehicle.max_distance", deviationPct, setDeviationPct, 0, 500, 10, '%', '+')}
+        {slider('Deviation allowance', "Absolute km added on top of the percentage cap (and the matching drive time added to the detour budget). A trailer already at its end point has a zero baseline, so this allowance is its whole cap - without it the percentage would multiply zero.\n\nVROOM fields: vehicle.max_distance, vehicle.max_travel_time", deviationAllowanceKm, setDeviationAllowanceKm, 0, 1500, 50, ' km', '+')}
         {slider('Internal-first', 'Bias toward internal volumes vs external offers. 100 = always internal first, 50 = equal, 0 = always external first.\n\nVROOM field: job.priority', internalFirstWeight, setInternalFirstWeight, 0, 100)}
         {slider('Window slack', 'Widens every pickup/delivery time window by this many hours so the solver has more flexibility.\n\nVROOM field: job.time_windows', windowSlackHrs, setWindowSlackHrs, 0, 12, 1, ' h', '\u00b1')}
         <div style={{ minWidth: 220 }}>

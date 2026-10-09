@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Assignment, ROUTE_COLORS, placeLabel, isAtEndBaseline } from './helpers';
+import { Assignment, ROUTE_COLORS, placeLabel, isAtEndBaseline, returnLegKm } from './helpers';
 import InfoTip from './InfoTip';
 
 interface Props {
@@ -95,11 +95,20 @@ export default function AssignmentList({
                 adds {Math.round(a.EMPTY_KM)} km empty
               </div>
             )}
-            {(a.DETOUR_KM !== undefined || a.SAVED_KM !== undefined) && (
+            {returnLegKm(a) !== undefined && (
               <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
-                {a.DETOUR_KM !== undefined ? `detour +${Math.round(a.DETOUR_KM)} km vs reposition baseline` : ''}
+                after the last delivery: {Math.round(returnLegKm(a) as number)} km empty to the tour end
+              </div>
+            )}
+            {/* With a 0 km baseline "detour vs reposition baseline" can only
+                restate the added empty km above, and a per-hop figure from an
+                older collected plan contradicted it outright ("adds 1123 km"
+                beside "+0 km"). The at-end line is the whole story there. */}
+            {((a.DETOUR_KM !== undefined && !isAtEndBaseline(a)) || a.SAVED_KM !== undefined) && (
+              <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-secondary, #6b7280)' }}>
+                {a.DETOUR_KM !== undefined && !isAtEndBaseline(a) ? `detour +${Math.round(a.DETOUR_KM)} km vs reposition baseline` : ''}
                 {a.SAVED_KM !== undefined
-                  ? `${a.DETOUR_KM !== undefined ? ' \u00b7 ' : ''}deadhead avoided ~${Math.round(a.SAVED_KM)} km`
+                  ? `${a.DETOUR_KM !== undefined && !isAtEndBaseline(a) ? ' \u00b7 ' : ''}deadhead avoided ~${Math.round(a.SAVED_KM)} km`
                   : ''}
                 {a.BASELINE_EMPTY_KM !== undefined && (
                   <InfoTip text={`Baseline = the ${Math.round(a.BASELINE_EMPTY_KM)} km this vehicle would have driven empty anyway from its idle location to its end point (source: ${a.BASELINE_SOURCE ?? 'unknown'}). Deadhead avoided = baseline minus the ${Math.round(a.EMPTY_KM)} km actually driven empty on this tour, so it can never exceed the reposition it replaces.`} />
