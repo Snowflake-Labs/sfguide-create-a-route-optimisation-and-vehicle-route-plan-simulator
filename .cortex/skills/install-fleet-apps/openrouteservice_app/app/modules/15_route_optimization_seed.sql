@@ -165,16 +165,16 @@ BEGIN
             :REGION_KEY,
             p.GEOMETRY,
             p.PHONES[0]::TEXT,
-            p.CATEGORIES:primary::TEXT,
+            p.TAXONOMY:primary::TEXT,
             p.NAMES:primary::TEXT,
             p.ADDRESSES[0],
-            COALESCE(p.CATEGORIES:alternate:list, ARRAY_CONSTRUCT())
+            COALESCE(p.TAXONOMY:alternates, ARRAY_CONSTRUCT())
         FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
         LEFT JOIN region_boundary rb ON TRUE
         WHERE ST_X(p.GEOMETRY) BETWEEN :min_lon AND :max_lon
           AND ST_Y(p.GEOMETRY) BETWEEN :min_lat AND :max_lat
           AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
-          AND p.CATEGORIES:primary IS NOT NULL;
+          AND p.TAXONOMY:primary IS NOT NULL;
     END IF;
 
     DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE REGION = :REGION_KEY;
