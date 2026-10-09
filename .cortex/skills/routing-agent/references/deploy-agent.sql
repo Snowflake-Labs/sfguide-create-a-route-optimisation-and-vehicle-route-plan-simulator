@@ -3196,6 +3196,10 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VA
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT, FLOAT);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT);
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE(
     P_STRATEGY     VARCHAR DEFAULT NULL,
     P_MAX_VEHICLES FLOAT   DEFAULT NULL,
@@ -3204,7 +3208,11 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_BACKLOAD_SOLVE
     P_LIMIT        FLOAT   DEFAULT NULL,
     P_GRANULARITY  VARCHAR DEFAULT NULL,
     P_TRAILER_ID   VARCHAR DEFAULT NULL,
-    P_TIME_BUDGET_S FLOAT  DEFAULT NULL
+    P_TIME_BUDGET_S FLOAT  DEFAULT NULL,
+    P_MAX_DEVIATION_PCT      FLOAT DEFAULT NULL,
+    P_DEVIATION_ALLOWANCE_KM FLOAT DEFAULT NULL,
+    P_DETOUR_BUDGET_HRS      FLOAT DEFAULT NULL,
+    P_MAX_LOADS_PER_VEHICLE  FLOAT DEFAULT NULL
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -3413,9 +3421,9 @@ try {
     // truck. Deliberately NOT wrapped in try/catch: a renamed column must fail
     // loudly here rather than degrade to "class profile missing".
     var clsRows = rowsOf(
-        "SELECT ORS_PROFILE, PAYLOAD_KG_TYP, COST_PER_KM, LABEL_NOUN "
+        "SELECT ORS_PROFILE, PAYLOAD_KG_TYP, COST_PER_KM, LABEL_NOUN, AVG_SPEED_KMH "
       + "FROM FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = ? LIMIT 1",
-        [vehicleType], ['ORS_PROFILE', 'PAYLOAD_KG_TYP', 'COST_PER_KM', 'LABEL_NOUN']);
+        [vehicleType], ['ORS_PROFILE', 'PAYLOAD_KG_TYP', 'COST_PER_KM', 'LABEL_NOUN', 'AVG_SPEED_KMH']);
     var cls = clsRows.length ? clsRows[0] : null;
     if (!cls) {
         return { status: 'FAILED', reason: 'DATA_NOT_PROVISIONED', region: region,
@@ -3482,6 +3490,40 @@ try {
     var maxPairsPerTrailer = Math.max(1, Math.min(2000,
         Math.floor(param('MAX_CANDIDATE_PAIRS_PER_TRAILER', 50))));
     var maxStops   = Math.max(2, param('BPMP_MAX_STOPS', 4));
+    // Per-vehicle tour caps. The SAME rule as the app's vehicleTourCaps
+    // (helpers.ts); check_backload_caps_parity.py keeps the two together.
+    // Before this the agent path sent max_tasks ONLY, so a CoWork solve was
+    // unbounded on tour length whatever the user asked for. A percentage of a
+    // zero baseline (vehicle already at its end point) is meaningless, so the
+    // absolute allowance is added on top rather than used as a floor.
+    function argOr(v, dflt, lo, hi) {
+        return finite(v) && Number(v) >= lo ? Math.min(hi, Number(v)) : dflt;
+    }
+    var deviationPct   = argOr(P_MAX_DEVIATION_PCT, param('MAX_DEVIATION_PCT', 200), 0, 1000);
+    var allowanceKm    = argOr(P_DEVIATION_ALLOWANCE_KM, param('DEVIATION_ALLOWANCE_KM', 300), 0, 5000);
+    var detourSlackHrs = argOr(P_DETOUR_BUDGET_HRS, param('DETOUR_BUDGET_HRS', 4), 0, 48);
+    if (finite(P_MAX_LOADS_PER_VEHICLE) && Number(P_MAX_LOADS_PER_VEHICLE) >= 1) {
+        maxStops = Math.min(20, Math.floor(Number(P_MAX_LOADS_PER_VEHICLE)));
+    }
+    var fixedDispatchUsd = param('FIXED_DISPATCH_USD', 140);
+    var capSpeedKmh = num(cls.AVG_SPEED_KMH) || 60;
+    function vehicleTourCaps(baseMeters, baseSec) {
+        return {
+            max_distance: Math.round(baseMeters * (1 + deviationPct / 100) + allowanceKm * 1000),
+            max_travel_time: Math.round(baseSec + detourSlackHrs * 3600 + (allowanceKm / capSpeedKmh) * 3600)
+        };
+    }
+    // Reported verbatim so the answer can only claim constraints that were sent.
+    // The baseline here is haversine EMPTY -> NEXT_START (the same km parseSolve
+    // reports as the reposition baseline), so it is a little tighter than the
+    // app's road-matrix baseline.
+    var appliedCaps = {
+        max_loads_per_vehicle_bpmp: maxStops, max_loads_per_vehicle_vrp: 1,
+        max_deviation_pct: deviationPct, deviation_allowance_km: allowanceKm,
+        detour_budget_hrs: detourSlackHrs, fixed_dispatch_usd: fixedDispatchUsd,
+        baseline: 'haversine idle -> next start',
+        rule: 'max_distance = baseline_km*(1+pct/100) + allowance_km; max_travel_time = baseline_time + detour_budget_hrs + allowance_km/avg_speed'
+    };
     var IDEAL_SLACK_HRS = 24;
 
     // Region-scoped feeds. Deterministic ORDER BY so the same request returns the
@@ -3652,6 +3694,8 @@ try {
             if (isBad(num(t.NEXT_START_LON), num(t.NEXT_START_LAT))) continue;
             var vid = vehicles.length + 1;
             idToTrailer[vid] = t;
+            var baseM = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT)) * 1000;
+            var caps = vehicleTourCaps(baseM, (baseM / 1000) / capSpeedKmh * 3600);
             vehicles.push({
                 id: vid, profile: profile,
                 start: [num(t.EMPTY_LON), num(t.EMPTY_LAT)],
@@ -3659,7 +3703,9 @@ try {
                 capacity: [num(t.MAX_PAYLOAD_KG) || classCapacityKg],
                 skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
                 max_tasks: maxLoadsPerVehicle * 2,
-                costs: { fixed: 140 * COST_SCALE, per_km: Math.round(effPerKm * COST_SCALE) }
+                max_distance: caps.max_distance,
+                max_travel_time: caps.max_travel_time,
+                costs: { fixed: Math.round(fixedDispatchUsd * COST_SCALE), per_km: Math.round(effPerKm * COST_SCALE) }
             });
         }
         var idToLoad = {}, shipments = [], nextId = 1000;
@@ -3785,6 +3831,26 @@ try {
             var t = idToTrailer[Number(route.vehicle)];
             if (!t) continue;
             var steps = route.steps && route.steps.length ? route.steps : [];
+            // Tour-level figures, computed ONCE per route. Per-row DETOUR_KM below
+            // is per pickup (empty to it + its delivery home - base) and stays as
+            // the scorer's ranking cost, but a multi-load tour's row then carried
+            // one hop's detour: the screenshot's 2-load V-DRI-00010 plan published
+            // detour_km 102.5 on a ~1,100 km tour. These are what a card reports.
+            var routeKm = 0, prevLon = num(t.EMPTY_LON), prevLat = num(t.EMPTY_LAT);
+            for (var si0 = 0; si0 < steps.length; si0++) {
+                var stp = steps[si0];
+                if (stp.type !== 'pickup' && stp.type !== 'delivery') continue;
+                var sl = idToLoad[Number(stp.id)];
+                if (!sl) continue;
+                var sLon = num(stp.type === 'pickup' ? sl.PICKUP_LON : sl.DELIVERY_LON);
+                var sLat = num(stp.type === 'pickup' ? sl.PICKUP_LAT : sl.DELIVERY_LAT);
+                routeKm += haversineKm(prevLon, prevLat, sLon, sLat);
+                prevLon = sLon; prevLat = sLat;
+            }
+            var routeReturnKm = haversineKm(prevLon, prevLat, num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+            routeKm += routeReturnKm;
+            var routeBaseKm = haversineKm(num(t.EMPTY_LON), num(t.EMPTY_LAT), num(t.NEXT_START_LON), num(t.NEXT_START_LAT));
+            var routeDetourKm = Math.max(0, routeKm - routeBaseKm);
             var seq = 0;
             for (var si2 = 0; si2 < steps.length; si2++) {
                 if (steps[si2].type !== 'pickup') continue;
@@ -3801,6 +3867,7 @@ try {
                     TRAILER_ID: t.TRAILER_ID, LOAD_ID: l.LOAD_ID, DISTANCE_BASIS: basis,
                     EMPTY_KM: emptyKm, LOADED_KM: loadedKm,
                     DETOUR_KM: Math.max(0, totalKm - loadedKm - baseKm), TOTAL_KM: totalKm,
+                    TOUR_DETOUR_KM: routeDetourKm, RETURN_KM: routeReturnKm,
                     PICKUP_SLACK_HRS: null, FEASIBLE: true, STOP_SEQ: (fam === 'bpmp' ? seq : null),
                     PICKUP_LON: num(l.PICKUP_LON), PICKUP_LAT: num(l.PICKUP_LAT),
                     DELIVERY_LON: num(l.DELIVERY_LON), DELIVERY_LAT: num(l.DELIVERY_LAT),
@@ -3997,7 +4064,7 @@ try {
                            proposals: 0, vehicles_matched: 0, excluded_unroutable: excludedTotal },
                  proposals: [], totals: {},
                  strategies_run: familiesRun, families_skipped: familiesSkipped,
-                 degraded: degradedNote, elapsed_s: elapsedS(),
+                 degraded: degradedNote, elapsed_s: elapsedS(), applied_caps: appliedCaps,
                  note: 'No proposals were produced. Every candidate pair was either ineligible or unroutable.' };
     }
 
@@ -4104,6 +4171,9 @@ try {
             loadConsensus: lCons, loadConsensusOf: lConsOf,
             emptyKm: emptyKm, loadedKm: loadedKm, loadedKmEst: loadedKmEst,
             detourKm: detourKm, totalKm: totalKm, pickupSlackHrs: slack,
+            // From the winning row, not min'd across rows: both describe ONE tour.
+            tourDetourKm: finite(best.TOUR_DETOUR_KM) ? Number(best.TOUR_DETOUR_KM) : null,
+            returnKm: finite(best.RETURN_KM) ? Number(best.RETURN_KM) : null,
             maxStopSeq: (best.TRAILER_ID in trailerStops) ? trailerStops[best.TRAILER_ID] : null,
             idleHours: (best.TRAILER_ID in idleHrsByTrailer) ? idleHrsByTrailer[best.TRAILER_ID] : null,
             feasible: feasible, isInternal: best.IS_INTERNAL === true, source: best.SOURCE,
@@ -4206,7 +4276,8 @@ try {
                 trailerConsensus: y.trailerConsensus, trailerConsensusOf: y.trailerConsensusOf,
                 loadConsensus: y.loadConsensus, loadConsensusOf: y.loadConsensusOf,
                 emptyKm: y.emptyKm, loadedKm: y.loadedKm, loadedKmEst: y.loadedKmEst,
-                detourKm: y.detourKm, totalKm: y.totalKm, marginUsd: econMargin(y),
+                detourKm: y.detourKm, tourDetourKm: y.tourDetourKm, returnKm: y.returnKm,
+                totalKm: y.totalKm, marginUsd: econMargin(y),
                 pickupSlackHrs: y.pickupSlackHrs, maxStopSeq: y.maxStopSeq, idleHours: y.idleHours,
                 feasible: y.feasible, isInternal: y.isInternal, source: y.source, product: y.product,
                 pickupCity: y.pickupCity, pickupCountry: y.pickupCountry,
@@ -4222,6 +4293,7 @@ try {
             granularity: granularity, label_noun: cls.LABEL_NOUN || 'vehicle',
             strategies_run: familiesRun,
             trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
+        applied_caps: appliedCaps,
             counts: {
                 vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
                  eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
@@ -4259,6 +4331,10 @@ try {
             empty_km: (o.emptyKm === null) ? null : Math.round(o.emptyKm * 10) / 10,
             loaded_km: (econLoaded(o) === null) ? null : Math.round(econLoaded(o) * 10) / 10,
             detour_km: (o.detourKm === null) ? null : Math.round(o.detourKm * 10) / 10,
+            // Whole-tour km above the reposition baseline, and the post-delivery
+            // return leg. A card reads these; detour_km is the per-pair ranking cost.
+            tour_detour_km: (o.tourDetourKm === null || o.tourDetourKm === undefined) ? null : Math.round(o.tourDetourKm * 10) / 10,
+            return_km: (o.returnKm === null || o.returnKm === undefined) ? null : Math.round(o.returnKm * 10) / 10,
             // 2dp, not integer. Whole dollars were adequate while every margin
             // was priced at truck rates; on ebike rates a real 0.28 USD margin
             // rounds to 0 and the column reads as though the economics were
@@ -4280,6 +4356,7 @@ try {
         // budget it used. elapsed_s next to time_budget_s is what makes a
         // truncated run legible without reading families_skipped.
         trailer_id: trailerId, time_budget_s: timeBudgetS, elapsed_s: elapsedS(), elapsed_feed_s: feedElapsedS,
+        applied_caps: appliedCaps,
         counts: {
             vehicles: trailers.length, loads: loads.length, eligible_pairs: eligibleCount, eligible_pairs_used: eligibleUsed,
                  eligible_pairs_capped: eligibleCapped, max_candidate_pairs_per_trailer: maxPairsPerTrailer,
