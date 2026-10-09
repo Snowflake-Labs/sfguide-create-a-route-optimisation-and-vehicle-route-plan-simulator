@@ -35,7 +35,8 @@ env/
 
 # Node / React
 node_modules/
-package-lock.json
+# package-lock.json is committed: the installer runs `npm ci`, which refuses to
+# run without one, so ignoring it broke every fresh clone.
 tsconfig.tsbuildinfo
 
 # Distribution
