@@ -744,6 +744,17 @@ fi
 # by free time, so it returns the LONGEST-IDLE vehicle and answers about a
 # different truck without saying so. Both regressions leave a proc that compiles
 # and returns correct numbers on a small warm region, which is why this is a gate.
+# Both backload solve paths (page + TOOL_BACKLOAD_SOLVE) must send the same
+# VROOM tour caps; the agent path once sent max_tasks only.
+BACKLOAD_CAPS_CHECK="$SKILL_DIR/scripts/check_backload_caps_parity.py"
+if [ -f "$BACKLOAD_CAPS_CHECK" ]; then
+  echo "pre-commit: backload caps parity check..."
+  python3 "$BACKLOAD_CAPS_CHECK" || {
+    echo "pre-commit FAILED: the agent and page backload solves no longer send the same caps."
+    exit 1
+  }
+fi
+
 BACKLOAD_BUDGET_CHECK="$SKILL_DIR/scripts/check_backload_budget.py"
 if [ -f "$BACKLOAD_BUDGET_CHECK" ]; then
   echo "pre-commit: backload solve budget + vehicle-scope check..."

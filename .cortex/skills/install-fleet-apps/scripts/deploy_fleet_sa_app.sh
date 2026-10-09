@@ -198,6 +198,19 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: dash units gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${BACKLOAD_CAPS_VERIFY:-1}" != "0" ]; then
+    # The page and TOOL_BACKLOAD_SOLVE each build the VROOM challenge. The agent
+    # path sent max_tasks ONLY, so a CoWork solve was unbounded on tour length
+    # and an answer claimed a deviation cap that was never passed. Also asserts
+    # a zero baseline (vehicle at its end point) is accepted and that the caps
+    # add an allowance instead of collapsing to a 10 km floor.
+    CAPS_GATE="$SKILL_DIR/scripts/check_backload_caps_parity.py"
+    if [ -f "$CAPS_GATE" ]; then
+      echo "[1/7] Verify both backload solve paths send the same tour caps..."
+      python3 "$CAPS_GATE" \
+        || { echo "ERROR: backload caps parity gate failed (see above)."; exit 1; }
+    fi
+  fi
   if [ "${BACKLOAD_MEMO_VERIFY:-1}" != "0" ]; then
     # What the agent can see of a solved plan is one bounded string per panel, and
     # the chat route trims by WHOLE PANEL. A memo that outgrows the budget is

@@ -167,6 +167,38 @@ MUTATIONS: list[tuple[str, str, dict[str, object]]] = [
          "    if (prev && samePlace(prev, [Number(lon), Number(lat)])) continue;",
          "    if (prev && prev[0] === Number(lon) && prev[1] === Number(lat)) continue;",
          "M25")}),
+
+    # ---- RULE L: unconditional geometry commit + the return layer is drawn.
+    ("M26", "the rehydrate commit is gated on `cancelled` again",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      setAssignments((prev) => [...prev]);",
+         "    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      if (!cancelled) setAssignments((prev) => [...prev]);",
+         "M26")}),
+    ("M27", "the retry commit returns early on `cancelled` BESIDE the commit",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "    enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      setGeomRetrying(false);",
+         "    enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      if (cancelled) return;\n      setGeomRetrying(false);",
+         "M27")}),
+    ("M28", "the rehydrate pass stops committing at all",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      setAssignments((prev) => [...prev]);",
+         "    enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {\n"
+         "      void 0;",
+         "M28")}),
+    ("M29", "the return leg layer is no longer pushed",
+     {REL_VIEW: lambda s: sub(
+         s,
+         "      if (selected.EMPTY_RETURN_GEOJSON) result.push(dashed('empty-ret-sel', selected.EMPTY_RETURN_GEOJSON));",
+         "",
+         "M29")}),
 ]
 
 
