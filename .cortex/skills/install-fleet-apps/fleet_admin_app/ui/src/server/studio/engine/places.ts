@@ -114,37 +114,37 @@ async function insertLookup(
     SELECT ${r}, 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
         ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
         ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
-        ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
+        ARRAY_CONSTRUCT('hospital', 'family_practice', 'general_dentistry', 'pharmacy'),
         ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge'),
         NULL,
-        ARRAY_CONSTRUCT('warehouses', 'medical_supply', 'storage_facility'),
+        ARRAY_CONSTRUCT('warehouse', 'medical_supply_store', 'storage_facility'),
         'Supplier Depot', ${j}
     UNION ALL
     SELECT ${r}, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
         ARRAY_CONSTRUCT('food vegetables meat'),
         ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
-        ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
+        ARRAY_CONSTRUCT('grocery_store', 'restaurant', 'butcher_shop'),
         ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
         NULL,
-        ARRAY_CONSTRUCT('warehouses', 'food_beverage_service_distribution', 'storage_facility'),
+        ARRAY_CONSTRUCT('warehouse', 'food_beverage_distributor', 'storage_facility'),
         'Distribution Depot', ${j}
     UNION ALL
     SELECT ${r}, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
         ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
         ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
-        ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
+        ARRAY_CONSTRUCT('grocery_store', 'outlet_store', 'fashion_and_apparel_store'),
         ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
         NULL,
-        ARRAY_CONSTRUCT('warehouses', 'distribution_services', 'storage_facility'),
+        ARRAY_CONSTRUCT('warehouse', 'distribution_service', 'storage_facility'),
         'Distribution Centre', ${j}
     UNION ALL
     SELECT ${r}, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
         ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
         ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
-        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
+        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'grocery_store', 'convenience_store'),
         ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'),
         NULL,
-        ARRAY_CONSTRUCT('warehouses', 'brewery', 'distillery', 'winery'),
+        ARRAY_CONSTRUCT('warehouse', 'brewery', 'distillery', 'winery'),
         'Distribution Depot', ${j}
     UNION ALL
     SELECT ${r}, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
