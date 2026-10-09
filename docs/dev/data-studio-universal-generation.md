@@ -190,7 +190,7 @@ Reusable facts for shaping the new generators' SQL (validated in prior Overture 
 | Field | Access | Notes |
 |---|---|---|
 | Name | `NAMES:primary::VARCHAR` | |
-| Category | `BASIC_CATEGORY` (preferred filter), `CATEGORIES:primary` | anchors: `pharmacy`, `hospital`, `health`/`social_facility` families |
+| Category | `BASIC_CATEGORY` (preferred filter), `TAXONOMY:primary` (the old `CATEGORIES` column was removed upstream) | anchors: `pharmacy`, `hospital`, `health`/`social_facility` families |
 | Geometry | `GEOMETRY` | `ST_X(GEOMETRY)`=lon, `ST_Y(GEOMETRY)`=lat |
 | Address | `ADDRESSES[0]:freeform / :locality / :region / :postcode` | `:region` = state |
 | Confidence | `CONFIDENCE` | the SV exposes AVG/MIN/MAX of this |
