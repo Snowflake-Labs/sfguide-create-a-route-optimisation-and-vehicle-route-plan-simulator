@@ -106,6 +106,43 @@ export const backload_solve = defineProc({
         'Raise it only for a deliberately large batch; for a faster answer prefer ' +
         'trailer_id or a single strategy over lowering it.',
       ),
+    // Tour constraints. Before these the agent path sent max_tasks ONLY, so a
+    // constraint stated in chat changed nothing and an answer could claim
+    // compliance with a cap that was never passed. applied_caps in the result
+    // is the record of what was actually enforced.
+    max_deviation_pct: t
+      .number()
+      .nullable()
+      .describe(
+        'Tour distance cap per vehicle as a percentage ABOVE its reposition baseline ' +
+        '(idle location -> next start). Default MATCH_PARAMS.MAX_DEVIATION_PCT (200), ' +
+        'clamped 0..1000. Added to deviation_allowance_km, never used alone: a vehicle ' +
+        'already at its end point has a zero baseline, so only the allowance bounds it.',
+      ),
+    deviation_allowance_km: t
+      .number()
+      .nullable()
+      .describe(
+        'Absolute km added to every vehicle\'s distance cap (and its drive time to the ' +
+        'time cap). Default MATCH_PARAMS.DEVIATION_ALLOWANCE_KM (300), clamped 0..5000. ' +
+        'Pass the user\'s km limit here when they state one, e.g. "no more than 300 km ' +
+        'out of the way" -> deviation_allowance_km=300 with max_deviation_pct=0.',
+      ),
+    detour_budget_hrs: t
+      .number()
+      .nullable()
+      .describe(
+        'Extra drive hours allowed on top of each vehicle\'s reposition time. Default ' +
+        'MATCH_PARAMS.DETOUR_BUDGET_HRS (4), clamped 0..48.',
+      ),
+    max_loads_per_vehicle: t
+      .number()
+      .nullable()
+      .describe(
+        'Most loads ONE vehicle may carry in the profit-max (bpmp) strategy. NOT the same ' +
+        'as max_loads, which sizes the candidate POOL. Default MATCH_PARAMS.BPMP_MAX_STOPS ' +
+        '(4), clamped 1..20. The per-load and fleet strategies always carry 1.',
+      ),
   },
   returns: {
     result: t.object({}).describe(
@@ -131,7 +168,12 @@ export const backload_solve = defineProc({
       'stopped it. If degraded says no road-graph strategy produced a plan, the numbers are ' +
       'GREAT-CIRCLE estimates from the baseline scan and you MUST say so rather than ' +
       'describing them as solved on the road network. Cross-check strategies_run against ' +
-      'the strategy you requested; a status of SUCCESS does not mean the run was complete.',
+      'the strategy you requested; a status of SUCCESS does not mean the run was complete. ' +
+      'applied_caps lists every tour constraint that was SENT to the optimizer (loads per ' +
+      'vehicle, deviation pct + allowance km, detour budget, dispatch cost) and the rule ' +
+      'that turned them into per-vehicle limits. Quote those values when describing ' +
+      'constraints. A constraint the user asked for that is absent from applied_caps was ' +
+      'NOT enforced - say so, and never state that a plan respects it.',
     ),
   },
   execute: async (args, ctx) => {
@@ -144,6 +186,10 @@ export const backload_solve = defineProc({
       granularity: args.granularity,
       trailer_id: args.trailer_id,
       time_budget_s: args.time_budget_s,
+      max_deviation_pct: args.max_deviation_pct,
+      deviation_allowance_km: args.deviation_allowance_km,
+      detour_budget_hrs: args.detour_budget_hrs,
+      max_loads_per_vehicle: args.max_loads_per_vehicle,
     };
     const result = await callTool(ctx.conn, Procs.backloadSolve, [
       args.strategy,
@@ -154,6 +200,10 @@ export const backload_solve = defineProc({
       args.granularity,
       args.trailer_id,
       args.time_budget_s,
+      args.max_deviation_pct,
+      args.deviation_allowance_km,
+      args.detour_budget_hrs,
+      args.max_loads_per_vehicle,
     ]);
     // Cache successful solves so the app can REDRAW this exact plan rather than
     // running a second, different one. Only on success: caching a failure would

@@ -38,10 +38,12 @@ const DEFAULT_VERBS: Record<string, number> = {
   // ONE implementation: the same procedures back the MCP tools, so a plan drawn on
   // screen and a plan the agent describes cannot diverge.
   // Arity excludes the trailing IDEMPOTENCY_KEY, as above.
-  // backload_solve is 8: the six original args plus trailer_id (scope to ONE named
-  // vehicle) and time_budget_s (wall-clock ceiling). Arity is matched EXACTLY below,
-  // so every caller must pass all eight - including nulls.
-  backload_solve: 8,
+  // backload_solve is 12: the six original args plus trailer_id (scope to ONE named
+  // vehicle) and time_budget_s (wall-clock ceiling), then the four tour caps
+  // (max_deviation_pct, deviation_allowance_km, detour_budget_hrs,
+  // max_loads_per_vehicle). Arity is matched EXACTLY below, so every caller must
+  // pass all twelve - including nulls. Ships with the 12-arg proc, not before it.
+  backload_solve: 12,
   backload_chain_solve: 6,
 };
 

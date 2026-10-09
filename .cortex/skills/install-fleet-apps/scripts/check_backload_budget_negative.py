@@ -95,7 +95,7 @@ def m_drop_trailer_arg(p):
 
 
 def m_drop_budget_arg(p):
-    sub_in_proc(p["proc"], "    P_TIME_BUDGET_S FLOAT  DEFAULT NULL\n", "")
+    sub_in_proc(p["proc"], "    P_TIME_BUDGET_S FLOAT  DEFAULT NULL,\n", "")
 
 
 def m_remove_stale_drop(p):
@@ -188,7 +188,7 @@ def m_unscope_eligible(p):
 
 def m_stale_arity(p):
     src = p["route"].read_text(encoding="utf-8")
-    p["route"].write_text(src.replace("backload_solve: 8,", "backload_solve: 6,"), encoding="utf-8")
+    p["route"].write_text(src.replace("backload_solve: 12,", "backload_solve: 6,"), encoding="utf-8")
 
 
 def m_verb_drops_arg(p):

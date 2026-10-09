@@ -317,6 +317,8 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
         // trailer_id: null - the cockpit plans the whole region. Scoping to one
         // vehicle is the agent's path, not the dispatcher's.
         null, PAGE_TIME_BUDGET_S,
+        // Tour caps: null = MATCH_PARAMS defaults, the same values the agent gets.
+        null, null, null, null,
       ]);
       const rows = (result.pairs as ScoredPair[] | undefined) ?? [];
       const counts = (result.counts ?? {}) as Record<string, number>;
