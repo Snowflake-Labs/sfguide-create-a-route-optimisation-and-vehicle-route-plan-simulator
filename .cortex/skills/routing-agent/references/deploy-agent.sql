@@ -1371,7 +1371,7 @@ BEGIN
     END IF;
 
     -- Step 3: Find Overture POIs inside the isochrone polygon, matching category.
-    -- Match against BASIC_CATEGORY and CATEGORIES:primary (case-insensitive).
+    -- Match against BASIC_CATEGORY and TAXONOMY:primary (case-insensitive).
     -- v_center_lon / v_center_lat were already resolved in step 1.
     v_category := LOWER(POI_CATEGORY);
     v_iso_geojson_str := v_iso_geojson::STRING;
@@ -1395,16 +1395,16 @@ BEGIN
                 ST_X(p.GEOMETRY) AS lon,
                 ST_Y(p.GEOMETRY) AS lat,
                 ROUND(ST_DISTANCE(p.GEOMETRY, ST_MAKEPOINT(?::FLOAT, ?::FLOAT)), 0) AS distance_m,
-                p.CATEGORIES:primary::STRING AS primary_cat,
+                p.TAXONOMY:primary::STRING AS primary_cat,
                 p.BASIC_CATEGORY AS basic_cat
             FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
             WHERE ST_WITHIN(p.GEOMETRY, TO_GEOGRAPHY(?))
               AND p.NAMES:primary IS NOT NULL
               AND (
                 LOWER(p.BASIC_CATEGORY) = ?
-                OR LOWER(p.CATEGORIES:primary::STRING) = ?
+                OR LOWER(p.TAXONOMY:primary::STRING) = ?
                 OR LOWER(p.BASIC_CATEGORY) LIKE ''%'' || ? || ''%''
-                OR LOWER(p.CATEGORIES:primary::STRING) LIKE ''%'' || ? || ''%''
+                OR LOWER(p.TAXONOMY:primary::STRING) LIKE ''%'' || ? || ''%''
               )
             ORDER BY distance_m
             LIMIT ' || v_max_results::STRING || '
@@ -1486,7 +1486,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE(VARCHAR, 
 --   region resolves; an unresolved region falls back to the bbox when present.
 -- GROUP_BY: 'list' (default; individual places), 'city' (counts by city), or
 --   'category' (counts by basic_category). POI_CATEGORY is optional; when given it
---   matches BASIC_CATEGORY / CATEGORIES:primary with an equality + LIKE fallback.
+--   matches BASIC_CATEGORY / TAXONOMY:primary with an equality + LIKE fallback.
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_SEARCH(
     REGION VARCHAR DEFAULT NULL,
@@ -1594,9 +1594,9 @@ BEGIN
         '         ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)) )' ||
         '   AND ( NOT ? OR (' ||
         '         LOWER(p.BASIC_CATEGORY) = ?' ||
-        '         OR LOWER(p.CATEGORIES:primary::STRING) = ?' ||
+        '         OR LOWER(p.TAXONOMY:primary::STRING) = ?' ||
         '         OR LOWER(p.BASIC_CATEGORY) LIKE ''%'' || ? || ''%''' ||
-        '         OR LOWER(p.CATEGORIES:primary::STRING) LIKE ''%'' || ? || ''%'') )';
+        '         OR LOWER(p.TAXONOMY:primary::STRING) LIKE ''%'' || ? || ''%'') )';
 
     IF (v_mode = 'city') THEN
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''city'', city, ''state'', state, ''poi_count'', cnt))' ||
@@ -1621,7 +1621,7 @@ BEGIN
                  '           ''geometry'', OBJECT_CONSTRUCT(''type'', ''Point'', ''coordinates'', ARRAY_CONSTRUCT(lon, lat)),' ||
                  '           ''properties'', OBJECT_CONSTRUCT(''name'', name, ''category'', basic_cat, ''city'', city))), ARRAY_CONSTRUCT())) AS geometry FROM (' ||
                  '  SELECT p.NAMES:primary::STRING AS name, ST_X(p.GEOMETRY) AS lon, ST_Y(p.GEOMETRY) AS lat,' ||
-                 '         p.CATEGORIES:primary::STRING AS primary_cat, p.BASIC_CATEGORY AS basic_cat,' ||
+                 '         p.TAXONOMY:primary::STRING AS primary_cat, p.BASIC_CATEGORY AS basic_cat,' ||
                  '         p.ADDRESSES[0]:locality::STRING AS city, p.ADDRESSES[0]:region::STRING AS state' ||
                  v_bounds ||
                  '   AND p.NAMES:primary IS NOT NULL LIMIT ' || v_max::STRING || ')';
