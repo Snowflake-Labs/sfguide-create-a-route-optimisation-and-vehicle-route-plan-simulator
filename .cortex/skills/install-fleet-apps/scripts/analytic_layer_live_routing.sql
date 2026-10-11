@@ -1302,17 +1302,31 @@ $$
     SELECT COALESCE(NULLIF(P_PROFILE, ''),
                     (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
   ),
+  -- Arrays built once in a single-row CTE, then unnested with FLATTEN below. With
+  -- the ARRAY_AGG subqueries inline and mtx.m:distances[pi][ci] indexed from a
+  -- cross join, the optimizer inlined the engine call per plant: measured 6
+  -- identical ORS matrices per SanFrancisco call (see LIVE_HUFF_ALLOCATION).
+  arrs AS (
+    SELECT prof.PR AS pr,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION) AS src,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION) AS dst
+    FROM prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `distances IS NOT NULL` filter below silently return no lanes.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      prof.PR,
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
-      P_REGION)) AS m
-    FROM prof
+      pr, src, dst, P_REGION)) AS m
+    FROM arrs
+  ),
+  cell AS (
+    SELECT r.index AS pi, dd.index AS ci, dd.value AS dist_m,
+           mtx.m:durations[r.index][dd.index] AS dur_s
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:distances) r,
+         LATERAL FLATTEN(input => r.value) dd
   ),
   p AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
@@ -1327,16 +1341,18 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND WHERE REGION = P_REGION
   )
   SELECT p.PLANT_ID, p.PLANT_NAME, c.CUSTOMER_ID, c.CUSTOMER_NAME,
-         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
-         ROUND((mtx.m:durations[p.pi][c.ci]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         ROUND((x.dist_m::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((x.dur_s::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          COALESCE(d.TONS_PER_LOAD, 22) AS tons,
-         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_KM
-               + COALESCE(d.TONS_PER_LOAD, 22) * (mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
+         ROUND((x.dist_m::FLOAT) / 1000.0 * P_RATE_PER_KM
+               + COALESCE(d.TONS_PER_LOAD, 22) * (x.dist_m::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
               )::NUMBER(18,2) AS freight_cost,
          p.GEOG AS plant_geog, c.GEOG AS customer_geog
-  FROM mtx, p CROSS JOIN c
+  FROM cell x
+  JOIN p ON p.pi = x.pi
+  JOIN c ON c.ci = x.ci
   LEFT JOIN d ON d.CUSTOMER_ID = c.CUSTOMER_ID
-  WHERE mtx.m:distances[p.pi][c.ci] IS NOT NULL
+  WHERE x.dist_m IS NOT NULL
 $$;
 
 -- Live location swap: for each customer, restrict lanes to product-capable
@@ -1419,16 +1435,26 @@ $$
     SELECT COALESCE(NULLIF(P_PROFILE, ''),
                     (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
   ),
+  -- Single-row array CTE + FLATTEN for the same reason as LIVE_SOURCING_LANES:
+  -- the inline form called the engine once per origin plant (6x measured).
+  arrs AS (
+    SELECT prof.PR AS pr,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION) AS pts
+    FROM prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE).
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      prof.PR,
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      P_REGION)) AS m
-    FROM prof
+      pr, pts, pts, P_REGION)) AS m
+    FROM arrs
+  ),
+  cell AS (
+    SELECT r.index AS ai, dd.index AS bi, dd.value AS dist_m,
+           mtx.m:durations[r.index][dd.index] AS dur_s
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:distances) r,
+         LATERAL FLATTEN(input => r.value) dd
   ),
   a AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
@@ -1439,11 +1465,13 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
   )
   SELECT a.PLANT_ID, a.PLANT_NAME, b.PLANT_ID, b.PLANT_NAME,
-         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
-         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         ROUND((x.dist_m::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((x.dur_s::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          a.GEOG, b.GEOG
-  FROM mtx, a CROSS JOIN b
-  WHERE mtx.m:distances[a.ai][b.bi] IS NOT NULL
+  FROM cell x
+  JOIN a ON a.ai = x.ai
+  JOIN b ON b.bi = x.bi
+  WHERE x.dist_m IS NOT NULL
 $$;
 
 -- Live product-mix tradeoff per customer order (basket of product lines):
