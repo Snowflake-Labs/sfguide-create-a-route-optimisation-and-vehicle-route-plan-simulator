@@ -115,7 +115,21 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   # next.config.ts already aliases these to the consumer copy (authoritative);
   # stripping the nested copies here keeps a fresh build correct even if the
   # alias is ever removed. Safe no-op when the dirs are absent.
-  KIT_NM="$REPO_ROOT/packages/fleet-kit/node_modules"
+  #
+  # The kit's own deps are INSTALLED first, from its tracked lockfile. They are
+  # not optional on a fresh clone: the map-spec gate below runs under tsx, which
+  # (unlike webpack's resolve.symlinks=false) follows the @fleet-kit/core symlink
+  # to packages/fleet-kit/src and resolves the kit's PEER imports (h3-js, react,
+  # maplibre-gl) upward from that real path - and a fresh clone has no
+  # packages/fleet-kit/node_modules at all, so the gate died with
+  # ERR_MODULE_NOT_FOUND 'h3-js' from src/map/geo-coords.ts and the SA deploy
+  # failed. A maintainer tree never sees it because that gitignored directory
+  # survives from kit development. Installing then stripping reproduces exactly
+  # the tree every successful deploy so far has run against.
+  KIT_DIR="$REPO_ROOT/packages/fleet-kit"
+  ( cd "$KIT_DIR" && { [ -d node_modules ] || npm ci >/tmp/fleet_sa_kit_npm.log 2>&1; } ) \
+    || { echo "ERROR: npm ci failed for $KIT_DIR"; tail -30 /tmp/fleet_sa_kit_npm.log; exit 1; }
+  KIT_NM="$KIT_DIR/node_modules"
   if [ -d "$KIT_NM" ]; then
     echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
