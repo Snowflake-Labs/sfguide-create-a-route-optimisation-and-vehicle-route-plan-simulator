@@ -86,6 +86,52 @@ END;
 $$;
 
 -- ============================================================================
+-- PHASE 1b: Deregister the agents from the Snowflake CoWork object
+--
+--   install-fleet-apps step 6.5 (cowork_binding.sql) ADDs every agent to
+--   SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT, and dropping an agent - which the
+--   FLEET_INTELLIGENCE CASCADE below does - does NOT remove that entry. So a
+--   "full" teardown left four dead registrations behind on every run, and the
+--   next install's ADD AGENT then hit "already present", which cowork_binding.sql
+--   absorbs by design. Nothing failed in either direction, which is why it was
+--   never noticed; it is still state surviving a wipe.
+--
+--   Runs BEFORE the database drops, while the agents still resolve. Enumerated,
+--   not listed, for the same reason as the ORS pools above: an agent added later
+--   would otherwise survive. Every step is exception-guarded so a missing CoWork
+--   object (an account where nobody ever opened the CoWork settings page) or a
+--   single refused ALTER can never abort this file.
+-- ============================================================================
+EXECUTE IMMEDIATE $$
+DECLARE
+  n_ok INTEGER DEFAULT 0;
+  n_err INTEGER DEFAULT 0;
+BEGIN
+  BEGIN
+    SHOW AGENTS IN SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT;
+  EXCEPTION WHEN OTHER THEN
+    RETURN 'no Snowflake CoWork object on this account - nothing to deregister';
+  END;
+  LET rs RESULTSET := (
+    SELECT '"' || "database_name" || '"."' || "schema_name" || '"."' || "name" || '"' AS fqn
+    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    WHERE "database_name" = 'FLEET_INTELLIGENCE'
+  );
+  LET c CURSOR FOR rs;
+  FOR r IN c DO
+    BEGIN
+      EXECUTE IMMEDIATE 'ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT DROP AGENT ' || r.fqn;
+      n_ok := n_ok + 1;
+    EXCEPTION WHEN OTHER THEN
+      n_err := n_err + 1;
+    END;
+  END FOR;
+  RETURN 'deregistered ' || n_ok || ' FLEET_INTELLIGENCE agent(s) from the CoWork object'
+         || IFF(n_err > 0, ' (' || n_err || ' refused - check SHOW AGENTS IN SNOWFLAKE INTELLIGENCE)', '');
+END;
+$$;
+
+-- ============================================================================
 -- PHASE 2: Project + engine databases
 --   CASCADE removes contained SPCS services, agents, MCP servers, schemas,
 --   tables, views, stages, procedures, tasks, dynamic tables, notebooks, etc.

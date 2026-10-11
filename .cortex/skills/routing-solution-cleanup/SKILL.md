@@ -281,6 +281,13 @@ SHOW COMPUTE POOLS;
 SHOW INTEGRATIONS;
 -- Expected: only SNOWFLAKE$LOCAL_APPLICATION (system)
 
+-- Verify no agent is still registered with Snowflake CoWork. Dropping an agent
+-- (FLEET_INTELLIGENCE CASCADE) does NOT remove its CoWork entry; drop-order.sql
+-- PHASE 1b deregisters them, and this is the check that it did.
+SHOW AGENTS IN SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT;
+-- Expected: no row with database_name = FLEET_INTELLIGENCE
+--           (an error here means the account has no CoWork object - also clean)
+
 -- Verify no marketplace listings attached
 -- (Overture Maps databases being dropped detaches the listing)
 ```
@@ -293,6 +300,7 @@ Report results as a table:
 | Warehouses | 2 | 2 (MY_WH, SYSTEM$*) | CLEAN |
 | Compute Pools | 2 | 2 (SYSTEM_*) | CLEAN |
 | Integrations | 1 | 1 (SNOWFLAKE$LOCAL_APPLICATION) | CLEAN |
+| CoWork agent registrations | 0 | 0 (FLEET_INTELLIGENCE.*) | CLEAN |
 
 ## Cleanup by Skill
 
