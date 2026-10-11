@@ -795,33 +795,6 @@ else
   step "4.27 plan standards" SKIPPED
 fi
 
-# ── 4.28 national multi-drop generation preset ────────────────────────────
-# Registers the 'national-multidrop-hgv' Data Studio profile as a catalog ROW
-# (IS_BUILTIN = FALSE), which is the documented way to onboard a generation mode
-# without rebuilding the admin image. Neither the admin app's boot MERGE
-# (WHEN MATCHED AND tgt.IS_BUILTIN = TRUE) nor its stale-builtin DELETE
-# (WHERE IS_BUILTIN = TRUE) can touch a non-builtin row, so this survives
-# restarts and the file is safe to re-run.
-#
-# Exists because the two shipped HGV/urban presets bracket a bottler without
-# hitting it: SanFrancisco/urban-ebike gives 28.1 stops per route in ONE city,
-# while regional-hgv gives 1.3-1.6 at country scale because it models line-haul.
-# This preset is country scale with urban trip density, which is what
-# route-plan standardization analytics need.
-#
-# Order only needs to be AFTER the admin app step that creates
-# GENERATION_PROFILE_CATALOG; it is data-only, touches no FLEET_APP object, and
-# nothing downstream in this installer reads it. Generation itself is always an
-# explicit operator action in Data Studio, never part of install.
-if [ "${SKIP_GENERATION_PRESETS:-0}" != "1" ]; then
-  note "[4.28/8] national multi-drop generation preset..."
-  snow sql -c "$CONNECTION" -f "$MULTIDROP_PRESET_SQL" --enable-templating NONE >/tmp/ifa_multidrop_preset.log 2>&1 \
-    && step "4.28 multidrop preset" OK \
-    || { note "  WARN: preset registration reported errors; see /tmp/ifa_multidrop_preset.log"; step "4.28 multidrop preset" WARN; }
-else
-  step "4.28 multidrop preset" SKIPPED
-fi
-
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────
 # Every statement in this file creates a SQL UDTF whose body calls an
 # OPENROUTESERVICE_APP.CORE routing function. A SQL function body resolves at
@@ -1236,6 +1209,53 @@ if [ "${SKIP_ROLES:-0}" != "1" ]; then
     || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
 else
   step "8 roles" SKIPPED
+fi
+
+# ── 8.2 national multi-drop generation preset ─────────────────────────────
+# Registers the 'national-multidrop-hgv' Data Studio profile as a catalog ROW
+# (IS_BUILTIN = FALSE), which is the documented way to onboard a generation mode
+# without rebuilding the admin image. Neither the admin app's boot MERGE
+# (WHEN MATCHED AND tgt.IS_BUILTIN = TRUE) nor its stale-builtin DELETE
+# (WHERE IS_BUILTIN = TRUE) can touch a non-builtin row, so this survives
+# restarts and the file is safe to re-run.
+#
+# Exists because the two shipped HGV/urban presets bracket a bottler without
+# hitting it: SanFrancisco/urban-ebike gives 28.1 stops per route in ONE city,
+# while regional-hgv gives 1.3-1.6 at country scale because it models line-haul.
+# This preset is country scale with urban trip density, which is what
+# route-plan standardization analytics need.
+#
+# ORDER: GENERATION_PROFILE_CATALOG has exactly one DDL owner - the admin app's
+# boot (init.ts -> ensureGenerationProfileCatalog). This step used to run as
+# "4.28", BEFORE the apps step, so on a fresh account its MERGE always failed
+# with "Object ... GENERATION_PROFILE_CATALOG does not exist" and the preset was
+# never registered; every maintainer account already had the table from an
+# earlier boot. It now runs after step 7, and because the admin deploy has no
+# readiness wait (the table appears only once the container's boot reaches that
+# call), it waits for the table with a bounded poll rather than racing it.
+# Generation itself is always an explicit operator action in Data Studio, never
+# part of install, and nothing downstream in this installer reads the row.
+if [ "${SKIP_GENERATION_PRESETS:-0}" != "1" ]; then
+  note "[8.2/8] national multi-drop generation preset..."
+  PRESET_TABLE=0
+  for _i in $(seq 1 "${PRESET_TABLE_WAIT_TRIES:-30}"); do
+    if obj_exists "SHOW TABLES LIKE 'GENERATION_PROFILE_CATALOG' IN SCHEMA FLEET_INTELLIGENCE.CORE;" 'GENERATION_PROFILE_CATALOG'; then
+      PRESET_TABLE=1; break
+    fi
+    [ "$_i" = "1" ] && note "  waiting for the admin app boot to create FLEET_INTELLIGENCE.CORE.GENERATION_PROFILE_CATALOG..."
+    sleep 20
+  done
+  if [ "$PRESET_TABLE" = "1" ]; then
+    snow sql -c "$CONNECTION" -f "$MULTIDROP_PRESET_SQL" --enable-templating NONE >/tmp/ifa_multidrop_preset.log 2>&1 \
+      && step "8.2 multidrop preset" OK \
+      || { note "  WARN: preset registration reported errors; see /tmp/ifa_multidrop_preset.log"; step "8.2 multidrop preset" WARN; }
+  else
+    note "  WARN: GENERATION_PROFILE_CATALOG not created by the admin app boot within the wait; preset NOT registered."
+    note "        Check the admin app logs, then re-run: snow sql -c $CONNECTION -f $MULTIDROP_PRESET_SQL --enable-templating NONE"
+    step "8.2 multidrop preset" WARN
+  fi
+else
+  step "8.2 multidrop preset" SKIPPED
 fi
 
 # ── 8.5 deployment coherence verification ───────────────────────
