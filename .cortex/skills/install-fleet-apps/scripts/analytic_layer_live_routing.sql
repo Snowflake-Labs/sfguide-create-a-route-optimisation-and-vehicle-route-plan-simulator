@@ -362,6 +362,20 @@ $$
            ROW_NUMBER() OVER (ORDER BY ANCHOR_H3) - 1 AS ai
     FROM anchor_pts
   ),
+  -- Both arrays are built in ONE single-row CTE before the engine call. With the
+  -- ARRAY_AGG subqueries inline in the MATRIX_TABULAR arguments, Snowflake
+  -- decorrelated the destination subquery into a join over `stores` and issued
+  -- the external function once PER STORE: measured 14 identical ORS matrices for
+  -- one SanFrancisco allocation (~20 s instead of ~1.5 s).
+  arrs AS (
+    SELECT (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTROID), ST_Y(CENTROID)))
+                     WITHIN GROUP (ORDER BY ai) FROM anchors_i) AS src,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(f.LON, f.LAT)) WITHIN GROUP (ORDER BY s.si)
+              FROM stores s JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS f
+                ON f.REGION = P_REGION AND f.STORE_ID = s.STORE_ID) AS dst,
+           COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                      WHERE REGION = P_REGION LIMIT 1), 'driving-car') AS prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `durations IS NOT NULL` filter below quietly return no rows,
@@ -371,19 +385,20 @@ $$
     -- so a re-stated filter that drifted would silently attach every drive time to
     -- the wrong store with nothing to error on.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
-                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTROID), ST_Y(CENTROID)))
-                WITHIN GROUP (ORDER BY ai) FROM anchors_i),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY s.si)
-         FROM stores s JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS f
-           ON f.REGION = P_REGION AND f.STORE_ID = s.STORE_ID),
-      P_REGION)) AS m
+      prof, src, dst, P_REGION)) AS m
+    FROM arrs
   ),
   pairs AS (
+    -- Unnested with FLATTEN, not indexed as mtx.m:durations[ai][si] from a cross
+    -- join: that form let the optimizer inline the engine call into the join and
+    -- run it once per store (14 matrices, ~20 s). FLATTEN pins it to one call.
     SELECT a.ANCHOR_H3, a.res, a.HH, s.STORE_ID, s.STORE_ROLE, s.ATTR,
-           (mtx.m:durations[a.ai][s.si]::FLOAT) / 60.0 AS drive_min
-    FROM mtx, anchors_i a CROSS JOIN stores s
+           (d.value::FLOAT) / 60.0 AS drive_min
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:durations) r,
+         LATERAL FLATTEN(input => r.value) d,
+         anchors_i a, stores s
+    WHERE a.ai = r.index AND s.si = d.index
   ),
   valid AS (
     -- Unreachable pairs are dropped HERE, before any normalisation. Dropping them
