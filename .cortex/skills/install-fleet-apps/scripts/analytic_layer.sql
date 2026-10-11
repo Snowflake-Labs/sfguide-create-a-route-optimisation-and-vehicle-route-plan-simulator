@@ -114,6 +114,41 @@ $$
   '\\bAnd\\b', 'and')
 $$;
 
+-- Created HERE, up front, for the same reason as REGION_LABEL above: it is read
+-- at RUNTIME by FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS, which
+-- BUILD_LOCATION_DIAGNOSTICS calls later in THIS file (section 5). It used to be
+-- defined ~200 lines AFTER that call, so on a fresh account the builder failed
+-- with "Object 'FLEET_APP.CORE.VW_REGION_PROFILE' does not exist" and the guard
+-- turned it into a WARN that left site_impact / closure_impact empty. Every
+-- re-install hid it because the previous run had already created the view.
+-- Its sources (DIM_DATASETS from the seed, DIM_VEHICLE_PROFILE from step 2.5)
+-- both exist before step 3.5 runs.
+-- Region -> ORS profile. Every live-routing view below used to hardcode
+-- 'driving-car', which is only correct when the region's graph happens to have
+-- that profile built. A region is provisioned for its dataset's vehicle type, so
+-- an HGV region builds ONLY driving-hgv and an e-bike region builds
+-- cycling-electric - and ORS answers a request for an unbuilt profile with
+-- {"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'"},
+-- which the ORS_FEATURES guard turns into a cast failure. Result: catchment,
+-- site_impact, closure_impact, sourcing_optimizer and mix_sourcing all failed
+-- outright on every HGV region (96 failing area-executions across 4 regions in
+-- the validate_app_views baseline), while passing on a car region - which is why
+-- it was never noticed.
+--
+-- Resolved from data, not from a live ORS_STATUS call, so it costs nothing and
+-- works while the service is suspended: the active dataset's VEHICLE_TYPE maps
+-- through DIM_VEHICLE_PROFILE to exactly the profile that region's graph was
+-- built for. Falls back to driving-car for a region with no active dataset.
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_PROFILE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT d.REGION,
+       COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
+WHERE d.IS_ACTIVE;
+
 -- =============================================================================
 -- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
 -- =============================================================================
@@ -1352,31 +1387,6 @@ $$;
 -- it; the rationale above documents why the derivation is used. Nothing to create
 -- here anymore.
 
--- Region -> ORS profile. Every live-routing view below used to hardcode
--- 'driving-car', which is only correct when the region's graph happens to have
--- that profile built. A region is provisioned for its dataset's vehicle type, so
--- an HGV region builds ONLY driving-hgv and an e-bike region builds
--- cycling-electric - and ORS answers a request for an unbuilt profile with
--- {"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'"},
--- which the ORS_FEATURES guard turns into a cast failure. Result: catchment,
--- site_impact, closure_impact, sourcing_optimizer and mix_sourcing all failed
--- outright on every HGV region (96 failing area-executions across 4 regions in
--- the validate_app_views baseline), while passing on a car region - which is why
--- it was never noticed.
---
--- Resolved from data, not from a live ORS_STATUS call, so it costs nothing and
--- works while the service is suspended: the active dataset's VEHICLE_TYPE maps
--- through DIM_VEHICLE_PROFILE to exactly the profile that region's graph was
--- built for. Falls back to driving-car for a region with no active dataset.
-CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_PROFILE
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-AS
-SELECT d.REGION,
-       COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
-FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
-LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
-  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
-WHERE d.IS_ACTIVE;
 
 -- Region -> the bbox of its ROAD GRAPH (what ORS enforces), for views that offer a
 -- user-pickable routing anchor. A region's POI set is loaded with a padded extent,
