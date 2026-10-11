@@ -521,8 +521,18 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
       [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
       ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/11 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
+    elif [ "$ROUTING_TOOLS_RC" -ne 0 ]; then
+      # The count alone cannot convict a partial deploy. `snow sql -f` stops at
+      # the first error, so a failure late in deploy-agent.sql leaves every proc
+      # ABOVE it in place - measured: an ALTER naming a stale signature aborted
+      # the file with 630 lines left, the 16 surviving procs passed `>= 11`, and
+      # this branch printed "OK (11/11)" while TOOL_BACKLOAD_CHAIN_SOLVE (wrapped
+      # by the backload_chain_solve verb) was never created. A non-zero exit is
+      # therefore DEGRADED regardless of how many procs happen to exist.
+      ROUTING_SUBSTRATE="DEGRADED: deploy-agent.sql exited rc=$ROUTING_TOOLS_RC (stop-on-first-error: every proc after the failing statement is missing; ${TOOL_N} TOOL_* procs present) - see /tmp/ifa_routing_tools.log"
+      note "  WARN: $ROUTING_SUBSTRATE"
     else
-      ROUTING_SUBSTRATE="OK (11/11 ROUTING_TOOLS.TOOL_* procs)"
+      ROUTING_SUBSTRATE="OK (${TOOL_N} ROUTING_TOOLS.TOOL_* procs, deploy-agent.sql rc=0)"
       note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else
