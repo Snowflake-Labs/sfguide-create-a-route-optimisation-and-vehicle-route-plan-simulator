@@ -73,12 +73,42 @@ check('isChartTool tolerates a server prefix', isChartTool('some_mcp_data_to_cha
 check('isChartTool rejects an unrelated tool', !isChartTool('backload_solve'));
 check('isChartTool rejects undefined', !isChartTool(undefined));
 
+// ------------------------------------------------------------ compile notices
+// vega-lite logs to the console by default, so its warnings used to reach the
+// install log as bare `WARN ...` lines under a gate that then PASSED - noise an
+// operator cannot act on, and cover for a NEW warning, which would pass just as
+// quietly. Every compile now goes through this logger: a notice is allowed only
+// if it matches an entry below, each MEASURED against vega-lite 5.23, and any
+// other warning or error fails the case.
+//
+//  - fit-y: `width: "container"` with a step height (sizeSpec, discrete y) warns
+//    under EVERY autosize - explicit fit-x, none, the string "fit-x" - and still
+//    compiles to fit-x; `pad` swaps it for "container only works with fit".
+//    No warning-free form tracks the bubble width, so the notice is the cost.
+//  - fieldless color scale: the host writes `color: {scale: {range}}` with no
+//    field on a single-series bar (verbatim in the live fixture). The range is
+//    DEFAULT_CHART_PALETTE, which the theme already applies, so the drop is
+//    invisible.
+const EXPECTED_NOTICES: RegExp[] = [
+  /^Dropping "fit-y" because spec has discrete height\.$/,
+  /^Dropping \{"scale":\{"range":\[[^\]]*\]\}\} from channel "color" since it does not contain any data field, datum, value, or signal\.$/,
+];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function capturingLogger(sink: string[]): any {
+  const push = (...a: unknown[]) => { sink.push(a.map(String).join(' ')); return logger; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const logger: any = { level: () => logger, info: () => logger, debug: () => logger, warn: push, error: push };
+  return logger;
+}
+
 // ------------------------------------------------------------------ fixtures
 const fixtures = JSON.parse(readFileSync(FIXTURES, 'utf8')) as {
   cases: Array<{ name: string; expectSpecs: number; expectMarks: number; payload: unknown }>;
   rejectCases: Array<{ name: string; payload: unknown }>;
 };
 
+let capturedNotices = 0;
 for (const c of fixtures.cases) {
   const bundle = extractChartSpecs(c.payload);
   check(`[${c.name}] extracts ${c.expectSpecs} spec(s)`,
@@ -88,18 +118,27 @@ for (const c of fixtures.cases) {
   for (const [i, spec] of bundle.specs.entries()) {
     let marks = -1;
     let err = '';
+    const notices: string[] = [];
     try {
       const prepared = sizeSpec(themeSpec(spec, DEFAULT_CHART_PALETTE), 260);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      marks = countMarks(compile(prepared as any).spec);
+      marks = countMarks(compile(prepared as any, { logger: capturingLogger(notices) }).spec);
     } catch (e) {
       err = (e as Error).message;
     }
     check(`[${c.name}] spec ${i} compiles`, err === '', err);
+    capturedNotices += notices.length;
+    const unexpected = notices.filter((n) => !EXPECTED_NOTICES.some((re) => re.test(n)));
+    check(`[${c.name}] spec ${i} compiles without an unexpected vega-lite warning`,
+      unexpected.length === 0, unexpected.join(' | '));
     check(`[${c.name}] spec ${i} draws >= ${c.expectMarks} mark(s)`,
       marks >= c.expectMarks, `got ${marks}`);
   }
 }
+// The step-height fixtures are known to raise the fit-y notice, so zero means
+// the logger was never handed to compile() and vega-lite printed to stdout.
+check('compile notices are captured by the harness logger', capturedNotices > 0,
+  'no notice reached the logger');
 
 for (const c of fixtures.rejectCases) {
   const bundle = extractChartSpecs(c.payload);

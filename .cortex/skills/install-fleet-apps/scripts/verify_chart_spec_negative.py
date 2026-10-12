@@ -52,4 +52,20 @@ h.replace(f"{LIB}/chart-encodings.ts",
           expect="a grouped chart missing its groupBy column reports it",
           name="plot diagnostic ignores a missing groupBy column")
 
+# The logger unplugged: vega-lite prints its warnings to stdout, so they land in
+# the install log as bare WARN lines under a gate that PASSES.
+h.replace(f"{UI}/scripts/verify-chart-spec.mts",
+          "compile(prepared as any, { logger: capturingLogger(notices) })",
+          "compile(prepared as any)",
+          expect="compile notices are captured by the harness logger",
+          name="compile warnings bypass the harness logger")
+
+# A sizing change that raises a NEW warning must fail, not hide among the two
+# expected ones: `pad` makes vega-lite warn that a container width needs fit.
+h.replace(f"{LIB}/chart-spec.ts",
+          "      ? { type: 'fit-x', contains: 'padding' }",
+          "      ? { type: 'pad', contains: 'padding' }",
+          expect="compiles without an unexpected vega-lite warning",
+          name="step-height spec autosized to pad")
+
 sys.exit(h.finish())
