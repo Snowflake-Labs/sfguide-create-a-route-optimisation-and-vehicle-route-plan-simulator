@@ -50,7 +50,7 @@ REPO = pathlib.Path(
 )
 SKILL = REPO / ".cortex" / "skills" / "install-fleet-apps"
 SCRIPTS = SKILL / "scripts"
-DSV = SCRIPTS / "delivery_sync_layer.sql"
+DELIVERY_SYNC_SQL = SCRIPTS / "delivery_sync_layer.sql"
 LIVE = SCRIPTS / "analytic_layer_live_routing.sql"
 VIEWGEN = SCRIPTS / "add_delivery_sync_view.py"
 APPVIEWS = SKILL / "fleet_sa_app" / "app" / "app-views.json"
@@ -106,13 +106,13 @@ def body_of(sql: str, create_marker: str) -> str:
 # ---------------------------------------------------------------------------
 # RULE A - the detector drops the trip-less IDLE heartbeat.
 # ---------------------------------------------------------------------------
-dsv = read(DSV, strip_sql_comments)
-if dsv:
+delivery_sync_sql = read(DELIVERY_SYNC_SQL, strip_sql_comments)
+if delivery_sync_sql:
     checked += 1
-    dt = body_of(dsv, "CREATE OR REPLACE DYNAMIC TABLE "
+    dt = body_of(delivery_sync_sql, "CREATE OR REPLACE DYNAMIC TABLE "
                       "FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS")
     if not dt:
-        fail("RULE A", "DT_SITE_VISITS statement not found in %s" % DSV.name)
+        fail("RULE A", "DT_SITE_VISITS statement not found in %s" % DELIVERY_SYNC_SQL.name)
     else:
         # Scoped to the pts CTE: the exclusion has to be on the PING SOURCE, not
         # anywhere in a 200-line query.
@@ -144,9 +144,9 @@ if dsv:
 # RULE B - EXIT_TS carries BOTH plausibility gates, measured from the last
 #          in-fence ping.
 # ---------------------------------------------------------------------------
-if dsv:
+if delivery_sync_sql:
     checked += 1
-    dt = body_of(dsv, "CREATE OR REPLACE DYNAMIC TABLE "
+    dt = body_of(delivery_sync_sql, "CREATE OR REPLACE DYNAMIC TABLE "
                       "FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS")
     if dt:
         # Scoped to the exit JOIN, not the statement. Asserting the mere presence
