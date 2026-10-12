@@ -1,6 +1,6 @@
 ---
 name: routing-solution-cleanup
-description: "Discover and remove all Snowflake objects created by skills in this repo. Uses the COMMENT tracking tag (sf_sit-is-fleet) to find objects, generates DROP statements, and optionally executes them. Use when: cleaning up after a demo, removing all skill-created objects, tearing down an environment, uninstalling a specific skill's objects. Do NOT use for: dropping objects not created by these skills, production environment cleanup without review. Triggers: routing-solution-cleanup, cleanup, teardown, remove, uninstall, drop all, clean up demo, remove skill objects, reset environment."
+description: "Discover and remove all Snowflake objects created by skills in this repo. Uses the COMMENT tracking tag (sf_sit-is-fleet) to find objects, generates DROP statements, and optionally executes them. Use when: cleaning up after a demo, removing all skill-created objects, tearing down an environment, uninstalling a specific skill's objects. Do NOT use for: dropping objects not created by these skills, production environment cleanup without review. Triggers: routing-solution-cleanup, cleanup, teardown, remove, uninstall, drop all, clean up demo, remove skill objects, reset environment, full teardown and reinstall, fresh reinstall, brand new machine, fresh-clone state, reset local state."
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
@@ -55,6 +55,53 @@ to catch a stale image or a broken engine module, and this mode deliberately
 cannot. Use it while iterating on the analytics stack; never for a release check
 or to validate an engine change. The four affected phases each print whether they
 preserved or dropped, so the run's own output states which mode it took.
+
+## Full fresh-machine teardown + reinstall
+
+"Full teardown and reinstall" means the account AND this machine end up as if
+the solution had never been installed - the state of a new laptop that has just
+cloned the repo. Installed software (docker, node, snow, python, crane) stays.
+A Snowflake-only wipe is not a fresh install: a developed checkout reuses state
+a clone does not have (every deploy step runs `[ -d node_modules ] || npm ci`,
+so stale dependencies mask lockfile drift), and three source files once existed
+only on the developer machine, so every local install passed while a fresh clone
+404'd two admin pages.
+
+Run all three steps, in order, from the repo root:
+
+```bash
+CONN=<connection>
+
+# 1. Account: full teardown (KEEP_FLEET_ENGINE stays FALSE - the engine is re-tested)
+snow sql -f .cortex/skills/routing-solution-cleanup/references/drop-order.sql -c "$CONN"
+
+# 2. Machine: dry run first, review, then apply
+bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --connection "$CONN"
+bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --connection "$CONN" --yes
+
+# 3. Reinstall with an empty npm cache and uncached image builds
+npm_config_cache="$(mktemp -d)" FLEET_DOCKER_BUILD_FLAGS="--no-cache --pull" \
+  bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection "$CONN"
+```
+
+What step 2 does (`scripts/reset_local_state.sh`, dry run unless `--yes`):
+
+| Area | Action |
+|---|---|
+| Gates | Refuses if the tracked tree is dirty or has untracked files (a clone has neither), or if `install-fleet-apps/scripts/check_no_ignored_source.py` finds a source file hidden by `.gitignore` - the reset would delete the only copy. |
+| Repo, GENERATED | Deletes every ignored path whose `.gitignore` rule marks it rebuildable: `node_modules/`, `.next/`, `dist/`, `__pycache__/`, `tsconfig.tsbuildinfo`, synapse `fleet_tools/_installed/`, `.DS_Store`. |
+| Repo, PERSONAL | MOVES everything else ignored (run logs, `logs/*.md`, `.snowflake/cortex/plans`, `docs/blogpost`, `docs/old`, eval results, keys) to `~/fleet-local-archive/<UTC-ts>/` with `MANIFEST.txt`. Override the root with `FLEET_LOCAL_ARCHIVE`. Nothing it does not recognise is deleted. |
+| `/tmp` | Deletes the installer's log and scratch files. A self-check fails if any install script writes a `/tmp` path the list does not cover. |
+| Docker | `docker rmi` every local image of this solution (`fleet_intelligence` / `openrouteservice_app` SPCS repos, any account) and `docker logout` the target account's SPCS registry. Other images, the build cache and other logins are untouched; step 3's `--no-cache --pull` gives the build the same no-cache behaviour a new machine has without pruning other projects' cache. |
+| Post-condition | Fails unless `git ls-files -o -i --exclude-standard` and `git status --porcelain` are both empty, i.e. the checkout matches a fresh clone. |
+
+Verify it (optional, decisive): the file list must equal a fresh clone's.
+
+```bash
+B=$(git branch --show-current); T=$(mktemp -d)
+git clone -q --branch "$B" "file://$PWD" "$T/c"
+diff <(find . -path ./.git -prune -o -print | sort) <(cd "$T/c" && find . -path ./.git -prune -o -print | sort) && echo IDENTICAL
+```
 
 ## Error Logging
 

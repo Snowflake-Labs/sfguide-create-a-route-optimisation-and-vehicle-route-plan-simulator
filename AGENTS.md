@@ -846,6 +846,13 @@ Key rules:
 
 Before considering any fix done, reason through the fresh-install path (`install-fleet-apps` orchestrator layers 0-8, with the routing engine built by default unless `--no-engine`): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
 
+**"Full teardown and reinstall" always means a brand-new machine that has just cloned the repo**, on a never-installed account, with installed software (docker, node, snow, python, crane) left in place. Run all three steps of "Full fresh-machine teardown + reinstall" in `.cortex/skills/routing-solution-cleanup/SKILL.md`, in order:
+1. `references/drop-order.sql`, with `KEEP_FLEET_ENGINE` left `FALSE`.
+2. `scripts/reset_local_state.sh --connection <conn> --yes`.
+3. The installer, run with `npm_config_cache="$(mktemp -d)"` and `FLEET_DOCKER_BUILD_FLAGS="--no-cache --pull"`.
+
+A Snowflake-only wipe, or `KEEP_FLEET_ENGINE=TRUE`, is iteration mode and never counts as a fresh-install check. A developed checkout reuses state a clone does not have: stale `node_modules`, `.next` and materialized synapse bundles, local images, and once three source files that existed only on the developer machine because the generic `build/`/`env/` gitignore rules swallowed them, so the admin Diagnostics and Matrix Builder pages 404'd on every fresh clone. The reset refuses a dirty tree and any source hidden by `.gitignore` (`check_no_ignored_source.py`, also run by `.githooks/pre-commit`). It archives personal ignored files to `~/fleet-local-archive/<ts>/` rather than deleting them.
+
 ## Error Logging
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `<skill-name>_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
