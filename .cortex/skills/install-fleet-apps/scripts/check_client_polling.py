@@ -71,7 +71,10 @@ SCAN_ROOTS = [
 # The canonical hook is the ONE place a raw setInterval belongs.
 ALLOWED_FILES = {"useVisiblePolling.ts"}
 
-MARKER_RE = re.compile(r"polling-gate:\s*ui-only\s*--\s*(\S.*)", re.IGNORECASE)
+# `[ \t]*`, not `\s*`: the reason must be on the marker's OWN line. With `\s*` a
+# bare `// polling-gate: ui-only --` crossed the newline and took the next code
+# line (`useEffect(() => {`) as its reason, so an opt-out with no reason passed.
+MARKER_RE = re.compile(r"polling-gate:[ \t]*ui-only[ \t]*--[ \t]*(\S.*)", re.IGNORECASE)
 SET_INTERVAL_RE = re.compile(r"\bsetInterval\s*\(")
 
 # Only flag real timer creation, not a type reference like

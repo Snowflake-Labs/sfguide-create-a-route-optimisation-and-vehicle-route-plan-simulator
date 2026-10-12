@@ -293,11 +293,22 @@ def check_call_sites() -> None:
             )
             continue
         seen += 1
-        window = src[m.start(): m.start() + 900]
-        # Cut at the end of the statement so we cannot borrow a neighbouring
-        # inserter's broadcast and call this one covered.
-        cut = window.find("});")
-        stmt = window[: cut + 3] if cut > 0 else window
+        # Take exactly the call's argument list, by matching its parentheses,
+        # so we cannot borrow a neighbouring broadcast and call this one
+        # covered. Cutting at the first `});` was not enough: every call site
+        # is followed by a one-shot `broadcast(job, 'progress', ...)` AFTER the
+        # insert, so a call with its per-batch callback removed borrowed that
+        # line and passed - while every batch went silent again.
+        depth, end = 0, len(src)
+        for i in range(m.end() - 1, len(src)):
+            if src[i] == "(":
+                depth += 1
+            elif src[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        stmt = src[m.start(): end]
         if "broadcast(" not in stmt or "'progress'" not in stmt:
             failures.append(
                 f"F: the `{fn}` call site does not pass a callback that calls "
@@ -364,6 +375,11 @@ def main() -> int:
             + "\n  The paths in this gate are stale, so those rules cannot "
             "fail and are not protecting anything."
         )
+        # A rule can read zero items precisely BECAUSE its defect is present
+        # (rule C counts the very declaration it checks for), so the rule's own
+        # diagnosis must still be printed rather than hidden behind this one.
+        for f in failures:
+            print(f"  - {f}")
         return 1
 
     if failures:

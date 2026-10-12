@@ -176,29 +176,29 @@ gates:
     why: the dynamic read allowlist disagrees with itself across filter, verb, grants, specs
   - id: view_catalog_drift
     run: python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog.py --check
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog_negative.py
     scope: static
     why: the agent-side solution catalog is stale against app-views.json
   - id: cowork_skills_drift
     run: python3 .cortex/skills/install-fleet-apps/scripts/build_cowork_skills.py --check
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_cowork_skills_negative.py
     scope: static
     why: generated CoWork skills are stale against their source
   - id: super_agent_spec_drift
     run: python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py --check
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec_negative.py
     scope: static
     why: the super-agent spec is stale against the bundle specs
 
   # ── SA / admin app views and UI ─────────────────────────────────────────────
   - id: view_usecases
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases_negative.py
     scope: static
     why: an SA app view lacks its useCase block
   - id: view_tokens
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens_negative.py
     scope: static
     why: a {{...}} token in a view spec is unresolvable
   - id: chart_rendering
@@ -233,17 +233,17 @@ gates:
     why: a semantic view exposes an H3 cell without saying what it can do
   - id: client_polling
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_client_polling.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_client_polling_negative.py
     scope: static
     why: client polling bypasses the visibility-guarded hook and keeps warehouses up
   - id: batch_transport
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_batch_transport.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_batch_transport_negative.py
     scope: static
     why: a batch workload uses the interactive SQL transport
   - id: studio_generation_guards
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_studio_generation_guards.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_studio_generation_guards_negative.py
     scope: static
     why: Data Studio loses its POI-cap override or a setup-phase heartbeat
   - id: site_impact_store_keys
@@ -314,14 +314,6 @@ gates:
 debt:
   missing_negative:
     - install_order
-    - view_catalog_drift
-    - cowork_skills_drift
-    - super_agent_spec_drift
-    - view_usecases
-    - view_tokens
-    - client_polling
-    - batch_transport
-    - studio_generation_guards
     - deployment_coherence
     - stream_invariants
     - plan_standards_view
