@@ -74,6 +74,12 @@ ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 # contract and the projections exist, and BEFORE the semantic views bind to it.
 DELIVERY_SYNC_SQL="$SCRIPTS/delivery_sync_layer.sql"
 LABOR_LAYER_SQL="$SKILL_DIR/fleet_sa_app/app/labor_layer.sql"
+# Route-plan standardization + planner variance. Engine-FREE: reads only the
+# FLEET_APP contract (CORE.VW_DIM_PLAN / VW_DIM_SITE + ROUTE_OPTIMIZATION), so it
+# is correct under --no-engine. The live optimizer comparison that prices a
+# non-standard plan lives in analytic_layer_live_routing.sql instead.
+PLAN_STANDARDS_SQL="$SCRIPTS/plan_standards_layer.sql"
+MULTIDROP_PRESET_SQL="$SCRIPTS/preset_national_multidrop.sql"
 # The engine-dependent half extracted from analytic_layer.sql + delivery_sync_layer.sql.
 LIVE_ROUTING_SQL="$SCRIPTS/analytic_layer_live_routing.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
@@ -204,7 +210,36 @@ snow sql -c "$CONNECTION" -f "$SCRIPTS/warehouses.sql" >/tmp/ifa_warehouses.log 
   || note "  WARNING: warehouse setup reported errors -- see /tmp/ifa_warehouses.log"
 
 note "[1/8] resolving SPCS infra..."
-if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
+# STICKY: FLEET-owned infra wins once it exists. On a from-scratch install this
+# step always runs before the engine is built, so the ORS probe below fails and
+# the FLEET infra is self-provisioned and the apps are deployed onto it. A plain
+# "ORS if present" check then flipped on EVERY re-run (the engine now exists):
+# measured on wgb26798, the idempotency run re-pushed both app images into
+# OPENROUTESERVICE_APP.core.image_repository, swapped the live services'
+# external access integrations from FLEET_APP_*_EAI to ORS_*_EAI, changed both
+# spec digests and suspended/resumed both apps - while printing "all steps OK".
+# It also reported pool=OPENROUTESERVICE_APP_COMPUTE_POOL for services that stay
+# on FLEET_APPS_COMPUTE_POOL (a pool cannot change on an existing service). That
+# is the silent mid-life migration lib/resolve_image_repo.sh exists to prevent,
+# and the export below overrode its "stick to the live service" rule.
+# Accounts that never self-provisioned FLEET infra (engine installed first) keep
+# resolving to the ORS infra exactly as before.
+if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA FLEET_INTELLIGENCE.CORE;" 'IMAGE_REPOSITORY' \
+   && obj_exists "SHOW COMPUTE POOLS LIKE 'FLEET_APPS_COMPUTE_POOL';" 'FLEET_APPS_COMPUTE_POOL'; then
+  note "  reusing FLEET-owned infra (provisioned by an earlier run of this installer)"
+  IMAGE_REPO_SQL_NAME="FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY"
+  COMPUTE_POOL="FLEET_APPS_COMPUTE_POOL"
+  CARTO_EAI="FLEET_APP_CARTO_EAI"
+  OSM_EAI="FLEET_APP_OSM_EAI"
+  SPEC_STAGE_NAME="FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE"
+  # Re-assert it (all IF NOT EXISTS; the two network rules are CREATE OR REPLACE
+  # and measured safe while their EAIs are bound to live services) so a partly
+  # deleted FLEET infra is repaired rather than half-used.
+  if [ "${SKIP_INFRA:-0}" != "1" ]; then
+    snow sql -c "$CONNECTION" -f "$REF/infra.sql" >/tmp/ifa_infra.log 2>&1 \
+      || { echo "ERROR: infra provisioning failed"; tail -30 /tmp/ifa_infra.log; step "1 infra" FAILED; exit 1; }
+  fi
+elif obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
    && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
    && obj_exists "SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'ORS_CARTO_EAI';" 'ORS_CARTO_EAI'; then
   note "  reusing OPENROUTESERVICE_APP infra"
@@ -515,8 +550,18 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
       [ "$ROUTING_TOOLS_RC" -ne 0 ] && note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
       ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/11 ROUTING_TOOLS.TOOL_* procs deployed - routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
       note "  WARN: $ROUTING_SUBSTRATE"
+    elif [ "$ROUTING_TOOLS_RC" -ne 0 ]; then
+      # The count alone cannot convict a partial deploy. `snow sql -f` stops at
+      # the first error, so a failure late in deploy-agent.sql leaves every proc
+      # ABOVE it in place - measured: an ALTER naming a stale signature aborted
+      # the file with 630 lines left, the 16 surviving procs passed `>= 11`, and
+      # this branch printed "OK (11/11)" while TOOL_BACKLOAD_CHAIN_SOLVE (wrapped
+      # by the backload_chain_solve verb) was never created. A non-zero exit is
+      # therefore DEGRADED regardless of how many procs happen to exist.
+      ROUTING_SUBSTRATE="DEGRADED: deploy-agent.sql exited rc=$ROUTING_TOOLS_RC (stop-on-first-error: every proc after the failing statement is missing; ${TOOL_N} TOOL_* procs present) - see /tmp/ifa_routing_tools.log"
+      note "  WARN: $ROUTING_SUBSTRATE"
     else
-      ROUTING_SUBSTRATE="OK (11/11 ROUTING_TOOLS.TOOL_* procs)"
+      ROUTING_SUBSTRATE="OK (${TOOL_N} ROUTING_TOOLS.TOOL_* procs, deploy-agent.sql rc=0)"
       note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else
@@ -756,6 +801,27 @@ PYEOF
   fi
 else
   step "4.25 labour" SKIPPED
+fi
+
+# ── 4.27 route-plan standards (FLEET_APP.PLAN_STANDARDS) ──────────────────
+# Scores every planned route against a written planning standard and ranks the
+# planners on compliance AND on consistency, so "our planners each build routes
+# differently" becomes a number instead of an anecdote.
+#
+# Must run AFTER 4 (needs FLEET_APP.CORE.VW_DIM_PLAN / VW_DIM_SITE and
+# FLEET_APP.ROUTE_OPTIMIZATION.VW_FLEET_CURRENT) and BEFORE 4.5, which creates
+# SV_PLAN_STANDARDS over these views.
+#
+# Engine-free by construction: it reads only the FLEET_APP contract, so it is
+# correct under --no-engine and is NOT gated on the routing engine. The live
+# optimizer comparison is a separate UDTF in step 4.3.
+if [ "${SKIP_PLAN_STANDARDS:-0}" != "1" ]; then
+  note "[4.27/8] route-plan standards (FLEET_APP.PLAN_STANDARDS)..."
+  snow sql -c "$CONNECTION" -f "$PLAN_STANDARDS_SQL" --enable-templating NONE >/tmp/ifa_plan_standards.log 2>&1 \
+    && step "4.27 plan standards" OK \
+    || { note "  WARN: plan-standards layer reported errors; see /tmp/ifa_plan_standards.log"; step "4.27 plan standards" WARN; }
+else
+  step "4.27 plan standards" SKIPPED
 fi
 
 # ── 4.3 live-routing UDTFs (the engine-dependent half of 3.5 + 4.2) ──────
@@ -1172,6 +1238,53 @@ if [ "${SKIP_ROLES:-0}" != "1" ]; then
     || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
 else
   step "8 roles" SKIPPED
+fi
+
+# ── 8.2 national multi-drop generation preset ─────────────────────────────
+# Registers the 'national-multidrop-hgv' Data Studio profile as a catalog ROW
+# (IS_BUILTIN = FALSE), which is the documented way to onboard a generation mode
+# without rebuilding the admin image. Neither the admin app's boot MERGE
+# (WHEN MATCHED AND tgt.IS_BUILTIN = TRUE) nor its stale-builtin DELETE
+# (WHERE IS_BUILTIN = TRUE) can touch a non-builtin row, so this survives
+# restarts and the file is safe to re-run.
+#
+# Exists because the two shipped HGV/urban presets bracket a bottler without
+# hitting it: SanFrancisco/urban-ebike gives 28.1 stops per route in ONE city,
+# while regional-hgv gives 1.3-1.6 at country scale because it models line-haul.
+# This preset is country scale with urban trip density, which is what
+# route-plan standardization analytics need.
+#
+# ORDER: GENERATION_PROFILE_CATALOG has exactly one DDL owner - the admin app's
+# boot (init.ts -> ensureGenerationProfileCatalog). This step used to run as
+# "4.28", BEFORE the apps step, so on a fresh account its MERGE always failed
+# with "Object ... GENERATION_PROFILE_CATALOG does not exist" and the preset was
+# never registered; every maintainer account already had the table from an
+# earlier boot. It now runs after step 7, and because the admin deploy has no
+# readiness wait (the table appears only once the container's boot reaches that
+# call), it waits for the table with a bounded poll rather than racing it.
+# Generation itself is always an explicit operator action in Data Studio, never
+# part of install, and nothing downstream in this installer reads the row.
+if [ "${SKIP_GENERATION_PRESETS:-0}" != "1" ]; then
+  note "[8.2/8] national multi-drop generation preset..."
+  PRESET_TABLE=0
+  for _i in $(seq 1 "${PRESET_TABLE_WAIT_TRIES:-30}"); do
+    if obj_exists "SHOW TABLES LIKE 'GENERATION_PROFILE_CATALOG' IN SCHEMA FLEET_INTELLIGENCE.CORE;" 'GENERATION_PROFILE_CATALOG'; then
+      PRESET_TABLE=1; break
+    fi
+    [ "$_i" = "1" ] && note "  waiting for the admin app boot to create FLEET_INTELLIGENCE.CORE.GENERATION_PROFILE_CATALOG..."
+    sleep 20
+  done
+  if [ "$PRESET_TABLE" = "1" ]; then
+    snow sql -c "$CONNECTION" -f "$MULTIDROP_PRESET_SQL" --enable-templating NONE >/tmp/ifa_multidrop_preset.log 2>&1 \
+      && step "8.2 multidrop preset" OK \
+      || { note "  WARN: preset registration reported errors; see /tmp/ifa_multidrop_preset.log"; step "8.2 multidrop preset" WARN; }
+  else
+    note "  WARN: GENERATION_PROFILE_CATALOG not created by the admin app boot within the wait; preset NOT registered."
+    note "        Check the admin app logs, then re-run: snow sql -c $CONNECTION -f $MULTIDROP_PRESET_SQL --enable-templating NONE"
+    step "8.2 multidrop preset" WARN
+  fi
+else
+  step "8.2 multidrop preset" SKIPPED
 fi
 
 # ── 8.5 deployment coherence verification ───────────────────────

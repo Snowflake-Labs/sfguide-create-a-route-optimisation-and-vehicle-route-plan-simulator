@@ -118,15 +118,19 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
           WHERE t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
         ),
         flows AS (
-          SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
+          SELECT REGION, ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1, 2
           UNION ALL
-          SELECT DESTINATION_POI_ID AS POI_ID, 0 AS OUT_CNT, COUNT(*) AS IN_CNT FROM recent_trips GROUP BY 1
+          SELECT REGION, DESTINATION_POI_ID AS POI_ID, 0 AS OUT_CNT, COUNT(*) AS IN_CNT FROM recent_trips GROUP BY 1, 2
         ),
+        -- Keyed on (REGION, POI_ID). A POI id repeats across regions (483
+        -- measured), so aggregating on the id alone MERGED two regions' trip
+        -- flows into one score and then reported whichever region's copy of the
+        -- place the join happened to pick.
         agg AS (
-          SELECT POI_ID, SUM(OUT_CNT) AS OUTBOUND, SUM(IN_CNT) AS INBOUND
+          SELECT REGION, POI_ID, SUM(OUT_CNT) AS OUTBOUND, SUM(IN_CNT) AS INBOUND
           FROM flows
           WHERE POI_ID IS NOT NULL
-          GROUP BY POI_ID
+          GROUP BY REGION, POI_ID
         )
         SELECT
           p.LOCATION_ID                                       AS TERMINAL_ID,
@@ -143,7 +147,7 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
             + ROUND(GREATEST(0, a.OUTBOUND - a.INBOUND) * 0.25, 0) AS DEMAND_SCORE
         FROM agg a
         JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
-          ON p.LOCATION_ID = a.POI_ID
+          ON p.LOCATION_ID = a.POI_ID AND p.REGION = a.REGION
         WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','STORE','RESTAURANT')
           AND (a.OUTBOUND - a.INBOUND) > 0`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
@@ -510,13 +514,20 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- to no single drop-off. Verified to return the same 100 vehicles and
           -- the same coordinates as the MAX_BY form.
           SELECT VEHICLE_ID,
+                 REGION,
                  DESTINATION_LON    AS DROPOFF_LON,
                  DESTINATION_LAT    AS DROPOFF_LAT,
                  DESTINATION        AS DROPOFF_GEOM,
                  DESTINATION_POI_ID AS DROPOFF_POI_ID,
                  TRIP_END           AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TRIP_END DESC) = 1
+          -- Keyed on (REGION, VEHICLE_ID): VEHICLE_ID is unique only WITHIN a
+          -- region. Measured on tib85385, V-DRI-00013 and V-DRI-00019 exist in
+          -- both UsTexas and UnitedStatesOfAmerica, so partitioning on
+          -- VEHICLE_ID alone gave a Texas trailer the globally-latest trip -
+          -- a USA trip ending in Florida, ~900 km outside the Texas road graph,
+          -- which made ORS refuse the whole solve with code 6010.
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY REGION, VEHICLE_ID ORDER BY TRIP_END DESC) = 1
         ),
         -- Home anchor is grouped BY REGION. Averaging POI coordinates across two
         -- regions puts the fallback depot in the ocean between them.
@@ -525,29 +536,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           GROUP BY REGION
         ),
-        -- Collapse DIM_POIS to one row per LOCATION_ID. The base table can have
-        -- multiple rows per LOCATION_ID (POI name variants, regen overlap),
-        -- which would otherwise multiply trailer rows via the LEFT JOINs below
-        -- and cause VROOM to receive the same TRAILER_ID as multiple vehicles.
+        -- Collapse DIM_POIS to one row per (REGION, LOCATION_ID). The base table
+        -- can have multiple rows per LOCATION_ID (POI name variants, regen
+        -- overlap), which would otherwise multiply trailer rows via the LEFT
+        -- JOINs below and cause VROOM to receive the same TRAILER_ID as multiple
+        -- vehicles. REGION is part of the key because 483 LOCATION_IDs appear in
+        -- more than one region - collapsing on the id alone would merge two
+        -- different regions' copies of a place into one arbitrary row.
         poi AS (
           SELECT LOCATION_ID,
+                 REGION,
                  ANY_VALUE(NAME) AS NAME,
                  ANY_VALUE(LAT)  AS LAT,
                  ANY_VALUE(LNG)  AS LNG,
                  ANY_VALUE(POINT_GEOM) AS POINT_GEOM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          GROUP BY LOCATION_ID
+          GROUP BY LOCATION_ID, REGION
         ),
-        -- Collapse DIM_FLEET to one row per VEHICLE_ID for the same reason
-        -- (the synthetic dataset can carry duplicate fleet rows).
+        -- Collapse DIM_FLEET to one row per (REGION, VEHICLE_ID) for the same
+        -- reason (the synthetic dataset can carry duplicate fleet rows). Grouping
+        -- on VEHICLE_ID alone silently DISCARDED one of the two regions a
+        -- colliding id belongs to, and ANY_VALUE(REGION) then picked the survivor
+        -- arbitrarily.
         fleet AS (
           SELECT VEHICLE_ID,
-                 ANY_VALUE(REGION)             AS REGION,
+                 REGION,
                  ANY_VALUE(VEHICLE_TYPE)       AS VEHICLE_TYPE,
                  ANY_VALUE(HOME_LOCATION_ID)   AS HOME_LOCATION_ID,
                  ANY_VALUE(BATTERY_RANGE_KM)   AS BATTERY_RANGE_KM
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-          GROUP BY VEHICLE_ID
+          GROUP BY VEHICLE_ID, REGION
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -587,14 +605,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
           c.PAYLOAD_KG_TYP::NUMBER                            AS MAX_PAYLOAD_KG,
           NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
         FROM fleet f
-        JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+        JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID AND ld.REGION = f.REGION
         -- Class profile resolved per VEHICLE, not from one CONFIG value, so a
         -- mixed-mode fleet gets the right payload band. An unknown vehicle_type
         -- drops that vehicle (what the old EXISTS-on-cls guard did globally).
         JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = f.VEHICLE_TYPE
         LEFT JOIN home_anchor ha ON ha.REGION = f.REGION
-        LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID`,
+        LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID AND h.REGION = f.REGION
+        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID AND d.REGION = ld.REGION`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -604,11 +622,15 @@ export async function ensureBackloadAndAssetVelocityObjects(
         WITH poi AS (
           -- Same pre-aggregation as VW_EXTERNAL_OFFERS / VW_TRAILERS:
           -- DIM_POIS may have multiple rows per LOCATION_ID after Studio
-          -- re-runs, which would otherwise multiply trip rows here.
+          -- re-runs, which would otherwise multiply trip rows here. REGION is
+          -- part of the key because 483 LOCATION_IDs appear in more than one
+          -- region, so an id-only collapse can label a stop with another
+          -- region's copy of the place.
           SELECT LOCATION_ID,
+                 REGION,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          GROUP BY LOCATION_ID
+          GROUP BY LOCATION_ID, REGION
         ),
         trips AS (
           -- Defence-in-depth: even though FACT_TRIPS uses random TRIP_IDs
@@ -714,8 +736,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- vehicle_type drops those trips, which is what the old global
           -- EXISTS-on-cls guard did for the single active type.
           JOIN OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE c ON c.VEHICLE_TYPE = t.VEHICLE_TYPE
-          LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-          LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+          LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID AND o.REGION = t.REGION
+          LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID AND d.REGION = t.REGION
           LEFT JOIN fleet_size fs ON fs.REGION = t.REGION
           QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY t.REGION,
@@ -765,14 +787,16 @@ export async function ensureBackloadAndAssetVelocityObjects(
         COMMENT = ${TRACK}
         AS
         WITH poi AS (
-          -- Collapse DIM_POIS to one row per LOCATION_ID. Re-running Data
-          -- Studio for the same region used to compound rows, so the LEFT
+          -- Collapse DIM_POIS to one row per (REGION, LOCATION_ID). Re-running
+          -- Data Studio for the same region used to compound rows, so the LEFT
           -- JOINs below would multiply offers; pre-aggregating here makes
-          -- the view robust to that.
+          -- the view robust to that. REGION is part of the key because 483
+          -- LOCATION_IDs appear in more than one region.
           SELECT LOCATION_ID,
+                 REGION,
                  ANY_VALUE(NAME) AS NAME
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
-          GROUP BY LOCATION_ID
+          GROUP BY LOCATION_ID, REGION
         ),
         offers AS (
           -- Dedupe FACT_OFFERS by OFFER_ID. The seed pipeline can
@@ -896,8 +920,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.LISTING_TEXT
         FROM shifted f
         JOIN cls c ON c.REGION = f.REGION
-        LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID`,
+        LEFT JOIN poi p2 ON p2.LOCATION_ID = f.PICKUP_POI_ID AND p2.REGION = f.REGION
+        LEFT JOIN poi d  ON d.LOCATION_ID  = f.DROPOFF_POI_ID AND d.REGION = f.REGION`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------
@@ -1030,6 +1054,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
           ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (km).'),
           ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor: shipment priority = clamp(round(loaded-km revenue / scale), 1..100).'),
           ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy builder.'),
+          ('MAX_DEVIATION_PCT',          '200',   'number', 'core',   TRUE,  'Per-vehicle tour distance cap as a percentage above its reposition baseline (idle -> next start). Sent as VROOM vehicle.max_distance together with DEVIATION_ALLOWANCE_KM.'),
+          ('DEVIATION_ALLOWANCE_KM',     '300',   'number', 'core',   TRUE,  'Absolute km added to every vehicle distance cap (and its drive time to the time cap). A vehicle already at its end point has a zero baseline, so this is its whole cap.'),
+          ('DETOUR_BUDGET_HRS',          '4',     'number', 'core',   TRUE,  'Extra drive hours allowed on top of each vehicle reposition time. Sent as VROOM vehicle.max_travel_time.'),
+          ('FIXED_DISPATCH_USD',         '140',   'number', 'core',   TRUE,  'Fixed cost per dispatched vehicle. Sent as VROOM vehicle.costs.fixed by both the agent solve and the page default.'),
           ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival.'),
           ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.'),
           ('INTERNAL_LOADS_PER_TRAILER','4',     'number', 'core',   TRUE,  'Waiting internal loads per idle trailer. Sizes the internal pool relative to the fleet so it means the same thing in every region.'),
@@ -2085,8 +2113,8 @@ $$`,
           f.VEHICLE_TYPE,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
         FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID AND p.REGION = f.REGION
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID AND d.REGION = f.REGION`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {

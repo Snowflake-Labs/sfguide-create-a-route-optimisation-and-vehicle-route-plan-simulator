@@ -275,9 +275,9 @@ export function suspendedMessage(
   }
   if (state === 'not_ready') {
     return (
-      `The routing engine for ${region} is starting up and cannot answer yet. ` +
-      `Loading its road graph usually takes ${waitCopy}. ` +
-      `Please try again in a moment.`
+      `The routing engine for ${region} is running but did not answer in time. ` +
+      `It may still be loading its road graph (usually ${waitCopy}) or be busy ` +
+      `with other requests. Please try again in a moment.`
     );
   }
   return (

@@ -22,48 +22,62 @@ export function DataTable({ columns, rows, totalRows }: DataTableProps) {
       style={{
         borderRadius: '8px',
         border: '1px solid var(--border-default, #e5e7eb)',
+        // Clips the children to the rounded corners. The SCROLL lives on the
+        // inner element below: `hidden` here used to be the only overflow rule in
+        // the chain, so a result wider than the chat panel was squeezed and then
+        // cut off with no way to reach the remaining columns.
         overflow: 'hidden',
       }}
     >
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-        <thead>
-          <tr>
-            {columns.map((col) => (
-              <th
-                key={col.key}
-                style={{
-                  padding: '8px 12px',
-                  textAlign: 'left',
-                  fontWeight: 600,
-                  backgroundColor: 'var(--surface-secondary, #f3f4f6)',
-                  borderBottom: '1px solid var(--border-default, #e5e7eb)',
-                  color: 'var(--text-primary, #111827)',
-                }}
-              >
-                {interpolateTokens(col.label, display)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {displayRows.map((row, i) => (
-            <tr key={i}>
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: '380px' }}>
+        <table style={{ minWidth: '100%', width: 'max-content', borderCollapse: 'collapse', fontSize: '13px' }}>
+          <thead>
+            <tr>
               {columns.map((col) => (
-                <td
+                <th
                   key={col.key}
                   style={{
                     padding: '8px 12px',
+                    textAlign: 'left',
+                    fontWeight: 600,
+                    whiteSpace: 'nowrap',
+                    backgroundColor: 'var(--surface-secondary, #f3f4f6)',
                     borderBottom: '1px solid var(--border-default, #e5e7eb)',
                     color: 'var(--text-primary, #111827)',
+                    // Survives the vertical scroll of the box above. Needs the
+                    // opaque background (rows pass underneath) and a z-index over
+                    // the cell borders.
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 1,
                   }}
                 >
-                  {formatCellValue(row[col.key], { column: col.key, grouping: true, empty: '' })}
-                </td>
+                  {interpolateTokens(col.label, display)}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {displayRows.map((row, i) => (
+              <tr key={i}>
+                {columns.map((col) => (
+                  <td
+                    key={col.key}
+                    style={{
+                      padding: '8px 12px',
+                      whiteSpace: 'nowrap',
+                      borderBottom: '1px solid var(--border-default, #e5e7eb)',
+                      color: 'var(--text-primary, #111827)',
+                    }}
+                  >
+                    {formatCellValue(row[col.key], { column: col.key, grouping: true, empty: '' })}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {hasMore && !expanded && (
         <div
           onClick={() => setExpanded(true)}

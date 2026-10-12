@@ -135,16 +135,26 @@ def check_charts(problems: list[str]) -> None:
                         f"server-side render container. Use one of "
                         f"{sorted(GENERIC_FONTS)}.")
 
-        # RULE C: its own section, so an append cannot absorb it.
-        for line in orch.split("\n"):
-            if line.startswith(CHART_SECTION) and ":" in line:
-                break
-        else:
+        # RULE C: its own section, so an append cannot absorb it. The header
+        # must be the NEAREST section header above the block - a header that
+        # merely exists somewhere passed with the block appended to the last
+        # section and the header left behind, empty, above another section.
+        heads = [
+            line for line in orch[: orch.index("<chart_customization>")].split("\n")
+            if re.match(r"[A-Z]{3,}[A-Z ]*\b", line) and ":" in line
+        ]
+        if not any(h.startswith(CHART_SECTION) for h in heads):
             problems.append(
                 f"RULE C {name}: the chart_customization block has no "
                 f"'{CHART_SECTION}...:' section header of its own, so it is part "
                 f"of whichever section precedes it and any append to that "
                 f"section edits it.")
+        elif not heads[-1].startswith(CHART_SECTION):
+            problems.append(
+                f"RULE C {name}: the chart_customization block sits under "
+                f"'{heads[-1][:60]}', not under its own '{CHART_SECTION}...:' "
+                f"header, so it is part of that section and any append to it "
+                f"edits the block.")
 
 
 def walk_fonts(node, prefix: str = ""):

@@ -1,6 +1,6 @@
 ---
 name: routing-solution-cleanup
-description: "Discover and remove all Snowflake objects created by skills in this repo. Uses the COMMENT tracking tag (sf_sit-is-fleet) to find objects, generates DROP statements, and optionally executes them. Use when: cleaning up after a demo, removing all skill-created objects, tearing down an environment, uninstalling a specific skill's objects. Do NOT use for: dropping objects not created by these skills, production environment cleanup without review. Triggers: routing-solution-cleanup, cleanup, teardown, remove, uninstall, drop all, clean up demo, remove skill objects, reset environment."
+description: "Discover and remove all Snowflake objects created by skills in this repo. Uses the COMMENT tracking tag (sf_sit-is-fleet) to find objects, generates DROP statements, and optionally executes them. Use when: cleaning up after a demo, removing all skill-created objects, tearing down an environment, uninstalling a specific skill's objects. Do NOT use for: dropping objects not created by these skills, production environment cleanup without review. Triggers: routing-solution-cleanup, cleanup, teardown, remove, uninstall, drop all, clean up demo, remove skill objects, reset environment, full teardown and reinstall, fresh reinstall, brand new machine, fresh-clone state, reset local state."
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
@@ -56,6 +56,54 @@ cannot. Use it while iterating on the analytics stack; never for a release check
 or to validate an engine change. The four affected phases each print whether they
 preserved or dropped, so the run's own output states which mode it took.
 
+## Full fresh-machine teardown + reinstall
+
+"Full teardown and reinstall" means the account AND this machine end up as if
+the solution had never been installed - the state of a new laptop that has just
+cloned the repo. Installed software (docker, node, snow, python, crane) stays.
+A Snowflake-only wipe is not a fresh install: a developed checkout reuses state
+a clone does not have (every deploy step runs `[ -d node_modules ] || npm ci`,
+so stale dependencies mask lockfile drift), and three source files once existed
+only on the developer machine, so every local install passed while a fresh clone
+404'd two admin pages.
+
+Run all three steps, in order, from the repo root:
+
+```bash
+CONN=<connection>
+
+# 1. Account: full teardown (KEEP_FLEET_ENGINE stays FALSE - the engine is re-tested)
+snow sql -f .cortex/skills/routing-solution-cleanup/references/drop-order.sql -c "$CONN"
+
+# 2. Machine: dry run first, review, then apply
+bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --connection "$CONN"
+bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --connection "$CONN" --yes
+
+# 3. Reinstall with an empty npm cache and uncached image builds
+npm_config_cache="$(mktemp -d)" FLEET_DOCKER_BUILD_FLAGS="--no-cache --pull" \
+  bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection "$CONN"
+```
+
+What step 2 does (`scripts/reset_local_state.sh`, dry run unless `--yes`):
+
+| Area | Action |
+|---|---|
+| Gates | Refuses if the tracked tree is dirty or has untracked files (a clone has neither), or if `install-fleet-apps/scripts/check_no_ignored_source.py` finds a source file hidden by `.gitignore` - the reset would delete the only copy. |
+| Repo, GENERATED | Deletes every ignored path whose `.gitignore` rule marks it rebuildable: `node_modules/`, `.next/`, `dist/`, `__pycache__/`, `tsconfig.tsbuildinfo`, synapse `fleet_tools/_installed/`, `.DS_Store`. |
+| Repo, PERSONAL | LEFT IN PLACE: everything else ignored (run logs, `logs/*.md`, `.snowflake/cortex/plans`, `docs/blogpost`, `docs/old`, eval results, keys). No tracked script, build or app reads them, so they cannot change what an install does. A path whose rule is unclassified fails the gate rather than being guessed at. |
+| `/tmp` | Deletes the installer's log and scratch files. A self-check fails if any install script writes a `/tmp` path the list does not cover. |
+| Docker | `docker rmi` every local image of this solution (`fleet_intelligence` / `openrouteservice_app` SPCS repos, any account) and `docker logout` the target account's SPCS registry. Other images, the build cache and other logins are untouched; step 3's `--no-cache --pull` gives the build the same no-cache behaviour a new machine has without pruning other projects' cache. |
+| Post-condition | Fails unless no GENERATED path remains and `git status --porcelain` is empty: an install from this checkout sees exactly what a fresh clone has. |
+
+`--only repo|tmp|docker` limits a run to one area (for testing the repo half in a scratch clone without touching the machine's real `/tmp` and images); a fresh-machine reset always runs all three.
+
+Verify it (optional, decisive): the checkout's file list, minus PERSONAL paths, must equal a fresh clone's.
+
+```bash
+T=$(mktemp -d); git clone -q --branch "$(git branch --show-current)" "file://$PWD" "$T/c"
+python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py --compare-clone "$T/c"
+```
+
 ## Error Logging
 
 > Follow the Error Logging convention in AGENTS.md. Log file prefix: `cleanup`.
@@ -90,6 +138,9 @@ These are ALL object types created across all skills. The drop order reverses cr
 | 17 | Schemas | `SHOW SCHEMAS` + comment match | `DROP SCHEMA IF EXISTS <name> CASCADE` |
 | 18 | Warehouses | `SHOW WAREHOUSES` + comment match | `DROP WAREHOUSE IF EXISTS <name>` (DROP does not need a prior SUSPEND) |
 | 19 | Marketplace Databases | `SHOW DATABASES` + name/origin match | `DROP DATABASE IF EXISTS <name>` |
+| 20 | Resource Monitors (opt-in) | `SHOW RESOURCE MONITORS LIKE 'FLEET_%'` | `DROP RESOURCE MONITOR IF EXISTS FLEET_ROUTING_ANALYTICS_MONITOR` |
+| 21 | Notification Integrations (opt-in) | `SHOW INTEGRATIONS LIKE 'FLEET_%NOTIFICATIONS'` | `DROP INTEGRATION IF EXISTS FLEET_BUDGET_NOTIFICATIONS` / `FLEET_LABOR_NOTIFICATIONS` |
+| 22 | Opt-in EAI / SAP landing DB | `SHOW INTEGRATIONS LIKE 'ROUTING_MAPBOX_EAI'`, `SHOW DATABASES LIKE 'SAP_SOURCE'` | `DROP INTEGRATION IF EXISTS ROUTING_MAPBOX_EAI`, `DROP DATABASE IF EXISTS SAP_SOURCE CASCADE` |
 
 ## Step 1: Set Session Tag
 
@@ -279,7 +330,20 @@ SHOW COMPUTE POOLS;
 
 -- Verify no project integrations remain
 SHOW INTEGRATIONS;
--- Expected: only SNOWFLAKE$LOCAL_APPLICATION (system)
+-- Expected: only SNOWFLAKE$LOCAL_APPLICATION (system) - no FLEET_*, ORS_*,
+--           ROUTING_MAPBOX_EAI or FLEET_*_NOTIFICATIONS
+
+-- Verify the opt-in resource monitor is gone (account-level: no database drop
+-- removes it)
+SHOW RESOURCE MONITORS LIKE 'FLEET_%';
+-- Expected: no rows
+
+-- Verify no agent is still registered with Snowflake CoWork. Dropping an agent
+-- (FLEET_INTELLIGENCE CASCADE) does NOT remove its CoWork entry; drop-order.sql
+-- PHASE 1b deregisters them, and this is the check that it did.
+SHOW AGENTS IN SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT;
+-- Expected: no row with database_name = FLEET_INTELLIGENCE
+--           (an error here means the account has no CoWork object - also clean)
 
 -- Verify no marketplace listings attached
 -- (Overture Maps databases being dropped detaches the listing)
@@ -293,6 +357,8 @@ Report results as a table:
 | Warehouses | 2 | 2 (MY_WH, SYSTEM$*) | CLEAN |
 | Compute Pools | 2 | 2 (SYSTEM_*) | CLEAN |
 | Integrations | 1 | 1 (SNOWFLAKE$LOCAL_APPLICATION) | CLEAN |
+| Resource monitors (FLEET_*) | 0 | 0 | CLEAN |
+| CoWork agent registrations | 0 | 0 (FLEET_INTELLIGENCE.*) | CLEAN |
 
 ## Cleanup by Skill
 

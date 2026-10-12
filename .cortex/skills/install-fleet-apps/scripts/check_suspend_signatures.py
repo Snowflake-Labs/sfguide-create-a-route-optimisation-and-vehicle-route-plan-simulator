@@ -72,6 +72,11 @@ def gateway_error_codes() -> tuple[set[str], list[str]]:
             "routing_service.py no longer returns the breaker cause as 'error'; "
             "a fail-fast response must keep naming the underlying code"
         )
+    # ...and the breaker's FALLBACK reaches the body through that same
+    # indirection: `_breaker_check` returns `st.get('cause') or 'circuit_open'`.
+    # That literal never appears as `'error': '...'`, so without this the code
+    # the docstring names as the historical defect was not checked at all.
+    codes.update(re.findall(r"""return\s+False\s*,[^\n]*?\bor\s+['"]([a-z0-9_]+)['"]""", text))
     if not codes:
         problems.append(f"{GATEWAY_PY.name}: found no error codes - has the response shape changed?")
     return codes, problems

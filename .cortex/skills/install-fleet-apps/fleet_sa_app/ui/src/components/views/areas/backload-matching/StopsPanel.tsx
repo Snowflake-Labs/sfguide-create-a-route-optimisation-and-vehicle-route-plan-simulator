@@ -1,6 +1,6 @@
 'use client';
 
-import { Assignment, Stop, realPlace } from './helpers';
+import { Assignment, Stop, realPlace, isAtEndBaseline, returnLegKm } from './helpers';
 
 interface Props {
   assignment: Assignment | null;
@@ -36,7 +36,8 @@ export default function StopsPanel({ assignment, showWaitTimes = true }: Props) 
           {assignment.EMPTY_OUT_KM !== undefined && (assignment.EMPTY_BACK_KM ?? 0) > 0
             ? ` (${Math.round(assignment.EMPTY_OUT_KM)} out + ${Math.round(assignment.EMPTY_BACK_KM as number)} back)` : ''}
           {' \u00b7 '}loaded {Math.round(assignment.LOADED_KM)} km
-          {assignment.DETOUR_KM !== undefined ? ` \u00b7 detour +${Math.round(assignment.DETOUR_KM)} km` : ''}
+          {returnLegKm(assignment) !== undefined ? ` \u00b7 then ${Math.round(returnLegKm(assignment) as number)} km empty to end` : ''}
+          {assignment.DETOUR_KM !== undefined && !isAtEndBaseline(assignment) ? ` \u00b7 detour +${Math.round(assignment.DETOUR_KM)} km` : ''}
           {assignment.SAVED_KM !== undefined ? ` \u00b7 deadhead avoided ~${Math.round(assignment.SAVED_KM)} km` : ''}
           {assignment.TOUR_HRS ? ` \u00b7 ${assignment.TOUR_HRS.toFixed(1)} h` : ` \u00b7 ${assignment.SCORE.toFixed(0)}s`}
           {showWaitTimes && totalWait > 0 ? ` \u00b7 wait ${Math.round(totalWait / 60)} min total` : ''}

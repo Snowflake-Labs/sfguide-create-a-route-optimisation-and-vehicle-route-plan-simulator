@@ -1,0 +1,12 @@
+{
+ "sql\u001f--format\u001fjson\u001f-q\u001fSELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):gateway_version::string AS V": {
+  "rc": 0,
+  "stderr": "",
+  "stdout": "[\n    {\n        \"V\": \"v1.1.16\"\n    }\n]\n"
+ },
+ "sql\u001f--format\u001fjson\u001f-q\u001fSELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.routing_gateway_service') AS S": {
+  "rc": 0,
+  "stderr": "",
+  "stdout": "[\n    {\n        \"S\": \"[{\\\"status\\\":\\\"READY\\\",\\\"message\\\":\\\"Running\\\",\\\"containerName\\\":\\\"reverse-proxy\\\",\\\"instanceId\\\":\\\"0\\\",\\\"serviceName\\\":\\\"ROUTING_GATEWAY_SERVICE\\\",\\\"image\\\":\\\"org-account.registry.snowflakecomputing.com/openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.16\\\",\\\"restartCount\\\":0,\\\"startTime\\\":\\\"2026-10-12T08:20:21Z\\\"}]\"\n    }\n]\n"
+ }
+}

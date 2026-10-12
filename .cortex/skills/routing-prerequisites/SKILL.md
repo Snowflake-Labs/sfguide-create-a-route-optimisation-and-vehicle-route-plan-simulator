@@ -1,6 +1,6 @@
 ---
 name: routing-prerequisites
-description: "Check and install build prerequisites for the Routing Solution project. Use when: verifying environment setup before building, checking if Docker/Podman/snow CLI are installed, confirming readiness to build. Do NOT use for: building the routing solution itself (use install-fleet-apps), deploying demos, or changing ORS configuration. Triggers: check prerequisites, check build prerequisites, am I ready to build, what do I need installed, verify environment setup, Docker installed, Podman installed, snow CLI installed."
+description: "Check and install build prerequisites for the Routing Solution project. Use when: verifying environment setup before building, checking if Docker/Podman/snow CLI/Node.js/Python packages/crane are installed, confirming readiness to build. Do NOT use for: building the routing solution itself (use install-fleet-apps), deploying demos, or changing ORS configuration. Triggers: check prerequisites, check build prerequisites, am I ready to build, what do I need installed, verify environment setup, Docker installed, Podman installed, snow CLI installed, Node installed."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -10,6 +10,13 @@ metadata:
 # Check Prerequisites
 
 Verify all required tools are installed and guide installation of missing dependencies.
+
+The checks below are the COMPLETE set of commands `install-fleet-apps` calls. A tool the
+installer needs and this skill does not check is a defect here, because the installer then
+fails partway through a long run instead of before it starts. The two easy ones to miss:
+the installer's own preflight and both app image builds call `docker` directly, so Podman
+alone is NOT sufficient; and three Python packages are imported by install steps, so
+`python3` being present is not enough either.
 
 ## Prerequisites
 
@@ -27,20 +34,34 @@ None - this skill helps you install prerequisites!
 
 **Actions:**
 
-1. **Check** which container runtimes are installed:
+1. **Check** the tools the installer calls:
 
    ```bash
    # Check Cortex Code CLI
    cortex --version 2>/dev/null && echo "Cortex Code: INSTALLED" || echo "Cortex Code: NOT FOUND"
    
-   # Check Podman
-   podman --version 2>/dev/null && echo "Podman: INSTALLED" || echo "Podman: NOT FOUND"
-   
-   # Check Docker (optional if Podman is installed)
+   # Check Docker (REQUIRED: install_fleet_apps.sh preflight and both app image builds call `docker`)
    docker --version 2>/dev/null && echo "Docker: INSTALLED" || echo "Docker: NOT FOUND"
+   docker info >/dev/null 2>&1 && echo "Docker Daemon: RUNNING" || echo "Docker Daemon: NOT RUNNING"
    
-   # Check container runtime is running (Podman or Docker)
-   podman info >/dev/null 2>&1 && echo "Podman Daemon: RUNNING" || docker info >/dev/null 2>&1 && echo "Docker Daemon: RUNNING" || echo "Container Runtime: NOT RUNNING"
+   # Check Podman (optional: only usable for the ENGINE image build via CONTAINER_CMD=podman)
+   podman --version 2>/dev/null && echo "Podman: INSTALLED" || echo "Podman: NOT FOUND (optional)"
+   
+   # Check crane (recommended: avoids the SPCS registry push hang on the manifest commit)
+   crane version 2>/dev/null && echo "crane: INSTALLED" || echo "crane: NOT FOUND (recommended)"
+   
+   # Check Node.js >= 20 and npm (synapse tool bundles + both app builds)
+   node -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' 2>/dev/null \
+     && echo "Node.js: $(node --version) OK" || echo "Node.js: NOT FOUND or < 20"
+   npm --version 2>/dev/null && echo "npm: INSTALLED" || echo "npm: NOT FOUND"
+   
+   # Check Python 3 and the three packages install steps import
+   #   PyYAML                      -> pack install (step 4) hard-fails without it
+   #   snowflake-connector-python  -> view verification (step 9) is SKIPPED without it
+   #   requests                    -> engine map download helper
+   python3 --version 2>/dev/null && echo "Python 3: INSTALLED" || echo "Python 3: NOT FOUND"
+   python3 -c 'import yaml, snowflake.connector, requests' 2>/dev/null \
+     && echo "Python packages: INSTALLED" || echo "Python packages: MISSING (PyYAML / snowflake-connector-python / requests)"
    
    # Check Snowflake CLI
    snow --version 2>/dev/null && echo "Snowflake CLI: INSTALLED" || echo "Snowflake CLI: NOT FOUND"
@@ -62,9 +83,12 @@ None - this skill helps you install prerequisites!
    | Prerequisite | Status | Required |
    |--------------|--------|----------|
    | Cortex Code CLI | ✅/❌ | Yes |
-   | Podman | ✅/❌ | Yes (or Docker) |
-   | Docker | ✅/❌ | Yes (or Podman) |
-   | Container Runtime | ✅/❌ | Yes |
+   | Docker (CLI + running daemon) | ✅/❌ | Yes |
+   | Podman | ✅/❌ | No (optional, engine build only) |
+   | crane | ✅/❌ | Recommended |
+   | Node.js >= 20 + npm | ✅/❌ | Yes |
+   | Python 3 | ✅/❌ | Yes |
+   | PyYAML, snowflake-connector-python, requests | ✅/❌ | Yes |
    | Snowflake CLI | ✅/❌ | Yes |
    | Snowflake Connection | ✅/❌ | Yes |
    | Git | ✅/❌ | Yes |
@@ -90,9 +114,15 @@ None - this skill helps you install prerequisites!
 - **Installation:** See [Cortex Code documentation](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli)
 - **Verify:** `cortex --version`
 
-#### Container Runtime Installation (Podman or Docker)
+#### Container Runtime Installation (Docker required, Podman optional)
 
-**Podman** (recommended - no daemon required):
+Docker is required: `install_fleet_apps.sh` refuses to start without the `docker` command,
+and both app images are built with `docker build`. Podman is an optional extra for the
+engine image build only (`CONTAINER_CMD=podman`); it does not replace Docker. Note the
+engine build auto-detects docker first because a default 2 GB podman machine OOMs on the
+ORS image.
+
+**Podman** (optional, engine image build only):
 - **macOS:**
   ```bash
   brew install podman
@@ -114,7 +144,7 @@ None - this skill helps you install prerequisites!
 
 - **Verify:** `podman --version && podman info`
 
-**Docker** (alternative if Podman is not available):
+**Docker** (required):
 - **macOS:**
   ```bash
   brew install --cask docker
@@ -134,6 +164,25 @@ None - this skill helps you install prerequisites!
 
 - **Post-install:** Start Docker Desktop (macOS/Windows) or the daemon (Linux)
 - **Verify:** `docker --version && docker info`
+
+#### crane Installation (recommended)
+- **macOS:** `brew install crane`
+- **Linux:** download a release from https://github.com/google/go-containerregistry/releases
+- **Why:** `docker push` to the SPCS registry intermittently hangs on the final manifest commit; the installer pushes with crane when it is present.
+- **Verify:** `crane version`
+
+#### Node.js Installation (>= 20, includes npm)
+- **macOS:** `brew install node` (or `nvm install 22`)
+- **Windows / Linux:** https://nodejs.org/en/download
+- **Verify:** `node --version && npm --version`
+
+#### Python 3 + Packages Installation
+- **Python 3:** `brew install python` (macOS) or https://www.python.org/downloads/
+- **Packages:**
+  ```bash
+  python3 -m pip install pyyaml snowflake-connector-python requests
+  ```
+- **Verify:** `python3 -c 'import yaml, snowflake.connector, requests'`
 
 #### Snowflake CLI Installation
 - **All platforms:**
@@ -237,14 +286,18 @@ After completion, all these commands should succeed:
 
 ```bash
 cortex --version        # Cortex Code CLI  
-podman --version        # Podman (or docker --version for Docker)
-podman info             # Podman running (or docker info for Docker)
+docker --version        # Docker CLI
+docker info             # Docker daemon running
+node --version          # Node.js >= 20
+npm --version           # npm
+python3 -c 'import yaml, snowflake.connector, requests'   # Python 3 + packages
 snow --version          # Snowflake CLI
 snow connection list    # At least one connection configured
 git --version           # Git
+crane version           # crane (recommended)
 ```
 
-**Note:** Either Podman or Docker is required - you don't need both.
+**Note:** Docker is required. Podman is optional and only used for the engine image build when `CONTAINER_CMD=podman` is set.
 
 ## Common Issues
 

@@ -115,7 +115,21 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   # next.config.ts already aliases these to the consumer copy (authoritative);
   # stripping the nested copies here keeps a fresh build correct even if the
   # alias is ever removed. Safe no-op when the dirs are absent.
-  KIT_NM="$REPO_ROOT/packages/fleet-kit/node_modules"
+  #
+  # The kit's own deps are INSTALLED first, from its tracked lockfile. They are
+  # not optional on a fresh clone: the map-spec gate below runs under tsx, which
+  # (unlike webpack's resolve.symlinks=false) follows the @fleet-kit/core symlink
+  # to packages/fleet-kit/src and resolves the kit's PEER imports (h3-js, react,
+  # maplibre-gl) upward from that real path - and a fresh clone has no
+  # packages/fleet-kit/node_modules at all, so the gate died with
+  # ERR_MODULE_NOT_FOUND 'h3-js' from src/map/geo-coords.ts and the SA deploy
+  # failed. A maintainer tree never sees it because that gitignored directory
+  # survives from kit development. Installing then stripping reproduces exactly
+  # the tree every successful deploy so far has run against.
+  KIT_DIR="$REPO_ROOT/packages/fleet-kit"
+  ( cd "$KIT_DIR" && { [ -d node_modules ] || npm ci >/tmp/fleet_sa_kit_npm.log 2>&1; } ) \
+    || { echo "ERROR: npm ci failed for $KIT_DIR"; tail -30 /tmp/fleet_sa_kit_npm.log; exit 1; }
+  KIT_NM="$KIT_DIR/node_modules"
   if [ -d "$KIT_NM" ]; then
     echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
     rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
@@ -198,6 +212,19 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
         || { echo "ERROR: dash units gate failed (see above)."; exit 1; }
     fi
   fi
+  if [ "${BACKLOAD_CAPS_VERIFY:-1}" != "0" ]; then
+    # The page and TOOL_BACKLOAD_SOLVE each build the VROOM challenge. The agent
+    # path sent max_tasks ONLY, so a CoWork solve was unbounded on tour length
+    # and an answer claimed a deviation cap that was never passed. Also asserts
+    # a zero baseline (vehicle at its end point) is accepted and that the caps
+    # add an allowance instead of collapsing to a 10 km floor.
+    CAPS_GATE="$SKILL_DIR/scripts/check_backload_caps_parity.py"
+    if [ -f "$CAPS_GATE" ]; then
+      echo "[1/7] Verify both backload solve paths send the same tour caps..."
+      python3 "$CAPS_GATE" \
+        || { echo "ERROR: backload caps parity gate failed (see above)."; exit 1; }
+    fi
+  fi
   if [ "${BACKLOAD_MEMO_VERIFY:-1}" != "0" ]; then
     # What the agent can see of a solved plan is one bounded string per panel, and
     # the chat route trims by WHOLE PANEL. A memo that outgrows the budget is
@@ -211,6 +238,39 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       echo "[1/7] Verify the backload memos fit the agent context budget..."
       python3 "$MEMO_GATE" \
         || { echo "ERROR: backload memo gate failed (see above)."; exit 1; }
+    fi
+  fi
+  if [ "${CHAT_PRESENTATION_VERIFY:-1}" != "0" ]; then
+    # Three defects a user reported in one sitting, all on the agent tab, none of
+    # which raised anything: a markdown table squeezed to the panel width and then
+    # clipped (the columns past the edge were simply absent from the answer); a
+    # discrete chart axis drawing every category label on top of the next, because
+    # vega-lite's default labelOverlap for a discrete axis is false and the plot
+    # height was pinned at 260px; and a semantic-view FACT summed by Cortex Analyst
+    # reaching the screen as 21289.670000000002, because the decimal policy had no
+    # hold on the agent's own prose - which is what the agent tab's tables ARE.
+    #
+    # Wired here as well as in .githooks/pre-commit because core.hooksPath is unset,
+    # so the hook never runs and the deploy is the only real enforcement point.
+    for GATE_NAME in check_chat_table_scroll.py check_chart_rendering.py \
+                     check_number_formatting.py check_chart_dual_axis.py; do
+      GATE_PATH="$SKILL_DIR/scripts/$GATE_NAME"
+      if [ -f "$GATE_PATH" ]; then
+        echo "[1/7] Verify chat presentation: $GATE_NAME ..."
+        python3 "$GATE_PATH" \
+          || { echo "ERROR: $GATE_NAME failed (see above)."; exit 1; }
+      fi
+    done
+    # The dual-axis gate's central rules are about BRANCH ORDER and about which
+    # axis a mark is routed to - neither of which any passing run can demonstrate.
+    # Two of its mutations are the states that actually shipped (a count series as
+    # a second bar on a currency axis, and `type: "line"` authored with no second
+    # axis), so the mutations are the evidence and they run with the gate.
+    DUAL_AXIS_NEG="$SKILL_DIR/scripts/check_chart_dual_axis_negative.py"
+    if [ -f "$DUAL_AXIS_NEG" ]; then
+      echo "[1/7] Verify chat presentation: dual-axis mutation tests ..."
+      python3 "$DUAL_AXIS_NEG" \
+        || { echo "ERROR: dual-axis mutation tests failed (see above)."; exit 1; }
     fi
   fi
   if [ "${FORCED_REGION_VERIFY:-1}" != "0" ]; then
@@ -299,6 +359,69 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       fi
     fi
   fi
+
+  # A vehicle can emit TWO CONCURRENT POSITION STREAMS, and every consumer that
+  # assumes one has to keep its guard.
+  #
+  # Same silent class as the gates above, and the worst instance of it so far: a
+  # trip-less IDLE heartbeat pinned at the depot, interleaved into an active
+  # dwell, made Delivery Sync publish a DEPARTED notification for a vehicle that
+  # had not moved, shredded one 18-minute dwell into three visits, and plotted the
+  # dot 520 km from the site - so ON_SITE and JUST_LEFT, the two states the page
+  # exists to show, were BOTH unreachable at every instant tested. Nothing threw;
+  # every individual number was right about the wrong ping, and each surface
+  # looked internally consistent while disagreeing with the others.
+  #
+  # Its own opt-out, like every other gate here: the block above is about map
+  # SURFACES and this one is about telemetry streams, so sharing a switch would
+  # make disabling one silently disable the other.
+  if [ "${STREAM_VERIFY:-1}" != "0" ]; then
+    STREAM_GATE="$SKILL_DIR/scripts/check_concurrent_streams.py"
+    STREAM_NEG="$SKILL_DIR/scripts/check_concurrent_streams_negative.py"
+    if [ -f "$STREAM_GATE" ]; then
+      echo "[1/7] Verify concurrent-stream guards (detector, live status, map)..."
+      python3 "$STREAM_GATE" \
+        || { echo "ERROR: concurrent-stream gate failed (see above)."; exit 1; }
+      if [ -f "$STREAM_NEG" ]; then
+        python3 "$STREAM_NEG" >/dev/null \
+          || { echo "ERROR: concurrent-stream negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$STREAM_NEG'"; exit 1; }
+      fi
+    fi
+  fi
+  # Off-graph / region-key gate. Separate switch again: this one is about a stop
+  # the road graph refuses and the region keys that put it there, which has
+  # nothing to do with telemetry streams or map surfaces.
+  if [ "${OFFGRAPH_VERIFY:-1}" != "0" ]; then
+    OFFGRAPH_GATE="$SKILL_DIR/scripts/check_offgraph_region_keys.py"
+    OFFGRAPH_NEG="$SKILL_DIR/scripts/check_offgraph_region_keys_negative.py"
+    if [ -f "$OFFGRAPH_GATE" ]; then
+      echo "[1/7] Verify off-graph exclusion and region-keyed joins..."
+      python3 "$OFFGRAPH_GATE" \
+        || { echo "ERROR: off-graph/region-key gate failed (see above)."; exit 1; }
+      if [ -f "$OFFGRAPH_NEG" ]; then
+        python3 "$OFFGRAPH_NEG" >/dev/null \
+          || { echo "ERROR: off-graph negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$OFFGRAPH_NEG'"; exit 1; }
+      fi
+    fi
+  fi
+  # Site Impact store-key gate: STORE_ID is not unique across regions, and a
+  # NULL selection must not reach ORS. Both shipped as page-open 500s.
+  if [ "${SITE_IMPACT_VERIFY:-1}" != "0" ]; then
+    SI_GATE="$SKILL_DIR/scripts/check_site_impact_store_keys.py"
+    SI_NEG="$SKILL_DIR/scripts/check_site_impact_store_keys_negative.py"
+    if [ -f "$SI_GATE" ]; then
+      echo "[1/7] Verify Site Impact store joins are region-keyed and null-safe..."
+      python3 "$SI_GATE" \
+        || { echo "ERROR: Site Impact store-key gate failed (see above)."; exit 1; }
+      if [ -f "$SI_NEG" ]; then
+        python3 "$SI_NEG" >/dev/null \
+          || { echo "ERROR: Site Impact negative tests failed. Re-run for detail:"; \
+               echo "         python3 '$SI_NEG'"; exit 1; }
+      fi
+    fi
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
@@ -361,7 +484,10 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   echo "  registry=$REPO_URL"
 
   echo "[3/7] Docker build (prebuilt .next) + push tag=$IMAGE_TAG..."
-  docker build --platform linux/amd64 \
+  # FLEET_DOCKER_BUILD_FLAGS (e.g. "--no-cache --pull") makes a fresh-machine
+  # reinstall build with no cached layer or base image; empty by default.
+  # shellcheck disable=SC2086
+  docker build --platform linux/amd64 ${FLEET_DOCKER_BUILD_FLAGS:-} \
     --label "git.sha=$GIT_SHA" --label "git.branch=$GIT_BRANCH" \
     -f "$UI_DIR/Dockerfile" \
     -t "$REPO_URL/fleet_sa_app:$IMAGE_TAG" \

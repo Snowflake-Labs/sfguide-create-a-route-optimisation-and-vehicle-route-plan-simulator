@@ -114,6 +114,41 @@ $$
   '\\bAnd\\b', 'and')
 $$;
 
+-- Created HERE, up front, for the same reason as REGION_LABEL above: it is read
+-- at RUNTIME by FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS, which
+-- BUILD_LOCATION_DIAGNOSTICS calls later in THIS file (section 5). It used to be
+-- defined ~200 lines AFTER that call, so on a fresh account the builder failed
+-- with "Object 'FLEET_APP.CORE.VW_REGION_PROFILE' does not exist" and the guard
+-- turned it into a WARN that left site_impact / closure_impact empty. Every
+-- re-install hid it because the previous run had already created the view.
+-- Its sources (DIM_DATASETS from the seed, DIM_VEHICLE_PROFILE from step 2.5)
+-- both exist before step 3.5 runs.
+-- Region -> ORS profile. Every live-routing view below used to hardcode
+-- 'driving-car', which is only correct when the region's graph happens to have
+-- that profile built. A region is provisioned for its dataset's vehicle type, so
+-- an HGV region builds ONLY driving-hgv and an e-bike region builds
+-- cycling-electric - and ORS answers a request for an unbuilt profile with
+-- {"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'"},
+-- which the ORS_FEATURES guard turns into a cast failure. Result: catchment,
+-- site_impact, closure_impact, sourcing_optimizer and mix_sourcing all failed
+-- outright on every HGV region (96 failing area-executions across 4 regions in
+-- the validate_app_views baseline), while passing on a car region - which is why
+-- it was never noticed.
+--
+-- Resolved from data, not from a live ORS_STATUS call, so it costs nothing and
+-- works while the service is suspended: the active dataset's VEHICLE_TYPE maps
+-- through DIM_VEHICLE_PROFILE to exactly the profile that region's graph was
+-- built for. Falls back to driving-car for a region with no active dataset.
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_PROFILE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT d.REGION,
+       COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
+WHERE d.IS_ACTIVE;
+
 -- =============================================================================
 -- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
 -- =============================================================================
@@ -441,6 +476,10 @@ MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.MATCH_PARAMS tgt USING (
     ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (km).'),
     ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor.'),
     ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve; greedy = solver-free greedy builder.'),
+    ('MAX_DEVIATION_PCT',          '200',   'number', 'core',   TRUE,  'Per-vehicle tour distance cap as a percentage above its reposition baseline (idle -> next start). Sent as VROOM vehicle.max_distance together with DEVIATION_ALLOWANCE_KM.'),
+    ('DEVIATION_ALLOWANCE_KM',     '300',   'number', 'core',   TRUE,  'Absolute km added to every vehicle distance cap (and its drive time to the time cap). A vehicle already at its end point has a zero baseline, so this is its whole cap.'),
+    ('DETOUR_BUDGET_HRS',          '4',     'number', 'core',   TRUE,  'Extra drive hours allowed on top of each vehicle reposition time. Sent as VROOM vehicle.max_travel_time.'),
+    ('FIXED_DISPATCH_USD',         '140',   'number', 'core',   TRUE,  'Fixed cost per dispatched vehicle. Sent as VROOM vehicle.costs.fixed by both the agent solve and the page default.'),
     ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days).'),
     ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.'),
     ('INTERNAL_LOADS_PER_TRAILER','4',     'number', 'core',   TRUE,  'Waiting internal loads per idle trailer. Sizes the internal pool relative to the fleet so it means the same thing in every region, instead of the pool being whatever INTERNAL_POOL_CAP happens to truncate to.'),
@@ -835,6 +874,72 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS (
   POP_PER_SQMI  NUMBER(14,2)
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Household cells the region's OWN routing profile cannot reach. A cycling or foot
+-- matrix does not answer an unreachable source with a null cell: ORS fails the
+-- whole call (6099 -> all_chunks_failed) and the gateway breaker then 503s every
+-- call behind it. On SanFrancisco (cycling-electric) Treasure Island / Yerba Buena
+-- and Point Richmond cells did exactly that for any Site/Closure Impact band wide
+-- enough to reach them. Treasure Island is DRIVABLE over the Bay Bridge, so a
+-- driving probe cannot find them - the probe must use the region's profile.
+-- Driving profiles return null cells instead of failing, so they are skipped, which
+-- also keeps this off the multi-million-cell state and country grids.
+-- Probes 25 cells per call against the store nearest the household centre; a chunk
+-- that fails is re-probed one cell at a time. Fails OPEN: if more than half the
+-- cells look unroutable the engine is the likelier problem, so nothing is deleted.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS(P_REGION VARCHAR)
+  RETURNS VARCHAR
+  LANGUAGE JAVASCRIPT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  EXECUTE AS OWNER
+AS
+$$
+function q(sql, binds) { return snowflake.createStatement({ sqlText: sql, binds: binds || [] }).execute(); }
+var pr = q("SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE WHERE REGION = ? LIMIT 1", [P_REGION]);
+var profile = pr.next() ? String(pr.getColumnValue(1) || '') : '';
+if (!profile || profile.indexOf('driving') === 0) return 'skipped: profile ' + (profile || 'unknown') + ' answers unreachable with null cells';
+var cnt = q("SELECT COUNT(*) FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ?", [P_REGION]);
+cnt.next();
+if (Number(cnt.getColumnValue(1)) > 20000) return 'skipped: too many cells for a probe';
+var rf = q("SELECT s.LON, s.LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES s, "
+         + "(SELECT ST_MAKEPOINT(AVG(ST_X(CENTROID)), AVG(ST_Y(CENTROID))) g FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ?) h "
+         + "WHERE s.REGION = ? ORDER BY ST_DISTANCE(s.GEOG, h.g) LIMIT 1", [P_REGION, P_REGION]);
+if (!rf.next()) return 'skipped: no store to probe against';
+var ref = [[Number(rf.getColumnValue(1)), Number(rf.getColumnValue(2))]];
+// Probe a REAL ADDRESS per cell (the one nearest its centroid), as anchor_pts in
+// LIVE_HUFF_ALLOCATION does: a centroid is a mean and can sit in water.
+var cs = q("SELECT c.H3, ra.LONGITUDE, ra.LATITUDE FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS c "
+         + "JOIN FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES ra "
+         + "  ON ra.REGION = c.REGION AND ra.GEOMETRY IS NOT NULL AND H3_POINT_TO_CELL_STRING(ra.GEOMETRY, 8) = c.H3 "
+         + "WHERE c.REGION = ? "
+         + "QUALIFY ROW_NUMBER() OVER (PARTITION BY c.H3 ORDER BY ST_DISTANCE(ra.GEOMETRY, c.CENTROID)) = 1", [P_REGION]);
+var cells = [];
+while (cs.next()) cells.push({ h3: cs.getColumnValue(1), p: [Number(cs.getColumnValue(2)), Number(cs.getColumnValue(3))] });
+// null = the call itself failed; otherwise one boolean per source
+function probe(batch) {
+  try {
+    var r = q("SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(?, PARSE_JSON(?)::ARRAY, PARSE_JSON(?)::ARRAY, ?))",
+              [profile, JSON.stringify(batch.map(function (c) { return c.p; })), JSON.stringify(ref), P_REGION]);
+    var m = r.next() ? JSON.parse(r.getColumnValue(1) || '{}') : {};
+    if (!m.durations || m.durations.length !== batch.length) return null;
+    return m.durations.map(function (row) { return row && typeof row[0] === 'number'; });
+  } catch (e) { return null; }
+}
+var bad = [];
+for (var i = 0; i < cells.length; i += 25) {
+  var batch = cells.slice(i, i + 25);
+  var ok = probe(batch);
+  if (ok === null) ok = batch.map(function (c) { var one = probe([c]); return one !== null && one[0]; });
+  for (var k = 0; k < batch.length; k++) if (!ok[k]) bad.push(batch[k].h3);
+}
+if (bad.length * 2 > cells.length) return 'not pruned: ' + bad.length + ' of ' + cells.length + ' cells failed, engine likely unavailable';
+for (var j = 0; j < bad.length; j += 500) {
+  var part = bad.slice(j, j + 500);
+  q("DELETE FROM FLEET_INTELLIGENCE.LOCATION.HH_CELLS WHERE REGION = ? AND ARRAY_CONTAINS(H3::VARIANT, PARSE_JSON(?))",
+    [P_REGION, JSON.stringify(part)]);
+}
+return 'pruned ' + bad.length + ' of ' + cells.length + ' cells unroutable by ' + profile;
+$$;
+
 -- Build procedure: materializes the estate + household grid + synthetic facts for
 -- the active region. NO ORS calls (isochrones are computed live by the app views).
 -- Owner's rights. Idempotent per region.
@@ -865,8 +970,15 @@ BEGIN
   --    extra store therefore costs an anchor cell - i.e. spatial resolution - so
   --    raising this coarsens Site Impact rather than enriching it.
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION = :rg;
-  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
-    (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
+  -- Reachability probe. Every store is a destination in every live matrix, and ONE
+  -- store the region's graph cannot reach fails the WHOLE call: SanFrancisco's spread
+  -- put two competitors in Richmond and Oakland, which the cycling-electric graph
+  -- cannot reach, so every Site Impact / Closure Impact panel failed with ORS 6099 /
+  -- all_chunks_failed and tripped the gateway breaker. A driving profile answers the
+  -- same question with a NULL cell instead of an error, so probe the spread with one
+  -- and keep only stores that reach the region's household centre. Fails OPEN: no
+  -- matrix (engine down at build time) keeps every candidate.
+  CREATE OR REPLACE TEMPORARY TABLE FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD AS
   WITH cat AS (
     SELECT BASIC_CATEGORY
     FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
@@ -881,10 +993,45 @@ BEGIN
     FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
     JOIN cat ON p.BASIC_CATEGORY = cat.BASIC_CATEGORY
     WHERE p.REGION = :rg AND p.LONGITUDE IS NOT NULL
+  )
+  SELECT POI_ID, POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY,
+         ROW_NUMBER() OVER (ORDER BY POI_ID) - 1 AS pidx
+  FROM ranked WHERE rn_cell = 1
+  QUALIFY ROW_NUMBER() OVER (ORDER BY POI_ID) <= 60;
+
+  LET probe_prof VARCHAR := (
+    SELECT COALESCE(
+      (SELECT f.value::STRING
+         FROM TABLE(FLATTEN(INPUT => OPENROUTESERVICE_APP.CORE.PROFILES_FOR_REGION(:rg))) f
+        WHERE f.value::STRING LIKE 'driving%' LIMIT 1),
+      'driving-car'));
+  CREATE OR REPLACE TEMPORARY TABLE FLEET_INTELLIGENCE.LOCATION._STORE_REACH AS
+  WITH hub AS (
+    SELECT ST_MAKEPOINT(AVG(LONGITUDE), AVG(LATITUDE)) AS g
+    FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES WHERE REGION = :rg
   ),
-  spread AS (
-    SELECT *, ROW_NUMBER() OVER (ORDER BY POI_ID) AS gidx
-    FROM ranked WHERE rn_cell = 1
+  ref AS (
+    SELECT s.LONGITUDE, s.LATITUDE FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s, hub
+    ORDER BY ST_DISTANCE(s.GEOMETRY, hub.g) LIMIT 1
+  ),
+  m AS (
+    SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+             :probe_prof,
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE, LATITUDE)) WITHIN GROUP (ORDER BY pidx)
+                FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD),
+             (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE, LATITUDE)) FROM ref),
+             :rg) AS M
+  )
+  SELECT s.POI_ID
+  FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s, m
+  WHERE m.M:durations IS NULL OR NOT IS_NULL_VALUE(m.M:durations[s.pidx][0]);
+
+  INSERT INTO FLEET_INTELLIGENCE.LOCATION.STORES
+    (REGION, STORE_ID, POI_ID, POI_NAME, CATEGORY, LON, LAT, GEOG, STORE_ROLE)
+  WITH spread AS (
+    SELECT s.*, ROW_NUMBER() OVER (ORDER BY s.POI_ID) AS gidx
+    FROM FLEET_INTELLIGENCE.LOCATION._STORE_SPREAD s
+    JOIN FLEET_INTELLIGENCE.LOCATION._STORE_REACH r ON r.POI_ID = s.POI_ID
   )
   SELECT :rg,
          'ST' || LPAD(gidx::VARCHAR, 4, '0'),
@@ -908,6 +1055,11 @@ BEGIN
   FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
   WHERE REGION = :rg AND GEOMETRY IS NOT NULL
   GROUP BY 1, 2;
+
+  -- 3b. Drop household cells the region's own profile cannot route (see
+  --     PRUNE_UNROUTABLE_HH_CELLS). Every reader of HH_CELLS feeds live matrices.
+  LET prune_res VARCHAR;
+  CALL FLEET_INTELLIGENCE.LOCATION.PRUNE_UNROUTABLE_HH_CELLS(:rg) INTO :prune_res;
 
   -- 4. Synthetic store facts. Data-only, no ORS.
   --
@@ -1013,13 +1165,12 @@ BEGIN
 END;
 $$;
 
--- Zero-arg form kept for the installer and for callers that just want "the active
--- region". The region-parameterised form above exists because the estate is built
--- per region while CATCHMENT.CONFIG holds exactly ONE row: without it, bringing a
--- second loaded region up to date meant MUTATING that shared row, which every other
--- domain's default selection also reads. A stale region is not harmless here - it
--- keeps the pre-competitor estate, so Site Impact reports 100% cannibalisation for
--- every candidate, which is a plausible-looking wrong answer rather than an error.
+-- Zero-arg form kept for the installer. It builds EVERY region that has POIs:
+-- reading the one CATCHMENT.CONFIG row built only that region, so UsTexas and
+-- UnitedStatesOfAmerica had no estate at all and site_impact / closure_impact
+-- errored or rendered empty there while every other view worked. A stale region
+-- is not harmless either - it keeps the pre-competitor estate, so Site Impact
+-- reports 100% cannibalisation for every candidate.
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()
   RETURNS VARCHAR
   LANGUAGE SQL
@@ -1027,15 +1178,19 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTI
 AS
 $$
 DECLARE
-  rg VARCHAR;
   res VARCHAR;
+  out VARCHAR DEFAULT '';
+  c1 CURSOR FOR SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION IS NOT NULL ORDER BY 1;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
-  IF (rg IS NULL) THEN
-    RETURN 'no active region in CATCHMENT.CONFIG';
+  FOR r IN c1 DO
+    LET rg VARCHAR := r.REGION;
+    CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(:rg) INTO :res;
+    out := out || res || '; ';
+  END FOR;
+  IF (out = '') THEN
+    RETURN 'no region with POIs in CATCHMENT.POIS';
   END IF;
-  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS(:rg) INTO :res;
-  RETURN res;
+  RETURN out;
 END;
 $$;
 
@@ -1059,7 +1214,7 @@ $$;
 -- with EXCEPTION so a fresh install without the two free listings (or a non-US region)
 -- simply skips enrichment instead of failing the whole analytic layer. ZIP_AREAS then
 -- stays empty and the ZIP drill/choropleth render nothing (the rest of LOCATION works).
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT()
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT(P_REGION VARCHAR)
   RETURNS VARCHAR
   LANGUAGE SQL
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -1069,9 +1224,9 @@ DECLARE
   rg VARCHAR;
   n INT DEFAULT 0;
 BEGIN
-  SELECT REGION INTO rg FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  rg := :P_REGION;
   IF (rg IS NULL) THEN
-    RETURN 'no active region';
+    RETURN 'no region';
   END IF;
   DELETE FROM FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS WHERE REGION = :rg;
   INSERT INTO FLEET_INTELLIGENCE.LOCATION.ZIP_AREAS
@@ -1114,6 +1269,28 @@ BEGIN
 EXCEPTION
   WHEN OTHER THEN
     RETURN 'ZIP enrichment skipped (listings absent or non-US region): ' || SQLERRM;
+END;
+$$;
+
+-- Zero-arg form: every region with POIs, same reason as BUILD_LOCATION_DIAGNOSTICS().
+-- Each region is guarded inside the per-region proc, so a non-US region skips.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT()
+  RETURNS VARCHAR
+  LANGUAGE SQL
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+DECLARE
+  res VARCHAR;
+  out VARCHAR DEFAULT '';
+  c1 CURSOR FOR SELECT DISTINCT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION IS NOT NULL ORDER BY 1;
+BEGIN
+  FOR r IN c1 DO
+    LET rg VARCHAR := r.REGION;
+    CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_ZIP_ENRICHMENT(:rg) INTO :res;
+    out := out || res || '; ';
+  END FOR;
+  RETURN out;
 END;
 $$;
 
@@ -1210,31 +1387,17 @@ $$;
 -- it; the rationale above documents why the derivation is used. Nothing to create
 -- here anymore.
 
--- Region -> ORS profile. Every live-routing view below used to hardcode
--- 'driving-car', which is only correct when the region's graph happens to have
--- that profile built. A region is provisioned for its dataset's vehicle type, so
--- an HGV region builds ONLY driving-hgv and an e-bike region builds
--- cycling-electric - and ORS answers a request for an unbuilt profile with
--- {"code":3003,"message":"Parameter 'profile' has incorrect value of 'unknown'"},
--- which the ORS_FEATURES guard turns into a cast failure. Result: catchment,
--- site_impact, closure_impact, sourcing_optimizer and mix_sourcing all failed
--- outright on every HGV region (96 failing area-executions across 4 regions in
--- the validate_app_views baseline), while passing on a car region - which is why
--- it was never noticed.
---
--- Resolved from data, not from a live ORS_STATUS call, so it costs nothing and
--- works while the service is suspended: the active dataset's VEHICLE_TYPE maps
--- through DIM_VEHICLE_PROFILE to exactly the profile that region's graph was
--- built for. Falls back to driving-car for a region with no active dataset.
-CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_PROFILE
+
+-- Region -> the bbox of its ROAD GRAPH (what ORS enforces), for views that offer a
+-- user-pickable routing anchor. A region's POI set is loaded with a padded extent,
+-- and SanFrancisco's reaches Oakland and Richmond: picking one of those ~2,000
+-- sites in Catchment failed every ring with ORS 3099 "Unable to build an
+-- isochrone map". Conservative by design - the graph can extend past its bbox.
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_REGION_GRAPH_BBOX
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-SELECT d.REGION,
-       COALESCE(vp.ORS_PROFILE, 'driving-car') AS ORS_PROFILE
-FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
-LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
-  ON vp.VEHICLE_TYPE = d.VEHICLE_TYPE
-WHERE d.IS_ACTIVE;
+SELECT REGION, MIN_LON, MAX_LON, MIN_LAT, MAX_LAT
+FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
 
 -- FLATTEN input for the ISOCHRONES response. Returns the features array when the
 -- call succeeded; raises (carrying the suspend tokens) when it did not. A missing

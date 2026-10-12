@@ -64,7 +64,7 @@ bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connectio
 The orchestrator runs these layers in order (detect-and-reuse-else-create throughout):
 
 1. **Preflight** - tools, connection, account.
-2. **Infra** - image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses `OPENROUTESERVICE_APP` equivalents if present; otherwise creates skill-owned objects. See `references/infra.sql`.
+2. **Infra** - image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses FLEET-owned infra if an earlier run created it (sticky, so a re-run never migrates the live apps), else `OPENROUTESERVICE_APP` equivalents if present, otherwise creates skill-owned objects. See `references/infra.sql`.
 3. **Data** - probes the agnostic source tables; reuses existing rows, else loads `scripts/seed_data.sql`. See `references/seed-data.md`.
 3.5. **SAP mock landscape** - always lands a tiny, static `MOCK_SAP` (EAM/SD: EQUI/IFLOT/LIKP/LIPS) + `MOCK_TELEMATICS` (GPS) example so the `sap-fleet-connector` demo (introspection/discovery) has data in an account with no real SAP. Runs `.cortex/skills/sap-fleet-connector/scripts/mock_sap_seed.sql` (pure static INSERTs - NOT a Data Studio generator), raw tables only (does NOT bind `FLEET_APP` to SAP), idempotent, best-effort (a WARN never aborts). Not gated by `SKIP_DATA`.
 4. **Analytic layer** - authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode - the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
@@ -125,12 +125,13 @@ zero rows is invisible to that path and produces a silently empty panel instead 
 |---|---|---|
 | `--connection` | (required) | Snow CLI connection name |
 | `--no-engine` | (unset; engine on) | Skip the heavy ORS engine build (verbs install inert). Env equivalents: `NO_ENGINE=1` or `PROVISION_ENGINE=0`. `--with-engine` is accepted as a no-op (engine is the default). |
-| `IMAGE_REPO_SQL_NAME` | resolved (reuse `OPENROUTESERVICE_APP.core.image_repository` else `FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY`) | SPCS image repo |
-| `COMPUTE_POOL` | resolved (`OPENROUTESERVICE_APP_COMPUTE_POOL` else `FLEET_APPS_COMPUTE_POOL`) | SPCS compute pool |
-| `CARTO_EAI` | resolved (`ORS_CARTO_EAI` else `FLEET_APP_CARTO_EAI`) | basemap tile egress |
+| `IMAGE_REPO_SQL_NAME` | resolved (`FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY` if it exists, else reuse `OPENROUTESERVICE_APP.core.image_repository`, else self-provision the FLEET repo) | SPCS image repo |
+| `COMPUTE_POOL` | resolved (`FLEET_APPS_COMPUTE_POOL` if it exists, else `OPENROUTESERVICE_APP_COMPUTE_POOL`, else self-provision) | SPCS compute pool |
+| `CARTO_EAI` | resolved (`FLEET_APP_CARTO_EAI` with FLEET infra, else `ORS_CARTO_EAI`) | basemap tile egress |
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
 | `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_MARKETPLACE` / `SKIP_SEMANTIC` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` / `SKIP_COWORK` / `SKIP_AGENT_EVALS` | `0` | shorten idempotent re-runs |
+| `FLEET_DOCKER_BUILD_FLAGS` | (empty) | Extra flags for every local image build (SA app, admin app, the three built engine images). A fresh-machine reinstall sets `"--no-cache --pull"` so no cached layer or base image can mask a failure - see "Full fresh-machine teardown + reinstall" in `routing-solution-cleanup`. The `openrouteservice` engine image is copied registry-to-registry with crane and never touches the local cache. |
 | `RUN_AGENT_EVALS` | `0` | Step 6.6 always CREATES the four agent eval sets; a baseline evaluation RUN is opt-in. Set to `1` to also run one. Runs cost credits (47 agent invocations plus an LLM judge per metric per row), which is why they are off by default. Note both Snowsight agent-readiness checklist items ("Create the first eval set" and "Run an evaluation") are satisfied only once a RUN exists - a dataset alone clears neither - and a wipe/reinstall destroys runs while leaving datasets in place, so a rebuilt account shows the checklist gap until a baseline is re-run: `bash scripts/setup_agent_evals.sh <connection>`. `NO_RUN_AGENT_EVALS` is accepted as a no-op (datasets-only is already the default). |
 
 ## Required Privileges

@@ -72,7 +72,12 @@ def normalise(body: str) -> str:
     # Indentation / newlines: the TS side is indented inside a template literal.
     body = re.sub(r"\s+", " ", body)
     # A trailing statement terminator exists only in the .sql file.
-    return body.strip().rstrip(";").strip().upper()
+    body = body.strip().rstrip(";").strip()
+    # Case-fold identifiers and keywords but NOT single-quoted literals: a
+    # literal is data, so OUTCOME = 'DELIVERED' vs 'Delivered' selects different
+    # rows and must read as drift. Folding the whole body hid exactly that.
+    parts = re.split(r"('(?:[^']|'')*')", body)
+    return "".join(p if i % 2 else p.upper() for i, p in enumerate(parts))
 
 
 def extract_from_ts(text: str, fqn: str) -> str | None:

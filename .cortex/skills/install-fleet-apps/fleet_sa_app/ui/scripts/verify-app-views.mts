@@ -72,7 +72,10 @@ for (const [viewName, view] of Object.entries(raw)) {
     // Equality against the runtime's own normalizer IS the lowercase assertion:
     // whatever it would have changed is a reference that cannot bind against
     // /api/query, which lowercases every row key it returns.
-    const normalized = normalizeAreaColumnRefs(comp, area);
+    // Clone first, as the layer branch below does: a normalizer that mutated in
+    // place would hand back the SAME object and the diff would compare it to
+    // itself, so an uppercase reference would pass unseen.
+    const normalized = normalizeAreaColumnRefs(comp, JSON.parse(JSON.stringify(area)) as typeof area);
     const drifted = diffPaths(area, normalized);
     if (drifted.length) {
       fail(`${where} (${comp}): column reference(s) are not lowercase, so they will not`

@@ -19,7 +19,13 @@ export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspen
   // A region with no ORS service at all is not "starting" - retrying will never
   // help, so drop the Retry affordance and say what is actually wrong.
   const notProvisioned = info.state === 'not_provisioned';
-  const heading = notProvisioned ? 'Routing engine not provisioned' : 'Routing engine is starting';
+  // 'not_ready' means the service is RUNNING but did not answer in time (graph
+  // still loading, or busy), so "starting" would be a false claim there.
+  const heading = notProvisioned
+    ? 'Routing engine not provisioned'
+    : info.state === 'not_ready'
+      ? 'Routing engine did not answer in time'
+      : 'Routing engine is starting';
   const showRetry = !!onRetry && !notProvisioned;
 
   const handleRetry = async () => {

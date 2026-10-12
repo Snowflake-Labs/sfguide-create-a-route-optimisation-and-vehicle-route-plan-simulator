@@ -97,6 +97,10 @@ MERGE INTO MATCH_PARAMS tgt USING (
     ('BPMP_MAX_RETURN_KM',        '3000',  'number', 'core',   TRUE,  'Loose total-distance safety guard on a vehicle whole return tour (empty + loaded + onward) in km.'),
     ('BPMP_PRIORITY_SCALE',       '25',    'number', 'core',   TRUE,  'Revenue->priority divisor: shipment priority = clamp(round(loaded-km revenue / scale), 1..100).'),
     ('BPMP_SOLVER',               'vroom', 'string', 'core',   TRUE,  'vroom = VROOM road solve (falls back to greedy if unreachable); greedy = solver-free greedy multi-stop builder.'),
+    ('MAX_DEVIATION_PCT',          '200',   'number', 'core',   TRUE,  'Per-vehicle tour distance cap as a percentage above its reposition baseline (idle -> next start). Sent as VROOM vehicle.max_distance together with DEVIATION_ALLOWANCE_KM.'),
+    ('DEVIATION_ALLOWANCE_KM',     '300',   'number', 'core',   TRUE,  'Absolute km added to every vehicle distance cap (and its drive time to the time cap). A vehicle already at its end point has a zero baseline, so this is its whole cap.'),
+    ('DETOUR_BUDGET_HRS',          '4',     'number', 'core',   TRUE,  'Extra drive hours allowed on top of each vehicle reposition time. Sent as VROOM vehicle.max_travel_time.'),
+    ('FIXED_DISPATCH_USD',         '140',   'number', 'core',   TRUE,  'Fixed cost per dispatched vehicle. Sent as VROOM vehicle.costs.fixed by both the agent solve and the page default.'),
     -- ---- planning horizon / fleet sizing ----
     ('PLANNING_LEAD_DAYS',        '4',     'number', 'core',   TRUE,  'Shipment lead time (days). A vehicle still in transit is plannable this far ahead, so the return leg is planned at dispatch time rather than on arrival. Also the spread of the synthetic free-time and pickup windows.'),
     ('INTERNAL_POOL_CAP',         '5000',  'number', 'core',   TRUE,  'ABSOLUTE ceiling on own waiting loads exposed as internal demand. A safety valve only - the pool is normally sized by INTERNAL_LOADS_PER_TRAILER.'),

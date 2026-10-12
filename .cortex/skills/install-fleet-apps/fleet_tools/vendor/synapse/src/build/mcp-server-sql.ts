@@ -84,14 +84,22 @@ function renderTool(
   } else {
     out.push(`        properties:`);
     for (const [argName, schema] of argEntries) {
-      const json = toJsonSchema(schema);
+      // LOCAL PATCH 08: a nullable arg is advertised as its plain type and is
+      // NOT required, so the model omits it. The managed MCP server rejects an
+      // explicit JSON null ("unsupported parameter type: <nil>"); the omitted
+      // arg binds its DDL DEFAULT NULL (see build/ddl.ts).
+      const json = schema.kind === 'nullable' && schema.inner
+        ? toJsonSchema(schema.inner)
+        : toJsonSchema(schema);
       out.push(`          ${yamlKey(argName)}:`);
       out.push(...renderInlineJsonSchema(json, '            '));
     }
     // IDEMPOTENCY_KEY is on every proc's DDL signature with DEFAULT NULL; MCP
     // callers don't need to see it. Apps that want caller-supplied idempotency
     // should declare it as a real verb arg.
-    const requiredList = argEntries.map(([k]) => yamlString(k)).join(', ');
+    const requiredList = argEntries
+      .filter(([, s]) => s.kind !== 'nullable')
+      .map(([k]) => yamlString(k)).join(', ');
     out.push(`        required: [${requiredList}]`);
   }
   return out;

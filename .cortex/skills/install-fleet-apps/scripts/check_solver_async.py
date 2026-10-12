@@ -157,10 +157,18 @@ def main() -> int:
                     f"({', '.join(verbs)}). All seven solver verbs must be classified; a "
                     f"missing one silently keeps the 60s ceiling."
                 )
-            if "runSolve" not in code:
+            # A CALL inside the SOLVER_VERBS branch, not the token anywhere: the
+            # `import { runSolve }` line alone satisfied a substring check, so
+            # deleting the whole async branch (every verb falls through to the
+            # synchronous query()) passed while leaving the import behind.
+            if not re.search(
+                r"SOLVER_VERBS\.has\([^)]*\)\s*\)\s*\{[^{}]*?\bawait\s+runSolve\s*\(", code
+            ):
                 findings.append(
-                    "app/api/tool/route.ts: does not call `runSolve`. Solver verbs are "
-                    "back on the synchronous transport and will time out past ~40 vehicles."
+                    "app/api/tool/route.ts: does not call `runSolve` from its "
+                    "`if (SOLVER_VERBS.has(...))` branch (an import alone does not count). "
+                    "Solver verbs are back on the synchronous transport and will time out "
+                    "past ~40 vehicles."
                 )
             # The solver branch must not fall through to query()/queryBatch().
             if re.search(r"SOLVER_VERBS\.has\([^)]*\)\s*\?\s*queryBatch", code):
@@ -172,7 +180,7 @@ def main() -> int:
     # --- 3. the backload solve route must use the runner too ---
     if BACKLOAD_ROUTE.exists():
         bcode = strip_comments(BACKLOAD_ROUTE.read_text(encoding="utf-8", errors="replace"))
-        if "runSolve" not in bcode:
+        if not re.search(r"\brunSolve\s*\(", bcode):
             findings.append(
                 "app/api/backload/solve/route.ts: does not call `runSolve`. This page "
                 "allows 180s client-side (BM_SOLVE_TIMEOUT_MS) but the synchronous "

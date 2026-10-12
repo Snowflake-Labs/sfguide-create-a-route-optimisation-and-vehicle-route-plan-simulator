@@ -102,10 +102,35 @@ def strip_noise(src: str) -> str:
     Characters are replaced with spaces rather than removed so a reported line
     number still points at the real line. Regex literals are not tracked: a
     banned name inside one would be a false positive, and none exist today.
+
+    A template literal's `${...}` interpolations are CODE and stay visible: an
+    earlier version blanked the whole template, so the deep_link defect written
+    inline - `${new URLSearchParams(q)}` in the returned URL - passed. `exprs`
+    holds the brace depth of each open interpolation (innermost last), which
+    also handles a template nested inside an interpolation.
     """
     out: list[str] = []
     i, n = 0, len(src)
+    exprs: list[int] = []
+    in_template = False
     while i < n:
+        if in_template:
+            if src[i] == "\\":
+                out.append("  " if src[i : i + 2] != "\\\n" else " \n")
+                i += 2
+            elif src[i] == "`":
+                out.append(" ")
+                i += 1
+                in_template = False
+            elif src[i : i + 2] == "${":
+                out.append("  ")
+                i += 2
+                exprs.append(0)
+                in_template = False
+            else:
+                out.append("\n" if src[i] == "\n" else " ")
+                i += 1
+            continue
         two = src[i : i + 2]
         if two == "//":
             nl = src.find("\n", i)
@@ -121,7 +146,21 @@ def strip_noise(src: str) -> str:
             i = end
             continue
         ch = src[i]
-        if ch in "'\"`":
+        if ch == "`":
+            out.append(" ")
+            i += 1
+            in_template = True
+            continue
+        if exprs and ch in "{}":
+            if ch == "}" and exprs[-1] == 0:
+                # Closes the innermost interpolation: back inside its template.
+                exprs.pop()
+                out.append(" ")
+                i += 1
+                in_template = True
+                continue
+            exprs[-1] += 1 if ch == "{" else -1
+        if ch in "'\"":
             quote = ch
             out.append(" ")
             i += 1

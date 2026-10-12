@@ -6,7 +6,7 @@
 // (empty-leg polyline) at interaction time - never precomputed into tables.
 
 import type { LngLat } from '@/lib/map/map-fit';
-import { throwIfSuspended, isSuspendedBody, RoutingSuspendedError, SUSPEND_REASON } from '@/lib/routing-suspend';
+import { throwIfSuspended, isSuspendedBody, RoutingSuspendedError, SUSPEND_REASON, isOutOfGraph, parseOutOfGraphPoints } from '@/lib/routing-suspend';
 
 export const BM = 'FLEET_APP.BACKLOAD_MATCHING';
 
@@ -78,6 +78,9 @@ export interface Assignment {
   // pickup (out) and last task stop -> tour end (back). EMPTY_KM is their sum.
   EMPTY_OUT_KM?: number;
   EMPTY_BACK_KM?: number;
+  // Proc-reported return km (last delivery -> tour end) on a collected plan,
+  // before the road refinement fills EMPTY_BACK_KM. Read via returnLegKm().
+  RETURN_KM?: number;
   // Reposition baseline the vehicle would have driven empty anyway (idle -> end),
   // from computeEmptyLegBaselines (real ORS matrix, haversine/fixed fallback).
   // SAVED_KM = max(0, BASELINE_EMPTY_KM - EMPTY_KM) and is only meaningful when
@@ -370,6 +373,30 @@ export type EmptyLegBaseline = {
 
 const FIXED_OPEN_KM = 200;
 
+/** Default absolute deviation allowance. Mirrors MATCH_PARAMS.DEVIATION_ALLOWANCE_KM. */
+export const DEVIATION_ALLOWANCE_KM_DEFAULT = 300;
+
+/**
+ * Per-vehicle VROOM tour caps. The SAME rule lives in TOOL_BACKLOAD_SOLVE's
+ * buildChallenge (check_backload_caps_parity.py keeps them together).
+ *
+ * A pure percentage of the baseline is undefined for a vehicle already at its
+ * end point (baseline 0): it collapsed to the old 10 km / 1800 s floors and the
+ * deviation slider did nothing for ~39% of the pool. The absolute allowance is
+ * what such a vehicle gets; everyone else gets percentage + allowance.
+ */
+export function vehicleTourCaps(
+  base: EmptyLegBaseline,
+  opts: { deviationPct: number; detourSlackHrs: number; allowanceKm: number; kmh: number },
+): { max_distance: number; max_travel_time: number } {
+  const allowanceKm = Math.max(0, opts.allowanceKm);
+  const speed = opts.kmh > 0 ? opts.kmh : KMH_DEFAULT;
+  return {
+    max_distance: Math.round(base.distMeters * (1 + opts.deviationPct / 100) + allowanceKm * 1000),
+    max_travel_time: Math.round(base.durSec + opts.detourSlackHrs * 3600 + (allowanceKm / speed) * 3600),
+  };
+}
+
 function fixedOpenBaseline(kmh = KMH_DEFAULT, homeRangeKm = FIXED_OPEN_KM): EmptyLegBaseline {
   const km = homeRangeKm > 0 ? homeRangeKm : FIXED_OPEN_KM;
   const speed = kmh > 0 ? kmh : KMH_DEFAULT;
@@ -444,7 +471,10 @@ export async function computeEmptyLegBaselines(
     const costRow = matrix.costs[spec.startIdx];
     const dur = durRow ? Number(durRow[spec.endIdx]) : NaN;
     const dist = costRow ? Number(costRow[spec.endIdx]) : NaN;
-    if (Number.isFinite(dur) && Number.isFinite(dist) && dur > 0 && dist > 0) {
+    // A vehicle already at its end point has a TRUE matrix cell of 0/0. That is
+    // a measurement, not a miss: rejecting it fell through to a haversine floor
+    // and the caps built on this baseline collapsed to their minimums.
+    if (Number.isFinite(dur) && Number.isFinite(dist) && dur >= 0 && dist >= 0) {
       out.set(spec.trailer, { durSec: Math.round(dur), distMeters: Math.round(dist), source: 'matrix' });
     } else {
       out.set(spec.trailer, haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat, kmh));
@@ -493,6 +523,16 @@ export function applyBaseline(a: Assignment, base: EmptyLegBaseline | undefined)
  * on arrival. Threshold matches `samePlace`, the same tolerance fetchBaselineLeg
  * uses to decide it has nothing to route.
  */
+/**
+ * Empty km from the last delivery to where the tour ends. The road-refined leg
+ * wins; a collected plan shows the solver's figure until it arrives. Named on
+ * the card so a mid-tour delivery never reads as the final destination.
+ */
+export function returnLegKm(a: Assignment): number | undefined {
+  if (a.EMPTY_BACK_KM !== undefined && a.EMPTY_BACK_KM > 0) return a.EMPTY_BACK_KM;
+  return a.RETURN_KM !== undefined && a.RETURN_KM > 0 ? a.RETURN_KM : undefined;
+}
+
 export function isAtEndBaseline(a: Assignment): boolean {
   if (a.END_LON === undefined || a.END_LAT === undefined) return false;
   return samePlace(
@@ -567,6 +607,61 @@ export function coordKey(lon: number, lat: number): string {
   return `${Number(lon).toFixed(4)},${Number(lat).toFixed(4)}`;
 }
 
+// The bbox of the road graph ORS will actually route on.
+export interface RegionBbox {
+  minLon: number;
+  maxLon: number;
+  minLat: number;
+  maxLat: number;
+}
+
+// Read the ACTIVE region's graph bbox.
+//
+// Deliberately REGION_ORS_MAP and not FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+// (which use-region-camera.ts reads): the registry bbox is a boundary envelope
+// kept for camera framing, while REGION_ORS_MAP carries the extent of the PBF
+// the graph was built from - which is the thing ORS enforces when it answers
+// "code 6010 out of bounds". Framing the camera on one and routing on the other
+// is fine; deciding routability on the camera bbox is not.
+//
+// Returns null on any missing row / null column, and the caller then skips the
+// check. That fail-open is free here: no engine call has been made yet, so
+// skipping costs nothing beyond leaving the existing ORS probe to do its job.
+export async function fetchRegionBbox(
+  region: string | null | undefined,
+  opts: { signal?: AbortSignal } = {},
+): Promise<RegionBbox | null> {
+  if (!region) return null;
+  try {
+    const rows = await sfRead(
+      'SELECT MIN_LON, MAX_LON, MIN_LAT, MAX_LAT ' +
+        'FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :region',
+      { signal: opts.signal, params: { region: String(region) } },
+    );
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
+    const n = (v: unknown) => (v == null ? NaN : Number(v));
+    const box: RegionBbox = {
+      minLon: n(r.MIN_LON), maxLon: n(r.MAX_LON),
+      minLat: n(r.MIN_LAT), maxLat: n(r.MAX_LAT),
+    };
+    const finite = Object.values(box).every((v) => Number.isFinite(v));
+    if (!finite || box.minLon >= box.maxLon || box.minLat >= box.maxLat) return null;
+    return box;
+  } catch {
+    return null;
+  }
+}
+
+// True when a point lies outside the graph bbox, i.e. ORS will reject the whole
+// request rather than return a per-point null. Non-finite coordinates are NOT
+// reported here - they are absent data, not out-of-graph, and the existing
+// point collection already skips them.
+export function pointOutsideBbox(box: RegionBbox, lon: number, lat: number): boolean {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
+  return lon < box.minLon || lon > box.maxLon || lat < box.minLat || lat > box.maxLat;
+}
+
 // Bulk routability pre-filter. A single unroutable location aborts the ENTIRE
 // VROOM solve (code 3) and VROOM names only ONE offending coordinate per solve,
 // so a dataset with N unroutable points needs N sequential failed solves to
@@ -639,8 +734,21 @@ export async function findUnroutablePoints(
     return v;
   };
 
-  for (let i = 0; i < points.length; i += batchSize) {
-    const batch = points.slice(i, i + batchSize);
+  // Extra MATRIX calls the out-of-graph bisect below is allowed to spend.
+  // Bounded so a pathological batch cannot turn a probe into an unbounded
+  // sequence of round trips.
+  let bisectBudget = 24;
+
+  // Points ORS refused BY COORDINATE. Counted separately from `bad` because the
+  // backoff below must not discard them (see the note there).
+  let offGraphConvicted = 0;
+
+  // Probe ONE batch. Returns 'ok' when verdicts were recorded, 'open' when the
+  // response was unusable and the batch must be kept, or 'off-graph' with the
+  // coordinates ORS named when the call was refused for being out of bounds.
+  const probeBatch = async (
+    batch: [number, number][],
+  ): Promise<{ kind: 'ok' | 'open' } | { kind: 'off-graph'; named: { lon: number; lat: number }[] }> => {
     const destArr = fmtArr(batch);
     // Two function calls (inbound + outbound) hoisted into a subquery so each
     // MATRIX_TABULAR is evaluated once; extract durations/destinations from the
@@ -657,7 +765,7 @@ export async function findUnroutablePoints(
       const dests = parse(r?.DESTS) as Array<{ snapped_distance?: number } | null> | null;
       const durOut = parse(r?.DUR_OUT) as number[][] | null;
       // If the batch response is unusable, keep every point (fail open).
-      if (!Array.isArray(durIn) || !Array.isArray(durIn[0])) continue;
+      if (!Array.isArray(durIn) || !Array.isArray(durIn[0])) return { kind: 'open' };
       for (let j = 0; j < batch.length; j++) {
         const inD = durIn[0]?.[j];
         const outD = Array.isArray(durOut) ? durOut[j]?.[0] : undefined;
@@ -668,9 +776,59 @@ export async function findUnroutablePoints(
         if (nullIn || nullOut || farSnap) bad.add(coordKey(batch[j][0], batch[j][1]));
         else clean++;
       }
-    } catch {
-      // Transient MATRIX error: keep this batch's points, let the solve-time
+      return { kind: 'ok' };
+    } catch (err) {
+      // An OUT-OF-GRAPH refusal is evidence, not a hiccup. A point outside the
+      // graph bbox does not come back as a null cell - it fails the whole
+      // MATRIX call (ORS 6010), so treating it like a transient error kept all
+      // 150 points of the batch INCLUDING the one that caused the throw, and
+      // the pre-filter could never shear the case it exists for.
+      const text = (err as { message?: string } | null)?.message ?? String(err);
+      if (isOutOfGraph(text)) return { kind: 'off-graph', named: parseOutOfGraphPoints(text) };
+      // Any other MATRIX error: keep this batch's points, let the solve-time
       // retry loop catch any real unroutable point.
+      return { kind: 'open' };
+    }
+  };
+
+  // Worklist rather than a flat loop so an out-of-graph batch can be split and
+  // re-probed instead of abandoned whole.
+  const queue: [number, number][][] = [];
+  for (let i = 0; i < points.length; i += batchSize) queue.push(points.slice(i, i + batchSize));
+
+  while (queue.length) {
+    const batch = queue.shift()!;
+    if (!batch.length) continue;
+    const res = await probeBatch(batch);
+    if (res.kind !== 'off-graph') continue;
+
+    // Convict whatever ORS named. parseOutOfGraphPoints already swaps ORS's
+    // lat-first reporting into lon,lat - do NOT swap again.
+    const namedKeys = new Set<string>();
+    for (const p of res.named) {
+      if (Number.isFinite(p.lon) && Number.isFinite(p.lat)) {
+        const k = coordKey(p.lon, p.lat);
+        namedKeys.add(k);
+        if (!bad.has(k)) offGraphConvicted++;
+        bad.add(k);
+      }
+    }
+    const rest = batch.filter((pt) => !namedKeys.has(coordKey(pt[0], pt[1])));
+    // Nothing narrowed and nothing left to split: keep the remainder (fail
+    // open) rather than convicting points on no evidence.
+    if (!rest.length) continue;
+    if (bisectBudget <= 0) continue;
+    if (rest.length === batch.length) {
+      // ORS refused without naming a point we could match. Halve the batch so
+      // the offending point is isolated instead of shielding its neighbours.
+      if (batch.length === 1) { bad.add(coordKey(batch[0][0], batch[0][1])); offGraphConvicted++; continue; }
+      const mid = Math.floor(batch.length / 2);
+      bisectBudget -= 2;
+      queue.push(batch.slice(0, mid), batch.slice(mid));
+    } else {
+      // Named points removed: re-probe the remainder so its verdicts are not lost.
+      bisectBudget -= 1;
+      queue.push(rest);
     }
   }
   // Sanity backoff: the pre-filter must only ever remove a MINORITY of genuinely
@@ -687,7 +845,17 @@ export async function findUnroutablePoints(
   // `clean === 0` - zero cleanly-routed points is the actual signature of a
   // probe that cannot see the graph. One clean point proves the engine is
   // answering, which makes every rejection real.
-  if (points.length && bad.size > Math.floor(points.length * 0.5) && clean === 0) {
+  //
+  // Out-of-graph convictions are exempt entirely. Those points were not inferred
+  // from a null cell that a degraded engine could also produce - ORS was asked
+  // and explicitly refused them by coordinate, so there is no reading of that
+  // response under which they are routable.
+  if (
+    points.length &&
+    offGraphConvicted === 0 &&
+    bad.size > Math.floor(points.length * 0.5) &&
+    clean === 0
+  ) {
     publish(true);
     return new Set();
   }

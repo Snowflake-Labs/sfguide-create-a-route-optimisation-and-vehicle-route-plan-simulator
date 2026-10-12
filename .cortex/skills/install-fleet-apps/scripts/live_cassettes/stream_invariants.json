@@ -1,0 +1,7 @@
+{
+ "sql\u001f-f\u001fsha256:9ca97977f2274fd5b06085d2da65bcd271cc784eeddab6c67b1c349f34295947\u001f--format\u001fjson": {
+  "rc": 0,
+  "stderr": "",
+  "stdout": "[\n  [\n    {\n      \"status\"  :   \"Statement executed successfully.\"\n    }\n  ],\n  [],\n  []\n]\n\n"
+ }
+}

@@ -1298,3 +1298,270 @@ ORDER BY projected_week_hours DESC NULLS LAST'
     )
   )
 ;
+
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_PLAN_STANDARDS
+
+  TABLES (
+    routes AS FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN
+      PRIMARY KEY (ROUTE_ID)
+      COMMENT = 'Route-plan fact: one row per planned route (a vehicle-day of ordered stops), scored against the written planning standard for its region.'
+    , readiness AS FLEET_APP.PLAN_STANDARDS.VW_WAREHOUSE_READINESS
+      PRIMARY KEY (READINESS_ID)
+      COMMENT = 'Depot-day warehouse readiness fact (standalone): when the last route for a depot was released against when the warehouse wanted to start building sessions.'
+  )
+
+  FACTS (
+    routes.stops AS STOPS
+      COMMENT = 'Planned stops on the route. One per sequence position; a duplicate sequence number is excluded here and reported by is_sequence_breach instead.'
+    , routes.geocoded_stops AS GEOCODED_STOPS
+      COMMENT = 'Of those stops, how many resolved to a site geometry. MEASURED at about 86 percent on SanFrancisco. Quote this beside stops whenever a geographic claim is made - the territory measures can only see these.'
+    , routes.unique_sites AS UNIQUE_SITES
+      COMMENT = 'Distinct sites on the route. Lower than stops means the plan revisits a site.'
+    , routes.plan_km AS PLAN_KM
+      COMMENT = 'Planned distance as recorded by the SOURCE system, km. This is NOT a road distance from this platform - for a road figure comparable to the optimizer use F_ROUTE_RESOLVE_GAP, which re-prices the same sequence on the region graph.'
+    , routes.plan_hours AS PLAN_HOURS
+      COMMENT = 'Planned duration of the route, hours. Compared against max_shift_hours to decide is_shift_breach.'
+    , routes.km_per_stop AS KM_PER_STOP
+      COMMENT = 'Drop density: planned km divided by stops. The single most comparable number between planners, because it is independent of how many stops they were given.'
+    , routes.minutes_per_stop AS MINUTES_PER_STOP
+      COMMENT = 'Planned minutes per stop.'
+    , routes.max_stop_from_depot_km AS MAX_STOP_FROM_DEPOT_KM
+      COMMENT = 'Straight-line distance from the vehicle depot to its furthest planned stop, km. Territory reach. NULL when no stop on the route could be geocoded, and NULL is deliberately NOT treated as compliant.'
+    , routes.seq_conflicts AS SEQ_CONFLICTS
+      COMMENT = 'Count of duplicate sequence positions in the plan. Above zero means the stop order is ambiguous, which is itself a standards failure.'
+    , routes.breach_count AS BREACH_COUNT
+      COMMENT = 'How many of the five standards this route breaks (0-5).'
+    , routes.compliance_score AS COMPLIANCE_SCORE
+      COMMENT = 'Percentage of the five standards met (0-100). A summary only - name WHICH standard failed when advising a planner, because a blended score cannot be actioned.'
+    , routes.release_minutes_late AS RELEASE_MINUTES_LATE
+      COMMENT = 'Minutes by which the plan release ran past the warehouse session start, clamped at zero. See the view comment: release time is DERIVED, not recorded.'
+    , routes.min_stops AS MIN_STOPS
+      COMMENT = 'The standard in force: minimum stops per route for this region.'
+    , routes.max_stops AS MAX_STOPS
+      COMMENT = 'The standard in force: maximum stops per route for this region.'
+    , routes.max_shift_hours AS MAX_SHIFT_HOURS
+      COMMENT = 'The standard in force: maximum planned hours per route for this region.'
+    , routes.max_km_per_stop AS MAX_KM_PER_STOP
+      COMMENT = 'The standard in force: maximum km per stop for this region.'
+    , routes.max_territory_km AS MAX_TERRITORY_KM
+      COMMENT = 'The standard in force: maximum km from depot to furthest stop for this region.'
+    , readiness.readiness_routes AS ROUTES
+      COMMENT = 'Routes released for this depot-day.'
+    , readiness.readiness_planners AS PLANNERS
+      COMMENT = 'Distinct planners who contributed routes to this depot-day. More planners on one depot is more coordination risk on the release time.'
+    , readiness.readiness_stops AS STOPS
+      COMMENT = 'Total planned stops across the depot-day.'
+    , readiness.build_start_delay_min AS BUILD_START_DELAY_MIN
+      COMMENT = 'Minutes between the warehouse session start and the LAST plan release for the depot. SIGNED: negative means the plans were ready early, which is the good case. The warehouse cannot start until the last plan lands, so the max release is the blocking moment and an average would hide a depot held up by one late plan.'
+    , readiness.late_route_pct AS LATE_ROUTE_PCT
+      COMMENT = 'Percentage of the depot-day routes released after the session start (0-100).'
+  )
+
+  DIMENSIONS (
+    routes.route_id AS ROUTE_ID
+      WITH SYNONYMS ('route', 'plan', 'route plan')
+      COMMENT = 'Route key, region|vehicle|date. Use this to identify one route, never vehicle_id alone.'
+    , routes.planner_id AS PLANNER_ID
+      WITH SYNONYMS ('planner', 'route planner', 'dispatcher', 'who planned it', 'planner code')
+      COMMENT = 'The planner who built the route (e.g. DISP-08). Same attribution the Asset Velocity view shows as assigned_dispatcher, so the two screens agree. Synthesized from the vehicle, and stable.'
+    , routes.planner_label AS PLANNER_LABEL
+      WITH SYNONYMS ('planner name')
+      COMMENT = 'Planner in words, e.g. "Planner 08".'
+    , routes.vehicle_id AS VEHICLE_ID
+      WITH SYNONYMS ('vehicle', 'truck', 'van', 'asset')
+      COMMENT = 'Vehicle the route was planned for. Reused across regions, so always group with region.'
+    , routes.plan_date AS PLAN_DATE
+      WITH SYNONYMS ('planning date', 'plan cycle date')
+      COMMENT = 'The source planning-cycle date, and the route grain. NOT the day the vehicle rolls: on SanFrancisco it sits 40 days before the planned departure. Use service_date for anything operational.'
+    , routes.service_date AS SERVICE_DATE
+      WITH SYNONYMS ('service day', 'operating day', 'delivery date', 'day', 'date')
+      COMMENT = 'The day the vehicle actually rolls, derived from the first planned departure. This is the operational date - use it for "today", "last week" and any question about when work happened.'
+    , routes.operator_id AS OPERATOR_ID
+      WITH SYNONYMS ('driver', 'operator')
+      COMMENT = 'Driver assigned to execute the route. Distinct from planner_id, which is who BUILT it.'
+    , routes.depot_id AS DEPOT_ID
+      WITH SYNONYMS ('depot', 'branch', 'home base', 'site', 'warehouse')
+      COMMENT = 'Depot the vehicle is based at.'
+    , routes.depot_name AS DEPOT_NAME
+      WITH SYNONYMS ('depot name', 'warehouse name')
+      COMMENT = 'Depot in words.'
+    , routes.standard_label AS STANDARD_LABEL
+      WITH SYNONYMS ('standard', 'planning standard', 'which standard')
+      COMMENT = 'The named standard applied to this route, e.g. "Metro multi-drop standard". Regions get different bands, so a breach count is only comparable within one standard.'
+    , routes.is_stop_band_breach AS IS_STOP_BAND_BREACH
+      WITH SYNONYMS ('too few stops', 'too many stops', 'stop band')
+      COMMENT = 'TRUE when the stop count sits outside the region band.'
+    , routes.is_shift_breach AS IS_SHIFT_BREACH
+      WITH SYNONYMS ('over shift', 'too long', 'exceeds shift', 'over hours')
+      COMMENT = 'TRUE when planned hours exceed the region shift cap. The planner committed a driver to more time than the standard allows.'
+    , routes.is_density_breach AS IS_DENSITY_BREACH
+      WITH SYNONYMS ('poor density', 'too spread out', 'low drop density')
+      COMMENT = 'TRUE when km per stop exceeds the region ceiling.'
+    , routes.is_territory_breach AS IS_TERRITORY_BREACH
+      WITH SYNONYMS ('out of territory', 'crossed territory', 'too far from depot')
+      COMMENT = 'TRUE when the furthest stop exceeds the region territory radius, AND ALSO TRUE when no stop could be geocoded - an unmeasurable territory is not a pass. Read it with geocoded_stops before calling it a planning failure.'
+    , routes.is_sequence_breach AS IS_SEQUENCE_BREACH
+      WITH SYNONYMS ('ambiguous order', 'duplicate sequence', 'bad stop order')
+      COMMENT = 'TRUE when the plan has duplicate sequence positions, so the stop order is ambiguous.'
+    , routes.is_release_late AS IS_RELEASE_LATE
+      WITH SYNONYMS ('late plan', 'released late', 'plan was late')
+      COMMENT = 'TRUE when the plan was released after the warehouse session start.'
+    , routes.region AS REGION
+      WITH SYNONYMS ('region key', 'operating region')
+      COMMENT = 'Operating region KEY - the exact filter value (e.g. SanFrancisco, UsTexas). Use region_label for a place name in words.'
+    , routes.region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'geography', 'san francisco', 'region name')
+      COMMENT = 'Human-readable region label (e.g. "San Francisco", not "SanFrancisco").'
+    , readiness.readiness_id AS READINESS_ID
+      COMMENT = 'Depot-day key, region|depot|service_date.'
+    , readiness.readiness_region AS REGION
+      WITH SYNONYMS ('region key')
+      COMMENT = 'Operating region KEY for the depot-day.'
+    , readiness.readiness_region_label AS REGION_LABEL
+      WITH SYNONYMS ('city', 'area', 'region name')
+      COMMENT = 'Human-readable region label for the depot-day.'
+    , readiness.readiness_service_date AS SERVICE_DATE
+      WITH SYNONYMS ('service day', 'operating day', 'date')
+      COMMENT = 'The day the depot dispatches.'
+    , readiness.readiness_depot_id AS DEPOT_ID
+      WITH SYNONYMS ('depot', 'warehouse', 'branch')
+      COMMENT = 'Depot identifier.'
+    , readiness.readiness_depot_name AS DEPOT_NAME
+      WITH SYNONYMS ('depot name', 'warehouse name')
+      COMMENT = 'Depot in words.'
+    , readiness.readiness_status AS READINESS_STATUS
+      WITH SYNONYMS ('readiness', 'status', 'blocked', 'on time', 'at risk', 'can the warehouse start')
+      COMMENT = 'ON_TIME, AT_RISK (within 60 minutes past session start) or BLOCKED. The answer to "could the warehouse start building on time".'
+  )
+
+  METRICS (
+    routes.total_routes AS COUNT(DISTINCT ROUTE_ID)
+      WITH SYNONYMS ('routes', 'number of routes', 'route count', 'plans')
+      COMMENT = 'Distinct planned routes. Keyed on route_id, which already carries region, so this does not fuse regions.'
+    , routes.total_planners AS COUNT(DISTINCT REGION || '|' || PLANNER_ID)
+      WITH SYNONYMS ('planners', 'how many planners', 'planner count')
+      COMMENT = 'Distinct planners. Keyed on (region, planner_id) because planner codes repeat across regions, so counting the bare code understates the roster whenever more than one region is in scope.'
+    , routes.total_stops AS ROUND(SUM(STOPS), 0)
+      WITH SYNONYMS ('stops', 'total drops', 'number of stops')
+      COMMENT = 'Total planned stops. Zero decimals because this is a sum of counts and a fractional stop is meaningless.'
+    , routes.compliance_pct AS ROUND(100.0 * DIV0(COUNT_IF(BREACH_COUNT = 0), COUNT(*)), 2)
+      WITH SYNONYMS ('compliance', 'percent compliant', 'adherence', 'following the standard', 'standard compliance')
+      COMMENT = 'Percentage of routes that break NO standard (0-100). The headline standardization number.'
+    , routes.avg_km_per_stop AS ROUND(AVG(KM_PER_STOP), 2)
+      WITH SYNONYMS ('average density', 'average km per drop')
+      COMMENT = 'Mean km per stop. Careful: this is a MEAN OF RATIOS. For a like-for-like planner benchmark use km_per_stop_pooled, which is the ratio of sums - the two statistics disagree on unequal route sizes and mixing them once reported the regional BEST planner as 60 km WORSE than the benchmark.'
+    , routes.km_per_stop_pooled AS ROUND(DIV0(SUM(PLAN_KM), SUM(STOPS)), 2)
+      WITH SYNONYMS ('pooled density', 'km per stop overall', 'fleet density')
+      COMMENT = 'Total planned km divided by total stops. The correct statistic for comparing planners or regions, because it weights each route by its size.'
+    , routes.consistency_sd_km_per_stop AS ROUND(STDDEV(KM_PER_STOP), 2)
+      WITH SYNONYMS ('consistency', 'variation', 'variability', 'how consistent', 'spread', 'do they plan the same way')
+      COMMENT = 'Standard deviation of km per stop. This is the CONSISTENCY measure and it is a different question from compliance: a planner can sit near the fleet mean and still be unpredictable, and that planner is the one whose routes nobody else can pick up. Group by planner to answer "which planners work differently from each other".'
+    , routes.avg_plan_hours AS ROUND(AVG(PLAN_HOURS), 2)
+      WITH SYNONYMS ('average route length', 'average hours')
+      COMMENT = 'Mean planned hours per route.'
+    , routes.shift_breaches AS COUNT_IF(IS_SHIFT_BREACH)
+      WITH SYNONYMS ('over shift routes', 'routes over hours')
+      COMMENT = 'Routes planned beyond the shift cap.'
+    , routes.stop_band_breaches AS COUNT_IF(IS_STOP_BAND_BREACH)
+      COMMENT = 'Routes outside the stop band.'
+    , routes.density_breaches AS COUNT_IF(IS_DENSITY_BREACH)
+      COMMENT = 'Routes above the km-per-stop ceiling.'
+    , routes.territory_breaches AS COUNT_IF(IS_TERRITORY_BREACH)
+      COMMENT = 'Routes above the territory radius OR with no geocodable stop. Read alongside total_geocoded_stops before attributing these to the planner.'
+    , routes.sequence_breaches AS COUNT_IF(IS_SEQUENCE_BREACH)
+      COMMENT = 'Routes with an ambiguous stop order.'
+    , routes.late_releases AS COUNT_IF(IS_RELEASE_LATE)
+      WITH SYNONYMS ('late plans', 'plans released late')
+      COMMENT = 'Routes released after the warehouse session start.'
+    , routes.avg_release_minutes_late AS ROUND(AVG(RELEASE_MINUTES_LATE), 2)
+      WITH SYNONYMS ('average lateness', 'how late are plans')
+      COMMENT = 'Mean minutes past the session start. Derived from a release-time BOUND, so treat as indicative of the pattern rather than a measured clock.'
+    , routes.total_geocoded_stops AS ROUND(SUM(GEOCODED_STOPS), 0)
+      COMMENT = 'Total stops that resolved to a site geometry. Quote against total_stops to bound any geographic claim. Zero decimals: a sum of counts.'
+    , readiness.blocked_depot_days AS COUNT_IF(READINESS_STATUS = 'BLOCKED')
+      WITH SYNONYMS ('blocked depots', 'depots held up', 'how often blocked')
+      COMMENT = 'Depot-days where the last plan landed more than an hour after the warehouse wanted to start.'
+    , readiness.avg_build_start_delay_min AS ROUND(AVG(BUILD_START_DELAY_MIN), 2)
+      WITH SYNONYMS ('average delay', 'how late can the warehouse start', 'session delay')
+      COMMENT = 'Mean signed minutes between session start and last plan release. Negative is early.'
+  )
+
+  COMMENT = 'Route-plan standardization and planner variance: how consistently each planner builds routes against a written standard, and whether plans are released early enough for the warehouse to begin building sessions.
+
+THREE THINGS TO READ BEFORE ANSWERING, because each changes the answer.
+
+1. COMPLIANCE AND CONSISTENCY ARE DIFFERENT QUESTIONS. compliance_pct asks "does this planner follow the standard". consistency_sd_km_per_stop asks "does this planner plan the same way twice". They do not move together, and for a team of many planners working to one standard the second is usually the real complaint. Answer whichever was asked, and say which one you used.
+
+2. THE FIVE STANDARDS ARE SEPARATE ON PURPOSE. Name the breached standard (shift, stop band, density, territory, sequence) rather than only quoting compliance_score - a planner cannot act on a blended percentage. is_territory_breach is ALSO true when no stop on the route could be geocoded, so read it with geocoded_stops before calling it a planning failure.
+
+3. TWO FIELDS ARE DERIVED AND MUST BE LABELLED. Plan release time is not recorded anywhere in the source; it is the latest moment a plan could have been released and still have the vehicle leave on time (first departure minus a configurable lead time). So release_minutes_late, is_release_late and everything in the readiness table describe a BOUND on lateness, not a measured clock. And planner_id is synthesized from the vehicle - it is stable and matches what Asset Velocity shows, but it is not a name from an HR system.
+
+REGION SHAPES EVERYTHING HERE. Only dense urban regions have multi-stop route plans: SanFrancisco averages 28 stops per route, while UnitedStatesOfAmerica and UsTexas average 1.3 and 1.6 because they are long-haul line-haul. Each region has its OWN standard with its own bands, so a breach count from one region is not comparable with another. Always group by region, and prefer SanFrancisco for any question about route planning practice.
+
+plan_km comes from the source system and is NOT a road distance computed here. For a road figure comparable against an optimizer, call FLEET_APP.PLAN_STANDARDS.F_ROUTE_RESOLVE_GAP, which re-solves one route live on the region graph and returns planned vs optimized km, hours and cost. That is a live engine call for one route at a time, not something this semantic view can aggregate.'
+
+  AI_SQL_GENERATION 'Route-plan standards and planner variance. Read the view comment first: the compliance-vs-consistency split, the derived release time and the region shape all change the answer.
+- Group by (region, planner_id) rather than planner_id alone. Planner codes repeat across regions, so grouping on the bare code fuses two different people onto one row.
+- Use service_date for anything operational ("today", "last week", "which day"). plan_date is the source planning-cycle key and sits 40 days earlier on SanFrancisco, so a date filter on it silently returns nothing for a recent window.
+- For "which planners are inconsistent" use consistency_sd_km_per_stop grouped by planner. For "who follows the standard" use compliance_pct. Do not substitute one for the other.
+- When comparing planners or regions on density use km_per_stop_pooled (ratio of sums), not avg_km_per_stop (mean of ratios).
+- Filter to one region for any practice question, and prefer region = ''SanFrancisco'': the long-haul regions have 1-2 stops per route and score near-perfect compliance against bands that do not describe them.
+- Never present a territory breach without checking geocoded_stops on the same rows - an unmeasurable territory counts as a breach by design.
+<chart_customization>
+- Planner league tables: horizontal bar sorted descending. Plot compliance_pct and consistency_sd_km_per_stop as SEPARATE charts - they are different units and different questions, and a shared axis invites the reader to treat a high SD as good compliance.
+- Breach mix per planner: stacked bar with one series per standard, so the reader sees WHICH rule each planner breaks rather than a single height.
+- Compliance or lateness over time: line chart on service_date, never plan_date.
+- km_per_stop across routes: histogram or box plot per planner. A mean hides the whole point - the spread IS the finding.
+- Money and minutes on one chart: do not. Use two panels.
+- Anything about WHERE routes go - stop locations, territory overlap, depot catchment - is a MAP, not a chart. Use render_map with the stop coordinates from FLEET_APP.PLAN_STANDARDS.VW_ROUTE_STOPS (stop_lng, stop_lat) plus a measure to shade by; do not attempt to chart coordinates.
+</chart_customization>'
+  AI_VERIFIED_QUERIES (
+    least_consistent_planners AS (
+      QUESTION 'Which route planners are least consistent in how they build routes?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT planner_id, region,
+       COUNT(*) AS routes,
+       ROUND(STDDEV(km_per_stop), 2) AS consistency_sd_km_per_stop,
+       ROUND(DIV0(SUM(plan_km), SUM(stops)), 2) AS km_per_stop_pooled,
+       ROUND(100.0 * DIV0(COUNT_IF(breach_count = 0), COUNT(*)), 2) AS compliance_pct
+FROM FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN
+WHERE region = ''SanFrancisco''
+GROUP BY planner_id, region
+ORDER BY consistency_sd_km_per_stop DESC NULLS LAST'
+    )
+    , planners_breaking_the_shift_cap AS (
+      QUESTION 'Which planners most often build routes that run past the shift limit?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT planner_id, region,
+       COUNT(*) AS routes,
+       COUNT_IF(is_shift_breach) AS shift_breaches,
+       ROUND(100.0 * DIV0(COUNT_IF(is_shift_breach), COUNT(*)), 2) AS shift_breach_pct,
+       ROUND(AVG(plan_hours), 2) AS avg_plan_hours,
+       ANY_VALUE(max_shift_hours) AS shift_cap_hours
+FROM FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN
+WHERE region = ''SanFrancisco''
+GROUP BY planner_id, region
+ORDER BY shift_breach_pct DESC NULLS LAST'
+    )
+    , depots_blocking_the_warehouse AS (
+      QUESTION 'Which depots cannot start building sessions on time because plans land too late?'
+      VERIFIED_AT 1789000000
+      ONBOARDING_QUESTION TRUE
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT depot_name, region,
+       COUNT(*) AS depot_days,
+       COUNT_IF(readiness_status = ''BLOCKED'') AS blocked_days,
+       ROUND(AVG(build_start_delay_min), 2) AS avg_build_start_delay_min,
+       ROUND(AVG(planners), 2) AS avg_planners_per_day
+FROM FLEET_APP.PLAN_STANDARDS.VW_WAREHOUSE_READINESS
+WHERE region = ''SanFrancisco''
+GROUP BY depot_name, region
+HAVING COUNT_IF(readiness_status = ''BLOCKED'') > 0
+ORDER BY avg_build_start_delay_min DESC NULLS LAST'
+    )
+  )
+;

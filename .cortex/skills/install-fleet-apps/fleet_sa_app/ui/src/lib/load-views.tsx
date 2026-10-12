@@ -127,10 +127,26 @@ export function registerViewsFromConfig(
       category: view.category ?? 'Core',
       roles: view.roles,
       agentKnowledge: interpolateAgentKnowledge(view.agentKnowledge, display),
+      requiredBinds: requiredBindsOf(view),
       component: createLazyViewComponent(view),
     };
     viewRegistry.register(registration);
   }
+}
+
+// Binds emitted by `required: true` filters in any FilterBar area of the view.
+function requiredBindsOf(view: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  const areas = (view as { areas?: Record<string, unknown> }).areas ?? {};
+  for (const area of Object.values(areas)) {
+    const filters = (area as { filters?: unknown[] })?.filters;
+    if (!Array.isArray(filters)) continue;
+    for (const f of filters as { required?: boolean; name?: string; label?: string; emits?: Record<string, string> }[]) {
+      if (!f?.required || !f.emits) continue;
+      for (const key of Object.keys(f.emits)) out[key] = f.label || f.name || key;
+    }
+  }
+  return out;
 }
 
 // Reserved id for the single ephemeral, agent-emitted page. Hidden from the

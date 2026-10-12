@@ -610,6 +610,20 @@ export async function activateDataset(
     log('WARN', 'Studio',
       `activateDataset: CONFIG sync failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`);
   }
+  // NOT awaited, unlike the generation path. This runs behind an interactive
+  // HTTP request (api/ops/activate-dataset and the activate_dataset ops verb),
+  // and ALTER DYNAMIC TABLE ... REFRESH was measured at ~97 s - long enough to
+  // trip a request timeout and report a failed activation that actually
+  // succeeded. The statement is submitted to Snowflake and completes there
+  // regardless of this response, so the caller returns immediately and the
+  // visit population catches up shortly after instead of up to an hour later.
+  //
+  // The explicit .catch is required, not defensive: the helper only swallows
+  // errors from the SQL itself, and an unhandled rejection here would surface as
+  // a process-level warning (or a crash under --unhandled-rejections=strict).
+  void refreshDatasetScopedDynamicTables(
+    snowSql, `activateDataset ${region}/${vehicleType}`, datasetId,
+  ).catch(() => { /* already logged inside the helper */ });
   return {
     activated: datasetId,
     deactivated: Number((priorActive[0] as any)?.N ?? 0),
@@ -692,6 +706,60 @@ export async function deleteDataset(
 // preset's data must never touch another preset's rows. The only
 // JOB_ID-scoped destructive helper is deleteJobData() above. Do not add
 // region-wide DELETE helpers here without changing the data model.
+// Dynamic Tables that read the DATASET-SCOPED projection views, and therefore
+// hold rows derived from whichever dataset was active when they last refreshed.
+//
+// WHY THIS EXISTS. Activation flips IS_ACTIVE last, so SYNTHETIC_DATASETS.UNIFIED
+// V_*_CURRENT switches to the new dataset ATOMICALLY - but a Dynamic Table is
+// MATERIALISED, so it keeps serving the PREVIOUS dataset's rows until its own
+// TARGET_LAG elapses. DT_SITE_VISITS is TARGET_LAG = '1 hour' and was measured
+// refreshing on a ~50-minute cadence, so for up to an hour after a regeneration
+// the app's context bar and date range describe the NEW dataset while the visit
+// population still describes the OLD one.
+//
+// Observed consequence: Delivery Sync opened with every KPI at zero, an As Of
+// card reading "-", and the map reporting "No features match the current
+// selection" - on a freshly generated, wholly healthy UsTexas dataset. Nothing
+// threw. The page was accurately describing a Dynamic Table that had not caught
+// up yet, which is indistinguishable from a broken view.
+//
+// Scope is deliberately ONE table. MARKETPLACE.RATE_INDEX also has a 1-hour lag
+// but reads the PHYSICAL UNIFIED.FACT_OFFERS rather than a V_*_CURRENT view, so
+// an activation flip does not change its input and refreshing it here would be
+// pure cost. Add to this list only tables whose input is dataset-scoped.
+const DATASET_SCOPED_DYNAMIC_TABLES = [
+  'FLEET_INTELLIGENCE.DELIVERY_SYNC.DT_SITE_VISITS',
+];
+
+// Bring the dataset-scoped Dynamic Tables up to date with the dataset that was
+// just activated.
+//
+// ALWAYS NON-FATAL. A failed refresh must never fail a generation run or an
+// activation: the only consequence is that the page waits for the scheduled
+// refresh, which is exactly today's behaviour. Raising here would turn a
+// cosmetic delay into a failed dataset.
+//
+// ALTER DYNAMIC TABLE ... REFRESH is SYNCHRONOUS and has no async form; it was
+// measured at ~97 s on this account. Callers therefore choose whether to wait -
+// see the two call sites.
+async function refreshDatasetScopedDynamicTables(
+  snowSql: SnowSqlFn,
+  context: string,
+  jobId?: string,
+): Promise<void> {
+  for (const dt of DATASET_SCOPED_DYNAMIC_TABLES) {
+    try {
+      await snowSql(`ALTER DYNAMIC TABLE ${dt} REFRESH`,
+                    'FLEET_INTELLIGENCE', 'CORE');
+    } catch (e: any) {
+      log('WARN', 'Studio',
+          `${context}: refresh of ${dt} failed (non-fatal, page will wait for ` +
+          `the scheduled refresh): ${e.message?.slice(0, 200)}`,
+          jobId ? { jobId } : undefined);
+    }
+  }
+}
+
 async function archivePriorDatasets(
   snowSql: SnowSqlFn,
   region: string,
@@ -729,6 +797,13 @@ async function archivePriorDatasets(
         `archivePriorDatasets activate failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
         { jobId: newJobId });
   }
+  // AWAITED here on purpose. A generation run already takes minutes and reports
+  // success to the user at the end, so paying ~97 s means the dataset is
+  // actually queryable the moment the run says it is done - which is the whole
+  // point. Firing and forgetting would let the job report success while
+  // Delivery Sync still served the previous dataset.
+  await refreshDatasetScopedDynamicTables(
+    snowSql, `archivePriorDatasets ${region}/${vehicleType}`, newJobId);
 }
 
 // Check whether a peer dataset exists for the same (REGION, VEHICLE_TYPE).
@@ -1376,7 +1451,9 @@ export async function startGeneration(
       // flip DIM_DATASETS.IS_ACTIVE at the very end of this block. This keeps
       // the previously-active dataset visible to downstream demos (Backload
       // Matching, Freight Exchange, Fleet Intelligence, Asset Velocity) for
-      // the entire ~5-30s window during which the new data is being inserted,
+      // the entire window during which the new data is being inserted (seconds
+      // on a small pool, but MEASURED at ~15 min for a 72,849-POI pool, so do
+      // not assume this is brief),
       // and switches them atomically to the new dataset only once it is fully
       // populated. The new JOB_ID's rows live in the base tables but are
       // invisible to V_*_CURRENT views until the flip happens.
@@ -1385,19 +1462,29 @@ export async function startGeneration(
       const datasetLabel = `${presetName} @ ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
 
       try {
-        await insertDimPois(pois, config, snowSql, jobId);
+        // The onProgress beat is a watchdog heartbeat, not decoration: this
+        // insert is one round-trip per 500 rows, so a large pool is otherwise a
+        // single silent phase that can exceed WATCHDOG_STALL_MS and get a
+        // healthy job aborted. Measured at 929 s of silence on a 72,849-POI pool.
+        await insertDimPois(pois, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} POIs` });
+        });
+        broadcast(job, 'progress', { status: `Inserted ${pois.length} POIs` });
       } catch (e: any) {
         log('WARN', 'Studio', `DIM_POIS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `DIM_POIS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
         await insertDimFleet(fleet, config, snowSql, jobId);
+        broadcast(job, 'progress', { status: `Inserted ${fleet.length} fleet rows` });
       } catch (e: any) {
         log('WARN', 'Studio', `DIM_FLEET insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertFactOffers(offers, config, snowSql, jobId);
+        const n = await insertFactOffers(offers, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} offers` });
+        });
         log('INFO', 'Studio', `Inserted ${n} offers`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} offers` });
       } catch (e: any) {
@@ -1405,7 +1492,9 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `FACT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertDimPartners(partners, config, snowSql, jobId);
+        const n = await insertDimPartners(partners, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} partners` });
+        });
         log('INFO', 'Studio', `Inserted ${n} partners`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} partners` });
       } catch (e: any) {
@@ -1413,7 +1502,9 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `DIM_PARTNERS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId);
+        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId, (done, total) => {
+          broadcast(job, 'progress', { status: `Inserted ${done}/${total} partner-history rows` });
+        });
         log('INFO', 'Studio', `Inserted ${n} partner-history rows`, { jobId });
         broadcast(job, 'progress', { status: `Inserted ${n} partner-history rows` });
       } catch (e: any) {
