@@ -35,7 +35,7 @@ gates:
     why: source files hidden by a generic .gitignore rule exist only on one machine
   - id: no_brands
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands_negative.py
     scope: static
     why: the repo must not author a customer, vendor, competitor or individual name
   - id: tracking_tags
@@ -314,7 +314,6 @@ gates:
 debt:
   missing_negative:
     - no_ignored_source
-    - no_brands
     - tracking_tags
     - image_versions
     - install_order
