@@ -50,6 +50,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py
     scope: static
     why: image tags drift between image-versions.env, service YAML and docs
+  - id: dockerfile_pip
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
+    scope: static
+    why: an image build runs pip as root and prints pip's root-user WARNING into the install log
   - id: gate_registry
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry_negative.py
