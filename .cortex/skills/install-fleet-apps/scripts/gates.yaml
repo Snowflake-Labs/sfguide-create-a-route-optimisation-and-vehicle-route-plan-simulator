@@ -208,6 +208,12 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake_negative.py
     scope: static
     why: the admin Status & Health page reports a waking routing gateway as a graph-load failure
+  - id: next_build_warnings
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_next_build_warnings.py
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui, npm-ci:.cortex/skills/install-fleet-apps/fleet_admin_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_next_build_warnings_negative.py
+    scope: static
+    why: an app's production build reports "Compiled with warnings" (CSS autoprefixer or an unresolved optional require)
   - id: view_usecases
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases_negative.py

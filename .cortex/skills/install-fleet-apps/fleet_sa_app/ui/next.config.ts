@@ -53,6 +53,12 @@ const nextConfig: NextConfig = {
           path.resolve(process.cwd(), 'node_modules', pkg),
         ]),
       ),
+      // vega-canvas (via vega) does `try { require('canvas') } catch {}` to use
+      // node-canvas when present. It is not installed, so the server bundle
+      // printed "Module not found: Can't resolve 'canvas'" and `next build`
+      // reported "Compiled with warnings". An empty module is exactly what the
+      // catch already handles (check_next_build_warnings.py).
+      canvas: false,
     };
     return config;
   },
