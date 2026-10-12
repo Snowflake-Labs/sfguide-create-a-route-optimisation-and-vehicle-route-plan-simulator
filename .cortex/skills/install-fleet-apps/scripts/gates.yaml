@@ -30,7 +30,7 @@ gates:
   # ── repo hygiene ────────────────────────────────────────────────────────────
   - id: no_ignored_source
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source_negative.py
     scope: static
     why: source files hidden by a generic .gitignore rule exist only on one machine
   - id: no_brands
@@ -40,12 +40,12 @@ gates:
     why: the repo must not author a customer, vendor, competitor or individual name
   - id: tracking_tags
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags_negative.py
     scope: static
     why: every CREATE carries a tracking COMMENT and every session a query_tag
   - id: image_versions
     run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py
     scope: static
     why: image tags drift between image-versions.env, service YAML and docs
   - id: gate_registry
@@ -67,27 +67,27 @@ gates:
     why: an install SQL file references an object that is created later
   - id: warehouse_ddl
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl_negative.py
     scope: static
     why: warehouse specs diverge across install-fleet-apps
   - id: marketplace_ddl_parity
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_marketplace_ddl_parity.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_marketplace_ddl_parity_negative.py
     scope: static
     why: mirrored MARKETPLACE / projection DDL drifts apart
   - id: suspend_signatures
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_suspend_signatures.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_suspend_signatures_negative.py
     scope: static
     why: a routing-gateway error code is invisible to the app's suspend handling
   - id: js_proc_templating
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_js_proc_templating.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_js_proc_templating_negative.py
     scope: static
     why: SQL containing && deployed without --enable-templating NONE
   - id: engine_guards
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards_negative.py
     scope: static
     why: installer SQL creates an engine-dependent object outside a guard
   - id: geography_carrier
@@ -313,15 +313,7 @@ gates:
 # an entry requires the gate's `negative` to be set in the same change.
 debt:
   missing_negative:
-    - no_ignored_source
-    - tracking_tags
-    - image_versions
     - install_order
-    - warehouse_ddl
-    - marketplace_ddl_parity
-    - suspend_signatures
-    - js_proc_templating
-    - engine_guards
     - ors_observability
     - ors_raise
     - routing_probe

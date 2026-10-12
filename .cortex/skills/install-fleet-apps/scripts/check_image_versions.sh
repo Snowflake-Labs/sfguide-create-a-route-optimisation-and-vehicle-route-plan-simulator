@@ -92,7 +92,9 @@ done
 
 EXPECTED_REPO=""
 if [ "$HAS_MANIFEST" -eq 1 ]; then
-  EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1)
+  # `|| true` for the same pipefail reason as GW_VER below: a manifest with no
+  # /public/ path is valid and must skip the repo check, not abort the gate.
+  EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1 || true)
 fi
 if [ -n "$EXPECTED_REPO" ]; then
   echo "Expected repository path: $EXPECTED_REPO"
@@ -125,7 +127,10 @@ done
 # trustworthy; otherwise verify_gateway_version.sh would compare against a lie.
 GATEWAY_PY="$OPENROUTESERVICE_APP_DIR/services/gateway/routing_service.py"
 if [ -f "$GATEWAY_PY" ]; then
-  GW_VER=$(grep -oE "^GATEWAY_VERSION[[:space:]]*=[[:space:]]*'[^']*'" "$GATEWAY_PY" | sed -E "s/.*'([^']*)'.*/\1/" | head -1)
+  # `|| true`: under `set -euo pipefail` a grep that matches nothing would abort
+  # the script here, so the "could not read" error below was unreachable and the
+  # gate exited 1 without naming any cause.
+  GW_VER=$(grep -oE "^GATEWAY_VERSION[[:space:]]*=[[:space:]]*'[^']*'" "$GATEWAY_PY" | sed -E "s/.*'([^']*)'.*/\1/" | head -1 || true)
   if [ -z "$GW_VER" ]; then
     error "could not read GATEWAY_VERSION from $(basename "$GATEWAY_PY")"
   elif [ "$GW_VER" != "$ROUTING_REVERSE_PROXY_TAG" ]; then
