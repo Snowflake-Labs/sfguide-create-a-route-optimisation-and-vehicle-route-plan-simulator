@@ -52,6 +52,16 @@ build/
 # explicitly - it holds the patched ddl.ts and its loss is silent.
 !.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/src/build/
 !.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/src/build/**
+# The same two generic rules (`build/`, `env/`) swallowed three more source dirs,
+# which then existed only on the machine that wrote them: on a fresh clone the
+# admin Diagnostics page and the Matrix Builder "Build" action 404. Un-ignore
+# them explicitly; check_no_ignored_source.py fails on any further such file.
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/tests/unit/build/
+!.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse/tests/unit/build/**
+!.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/app/api/matrix/build/
+!.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/app/api/matrix/build/**
+!.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/app/api/diagnostics/env/
+!.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/app/api/diagnostics/env/**
 
 # Shared UI kit (@fleet-kit/core): ship its built dist so both apps can consume it
 # from a fresh clone via a relative file: dependency.
