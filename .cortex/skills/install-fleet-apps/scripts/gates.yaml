@@ -53,6 +53,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry_negative.py
     scope: static
     why: a gate outside this registry, or a growing negative-test debt
+  - id: run_gates
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_run_gates_negative.py
+    negative: self
+    scope: static
+    why: the runner turns a failing, hanging, missing or tree-dirtying gate green
 
   # ── install order, SQL and DDL correctness ──────────────────────────────────
   - id: install_order
