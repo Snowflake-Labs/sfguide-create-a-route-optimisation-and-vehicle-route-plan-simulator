@@ -1858,37 +1858,35 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region"}}';
 
--- Idempotent backfill of GRAPHS_DATA_ACCESS for installs created before this
--- column existed. Per the ADD COLUMN IF NOT EXISTS gotcha (it can raise a
--- compile-time "ambiguous column" error when the column already exists), the
--- ALTER is wrapped in an EXCEPTION-swallowing EXECUTE IMMEDIATE so a fresh
--- install (where the CREATE TABLE above already has the column) is a clean no-op.
+-- Idempotent backfill for installs created before these columns existed:
+-- GRAPHS_DATA_ACCESS, NEEDS_PREWARM (set TRUE by the resume/limits/downsize
+-- paths for MMAP regions; drained by the RESCUE_PENDING_PROVISIONS reconciler)
+-- and IS_DEFAULT. Each column is added ONLY when INFORMATION_SCHEMA says it is
+-- missing. Do not use `ADD COLUMN IF NOT EXISTS ... DEFAULT`: with a DEFAULT
+-- clause Snowflake raises "ambiguous column name" when the column exists, so
+-- the old blocks printed `skipped` on every fresh install (and IS_DEFAULT's
+-- migration had to be disabled outright). check_add_column_default.py enforces
+-- this. No EXCEPTION handler: a real ALTER error must fail the module.
 EXECUTE IMMEDIATE $$
+DECLARE
+    missing RESULTSET DEFAULT (
+        SELECT v.NAME, v.DDL
+        FROM (VALUES ('GRAPHS_DATA_ACCESS', 'VARCHAR DEFAULT ''RAM_STORE'''),
+                     ('NEEDS_PREWARM', 'BOOLEAN DEFAULT FALSE'),
+                     ('IS_DEFAULT', 'BOOLEAN DEFAULT FALSE')) AS v (NAME, DDL)
+        WHERE v.NAME NOT IN (
+            SELECT COLUMN_NAME FROM OPENROUTESERVICE_APP.INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'CORE' AND TABLE_NAME = 'REGION_ORS_MAP'));
+    added VARCHAR DEFAULT '';
 BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-        ADD COLUMN IF NOT EXISTS GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE';
-    RETURN 'ok';
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+    FOR c IN missing DO
+        EXECUTE IMMEDIATE 'ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN '
+            || c.NAME || ' ' || c.DDL;
+        added := added || ' ' || c.NAME;
+    END FOR;
+    RETURN 'REGION_ORS_MAP legacy columns: ' || IFF(added = '', 'all present', 'added' || added);
 END;
 $$;
-
--- Idempotent backfill of NEEDS_PREWARM (set TRUE by the resume/limits/downsize
--- paths for MMAP regions; drained by the RESCUE_PENDING_PROVISIONS reconciler).
--- Same EXECUTE IMMEDIATE wrapper as above so the bare ADD COLUMN can't abort the
--- module on installs that already have the column.
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-        ADD COLUMN IF NOT EXISTS NEEDS_PREWARM BOOLEAN DEFAULT FALSE;
-    RETURN 'ok';
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-
--- Idempotent migration for installs created before IS_DEFAULT existed.
--- Disabled 2026-05-19: triggers "ambiguous column name 'IS_DEFAULT'" on
--- fresh installs where the CREATE TABLE above already includes IS_DEFAULT.
--- ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS IS_DEFAULT BOOLEAN DEFAULT FALSE;
 
 -- Seed the canonical default region (SanFrancisco) so LIST_REGIONS() returns
 -- it alongside user-provisioned regions. Pre-v1.1.0 the legacy global

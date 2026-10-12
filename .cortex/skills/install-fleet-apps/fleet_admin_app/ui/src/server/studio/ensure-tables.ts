@@ -50,9 +50,21 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       JOB_ID VARCHAR
     ) COMMENT = '${TRACK}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // Empty-miles support: tag each trip leg LADEN vs EMPTY (repositioning /
-    // deadhead). Idempotent ALTER so existing FACT_TRIPS tables pick the column
-    // up; legacy rows default to LADEN so the contract's COALESCE stays correct.
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS ADD COLUMN IF NOT EXISTS TRIP_KIND VARCHAR(16) DEFAULT 'LADEN'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // deadhead). Existing FACT_TRIPS tables pick the column up; legacy rows
+    // default to LADEN so the contract's COALESCE stays correct. Guarded on
+    // INFORMATION_SCHEMA because `ADD COLUMN IF NOT EXISTS ... DEFAULT` raises
+    // "ambiguous column name" when the column exists (check_add_column_default.py).
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM ${UNIFIED_DB}.INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = '${UNIFIED_SCHEMA}' AND TABLE_NAME = 'FACT_TRIPS'
+                AND COLUMN_NAME = 'TRIP_KIND')) THEN
+    RETURN 'FACT_TRIPS.TRIP_KIND present';
+  END IF;
+  ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS ADD COLUMN TRIP_KIND VARCHAR(16) DEFAULT 'LADEN';
+  RETURN 'FACT_TRIPS.TRIP_KIND added';
+END;
+$$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET (
       VEHICLE_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORS_PROFILE VARCHAR(30), SHIFT_TYPE VARCHAR(30),
@@ -294,13 +306,13 @@ $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
       LAST_PROGRESS_AT TIMESTAMP_NTZ,
       COMPLETED_AT     TIMESTAMP_NTZ
     ) COMMENT = '${TRACK_JOB_STATE}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
-    { sql: `EXECUTE IMMEDIATE $$
-BEGIN
-  ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE();
-  RETURN 'ok';
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    // Legacy JOB_EVENTS tables predate EVENT_TS. No DEFAULT on the ALTER: with
+    // one, IF NOT EXISTS raises "ambiguous column name" when the column exists,
+    // and Snowflake rejects a SYSDATE() default on an existing table anyway
+    // ("Invalid column default expression", measured) - so the old
+    // EXCEPTION-swallowed form could never add it. Without a DEFAULT the ALTER
+    // is a true no-op when the column exists (check_add_column_default.py).
+    { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     // Dataset versioning registry. Each Studio run = one immutable dataset
     // keyed by JOB_ID. At most one IS_ACTIVE = TRUE per (REGION, VEHICLE_TYPE).
     // Downstream consumers read via V_*_CURRENT views (see init.ts) which

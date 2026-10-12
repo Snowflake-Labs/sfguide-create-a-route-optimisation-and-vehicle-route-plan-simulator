@@ -72,6 +72,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_order_negative.py
     scope: static
     why: an install SQL file references an object that is created later
+  - id: add_column_default
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_add_column_default.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_add_column_default_negative.py
+    scope: static
+    why: a column backfill raises when the column exists (IF NOT EXISTS + DEFAULT) or uses a default Snowflake rejects
   - id: warehouse_ddl
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl_negative.py
