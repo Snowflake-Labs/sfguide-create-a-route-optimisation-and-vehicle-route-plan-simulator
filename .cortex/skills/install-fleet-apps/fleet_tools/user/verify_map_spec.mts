@@ -78,6 +78,7 @@ import {
   REQUIRED_LAYER_ENCODINGS as VERB_REQUIRED_ENCODINGS,
   RENDER_COMPONENTS as VERB_RENDER_COMPONENTS,
   MAP_SQL_COMPILE_ERROR_RE,
+  mapLayerCompileProbe,
 } from './src/codes';
 // Geometry, the padding clamp and detection carry REAL runtime imports (h3-js),
 // unlike the type-only validators above, so this package declares h3-js as a
@@ -1339,6 +1340,27 @@ const geoCol = (name: string, type: string) => ({ key: name, type });
     [geoCol('h3_cell', 'text')], []);
   chk('rebind: NEG an empty result leaves an h3 spec alone',
     (r.layer as { hexColumn?: string }).hexColumn === 'H3_CELL' && r.note === undefined);
+}
+
+// render_map's compile probe. Both defects rejected the VALID live-routing layer
+// with "Invalid argument types (NULL, VARIANT, NULL, VARIANT)": untyped NULL
+// binds cannot resolve an overloaded function, and the leftover-bind regex
+// rewrote the second colon of every `::TYPE` cast into a VARIANT path.
+{
+  const live = 'SELECT g FROM TABLE(ROUTING_PLATFORM.CONTRACT.DIRECTIONS(:profile, '
+    + 'ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(-122.39::FLOAT, 37.61::FLOAT))::VARIANT, :region, NULL::VARCHAR))';
+  const p = mapLayerCompileProbe(live, ['region', 'profile']);
+  chk('probe: a bind becomes NULL::VARCHAR, the type /api/query really binds',
+    p.includes('DIRECTIONS(NULL::VARCHAR,') && p.includes(', NULL::VARCHAR, NULL::VARCHAR))'), p);
+  chk('probe: ::FLOAT / ::VARIANT / ::VARCHAR casts survive untouched',
+    p.includes('-122.39::FLOAT') && p.includes('))::VARIANT') && !/NULL:NULL|::NULL/.test(p), p);
+  chk('probe: no bind is left behind', !/(?<!:):(?!:)[A-Za-z_]/.test(p), p);
+  const q = mapLayerCompileProbe('SELECT 1 WHERE R = :region AND K = :region_key', ['region', 'region_key']);
+  chk('probe: :region does not consume :region_key',
+    q === 'SELECT 1 WHERE R = NULL::VARCHAR AND K = NULL::VARCHAR', q);
+  const u = mapLayerCompileProbe('SELECT 1 WHERE D = :undeclared::DATE', []);
+  chk('probe: an undeclared bind is neutralized and its cast kept',
+    u === 'SELECT 1 WHERE D = NULL::VARCHAR::DATE', u);
 }
 
 console.log(fails ? `\n${fails} FAILURE(S) of ${checks}` : `\nall ${checks} assertions passed`);

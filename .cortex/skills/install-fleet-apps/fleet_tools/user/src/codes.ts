@@ -170,6 +170,28 @@ export const ALLOWED_DYNAMIC_DBS = ['FLEET_APP', 'SNOWFLAKE', 'ROUTING_PLATFORM'
 export const MAP_SQL_COMPILE_ERROR_RE =
   /invalid identifier|syntax error|unexpected|invalid argument types|too many arguments|not enough arguments|unknown function|invalid (?:metric|type|expression)/i;
 
+/** The statement render_map compiles (EXPLAIN) to type-check a layer query
+ *  without binding real values. Every `:name` bind becomes `NULL::VARCHAR`, the
+ *  type it really has: /api/query substitutes each non-empty param as a quoted
+ *  string literal. Two earlier defects, both rejecting the VALID live-routing
+ *  layer `DIRECTIONS(:profile, ..., :region, NULL::VARCHAR)` with "Invalid
+ *  argument types (NULL, VARIANT, NULL, VARIANT)":
+ *    - an UNTYPED `NULL` cannot resolve an overloaded function's signature;
+ *    - the leftover-bind regex also matched the second colon of every `::TYPE`
+ *      cast, turning `NULL::VARCHAR` into `NULL:NULL` (a VARIANT path).
+ *  So a bind is a colon NOT preceded or followed by another colon. Declared
+ *  params are replaced longest-first so `:region` cannot consume `:region_key`;
+ *  an undeclared one is neutralized the same way, so a reported compile error
+ *  is about the agent's columns, not this probe. */
+export function mapLayerCompileProbe(query: string, paramNames: string[]): string {
+  const bind = (name: string) => new RegExp(`(?<!:):${name}(?![A-Za-z0-9_])`, 'g');
+  let probe = query;
+  for (const n of [...paramNames].sort((a, b) => b.length - a.length)) {
+    probe = probe.replace(bind(n.replace(/[^A-Za-z0-9_]/g, '')), 'NULL::VARCHAR');
+  }
+  return probe.replace(/(?<!:):(?!:)[A-Za-z_][A-Za-z0-9_]*/g, 'NULL::VARCHAR');
+}
+
 // Layer types the SA app's deck.gl compiler implements. MUST stay in sync with
 // MAP_LAYER_TYPES in fleet_sa_app/ui/src/lib/map-spec-schema.ts (and the
 // LayerSpec union in packages/fleet-kit/src/map/layer-spec.ts). An unknown type
