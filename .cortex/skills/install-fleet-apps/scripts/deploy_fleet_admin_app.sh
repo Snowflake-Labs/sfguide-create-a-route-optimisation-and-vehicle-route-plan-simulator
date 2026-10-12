@@ -116,7 +116,10 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
   echo "  registry=$REPO_URL"
 
   echo "[3/7] Docker build (prebuilt .next) + push tag=$IMAGE_TAG..."
-  docker build --platform linux/amd64 \
+  # FLEET_DOCKER_BUILD_FLAGS (e.g. "--no-cache --pull") makes a fresh-machine
+  # reinstall build with no cached layer or base image; empty by default.
+  # shellcheck disable=SC2086
+  docker build --platform linux/amd64 ${FLEET_DOCKER_BUILD_FLAGS:-} \
     --label "git.sha=$GIT_SHA" --label "git.branch=$GIT_BRANCH" \
     -f "$UI_DIR/Dockerfile" \
     -t "$REPO_URL/fleet_admin_app:$IMAGE_TAG" \
