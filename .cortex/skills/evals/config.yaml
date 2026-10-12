@@ -15,7 +15,10 @@ exclude_paths:
 # broad would drop real skills and still print a green "N/N pass" - failing
 # green, which is worse than the noise this replaced. Raise this when skills are
 # added; if discovery drops below it, the run aborts.
-min_authored_skills: 23
+# 21 = committed authored skills (git ls-files, cowork_skills excluded), measured
+# 2026-10-12. It was 23 because discovery used to count two SKILL.md files inside
+# node_modules/playwright-core on the machine that set it - see lib/discovery.py.
+min_authored_skills: 21
 eval_types:
   - trigger
   - quality
