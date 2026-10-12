@@ -95,12 +95,25 @@ def walk_files(d: str) -> list[str]:
     return sorted(files)
 
 
+def children(d: str) -> list[str]:
+    """Direct children of d, directories with a trailing '/' like git prints."""
+    with os.scandir(d) as it:
+        return sorted(e.path + "/" if e.is_dir(follow_symlinks=False) else e.path
+                      for e in it)
+
+
 def classify() -> list[tuple[str, str, str]]:
-    entries = git("ls-files", "-o", "-i", "--exclude-standard",
+    # `--directory` lists nested entries (`.snowflake/`, `.snowflake/cortex/`,
+    # `.snowflake/cortex/plans/`). Expand an unruled directory ONE level at a
+    # time and dedupe, so a directory that carries its own rule is classified
+    # as a unit and never also walked into - each path is reported exactly once.
+    pending = git("ls-files", "-o", "-i", "--exclude-standard",
                   "--directory").splitlines()
     result: list[tuple[str, str, str]] = []
-    pending = entries
+    seen: set[str] = set()
     while pending:
+        pending = [p for p in dict.fromkeys(pending) if p not in seen]
+        seen.update(pending)
         rules = rules_for(pending)
         expand: list[str] = []
         for p in pending:
@@ -108,7 +121,7 @@ def classify() -> list[tuple[str, str, str]]:
             if not rule:
                 if p.endswith("/") and os.path.isdir(p):
                     # Listed only because every child is ignored: classify children.
-                    expand.extend(walk_files(p.rstrip("/")))
+                    expand.extend(children(p.rstrip("/")))
                 else:
                     result.append(("UNKNOWN", p, "(no rule reported)"))
                 continue
