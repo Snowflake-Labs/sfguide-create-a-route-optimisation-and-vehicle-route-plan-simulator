@@ -193,6 +193,11 @@ gates:
     why: the super-agent spec is stale against the bundle specs
 
   # ── SA / admin app views and UI ─────────────────────────────────────────────
+  - id: admin_gateway_wake
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake_negative.py
+    scope: static
+    why: the admin Status & Health page reports a waking routing gateway as a graph-load failure
   - id: view_usecases
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases_negative.py

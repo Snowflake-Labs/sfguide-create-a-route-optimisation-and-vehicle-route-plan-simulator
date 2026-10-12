@@ -4,6 +4,9 @@ import type { StatusResponse, ServiceInfo, OrsRegionReadiness, ComputePoolInfo, 
 import PhasePips from '@/components/shared/phase-pips';
 import { useVisiblePolling } from '@/hooks/useVisiblePolling';
 
+// Re-check delay while the routing gateway is waking (see gateway-wake.ts).
+const GATEWAY_WAKE_REPOLL_MS = 8000;
+
 // One row of CORE.PBF_MIRRORS as exposed by /api/pbf-mirrors.
 interface PbfMirror {
   priority: number;
@@ -171,6 +174,16 @@ export function ServiceManagerPage() {
     return m;
   }, [orsReadiness]);
 
+  // A waking gateway is ready within ~30 s, so do not leave the notice up for a
+  // full 30 s poll: check once more shortly after. Above the early return for the
+  // same hook-order reason as readinessByUpper.
+  const anyGatewayWaking = !!orsReadiness && Object.values(orsReadiness).some((r) => !!r.gateway_waking);
+  useEffect(() => {
+    if (!anyGatewayWaking) return;
+    const t = setTimeout(() => { fetchOrsReadiness(); }, GATEWAY_WAKE_REPOLL_MS);
+    return () => clearTimeout(t);
+  }, [anyGatewayWaking, orsReadiness, fetchOrsReadiness]);
+
   if (loading) return <div className="panel loading">Loading service status...</div>;
 
   const poolState = status?.compute_pool || 'UNKNOWN';
@@ -198,6 +211,12 @@ export function ServiceManagerPage() {
   const anyErrors = orsReadiness
     ? Object.entries(orsReadiness).some(([region, r]) => !!r.error && !isRegionSuspended(region))
     : false;
+  // A waking gateway answers no graph question at all, so it must not be read as
+  // an error (red) or as graphs being built (yellow "Building").
+  const wakingRegions = orsReadiness
+    ? Object.entries(orsReadiness).filter(([region, r]) => !!r.gateway_waking && !isRegionSuspended(region)).map(([region]) => region)
+    : [];
+  const gatewayWaking = wakingRegions.length > 0;
 
   const poolSubtitle = poolInfo?.instance_family
     ? `${poolInfo.instance_family} \u00B7 ${poolInfo.active_nodes ?? '?'}/${poolInfo.max_nodes ?? '?'} nodes`
@@ -228,7 +247,7 @@ export function ServiceManagerPage() {
         <div className={`status-card ${allGraphsReady === null ? '' : allGraphsReady ? 'ok' : anyErrors ? 'error' : 'warn'}`}>
           <div className="status-label">Graphs</div>
           <div className="status-value">
-            {readinessLoading && !orsReadiness ? 'Loading...' : allGraphsReady === null ? 'Unknown' : allGraphsReady ? `All Ready (${totalBuilt})` : anyErrors ? `Error (${totalBuilt}/${totalExpected})` : `Building (${totalBuilt}/${totalExpected})`}
+            {readinessLoading && !orsReadiness ? 'Loading...' : allGraphsReady === null ? 'Unknown' : allGraphsReady ? `All Ready (${totalBuilt})` : anyErrors ? `Error (${totalBuilt}/${totalExpected})` : gatewayWaking ? 'Gateway waking' : `Building (${totalBuilt}/${totalExpected})`}
           </div>
         </div>
       </div>
@@ -335,6 +354,8 @@ export function ServiceManagerPage() {
                             <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>N/A</span>
                           ) : isSuspended ? (
                             <span className="badge" style={{ opacity: 0.6 }}>Paused</span>
+                          ) : readiness?.gateway_waking ? (
+                            <span className="badge warn" title={readiness.message}>Gateway waking</span>
                           ) : readiness ? (
                             <>
                               <span className={`badge ${readiness.service_ready ? 'ok' : readiness.error ? 'error' : 'warn'}`}>
@@ -414,14 +435,20 @@ export function ServiceManagerPage() {
         </div>
       )}
 
-      {orsReadiness && Object.entries(orsReadiness).some(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)) && (
+      {gatewayWaking && !anyErrors && (
+        <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
+          <strong>Routing gateway resuming:</strong> The routing gateway auto-suspends after an hour idle, and this status check just woke it. It is usually ready within about 30 seconds; this page checks again shortly. Routing graphs are not affected ({wakingRegions.join(', ')}).
+        </div>
+      )}
+
+      {orsReadiness && Object.entries(orsReadiness).some(([region, r]) => !r.service_ready && !r.error && !r.gateway_waking && !isRegionSuspended(region)) && (
         <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
           {Object.values(orsReadiness).every((r: any) => r.graph_loading || r.graphs_persisted)
             ? <><strong>Graphs Loading:</strong> Pre-built graphs are being loaded into memory after a recent resume. Functions will be ready shortly &mdash; this typically takes 1&ndash;10 minutes depending on region size.</>
             : <><strong>Graphs Building:</strong> ORS is building routing graphs from map data. Functions will return errors until all profiles are ready. This typically takes 5&ndash;15 minutes.</>
           }
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-            {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)).map(([region, r]: [string, any]) => (
+            {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !r.gateway_waking && !isRegionSuspended(region)).map(([region, r]: [string, any]) => (
               <li key={region}>
                 <strong>{region}</strong>
                 {' '}

@@ -50,6 +50,11 @@ export interface OrsRegionReadiness {
   graphs_persisted?: boolean;
   markers?: OrsRegionMarkers;
   error?: string;
+  // The routing gateway was waking from its idle auto-suspend when probed. Not
+  // an error: no graph state is known yet, and the next probe is expected to
+  // succeed (server/lib/gateway-wake.ts).
+  gateway_waking?: boolean;
+  message?: string;
 }
 
 export interface StatusResponse {
