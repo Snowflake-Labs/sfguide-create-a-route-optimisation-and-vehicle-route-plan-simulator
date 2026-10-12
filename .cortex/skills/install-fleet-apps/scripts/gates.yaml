@@ -62,7 +62,7 @@ gates:
   # ── install order, SQL and DDL correctness ──────────────────────────────────
   - id: install_order
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_order_negative.py
     scope: static
     why: an install SQL file references an object that is created later
   - id: warehouse_ddl
@@ -400,5 +400,4 @@ gates:
 # fails if an id appears here that is not in the base revision's list. Removing
 # an entry requires the gate's `negative` to be set in the same change.
 debt:
-  missing_negative:
-    - install_order
+  missing_negative: []

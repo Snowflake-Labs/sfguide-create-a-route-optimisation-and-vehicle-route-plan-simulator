@@ -210,18 +210,133 @@ def check_precedence() -> list[str]:
     return problems
 
 
+# ── within-file ordering ─────────────────────────────────────────────────────
+# The scan above treats an object as satisfied when the SAME file creates it,
+# wherever in the file that is - so it was blind to the defect fixed in
+# 0643d687: analytic_layer.sql's guarded `CALL BUILD_LOCATION_DIAGNOSTICS()`
+# (section 5) runs PRUNE_UNROUTABLE_HH_CELLS, whose body reads
+# FLEET_APP.CORE.VW_REGION_PROFILE - created ~200 lines FURTHER DOWN the same
+# file. On a fresh account the CALL failed, its EXCEPTION guard turned that into
+# a WARN, and Site Impact / Closure Impact were silently empty. Every re-install
+# hid it, because the previous run had already created the view.
+#
+# Rule: a LOAD-TIME read - a top-level statement, or an `EXECUTE IMMEDIATE $$`
+# block (it runs when the file loads; its guard only downgrades the failure),
+# including everything reached through a CALL into a procedure body - must not
+# read an object THIS file creates further down, unless an earlier step already
+# creates that exact object. Only the file's own later CREATE counts as
+# evidence, so the rule cannot fire on an object some other step provides.
+EXEC_BLOCK_RE = re.compile(r'\bEXECUTE\s+IMMEDIATE\s+\$\$(.*?)\$\$', re.S | re.I)
+CALL_RE = re.compile(r'\bCALL\s+([A-Z][A-Z_0-9]*\.[A-Z][A-Z_0-9]*\.[A-Z][A-Z_0-9]*)\s*\(', re.I)
+PROC_RE = re.compile(r'\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:SECURE\s+)?(?:PROCEDURE|FUNCTION)\s+'
+                     r'([A-Z][A-Z_0-9]*\.[A-Z][A-Z_0-9]*\.[A-Z][A-Z_0-9]*)\s*\(', re.I)
+SLASH_COMMENT_RE = re.compile(r'(?<![:\'"])//[^\n]*')
+DROP_IF_EXISTS_RE = re.compile(r'\bDROP\s+[A-Z ]+?\s+IF\s+EXISTS\s+[A-Z_0-9.]+', re.I)
+# From CREATE TASK to the end of its single statement (the CALL it schedules).
+TASK_CALL_RE = re.compile(r'\bCREATE\s+(?:OR\s+REPLACE\s+)?TASK\b[^;]*?\bAS\s+CALL\b[^;]*;',
+                          re.I | re.S)
+
+
+def routine_bodies(body: str) -> dict[str, tuple[set[str], set[str]]]:
+    """name -> (objects its $$ body reads, routines its body CALLs), minus what
+    the body creates itself (a proc that creates and then reads a table is fine)."""
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    for m in PROC_RE.finditer(body):
+        start = body.find("$$", m.end())
+        end = body.find("$$", start + 2) if start >= 0 else -1
+        if start < 0 or end < 0:
+            continue
+        text = SLASH_COMMENT_RE.sub("", body[start + 2:end])
+        made = {n.upper() for n in CREATE_RE.findall(text)}
+        reads = {n.upper() for n in REF_RE.findall(text)} - made
+        calls = {n.upper() for n in CALL_RE.findall(text)}
+        # MERGE overloads: the name alone is what a CALL names, and keying by it
+        # let BUILD_LOCATION_DIAGNOSTICS() (the zero-arg wrapper) overwrite the
+        # one-arg body that actually calls PRUNE_UNROUTABLE_HH_CELLS - hiding the
+        # very path of the 0643d687 defect.
+        prev_reads, prev_calls = out.get(m.group(1).upper(), (set(), set()))
+        out[m.group(1).upper()] = (prev_reads | reads, prev_calls | calls)
+    return out
+
+
+def check_within_file(path: pathlib.Path, rel, earlier_objects: set[str],
+                      routines: dict[str, tuple[set[str], set[str]]]) -> list[str]:
+    body = COMMENT_RE.sub("", path.read_text(errors="ignore"))
+    line = lambda off: body.count("\n", 0, off) + 1  # noqa: E731
+    # Where each object is FIRST created in this file.
+    first_create: dict[str, int] = {}
+    for m in CREATE_RE.finditer(body):
+        first_create.setdefault(m.group(1).upper(), m.start())
+    routines.update(routine_bodies(body))
+
+    def reads_via(callee: str, seen: set[str]) -> set[str]:
+        if callee in seen or callee not in routines:
+            return set()
+        seen.add(callee)
+        reads, calls = routines[callee]
+        out = set(reads)
+        for c in calls:
+            out |= reads_via(c, seen)
+        return out
+
+    # Load-time text: top level (all $$ bodies blanked, offsets kept) plus the
+    # EXECUTE IMMEDIATE blocks, which also run at load. Two shapes are NOT
+    # load-time reads and are blanked first (measured: they were all 6 false
+    # positives of a first draft on the real tree):
+    #   - `DROP ... IF EXISTS <obj>`: dropping what may not exist yet is the
+    #     point (a stale signature, a dependent view), not a read of it;
+    #   - `CREATE TASK ... AS CALL x()`: a task body runs on its schedule, not
+    #     when the file loads, so x's reads are deferred like a proc body's.
+    def blank(m: re.Match) -> str:
+        return re.sub(r"[^\n]", " ", m.group(0))
+
+    body = DROP_IF_EXISTS_RE.sub(blank, body)
+    body = TASK_CALL_RE.sub(blank, body)
+    #   - a name inside a '...' literal is a message, not a read (the guard's own
+    #     "VW_VEHICLE_PROFILE not present (fresh install)" RETURN text).
+    body = re.sub(r"'(?:[^'\n]|'')*'", blank, body)
+    top = DOLLAR_BODY_RE.sub(lambda m: " " * len(m.group(0)), body)
+    spans = [(0, top)] + [(m.start(1), m.group(1)) for m in EXEC_BLOCK_RE.finditer(body)]
+    problems: list[str] = []
+    for base, text in spans:
+        events = [(base + m.start(), m.group(1).upper(), None) for m in REF_RE.finditer(text)]
+        events += [(base + m.start(), obj, m.group(1).upper())
+                   for m in CALL_RE.finditer(text)
+                   for obj in sorted(reads_via(m.group(1).upper(), set()))]
+        for off, obj, via in events:
+            made_at = first_create.get(obj)
+            if made_at is None or made_at <= off or obj in earlier_objects:
+                continue
+            how = f"CALL {via} (its body reads it)" if via else "a load-time statement"
+            problems.append(
+                f"within-file: {rel}:{line(off)} reaches {obj} through {how}, but this "
+                f"file only creates it at line {line(made_at)}. On a fresh account that "
+                f"read fails (a guarded block just turns it into a WARN, and whatever "
+                f"it builds stays empty); re-installs hide it because the object "
+                f"survives from the last run. Create {obj.split('.')[-1]} first.")
+    # One message per (object, line) - a CALL can reach the same object twice.
+    return sorted(set(problems))
+
+
 def main() -> int:
     available: set[str] = set()
     problems: list[str] = []
+    # Exact objects created by EARLIER steps (no schema/db roll-up), and every
+    # routine body seen so far - for the within-file rule.
+    earlier_objects: set[str] = set()
+    routines: dict[str, tuple[set[str], set[str]]] = {}
     for label, target in ORDER:
         files = sql_files(target)
         if not files:
             print(f"  {label:20s} (no SQL found at {target})")
             continue
         step_created: set[str] = set()
+        step_objects: set[str] = set()
         for path in files:
             created, referenced = analyse(path)
             rel = path.relative_to(SKILL) if SKILL in path.parents else path.name
+            problems.extend(check_within_file(path, rel, earlier_objects, routines))
+            step_objects |= {c for c in created if c.count(".") == 2}
             for ref in sorted(referenced):
                 db = ref.split(".")[0]
                 schema = ".".join(ref.split(".")[:2])
@@ -241,6 +356,7 @@ def main() -> int:
                 )
             step_created |= created
         available |= step_created
+        earlier_objects |= step_objects
         print(f"  {label:20s} files={len(files):2d} cumulative_objects={len(available)}")
 
     print()
