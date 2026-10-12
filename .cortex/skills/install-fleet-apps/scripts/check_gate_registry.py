@@ -13,8 +13,11 @@ nobody runs, or one that has never been shown to fail, protects nothing.
 
 Rules
 -----
-  R1  every tracked `check_*.{py,sh,sql}` and every `*_negative.*` /
-      `*_mutations.*` driver is referenced by exactly one gate
+  R1  every tracked `check_*`, `verify_*` / `verify-*` and `mutate_*` script
+      (.py/.sh/.sql/.mts) and every `*_negative.*` / `*_mutations.*` driver is
+      referenced by exactly one gate. (`check_*` alone was too narrow: 13
+      verify_/mutate_ scripts ran nowhere, including a mutation driver that
+      reported 5/5 "convicted" while the suite it drives could not import.)
   R2  every script path a gate references exists
   R3  ids are unique; scope is `static` or `live`
   R4  a gate's `negative` is null  <=>  its id is in debt.missing_negative;
@@ -41,9 +44,10 @@ import yaml
 REPO = pathlib.Path(os.environ.get("GATE_REGISTRY_REPO")
                     or pathlib.Path(__file__).resolve().parents[4])
 REL = ".cortex/skills/install-fleet-apps/scripts/gates.yaml"
-GATE_FILE = re.compile(r"(^|/)check_[^/]+\.(py|sh|sql)$|_(negative|mutations)\.(py|sh)$")
-NEG_FILE = re.compile(r"_(negative|mutations)\.(py|sh)$")
-SCRIPT = re.compile(r"\.(py|sh|sql)$")
+GATE_FILE = re.compile(r"(^|/)(check|verify|mutate)[_-][^/]+\.(py|sh|sql|mts)$"
+                       r"|_(negative|mutations)\.(py|sh)$")
+NEG_FILE = re.compile(r"_(negative|mutations)\.(py|sh)$|(^|/)mutate_[^/]+\.py$")
+SCRIPT = re.compile(r"\.(py|sh|sql|mts)$")
 
 failures: list[str] = []
 
@@ -52,10 +56,16 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
 
 
-def paths_in(cmd: str | None) -> list[str]:
+def paths_in(cmd: str | None, base: str = "") -> list[str]:
+    """Script paths in a command, repo-relative (resolved against `base`, a
+    gate's cwd, for its `run` command)."""
     if not cmd or cmd == "self":
         return []
-    return [t for t in shlex.split(cmd) if SCRIPT.search(t) and "/" in t]
+    out = []
+    for t in shlex.split(cmd):
+        if SCRIPT.search(t) and ("/" in t or base):
+            out.append(os.path.normpath(os.path.join(base, t)) if base else t)
+    return out
 
 
 def load(text: str) -> dict:
@@ -90,14 +100,17 @@ def main() -> int:
     referenced: dict[str, list[str]] = {}
     for g in gates:
         for field in ("run", "negative"):
-            for p in paths_in(g.get(field)):
+            base = (g.get("cwd") or "") if field == "run" else ""
+            for p in paths_in(g.get(field), base):
                 referenced.setdefault(p, []).append(f"{g.get('id')}.{field}")
                 if not (REPO / p).is_file():
                     failures.append(f"R2 gate '{g.get('id')}' {field} references "
                                     f"missing file {p}")
 
-    # R1
-    tracked = git("ls-files").stdout.splitlines()
+    # R1 - committed + new-but-unignored, so a gate script is flagged as soon
+    # as it exists, not only after it is staged.
+    tracked = git("ls-files", "--cached", "--others", "--exclude-standard").stdout.splitlines()
+    tracked = [t for t in tracked if (REPO / t).is_file()]
     for p in sorted(t for t in tracked if GATE_FILE.search(t)):
         refs = referenced.get(p, [])
         if not refs:
@@ -115,7 +128,8 @@ def main() -> int:
         if neg is not None and gid in debt:
             failures.append(f"R4 gate '{gid}' has a negative test but is still in "
                             "debt.missing_negative - remove it from the debt list")
-        if neg == "self" and not any(NEG_FILE.search(p) for p in paths_in(g.get("run"))):
+        if neg == "self" and not any(NEG_FILE.search(p) for p in paths_in(
+                g.get("run"), g.get("cwd") or "")):
             failures.append(f"R4 gate '{gid}' uses negative: self but its run is "
                             "not a negative driver")
     for d in debt:

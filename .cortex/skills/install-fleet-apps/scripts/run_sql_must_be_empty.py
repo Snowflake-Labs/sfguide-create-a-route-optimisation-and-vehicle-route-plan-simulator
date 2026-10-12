@@ -11,6 +11,10 @@ A failed execution is a FAILURE, never "zero rows": a query that cannot compile
 returns nothing, and reading that as clean is the false pass this guards against.
 
 Usage:  python3 run_sql_must_be_empty.py -c <connection> <file.sql>
+        python3 run_sql_must_be_empty.py -c <conn> --status-column STATUS \
+                -D REGION=SanFrancisco verify_labor_layer.sql
+        (status mode: every row is an assertion; PASS only if none is FAIL and
+         at least one assertion row exists. WARN rows are printed, not failed.)
 Exit:   0 every query empty, 1 a query returned rows or did not run
 Env:    SNOW_BIN overrides the `snow` executable (the negative test injects a fake)
 """
@@ -26,11 +30,15 @@ import sys
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--connection", required=True)
+    ap.add_argument("--status-column")
+    ap.add_argument("-D", dest="defines", action="append", default=[])
     ap.add_argument("sql_file")
     a = ap.parse_args()
     snow = os.environ.get("SNOW_BIN", "snow")
-    p = subprocess.run([snow, "sql", "-c", a.connection, "-f", a.sql_file,
-                        "--format", "json"], capture_output=True, text=True)
+    cmd = [snow, "sql", "-c", a.connection, "-f", a.sql_file, "--format", "json"]
+    for d in a.defines:
+        cmd += ["-D", d]
+    p = subprocess.run(cmd, capture_output=True, text=True)
     name = os.path.basename(a.sql_file)
     if p.returncode != 0:
         print(f"{name}: FAILED - the SQL did not run (rc={p.returncode}):")
@@ -44,6 +52,23 @@ def main() -> int:
     # A single statement prints a bare list of rows; several print a list of lists.
     if results and isinstance(results[0], dict):
         results = [results]
+    if a.status_column:
+        col = a.status_column
+        rows = [r for s in results for r in s if isinstance(r, dict) and col in r]
+        if not rows:
+            print(f"{name}: FAILED - no row carries a {col} column; the file "
+                  "asserted nothing")
+            return 1
+        bad = [r for r in rows if str(r[col]).upper() == "FAIL"]
+        warn = [r for r in rows if str(r[col]).upper() == "WARN"]
+        for r in bad + warn:
+            print(f"  {str(r[col]).upper():4}  {r}")
+        if bad:
+            print(f"{name}: FAILED - {len(bad)} of {len(rows)} assertion(s) FAIL")
+            return 1
+        print(f"{name}: OK - {len(rows)} assertion(s), 0 FAIL"
+              + (f", {len(warn)} WARN" if warn else ""))
+        return 0
     queries = [r for r in results
                if not (r and all(set(row) == {"status"} for row in r))]
     if not queries:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -59,7 +60,10 @@ def tree_state() -> str:
     return st + "\0" + diff
 
 
-def prepare(needs: list[str]) -> str | None:
+def prepare(needs: list[str]) -> tuple[str | None, str | None]:
+    """Run each `needs` entry. Returns (error, python) where python is a venv
+    interpreter when the gate declared `pip:` packages, else None."""
+    python = None
     for n in needs:
         kind, _, arg = n.partition(":")
         if kind == "npm-ci":
@@ -68,10 +72,27 @@ def prepare(needs: list[str]) -> str | None:
                 p = subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=d,
                                    capture_output=True, text=True)
                 if p.returncode != 0:
-                    return f"needs {n}: npm ci failed\n{p.stdout[-1500:]}{p.stderr[-1500:]}"
+                    return f"needs {n}: npm ci failed\n{p.stdout[-1500:]}{p.stderr[-1500:]}", None
+        elif kind == "pip":
+            # A gate that imports third-party modules must not depend on what the
+            # machine happens to have installed: the gateway suites failed with
+            # ModuleNotFoundError on a dev machine, and their mutation driver then
+            # reported every mutation "convicted" by that import error.
+            pkgs = sorted(p for p in arg.split(",") if p)
+            key = hashlib.sha1(" ".join(pkgs).encode()).hexdigest()[:12]
+            venv = pathlib.Path(os.environ.get("GATES_VENV_DIR")
+                                or pathlib.Path.home() / ".cache" / "fleet-gates") / f"venv-{key}"
+            python = str(venv / "bin" / "python")
+            if not pathlib.Path(python).exists():
+                for step in ([sys.executable, "-m", "venv", str(venv)],
+                             [python, "-m", "pip", "install", "-q", *pkgs]):
+                    p = subprocess.run(step, capture_output=True, text=True)
+                    if p.returncode != 0:
+                        shutil.rmtree(venv, ignore_errors=True)
+                        return f"needs {n}: {' '.join(step[:3])} failed\n{p.stderr[-1500:]}", None
         else:
-            return f"unknown needs entry {n!r}"
-    return None
+            return f"unknown needs entry {n!r}", None
+    return None, python
 
 
 def run_cmd(cmd: str, cwd: pathlib.Path = REPO) -> tuple[int, str, float]:
@@ -132,6 +153,8 @@ def main() -> int:
     ap.add_argument("--scope", choices=("static", "live"), default="static")
     ap.add_argument("-c", "--connection")
     ap.add_argument("--only", help="comma-separated gate ids")
+    ap.add_argument("--skip", help="comma-separated gate ids to leave out; reported as "
+                    "NOT_RUN in --json so a skipped gate can never read as a pass")
     ap.add_argument("--checks-only", action="store_true")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 4))
     ap.add_argument("--json")
@@ -150,6 +173,15 @@ def main() -> int:
             print(f"run_gates: unknown gate id(s): {sorted(unknown)}")
             return 2
         gates = [g for g in reg["gates"] if g["id"] in want]
+    skipped: list[str] = []
+    if a.skip:
+        drop = set(a.skip.split(","))
+        unknown = drop - {g["id"] for g in reg["gates"]}
+        if unknown:
+            print(f"run_gates: unknown gate id(s) in --skip: {sorted(unknown)}")
+            return 2
+        skipped = [g["id"] for g in gates if g["id"] in drop]
+        gates = [g for g in gates if g["id"] not in drop]
     if a.list:
         for g in gates:
             print(f"{g['id']:32} {g['scope']:6} {'neg' if g.get('negative') else '---'}  {g['why']}")
@@ -169,15 +201,29 @@ def main() -> int:
             return 2
 
     results: list[dict] = []
+    pythons: dict[str, str] = {}
     for g in gates:
-        err = prepare(g.get("needs") or [])
+        err, python = prepare(g.get("needs") or [])
         if err:
             results.append({"id": g["id"], "phase": "setup", "rc": 1, "s": 0.0, "out": err})
+        elif python:
+            pythons[g["id"]] = python
     gates = [g for g in gates if not any(r["id"] == g["id"] for r in results)]
+
+    def command(g: dict, field: str) -> str:
+        cmd = expand(g[field])
+        # A gate with pip needs runs under its venv interpreter (the negative
+        # test too, so the harness's sys.executable is the venv as well).
+        if g["id"] in pythons and cmd.split(" ", 1)[0] == "python3":
+            cmd = shlex.quote(pythons[g["id"]]) + cmd[len("python3"):]
+        return cmd
+
+    def where(g: dict, root: pathlib.Path) -> pathlib.Path:
+        return root / g["cwd"] if g.get("cwd") else root
 
     t_all = time.monotonic()
     with cf.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
-        futs = {ex.submit(run_cmd, expand(g["run"])): g for g in gates}
+        futs = {ex.submit(run_cmd, command(g, "run"), where(g, REPO)): g for g in gates}
         for f in cf.as_completed(futs):
             rc, out, s = f.result()
             results.append({"id": futs[f]["id"], "phase": "check", "rc": rc, "s": s, "out": out})
@@ -188,7 +234,9 @@ def main() -> int:
         try:
             for g in negs:
                 before = tree_state()
-                rc, out, s = run_cmd(expand(g["negative"]), cwd=sb)
+                # Negative commands are always repo-relative (a gate's `cwd`
+                # applies to its `run` only), so they start at the sandbox root.
+                rc, out, s = run_cmd(command(g, "negative"), cwd=sb)
                 if tree_state() != before:
                     rc = 1
                     out += ("\nrun_gates: this negative test MODIFIED THE REAL CHECKOUT "
@@ -205,15 +253,18 @@ def main() -> int:
     failed = [r for r in results if r["rc"] != 0]
     for r in results:
         print(f"  {'PASS' if r['rc'] == 0 else 'FAIL'}  {r['id']:32} {r['phase']:8} {r['s']:6.1f}s")
+    for gid in skipped:
+        print(f"  SKIP  {gid:32} NOT_RUN  (--skip)")
     for r in failed:
         print(f"\n---- FAIL {r['id']} ({r['phase']}, rc={r['rc']}) ----")
         print("\n".join(r["out"].rstrip().splitlines()[-40:]))
     total = time.monotonic() - t_all
     print(f"\nrun_gates: {len(results) - len(failed)}/{len(results)} passed "
-          f"(scope {a.scope}, {total:.0f}s wall)" + (f" - {len(failed)} FAILED" if failed else ""))
+          f"(scope {a.scope}, {total:.0f}s wall)" + (f" - {len(failed)} FAILED" if failed else "")
+          + (f", {len(skipped)} NOT_RUN" if skipped else ""))
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(
-            {"scope": a.scope, "wall_s": round(total, 1),
+            {"scope": a.scope, "wall_s": round(total, 1), "not_run": skipped,
              "results": [{k: v for k, v in r.items() if k != "out"} | {"tail": r["out"][-4000:]}
                          for r in results]}, indent=2))
     return 1 if failed else 0

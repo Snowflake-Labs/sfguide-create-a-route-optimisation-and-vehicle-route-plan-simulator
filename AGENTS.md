@@ -186,7 +186,7 @@ cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_run_sql.
 # patterns would silently disable auto-resume, which is the opposite defect.
 cd .cortex/skills/install-fleet-apps/fleet_tools/user && npx tsx verify_routing_suspend.mts
 
-# Regression test for the generator's ROSTER-vs-LEGAL cap split (22 cases).
+# Regression test for the generator's ROSTER-vs-LEGAL cap split (23 cases).
 # Lives in fleet_tools/user for the same tsx reason as the test above.
 #
 # What it protects: the trip loop used to hard-stop at shift end and silently

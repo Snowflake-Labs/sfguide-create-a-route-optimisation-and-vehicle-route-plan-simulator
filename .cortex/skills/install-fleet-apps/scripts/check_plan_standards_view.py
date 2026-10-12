@@ -93,7 +93,11 @@ def main() -> int:
          "--enable-templating", "NONE"],
         capture_output=True, text=True, timeout=600,
     )
-    seed = json.loads(p.stdout)[0] if p.returncode == 0 and p.stdout.strip() else {}
+    # `[0]` on an EMPTY result raised IndexError, so "no route could be seeded"
+    # surfaced as a traceback and the FATAL diagnosis below was unreachable
+    # (caught by check_plan_standards_view_negative.py).
+    rows = json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else []
+    seed = rows[0] if rows else {}
     if not seed:
         print("FATAL: could not seed a selection")
         return 1
