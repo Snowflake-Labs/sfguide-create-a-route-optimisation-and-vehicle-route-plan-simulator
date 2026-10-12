@@ -20,7 +20,9 @@
 #   negative  command for the negative test, `self` when `run` IS a negative
 #             test, or null (then the id must be in debt.missing_negative)
 #   scope     static - no Snowflake account, runs in CI
-#             live   - needs an installed account, runs from the e2e harness
+#             live   - needs an installed account, runs from the e2e harness;
+#                      its NEGATIVE test replays a recorded account and also
+#                      runs in static scope (R6: a negative never takes {conn})
 #   needs     optional setup the runner performs first: `npm-ci:<dir>`
 #   why       one line: the defect class it catches
 

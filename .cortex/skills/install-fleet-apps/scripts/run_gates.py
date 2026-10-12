@@ -17,6 +17,12 @@ Order and isolation
   3. the real checkout is still compared before/after every negative test, as
      a backstop for a driver that writes through an absolute path
   4. a lock in .git/ refuses a second concurrent run in the same checkout
+  5. static scope also runs the NEGATIVE tests of live gates. Those drivers
+     replay a recorded account (negtest cassettes) and never reach Snowflake,
+     so nothing stops CI running them - and when only `--scope live` ran them,
+     verify_gateway_version_negative.py read a file that has never existed and
+     could not pass, unseen, because no CI run and no hook ever executed it.
+     check_gate_registry.py R6 keeps every negative account-free.
 
 Usage
   python3 run_gates.py                         all static gates + negatives
@@ -189,8 +195,19 @@ def main() -> int:
             return 2
         skipped = [g["id"] for g in gates if g["id"] in drop]
         gates = [g for g in gates if g["id"] not in drop]
+    # Live gates' negatives are account-free (see 5. above), so static runs them.
+    live_negs: list[dict] = []
+    if a.scope == "static" and not a.only:
+        drop = set(a.skip.split(",")) if a.skip else set()
+        for g in reg["gates"]:
+            if g["scope"] != "live" or g.get("negative") in (None, "self"):
+                continue
+            if g["id"] in drop:
+                skipped.append(g["id"])
+            else:
+                live_negs.append(g)
     if a.list:
-        for g in gates:
+        for g in gates + live_negs:
             print(f"{g['id']:32} {g['scope']:6} {'neg' if g.get('negative') else '---'}  {g['why']}")
         return 0
 
@@ -209,13 +226,14 @@ def main() -> int:
 
     results: list[dict] = []
     pythons: dict[str, str] = {}
-    for g in gates:
+    for g in gates + live_negs:
         err, python = prepare(g.get("needs") or [])
         if err:
             results.append({"id": g["id"], "phase": "setup", "rc": 1, "s": 0.0, "out": err})
         elif python:
             pythons[g["id"]] = python
     gates = [g for g in gates if not any(r["id"] == g["id"] for r in results)]
+    live_negs = [g for g in live_negs if not any(r["id"] == g["id"] for r in results)]
 
     def command(g: dict, field: str) -> str:
         cmd = expand(g[field])
@@ -235,7 +253,7 @@ def main() -> int:
             rc, out, s = f.result()
             results.append({"id": futs[f]["id"], "phase": "check", "rc": rc, "s": s, "out": out})
 
-    negs = [g for g in gates if g.get("negative") not in (None, "self")]
+    negs = [g for g in gates if g.get("negative") not in (None, "self")] + live_negs
     if negs and not a.checks_only:
         sb = make_sandbox()
         try:

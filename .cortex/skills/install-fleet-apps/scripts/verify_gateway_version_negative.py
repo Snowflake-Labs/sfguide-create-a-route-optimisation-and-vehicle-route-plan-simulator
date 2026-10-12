@@ -16,7 +16,7 @@ ERR = {"rc": 1, "stdout": "", "stderr": "000904 (42000): SQL compilation error: 
 
 h = Harness("verify_gateway_version.sh", args=["replayed"],
             cassette=f"{S}/live_cassettes/gateway_version.json")
-env = (h.root / ".cortex/skills/install-fleet-apps/openrouteservice_app/image-versions.env").read_text()
+env = (h.root / ".cortex/skills/install-fleet-apps/image-versions.env").read_text()
 TAG = re.search(r"^ROUTING_REVERSE_PROXY_TAG=(\S+)", env, re.M).group(1).strip("\"'")
 h.account("SPCS kept serving a stale cached image (version mismatch)",
           [{"match": "gateway_version::string",

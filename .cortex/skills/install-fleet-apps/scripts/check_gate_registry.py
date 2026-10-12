@@ -26,6 +26,9 @@ Rules
       base revision's list. Base = $GATES_BASE_REF (CI sets the PR base), else
       HEAD. A gate cannot lose its negative test, and a new gate cannot be
       added without one.
+  R6  a `negative` command never takes `{conn}`. run_gates.py runs live gates'
+      negatives in static scope (CI), which has no account, so a negative must
+      replay a recorded one (negtest cassettes) rather than call Snowflake.
 
 Usage:  python3 check_gate_registry.py        (repo: $GATE_REGISTRY_REPO or this checkout)
 Exit:   0 clean, 1 violation
@@ -135,6 +138,13 @@ def main() -> int:
     for d in debt:
         if d not in ids:
             failures.append(f"R4 debt.missing_negative names unknown gate '{d}'")
+
+    # R6
+    for g in gates:
+        if "{conn}" in (g.get("negative") or ""):
+            failures.append(f"R6 gate '{g.get('id')}' negative takes {{conn}} - static scope "
+                            "(CI) runs every negative without an account; replay a "
+                            "recorded one (negtest cassette) instead")
 
     # R5
     base_ref = os.environ.get("GATES_BASE_REF") or "HEAD"

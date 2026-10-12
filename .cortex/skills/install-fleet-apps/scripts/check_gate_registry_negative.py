@@ -10,6 +10,7 @@ pass first - a driver whose baseline is already red convicts nothing.
   R2  a gate naming a missing script       R3  a duplicate id / a bad scope
   R4  negative: null but not in debt       R4  in debt although it has a negative
   R5  a gate added to the debt list (the ratchet), against the committed base
+  R6  a negative command that needs an account ({conn})
 """
 from __future__ import annotations
 
@@ -112,10 +113,13 @@ with tempfile.TemporaryDirectory() as t:
                            "    negative: null\n")
          or edit(s, "    - beta\n", "    - beta\n    - alpha\n")
          or (s / "check_alpha_negative.py").unlink())
+    case(tmp, "negative needs an account", "R6",
+         lambda r, s: edit(s, f"    negative: python3 {SCRIPTS}/check_alpha_negative.py\n",
+                           f"    negative: python3 {SCRIPTS}/check_alpha_negative.py {{conn}}\n"))
 
 if failures:
     print(f"FAIL: {len(failures)} registry defect(s) not convicted")
     for f in failures:
         print("----\n" + f)
     sys.exit(1)
-print("OK: 8 registry defects all convicted with the right rule")
+print("OK: 9 registry defects all convicted with the right rule")

@@ -12,7 +12,10 @@ failure is re-created here against a throwaway git repo and asserted to exit 1:
      checkout through an absolute path
   5. a check that hangs past GATE_TIMEOUT_S  -> FAIL (timeout, not a pass)
   6. a gate whose script does not exist      -> FAIL (not silently skipped)
-and the all-green baseline must exit 0, or the cases above prove nothing.
+  7. a LIVE gate's failing negative test     -> FAIL in static scope (CI), which
+     used to run live negatives never, so a broken one stayed invisible
+and the all-green baseline must exit 0, or the cases above prove nothing. A live
+gate's CHECK must still be left out of static scope (it needs an account).
 """
 from __future__ import annotations
 
@@ -34,11 +37,12 @@ SCRIPTS = {
 }
 
 
-def registry(*gates: tuple[str, str, str | None]) -> str:
+def registry(*gates: tuple) -> str:
     out = ["version: 1", "gates:"]
-    for gid, run, neg in gates:
+    for gid, run, neg, *scope in gates:
         out += [f"  - id: {gid}", f"    run: {run}",
-                f"    negative: {neg if neg else 'null'}", "    scope: static", "    why: x"]
+                f"    negative: {neg if neg else 'null'}",
+                f"    scope: {scope[0] if scope else 'static'}", "    why: x"]
     return "\n".join(out) + "\n"
 
 
@@ -91,6 +95,12 @@ with tempfile.TemporaryDirectory() as t:
            run(repo, registry(("a", f"{py} hang.py", None)), GATE_TIMEOUT_S="2"), "TIMEOUT")
     expect("missing script", 1, run(repo, registry(("a", f"{py} no_such_gate.py", None))),
            "FAIL a")
+    expect("live gate's failing negative fails static scope", 1,
+           run(repo, registry(("a", f"{py} ok.py", f"{py} ok.py"),
+                              ("L", f"{py} ok.py", f"{py} bad.py", "live"))), "FAIL L")
+    expect("live gate's check is not run in static scope", 0,
+           run(repo, registry(("a", f"{py} ok.py", f"{py} ok.py"),
+                              ("L", f"{py} bad.py", f"{py} ok.py", "live"))))
 
 if failures:
     print(f"FAIL: {len(failures)} runner defect(s) not convicted")
