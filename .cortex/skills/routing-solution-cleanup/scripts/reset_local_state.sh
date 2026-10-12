@@ -21,10 +21,11 @@
 #           reset would delete the only copy of a hidden source file)
 #   repo    every gitignored path, classified by its .gitignore RULE:
 #             GENERATED -> deleted (node_modules, .next, dist, __pycache__,
-#                          synapse _installed/, tsbuildinfo, *.log, .DS_Store)
+#                          synapse _installed/, tsbuildinfo, .DS_Store)
 #             PERSONAL  -> MOVED to $FLEET_LOCAL_ARCHIVE/<UTC-ts>/<same path>
-#                          (logs/*.md, session plans, docs drafts, eval results,
-#                          keys) with MANIFEST.txt - never deleted
+#                          (logs/*.md and *.log run histories, session plans,
+#                          docs drafts, eval results, keys) with MANIFEST.txt -
+#                          never deleted
 #           then empty directories left behind (git does not track them)
 #   /tmp    the installer's log/scratch files; a self-check fails if a script
 #           writes a /tmp path this list does not cover

@@ -46,7 +46,7 @@ import subprocess
 import sys
 
 GENERATED = {
-    "*.log", "__pycache__/", "*.py[cod]", "*$py.class", "*.so", ".Python",
+    "__pycache__/", "*.py[cod]", "*$py.class", "*.so", ".Python",
     ".DS_Store", "node_modules/", "tsconfig.tsbuildinfo", "dist/",
     "dist-server/", "*.egg-info/", "**/.next/", ".next/", "out/", "venv/",
     ".venv/", "*.swp", "*.swo", "/Native_app/output",
@@ -55,8 +55,10 @@ GENERATED = {
     "**/_installed/**/runtime.js", "**/_installed/**/server.js",
     "**/_installed/**/package.json", "**/_installed/**/.claude-plugin/",
 }
+# `*.log` is PERSONAL: inside the repo it only ever matches dated run histories
+# under logs/ (the installer writes its own logs to /tmp, cleared separately).
 PERSONAL = {
-    "**/logs/*.md", "/logs/sa_regression/", ".env", ".env.local", "*.p8",
+    "*.log", "**/logs/*.md", "/logs/sa_regression/", ".env", ".env.local", "*.p8",
     "*.pem", "rsa_key*", ".idea/", ".vscode/", ".snowflake/cortex/plans/",
     "drafts/FINAL.md", "drafts/PLAN.md", "drafts/v1-critique.md",
     "drafts/v1.md", "drafts/v2-critique.md", "drafts/v2.md", "/docs/blogpost",
