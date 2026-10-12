@@ -166,6 +166,8 @@ DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP CASCADE;
 -- ============================================================================
 DROP DATABASE IF EXISTS MOCK_SAP CASCADE;
 DROP DATABASE IF EXISTS MOCK_TELEMATICS CASCADE;
+-- The sap-fleet-connector skill's landing database (build_crosswalk.sql):
+DROP DATABASE IF EXISTS SAP_SOURCE CASCADE;
 
 -- ============================================================================
 -- PHASE 4: Marketplace listing databases (installer re-acquires FROM LISTING).
@@ -222,6 +224,21 @@ DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL;
 -- ============================================================================
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 DROP WAREHOUSE IF EXISTS FLEET_APPS_WH;
+
+-- ============================================================================
+-- PHASE 6b: Opt-in account-level objects. Not created by a default install,
+--           but by a repo reference script a user may have run, and account-
+--           level objects survive every database drop - so a "never installed"
+--           account must not depend on which opt-ins were used. All IF EXISTS.
+--   install-fleet-apps/references/cost-guardrails.sql   resource monitor +
+--                                                        budget notification
+--   install-fleet-apps/references/overtime-alert.sql    labor notification
+--   install-fleet-apps/routing_platform/setup.sql       Mapbox egress (opt-in)
+-- ============================================================================
+DROP RESOURCE MONITOR IF EXISTS FLEET_ROUTING_ANALYTICS_MONITOR;
+DROP INTEGRATION IF EXISTS FLEET_BUDGET_NOTIFICATIONS;
+DROP INTEGRATION IF EXISTS FLEET_LABOR_NOTIFICATIONS;
+DROP INTEGRATION IF EXISTS ROUTING_MAPBOX_EAI;
 
 -- ============================================================================
 -- PHASE 7: External access integrations (ORS/FLEET only)

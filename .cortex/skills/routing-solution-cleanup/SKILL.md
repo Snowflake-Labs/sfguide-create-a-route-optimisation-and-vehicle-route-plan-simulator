@@ -90,6 +90,9 @@ These are ALL object types created across all skills. The drop order reverses cr
 | 17 | Schemas | `SHOW SCHEMAS` + comment match | `DROP SCHEMA IF EXISTS <name> CASCADE` |
 | 18 | Warehouses | `SHOW WAREHOUSES` + comment match | `DROP WAREHOUSE IF EXISTS <name>` (DROP does not need a prior SUSPEND) |
 | 19 | Marketplace Databases | `SHOW DATABASES` + name/origin match | `DROP DATABASE IF EXISTS <name>` |
+| 20 | Resource Monitors (opt-in) | `SHOW RESOURCE MONITORS LIKE 'FLEET_%'` | `DROP RESOURCE MONITOR IF EXISTS FLEET_ROUTING_ANALYTICS_MONITOR` |
+| 21 | Notification Integrations (opt-in) | `SHOW INTEGRATIONS LIKE 'FLEET_%NOTIFICATIONS'` | `DROP INTEGRATION IF EXISTS FLEET_BUDGET_NOTIFICATIONS` / `FLEET_LABOR_NOTIFICATIONS` |
+| 22 | Opt-in EAI / SAP landing DB | `SHOW INTEGRATIONS LIKE 'ROUTING_MAPBOX_EAI'`, `SHOW DATABASES LIKE 'SAP_SOURCE'` | `DROP INTEGRATION IF EXISTS ROUTING_MAPBOX_EAI`, `DROP DATABASE IF EXISTS SAP_SOURCE CASCADE` |
 
 ## Step 1: Set Session Tag
 
@@ -279,7 +282,13 @@ SHOW COMPUTE POOLS;
 
 -- Verify no project integrations remain
 SHOW INTEGRATIONS;
--- Expected: only SNOWFLAKE$LOCAL_APPLICATION (system)
+-- Expected: only SNOWFLAKE$LOCAL_APPLICATION (system) - no FLEET_*, ORS_*,
+--           ROUTING_MAPBOX_EAI or FLEET_*_NOTIFICATIONS
+
+-- Verify the opt-in resource monitor is gone (account-level: no database drop
+-- removes it)
+SHOW RESOURCE MONITORS LIKE 'FLEET_%';
+-- Expected: no rows
 
 -- Verify no agent is still registered with Snowflake CoWork. Dropping an agent
 -- (FLEET_INTELLIGENCE CASCADE) does NOT remove its CoWork entry; drop-order.sql
@@ -300,6 +309,7 @@ Report results as a table:
 | Warehouses | 2 | 2 (MY_WH, SYSTEM$*) | CLEAN |
 | Compute Pools | 2 | 2 (SYSTEM_*) | CLEAN |
 | Integrations | 1 | 1 (SNOWFLAKE$LOCAL_APPLICATION) | CLEAN |
+| Resource monitors (FLEET_*) | 0 | 0 | CLEAN |
 | CoWork agent registrations | 0 | 0 (FLEET_INTELLIGENCE.*) | CLEAN |
 
 ## Cleanup by Skill
