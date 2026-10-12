@@ -109,22 +109,22 @@ gates:
   # ── routing engine / ORS ────────────────────────────────────────────────────
   - id: ors_observability
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability_negative.py
     scope: static
     why: gateway retries deterministic errors, breaker cannot open, windows not tz-correct
   - id: ors_raise
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_raise.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_raise_negative.py
     scope: static
     why: a live-routing view fails silently when the engine is unavailable
   - id: routing_probe
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe_negative.py
     scope: static
     why: routing TOOL_* procedures regress on four known failure modes
   - id: solver_async
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_solver_async.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_solver_async_negative.py
     scope: static
     why: a solver verb bypasses the async solve runner
   - id: land_clip_simplify
@@ -134,7 +134,7 @@ gates:
     why: a continental land clip overflows its vertex budget
   - id: forced_region_refusal
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_forced_region_refusal.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_forced_region_refusal_negative.py
     scope: static
     why: a forced routing region turns a routable trip into a dead one
   - id: offgraph_region_keys
@@ -146,22 +146,22 @@ gates:
   # ── agents, synapse verbs, CoWork ───────────────────────────────────────────
   - id: agent_verb_coverage
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage_negative.py
     scope: static
     why: a synapse verb has no routing guidance in the agents bound to it
   - id: verb_js_globals
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_verb_js_globals.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_verb_js_globals_negative.py
     scope: static
     why: a verb uses a JavaScript global the Snowflake proc runtime lacks
   - id: cowork_surfaces
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_surfaces.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_surfaces_negative.py
     scope: static
     why: a CoWork-facing surface is not wired
   - id: chart_source_constraint
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint_negative.py
     scope: static
     why: an agent spec offers data_to_chart without naming what it accepts
   - id: map_guidance
@@ -171,7 +171,7 @@ gates:
     why: guidance forbids a map without naming the tool that can draw one
   - id: dynamic_allowlist
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_dynamic_allowlist.py
-    negative: null
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dynamic_allowlist_negative.py
     scope: static
     why: the dynamic read allowlist disagrees with itself across filter, verb, grants, specs
   - id: view_catalog_drift
@@ -314,16 +314,6 @@ gates:
 debt:
   missing_negative:
     - install_order
-    - ors_observability
-    - ors_raise
-    - routing_probe
-    - solver_async
-    - forced_region_refusal
-    - agent_verb_coverage
-    - verb_js_globals
-    - cowork_surfaces
-    - chart_source_constraint
-    - dynamic_allowlist
     - view_catalog_drift
     - cowork_skills_drift
     - super_agent_spec_drift

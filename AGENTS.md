@@ -680,7 +680,7 @@ python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
 # because "the code mentions 6099" passes on the comment and "a breaker call
 # exists" passed on the buggy version too.
 python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
-python3 .cortex/skills/install-fleet-apps/scripts/mutate_ors_observability.py
+python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability_negative.py
 
 # A continental region must still get a land clip. Europe's Function Tester read
 # "[routable_boundary: UNAVAILABLE: land clip could not be computed for Europe
