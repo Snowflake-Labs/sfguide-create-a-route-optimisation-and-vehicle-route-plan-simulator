@@ -4,6 +4,7 @@ import { SF_DATABASE } from '@/server/constants';
 import { runSql, callProcedure } from '@/server/lib/sql';
 import { sanitizeIdentifier } from '@/server/lib/sanitize';
 import { getExpectedProfiles } from '@/server/lib/ors';
+import { isConnectFailure, isGatewayWaking, readGatewayState, GATEWAY_WAKING_MESSAGE, type GatewayState } from '@/server/lib/gateway-wake';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -102,6 +103,9 @@ async function buildReadiness(regionKey: string, data: Record<string, unknown>):
 
 export const GET = withLogging(async () => {
   const readiness: Record<string, unknown> = {};
+  // Read at most once per request, and only after a connect failure: every
+  // region's ORS_STATUS goes through the same gateway.
+  let gateway: GatewayState | null | undefined;
   try {
     const regions = JSON.parse((await callProcedure('LIST_REGIONS()')) || '[]');
     for (const r of regions) {
@@ -114,7 +118,19 @@ export const GET = withLogging(async () => {
           readiness[r.region] = await buildReadiness(r.region, data);
         }
       } catch (e) {
-        readiness[r.region] = { service_ready: false, health_ready: false, error: (e as Error).message };
+        const message = (e as Error).message;
+        if (isConnectFailure(message)) {
+          if (gateway === undefined) gateway = await readGatewayState();
+          if (isGatewayWaking(gateway)) {
+            // No `error`: the engine is not broken, the gateway is starting.
+            readiness[r.region] = {
+              service_ready: false, health_ready: false, gateway_waking: true,
+              message: GATEWAY_WAKING_MESSAGE,
+            };
+            continue;
+          }
+        }
+        readiness[r.region] = { service_ready: false, health_ready: false, error: message };
       }
     }
   } catch {}
