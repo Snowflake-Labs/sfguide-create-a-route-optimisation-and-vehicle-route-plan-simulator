@@ -304,42 +304,42 @@ gates:
   - id: map_spec
     run: npx tsx verify_map_spec.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user, npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user, npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui, npm-ci:packages/fleet-kit]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_map_spec_negative.py
     scope: static
     why: map spec validation drifts between verb and client, or the compile probe mistypes binds
   - id: tool_descriptions
     run: npx tsx verify_tool_descriptions.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/ops, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/admin]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_tool_descriptions_negative.py
     scope: static
     why: a verb description outgrows the agent tool-description budget
   - id: routing_suspend
     run: npx tsx verify_routing_suspend.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_routing_suspend_negative.py
     scope: static
     why: an off-graph or warming-up routing error is classified as a suspended engine
   - id: run_sql_guard
     run: npx tsx verify_run_sql.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_run_sql_negative.py
     scope: static
     why: the run_sql verb accepts a write, a second statement or an unbounded read
   - id: sample_points
     run: npx tsx verify_sample_points.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_sample_points_negative.py
     scope: static
     why: sampled point pairs fall outside their distance band without a hint
   - id: shift_overrun
     run: npx tsx verify_shift_overrun.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
-    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_shift_overrun_negative.py
     scope: static
     why: the generator's shift-overrun allowance escapes its roster or legal cap

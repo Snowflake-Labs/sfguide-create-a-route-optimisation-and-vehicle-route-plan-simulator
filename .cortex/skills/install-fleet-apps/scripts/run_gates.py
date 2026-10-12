@@ -66,13 +66,20 @@ def prepare(needs: list[str]) -> tuple[str | None, str | None]:
     python = None
     for n in needs:
         kind, _, arg = n.partition(":")
-        if kind == "npm-ci":
+        if kind in ("npm-ci", "npm-build"):
             d = REPO / arg
             if not (d / "node_modules").is_dir():
                 p = subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=d,
                                    capture_output=True, text=True)
                 if p.returncode != 0:
                     return f"needs {n}: npm ci failed\n{p.stdout[-1500:]}{p.stderr[-1500:]}", None
+            # npm-build: a local `file:` dependency resolves to the package's
+            # built dist/, which a fresh clone does not have (it is gitignored
+            # output) - the installer builds it, so a gate needing it must too.
+            if kind == "npm-build" and not (d / "dist").is_dir():
+                p = subprocess.run(["npm", "run", "build"], cwd=d, capture_output=True, text=True)
+                if p.returncode != 0:
+                    return f"needs {n}: npm run build failed\n{p.stdout[-1500:]}{p.stderr[-1500:]}", None
         elif kind == "pip":
             # A gate that imports third-party modules must not depend on what the
             # machine happens to have installed: the gateway suites failed with
