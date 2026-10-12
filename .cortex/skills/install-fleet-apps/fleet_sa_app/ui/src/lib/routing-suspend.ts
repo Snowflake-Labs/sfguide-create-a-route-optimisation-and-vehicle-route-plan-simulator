@@ -96,6 +96,9 @@ const SUSPEND_SIGNATURES = [
 
 // Signatures for an engine that is UP but cannot answer yet. Same detection
 // path, different remedy and different copy - see EngineState.
+// Kept as a named constant because detectOrsSuspended also uses it to attribute
+// the failure to the gateway (the text names no host).
+const GATEWAY_CONNECT_FAILURE = /could not connect to server/i;
 const NOT_READY_SIGNATURES = [
   /service_warming_up/i,
   /graph_loading/i,
@@ -124,6 +127,17 @@ const NOT_READY_SIGNATURES = [
   // resume a region that is already running. Same remedy as the timeout, same
   // bucket, for the reason recorded on that entry.
   /non_json_response/i,
+  // Raised by SNOWFLAKE, not the gateway, when the routing gateway service is
+  // waking from its idle auto-suspend (auto_suspend_secs 3600) and has not
+  // started accepting connections. Measured on wgb26798:
+  //   100283 "Request failed for external function _ORS_STATUS_RAW. Error:
+  //   Could not connect to server" after 3.7 s; the same call 29 s later took
+  //   313 ms. The call itself triggers the resume, so the remedy is waiting,
+  //   which makes this not_ready rather than suspended. Covered by
+  //   MEASURED_PLATFORM_ERRORS in check_suspend_signatures.py. A literal here,
+  //   not GATEWAY_CONNECT_FAILURE: that gate reads regex LITERALS from this
+  //   array, and it asserts the two stay identical.
+  /could not connect to server/i,
 ];
 
 // Signatures for coordinates the region's road graph does not cover. These are
@@ -217,10 +231,13 @@ export function detectOrsSuspended(text: string | null | undefined): SuspendDete
   const notReadyHit = !suspendedHit && NOT_READY_SIGNATURES.some((re) => re.test(text));
   if (!suspendedHit && !notReadyHit) return { suspended: false };
   const ref = extractServiceRef(text);
+  // Snowflake's "Could not connect to server" names no host, but every routing
+  // function is a service function on the gateway, so that is what failed.
+  const kind = ref.kind ?? (GATEWAY_CONNECT_FAILURE.test(text) ? 'GATEWAY' : undefined);
   return {
     suspended: true,
     region: ref.region,
-    kind: ref.kind,
+    kind,
     state: suspendedHit ? 'suspended' : 'not_ready',
   };
 }
@@ -294,6 +311,17 @@ export function notProvisionedMessage(region: string): string {
     `No routing engine is provisioned for ${region}, so live routing is ` +
     `unavailable for this region. Provision it from the admin app (Regions), ` +
     `then reload this view.`
+  );
+}
+
+// Message for the shared routing gateway waking from its idle auto-suspend while
+// the region's engine is up. Naming the engine ("loading its road graph") here
+// would send the user to look at the wrong service, and the wait is far shorter.
+export function gatewayWakingMessage(region: string): string {
+  return (
+    `The routing gateway was idle and is waking up (it auto-suspends after an ` +
+    `hour without requests). The ${region} routing engine is running. It is ` +
+    `usually ready within about 30 seconds. Please try again in a moment.`
   );
 }
 

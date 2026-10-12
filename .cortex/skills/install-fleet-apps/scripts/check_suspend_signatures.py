@@ -19,6 +19,14 @@ routing-suspend.ts can match it or it is explicitly allowlisted here as a
 non-routing-availability error. Adding a new gateway error code without deciding
 which of those two it is now fails the commit.
 
+The gateway is not the only source. SNOWFLAKE raises some routing failures
+before the gateway answers - measured: 100283 "Could not connect to server"
+when the gateway is waking from its idle auto-suspend. Those never appear in
+routing_service.py, so MEASURED_PLATFORM_ERRORS lists them verbatim with the
+bucket each must land in, and the bucket is asserted, not just "some pattern
+matches": a waking gateway classified as suspended would claim a resume was
+triggered that never was.
+
 Usage:
     python3 .cortex/skills/install-fleet-apps/scripts/check_suspend_signatures.py
 
@@ -54,6 +62,22 @@ ENVELOPES = (
     '{{"error":"{code}","ors_host":"ors-service-usnewjersey"}}',
 )
 
+# Routing failures SNOWFLAKE raises before the gateway answers, verbatim as they
+# reach the app, with the bucket each must land in. `suspended` = a resume is
+# the remedy; `not_ready` = waiting is (see EngineState in routing-suspend.ts).
+MEASURED_PLATFORM_ERRORS: list[tuple[str, str]] = [
+    # wgb26798 2026-10-12 16:11:35 UTC, gateway waking from its 1h idle suspend.
+    ("SQL API error 422: { \"code\" : \"100283\", \"message\" : \"Request failed for "
+     "external function _ORS_STATUS_RAW. Error: Could not connect to server\" }", "not_ready"),
+    # The same platform error on a view's live routing call.
+    ("100283 (P0000): Request failed for external function _DIRECTIONS_RAW. Error: "
+     "Could not connect to server", "not_ready"),
+]
+
+# detectOrsSuspended attributes this text to the gateway through a named
+# constant, while this gate reads the array literal. They must stay identical.
+GATEWAY_CONST = "GATEWAY_CONNECT_FAILURE"
+
 
 def gateway_error_codes() -> tuple[set[str], list[str]]:
     """Every literal error code routing_service.py can put in a response body."""
@@ -84,11 +108,17 @@ def gateway_error_codes() -> tuple[set[str], list[str]]:
 
 def detector_patterns() -> tuple[list[re.Pattern[str]], list[str]]:
     """Compile every regex in SUSPEND_SIGNATURES + NOT_READY_SIGNATURES."""
+    buckets, problems = bucket_patterns()
+    return buckets.get("SUSPEND_SIGNATURES", []) + buckets.get("NOT_READY_SIGNATURES", []), problems
+
+
+def bucket_patterns() -> tuple[dict[str, list[re.Pattern[str]]], list[str]]:
+    """The same regexes, kept per array, so a bucket can be asserted."""
     problems: list[str] = []
     if not SUSPEND_TS.exists():
-        return [], [f"{SUSPEND_TS}: missing"]
+        return {}, [f"{SUSPEND_TS}: missing"]
     text = SUSPEND_TS.read_text()
-    pats: list[re.Pattern[str]] = []
+    buckets: dict[str, list[re.Pattern[str]]] = {}
     found_arrays = 0
     for name in ("SUSPEND_SIGNATURES", "NOT_READY_SIGNATURES"):
         block = re.search(rf"const\s+{name}\s*=\s*\[(.*?)\]\s*;", text, re.DOTALL)
@@ -96,6 +126,7 @@ def detector_patterns() -> tuple[list[re.Pattern[str]], list[str]]:
             problems.append(f"{SUSPEND_TS.name}: could not find {name}")
             continue
         found_arrays += 1
+        pats = buckets.setdefault(name, [])
         for raw in re.findall(r"/((?:[^/\\\n]|\\.)+)/([gimsuy]*)", block.group(1)):
             body, flags = raw
             try:
@@ -106,7 +137,36 @@ def detector_patterns() -> tuple[list[re.Pattern[str]], list[str]]:
                 problems.append(f"{name}: regex /{body}/ does not compile in Python: {exc}")
     if found_arrays == 0:
         problems.append(f"{SUSPEND_TS.name}: no signature arrays found at all")
-    return pats, problems
+    return buckets, problems
+
+
+def platform_error_problems(buckets: dict[str, list[re.Pattern[str]]]) -> list[str]:
+    """Each measured platform error lands in its required bucket. SUSPEND is
+    checked first by detectOrsSuspended, so a not_ready entry must also match no
+    SUSPEND pattern, or it is reported as a resume that never happened."""
+    problems: list[str] = []
+    sus = buckets.get("SUSPEND_SIGNATURES", [])
+    nrd = buckets.get("NOT_READY_SIGNATURES", [])
+    for text, want in MEASURED_PLATFORM_ERRORS:
+        hit_s = any(p.search(text) for p in sus)
+        hit_n = any(p.search(text) for p in nrd)
+        got = "suspended" if hit_s else "not_ready" if hit_n else None
+        if got is None:
+            problems.append(f"measured platform error is unmatched by any signature (want {want}): {text[:110]}")
+        elif got != want:
+            problems.append(f"measured platform error lands in the wrong bucket ({got}, want {want}): {text[:110]}")
+    text = SUSPEND_TS.read_text() if SUSPEND_TS.exists() else ""
+    const = re.search(rf"const\s+{GATEWAY_CONST}\s*=\s*/((?:[^/\\\n]|\\.)+)/([gimsuy]*)\s*;", text)
+    if not const:
+        problems.append(f"{SUSPEND_TS.name}: could not find {GATEWAY_CONST}, which attributes "
+                        "the connect failure to the gateway")
+    else:
+        literal = f"/{const.group(1)}/{const.group(2)}"
+        block = re.search(r"const\s+NOT_READY_SIGNATURES\s*=\s*\[(.*?)\]\s*;", text, re.DOTALL)
+        if not block or literal not in block.group(1):
+            problems.append(f"{GATEWAY_CONST} ({literal}) is not also a literal in "
+                            "NOT_READY_SIGNATURES - the detector and the gateway attribution disagree")
+    return problems
 
 
 def main() -> int:
@@ -115,6 +175,8 @@ def main() -> int:
     problems.extend(p1)
     pats, p2 = detector_patterns()
     problems.extend(p2)
+    buckets, _ = bucket_patterns()
+    problems.extend(platform_error_problems(buckets))
 
     uncovered: list[str] = []
     if pats:
@@ -158,7 +220,8 @@ def main() -> int:
     print(
         f"check_suspend_signatures: OK "
         f"({len(codes) - len(IGNORED_CODES)} routing-availability codes covered, "
-        f"{len(IGNORED_CODES)} allowlisted, {len(pats)} patterns)"
+        f"{len(IGNORED_CODES)} allowlisted, {len(MEASURED_PLATFORM_ERRORS)} measured platform "
+        f"errors in their bucket, {len(pats)} patterns)"
     )
     return 0
 
