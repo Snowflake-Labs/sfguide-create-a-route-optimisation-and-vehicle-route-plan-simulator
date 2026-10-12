@@ -57,4 +57,22 @@ h.replace(TS, "  /circuit_open/i,\n];", "  /circuit_open/i,\n  /(?<c>open)\\k<c>
           expect="does not compile in Python",
           name="JS-only regex syntax in a signature")
 
+# A waking gateway (Snowflake 100283 "Could not connect to server") goes back to
+# being a raw error in the panel - the defect the measured list exists for.
+h.replace(TS, "  /could not connect to server/i,\n];", "];",
+          expect="measured platform error is unmatched by any signature (want not_ready)",
+          name="waking-gateway text dropped from NOT_READY_SIGNATURES")
+
+# Same text, wrong bucket: the panel would claim a resume was triggered for a
+# gateway that is resuming itself.
+h.replace(TS, "  /connection_failed/i,\n", "  /connection_failed/i,\n  /could not connect to server/i,\n",
+          expect="lands in the wrong bucket (suspended, want not_ready)",
+          name="waking-gateway text added to SUSPEND_SIGNATURES")
+
+# The attribution constant drifts from the literal the detector array uses.
+h.replace(TS, "const GATEWAY_CONNECT_FAILURE = /could not connect to server/i;",
+          "const GATEWAY_CONNECT_FAILURE = /could not reach server/i;",
+          expect="is not also a literal in NOT_READY_SIGNATURES",
+          name="gateway attribution constant drifts from the detector literal")
+
 sys.exit(h.finish())
