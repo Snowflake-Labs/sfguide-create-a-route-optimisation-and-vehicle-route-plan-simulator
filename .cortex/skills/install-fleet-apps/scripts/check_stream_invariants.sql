@@ -35,11 +35,16 @@
 -- account-wide today, and the expected output is exactly one row, for that
 -- region, with those numbers.
 --
--- So the pass condition is: zero rows EXCEPT UnitedStatesOfAmerica at 38/20.
+-- So the pass condition WAS: zero rows EXCEPT UnitedStatesOfAmerica at 38/20.
 -- Any other region appearing, or those numbers changing, is a real regression.
 -- Regenerating or dropping that dataset restores a clean zero-row signal, which
 -- is strictly preferable - a check with a memorised exception is how a genuine
 -- regression gets waved through.
+--
+-- AS A GATE (gates.yaml id stream_invariants, scope live) the condition is
+-- strict: every query must return zero rows. It runs after a fresh install,
+-- where the pre-fix dataset cannot exist. On an account that still carries it,
+-- regenerate or drop that dataset rather than re-adding the exception.
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-delivery-sync","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
