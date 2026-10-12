@@ -34,6 +34,20 @@ if [ -f "$IMAGE_CHECK" ] && staged_any \
   }
 fi
 
+# ── 1b. No source file hidden by .gitignore ───────────────────────────────────
+# The generic `build/` / `env/` rules match real source dirs by name, so a new
+# file there is never staged and exists only on this machine: a fresh clone
+# 404s the route it implements. This machine is the only place the defect is
+# visible, so it runs on every commit (0.4 s), not only when .gitignore changes.
+IGNORED_SOURCE_CHECK="$SKILL_DIR/scripts/check_no_ignored_source.py"
+if [ -f "$IGNORED_SOURCE_CHECK" ]; then
+  echo "pre-commit: no source hidden by .gitignore check..."
+  python3 "$IGNORED_SOURCE_CHECK" || {
+    echo "pre-commit FAILED: a source file is gitignored and would be missing from every fresh clone."
+    exit 1
+  }
+fi
+
 # ── 2b. Agent-side solution catalog must match app-views.json ─────────────────
 # view_catalog.sql is generated from the useCase / agentKnowledge blocks and is
 # what Cowork / Snowflake Intelligence reads (outside the app there is no

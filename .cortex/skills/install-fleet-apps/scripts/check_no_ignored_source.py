@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Guard: no source file may exist only on a developer's disk because a
+.gitignore rule swallowed it.
+
+Why this exists
+---------------
+The generic rules `env/` (Python virtualenvs) and `build/` (build output) match
+by directory NAME anywhere in the tree, and real source directories share those
+names. Three files lived only on the machine that wrote them:
+
+  fleet_admin_app/ui/src/app/api/diagnostics/env/route.ts  (Diagnostics page)
+  fleet_admin_app/ui/src/app/api/matrix/build/route.ts     (Matrix Builder "Build")
+  fleet_tools/vendor/synapse/tests/unit/build/json-schema.test.ts
+
+A fresh clone has none of them, so the two admin routes 404 - and no install
+run can see it, because a test clone is MISSING the file rather than carrying a
+broken one, and nothing in the install clicks those pages. The same rule had
+already eaten synapse `src/build/` once (see the un-ignore in .gitignore). The
+only place the defect is observable is the machine where the file was written,
+which is where this runs: `.githooks/pre-commit`, and as the first gate of
+routing-solution-cleanup/scripts/reset_local_state.sh (which would otherwise
+delete the only copy).
+
+How it decides
+--------------
+Every ignored path is classified by the .gitignore RULE that matches it, never
+by guessing from its name:
+
+  GENERATED  rebuilt by the installer or tooling - safe to delete
+  PERSONAL   local notes, logs, keys, session artefacts - never deleted
+  AMBIGUOUS  generic names that collide with real source dirs (`env/`, `build/`)
+
+An AMBIGUOUS match containing a source file fails the gate (a genuine venv,
+marked by pyvenv.cfg, is GENERATED). A rule this file does not know fails the
+gate too, so adding a .gitignore rule forces a decision about which class it is.
+
+Usage:
+  python3 check_no_ignored_source.py              gate (exit 0 clean, 1 defect)
+  python3 check_no_ignored_source.py --manifest   CLASS<TAB>path<TAB>rule per
+                                                  entry, for the reset script
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+GENERATED = {
+    "*.log", "__pycache__/", "*.py[cod]", "*$py.class", "*.so", ".Python",
+    ".DS_Store", "node_modules/", "tsconfig.tsbuildinfo", "dist/",
+    "dist-server/", "*.egg-info/", "**/.next/", ".next/", "out/", "venv/",
+    ".venv/", "*.swp", "*.swo", "/Native_app/output",
+    "playwright-report/", "test-results/",
+    "**/_installed/**/install.sql", "**/_installed/**/install.json",
+    "**/_installed/**/runtime.js", "**/_installed/**/server.js",
+    "**/_installed/**/package.json", "**/_installed/**/.claude-plugin/",
+}
+PERSONAL = {
+    "**/logs/*.md", "/logs/sa_regression/", ".env", ".env.local", "*.p8",
+    "*.pem", "rsa_key*", ".idea/", ".vscode/", ".snowflake/cortex/plans/",
+    "drafts/FINAL.md", "drafts/PLAN.md", "drafts/v1-critique.md",
+    "drafts/v1.md", "drafts/v2-critique.md", "drafts/v2.md", "/docs/blogpost",
+    "/docs/old", "benchmarks/matrix-access/results/blogpost-blurb.md", "/tmp",
+    ".cortex/skills/evals/results/agent/",
+}
+AMBIGUOUS = {"env/", "build/"}
+
+SOURCE_EXT = (".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx",
+              ".sql", ".py", ".sh", ".yaml", ".yml", ".json", ".css")
+
+
+def git(*args: str, stdin: str | None = None) -> str:
+    return subprocess.run(["git", *args], input=stdin, capture_output=True,
+                          text=True, check=False).stdout
+
+
+def rules_for(paths: list[str]) -> dict[str, str]:
+    """path -> matching pattern ('' when the path itself matches no rule)."""
+    out: dict[str, str] = {}
+    if not paths:
+        return out
+    for line in git("check-ignore", "-v", "-n", "--stdin",
+                    stdin="\n".join(paths) + "\n").splitlines():
+        meta, _, path = line.partition("\t")
+        # meta is "<source>:<linenum>:<pattern>"; the pattern may contain ':'
+        parts = meta.split(":", 2)
+        out[path] = parts[2] if len(parts) == 3 else ""
+    return out
+
+
+def walk_files(d: str) -> list[str]:
+    files = []
+    for root, _dirs, names in os.walk(d):
+        files.extend(os.path.join(root, n) for n in names)
+    return sorted(files)
+
+
+def classify() -> list[tuple[str, str, str]]:
+    entries = git("ls-files", "-o", "-i", "--exclude-standard",
+                  "--directory").splitlines()
+    result: list[tuple[str, str, str]] = []
+    pending = entries
+    while pending:
+        rules = rules_for(pending)
+        expand: list[str] = []
+        for p in pending:
+            rule = rules.get(p, "")
+            if not rule:
+                if p.endswith("/") and os.path.isdir(p):
+                    # Listed only because every child is ignored: classify children.
+                    expand.extend(walk_files(p.rstrip("/")))
+                else:
+                    result.append(("UNKNOWN", p, "(no rule reported)"))
+                continue
+            if rule in GENERATED:
+                cls = "GENERATED"
+            elif rule in PERSONAL:
+                cls = "PERSONAL"
+            elif rule in AMBIGUOUS:
+                cls = "AMBIGUOUS"
+            else:
+                cls = "UNKNOWN"
+            result.append((cls, p, rule))
+        pending = expand
+    return result
+
+
+def ambiguous_source(path: str) -> list[str]:
+    """Source files under an AMBIGUOUS match; [] for a genuine virtualenv."""
+    if os.path.isdir(path):
+        if os.path.exists(os.path.join(path, "pyvenv.cfg")):
+            return []
+        files = walk_files(path.rstrip("/"))
+    else:
+        files = [path]
+    return [f for f in files if f.endswith(SOURCE_EXT)]
+
+
+def main() -> int:
+    os.chdir(git("rev-parse", "--show-toplevel").strip() or ".")
+    entries = classify()
+    defects: list[str] = []
+    resolved: list[tuple[str, str, str]] = []
+    for cls, path, rule in entries:
+        if cls == "AMBIGUOUS":
+            src = ambiguous_source(path)
+            if src:
+                defects.extend(f"  {f}\n      swallowed by .gitignore rule '{rule}'"
+                               for f in src)
+                cls = "SOURCE"
+            else:
+                cls = "GENERATED"
+        elif cls == "UNKNOWN":
+            defects.append(f"  {path}\n      matched by unclassified rule '{rule}' -"
+                           " add it to GENERATED or PERSONAL in this script")
+        resolved.append((cls, path, rule))
+
+    if "--manifest" in sys.argv[1:]:
+        for cls, path, rule in resolved:
+            print(f"{cls}\t{path}\t{rule}")
+        return 1 if defects else 0
+
+    if defects:
+        print("check_no_ignored_source: FAILED - these files exist only on this"
+              " machine; a fresh clone does not have them:")
+        print("\n".join(defects))
+        print("Fix: track the file and add a scoped '!<dir>/' + '!<dir>/**'"
+              " un-ignore to .gitignore (see the synapse src/build/ precedent),"
+              " or classify the rule above.")
+        return 1
+    counts: dict[str, int] = {}
+    for cls, _p, _r in resolved:
+        counts[cls] = counts.get(cls, 0) + 1
+    print("check_no_ignored_source: OK - no source is hidden by .gitignore "
+          f"({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))} entries)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
