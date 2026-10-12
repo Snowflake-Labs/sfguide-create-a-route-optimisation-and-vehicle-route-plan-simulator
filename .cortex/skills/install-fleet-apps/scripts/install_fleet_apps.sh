@@ -210,7 +210,36 @@ snow sql -c "$CONNECTION" -f "$SCRIPTS/warehouses.sql" >/tmp/ifa_warehouses.log 
   || note "  WARNING: warehouse setup reported errors -- see /tmp/ifa_warehouses.log"
 
 note "[1/8] resolving SPCS infra..."
-if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
+# STICKY: FLEET-owned infra wins once it exists. On a from-scratch install this
+# step always runs before the engine is built, so the ORS probe below fails and
+# the FLEET infra is self-provisioned and the apps are deployed onto it. A plain
+# "ORS if present" check then flipped on EVERY re-run (the engine now exists):
+# measured on wgb26798, the idempotency run re-pushed both app images into
+# OPENROUTESERVICE_APP.core.image_repository, swapped the live services'
+# external access integrations from FLEET_APP_*_EAI to ORS_*_EAI, changed both
+# spec digests and suspended/resumed both apps - while printing "all steps OK".
+# It also reported pool=OPENROUTESERVICE_APP_COMPUTE_POOL for services that stay
+# on FLEET_APPS_COMPUTE_POOL (a pool cannot change on an existing service). That
+# is the silent mid-life migration lib/resolve_image_repo.sh exists to prevent,
+# and the export below overrode its "stick to the live service" rule.
+# Accounts that never self-provisioned FLEET infra (engine installed first) keep
+# resolving to the ORS infra exactly as before.
+if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA FLEET_INTELLIGENCE.CORE;" 'IMAGE_REPOSITORY' \
+   && obj_exists "SHOW COMPUTE POOLS LIKE 'FLEET_APPS_COMPUTE_POOL';" 'FLEET_APPS_COMPUTE_POOL'; then
+  note "  reusing FLEET-owned infra (provisioned by an earlier run of this installer)"
+  IMAGE_REPO_SQL_NAME="FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY"
+  COMPUTE_POOL="FLEET_APPS_COMPUTE_POOL"
+  CARTO_EAI="FLEET_APP_CARTO_EAI"
+  OSM_EAI="FLEET_APP_OSM_EAI"
+  SPEC_STAGE_NAME="FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE"
+  # Re-assert it (all IF NOT EXISTS; the two network rules are CREATE OR REPLACE
+  # and measured safe while their EAIs are bound to live services) so a partly
+  # deleted FLEET infra is repaired rather than half-used.
+  if [ "${SKIP_INFRA:-0}" != "1" ]; then
+    snow sql -c "$CONNECTION" -f "$REF/infra.sql" >/tmp/ifa_infra.log 2>&1 \
+      || { echo "ERROR: infra provisioning failed"; tail -30 /tmp/ifa_infra.log; step "1 infra" FAILED; exit 1; }
+  fi
+elif obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
    && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
    && obj_exists "SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'ORS_CARTO_EAI';" 'ORS_CARTO_EAI'; then
   note "  reusing OPENROUTESERVICE_APP infra"
