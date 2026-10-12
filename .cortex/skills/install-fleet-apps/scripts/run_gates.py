@@ -7,12 +7,16 @@ what ran depended on whether a developer had opted in and on which paths were
 staged. Every caller now runs the same registry, unconditionally.
 
 Order and isolation
-  1. checks run in parallel (read-only by contract)
-  2. negative tests run ONE AT A TIME afterwards: several mutate a checkout file
-     in place and restore it, which would race any check reading that file
-  3. after every negative test the tracked tree must be exactly as it was - a
-     driver that dies half-way and leaves a mutation behind fails loudly here
-     instead of silently poisoning the next commit
+  1. checks run in parallel against the working tree (read-only by contract)
+  2. negative tests run ONE AT A TIME inside a SANDBOX - a disposable git copy
+     of the working tree (node_modules symlinked in), reset between tests - so
+     no negative test can modify the real checkout. This is not hypothetical:
+     an in-place driver restoring from a shared /tmp backup once wrote one
+     file's content over five others (check_number_formatting.py's source
+     landed in data-table.tsx) while another process ran alongside it.
+  3. the real checkout is still compared before/after every negative test, as
+     a backstop for a driver that writes through an absolute path
+  4. a lock in .git/ refuses a second concurrent run in the same checkout
 
 Usage
   python3 run_gates.py                         all static gates + negatives
@@ -26,12 +30,15 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import fcntl
 import json
 import os
 import pathlib
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import yaml
@@ -67,10 +74,10 @@ def prepare(needs: list[str]) -> str | None:
     return None
 
 
-def run_cmd(cmd: str) -> tuple[int, str, float]:
+def run_cmd(cmd: str, cwd: pathlib.Path = REPO) -> tuple[int, str, float]:
     t0 = time.monotonic()
     try:
-        p = subprocess.run(shlex.split(cmd), cwd=REPO, capture_output=True,
+        p = subprocess.run(shlex.split(cmd), cwd=cwd, capture_output=True,
                            text=True, timeout=TIMEOUT_S)
         rc, out = p.returncode, p.stdout + p.stderr
     except subprocess.TimeoutExpired as e:
@@ -78,6 +85,46 @@ def run_cmd(cmd: str) -> tuple[int, str, float]:
     except FileNotFoundError as e:
         rc, out = 127, str(e)
     return rc, out, time.monotonic() - t0
+
+
+def sb_git(sb: pathlib.Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(sb), "-c", "user.email=gates@local", "-c",
+                    "user.name=run_gates", "-c", "core.hooksPath=/dev/null", *args],
+                   check=True, capture_output=True)
+
+
+def make_sandbox() -> pathlib.Path:
+    """A git copy of the working tree (committed + new files, as on disk), with the
+    real node_modules symlinked so JS-based drivers run. Never the real repo."""
+    sb = pathlib.Path(tempfile.mkdtemp(prefix="run_gates_sandbox_")) / "repo"
+    files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached",
+                            "--others", "--exclude-standard"],
+                           capture_output=True, text=True, check=True).stdout
+    for rel in filter(None, files.split("\0")):
+        src = REPO / rel
+        if src.is_file():
+            dst = sb / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    sb_git(sb, "init", "-q")
+    sb_git(sb, "add", "-A")
+    sb_git(sb, "commit", "-qm", "sandbox baseline")
+    # Pruned walk: never descend into a node_modules (or .git) tree.
+    for root, dirs, _files in os.walk(REPO):
+        if ".git" in dirs:
+            dirs.remove(".git")
+        if "node_modules" in dirs:
+            dirs.remove("node_modules")
+            nm = pathlib.Path(root) / "node_modules"
+            link = sb / nm.relative_to(REPO)
+            if link.parent.is_dir() and not link.exists():
+                link.symlink_to(nm)
+    return sb
+
+
+def reset_sandbox(sb: pathlib.Path) -> None:
+    sb_git(sb, "checkout", "-q", "--", ".")
+    sb_git(sb, "clean", "-fdq", "-e", "node_modules")
 
 
 def main() -> int:
@@ -111,6 +158,16 @@ def main() -> int:
     def expand(cmd: str) -> str:
         return cmd.replace("{conn}", shlex.quote(a.connection or ""))
 
+    lock_path = REPO / ".git" / "run_gates.lock"
+    lock = open(lock_path, "w") if lock_path.parent.is_dir() else None
+    if lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("run_gates: another run_gates.py is already running in this checkout "
+                  "- refusing to overlap (negative tests are serial by design)")
+            return 2
+
     results: list[dict] = []
     for g in gates:
         err = prepare(g.get("needs") or [])
@@ -125,19 +182,23 @@ def main() -> int:
             rc, out, s = f.result()
             results.append({"id": futs[f]["id"], "phase": "check", "rc": rc, "s": s, "out": out})
 
-    if not a.checks_only:
-        for g in gates:
-            neg = g.get("negative")
-            if not neg or neg == "self":
-                continue
-            before = tree_state()
-            rc, out, s = run_cmd(expand(neg))
-            if tree_state() != before:
-                rc = 1
-                out += ("\nrun_gates: this negative test LEFT THE CHECKOUT MODIFIED - "
-                        "it must mutate a temp copy or restore every file it touches. "
-                        "Inspect `git status` / `git diff` before committing.")
-            results.append({"id": g["id"], "phase": "negative", "rc": rc, "s": s, "out": out})
+    negs = [g for g in gates if g.get("negative") not in (None, "self")]
+    if negs and not a.checks_only:
+        sb = make_sandbox()
+        try:
+            for g in negs:
+                before = tree_state()
+                rc, out, s = run_cmd(expand(g["negative"]), cwd=sb)
+                if tree_state() != before:
+                    rc = 1
+                    out += ("\nrun_gates: this negative test MODIFIED THE REAL CHECKOUT "
+                            "(it runs in a sandbox, so it wrote through an absolute "
+                            "path). Inspect `git status` / `git diff` now.")
+                reset_sandbox(sb)
+                results.append({"id": g["id"], "phase": "negative", "rc": rc, "s": s,
+                                "out": out})
+        finally:
+            shutil.rmtree(sb.parent, ignore_errors=True)
 
     order = {g["id"]: i for i, g in enumerate(reg["gates"])}
     results.sort(key=lambda r: (order.get(r["id"], 0), r["phase"] != "check"))
