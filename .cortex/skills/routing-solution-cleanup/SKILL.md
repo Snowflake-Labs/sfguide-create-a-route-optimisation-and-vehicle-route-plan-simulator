@@ -90,17 +90,18 @@ What step 2 does (`scripts/reset_local_state.sh`, dry run unless `--yes`):
 |---|---|
 | Gates | Refuses if the tracked tree is dirty or has untracked files (a clone has neither), or if `install-fleet-apps/scripts/check_no_ignored_source.py` finds a source file hidden by `.gitignore` - the reset would delete the only copy. |
 | Repo, GENERATED | Deletes every ignored path whose `.gitignore` rule marks it rebuildable: `node_modules/`, `.next/`, `dist/`, `__pycache__/`, `tsconfig.tsbuildinfo`, synapse `fleet_tools/_installed/`, `.DS_Store`. |
-| Repo, PERSONAL | MOVES everything else ignored (run logs, `logs/*.md`, `.snowflake/cortex/plans`, `docs/blogpost`, `docs/old`, eval results, keys) to `~/fleet-local-archive/<UTC-ts>/` with `MANIFEST.txt`. Override the root with `FLEET_LOCAL_ARCHIVE`. Nothing it does not recognise is deleted. |
+| Repo, PERSONAL | LEFT IN PLACE: everything else ignored (run logs, `logs/*.md`, `.snowflake/cortex/plans`, `docs/blogpost`, `docs/old`, eval results, keys). No tracked script, build or app reads them, so they cannot change what an install does. A path whose rule is unclassified fails the gate rather than being guessed at. |
 | `/tmp` | Deletes the installer's log and scratch files. A self-check fails if any install script writes a `/tmp` path the list does not cover. |
 | Docker | `docker rmi` every local image of this solution (`fleet_intelligence` / `openrouteservice_app` SPCS repos, any account) and `docker logout` the target account's SPCS registry. Other images, the build cache and other logins are untouched; step 3's `--no-cache --pull` gives the build the same no-cache behaviour a new machine has without pruning other projects' cache. |
-| Post-condition | Fails unless `git ls-files -o -i --exclude-standard` and `git status --porcelain` are both empty, i.e. the checkout matches a fresh clone. |
+| Post-condition | Fails unless no GENERATED path remains and `git status --porcelain` is empty: an install from this checkout sees exactly what a fresh clone has. |
 
-Verify it (optional, decisive): the file list must equal a fresh clone's.
+`--only repo|tmp|docker` limits a run to one area (for testing the repo half in a scratch clone without touching the machine's real `/tmp` and images); a fresh-machine reset always runs all three.
+
+Verify it (optional, decisive): the checkout's file list, minus PERSONAL paths, must equal a fresh clone's.
 
 ```bash
-B=$(git branch --show-current); T=$(mktemp -d)
-git clone -q --branch "$B" "file://$PWD" "$T/c"
-diff <(find . -path ./.git -prune -o -print | sort) <(cd "$T/c" && find . -path ./.git -prune -o -print | sort) && echo IDENTICAL
+T=$(mktemp -d); git clone -q --branch "$(git branch --show-current)" "file://$PWD" "$T/c"
+python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py --compare-clone "$T/c"
 ```
 
 ## Error Logging

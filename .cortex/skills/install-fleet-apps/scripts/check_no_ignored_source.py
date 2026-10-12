@@ -38,6 +38,10 @@ Usage:
   python3 check_no_ignored_source.py              gate (exit 0 clean, 1 defect)
   python3 check_no_ignored_source.py --manifest   CLASS<TAB>path<TAB>rule per
                                                   entry, for the reset script
+  python3 check_no_ignored_source.py --compare-clone <dir>
+        the decisive fresh-clone check: the file list of this checkout, minus
+        PERSONAL paths (nothing an install runs reads them), must equal the
+        file list of <dir>, a fresh `git clone` of the same branch
 """
 from __future__ import annotations
 
@@ -151,7 +155,46 @@ def ambiguous_source(path: str) -> list[str]:
     return [f for f in files if f.endswith(SOURCE_EXT)]
 
 
+def file_list(root: str, skip: list[str]) -> set[str]:
+    """Every file under root (relative, '/'-separated), minus .git and skip."""
+    out: set[str] = set()
+    for d, dirs, names in os.walk(root):
+        rel_d = os.path.relpath(d, root)
+        rel_d = "" if rel_d == "." else rel_d + "/"
+        dirs[:] = [x for x in dirs if not (rel_d == "" and x == ".git")
+                   and not any((rel_d + x + "/").startswith(s) for s in skip)]
+        for n in names:
+            rel = rel_d + n
+            if not any(rel == s.rstrip("/") or rel.startswith(s) for s in skip):
+                out.add(rel)
+    return out
+
+
+def compare_clone(clone: str, resolved: list[tuple[str, str, str]]) -> int:
+    personal = [p for cls, p, _r in resolved if cls == "PERSONAL"]
+    here, there = file_list(".", personal), file_list(clone, [])
+    extra, missing = sorted(here - there), sorted(there - here)
+    if not extra and not missing:
+        print(f"check_no_ignored_source: IDENTICAL to the fresh clone ({len(here)} "
+              f"files; {len(personal)} personal entries not compared)")
+        return 0
+    print("check_no_ignored_source: checkout DIFFERS from the fresh clone")
+    for tag, paths in (("only here", extra), ("only in clone", missing)):
+        for p in paths[:40]:
+            print(f"  {tag}: {p}")
+        if len(paths) > 40:
+            print(f"  {tag}: ... {len(paths) - 40} more")
+    return 1
+
+
 def main() -> int:
+    clone_dir = None
+    if "--compare-clone" in sys.argv[1:]:
+        i = sys.argv.index("--compare-clone")
+        if i + 1 >= len(sys.argv) or not os.path.isdir(sys.argv[i + 1]):
+            print("check_no_ignored_source: --compare-clone needs a clone directory")
+            return 2
+        clone_dir = os.path.abspath(sys.argv[i + 1])  # before the chdir below
     os.chdir(git("rev-parse", "--show-toplevel").strip() or ".")
     entries = classify()
     defects: list[str] = []
@@ -174,6 +217,9 @@ def main() -> int:
         for cls, path, rule in resolved:
             print(f"{cls}\t{path}\t{rule}")
         return 1 if defects else 0
+
+    if clone_dir:
+        return compare_clone(clone_dir, resolved)
 
     if defects:
         print("check_no_ignored_source: FAILED - these files exist only on this"

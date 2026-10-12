@@ -851,7 +851,7 @@ Before considering any fix done, reason through the fresh-install path (`install
 2. `scripts/reset_local_state.sh --connection <conn> --yes`.
 3. The installer, run with `npm_config_cache="$(mktemp -d)"` and `FLEET_DOCKER_BUILD_FLAGS="--no-cache --pull"`.
 
-A Snowflake-only wipe, or `KEEP_FLEET_ENGINE=TRUE`, is iteration mode and never counts as a fresh-install check. A developed checkout reuses state a clone does not have: stale `node_modules`, `.next` and materialized synapse bundles, local images, and once three source files that existed only on the developer machine because the generic `build/`/`env/` gitignore rules swallowed them, so the admin Diagnostics and Matrix Builder pages 404'd on every fresh clone. The reset refuses a dirty tree and any source hidden by `.gitignore` (`check_no_ignored_source.py`, also run by `.githooks/pre-commit`). It archives personal ignored files to `~/fleet-local-archive/<ts>/` rather than deleting them.
+A Snowflake-only wipe, or `KEEP_FLEET_ENGINE=TRUE`, is iteration mode and never counts as a fresh-install check. A developed checkout reuses state a clone does not have: stale `node_modules`, `.next` and materialized synapse bundles, local images, and once three source files that existed only on the developer machine because the generic `build/`/`env/` gitignore rules swallowed them, so the admin Diagnostics and Matrix Builder pages 404'd on every fresh clone. The reset refuses a dirty tree and any source hidden by `.gitignore` (`check_no_ignored_source.py`, also run by `.githooks/pre-commit`). It deletes generated state and leaves personal ignored files (notes, plans, run logs) in place, because nothing an install runs reads them.
 
 ## Error Logging
 

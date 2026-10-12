@@ -22,10 +22,11 @@
 #   repo    every gitignored path, classified by its .gitignore RULE:
 #             GENERATED -> deleted (node_modules, .next, dist, __pycache__,
 #                          synapse _installed/, tsbuildinfo, .DS_Store)
-#             PERSONAL  -> MOVED to $FLEET_LOCAL_ARCHIVE/<UTC-ts>/<same path>
-#                          (logs/*.md and *.log run histories, session plans,
-#                          docs drafts, eval results, keys) with MANIFEST.txt -
-#                          never deleted
+#             PERSONAL  -> LEFT IN PLACE (logs/*.md and *.log run histories,
+#                          session plans, docs drafts, eval results, keys).
+#                          No tracked script, build or app reads them, so they
+#                          cannot change what an install does; moving them
+#                          would only cost the user their notes.
 #           then empty directories left behind (git does not track them)
 #   /tmp    the installer's log/scratch files; a self-check fails if a script
 #           writes a /tmp path this list does not cover
@@ -36,7 +37,11 @@
 #
 # Usage:
 #   bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh \
-#        --connection <conn> [--yes]
+#        --connection <conn> [--yes] [--only repo|tmp|docker]
+#
+# --only limits the run to one area (default: all three). It exists so the repo
+# half can be exercised in a scratch clone without touching the machine's real
+# /tmp and docker state; a fresh-machine reset always runs all three.
 #
 # Then reinstall with an empty npm cache and uncached image builds - see
 # "Full fresh-machine teardown + reinstall" in ../SKILL.md.
@@ -44,10 +49,13 @@ set -euo pipefail
 
 CONNECTION=""
 APPLY=0
+ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -c|--connection) CONNECTION="${2:-}"; shift 2 ;;
     --yes) APPLY=1; shift ;;
+    --only) ONLY="${2:-}"; shift 2
+            case "$ONLY" in repo|tmp|docker) ;; *) echo "ERROR: --only takes repo, tmp or docker"; exit 2 ;; esac ;;
     -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     *) echo "ERROR: unknown argument '$1'"; exit 2 ;;
   esac
@@ -58,11 +66,10 @@ REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 IFA_SCRIPTS=".cortex/skills/install-fleet-apps/scripts"
 CLASSIFIER="$IFA_SCRIPTS/check_no_ignored_source.py"
-TS="$(date -u +%Y%m%dT%H%M%SZ)"
-ARCHIVE="${FLEET_LOCAL_ARCHIVE:-$HOME/fleet-local-archive}/$TS"
 MODE="DRY RUN (pass --yes to apply)"; [ "$APPLY" = "1" ] && MODE="APPLY"
 FAIL=0
 note() { echo "[reset-local-state] $*"; }
+want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
 
 note "repo=$REPO_ROOT  connection=$CONNECTION  mode=$MODE"
 
@@ -102,34 +109,32 @@ if [ -n "$UNCOVERED" ]; then
   exit 1
 fi
 
-# ── 3. repo: delete GENERATED, archive PERSONAL ──────────────────────────────
+# ── 3. repo: delete GENERATED, keep PERSONAL ─────────────────────────────────
 N_GEN=$(printf '%s\n' "$MANIFEST" | grep -c '^GENERATED' || true)
 N_PER=$(printf '%s\n' "$MANIFEST" | grep -c '^PERSONAL' || true)
-note "repo: $N_GEN generated entries to delete, $N_PER personal entries to archive -> $ARCHIVE"
-printf '%s\n' "$MANIFEST" | awk -F'\t' '{print $1}' | sort | uniq -c | sed 's/^/    /'
-printf '%s\n' "$MANIFEST" | awk -F'\t' '$1=="PERSONAL"{print $2}' \
-  | sed -E 's#^((logs|\.cortex/skills/evals/results|\.cortex/skills/install-fleet-apps/logs)/).*#\1...#' \
-  | sort | uniq -c | sed 's/^/    archive: /'
+if want repo; then
+note "repo: $N_GEN generated entries to delete; $N_PER personal entries kept in place (nothing reads them)"
+printf '%s\n' "$MANIFEST" | awk -F'\t' '$1=="GENERATED"{print $2}' \
+  | sed -E 's#^(.*/)?(node_modules|\.next|__pycache__|dist)/$#<\2>#; s#^.*/_installed/.*#<synapse _installed>#; s#^(.*/)?\.DS_Store$#<.DS_Store>#' \
+  | sort | uniq -c | sed 's/^/    delete: /'
 
 if [ "$APPLY" = "1" ]; then
-  mkdir -p "$ARCHIVE"; chmod 700 "$ARCHIVE"
-  printf '%s\n' "$MANIFEST" | awk -F'\t' '$1=="PERSONAL"' > "$ARCHIVE/MANIFEST.txt"
-  printf '%s\n' "$MANIFEST" | awk -F'\t' '$1=="GENERATED"' > "$ARCHIVE/DELETED.txt"
   printf '%s\n' "$MANIFEST" | while IFS="$(printf '\t')" read -r cls path _rule; do
+    [ "$cls" = "GENERATED" ] || continue
     path="${path%/}"
-    [ -e "$path" ] || [ -L "$path" ] || continue
-    case "$cls" in
-      GENERATED) rm -rf -- "$path" ;;
-      PERSONAL)  mkdir -p "$ARCHIVE/$(dirname "$path")"; mv -- "$path" "$ARCHIVE/$path" ;;
-    esac
+    # `if`, not `test && rm`: a false test as the loop's last command would make
+    # the pipeline fail and, under pipefail + set -e, abort the reset half-way.
+    if [ -e "$path" ] || [ -L "$path" ]; then rm -rf -- "$path"; fi
   done
   # git never tracks a directory, so one emptied above is fresh-clone noise.
   find . -path ./.git -prune -o -type d -empty -print | sort -r | while read -r d; do
     rmdir -- "$d" 2>/dev/null || true
   done
 fi
+fi  # want repo
 
 # ── 4. /tmp ──────────────────────────────────────────────────────────────────
+if want tmp; then
 TMP_HITS=""
 for p in $TMP_PREFIXES; do
   for f in /tmp/"$p"*; do [ -e "$f" ] && TMP_HITS="$TMP_HITS $f"; done
@@ -144,10 +149,13 @@ if [ "$APPLY" = "1" ] && [ -n "$TMP_HITS" ]; then
   # shellcheck disable=SC2086
   rm -rf -- $TMP_HITS
 fi
+fi  # want tmp
 
 # ── 5. docker ────────────────────────────────────────────────────────────────
 IMAGE_RE='\.registry\.snowflakecomputing\.com/(fleet_intelligence|openrouteservice_app)/core/image_repository/'
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+if ! want docker; then
+  :
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   IMAGES="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "$IMAGE_RE" || true)"
   N_IMG=$(printf '%s' "$IMAGES" | grep -c . || true)
   OTHER_BEFORE=$(docker images -q | sort -u | wc -l | tr -d ' ')
@@ -172,16 +180,18 @@ else
 fi
 
 # ── 6. post-condition ────────────────────────────────────────────────────────
-if [ "$APPLY" = "1" ]; then
-  LEFTOVER="$(git ls-files -o -i --exclude-standard --directory)"
-  if [ -n "$LEFTOVER" ] || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+# A fresh-clone install sees no GENERATED state and no local change. PERSONAL
+# files are allowed to remain: nothing an install runs can read them.
+if [ "$APPLY" = "1" ] && want repo; then
+  LEFTOVER="$(python3 "$CLASSIFIER" --manifest | awk -F'\t' '$1!="PERSONAL"{print $1"  "$2}')"
+  CHANGES="$(git status --porcelain --untracked-files=all)"
+  if [ -n "$LEFTOVER" ] || [ -n "$CHANGES" ]; then
     echo "ERROR: the checkout still differs from a fresh clone:"
-    { echo "$LEFTOVER"; git status --porcelain --untracked-files=all; } | sed '/^$/d; s/^/  /' | head -40
+    { echo "$LEFTOVER"; echo "$CHANGES"; } | sed '/^$/d; s/^/  /' | head -40
     FAIL=1
   else
-    note "checkout now matches a fresh clone (no ignored or untracked paths)"
+    note "checkout matches a fresh clone: no generated state, no local change ($N_PER personal entries kept)"
   fi
-  [ "$N_PER" = "0" ] || note "personal files archived to $ARCHIVE (MANIFEST.txt lists them)"
 fi
 [ "$FAIL" = "0" ] || exit 1
 note "done ($MODE)"
