@@ -47,76 +47,39 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}';
 
--- Legacy backfill for accounts that created MATRIX_BUILD_JOBS before the
--- four filter columns were folded into the canonical CREATE TABLE above.
--- Wrapped in anonymous blocks because Snowflake's ADD COLUMN IF NOT EXISTS
--- can throw "ambiguous column name" at compile time when the column already
--- exists with a DEFAULT clause. We swallow that error so the script keeps
--- running.
+-- Legacy backfill for accounts that created MATRIX_BUILD_JOBS before these
+-- columns were folded into the canonical CREATE TABLE above. Each column is
+-- added ONLY when INFORMATION_SCHEMA says it is missing. Do not use
+-- `ADD COLUMN IF NOT EXISTS ... DEFAULT` here: with a DEFAULT clause Snowflake
+-- raises "ambiguous column name" when the column exists (without one it is a
+-- no-op - measured), so on every fresh install the old per-column blocks fell
+-- into a catch-all handler and printed `skipped` rows, a handler that would
+-- equally have swallowed a real failure. check_add_column_default.py enforces
+-- this. No EXCEPTION handler: a real ALTER error must fail the module.
 EXECUTE IMMEDIATE $$
+DECLARE
+    missing RESULTSET DEFAULT (
+        SELECT v.NAME, v.DDL
+        FROM (VALUES ('ROAD_FILTER', 'BOOLEAN DEFAULT FALSE'),
+                     ('HEXAGONS_BEFORE_FILTER', 'NUMBER DEFAULT 0'),
+                     ('HEXAGONS_AFTER_FILTER', 'NUMBER DEFAULT 0'),
+                     ('FILTER_DURATION_SECONDS', 'FLOAT DEFAULT 0'),
+                     ('HEXAGONS_BEFORE_ROUTABILITY', 'NUMBER DEFAULT 0'),
+                     ('HEXAGONS_AFTER_ROUTABILITY', 'NUMBER DEFAULT 0'),
+                     ('ROUTABILITY_DURATION_SECONDS', 'FLOAT DEFAULT 0'),
+                     ('ROUTABILITY_NOTE', 'VARCHAR'),
+                     ('FILTER_WARNING', 'VARCHAR')) AS v (NAME, DDL)
+        WHERE v.NAME NOT IN (
+            SELECT COLUMN_NAME FROM OPENROUTESERVICE_APP.INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX' AND TABLE_NAME = 'MATRIX_BUILD_JOBS'));
+    added VARCHAR DEFAULT '';
 BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS ROAD_FILTER BOOLEAN DEFAULT FALSE;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS HEXAGONS_BEFORE_FILTER NUMBER DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS FILTER_DURATION_SECONDS FLOAT DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
--- One block per column: sharing a block would skip every later column on any
--- account that already has the first one (first statement raises, the handler
--- swallows it, the rest never run).
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS HEXAGONS_BEFORE_ROUTABILITY NUMBER DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS HEXAGONS_AFTER_ROUTABILITY NUMBER DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS ROUTABILITY_DURATION_SECONDS FLOAT DEFAULT 0;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS ROUTABILITY_NOTE VARCHAR;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
-END;
-$$;
-EXECUTE IMMEDIATE $$
-BEGIN
-    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        ADD COLUMN IF NOT EXISTS FILTER_WARNING VARCHAR;
-EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+    FOR c IN missing DO
+        EXECUTE IMMEDIATE 'ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS ADD COLUMN '
+            || c.NAME || ' ' || c.DDL;
+        added := added || ' ' || c.NAME;
+    END FOR;
+    RETURN 'MATRIX_BUILD_JOBS legacy columns: ' || IFF(added = '', 'all present', 'added' || added);
 END;
 $$;
 

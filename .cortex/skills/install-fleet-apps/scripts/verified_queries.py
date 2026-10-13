@@ -132,6 +132,26 @@ WHERE is_current_week = TRUE
   AND projected_week_hours > 60
 ORDER BY projected_week_hours DESC NULLS LAST""",
     ),
+    "SV_PLAN_STANDARDS": (
+        "least_consistent_planners",
+        "Which route planners are least consistent in how they build routes?",
+        True,
+        # Scoped to SanFrancisco deliberately: it is the only region whose plans
+        # are multi-stop (28 stops per route against 1.3 for the long-haul
+        # regions), so it is the only one where planning PRACTICE is visible.
+        # STDDEV of km per stop is the consistency measure and is a different
+        # question from compliance - a planner can sit on the fleet mean and still
+        # be unpredictable.
+        """SELECT planner_id, region,
+       COUNT(*) AS routes,
+       ROUND(STDDEV(km_per_stop), 2) AS consistency_sd_km_per_stop,
+       ROUND(DIV0(SUM(plan_km), SUM(stops)), 2) AS km_per_stop_pooled,
+       ROUND(100.0 * DIV0(COUNT_IF(breach_count = 0), COUNT(*)), 2) AS compliance_pct
+FROM FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN
+WHERE region = 'SanFrancisco'
+GROUP BY planner_id, region
+ORDER BY consistency_sd_km_per_stop DESC NULLS LAST""",
+    ),
     "SV_EMERGENCY_RESPONSE": (
         "participants_per_care_centre",
         "How many participants are nearest to each care centre?",

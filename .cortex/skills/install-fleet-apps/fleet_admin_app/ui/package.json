@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
     "@deck.gl/aggregation-layers": "~9.2.11",
     "@deck.gl/core": "~9.2.11",
     "@deck.gl/extensions": "~9.2.11",
@@ -18,13 +17,14 @@
     "@deck.gl/mesh-layers": "~9.2.11",
     "@deck.gl/react": "~9.2.11",
     "@deck.gl/widgets": "~9.2.11",
+    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
     "h3-js": "^4.1.0",
     "lucide-react": "^0.460.0",
     "maplibre-gl": "^5.14.0",
     "next": "^15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "recharts": "^2.15.4",
+    "recharts": "^3.10.1",
     "zod": "^3.24.0"
   },
   "devDependencies": {

@@ -118,6 +118,12 @@ chk('HGV Day 5-17 MILD -> 2.5h',
 // the actual gap and not a constant.
 chk('HGV Night 18-04 OUTLIER -> full 4.0h (14h gap, not clipped)',
   near(overrunAllowanceHours({ ...SHIFT_NIGHT, driverProfile: 'OUTLIER', cfg, draw: DRAW_ELIGIBLE }), 4.0));
+// ...and the night guard must actually CLIP. Both night checks above ask for
+// less than the 6h a night roster leaves, so a night end read literally (a 38h
+// gap instead of 14h) passed them: the allowance "explodes" and the cap hides
+// it. A 5h max_hours OUTLIER asks for 8h, which only the real gap clips to 6h.
+chk('HGV Night 18-04 cap above the 6h available -> clipped to 6.0h',
+  near(overrunAllowanceHours({ ...SHIFT_NIGHT, driverProfile: 'OUTLIER', cfg: { ...cfg, max_hours: 5 }, draw: DRAW_ELIGIBLE }), 6.0));
 
 // --- malformed config must degrade to safe, not to NaN ----------------------
 // A NaN allowance would make `currentHour >= shiftEnd + NaN` always false and
@@ -131,5 +137,5 @@ chk('negative multiplier -> 0, never negative',
 const r = overrunAllowanceHours({ ...SHIFT_10_15, driverProfile: 'MILD', cfg, draw: DRAW_ELIGIBLE });
 chk('result is finite', Number.isFinite(r));
 
-console.log(fails ? `\n${fails} FAILURE(S)` : `\nall 22 assertions passed`);
+console.log(fails ? `\n${fails} FAILURE(S)` : `\nall 23 assertions passed`);
 process.exit(fails ? 1 : 0);

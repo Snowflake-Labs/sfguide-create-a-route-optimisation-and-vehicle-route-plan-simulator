@@ -80,6 +80,18 @@ export function buildVegaTheme(palette: string[]): Record<string, unknown> {
     },
     axisY: { grid: true, domain: false, ticks: false, titlePadding: 6 },
     axisX: { grid: false },
+    // CATEGORY LABEL COLLISION. Vega-Lite's default `labelOverlap` for a
+    // DISCRETE axis is `false` - every band gets a label whether or not there is
+    // room - so a breakdown with more than a handful of categories drew its names
+    // on top of each other. Rotating is the fix that keeps all of them readable;
+    // dropping some would silently hide rows of the answer.
+    //
+    // Scoped to the `*Discrete` variants deliberately. A `labelAngle` on `axisX`
+    // would tilt quantitative and temporal axes too, where horizontal labels fit
+    // and read better. And these stay UNDER the spec via mergeThemeUnder, so an
+    // agent that chose its own angle still wins.
+    axisXDiscrete: { labelAngle: -35, labelOverlap: false, labelSeparation: 2, labelLimit: 120 },
+    axisYDiscrete: { labelOverlap: false, labelSeparation: 2 },
     legend: {
       labelFont: FONT, titleFont: FONT,
       labelFontSize: 11, titleFontSize: 12,

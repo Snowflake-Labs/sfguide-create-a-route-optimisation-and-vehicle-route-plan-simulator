@@ -95,10 +95,37 @@ body {
   background: none;
 }
 
+/* The agent presents verb and analyst results as MARKDOWN tables (agent-spec.json
+   says so in several places), so this - not a React grid - is the table most
+   users read. `width: 100%` used to squeeze a wide result into the panel and then
+   clip it, because the only overflow rule in the chain was `hidden`. Columns now
+   keep their natural width and the scroll happens in `.markdown-table-scroll`
+   (message-part.tsx), which is the element that has a bounded size to scroll
+   within; `min-width: 100%` keeps a narrow table full-bleed as before. */
 .markdown-body table {
   border-collapse: collapse;
-  width: 100%;
+  min-width: 100%;
+  width: max-content;
   margin: 8px 0;
+}
+
+.markdown-table-scroll {
+  overflow: auto;
+  max-height: 420px;
+  margin: 8px 0;
+}
+
+/* The wrapper owns the spacing, so the table must not add its own inside it. */
+.markdown-table-scroll > table {
+  margin: 0;
+}
+
+/* Scoped to the scroll wrapper on purpose: wrapping is what makes a cell
+   unreadable in a horizontally scrollable grid, but the other `.markdown-body`
+   surfaces (markdown-area, view-info-dialog) hold prose that SHOULD wrap. */
+.markdown-table-scroll td,
+.markdown-table-scroll th {
+  white-space: nowrap;
 }
 
 .markdown-body th,
@@ -109,9 +136,14 @@ body {
   font-size: 13px;
 }
 
+/* Sticky so the header survives the scroll box above. Needs an opaque background
+   (rows scroll UNDER it) and a z-index above the cell borders. */
 .markdown-body th {
   background-color: var(--surface-secondary);
   font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 /* ============================================================================

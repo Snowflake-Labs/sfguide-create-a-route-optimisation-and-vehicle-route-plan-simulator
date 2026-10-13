@@ -232,7 +232,15 @@ export interface MapAreaConfig {
    *  numbers the camera pans to that point (and zooms to `zoom`, when given).
    *  Typically written by a table row click, so a user gesture can move the
    *  camera even on a `lockCamera` map. */
-  focusOn?: { lngKey: string; latKey: string; zoom?: number };
+  focusOn?: { lngKey: string; latKey: string; zoom?: number;
+    /** Optional viewState key whose value is folded into the focus signature.
+     *  Without it the camera de-dupes on the COORDINATE PAIR alone, so clicking a
+     *  second row that resolves to the same point is a silent no-op. That is the
+     *  common case for a per-event table whose focus point is its site: three
+     *  events of one visit share one coordinate, so only the first click moved the
+     *  camera. Point this at a per-row key (the emitting table's row id) to make
+     *  every row click an explicit, honoured gesture. */
+    keyKey?: string };
   /** Overlay text shown when every layer has reported and none produced a
    *  feature. Without it an empty result is indistinguishable from a broken
    *  map: the basemap renders, no error is raised, and nothing says why the

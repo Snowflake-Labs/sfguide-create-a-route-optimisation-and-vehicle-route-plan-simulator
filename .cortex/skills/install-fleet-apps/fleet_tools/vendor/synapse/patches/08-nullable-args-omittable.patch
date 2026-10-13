@@ -1,0 +1,107 @@
+diff --git a/src/build/ddl.ts b/src/build/ddl.ts
+index 19ecffbc..ab6c7917 100644
+--- a/src/build/ddl.ts
++++ b/src/build/ddl.ts
+@@ -57,8 +57,17 @@ export function procDDL(
+   proc: ProcDef<string, unknown, unknown>,
+   opts: ProcDDLOpts,
+ ): string {
+-  const argEntries = Object.entries(proc.args).map(
+-    ([name, schema]) => `${quoteArg(name)} ${sqlType(schema as Schema<unknown>)}`,
++  const entries = Object.entries(proc.args) as Array<[string, Schema<unknown>]>;
++  // LOCAL PATCH 08 (see ../../VENDOR.md): every arg from the first nullable one
++  // onward gets DEFAULT NULL. The managed MCP server rejects a JSON null for
++  // ANY argument ("unsupported parameter type: <nil>"), and an omitted arg
++  // only binds when the procedure declares a DEFAULT. Snowflake requires
++  // defaulted args to be trailing, so a required arg that follows a nullable
++  // one is defaulted too; the runtime schema check still rejects it when null.
++  const firstNullable = entries.findIndex(([, s]) => s.kind === 'nullable');
++  const argEntries = entries.map(
++    ([name, schema], i) => `${quoteArg(name)} ${sqlType(schema)}`
++      + (firstNullable >= 0 && i >= firstNullable ? ' DEFAULT NULL' : ''),
+   );
+   // IDEMPOTENCY_KEY appended as the last arg of every emitted DDL, with a
+   // DEFAULT so callers (MCP dispatcher, direct CALL) can omit it. Audit code
+diff --git a/src/build/mcp-server-sql.ts b/src/build/mcp-server-sql.ts
+index 1f90da44..6748bba7 100644
+--- a/src/build/mcp-server-sql.ts
++++ b/src/build/mcp-server-sql.ts
+@@ -84,14 +84,22 @@ function renderTool(
+   } else {
+     out.push(`        properties:`);
+     for (const [argName, schema] of argEntries) {
+-      const json = toJsonSchema(schema);
++      // LOCAL PATCH 08: a nullable arg is advertised as its plain type and is
++      // NOT required, so the model omits it. The managed MCP server rejects an
++      // explicit JSON null ("unsupported parameter type: <nil>"); the omitted
++      // arg binds its DDL DEFAULT NULL (see build/ddl.ts).
++      const json = schema.kind === 'nullable' && schema.inner
++        ? toJsonSchema(schema.inner)
++        : toJsonSchema(schema);
+       out.push(`          ${yamlKey(argName)}:`);
+       out.push(...renderInlineJsonSchema(json, '            '));
+     }
+     // IDEMPOTENCY_KEY is on every proc's DDL signature with DEFAULT NULL; MCP
+     // callers don't need to see it. Apps that want caller-supplied idempotency
+     // should declare it as a real verb arg.
+-    const requiredList = argEntries.map(([k]) => yamlString(k)).join(', ');
++    const requiredList = argEntries
++      .filter(([, s]) => s.kind !== 'nullable')
++      .map(([k]) => yamlString(k)).join(', ');
+     out.push(`        required: [${requiredList}]`);
+   }
+   return out;
+diff --git a/tests/unit/nullable-args.test.ts b/tests/unit/nullable-args.test.ts
+new file mode 100644
+index 00000000..545483d6
+--- /dev/null
++++ b/tests/unit/nullable-args.test.ts
+@@ -0,0 +1,48 @@
++import { describe, it, expect } from 'vitest';
++import { defineProc, t } from '../../src/index.js';
++import { procDDL } from '../../src/build/ddl.js';
++import { buildMcpServerSql } from '../../src/build/mcp-server-sql.js';
++
++// LOCAL PATCH 08. The managed MCP server rejects an explicit JSON null for any
++// GENERIC-tool argument ("unsupported parameter type: <nil>"), which broke every
++// agent call that left an optional verb arg empty (deep_link, show_view,
++// backload_solve, ...). Nullable args must be omittable: DEFAULT NULL in the DDL
++// and absent from the MCP `required` list.
++const verb = defineProc({
++  name: 'deep_link',
++  roles: ['user'],
++  args: {
++    app: t.string(),
++    page: t.string().nullable(),
++    view_id: t.string(),
++    selection: t.string().nullable(),
++  },
++  returns: { ok: t.boolean() },
++  execute: async () => ({ ok: true }),
++});
++
++describe('nullable args are omittable', () => {
++  it('defaults every arg from the first nullable one onward', () => {
++    const ddl = procDDL(verb, { body: '' });
++    expect(ddl).toContain('APP STRING, PAGE STRING DEFAULT NULL, VIEW_ID STRING DEFAULT NULL, '
++      + 'SELECTION STRING DEFAULT NULL, IDEMPOTENCY_KEY STRING DEFAULT NULL');
++  });
++
++  it('leaves a verb with no nullable arg without defaults', () => {
++    const strict = defineProc({
++      name: 'strict', roles: ['user'], args: { a: t.string(), b: t.number() },
++      returns: { ok: t.boolean() }, execute: async () => ({ ok: true }),
++    });
++    expect(procDDL(strict, { body: '' })).toContain('(A STRING, B FLOAT, IDEMPOTENCY_KEY');
++  });
++
++  it('advertises nullable args as their plain type and not required', () => {
++    const sql = buildMcpServerSql({
++      procs: [verb],
++      install: { database: 'D', schema: 'S', warehouse: 'W' } as never,
++      app: 'routing',
++    });
++    expect(sql).toContain('required: ["app", "view_id"]');
++    expect(sql).not.toContain('type: "null"');
++  });
++});

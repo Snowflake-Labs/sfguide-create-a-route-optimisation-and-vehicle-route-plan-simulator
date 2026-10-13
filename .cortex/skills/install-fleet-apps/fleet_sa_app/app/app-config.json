@@ -76,15 +76,15 @@
     "verbs": {
       "optimize_routes": 5,
       "compute_isochrone": 3,
-      "get_directions": 2,
+      "get_directions": 3,
       "find_poi": 5,
       "catchment": 3,
-      "delivery_optimization": 1,
-      "network_optimization": 1,
+      "delivery_optimization": 2,
+      "network_optimization": 2,
       "evac_seed": 4,
       "evac_solve": 2,
       "vrp_solve": 2,
-      "backload_solve": 8,
+      "backload_solve": 12,
       "backload_chain_solve": 6
     },
     "mapTools": [

@@ -36,7 +36,7 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Seven deviations from upstream, plus two new local files. Each is load-bearing: dropping
+Nine deviations from upstream, plus three new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
 replayable record and are already applied to this tree. Patches 01-05 and 07 are scoped by
 FILE, not by concern, so `git apply` never has two of them editing the same file.
@@ -278,6 +278,59 @@ Trade-off: a future column addition now needs an explicit `ALTER TABLE`. That is
 way round for an append-only audit log - a migration statement is cheap, lost history is not.
 A re-vendor that silently drops this patch is caught by the `IF NOT EXISTS` assertion in
 `scripts/install_synapse_bundles.sh`.
+
+### patches/08-nullable-args-omittable.patch
+
+Files: `src/build/ddl.ts`, `src/build/mcp-server-sql.ts`, new `tests/unit/nullable-args.test.ts`.
+A diff of the post-07 tree (07 also touches `ddl.ts`, a different file), so it sorts last.
+
+Makes a `.nullable()` verb arg omittable by an MCP client. The Snowflake-managed MCP server
+rejects an explicit JSON `null` for any GENERIC-tool argument with
+`error building SQL query for generic tool <verb>: unsupported parameter type: <nil>`, and
+upstream advertised nullable args as `oneOf: [<T>, null]` AND listed every arg in `required`,
+so the model was told to send exactly the value the server refuses. Omitting the arg did not
+work either: the procedure declared no DEFAULT, so the call failed with "named arguments ... do
+not match any signature".
+
+Measured on tib85385, 2026-09-28, in one DATA_AGENT_RUN sweep (25 questions x 3 regions x 2
+agents): 50+ failed calls across `deep_link`, `show_view`, `backload_solve`,
+`backload_chain_solve`, `describe_data` and `catchment`, which is why backload and triangle
+answers never produced a map. Reproduced over the MCP REST endpoint: explicit null fails,
+omitted fails, empty string succeeds.
+
+The fix: every DDL arg from the first nullable one onward gets `DEFAULT NULL` (Snowflake
+requires defaults to be trailing, so a required arg after a nullable one is defaulted too; the
+runtime schema check still rejects it when it arrives null), and the MCP `input_schema`
+advertises a nullable arg as its plain type, omitted from `required`.
+
+### patches/09-sdk3-no-deprecated-deps.patch
+
+File: `package.json`. Independent of 01-08 (no other patch touches it).
+
+Removes every `npm warn deprecated` line from the install. Upstream pins
+`snowflake-sdk ^1.11.0`, which resolves to 1.15.0 and pulls in deprecated
+`@aws-sdk/node-http-handler@3.374.0`, `@azure/core-http@3.0.5`, `glob@10.5.0`,
+`uuid@8.3.2` and `uuid@9.0.1`; a fresh install printed all of them into
+`/tmp/synapse_vendor.log`. The patch moves to `snowflake-sdk ^3.4.0`, drops
+`@types/snowflake-sdk` (3.x ships its own declarations, which tsc then
+prefers anyway), and overrides `node-domexception` - still pulled by 3.4.0 via
+google-auth-library > gaxios > node-fetch > fetch-blob, and deprecated in every
+release - with `@nolyfill/domexception`, which re-exports the platform's
+native `DOMException` (Node 17+).
+
+Safe for this repo's install because the installer materializes with
+`runtime: "sproc"` and `synapse deploy` runs `snow sql`, so snowflake-sdk is
+never loaded during an install. It matters only to the `local` runtime, whose
+CJS bundle (see the comment in `src/build/runtime-js.ts`) resolves
+`createConnection` on 3.x - checked by bundling `src/connector.ts` with the same
+esbuild options. A plain ESM `import * as` of 3.x exposes only `default`; that
+is why the runtime is bundled as CJS, and is not a new constraint. Verified:
+`npm install` from an empty cache prints no warning, `npm run build` passes,
+90/90 unit tests pass. `check_lockfile_deprecations.py` fails if a deprecated
+package returns to this lockfile.
+
+Not changed: `src/cli/materialize.ts` still writes `snowflake-sdk ^1.11.0` into
+the `local` runtime's emitted `package.json`. Nothing in this repo installs it.
 
 ## Re-vendoring procedure
 

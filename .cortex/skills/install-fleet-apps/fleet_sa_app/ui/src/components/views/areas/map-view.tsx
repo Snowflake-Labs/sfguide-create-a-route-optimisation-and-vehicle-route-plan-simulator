@@ -50,7 +50,7 @@ interface FitToOptions {
   // Deliberately bypasses lockAfterFirstFit: it is an explicit user gesture (a
   // table row click), not an automatic re-frame, and it does not re-arm the
   // auto-fit machinery.
-  focusPoint?: { lng: number; lat: number; zoom?: number } | null;
+  focusPoint?: { lng: number; lat: number; zoom?: number; key?: string } | null;
   // Bounding-box corners of the ACTIVE region (2 coords is enough). Used to frame
   // the region immediately when regionKey changes, before that region's layer
   // data has arrived - and to keep framing it when a view has no rows for the
@@ -302,8 +302,12 @@ export default function MapView({
 
   // Explicit one-shot focus (row click). Keyed on the point signature so it
   // fires once per new point and never fights the user's own panning after.
+  //
+  // `key` is part of the signature, not decoration: without it two rows that
+  // resolve to the SAME coordinate are indistinguishable here, and the second
+  // click is dropped as "already focused there". See MapAreaConfig.focusOn.keyKey.
   const focusSig = focusPoint
-    ? `${focusPoint.lng},${focusPoint.lat},${focusPoint.zoom ?? ''}`
+    ? `${focusPoint.lng},${focusPoint.lat},${focusPoint.zoom ?? ''},${focusPoint.key ?? ''}`
     : '';
   const lastFocusPointRef = useRef<string>(focusSig);
   useEffect(() => {

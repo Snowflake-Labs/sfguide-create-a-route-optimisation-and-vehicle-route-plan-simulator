@@ -337,9 +337,14 @@ def main() -> int:
         for col in ("PICKUP_CITY", "PROPOSAL_DROPOFF_CITY"):
             if f"placeLabel(a.{col}" not in card:
                 fail("H", f"AssignmentList.tsx does not pass a.{col} through placeLabel")
-        if "isAtEndBaseline(" not in card:
-            fail("I", "AssignmentList.tsx never checks isAtEndBaseline, so a vehicle already at its "
-                      "end point shows no baseline and no reason for its absence")
+        # The predicate that GUARDS the at-end explanation, not any call: the
+        # detour line also calls isAtEndBaseline (to suppress itself), so a bare
+        # substring check passed with the explanation disabled (M21).
+        if not re.search(r"\{\s*isAtEndBaseline\(a\)\s*&&\s*\(\s*<div[^>]*>\s*already at its end point",
+                         card):
+            fail("I", "AssignmentList.tsx does not guard the 'already at its end point' line with "
+                      "isAtEndBaseline(a), so a vehicle already at its end point shows no baseline "
+                      "and no reason for its absence")
     if STOPS.exists():
         checked += 1
         stops_src = STOPS.read_text()
@@ -395,6 +400,33 @@ def main() -> int:
             "gating on `(EMPTY_BACK_KM ?? 0) > 0` alone means a collected plan never fetches its "
             "reposition leg and reports less deadhead than the same tour solved on this page",
         )
+
+    # ---- RULE L: the geometry commit is unconditional, and the return leg is
+    # drawn. enrichGeometry MUTATES the assignment objects and the map only sees
+    # the legs when a NEW array is committed afterwards. The rehydrate and
+    # selection-retry effects skipped that commit when cancelled, and
+    # `assignments` changes mid-fetch (baseline pass, load-pool backfill), so the
+    # re-run returned early on its claimed ids and nothing rendered after the
+    # LAST leg landed. The return leg is fetched last: DIRECTIONS succeeded and
+    # the black dashed leg never appeared.
+    code = strip_comments(src)
+    commits = list(re.finditer(r"enrichGeometry\([^;]*?\)\s*\.then\(\s*\(\)\s*=>\s*\{?", code))
+    if len(commits) < 3:
+        fail("L", f"expected enrichGeometry(...).then commits on the solve, rehydrate and retry "
+                  f"paths, found {len(commits)}")
+    for m in commits:
+        then_body = code[m.end():m.end() + 400]
+        body = then_body.split("})", 1)[0]
+        if "setAssignments" not in body:
+            fail("L", "an enrichGeometry(...).then callback does not commit setAssignments, so the "
+                      "mutated legs never reach the map")
+        elif re.search(r"\bcancelled\b", body):
+            fail("L", "an enrichGeometry(...).then commit is gated on `cancelled`; the effect is "
+                      "cancelled by the very array updates that run during the fetch, so the last "
+                      "leg to land (the return leg) is never rendered")
+    if not re.search(r"if\s*\(\s*selected\.EMPTY_RETURN_GEOJSON\s*\)\s*result\.push\(\s*dashed\(\s*'empty-ret-sel'\s*,\s*selected\.EMPTY_RETURN_GEOJSON",
+                     code):
+        fail("L", "the selected tour's EMPTY_RETURN_GEOJSON is not pushed as the 'empty-ret-sel' layer")
 
     if checked < 5:
         print(f"FAILED: gate inspected only {checked} file(s) - it is passing vacuously")

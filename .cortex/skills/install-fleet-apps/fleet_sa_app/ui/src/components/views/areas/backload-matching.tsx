@@ -35,9 +35,11 @@ import {
   sfRead, sqlLiteral, haversineKm, synthPallets, synthVolumeM3,
   fetchVehicleClass, computeEmptyLegBaselines, fetchEmptyLeg, fetchTourPath, trimPathAt,
   findUnroutablePoints, coordKey, describeTourChain, realPlace, placeLabel,
+  fetchRegionBbox, pointOutsideBbox,
   type Trailer, type Volume, type Offer, type Assignment, type Stop,
   baselineEndpointFor, fetchBaselineLeg, straightLineGeoJSON,
   deriveSavedKm, applyBaseline, samePlace, backfillFromLoadPool,
+  vehicleTourCaps, DEVIATION_ALLOWANCE_KM_DEFAULT, returnLegKm,
   type VehicleClass, type EmptyLegBaseline, type UnroutableProbeStats,
   type EndMode, type BaselineGeom,
 } from './backload-matching/helpers';
@@ -86,12 +88,8 @@ const BM_SOLVE_TIMEOUT_MS = 180_000;
 // Cap the retries so a pathological dataset can never loop forever.
 const BM_MAX_UNROUTABLE_RETRIES = 16;
 
-// VROOM echoes the failing coordinate rounded to ~6dp, so match with a small
-// epsilon rather than exact equality.
-function coordNear(a: number, b: number): boolean { return Math.abs(a - b) < 1e-4; }
-function locMatchesCoord(loc: unknown, lon: number, lat: number): boolean {
-  return Array.isArray(loc) && coordNear(Number(loc[0]), lon) && coordNear(Number(loc[1]), lat);
-}
+// Coordinate matching for every exclusion path now goes through coordKey() (4dp,
+// ~11m), which absorbs the ~6dp VROOM echoes the old coordNear epsilon handled.
 
 function clampPayload(v: number, i: number, e: number, budget: number): { v: number; i: number; e: number; clamped: boolean } {
   const used = 2 * v + 2 * i + 2 * e;
@@ -123,6 +121,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
   const [maxStops, setMaxStops] = useState(2);
   const [detourSlackHrs, setDetourSlackHrs] = useState(4);
   const [deviationPct, setDeviationPct] = useState(200);
+  const [deviationAllowanceKm, setDeviationAllowanceKm] = useState(DEVIATION_ALLOWANCE_KM_DEFAULT);
   const [internalFirstWeight, setInternalFirstWeight] = useState(90);
   const [windowSlackHrs, setWindowSlackHrs] = useState(2);
   const [endMode, setEndMode] = useState<EndMode>('home');
@@ -564,11 +563,17 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // Claim before the await: this effect reruns on `assignments`, which the
     // enrichment itself replaces, and an unclaimed rerun would refetch forever.
     for (const a of pending) enrichedKeysRef.current.add(a.ASSIGNMENT_ID);
-    let cancelled = false;
+    // Commit UNCONDITIONALLY. This used to be skipped when the effect was
+    // cancelled, but `assignments` changes mid-fetch (the baseline pass and the
+    // load-pool backfill both replace the array), which cancelled this run, and
+    // the re-run returned early because the ids were already claimed. The legs
+    // were mutated onto the objects with no render after the LAST one landed -
+    // and the return leg is fetched last, so DIRECTIONS succeeded and the black
+    // dashed leg never appeared. Committing a copy is safe after a re-collection
+    // too: those are new objects, so the stale ones are not in `prev`.
     enrichGeometry(pending, vehicleClass.ORS_PROFILE, cfg.region).then(() => {
-      if (!cancelled) setAssignments((prev) => [...prev]);
+      setAssignments((prev) => [...prev]);
     });
-    return () => { cancelled = true; };
   }, [assignments, cfg, vehicleClass, enrichGeometry]);
 
   // Where a tour is required to finish, per the End radio group. Component scope
@@ -670,14 +675,13 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // effect reruns on `assignments`, which the enrichment itself replaces.
     if (retriedGeomRef.current.has(selectedAssignment)) return;
     retriedGeomRef.current.add(selectedAssignment);
-    let cancelled = false;
     setGeomRetrying(true);
+    // Unconditional commit, same reason as the rehydrate pass above: a cancel
+    // here dropped the render AND left geomRetrying stuck on true.
     enrichGeometry([target], vehicleClass.ORS_PROFILE, cfg.region).then(() => {
-      if (cancelled) return;
       setGeomRetrying(false);
       setAssignments((prev) => [...prev]);
-    }).catch(() => { if (!cancelled) setGeomRetrying(false); });
-    return () => { cancelled = true; };
+    }).catch(() => { setGeomRetrying(false); });
   }, [selectedAssignment, assignments, cfg, vehicleClass, enrichGeometry]);
 
 
@@ -772,8 +776,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         // straight through made the slider's own "1 = pure backload" setting
         // unsatisfiable (one task cannot hold a pickup and its delivery).
         max_tasks: maxStops * 2,
-        max_travel_time: Math.max(1800, base.durSec + Math.round(detourSlackHrs * 3600)),
-        max_distance: Math.max(10_000, Math.round(base.distMeters * (1 + deviationPct / 100))),
+        ...vehicleTourCaps(base, { deviationPct, detourSlackHrs, allowanceKm: deviationAllowanceKm, kmh: speedKmh }),
         costs: { fixed: Math.round(fixedDispatchUsd * COST_SCALE), per_km: Math.round(effPerKmUsd * COST_SCALE) },
       };
       if (endPt) veh.end = endPt;
@@ -854,11 +857,75 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     let workVehicles = vrpVehicles;
     let workShipments = vrpShipments;
 
+    // ONE shear for every exclusion path (bbox pre-flight, ORS probe, and the
+    // 422/code-3 loop below), operating on the CURRENT work sets. Three copies
+    // of this filter existed and each reassigned from the ORIGINAL vrp* arrays,
+    // so whichever ran last silently restored the points an earlier pass had
+    // already removed.
+    const shearByKeys = (badKeys: Set<string>): void => {
+      if (!badKeys.size) return;
+      const locBad = (loc: unknown): boolean =>
+        Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
+      workVehicles = workVehicles.filter((veh) => {
+        const hit = locBad(veh.start) || locBad(veh.end);
+        if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
+        return !hit;
+      });
+      workShipments = workShipments.filter((s) => {
+        const pu = (s.pickup as { location?: unknown } | undefined)?.location;
+        const dl = (s.delivery as { location?: unknown } | undefined)?.location;
+        const hitPickup = locBad(pu);
+        const hitDelivery = locBad(dl);
+        if (hitPickup || hitDelivery) {
+          const sid = Number((s.pickup as { id?: unknown } | undefined)?.id);
+          const ent = offerById.get(sid);
+          const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
+          excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
+        }
+        return !(hitPickup || hitDelivery);
+      });
+      for (const k of badKeys) if (!droppedCoords.includes(k)) droppedCoords.push(k);
+    };
+
+    // Graph-bbox pre-flight, BEFORE any ORS call.
+    //
+    // A point outside the graph bbox does not come back as a null duration - it
+    // fails the WHOLE ORS request with code 6010, so the MATRIX probe below
+    // cannot shear it (its batch throws and fails open) and the solve is refused
+    // outright. Measured on tib85385: one UsTexas trailer sat at 27.4475,
+    // -82.5730 (Florida, ~900 km past the Texas graph) and that single stop
+    // turned a 27-trailer solve into "the routing engine refused the request".
+    //
+    // This check is arithmetic on a bbox, so unlike the ORS probe its verdict
+    // needs no trust test - there is no degraded-engine reading of it.
+    let bboxRejected = 0;
+    const graphBox = await fetchRegionBbox(cfg.region, { signal: ac.signal });
+    if (graphBox) {
+      const outside = new Set<string>();
+      const addIfOutside = (loc: unknown) => {
+        if (Array.isArray(loc) && loc.length >= 2) {
+          const lon = Number(loc[0]);
+          const lat = Number(loc[1]);
+          if (pointOutsideBbox(graphBox, lon, lat)) outside.add(coordKey(lon, lat));
+        }
+      };
+      for (const v of workVehicles) { addIfOutside(v.start); addIfOutside(v.end); }
+      for (const s of workShipments) {
+        addIfOutside((s.pickup as { location?: unknown }).location);
+        addIfOutside((s.delivery as { location?: unknown }).location);
+      }
+      if (outside.size) {
+        bboxRejected = outside.size;
+        setSolverLog(`Excluding ${outside.size} stop(s) outside the ${cfg.region} road graph...`);
+        shearByKeys(outside);
+      }
+    }
+
     // Anchor for the routability probe: the trailer start with the most
     // neighbours within 300km (densest continental cluster centre) is on the
     // main road graph, so probing every point to/from it flags island /
     // off-road / disconnected points up front.
-    const vehStarts = vrpVehicles
+    const vehStarts = workVehicles
       .map((v) => (Array.isArray(v.start) ? (v.start as number[]) : null))
       .filter((s): s is number[] => s != null && s.length >= 2);
     let anchor: [number, number] | null = null;
@@ -884,8 +951,11 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
           if (Number.isFinite(p[0]) && Number.isFinite(p[1])) uniq.set(coordKey(p[0], p[1]), p);
         }
       };
-      for (const v of vrpVehicles) { addPt(v.start); addPt(v.end); }
-      for (const s of vrpShipments) {
+      // Collected from the WORK sets, so the bbox pre-flight's rejections are
+      // not handed straight back to ORS - probing a known out-of-bbox point is
+      // exactly what makes its whole batch throw 6010 and fail open.
+      for (const v of workVehicles) { addPt(v.start); addPt(v.end); }
+      for (const s of workShipments) {
         addPt((s.pickup as { location?: unknown }).location);
         addPt((s.delivery as { location?: unknown }).location);
       }
@@ -894,29 +964,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       try { badKeys = await findUnroutablePoints(profile, [...uniq.values()], anchor, cfg.region, { signal: ac.signal, stats: probe }); }
       catch { badKeys = new Set(); probe.backedOff = true; }
       probeTrustworthy = probe.clean > 0 && !probe.backedOff;
-      if (badKeys.size) {
-        const locBad = (loc: unknown): boolean =>
-          Array.isArray(loc) && loc.length >= 2 && badKeys.has(coordKey(Number(loc[0]), Number(loc[1])));
-        workVehicles = vrpVehicles.filter((veh) => {
-          const hit = locBad(veh.start) || locBad(veh.end);
-          if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
-          return !hit;
-        });
-        workShipments = vrpShipments.filter((s) => {
-          const pu = (s.pickup as { location?: unknown }).location;
-          const dl = (s.delivery as { location?: unknown }).location;
-          const hitPickup = locBad(pu);
-          const hitDelivery = locBad(dl);
-          if (hitPickup || hitDelivery) {
-            const sid = Number((s.pickup as { id?: unknown }).id);
-            const ent = offerById.get(sid);
-            const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
-            excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
-          }
-          return !(hitPickup || hitDelivery);
-        });
-        for (const k of badKeys) droppedCoords.push(k);
-      }
+      shearByKeys(badKeys);
     }
 
     // A pre-filter that zeroes out the solve is either a bad probe or a genuinely
@@ -930,8 +978,12 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     // answering): the rejections are real. Restoring them here is what used to
     // hand the engine coordinates it had just refused, turning a shear-and-solve
     // into a hard matrix pre-compute failure. Report it instead.
+    //
+    // A bbox rejection counts as trustworthy on its own: it is arithmetic
+    // against the graph extent, so there is no reading of it under which the
+    // points are routable and restoring them can only reproduce the refusal.
     if (!workVehicles.length || !workShipments.length) {
-      if (probeTrustworthy) {
+      if (probeTrustworthy || bboxRejected > 0) {
         const what = !workVehicles.length ? 'vehicle start/end locations' : 'load pickup/dropoff locations';
         setSolveError(
           `Every one of the ${what} in this selection is outside the ${cfg.region} road graph, ` +
@@ -962,7 +1014,13 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       setSolverLog(attempt === 0
         ? (excludedLabels.length ? `Excluded ${excludedLabels.length} unroutable stop(s); calling OPTIMIZATION...` : 'Calling OPTIMIZATION...')
         : `Re-solving without ${excludedLabels.length} unroutable stop(s)...`);
-      let body: { ok?: boolean; result?: unknown; error?: string; unroutable?: { lon: number; lat: number } };
+      let body: {
+        ok?: boolean;
+        result?: unknown;
+        error?: string;
+        unroutable?: { lon: number; lat: number };
+        outOfGraphPoints?: { lon: number; lat: number }[];
+      };
       let ok = false;
       try {
         // postSolve handles the deferred case: the route answers 202 with a
@@ -1002,6 +1060,33 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
 
       if (ok) { respObj = body.result as Record<string, unknown>; break; }
 
+      // Out-of-graph (ORS 6010/2010): the 422 body NAMES the offending points in
+      // outOfGraphPoints. That field was already being sent and never read, and
+      // because outOfGraphMessage() contains no "location [lon,lat]" substring
+      // the parse below found nothing, so a single off-graph stop went straight
+      // to `fatal` on attempt 0 - the one error shape that names its own remedy
+      // was the one shape that could not be recovered. Shear and retry instead.
+      const offGraph = Array.isArray(body.outOfGraphPoints) ? body.outOfGraphPoints : [];
+      if (offGraph.length) {
+        const keys = new Set<string>();
+        for (const p of offGraph) {
+          const lon = Number(p?.lon);
+          const lat = Number(p?.lat);
+          if (Number.isFinite(lon) && Number.isFinite(lat)) {
+            const k = coordKey(lon, lat);
+            // No-progress guard: if every named point is already excluded,
+            // retrying sends the identical challenge and burns the cap.
+            if (!droppedCoords.includes(k)) keys.add(k);
+          }
+        }
+        if (keys.size) {
+          shearByKeys(keys);
+          if (!workVehicles.length) { fatal = `Every trailer start or end is outside the ${cfg.region} road graph. Check that the selected region matches the data, or regenerate the preset for this region.`; break; }
+          if (!workShipments.length) { fatal = `Every load pickup or dropoff is outside the ${cfg.region} road graph. Check that the selected region matches the data, or regenerate the preset for this region.`; break; }
+          continue;
+        }
+      }
+
       // Extract the unroutable coordinate (structured field, else parse the msg).
       let bad = body.unroutable ?? null;
       if (!bad && typeof body.error === 'string') {
@@ -1017,25 +1102,9 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
       droppedCoords.push(badKey!);
 
       // Drop every vehicle (start/end) and shipment (pickup/delivery) that sits
-      // on the offending coordinate, recording a human label for each.
-      workVehicles = workVehicles.filter((veh) => {
-        const hit = locMatchesCoord(veh.start, bad!.lon, bad!.lat) || locMatchesCoord(veh.end, bad!.lon, bad!.lat);
-        if (hit) { const t = trailerById.get(Number(veh.id)); excludedLabels.push(`${t?.TRAILER_ID ?? `vehicle ${veh.id}`} location`); }
-        return !hit;
-      });
-      workShipments = workShipments.filter((s) => {
-        const pu = (s.pickup as { location?: unknown } | undefined)?.location;
-        const dl = (s.delivery as { location?: unknown } | undefined)?.location;
-        const hitPickup = locMatchesCoord(pu, bad!.lon, bad!.lat);
-        const hitDelivery = locMatchesCoord(dl, bad!.lon, bad!.lat);
-        if (hitPickup || hitDelivery) {
-          const sid = Number((s.pickup as { id?: unknown } | undefined)?.id);
-          const ent = offerById.get(sid);
-          const oid = ent ? (ent.kind === 'INTERNAL' ? (ent.row as unknown as Volume).ID : (ent.row as Offer).OFFER_ID) : `job ${sid}`;
-          excludedLabels.push(`${ent?.kind ?? ''} ${oid} ${hitPickup ? 'pickup' : 'dropoff'}`.trim());
-        }
-        return !(hitPickup || hitDelivery);
-      });
+      // on the offending coordinate, recording a human label for each. VROOM
+      // echoes the coordinate at ~6dp, so match through the shared 4dp key.
+      shearByKeys(new Set([coordKey(bad.lon, bad.lat)]));
 
       if (!workVehicles.length) { fatal = 'All trailers are at unroutable locations for this region. Regenerate the preset data or pick another region.'; break; }
       if (!workShipments.length) { fatal = 'Every load pickup/dropoff is unroutable for this region. Regenerate the preset data or pick another region.'; break; }
@@ -1199,7 +1268,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     const excludedNote = excludedLabels.length
       ? ` Excluded ${excludedLabels.length} unroutable stop(s): ${excludedLabels.slice(0, 6).join('; ')}${excludedLabels.length > 6 ? ` (+${excludedLabels.length - 6} more)` : ''}.`
       : '';
-    setSolverLog(`Sent ${workVehicles.length} vehicles, ${workShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external).${excludedNote} Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
+    setSolverLog(`Sent ${workVehicles.length} vehicles, ${workShipments.length} shipments (maxStops=${maxStops}, dev=${deviationPct}%+${deviationAllowanceKm}km, slack=+${detourSlackHrs}h, caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, intFirst=${internalFirstWeight}, end=${endMode}; skipped ${internalSkipped} internal, ${externalSkipped} external).${excludedNote} Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned -> ${newAssignments.length} assigned. Avg detour +${avgDetour} km. Net benefit total $${totalNet.toLocaleString()}.`);
 
     if (vroomError) {
       setSolveError(`Routing gateway / VROOM error: ${vroomError}`);
@@ -1218,7 +1287,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
     setSolving(false);
   }, [
     trailers, internal, external, cfg, vehicleClass, vehicleClassError,
-    maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct,
+    maxVehicles, maxInternal, maxExternal, maxStops, detourSlackHrs, deviationPct, deviationAllowanceKm,
     internalFirstWeight, windowSlackHrs, endMode, sharedDestLon, sharedDestLat,
     costPerHourUsd, costPerKmUsd, fixedDispatchUsd, costPerDeliveryUsd, internalRatePerKm,
     enforceDriverBreak, breakAfterHrs, breakLengthMin, enforceShift, shiftLengthHrs,
@@ -1435,7 +1504,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
             : (a.NET_BENEFIT_USD !== undefined
                 ? `, margin ${a.NET_BENEFIT_USD >= 0 ? '+' : ''}$${Math.round(a.NET_BENEFIT_USD)} (solver margin; revenue/cost breakdown not available for a collected plan)`
                 : '');
-          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(a.EMPTY_BACK_KM || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
+          return `${a.TRAILER_ID} ${a.SOURCE} | ${loadStr}first pickup ${origin} -> final dropoff ${dest}${chainStr}${endStr} | drops: ${dropStr} | ${a.N_DELIVERIES ?? drops.length} deliv, empty ${Math.round(a.EMPTY_KM || 0)}km (${Math.round(a.EMPTY_OUT_KM || 0)} out + ${Math.round(returnLegKm(a) || 0)} back) loaded ${Math.round(a.LOADED_KM || 0)}km${a.SAVED_KM !== undefined ? `, deadhead avoided ${Math.round(a.SAVED_KM)}km vs ${Math.round(a.BASELINE_EMPTY_KM || 0)}km reposition baseline` : ''}${econ}`;
         });
     // Bound by CHARACTERS, not by row count. MAX_TRIPS caps rows, but 12 rows of
     // tour prose measured 3,627 chars - over the consumer's whole-panel budget in
@@ -1783,6 +1852,7 @@ export function BackloadMatchingView({ viewState, onStateChange }: Partial<ViewP
         {slider('Max loads per trailer', 'How many shipments one trailer may collect on a single tour. 1 = pure backload; higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks (set to 2x this value, since each shipment is a pickup task plus a delivery task)', maxStops, setMaxStops, 1, 6)}
         {slider('Detour budget', "Extra hours allowed on top of each trailer's empty drive home. Adds linearly per vehicle.\n\nVROOM field: vehicle.max_travel_time", detourSlackHrs, setDetourSlackHrs, 0, 12, 1, ' h', '+')}
         {slider('Allowed deviation', "Distance cap as a percentage above each trailer's empty drive home. 200% = tour may be up to 3x the empty distance.\n\nVROOM field: vehicle.max_distance", deviationPct, setDeviationPct, 0, 500, 10, '%', '+')}
+        {slider('Deviation allowance', "Absolute km added on top of the percentage cap (and the matching drive time added to the detour budget). A trailer already at its end point has a zero baseline, so this allowance is its whole cap - without it the percentage would multiply zero.\n\nVROOM fields: vehicle.max_distance, vehicle.max_travel_time", deviationAllowanceKm, setDeviationAllowanceKm, 0, 1500, 50, ' km', '+')}
         {slider('Internal-first', 'Bias toward internal volumes vs external offers. 100 = always internal first, 50 = equal, 0 = always external first.\n\nVROOM field: job.priority', internalFirstWeight, setInternalFirstWeight, 0, 100)}
         {slider('Window slack', 'Widens every pickup/delivery time window by this many hours so the solver has more flexibility.\n\nVROOM field: job.time_windows', windowSlackHrs, setWindowSlackHrs, 0, 12, 1, ' h', '\u00b1')}
         <div style={{ minWidth: 220 }}>

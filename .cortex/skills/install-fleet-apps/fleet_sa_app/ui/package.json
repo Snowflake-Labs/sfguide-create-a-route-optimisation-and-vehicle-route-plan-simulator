@@ -27,7 +27,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.0",
-    "recharts": "^2.15.4",
+    "recharts": "^3.10.1",
     "remark-gfm": "^4.0.0",
     "vega": "^5.33.1",
     "vega-interpreter": "^2.3.2",

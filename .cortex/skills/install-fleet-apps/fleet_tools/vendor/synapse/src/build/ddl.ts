@@ -57,8 +57,17 @@ export function procDDL(
   proc: ProcDef<string, unknown, unknown>,
   opts: ProcDDLOpts,
 ): string {
-  const argEntries = Object.entries(proc.args).map(
-    ([name, schema]) => `${quoteArg(name)} ${sqlType(schema as Schema<unknown>)}`,
+  const entries = Object.entries(proc.args) as Array<[string, Schema<unknown>]>;
+  // LOCAL PATCH 08 (see ../../VENDOR.md): every arg from the first nullable one
+  // onward gets DEFAULT NULL. The managed MCP server rejects a JSON null for
+  // ANY argument ("unsupported parameter type: <nil>"), and an omitted arg
+  // only binds when the procedure declares a DEFAULT. Snowflake requires
+  // defaulted args to be trailing, so a required arg that follows a nullable
+  // one is defaulted too; the runtime schema check still rejects it when null.
+  const firstNullable = entries.findIndex(([, s]) => s.kind === 'nullable');
+  const argEntries = entries.map(
+    ([name, schema], i) => `${quoteArg(name)} ${sqlType(schema)}`
+      + (firstNullable >= 0 && i >= firstNullable ? ' DEFAULT NULL' : ''),
   );
   // IDEMPOTENCY_KEY appended as the last arg of every emitted DDL, with a
   // DEFAULT so callers (MCP dispatcher, direct CALL) can omit it. Audit code

@@ -165,6 +165,19 @@ snow sql -c "$CONNECTION" -f "$REPO_ROOT/.cortex/skills/install-fleet-apps/scrip
 # you do it, so the ceiling is checked here instead, before anything is created.
 if [ "${DESC_VERIFY:-1}" != "0" ] && [ -f "$TOOLS_DIR/user/verify_tool_descriptions.mts" ]; then
   echo "[synapse] Verify MCP tool descriptions fit the 2500-char cap..."
+  # The verifier IMPORTS the procs of all three bundles, so ops and admin need
+  # their dependencies (the vendored @snowflake/synapse among them) BEFORE it
+  # runs - not only user's, which the line below installs. The bundle loop
+  # further down installs ops/admin itself, but that is too late: on a fresh
+  # clone the import of fleet_tools/ops/src/procs/*.ts failed with
+  # ERR_MODULE_NOT_FOUND '@snowflake/synapse' and aborted step 5. A maintainer
+  # checkout never sees it because those node_modules (gitignored) survive from
+  # earlier installs. Same command as the loop, so its `[ -d node_modules ]`
+  # guard turns the later install into a no-op rather than a second resolve.
+  for DEP_SRC in ops admin; do
+    ( cd "$TOOLS_DIR/$DEP_SRC" && { [ -d node_modules ] || npm install >/tmp/synapse_${DEP_SRC}_npm.log 2>&1; } ) \
+      || { echo "ERROR: npm install failed for $DEP_SRC (needed by the description verifier)"; tail -30 /tmp/synapse_${DEP_SRC}_npm.log; exit 1; }
+  done
   ( cd "$TOOLS_DIR/user" && { [ -d node_modules ] || npm ci; } && npx tsx verify_tool_descriptions.mts ) \
     || { echo "ERROR: tool description verification failed (see above)."; \
          echo "       CREATE MCP SERVER would reject this mid-install."; exit 1; }
@@ -245,14 +258,17 @@ JSON
   #
   # Scoped to verbs whose arity has actually changed, listed explicitly rather
   # than derived, because dropping a signature is not something to do by pattern
-  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s).
+  # match. backload_solve went 6 -> 8 business args (trailer_id, time_budget_s);
+  # delivery_optimization / network_optimization went 1 -> 2 (region).
   if [ "$SRC" = "user" ]; then
     snow sql -c "$CONNECTION" -q "
       $TAG_SQL
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR);
       DROP PROCEDURE IF EXISTS $DB.$SCHEMA.BACKLOAD_SOLVE(VARCHAR, FLOAT, FLOAT, VARCHAR, FLOAT, VARCHAR, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.DELIVERY_OPTIMIZATION(VARCHAR, VARCHAR);
+      DROP PROCEDURE IF EXISTS $DB.$SCHEMA.NETWORK_OPTIMIZATION(VARCHAR, VARCHAR);
     " >/tmp/synapse_${SRC}_dropstale.log 2>&1 \
-      || { echo "ERROR: could not drop stale BACKLOAD_SOLVE wrapper signatures"; \
+      || { echo "ERROR: could not drop stale verb wrapper signatures"; \
            tail -20 /tmp/synapse_${SRC}_dropstale.log; exit 1; }
   fi
 

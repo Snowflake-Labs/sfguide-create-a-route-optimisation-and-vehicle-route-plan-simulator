@@ -34,7 +34,7 @@ used by the matrix/routability pipeline but is installed manually (no codified
 |---|---|---|---|
 | `ID` | VARCHAR | `p.ID` | Stable Overture feature id |
 | `NAMES` | VARIANT | `p.NAMES:primary::STRING` | Primary display name |
-| `CATEGORIES` | VARIANT | `p.CATEGORIES:primary::STRING` | Primary category; `:alternate` is a list |
+| `TAXONOMY` | VARIANT | `p.TAXONOMY:primary::STRING` | Fine-grained primary category; `:hierarchy` and `:alternates` are arrays (replaces the removed `CATEGORIES` column) |
 | `BASIC_CATEGORY` | VARCHAR | `p.BASIC_CATEGORY` | Flattened single category (preferred for filtering) |
 | `GEOMETRY` | GEOGRAPHY | `ST_X(p.GEOMETRY)`, `ST_Y(p.GEOMETRY)` | Point; longitude = ST_X, latitude = ST_Y |
 | `ADDRESSES` | VARIANT | `p.ADDRESSES[0]:locality::STRING` (city), `:region` (state), `:postcode`, `:freeform` (street) | First address element |
@@ -48,7 +48,7 @@ Common `BASIC_CATEGORY` values: `coffee_shop`, `restaurant`, `fast_food_restaura
 `grocery_store`, `supermarket`, `convenience_store`, `gas_station`, `pharmacy`,
 `hospital`, `clothing_store`, `electronics_store`, `gym`, `bakery`, `bar`,
 `hotel`, `bank`, `school`. Category matching uses equality on `BASIC_CATEGORY`
-and `CATEGORIES:primary` plus a `LIKE '%cat%'` fallback, so partial names work.
+and `TAXONOMY:primary` plus a `LIKE '%cat%'` fallback, so partial names work.
 
 ## Cost-safe query discipline
 

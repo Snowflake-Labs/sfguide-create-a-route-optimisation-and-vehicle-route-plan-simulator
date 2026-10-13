@@ -18,6 +18,7 @@ import {
   waitCopyForTier,
   suspendedMessage,
   notProvisionedMessage,
+  gatewayWakingMessage,
 } from './routing-suspend';
 
 // Actual SPCS state of a region's ORS service.
@@ -145,6 +146,16 @@ export async function resumeAndBuildPayload(
     logger.info('routing-resume-skipped-service-running', { region, detectedState });
   }
 
+  // The region's engine is up and the failure was the shared gateway (it
+  // auto-suspends after an idle hour and the failed call is what wakes it).
+  // suspendedMessage('not_ready') would blame the engine's road graph and quote
+  // a multi-minute wait for a ~30 s gateway start. When the engine is ALSO
+  // suspended, the resume above and its copy are the real remedy, so this only
+  // applies while ORS is running.
+  const message = state === 'not_ready' && kind === 'GATEWAY'
+    ? gatewayWakingMessage(region)
+    : suspendedMessage(region, waitMinutes, state);
+
   return {
     reason: SUSPEND_REASON,
     region,
@@ -152,6 +163,6 @@ export async function resumeAndBuildPayload(
     waitMinutes,
     service,
     state,
-    message: suspendedMessage(region, waitMinutes, state),
+    message,
   };
 }

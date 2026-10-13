@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
@@ -106,7 +107,7 @@ ALLOWLIST_FILES = (os.path.join("install-fleet-apps", "scripts", "seed_data.sql"
 
 SKIP_DIRS = {
     ".git", "node_modules", ".next", "__pycache__", ".venv", "venv",
-    "dist", "build", ".pytest_cache", ".mypy_cache",
+    ".pytest_cache", ".mypy_cache",
     # Assistant transcripts and run logs, not shipped source.
     "plans", "logs",
     # DATA, not repo text. Seed payloads exported from Overture legitimately carry
@@ -114,6 +115,10 @@ SKIP_DIRS = {
     # future CSV or JSON export cannot fail this check on data that is allowed.
     "datasets",
 }
+# NOT skipped by name: `build` and `dist`. Build OUTPUT is gitignored, and files
+# come from git (below), so it never reaches the scan anyway - while a name skip
+# also hid real source: fleet_admin_app/ui/src/app/api/matrix/build/route.ts was
+# never scanned (caught by check_no_brands_negative.py).
 
 # This file holds the term list, so it cannot scan itself. Lockfiles match only
 # through unrelated dependency hashes.
@@ -141,36 +146,52 @@ def allowed(rel: str) -> bool:
     return rel.endswith(ALLOWLIST_FILES)
 
 
+def repo_files() -> list[str]:
+    """Committed + new-but-unignored files (what a commit can carry), repo-relative.
+
+    Falls back to a disk walk outside a git checkout. Either way SKIP_DIRS prunes.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", REPO, "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard"], capture_output=True, text=True, check=True).stdout
+        rels = [r for r in out.split("\0") if r]
+    except (OSError, subprocess.CalledProcessError):
+        rels = []
+        for root, dirs, files in os.walk(REPO):
+            # Prune in place so we never descend into node_modules at all.
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            rels += [os.path.relpath(os.path.join(root, n), REPO) for n in files]
+    return sorted(r for r in set(rels)
+                  if not SKIP_DIRS & set(r.split("/")[:-1])
+                  and os.path.isfile(os.path.join(REPO, r)))
+
+
 def main() -> int:
     findings: list[tuple[str, int, str, str]] = []
     scanned = 0
 
-    for root, dirs, files in os.walk(REPO):
-        # Prune in place so we never descend into node_modules at all - the
-        # difference between a 1s check and a 20s one.
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for name in files:
-            if name in SKIP_FILES:
-                continue
-            if os.path.splitext(name)[1].lower() in SKIP_EXT:
-                continue
-            path = os.path.join(root, name)
-            rel = os.path.relpath(path, REPO)
-            if allowed(rel):
-                continue
-            try:
-                with open(path, "r", encoding="utf-8", errors="strict") as fh:
-                    lines = fh.readlines()
-            except (UnicodeDecodeError, OSError):
-                continue  # binary or unreadable: nothing meaningful to match
-            scanned += 1
-            for lineno, line in enumerate(lines, 1):
-                for term, pat in PATTERNS:
-                    if pat.search(line):
-                        findings.append((rel, lineno, term, line.strip()[:120]))
-                for label, pat in CONTEXT_PATTERNS:
-                    if pat.search(line):
-                        findings.append((rel, lineno, label, line.strip()[:120]))
+    for rel in repo_files():
+        name = os.path.basename(rel)
+        if name in SKIP_FILES:
+            continue
+        if os.path.splitext(name)[1].lower() in SKIP_EXT:
+            continue
+        if allowed(rel):
+            continue
+        try:
+            with open(os.path.join(REPO, rel), "r", encoding="utf-8", errors="strict") as fh:
+                lines = fh.readlines()
+        except (UnicodeDecodeError, OSError):
+            continue  # binary or unreadable: nothing meaningful to match
+        scanned += 1
+        for lineno, line in enumerate(lines, 1):
+            for term, pat in PATTERNS:
+                if pat.search(line):
+                    findings.append((rel, lineno, term, line.strip()[:120]))
+            for label, pat in CONTEXT_PATTERNS:
+                if pat.search(line):
+                    findings.append((rel, lineno, label, line.strip()[:120]))
 
     if findings:
         print(f"check_no_brands: FAILED - {len(findings)} brand reference(s) found\n")

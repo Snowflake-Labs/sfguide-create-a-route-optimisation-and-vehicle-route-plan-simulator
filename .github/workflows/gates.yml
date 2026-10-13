@@ -1,0 +1,79 @@
+# Static quality gates - the enforcement point for every gate in
+# .cortex/skills/install-fleet-apps/scripts/gates.yaml with scope `static`.
+#
+# Why CI and not the pre-commit hook: the hook is opt-in (core.hooksPath), so
+# for a long time the gates ran only on machines that had enabled it, and only
+# for the paths staged - a brand string sat red for three weeks unseen. Here
+# every check AND every negative test runs on every pull request, from a fresh
+# clone, which is also what proves no gate passes only because of local state
+# (gitignored source, a stale node_modules, an unbuilt dist/).
+#
+# Runs with NO secrets and read-only permissions: static gates never touch a
+# Snowflake account. Live gates (scope `live`) need an installed account and
+# run from scripts/e2e/fresh_install_e2e.sh on a machine the operator chooses.
+#
+# To make it binding, require the "gates" check in branch protection for dev
+# and main (Settings > Branches > Require status checks to pass).
+name: gates
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: check_gate_registry R5 compares the negative-test debt
+          # against the base revision and must be able to read it.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Python dependencies
+        run: python3 -m pip install --disable-pip-version-check pyyaml
+
+      # The runner provisions pip: needs into ~/.cache/fleet-gates; npm-ci /
+      # npm-build needs are installed in place, as on a fresh clone.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/fleet-gates
+          key: fleet-gates-venv-${{ hashFiles('.cortex/skills/install-fleet-apps/scripts/gates.yaml') }}
+
+      - name: Static gates (checks + negative tests)
+        env:
+          # The ratchet base: the PR's target branch, or the previous tip on push.
+          GATES_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python3 .cortex/skills/install-fleet-apps/scripts/run_gates.py --json gates-report.json
+
+      - name: Tree unchanged by the gates
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "A gate modified tracked files:"; git status --short; git diff --stat
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gates-report
+          path: gates-report.json

@@ -22,6 +22,8 @@
 # Env overrides:
 #   CONTAINER_CMD=podman|docker   Force the container runtime (else auto-detect)
 #   SKIP_IMAGES=1                 Skip the 4-image build/push (images already pushed)
+#   FLEET_DOCKER_BUILD_FLAGS=...  Extra image-build flags, e.g. "--no-cache --pull" for
+#                                 a fresh-machine reinstall (no cached layer or base image)
 #   SKIP_MODULES=1                Skip the SQL module load (engine SQL already applied)
 #   REGION=SanFrancisco           Informational; the default region is bootstrapped
 #                                 by the tail of 03_region_management.sql.
@@ -177,7 +179,8 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
 
   build_push() { # <context-subdir> <image-name> <tag>
     note "  -> $2:$3"
-    "$CONTAINER_CMD" build --rm --platform linux/amd64 \
+    # shellcheck disable=SC2086  # FLEET_DOCKER_BUILD_FLAGS is a word list by design
+    "$CONTAINER_CMD" build --rm --platform linux/amd64 ${FLEET_DOCKER_BUILD_FLAGS:-} \
       -t "$REPO_URL/$2:$3" "$ORS_APP_DIR/services/$1" >/tmp/ifa_img_$2.log 2>&1 \
       || { echo "ERROR: build $2 failed"; tail -40 /tmp/ifa_img_$2.log; exit 1; }
     push_image "$REPO_URL/$2:$3" >/tmp/ifa_push_$2.log 2>&1 \

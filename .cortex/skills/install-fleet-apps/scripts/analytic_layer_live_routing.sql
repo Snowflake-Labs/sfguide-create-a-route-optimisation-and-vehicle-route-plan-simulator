@@ -45,13 +45,15 @@ $$
   WITH iso AS (
     SELECT (f.value:properties:value::INT)/60 AS band_min,
            TO_GEOGRAPHY(f.value:geometry) AS g
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Row source, not scalar LON/LAT subqueries: a NULL store (page open)
+    -- made ORS reject the call (3003 -> 500); an empty row source calls nothing.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES
+           WHERE REGION = P_REGION AND STORE_ID = P_STORE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORES WHERE REGION=P_REGION AND STORE_ID=P_STORE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       (SELECT ARRAY_AGG(BAND_MIN*60) FROM FLEET_INTELLIGENCE.LOCATION.BANDS),
       'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
@@ -119,14 +121,14 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-location-diagnostics","versio
 AS
 $$
   SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-  FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+  -- Row source, not scalar LON/LAT subqueries: a NULL candidate made ORS
+  -- reject the call (3003 -> 500); an empty row source calls nothing.
+  FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+         WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+  TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
     COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-      (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-      (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
-        WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
     ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
     -- ORS_FEATURES = suspended-engine guard: raises rather than yielding 0 rows.
     LATERAL FLATTEN(input => FLEET_APP.CORE.ORS_FEATURES(resp.RESPONSE)) f
@@ -293,12 +295,21 @@ $$
   -- So read OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (the table the admin app's
   -- routing-limits panel already owns) and fall back to the SAFE value when the
   -- region has no recorded limit, since guessing high fails closed.
+  -- The safe value is PROFILE-dependent. Pairs are not the only cost: a cycling
+  -- matrix over long cross-bay routes is slow, and SanFrancisco (cycling-electric)
+  -- at band 30 sent ~150 x 16 pairs that ran past the gateway's 55 s matrix timeout
+  -- on every attempt, while the same pair count over short urban legs took 10 s.
+  -- 1000 pairs coarsens those bands one resolution and they complete.
+  -- 500, not 1000: the page runs this allocation from two panels at once
+  -- (verdict and cannibalisation). SanFrancisco band 20 at 952 pairs took 10 s
+  -- raw, ~70 s inside the function, and the concurrent pair tripped the gateway
+  -- timeout; at 238 pairs (one resolution coarser) the raw matrix takes 2 s.
   cap AS (
     SELECT COALESCE(
              (SELECT TRY_TO_NUMBER(TO_VARCHAR(LIMITS:matrix_maximum_routes))
                 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS
                WHERE UPPER(REGION) = UPPER(P_REGION) LIMIT 1),
-             2400) AS maxpairs
+             (SELECT IFF(mph < 130000.0, 500, 2400) FROM spd)) AS maxpairs
   ),
   chosen AS (
     -- Finest resolution satisfying BOTH caps: the region's engine pair ceiling and
@@ -351,6 +362,20 @@ $$
            ROW_NUMBER() OVER (ORDER BY ANCHOR_H3) - 1 AS ai
     FROM anchor_pts
   ),
+  -- Both arrays are built in ONE single-row CTE before the engine call. With the
+  -- ARRAY_AGG subqueries inline in the MATRIX_TABULAR arguments, Snowflake
+  -- decorrelated the destination subquery into a join over `stores` and issued
+  -- the external function once PER STORE: measured 14 identical ORS matrices for
+  -- one SanFrancisco allocation (~20 s instead of ~1.5 s).
+  arrs AS (
+    SELECT (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTROID), ST_Y(CENTROID)))
+                     WITHIN GROUP (ORDER BY ai) FROM anchors_i) AS src,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(f.LON, f.LAT)) WITHIN GROUP (ORDER BY s.si)
+              FROM stores s JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS f
+                ON f.REGION = P_REGION AND f.STORE_ID = s.STORE_ID) AS dst,
+           COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+                      WHERE REGION = P_REGION LIMIT 1), 'driving-car') AS prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `durations IS NOT NULL` filter below quietly return no rows,
@@ -360,19 +385,20 @@ $$
     -- so a re-stated filter that drifted would silently attach every drive time to
     -- the wrong store with nothing to error on.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
-                 WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTROID), ST_Y(CENTROID)))
-                WITHIN GROUP (ORDER BY ai) FROM anchors_i),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY s.si)
-         FROM stores s JOIN FLEET_INTELLIGENCE.LOCATION.STORE_FACTS f
-           ON f.REGION = P_REGION AND f.STORE_ID = s.STORE_ID),
-      P_REGION)) AS m
+      prof, src, dst, P_REGION)) AS m
+    FROM arrs
   ),
   pairs AS (
+    -- Unnested with FLATTEN, not indexed as mtx.m:durations[ai][si] from a cross
+    -- join: that form let the optimizer inline the engine call into the join and
+    -- run it once per store (14 matrices, ~20 s). FLATTEN pins it to one call.
     SELECT a.ANCHOR_H3, a.res, a.HH, s.STORE_ID, s.STORE_ROLE, s.ATTR,
-           (mtx.m:durations[a.ai][s.si]::FLOAT) / 60.0 AS drive_min
-    FROM mtx, anchors_i a CROSS JOIN stores s
+           (d.value::FLOAT) / 60.0 AS drive_min
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:durations) r,
+         LATERAL FLATTEN(input => r.value) d,
+         anchors_i a, stores s
+    WHERE a.ai = r.index AND s.si = d.index
   ),
   valid AS (
     -- Unreachable pairs are dropped HERE, before any normalisation. Dropping them
@@ -646,13 +672,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
@@ -742,13 +771,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
@@ -796,13 +828,16 @@ AS
 $$
   WITH cand AS (
     SELECT TO_GEOGRAPHY(f.value:geometry) AS poly
-    FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+    -- Driven from a row source, not scalar LON/LAT subqueries: with no store
+    -- selected (page open) the scalars were NULL and ORS rejected the call
+    -- (3003), surfacing as a 500. An empty row source makes no call at all.
+    FROM (SELECT LON, LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS
+           WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID) c,
+    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
       -- Region-resolved, never hardcoded: see FLEET_APP.CORE.VW_REGION_PROFILE.
       COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
                  WHERE REGION = P_REGION LIMIT 1), 'driving-car'),
-      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(
-        (SELECT LON FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID),
-        (SELECT LAT FROM FLEET_INTELLIGENCE.LOCATION.STORE_FACTS WHERE REGION = P_REGION AND STORE_ID = P_CANDIDATE_ID))),
+      ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(c.LON, c.LAT)),
       ARRAY_CONSTRUCT(P_BAND * 60), 'time', P_REGION)) resp,
       -- ORS_FEATURES = the suspended-engine guard: raises instead of yielding
       -- zero rows when the region's ORS service is down (see FLEET_APP.CORE).
@@ -1267,17 +1302,31 @@ $$
     SELECT COALESCE(NULLIF(P_PROFILE, ''),
                     (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
   ),
+  -- Arrays built once in a single-row CTE, then unnested with FLATTEN below. With
+  -- the ARRAY_AGG subqueries inline and mtx.m:distances[pi][ci] indexed from a
+  -- cross join, the optimizer inlined the engine call per plant: measured 6
+  -- identical ORS matrices per SanFrancisco call (see LIVE_HUFF_ALLOCATION).
+  arrs AS (
+    SELECT prof.PR AS pr,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION) AS src,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION) AS dst
+    FROM prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE): raises instead of
     -- letting the `distances IS NOT NULL` filter below silently return no lanes.
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      prof.PR,
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY CUSTOMER_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMERS WHERE REGION = P_REGION),
-      P_REGION)) AS m
-    FROM prof
+      pr, src, dst, P_REGION)) AS m
+    FROM arrs
+  ),
+  cell AS (
+    SELECT r.index AS pi, dd.index AS ci, dd.value AS dist_m,
+           mtx.m:durations[r.index][dd.index] AS dur_s
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:distances) r,
+         LATERAL FLATTEN(input => r.value) dd
   ),
   p AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS pi
@@ -1292,16 +1341,18 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.CUSTOMER_DEMAND WHERE REGION = P_REGION
   )
   SELECT p.PLANT_ID, p.PLANT_NAME, c.CUSTOMER_ID, c.CUSTOMER_NAME,
-         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
-         ROUND((mtx.m:durations[p.pi][c.ci]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         ROUND((x.dist_m::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((x.dur_s::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          COALESCE(d.TONS_PER_LOAD, 22) AS tons,
-         ROUND((mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_KM
-               + COALESCE(d.TONS_PER_LOAD, 22) * (mtx.m:distances[p.pi][c.ci]::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
+         ROUND((x.dist_m::FLOAT) / 1000.0 * P_RATE_PER_KM
+               + COALESCE(d.TONS_PER_LOAD, 22) * (x.dist_m::FLOAT) / 1000.0 * P_RATE_PER_TON_KM
               )::NUMBER(18,2) AS freight_cost,
          p.GEOG AS plant_geog, c.GEOG AS customer_geog
-  FROM mtx, p CROSS JOIN c
+  FROM cell x
+  JOIN p ON p.pi = x.pi
+  JOIN c ON c.ci = x.ci
   LEFT JOIN d ON d.CUSTOMER_ID = c.CUSTOMER_ID
-  WHERE mtx.m:distances[p.pi][c.ci] IS NOT NULL
+  WHERE x.dist_m IS NOT NULL
 $$;
 
 -- Live location swap: for each customer, restrict lanes to product-capable
@@ -1384,16 +1435,26 @@ $$
     SELECT COALESCE(NULLIF(P_PROFILE, ''),
                     (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
   ),
+  -- Single-row array CTE + FLATTEN for the same reason as LIVE_SOURCING_LANES:
+  -- the inline form called the engine once per origin plant (6x measured).
+  arrs AS (
+    SELECT prof.PR AS pr,
+           (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
+              FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION) AS pts
+    FROM prof
+  ),
   mtx AS (
     -- ORS_MATRIX = suspended-engine guard (see FLEET_APP.CORE).
     SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
-      prof.PR,
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON, LAT)) WITHIN GROUP (ORDER BY PLANT_ID)
-         FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION),
-      P_REGION)) AS m
-    FROM prof
+      pr, pts, pts, P_REGION)) AS m
+    FROM arrs
+  ),
+  cell AS (
+    SELECT r.index AS ai, dd.index AS bi, dd.value AS dist_m,
+           mtx.m:durations[r.index][dd.index] AS dur_s
+    FROM mtx,
+         LATERAL FLATTEN(input => mtx.m:distances) r,
+         LATERAL FLATTEN(input => r.value) dd
   ),
   a AS (
     SELECT PLANT_ID, PLANT_NAME, GEOG, ROW_NUMBER() OVER (ORDER BY PLANT_ID) - 1 AS ai
@@ -1404,11 +1465,13 @@ $$
     FROM FLEET_INTELLIGENCE.SOURCING.PLANTS WHERE REGION = P_REGION
   )
   SELECT a.PLANT_ID, a.PLANT_NAME, b.PLANT_ID, b.PLANT_NAME,
-         ROUND((mtx.m:distances[a.ai][b.bi]::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
-         ROUND((mtx.m:durations[a.ai][b.bi]::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
+         ROUND((x.dist_m::FLOAT) / 1000.0, 2)::NUMBER(14,2) AS distance_km,
+         ROUND((x.dur_s::FLOAT) / 60.0, 1)::NUMBER(14,1) AS duration_min,
          a.GEOG, b.GEOG
-  FROM mtx, a CROSS JOIN b
-  WHERE mtx.m:distances[a.ai][b.bi] IS NOT NULL
+  FROM cell x
+  JOIN a ON a.ai = x.ai
+  JOIN b ON b.bi = x.bi
+  WHERE x.dist_m IS NOT NULL
 $$;
 
 -- Live product-mix tradeoff per customer order (basket of product lines):
@@ -1655,19 +1718,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  swap AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH swap AS (
     SELECT CUSTOMER_ID, SAVINGS_PER_LOAD, BEST_PLANT_GEOG, CUSTOMER_GEOG
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
     WHERE BEST_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
       AND ( (P_ONLY_CUSTOMER IS NULL AND SAVINGS_PER_LOAD > 0)
             OR (P_ONLY_CUSTOMER IS NOT NULL AND CUSTOMER_ID = P_ONLY_CUSTOMER) )
@@ -1676,12 +1735,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM swap s, reg, prof,
+  FROM swap s,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(ST_X(s.BEST_PLANT_GEOG), ST_Y(s.BEST_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(s.CUSTOMER_GEOG), ST_Y(s.CUSTOMER_GEOG)),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 -- Product-mix flow legs as road paths for the selected customer's order. Wraps
@@ -1696,19 +1755,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  flows AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH flows AS (
     SELECT LEG_KIND, PRODUCT, TONS, FROM_LON, FROM_LAT, TO_LON, TO_LAT
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_MIX_FLOWS(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM,
                  P_HANDLING_PER_TON, P_CUSTOMER_ID))
     WHERE FROM_LON IS NOT NULL AND FROM_LAT IS NOT NULL
       AND TO_LON IS NOT NULL AND TO_LAT IS NOT NULL
@@ -1718,12 +1773,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM flows f, reg, prof,
+  FROM flows f,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(f.FROM_LON, f.FROM_LAT),
                ARRAY_CONSTRUCT(f.TO_LON, f.TO_LAT),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 -- Current-source lanes as road paths for EVERY customer (not just savings lanes).
@@ -1739,19 +1794,15 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-sourcing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  WITH reg AS (
-    SELECT COALESCE(P_REGION, (SELECT MAX(REGION) FROM FLEET_INTELLIGENCE.SOURCING.PLANTS)) AS r
-  ),
-  prof AS (
-    -- Profile guard - see LIVE_SOURCING_LANES. NULL/'' -> the sourcing region's
-    -- active profile, so the DIRECTIONS leg below never reaches ORS as 'unknown'.
-    SELECT COALESCE(NULLIF(P_PROFILE, ''),
-                    (SELECT ORS_PROFILE FROM FLEET_APP.SOURCING.VW_ACTIVE_PROFILE)) AS PR
-  ),
-  cur AS (
+  -- Region and profile come straight from the caller. The old in-body fallbacks
+  -- (a scalar-subquery region CTE and a VW_ACTIVE_PROFILE profile) made every
+  -- call fail with "Unsupported subquery type" once a lateral DIRECTIONS join
+  -- followed, even for a literal region, and VW_ACTIVE_PROFILE is unscoped so
+  -- it could only ever supply another region's profile.
+  WITH cur AS (
     SELECT CUSTOMER_ID, CURRENT_PLANT_GEOG, CUSTOMER_GEOG
-    FROM reg, TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
-                 reg.r, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
+    FROM TABLE(FLEET_APP.SOURCING.LIVE_LOCATION_SWAP(
+                 P_REGION, P_PROFILE, P_RATE_PER_KM, P_RATE_PER_TON_KM, P_PRODUCT_FILTER))
     WHERE CURRENT_PLANT_GEOG IS NOT NULL AND CUSTOMER_GEOG IS NOT NULL
       AND NOT (ST_X(CURRENT_PLANT_GEOG) = ST_X(CUSTOMER_GEOG)
                AND ST_Y(CURRENT_PLANT_GEOG) = ST_Y(CUSTOMER_GEOG))
@@ -1760,12 +1811,12 @@ $$
          ROUND(d.DISTANCE / 1000.0, 2)::NUMBER(14,2) AS road_km,
          ROUND(d.DURATION / 60.0, 1)::NUMBER(14,1) AS road_min,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS route_geojson
-  FROM cur c, reg, prof,
+  FROM cur c,
        TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-               prof.PR,
+               P_PROFILE,
                ARRAY_CONSTRUCT(ST_X(c.CURRENT_PLANT_GEOG), ST_Y(c.CURRENT_PLANT_GEOG)),
                ARRAY_CONSTRUCT(ST_X(c.CUSTOMER_GEOG), ST_Y(c.CUSTOMER_GEOG)),
-               reg.r)) d
+               P_REGION)) d
 $$;
 
 GRANT USAGE ON FUNCTION FLEET_APP.SOURCING.LIVE_SOURCING_LANES(VARCHAR, VARCHAR, FLOAT, FLOAT) TO ROLE FLEET_APP_USER;
@@ -1944,6 +1995,11 @@ $$
   ),
   -- Last known position per vehicle at or before the as-of instant, dropping
   -- vehicles whose position is too old to be actionable.
+  --
+  -- Trip pings OUTRANK the trip-less IDLE home heartbeat, for the same reason and
+  -- with the same worked example as LIVE_FLEET_STATUS.last_pos below. This table
+  -- quotes a NUMBER of minutes out, so picking the depot row does not just mis-draw
+  -- a dot, it publishes a confident ETA measured from the wrong place.
   last_pos AS (
     SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
     FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
@@ -1951,7 +2007,9 @@ $$
       AND TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
       AND TS >= DATEADD('minute', -1 * COALESCE(P_MAX_STALENESS_MIN, 15),
                         COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY VEHICLE_ID
+              ORDER BY IFF(TRIP_ID IS NULL AND STATUS = 'IDLE', 1, 0), TS DESC) = 1
   ),
   ordered AS (
     SELECT VEHICLE_ID, TS, POINT_GEOM, LONGITUDE, LATITUDE,
@@ -2013,6 +2071,34 @@ $$
     SELECT MONITORED_SITE_TYPES
     FROM FLEET_INTELLIGENCE.DELIVERY_SYNC.PARAMS LIMIT 1
   ),
+  -- The position the map PLOTS, and therefore the position every status in this
+  -- function must agree with.
+  --
+  -- THE ORDERING IS NOT JUST "LATEST". A vehicle can emit a trip-less IDLE
+  -- heartbeat pinned at its HOME POI while a trip is still running - the generator
+  -- emits it with no knowledge of trip activity (studio/engine.ts:552) - so a
+  -- plain MAX(TS) can return the depot while the vehicle is standing on a
+  -- customer site. Worked example UsTexas 2026-09-03, V-DRI-00096 (home POI
+  -- 31.027434,-95.933739):
+  --
+  --   00:58:11  52355052...  27.8863,-98.5932  DWELL_DESTINATION  (on site)
+  --   00:58:15  NULL         31.0274,-95.9337  IDLE               (434 km away)
+  --
+  -- At the 01:00 replay instant the plain rule picked the 00:58:15 row, so the dot
+  -- was drawn 520 km from the site: the geofence test could not match, the
+  -- drive-time BACK to the site came out at 432.7 min against a 15-minute gate,
+  -- and the vehicle rendered flat blue DRIVING with MINUTES_OUT 432.7 / 518.26 km
+  -- to a site it was parked at. Fleet-wide at that instant: 16 DRIVING, 73 IDLE,
+  -- ZERO ON_SITE and ZERO JUST_LEFT - the two states this page exists to show were
+  -- unreachable. 20 to 27 of the ~89-108 live vehicles per hour on that day
+  -- carried such a position.
+  --
+  -- So trip pings OUTRANK the heartbeat, and only then does recency apply. The
+  -- heartbeat is deliberately kept as a FALLBACK rather than filtered out (which
+  -- is what DT_SITE_VISITS does, because there it can only ever be noise): a
+  -- vehicle genuinely parked at base all day has NOTHING ELSE, and dropping it
+  -- would erase it from the vehicles layer instead of drawing it correctly as
+  -- IDLE at its depot.
   last_pos AS (
     SELECT VEHICLE_ID, TS, LATITUDE, LONGITUDE, POINT_GEOM
     FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
@@ -2020,7 +2106,9 @@ $$
       AND TS <= COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ)
       AND TS >= DATEADD('minute', -1 * COALESCE(P_MAX_STALENESS_MIN, 20),
                         COALESCE(P_AS_OF, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ))
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1
+    QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY VEHICLE_ID
+              ORDER BY IFF(TRIP_ID IS NULL AND STATUS = 'IDLE', 1, 0), TS DESC) = 1
   ),
   -- The monitored-site set with the geofence radius resolved per (vehicle type,
   -- site type). Deliberately mirrors the `sites` CTE of DT_SITE_VISITS verbatim
@@ -2397,3 +2485,280 @@ $$
   SELECT * FROM TABLE(FLEET_INTELLIGENCE.DELIVERY_SYNC.LIVE_FLEET_STATUS(
     P_REGION, P_PROFILE, P_AS_OF, P_APPROACH_MIN, P_JUST_LEFT_MIN, P_MAX_STALENESS_MIN))
 $$;
+
+-- =====================================================================
+-- PLAN_STANDARDS - live optimizer comparison for ONE selected route
+-- =====================================================================
+-- Prices what a non-standard plan costs, by re-solving the SAME stop set on the
+-- SAME road graph the planner was supposed to be working against. This is the
+-- number the league table cannot produce: VW_PLANNER_SCORECARD benchmarks a
+-- planner against their best PEER, which is a relative statement. This is an
+-- absolute one.
+--
+-- WHY THIS LIVES HERE AND NOT IN plan_standards_layer.sql
+-- The body calls OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR and .OPTIMIZATION. A
+-- LANGUAGE SQL body is resolved at CREATE time, so on a --no-engine install this
+-- statement is a hard error, and `snow sql -f` stop-on-first-error would then
+-- abandon every statement after it. Keeping it out of the engine-free layer is
+-- what lets PLAN_STANDARDS install and score correctly with no routing engine at
+-- all; only this one comparison is lost. Enforced by check_engine_guards.py.
+--
+-- ONE ROUTE AT A TIME, ON PURPOSE. SanFrancisco alone holds 589 routes averaging
+-- 28 stops. Re-solving all of them would be ~589 engine calls per page load, and
+-- Tenet 9 forbids caching the result to avoid that. So this is a click-to-resolve
+-- on the selected route: one matrix call plus one solve.
+--
+-- INDEX 0 IS THE DEPOT. Everything below addresses the matrix BY POSITION, so the
+-- coordinate array and the index assignment are aggregated from the SAME CTE. A
+-- restated filter that drifted would attach every road distance to the wrong stop
+-- with nothing to error on.
+--
+-- THE DEPOT IS COALESCED TO THE FIRST STOP RATHER THAN LEFT NULL. A missing depot
+-- geometry would otherwise produce a coordinate array one element short, which
+-- does not fail: the stops shift down one position and every leg distance
+-- silently belongs to the wrong pair. Substituting a real place keeps the
+-- positions aligned, and it is reported in GAP_STATUS rather than hidden.
+--
+-- UNROUTABLE STOPS ARE REMOVED BEFORE THE SOLVE, NOT AFTER. ORS writes an
+-- unroutable cell as a JSON null, and a VARIANT JSON null is NOT SQL NULL, so
+-- `durations[0][i] IS NULL` is FALSE for exactly the case it is written for - the
+-- ::FLOAT cast is what makes it SQL NULL. An entirely off-graph point comes back
+-- as a JSON-null DESTINATION, which has no snapped_distance to test at all, so
+-- IS_NULL_VALUE is checked FIRST and independently. One such point aborts the
+-- whole VROOM solve with code 3, which is why this pre-filter exists.
+--
+-- THE PLANNER'S OWN COST IS RE-PRICED FROM THE MATRIX rather than read from
+-- VW_DIM_PLAN.PLANNED_DISTANCE_VALUE. The source figure may have come from a
+-- different engine or a straight line, and comparing it against a VROOM solve
+-- would report an engine difference as a planning failure.
+-- THE STOPS ARRIVE AS AN ARGUMENT RATHER THAN BEING RE-DERIVED HERE, and that is
+-- a hard constraint, not a style choice. FLEET_APP.CORE.VW_DIM_PLAN is a view over
+-- F_DIM_PLAN_SCOPED, which is itself a view over F_VW_DIM_TRIP_SCHEDULE_SCOPED - a
+-- chain of scoped TABLE FUNCTIONS. A SQL UDF body is validated against the
+-- creating role's privileges and OWNERSHIP of a table function does not satisfy
+-- that resolution: creating this function while reading VW_ROUTE_STOPS fails with
+-- `Insufficient privileges to operate on Table function F_DIM_PLAN_SCOPED` even as
+-- ACCOUNTADMIN, the owner. Taking coordinates in also makes the function a pure
+-- primitive - "price this stop sequence against the optimizer" - which is
+-- testable on literals and reusable by any caller with a stop list.
+--
+-- P_STOPS IS THE PLANNER'S OWN SEQUENCE and its ORDER is load-bearing: it is what
+-- the optimizer is being compared against. A caller that passes stops in an
+-- arbitrary order is measuring nothing.
+CREATE OR REPLACE FUNCTION FLEET_APP.PLAN_STANDARDS.F_ROUTE_RESOLVE_GAP(
+  P_REGION       VARCHAR,
+  P_VEHICLE_ID   VARCHAR,
+  P_PLAN_DATE    DATE,
+  P_DEPOT        ARRAY,
+  P_STOPS        ARRAY,
+  P_STOPS_TOTAL  NUMBER,
+  P_MAX_SNAP_M   FLOAT DEFAULT 2000)
+RETURNS TABLE (
+  REGION                VARCHAR,
+  VEHICLE_ID            VARCHAR,
+  PLAN_DATE             DATE,
+  ORS_PROFILE           VARCHAR,
+  STOPS_TOTAL           NUMBER,
+  STOPS_SOLVED          NUMBER,
+  STOPS_UNROUTABLE      NUMBER,
+  STOPS_UNASSIGNED      NUMBER,
+  PLANNED_ROAD_KM       NUMBER(12,2),
+  PLANNED_ROAD_HOURS    NUMBER(12,2),
+  OPTIMIZED_ROAD_KM     NUMBER(12,2),
+  OPTIMIZED_ROAD_HOURS  NUMBER(12,2),
+  EXCESS_KM             NUMBER(12,2),
+  EXCESS_HOURS          NUMBER(12,2),
+  EXCESS_HOURS_PCT      NUMBER(12,2),
+  EXCESS_COST_USD       NUMBER(12,2),
+  GAP_STATUS            VARCHAR)
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-plan-standards","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+WITH cfg AS (
+  SELECT
+    COALESCE((SELECT ORS_PROFILE FROM FLEET_APP.CORE.VW_REGION_PROFILE
+               WHERE REGION = P_REGION LIMIT 1), 'driving-car')      AS PROFILE,
+    -- STANDARDS is read directly rather than through VW_STANDARDS_CONFIG so this
+    -- body touches plain tables and views only. The '*' fallback is restated for
+    -- the same reason, and is the only duplicated logic in this function.
+    COALESCE((SELECT MAX(COST_PER_KM_USD) FROM FLEET_APP.PLAN_STANDARDS.STANDARDS
+               WHERE REGION = P_REGION),
+             (SELECT MAX(COST_PER_KM_USD) FROM FLEET_APP.PLAN_STANDARDS.STANDARDS
+               WHERE REGION = '*'), 1.10)                            AS COST_KM,
+    COALESCE((SELECT MAX(COST_PER_HOUR_USD) FROM FLEET_APP.PLAN_STANDARDS.STANDARDS
+               WHERE REGION = P_REGION),
+             (SELECT MAX(COST_PER_HOUR_USD) FROM FLEET_APP.PLAN_STANDARDS.STANDARDS
+               WHERE REGION = '*'), 48.00)                           AS COST_HR
+),
+-- Positions 1..N, in the order the caller supplied. FLATTEN's INDEX is 0-based,
+-- so +1 leaves position 0 free for the depot.
+--
+-- OUT-OF-REGION POINTS ARE DROPPED BEFORE THE MATRIX, and this is a SEPARATE
+-- defence from the off-graph pre-filter below. MEASURED: a single point outside
+-- the region extent makes MATRIX_TABULAR refuse the ENTIRE call with ORS 6010
+-- `Source point(s) [2] out of bounds`, which the ORS_MATRIX guard then surfaces as
+-- `Boolean value 'ORS {...}' is not recognized`. The snapped_distance / null-
+-- duration filter cannot help: there is no matrix to inspect. REGION_CATALOG is a
+-- plain base table, so reading its bounding box costs nothing and adds no
+-- privilege chain.
+--
+-- `pi` is assigned AFTER this filter, deliberately. Assigning it first and then
+-- dropping rows would leave gaps in the positional sequence while the coordinate
+-- array closed up, so every leg after the gap would address the wrong stop.
+stops_raw AS (
+  SELECT f.INDEX           AS ord,
+         f.VALUE[0]::FLOAT AS LNG,
+         f.VALUE[1]::FLOAT AS LAT
+  FROM LATERAL FLATTEN(input => P_STOPS) f
+),
+bounds AS (
+  SELECT MAX(MIN_LAT) AS MIN_LAT, MAX(MAX_LAT) AS MAX_LAT,
+         MAX(MIN_LON) AS MIN_LON, MAX(MAX_LON) AS MAX_LON
+  FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+  WHERE REGION_KEY = P_REGION
+),
+stops AS (
+  SELECT ROW_NUMBER() OVER (ORDER BY s.ord) AS pi, s.LNG, s.LAT
+  FROM stops_raw s
+  LEFT JOIN bounds b ON TRUE
+  WHERE s.LNG IS NOT NULL AND s.LAT IS NOT NULL
+    -- An unknown region yields NULL bounds, and an unknown region must not
+    -- silently drop every stop - so absent bounds means "do not filter".
+    AND (b.MIN_LAT IS NULL
+         OR (s.LAT BETWEEN b.MIN_LAT AND b.MAX_LAT
+         AND s.LNG BETWEEN b.MIN_LON AND b.MAX_LON))
+),
+-- The depot falls back to the first stop when the caller has none, OR when the
+-- depot itself sits outside the region extent. A NULL coordinate would otherwise
+-- produce an array one element SHORT, which does not fail: every stop shifts down
+-- one position and each leg distance silently belongs to the wrong pair. An
+-- out-of-extent depot is worse - it kills the whole matrix with ORS 6010, so the
+-- gap for an otherwise perfectly routable route would be unobtainable.
+depot AS (
+  SELECT COALESCE(dv.LNG, (SELECT LNG FROM stops WHERE pi = 1)) AS LNG,
+         COALESCE(dv.LAT, (SELECT LAT FROM stops WHERE pi = 1)) AS LAT,
+         (dv.LNG IS NULL)                                       AS DEPOT_ASSUMED
+  FROM (
+    SELECT IFF(b.MIN_LAT IS NULL
+                 OR (P_DEPOT[1]::FLOAT BETWEEN b.MIN_LAT AND b.MAX_LAT
+                 AND  P_DEPOT[0]::FLOAT BETWEEN b.MIN_LON AND b.MAX_LON),
+               P_DEPOT[0]::FLOAT, NULL) AS LNG,
+           IFF(b.MIN_LAT IS NULL
+                 OR (P_DEPOT[1]::FLOAT BETWEEN b.MIN_LAT AND b.MAX_LAT
+                 AND  P_DEPOT[0]::FLOAT BETWEEN b.MIN_LON AND b.MAX_LON),
+               P_DEPOT[1]::FLOAT, NULL) AS LAT
+    FROM bounds b
+  ) dv
+),
+counts AS (
+  SELECT COALESCE(P_STOPS_TOTAL, (SELECT COUNT(*) FROM stops)) AS N_TOTAL
+),
+pts AS (
+  SELECT 0 AS pi, LNG, LAT FROM depot
+  UNION ALL
+  SELECT pi, LNG, LAT FROM stops
+),
+mtx AS (
+  -- ORS_MATRIX = the suspended-engine guard: it RAISES rather than letting the
+  -- null-duration filter below quietly return no rows, which would make a
+  -- suspended service indistinguishable from a perfectly compliant route.
+  SELECT FLEET_APP.CORE.ORS_MATRIX(OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+    (SELECT PROFILE FROM cfg),
+    (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LNG, LAT)) WITHIN GROUP (ORDER BY pi) FROM pts),
+    (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LNG, LAT)) WITHIN GROUP (ORDER BY pi) FROM pts),
+    P_REGION)) AS m
+),
+routable AS (
+  SELECT s.pi, s.LNG, s.LAT
+  FROM stops s, mtx
+  WHERE NOT IS_NULL_VALUE(mtx.m:destinations[s.pi])
+    AND COALESCE(mtx.m:destinations[s.pi]:snapped_distance::FLOAT, 0) <= P_MAX_SNAP_M
+    AND mtx.m:durations[0][s.pi]::FLOAT IS NOT NULL
+),
+seq AS (
+  SELECT pi, ROW_NUMBER() OVER (ORDER BY pi) AS ord, COUNT(*) OVER () AS n
+  FROM routable
+),
+-- The window function lives HERE and the aggregate in `legs`. A LAG() nested
+-- inside SUM() is not legal SQL, which is how the first draft of this function
+-- failed to compile.
+chain AS (
+  SELECT ord, n, pi, COALESCE(LAG(pi) OVER (ORDER BY ord), 0) AS prev_pi
+  FROM seq
+),
+-- The closing leg home is one more row rather than a separate CTE, so the total
+-- is a single SUM over a complete edge list.
+chain_full AS (
+  SELECT prev_pi, pi FROM chain
+  UNION ALL
+  SELECT pi, 0 FROM chain WHERE ord = n
+),
+legs AS (
+  SELECT SUM(mtx.m:distances[c.prev_pi][c.pi]::FLOAT) AS TOT_M,
+         SUM(mtx.m:durations[c.prev_pi][c.pi]::FLOAT) AS TOT_S
+  FROM chain_full c, mtx
+),
+solved AS (
+  -- The optimizer re-sequences the SAME routable stop set from the SAME depot.
+  -- `matrices` is left empty so the engine builds its own against the region
+  -- graph, which is the point: the benchmark must be the real road network.
+  SELECT o.DURATION                        AS OPT_S,
+         o.RESPONSE:summary:distance::FLOAT AS OPT_M,
+         COALESCE(ARRAY_SIZE(o.RESPONSE:unassigned), 0) AS UNASSIGNED
+  FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
+    (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('id', pi,
+              'location', ARRAY_CONSTRUCT(LNG, LAT)))
+              WITHIN GROUP (ORDER BY pi) FROM routable),
+    (SELECT ARRAY_CONSTRUCT(OBJECT_CONSTRUCT(
+              'id', 1,
+              'profile', (SELECT PROFILE FROM cfg),
+              'start', ARRAY_CONSTRUCT(d.LNG, d.LAT),
+              'end',   ARRAY_CONSTRUCT(d.LNG, d.LAT))) FROM depot d),
+    ARRAY_CONSTRUCT(),
+    P_REGION)) o
+)
+SELECT
+  P_REGION, P_VEHICLE_ID, P_PLAN_DATE,
+  (SELECT PROFILE FROM cfg),
+  c.N_TOTAL,
+  COALESCE(sq.n, 0),
+  c.N_TOTAL - COALESCE(sq.n, 0),
+  COALESCE(sv.UNASSIGNED, 0),
+  -- Every numeric column is cast EXPLICITLY. A RETURNS TABLE declaration does not
+  -- coerce: a NUMBER(12,2) column fed a FLOAT body is rejected outright with
+  -- `090210 Declared return type ... is incompatible with actual return type`,
+  -- and ROUND() over a FLOAT still yields FLOAT.
+  ROUND(l.TOT_M / 1000.0, 2)::NUMBER(12,2),
+  ROUND(l.TOT_S / 3600.0, 2)::NUMBER(12,2),
+  ROUND(sv.OPT_M / 1000.0, 2)::NUMBER(12,2),
+  ROUND(sv.OPT_S / 3600.0, 2)::NUMBER(12,2),
+  ROUND((l.TOT_M - sv.OPT_M) / 1000.0, 2)::NUMBER(12,2),
+  ROUND((l.TOT_S - sv.OPT_S) / 3600.0, 2)::NUMBER(12,2),
+  -- Percentage against the OPTIMIZED baseline, so "20% worse than achievable"
+  -- means what it says. Against the planned figure the same absolute gap reads
+  -- smaller the worse the plan gets, which inverts the signal.
+  ROUND(100.0 * DIV0(l.TOT_S - sv.OPT_S, sv.OPT_S), 2)::NUMBER(12,2),
+  -- GREATEST(0, ...) on each term separately: the optimizer beating the plan on
+  -- distance while losing on time is a real outcome, and a negative term would
+  -- net it off into an understated saving.
+  ROUND(GREATEST(0, (l.TOT_M - sv.OPT_M) / 1000.0) * (SELECT COST_KM FROM cfg)
+      + GREATEST(0, (l.TOT_S - sv.OPT_S) / 3600.0) * (SELECT COST_HR FROM cfg),
+        2)::NUMBER(12,2),
+  CASE
+    WHEN COALESCE(sq.n, 0) = 0             THEN 'NO_ROUTABLE_STOPS'
+    WHEN sv.OPT_S IS NULL                  THEN 'OPTIMIZER_RETURNED_NO_ROUTE'
+    WHEN COALESCE(sv.UNASSIGNED, 0) > 0    THEN 'PARTIAL_SOME_STOPS_UNASSIGNED'
+    WHEN c.N_TOTAL > COALESCE(sq.n, 0) AND d.DEPOT_ASSUMED
+                                           THEN 'PARTIAL_DEPOT_ASSUMED_AND_STOPS_DROPPED'
+    WHEN d.DEPOT_ASSUMED                   THEN 'OK_DEPOT_ASSUMED_FIRST_STOP'
+    WHEN c.N_TOTAL > COALESCE(sq.n, 0)     THEN 'PARTIAL_UNROUTABLE_STOPS_DROPPED'
+    ELSE 'OK'
+  END
+FROM counts c
+CROSS JOIN depot d
+CROSS JOIN legs l
+LEFT JOIN (SELECT MAX(n) AS n FROM seq) sq ON TRUE
+LEFT JOIN solved sv ON TRUE
+$$;
+

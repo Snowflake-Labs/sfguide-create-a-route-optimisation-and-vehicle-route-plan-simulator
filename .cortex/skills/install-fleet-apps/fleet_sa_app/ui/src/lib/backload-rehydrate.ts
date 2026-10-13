@@ -46,6 +46,10 @@ export interface AgentProposal {
   empty_km?: number | null;
   loaded_km?: number | null;
   detour_km?: number | null;
+  /** Whole-tour km above the reposition baseline. Absent on solves cached before it existed. */
+  tour_detour_km?: number | null;
+  /** Empty km from the last delivery to the tour end. */
+  return_km?: number | null;
   margin_usd?: number | null;
   stops?: number | null;
   product?: string | null;
@@ -140,6 +144,7 @@ export interface RehydratedAssignment {
   LOADED_KM: number;
   SCORE: number;
   DETOUR_KM?: number;
+  RETURN_KM?: number;
   PRODUCT: string;
   PICKUP_CITY: string;
   PROPOSAL_DROPOFF_CITY: string;
@@ -246,7 +251,13 @@ export function proposalsToAssignments(
       // The page sorts and labels by SCORE. The procedure's composite grade is
       // the closest honest equivalent it has.
       SCORE: finite(p.composite) ? n(p.composite) : 0,
-      ...(finite(p.detour_km) ? { DETOUR_KM: n(p.detour_km) } : {}),
+      // tour_detour_km is the WHOLE tour; detour_km is the solver's per-pair
+      // ranking cost and on a multi-load tour describes one hop only. Fall back
+      // to it for solves cached before tour_detour_km existed.
+      ...(finite(p.tour_detour_km)
+        ? { DETOUR_KM: n(p.tour_detour_km) }
+        : finite(p.detour_km) ? { DETOUR_KM: n(p.detour_km) } : {}),
+      ...(finite(p.return_km) ? { RETURN_KM: n(p.return_km) } : {}),
       // The proposal now carries the load's product (TOOL_BACKLOAD_SOLVE
       // outRows). Blank when an older cached solve is collected, which the
       // page then backfills from its own load pool.

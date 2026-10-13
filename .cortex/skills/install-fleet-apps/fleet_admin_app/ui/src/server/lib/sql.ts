@@ -55,6 +55,49 @@ function statementBody(sql: string, extra: Record<string, unknown>): Record<stri
   };
 }
 
+// The SQL API answers 429 "Request rate exceeds max. Try later." (and 503 when
+// overloaded) to ANY request - submit, status poll, partition fetch - once the
+// caller's request rate is too high. Data Studio generation drives hundreds of
+// concurrent ORS-leg statements, so this is routine there. The body of such a
+// response is JSON with a `message` and no `data`, so a poll that parses it
+// without checking the status reads it as the STATEMENT's own error: that is
+// how a PLACES INSERT that completed server-side (917,568 rows written) was
+// reported as failed and aborted the LOOKUP insert behind it. A throttled
+// response says nothing about the statement; the only correct reaction is to
+// wait and ask again.
+function isThrottled(status: number): boolean {
+  return status === 429 || status === 503;
+}
+
+const SUBMIT_MAX_ATTEMPTS = 6;
+
+// POST /api/v2/statements with bounded, jittered backoff on 429/503. Safe to
+// retry: a throttled submit was rejected before a statement was created, so a
+// retry cannot run the SQL twice.
+async function submitWithRetry(body: Record<string, unknown>, headers: Record<string, string>): Promise<Response> {
+  let delay = 500;
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (!isThrottled(res.status) || attempt >= SUBMIT_MAX_ATTEMPTS) return res;
+    await res.text().catch(() => '');
+    log('WARN', 'SQL', `submit throttled (${res.status}), retry ${attempt}/${SUBMIT_MAX_ATTEMPTS - 1}`);
+    await new Promise((r) => setTimeout(r, delay + Math.floor(Math.random() * delay)));
+    delay = Math.min(delay * 2, 8000);
+  }
+}
+
+// GET with the same throttle handling, for partition fetches.
+async function getWithRetry(url: string, headers: Record<string, string>): Promise<Response> {
+  let delay = 500;
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(url, { headers });
+    if (!isThrottled(res.status) || attempt >= SUBMIT_MAX_ATTEMPTS) return res;
+    await res.text().catch(() => '');
+    await new Promise((r) => setTimeout(r, delay + Math.floor(Math.random() * delay)));
+    delay = Math.min(delay * 2, 8000);
+  }
+}
+
 // A multi-statement response carries no rows: `data` is just the string
 // "Multiple statements executed successfully." and the per-statement handles
 // live in `statementHandles`. Resolve to the LAST child (our real statement -
@@ -74,7 +117,7 @@ async function resolveMultiStatement(
   let delay = 200;
   for (;;) {
     const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${last}`, { headers });
-    if (r.status !== 202) {
+    if (r.status !== 202 && !isThrottled(r.status)) {
       const child: any = await r.json();
       if (child.code !== '333334') return child;
     }
@@ -122,7 +165,7 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
   };
   console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${wh}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
   const sqlStart = Date.now();
-  const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const res = await submitWithRetry(body, headers);
   const submitMs = Date.now() - sqlStart;
   if (!res.ok) {
     const errBody = (await res.text()).slice(0, 500);
@@ -169,6 +212,12 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
       await new Promise((r) => setTimeout(r, delay));
       polls += 1;
       const pr = await fetch(pollUrl, { headers });
+      if (isThrottled(pr.status)) {
+        // Not a statement outcome; keep the last real result and poll again.
+        await pr.text().catch(() => '');
+        delay = Math.min(Math.floor(delay * 1.5), 3000);
+        continue;
+      }
       result = await pr.json();
       if (result.data || (result.code && result.code !== '333334')) { completed = true; break; }
       delay = Math.min(Math.floor(delay * 1.5), 3000);
@@ -249,7 +298,7 @@ async function mapSqlApiResult(result: any, headers: Record<string, string>): Pr
     const handle = result.statementHandle;
     console.log(`[SQL API] Result has ${partitions.length} partitions (${result.resultSetMetaData?.numRows} rows). Fetching remaining...`);
     for (let p = 1; p < partitions.length; p++) {
-      const pr = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${handle}?partition=${p}`, { headers });
+      const pr = await getWithRetry(`https://${SNOWFLAKE_HOST}/api/v2/statements/${handle}?partition=${p}`, headers);
       const partResult: any = await pr.json();
       if (partResult.data) allData = allData.concat(partResult.data);
     }
@@ -328,7 +377,7 @@ export async function submitSqlAsync(sql: string, database?: string, schema?: st
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
   console.log(`[SQL API Async] Submitting: ${sql.slice(0, 200)}`);
-  const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const r = await submitWithRetry(body, headers);
   if (!r.ok) {
     const errBody = (await r.text()).slice(0, 500);
     throw new Error(`SQL API error ${r.status}: ${errBody}`);
@@ -356,7 +405,9 @@ export async function fetchResultByHandle(handle: string): Promise<{ status: 'ru
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
   const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${handle}`, { headers });
-  if (r.status === 202) return { status: 'running' };
+  // Throttled poll: the statement's state is unknown, so report it as still
+  // running and let the caller's next poll ask again.
+  if (r.status === 202 || isThrottled(r.status)) return { status: 'running' };
   const result: any = await r.json();
   if (result.code === '333334' || (result.statementStatusUrl && !result.data && !result.message)) {
     return { status: 'running' };

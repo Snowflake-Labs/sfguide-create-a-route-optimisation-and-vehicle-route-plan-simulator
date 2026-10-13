@@ -154,6 +154,8 @@ entities:
       - { name: LOCATION_NAME, type: VARCHAR }
       - { name: FACILITY_TYPE, type: VARCHAR }
       - { name: H3_CELL_R7, type: VARCHAR }
+      - { name: DWELL_LAT, type: FLOAT, description: "Session centroid latitude (ST_Y of AVG_POINT); SV_DWELL_ANALYTICS re-bins H3 at any resolution from DWELL_LAT/DWELL_LON" }
+      - { name: DWELL_LON, type: FLOAT, description: "Session centroid longitude (ST_X of AVG_POINT)" }
       - { name: VEHICLE_TYPE, type: VARCHAR }
       - { name: REGION, type: VARCHAR, description: "Region KEY (join/filter value, e.g. SanFrancisco)" }
       - { name: CITY, type: VARCHAR, description: "Human-readable location/region label (e.g. San Francisco)" }
@@ -206,6 +208,18 @@ entities:
         s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
         s.SESSION_START, s.SESSION_END, s.DWELL_SECONDS, s.DWELL_MINUTES,
         s.PING_COUNT, s.AVG_POINT, s.H3_CELL_R7,
+        -- The session centroid as a plain lat/lon pair, so the SEMANTIC layer can
+        -- re-bin at any H3 resolution: H3_CELL_R7 is the only pre-computed one, and
+        -- AVG_POINT is GEOGRAPHY, which a semantic view cannot expose.
+        -- SV_DWELL_ANALYTICS (fleet_sa_app/app/semantic_views.sql) READS BOTH - do
+        -- not drop them as unused. They were once added only to the generated
+        -- setup.sql, so every install's --regenerate silently removed them, then
+        -- they were deleted from setup.sql as "never consumed"; on a fresh account
+        -- the SV then failed with invalid identifier 'DWELL_LON' and, because
+        -- `snow sql -f` stops at the first error, took 8 of the 11 semantic views
+        -- below it down too. This file is the source; setup.sql is generated.
+        ST_Y(s.AVG_POINT) AS DWELL_LAT,
+        ST_X(s.AVG_POINT) AS DWELL_LON,
         COALESCE(
           d.NAME, rs.NAME, sn.NAME,
           'Unmapped ' || LOWER(REPLACE(REPLACE(s.STATUS, 'DWELL_', ''), '_', ' '))

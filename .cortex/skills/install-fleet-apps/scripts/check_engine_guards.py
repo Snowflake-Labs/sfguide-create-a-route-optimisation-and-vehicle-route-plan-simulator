@@ -105,7 +105,9 @@ def statements(body: str):
     lines = body.split("\n")
     i, n = 0, len(lines)
     starter = re.compile(
-        r"^(CREATE|DROP|GRANT|EXECUTE IMMEDIATE|ALTER|MERGE|INSERT|CALL|SELECT|USE)\b",
+        # Leading whitespace allowed: Snowflake accepts an indented statement,
+        # and a column-0-only match let an indented CREATE FUNCTION through.
+        r"^\s*(CREATE|DROP|GRANT|EXECUTE IMMEDIATE|ALTER|MERGE|INSERT|CALL|SELECT|USE)\b",
         re.I,
     )
     while i < n:
@@ -116,7 +118,7 @@ def statements(body: str):
                 if depth % 2 == 0 and lines[j].rstrip().endswith(";"):
                     break
                 j += 1
-            yield i + 1, "\n".join(lines[i : j + 1])
+            yield i + 1, "\n".join(lines[i : j + 1]).lstrip()
             i = j + 1
         else:
             i += 1

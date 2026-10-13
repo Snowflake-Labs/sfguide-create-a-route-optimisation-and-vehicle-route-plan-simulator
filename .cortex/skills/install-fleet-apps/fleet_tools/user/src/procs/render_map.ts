@@ -1,5 +1,5 @@
 import { defineProc, t } from '@snowflake/synapse';
-import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS, REQUIRED_LAYER_ENCODINGS } from '../codes.js';
+import { MapRenderCodes, MAP_LAYER_TYPES, MAX_MAP_LAYERS, ALLOWED_DYNAMIC_DBS, REQUIRED_LAYER_ENCODINGS, MAP_SQL_COMPILE_ERROR_RE, mapLayerCompileProbe } from '../codes.js';
 
 // Any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
 // `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))`. Same expression
@@ -247,24 +247,19 @@ export const render_map = defineProc({
       const data = layer.data as Record<string, unknown>;
       const query = data.query as string;
       // Params are bound by the client at render time; here they only need to
-      // TYPE-CHECK, so each :name becomes an untyped NULL. Longest name first so
-      // `:region` cannot partially consume `:region_key`.
+      // TYPE-CHECK - see mapLayerCompileProbe for why each bind becomes
+      // NULL::VARCHAR and why `::TYPE` casts must be left alone.
       const names = Object.keys(
         (typeof data.params === 'object' && data.params !== null && !Array.isArray(data.params)
           ? data.params
           : {}) as Record<string, unknown>,
-      ).sort((a, b) => b.length - a.length);
-      let probe = query;
-      for (const n of names) probe = probe.split(':' + n).join('NULL');
-      // Any remaining :name (a param the spec forgot to declare) would be an
-      // unbound bind at runtime; neutralize it so the compile error we report is
-      // about the agent's columns, not about our own probe.
-      probe = probe.replace(/:[A-Za-z_][A-Za-z0-9_]*/g, 'NULL');
+      );
+      const probe = mapLayerCompileProbe(query, names);
       try {
         await ctx.conn.exec('EXPLAIN USING TEXT ' + probe);
       } catch (e) {
         const msg = (e as Error).message || String(e);
-        if (/invalid identifier|syntax error|unexpected/i.test(msg)) {
+        if (MAP_SQL_COMPILE_ERROR_RE.test(msg)) {
           ctx.fail(
             MapRenderCodes.INVALID_MAP_SPEC_SQL,
             `layer ${i} data.query does not compile: ${msg} ` +

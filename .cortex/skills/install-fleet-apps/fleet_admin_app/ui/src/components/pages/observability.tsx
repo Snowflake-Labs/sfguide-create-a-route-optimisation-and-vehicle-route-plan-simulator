@@ -153,7 +153,7 @@ export function ObservabilityPage() {
               />
               <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} width={44} />
               <Tooltip
-                formatter={(v: number, name: string) => [`${Number(v).toFixed(2)} cr`, name === 'WAREHOUSE_CREDITS' ? 'Warehouse' : 'SPCS']}
+                formatter={(v, name) => [`${Number(v).toFixed(2)} cr`, name === 'WAREHOUSE_CREDITS' ? 'Warehouse' : 'SPCS']}
                 contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
               />
               <Legend

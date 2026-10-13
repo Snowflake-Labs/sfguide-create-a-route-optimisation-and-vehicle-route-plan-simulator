@@ -35,11 +35,23 @@ An over-broad pattern would silently drop real skills and print a healthy
 "18/18 pass" - strictly worse than the noise it replaced, because it fails green.
 So `min_authored_skills` is a hard floor: if discovery finds fewer than that, the
 exclusion is wrong and the run aborts rather than reporting success.
+
+TRACKED FILES ONLY
+------------------
+Discovery used to `rglob` the disk, so it also scored any SKILL.md that merely
+existed locally. `npm ci` in the SA app installs playwright-core, which ships two
+(`node_modules/playwright-core/lib/tools/{cli-client/skill,trace}/SKILL.md`):
+the developer machine counted 23, the floor was set to 23 there, and every fresh
+clone - 21 real skills, no node_modules - aborted. The gate passed only because
+of local state. A skill is authored when it is committed, so discovery reads
+`git ls-files`; outside a git checkout it falls back to the disk walk minus
+dependency/build trees, and says so.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,6 +65,22 @@ DEFAULT_EXCLUDE_PATHS = ["**/cowork_skills/**"]
 DEFAULT_MIN_AUTHORED = 1
 
 _announced = False
+
+# Only used outside a git checkout (e.g. a downloaded archive).
+NON_SOURCE_DIRS = {"node_modules", ".next", "dist", ".venv", "venv", "__pycache__"}
+
+
+def _tracked_skill_files(root: Path) -> list[Path] | None:
+    """Committed SKILL.md files under root, or None when root is not in git."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "*SKILL.md"],
+            capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    # A tracked file deleted locally is not a skill this run can score.
+    return sorted(p for p in (root / rel for rel in out.split("\0") if rel)
+                  if p.name == "SKILL.md" and p.is_file())
 
 
 def _config() -> dict:
@@ -81,7 +109,13 @@ def discover_skill_files(skills_root: str, announce: bool = True) -> list[Path]:
     floor = cfg.get("min_authored_skills") or DEFAULT_MIN_AUTHORED
 
     root = Path(skills_root)
-    every = sorted(p for p in root.rglob("SKILL.md") if "evals" not in p.parts)
+    tracked = _tracked_skill_files(root)
+    if tracked is None:
+        print("(skill discovery: not a git checkout - walking the disk, minus "
+              f"{sorted(NON_SOURCE_DIRS)})", file=sys.stderr)
+        tracked = sorted(p for p in root.rglob("SKILL.md")
+                         if not NON_SOURCE_DIRS & set(p.relative_to(root).parts))
+    every = [p for p in tracked if "evals" not in p.relative_to(root).parts]
 
     kept: list[Path] = []
     excluded: list[Path] = []

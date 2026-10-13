@@ -21,7 +21,14 @@ verb result, an agent-invented column, or any future unrounded view prints
 whatever it is handed. And formatting alone cannot fix it either, because the
 agent's PROSE never passes through a React component. Both layers, or neither.
 
-FOUR RULES
+Direction 3, prose - the layer the two above left open, now closed by rule F.
+On this surface it is the MAIN one: agent-spec.json instructs the model to present
+verb and analyst results as MARKDOWN TABLES, so the grid a user reads in the agent
+tab is a string the model wrote. The number that prompted rule F came from a
+semantic-view FACT (`hours_to_date`), and rule B covers METRICS only, so Cortex
+Analyst's own SUM was outside every existing check.
+
+FIVE RULES
 
   A. Render sites listed in FORMATTED_SITES must route cell values through the
      shared formatter. Keyed on the FILE, with the banned pattern named, because
@@ -36,6 +43,10 @@ FOUR RULES
      actually inspected and fails on zero. A gate whose paths have gone stale
      passes by inspecting nothing, which is worse than no gate: it reports a
      property it never checked.
+  F. The prose layer exists, is MOUNTED in the markdown renderer, and DERIVES its
+     cap from decimalsFor rather than restating it. Mounting is asserted because an
+     unused import compiles and formats nothing; derivation because a second
+     literal is exactly how one surface gets left behind when the policy widens.
 """
 
 import re
@@ -51,6 +62,14 @@ FORMAT_MODULES = [
     SA_UI / "lib/format-number.ts",
     ADMIN_UI / "lib/format-number.ts",
 ]
+
+# The PROSE layer. Rule F below asserts these two files, which are what closes the
+# hole this module's own header describes ("the agent's PROSE never passes through
+# a React component"). They are listed separately from FORMAT_MODULES because the
+# properties asserted are different: not a cap, but that the cap is DERIVED and
+# that the plugin is actually mounted.
+PROSE_MODULE = SA_UI / "lib/remark-number-format.ts"
+MARKDOWN_SITE = SA_UI / "components/chat/message-part.tsx"
 
 # Files that render query values into cells, tooltips or tiles, each with the
 # reason it is here. A raw stringify in one of these is the defect.
@@ -339,12 +358,106 @@ def rule_e() -> tuple[list[str], int]:
     return violations, checked
 
 
+def rule_f() -> tuple[list[str], int]:
+    """The agent's PROSE is formatted too, and its cap is DERIVED not duplicated.
+
+    This is the third layer, and the one that was missing while the other two
+    passed. It matters most on this surface: agent-spec.json instructs the model to
+    present verb and analyst results as MARKDOWN TABLES, so the grid a user reads in
+    the agent tab is a string the model wrote and no React formatter ever sees.
+    """
+    violations, checked = [], 0
+
+    if not PROSE_MODULE.exists():
+        violations.append(
+            f"{PROSE_MODULE.relative_to(REPO)} is missing - the agent's prose has no "
+            f"formatter, so a FLOAT sum quoted in a markdown table reaches the screen "
+            f"with all 17 of its digits"
+        )
+    else:
+        checked += 1
+        text = PROSE_MODULE.read_text()
+        code = "\n".join(
+            l for l in text.split("\n") if not l.lstrip().startswith(("//", "*", "/*"))
+        )
+        # Import lines dropped as well: `import { decimalsFor }` satisfied a bare
+        # substring check on a module whose only CALL had been replaced by a
+        # hardcoded 2 (mutation 16 of the negative suite convicted this).
+        body = "\n".join(
+            l for l in code.split("\n") if not l.lstrip().startswith("import ")
+        )
+        # The cap must come from format-number, not be restated. A second literal is
+        # how one surface gets left behind on the old policy.
+        if not re.search(r"decimalsFor\s*\(", body):
+            violations.append(
+                f"{PROSE_MODULE.relative_to(REPO)}: does not CALL decimalsFor() from "
+                f"lib/format-number. Restating the cap here means widening the policy "
+                f"in one place silently leaves prose on the old one."
+            )
+        if re.search(r"toFixed\(\s*[0-9]", code):
+            violations.append(
+                f"{PROSE_MODULE.relative_to(REPO)}: hardcodes a decimal count via "
+                f"toFixed(N). Derive it from decimalsFor(value)."
+            )
+        # Code spans must be excluded BY NODE TYPE. A number inside `code` may be an
+        # id or a snippet someone will copy; rewriting it changes meaning.
+        if not ("inlineCode" in code and "code" in code):
+            violations.append(
+                f"{PROSE_MODULE.relative_to(REPO)}: does not exclude code/inlineCode "
+                f"nodes, so a literal inside a code span would be rewritten."
+            )
+        # The coordinate exemption cannot be keyed on a column name in prose, so a
+        # value-shape guard has to exist AND be reachable. Asserting the identifier
+        # is DECLARED and also listed in the guard's own scan is what convicts a
+        # rename that leaves the usage dangling (mutation 17).
+        guard = re.search(r"const\s+(\w*(?:COORD|PAIR)\w*)\s*=\s*/", body)
+        scan = re.search(r"for\s*\(const re of \[([^\]]*)\]", body)
+        if not guard:
+            violations.append(
+                f"{PROSE_MODULE.relative_to(REPO)}: no coordinate guard regex. Prose "
+                f"carries no column name, so without a pair-shape test a 5dp latitude "
+                f"is capped at 2dp - about a kilometre of error."
+            )
+        elif not scan or guard.group(1) not in scan.group(1):
+            violations.append(
+                f"{PROSE_MODULE.relative_to(REPO)}: {guard.group(1)} is declared but "
+                f"not consulted by the protected-range scan, so the coordinate "
+                f"exemption is dead code."
+            )
+
+    if not MARKDOWN_SITE.exists():
+        violations.append(f"{MARKDOWN_SITE.relative_to(REPO)} is missing")
+    else:
+        checked += 1
+        md = MARKDOWN_SITE.read_text()
+        md_code = "\n".join(
+            l for l in md.split("\n") if not l.lstrip().startswith(("//", "*", "/*"))
+        )
+        # MOUNTED, not merely imported. An unused import satisfies a substring check
+        # while every number still renders raw.
+        plugins = re.search(r"remarkPlugins=\{\[([^\]]*)\]\}", md_code)
+        if not plugins:
+            violations.append(
+                f"{MARKDOWN_SITE.relative_to(REPO)}: no remarkPlugins array found, so "
+                f"the prose formatter cannot be mounted."
+            )
+        elif "remarkNumberFormat" not in plugins.group(1):
+            violations.append(
+                f"{MARKDOWN_SITE.relative_to(REPO)}: remarkNumberFormat is not in the "
+                f"remarkPlugins array. Importing it is not enough - unmounted, every "
+                f"number in an agent answer renders exactly as the model wrote it."
+            )
+
+    return violations, checked
+
+
 def main() -> int:
     results = [
         ("A render sites", *rule_a()),
         ("B semantic metrics", *rule_b()),
         ("C policy constants", *rule_c()),
         ("E unlisted emitters", *rule_e()),
+        ("F agent prose", *rule_f()),
     ]
 
     failed = False

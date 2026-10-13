@@ -156,7 +156,19 @@ def main():
         all_breaches.extend(breaches)
 
     if all_breaches:
-        print(f"\n[eval-gate] FAILED: {len(all_breaches)} threshold breach(es)")
+        # Name each cause. This printed only "FAILED: 4 threshold breach(es)" on a
+        # fresh install where no agent had ever been evaluated - the failure was
+        # right (nothing to gate on is not a pass) but the stated cause was wrong.
+        not_run = [b for b in all_breaches if "no evaluation run found" in b]
+        for b in all_breaches:
+            print(b)
+        parts = []
+        if not_run:
+            parts.append(f"{len(not_run)} agent(s) NOT_RUN (never evaluated - run "
+                         "the eval suite, e.g. RUN_AGENT_EVALS=1, before gating)")
+        if len(all_breaches) > len(not_run):
+            parts.append(f"{len(all_breaches) - len(not_run)} threshold breach(es)")
+        print(f"\n[eval-gate] FAILED: {'; '.join(parts)}")
         sys.exit(1)
     else:
         print("\n[eval-gate] PASSED: all scores above thresholds")

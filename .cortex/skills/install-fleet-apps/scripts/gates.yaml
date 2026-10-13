@@ -1,0 +1,436 @@
+# Gate registry - the single list of every quality gate in this repo.
+#
+# Why it exists: the gates used to live inside .githooks/pre-commit, which runs
+# only when a developer opts in (core.hooksPath) and skipped ~20 gates unless
+# matching paths were staged. Six checks and twelve negative tests were wired
+# into nothing at all, and check_no_brands sat red for three weeks unseen. The
+# registry is what run_gates.py executes - in CI on every PR (scope static) and
+# after a fresh install (scope live) - and check_gate_registry.py fails if any
+# gate exists outside it.
+#
+# Every gate must also carry a NEGATIVE test: a driver that re-introduces the
+# defect the gate exists to catch and asserts the gate convicts it. A gate that
+# has never been seen to fail is documentation, not a gate. Gates without one
+# are listed under debt.missing_negative, which may only SHRINK
+# (check_gate_registry.py compares it against the base revision).
+#
+# Fields
+#   id        unique, snake_case
+#   run       command, relative to the repo root; {conn} = Snowflake connection
+#   negative  command for the negative test, `self` when `run` IS a negative
+#             test, or null (then the id must be in debt.missing_negative)
+#   scope     static - no Snowflake account, runs in CI
+#             live   - needs an installed account, runs from the e2e harness;
+#                      its NEGATIVE test replays a recorded account and also
+#                      runs in static scope (R6: a negative never takes {conn})
+#   needs     optional setup the runner performs first: `npm-ci:<dir>`
+#   why       one line: the defect class it catches
+
+version: 1
+
+gates:
+  # ── repo hygiene ────────────────────────────────────────────────────────────
+  - id: no_ignored_source
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source_negative.py
+    scope: static
+    why: source files hidden by a generic .gitignore rule exist only on one machine
+  - id: no_brands
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands_negative.py
+    scope: static
+    why: the repo must not author a customer, vendor, competitor or individual name
+  - id: tracking_tags
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags_negative.py
+    scope: static
+    why: every CREATE carries a tracking COMMENT and every session a query_tag
+  - id: image_versions
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py
+    scope: static
+    why: image tags drift between image-versions.env, service YAML and docs
+  - id: dockerfile_pip
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
+    scope: static
+    why: an image build runs pip as root and prints pip's root-user WARNING into the install log
+  - id: reset_tmp_coverage
+    run: bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --check-tmp-coverage
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/reset_tmp_coverage_negative.py
+    scope: static
+    why: an install script names a /tmp path the fresh-machine reset does not clear, so the reset refuses to run
+  - id: lockfile_deprecations
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations_negative.py
+    scope: static
+    why: a committed lockfile resolves a deprecated package, so every install prints `npm warn deprecated`
+  - id: gate_registry
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry_negative.py
+    scope: static
+    why: a gate outside this registry, or a growing negative-test debt
+  - id: run_gates
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_run_gates_negative.py
+    negative: self
+    scope: static
+    why: the runner turns a failing, hanging, missing or tree-dirtying gate green
+
+  # ── install order, SQL and DDL correctness ──────────────────────────────────
+  - id: install_order
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_install_order.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_order_negative.py
+    scope: static
+    why: an install SQL file references an object that is created later
+  - id: add_column_default
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_add_column_default.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_add_column_default_negative.py
+    scope: static
+    why: a column backfill raises when the column exists (IF NOT EXISTS + DEFAULT) or uses a default Snowflake rejects
+  - id: warehouse_ddl
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_warehouse_ddl_negative.py
+    scope: static
+    why: warehouse specs diverge across install-fleet-apps
+  - id: marketplace_ddl_parity
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_marketplace_ddl_parity.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_marketplace_ddl_parity_negative.py
+    scope: static
+    why: mirrored MARKETPLACE / projection DDL drifts apart
+  - id: suspend_signatures
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_suspend_signatures.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_suspend_signatures_negative.py
+    scope: static
+    why: a routing-gateway error code is invisible to the app's suspend handling
+  - id: js_proc_templating
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_js_proc_templating.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_js_proc_templating_negative.py
+    scope: static
+    why: SQL containing && deployed without --enable-templating NONE
+  - id: engine_guards
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards_negative.py
+    scope: static
+    why: installer SQL creates an engine-dependent object outside a guard
+  - id: geography_carrier
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_geography_carrier.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_geography_carrier_negative.py
+    scope: static
+    why: stored GEOGRAPHY dropped, rebuilt or left unplugged
+  - id: region_scoping
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_region_scoping_negative.py
+    scope: static
+    why: a contract view scoped to one region by a singleton CONFIG row
+  - id: semantic_verdict_classifier
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_semantic_verdict_negative.sh
+    negative: self
+    scope: static
+    why: the installer maps a broken semantic view to "skipped, expected"
+
+  # ── routing engine / ORS ────────────────────────────────────────────────────
+  - id: ors_observability
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_observability_negative.py
+    scope: static
+    why: gateway retries deterministic errors, breaker cannot open, windows not tz-correct
+  - id: ors_raise
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_raise.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_ors_raise_negative.py
+    scope: static
+    why: a live-routing view fails silently when the engine is unavailable
+  - id: routing_probe
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_routing_probe_negative.py
+    scope: static
+    why: routing TOOL_* procedures regress on four known failure modes
+  - id: solver_async
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_solver_async.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_solver_async_negative.py
+    scope: static
+    why: a solver verb bypasses the async solve runner
+  - id: land_clip_simplify
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_land_clip_simplify_mutations.py
+    scope: static
+    why: a continental land clip overflows its vertex budget
+  - id: forced_region_refusal
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_forced_region_refusal.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_forced_region_refusal_negative.py
+    scope: static
+    why: a forced routing region turns a routable trip into a dead one
+  - id: offgraph_region_keys
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_offgraph_region_keys.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_offgraph_region_keys_negative.py
+    scope: static
+    why: a stop outside the road graph is routed instead of excluded
+
+  # ── agents, synapse verbs, CoWork ───────────────────────────────────────────
+  - id: agent_verb_coverage
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_verb_coverage_negative.py
+    scope: static
+    why: a synapse verb has no routing guidance in the agents bound to it
+  - id: verb_js_globals
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_verb_js_globals.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_verb_js_globals_negative.py
+    scope: static
+    why: a verb uses a JavaScript global the Snowflake proc runtime lacks
+  - id: cowork_surfaces
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_surfaces.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_surfaces_negative.py
+    scope: static
+    why: a CoWork-facing surface is not wired
+  - id: chart_source_constraint
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint_negative.py
+    scope: static
+    why: an agent spec offers data_to_chart without naming what it accepts
+  - id: map_guidance
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance_negative.py
+    scope: static
+    why: guidance forbids a map without naming the tool that can draw one
+  - id: dynamic_allowlist
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_dynamic_allowlist.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dynamic_allowlist_negative.py
+    scope: static
+    why: the dynamic read allowlist disagrees with itself across filter, verb, grants, specs
+  - id: view_catalog_drift
+    run: python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog.py --check
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_view_catalog_negative.py
+    scope: static
+    why: the agent-side solution catalog is stale against app-views.json
+  - id: cowork_skills_drift
+    run: python3 .cortex/skills/install-fleet-apps/scripts/build_cowork_skills.py --check
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_cowork_skills_negative.py
+    scope: static
+    why: generated CoWork skills are stale against their source
+  - id: super_agent_spec_drift
+    run: python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec.py --check
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/build_super_agent_spec_negative.py
+    scope: static
+    why: the super-agent spec is stale against the bundle specs
+
+  # ── SA / admin app views and UI ─────────────────────────────────────────────
+  - id: admin_gateway_wake
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake_negative.py
+    scope: static
+    why: the admin Status & Health page reports a waking routing gateway as a graph-load failure
+  - id: next_build_warnings
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_next_build_warnings.py
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui, npm-ci:.cortex/skills/install-fleet-apps/fleet_admin_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_next_build_warnings_negative.py
+    scope: static
+    why: an app's production build reports "Compiled with warnings" (CSS autoprefixer or an unresolved optional require)
+  - id: view_usecases
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_usecases_negative.py
+    scope: static
+    why: an SA app view lacks its useCase block
+  - id: view_tokens
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_tokens_negative.py
+    scope: static
+    why: a {{...}} token in a view spec is unresolvable
+  - id: chart_rendering
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_rendering.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_rendering_negative.py
+    scope: static
+    why: the SA app cannot render an agent-produced chart
+  - id: chart_dual_axis
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_dual_axis.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_dual_axis_negative.py
+    scope: static
+    why: a chart plots two incompatible scales on one axis
+  - id: chat_table_scroll
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_chat_table_scroll.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chat_table_scroll_negative.py
+    scope: static
+    why: a table in the chat panel is not reachable
+  - id: number_formatting
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_number_formatting.py
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_number_formatting_negative.sh
+    scope: static
+    why: a number a user reads carries more decimals than it means
+  - id: dash_units
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dash_units_negative.py
+    scope: static
+    why: a dashed deck.gl path stops being dashed at some zoom
+  - id: h3_resolution
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_h3_resolution.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_h3_resolution_negative.py
+    scope: static
+    why: a semantic view exposes an H3 cell without saying what it can do
+  - id: client_polling
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_client_polling.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_client_polling_negative.py
+    scope: static
+    why: client polling bypasses the visibility-guarded hook and keeps warehouses up
+  - id: batch_transport
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_batch_transport.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_batch_transport_negative.py
+    scope: static
+    why: a batch workload uses the interactive SQL transport
+  - id: studio_generation_guards
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_studio_generation_guards.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_studio_generation_guards_negative.py
+    scope: static
+    why: Data Studio loses its POI-cap override or a setup-phase heartbeat
+  - id: site_impact_store_keys
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_site_impact_store_keys.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_site_impact_store_keys_negative.py
+    scope: static
+    why: Site Impact store lookups lose region keying or null safety
+  - id: concurrent_streams
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_concurrent_streams.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_concurrent_streams_negative.py
+    scope: static
+    why: telemetry code loses a guard against two concurrent position streams
+
+  # ── backload ────────────────────────────────────────────────────────────────
+  - id: backload_memo
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_memo.py
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_backload_memo_negative.sh
+    scope: static
+    why: a backload trip published to the agent is mis-described
+  - id: backload_caps_parity
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_caps_parity.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_caps_parity_negative.py
+    scope: static
+    why: the two backload solve paths send the optimizer different tour caps
+  - id: backload_budget
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_budget_negative.py
+    scope: static
+    why: TOOL_BACKLOAD_SOLVE becomes unbounded or loses vehicle scoping
+  - id: backload_rehydrate_geometry
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_backload_rehydrate_geometry_negative.py
+    scope: static
+    why: a plan on the Backload map arrives without road geometry
+
+  # ── skill evals ─────────────────────────────────────────────────────────────
+  - id: skill_evals
+    run: python3 .cortex/skills/evals/run_evals.py
+    negative: python3 .cortex/skills/evals/discovery_negative.py
+    scope: static
+    why: a skill fails trigger/quality/xref/sql evals, or discovery counts local files
+
+  # ── TypeScript suites (run from their package; npm ci on a fresh clone) ─────
+  - id: app_views_bindable
+    run: npx tsx scripts/verify-app-views.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_sa_app/ui
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_app_views_negative.py
+    scope: static
+    why: an authored view column reference cannot bind, or a map layer lacks its encoding
+  - id: chart_spec
+    run: npx tsx scripts/verify-chart-spec.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_sa_app/ui
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_chart_spec_negative.py
+    scope: static
+    why: an agent chart payload fails to extract, theme, compile or cite in place
+  - id: map_spec
+    run: npx tsx verify_map_spec.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user, npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui, npm-ci:packages/fleet-kit]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_map_spec_negative.py
+    scope: static
+    why: map spec validation drifts between verb and client, or the compile probe mistypes binds
+  - id: tool_descriptions
+    run: npx tsx verify_tool_descriptions.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/ops, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/admin]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_tool_descriptions_negative.py
+    scope: static
+    why: a verb description outgrows the agent tool-description budget
+  - id: routing_suspend
+    run: npx tsx verify_routing_suspend.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_routing_suspend_negative.py
+    scope: static
+    why: an off-graph or warming-up routing error is classified as a suspended engine
+  - id: run_sql_guard
+    run: npx tsx verify_run_sql.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_run_sql_negative.py
+    scope: static
+    why: the run_sql verb accepts a write, a second statement or an unbounded read
+  - id: sample_points
+    run: npx tsx verify_sample_points.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_sample_points_negative.py
+    scope: static
+    why: sampled point pairs fall outside their distance band without a hint
+  - id: shift_overrun
+    run: npx tsx verify_shift_overrun.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_shift_overrun_negative.py
+    scope: static
+    why: the generator's shift-overrun allowance escapes its roster or legal cap
+
+  # ── gateway (imports the real routing_service.py; deps in a cached venv) ────
+  - id: gateway_non_json
+    run: python3 .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway/verify_gateway_non_json.py
+    needs: ["pip:flask,requests,polyline"]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_gateway_non_json_negative.py
+    scope: static
+    why: a non-JSON engine response crashes or is retried, or the ingress timeout floor drifts
+  - id: gateway_retry_policy
+    run: python3 .cortex/skills/install-fleet-apps/openrouteservice_app/services/gateway/verify_gateway_retry_policy.py
+    needs: ["pip:flask,requests,polyline"]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_gateway_retry_policy_negative.py
+    scope: static
+    why: deterministic engine errors are retried, or a final 5xx clears the breaker
+
+  # ── live: need an installed account (run by scripts/e2e) ────────────────────
+  - id: deployment_coherence
+    run: bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c {conn} --expect-engine
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_deployment_negative.py
+    scope: live
+    why: an app surface is not backed by the objects it reads
+  - id: stream_invariants
+    run: python3 .cortex/skills/install-fleet-apps/scripts/run_sql_must_be_empty.py -c {conn} .cortex/skills/install-fleet-apps/scripts/check_stream_invariants.sql
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/run_sql_must_be_empty_negative.py
+    scope: live
+    why: the DATA carries overlapping trips or teleporting exit pings
+  - id: plan_standards_view
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_plan_standards_view.py {conn} SanFrancisco
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_plan_standards_view_negative.py
+    scope: live
+    why: a route_plan_standards view query errors or returns nothing
+  - id: agent_eval_thresholds
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds.py -c {conn}
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_agent_eval_thresholds_negative.py
+    scope: live
+    why: an agent's mean evaluation score drops below its per-metric threshold
+
+  - id: labor_layer
+    run: python3 .cortex/skills/install-fleet-apps/scripts/run_sql_must_be_empty.py -c {conn} --status-column STATUS -D REGION=SanFrancisco .cortex/skills/install-fleet-apps/scripts/verify_labor_layer.sql
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_labor_layer_negative.py
+    scope: live
+    why: the labour layer produces a number that must not be shown (any FAIL assertion)
+  - id: gateway_version
+    run: bash .cortex/skills/install-fleet-apps/scripts/verify_gateway_version.sh {conn}
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_gateway_version_negative.py
+    scope: live
+    why: SPCS serves a stale cached gateway image although the spec names the new tag
+  - id: render_map_live
+    run: bash .cortex/skills/install-fleet-apps/scripts/verify_render_map_live.sh {conn}
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_render_map_live_negative.py
+    scope: live
+    why: the deployed render_map accepts an invalid spec or rejects the live-routing layer
+
+# Gates with no negative test yet. This list may only SHRINK: check_gate_registry
+# fails if an id appears here that is not in the base revision's list. Removing
+# an entry requires the gate's `negative` to be set in the same change.
+debt:
+  missing_negative: []

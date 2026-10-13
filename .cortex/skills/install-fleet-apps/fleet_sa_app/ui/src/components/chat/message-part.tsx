@@ -13,6 +13,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { stripCitationTags } from '@/lib/chart-citations';
 import { roundForDisplay } from '@/lib/format-number';
+import { remarkNumberFormat } from '@/lib/remark-number-format';
 
 // Raw tool-result viewer: still a surface a user reads, so numbers are capped at
 // the display precision here too. Applied as a JSON replacer rather than a string
@@ -127,9 +128,23 @@ function TextPart({ content }: { content: string }) {
   return (
     <div className="markdown-body" style={{ fontSize: '14px', lineHeight: '1.6' }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        // remarkNumberFormat is the THIRD layer of the decimal policy, and the
+        // only one that reaches the agent's own words. The React formatter cannot:
+        // an answer's numbers arrive inside a markdown table the model wrote, so
+        // a FLOAT sum from a semantic-view fact printed all 17 of its digits.
+        remarkPlugins={[remarkGfm, remarkNumberFormat]}
         urlTransform={(url) => (url.startsWith('view:') ? url : defaultUrlTransform(url))}
         components={{
+          // A markdown table is the agent's own output format for verb and
+          // analyst results (agent-spec.json instructs it to use one), so this
+          // is the grid most answers are read in. It needs a bounded, scrollable
+          // ancestor: the CSS alone cannot scroll, because the element that
+          // overflows and the element with a size are not the same one.
+          table: ({ children }) => (
+            <div className="markdown-table-scroll">
+              <table>{children}</table>
+            </div>
+          ),
           a: ({ href, children }) => {
             if (href?.startsWith('view:') || href?.startsWith('#view:')) {
               const rawId = href.startsWith('view:') ? href.slice(5) : href.slice(6);
