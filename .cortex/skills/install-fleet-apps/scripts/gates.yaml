@@ -55,6 +55,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
     scope: static
     why: an image build runs pip as root and prints pip's root-user WARNING into the install log
+  - id: lockfile_deprecations
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations_negative.py
+    scope: static
+    why: a committed lockfile resolves a deprecated package, so every install prints `npm warn deprecated`
   - id: gate_registry
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_gate_registry_negative.py

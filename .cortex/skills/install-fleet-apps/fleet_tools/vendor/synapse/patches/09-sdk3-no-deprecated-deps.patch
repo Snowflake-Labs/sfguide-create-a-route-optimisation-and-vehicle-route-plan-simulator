@@ -1,0 +1,27 @@
+diff --git a/package.json b/package.json
+index 8041893d..8cf4fb6e 100644
+--- a/package.json
++++ b/package.json
+@@ -40,7 +40,7 @@
+   "dependencies": {
+     "@modelcontextprotocol/sdk": "^1.0.0",
+     "esbuild": "^0.20.2",
+-    "snowflake-sdk": "^1.11.0",
++    "snowflake-sdk": "^3.4.0",
+     "acorn": "^8.11.3",
+     "acorn-walk": "^8.3.2",
+     "astring": "^1.8.6",
+@@ -48,10 +48,12 @@
+   },
+   "devDependencies": {
+     "@types/node": "^20.11.0",
+-    "@types/snowflake-sdk": "^1.6.24",
+     "typescript": "^5.4.0",
+     "vitest": "^1.4.0"
+   },
++  "overrides": {
++    "node-domexception": "npm:@nolyfill/domexception@^1.0.28"
++  },
+   "files": [
+     "dist"
+   ]
