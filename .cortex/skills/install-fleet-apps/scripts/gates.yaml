@@ -55,6 +55,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
     scope: static
     why: an image build runs pip as root and prints pip's root-user WARNING into the install log
+  - id: reset_tmp_coverage
+    run: bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --check-tmp-coverage
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/reset_tmp_coverage_negative.py
+    scope: static
+    why: an install script names a /tmp path the fresh-machine reset does not clear, so the reset refuses to run
   - id: lockfile_deprecations
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_lockfile_deprecations_negative.py

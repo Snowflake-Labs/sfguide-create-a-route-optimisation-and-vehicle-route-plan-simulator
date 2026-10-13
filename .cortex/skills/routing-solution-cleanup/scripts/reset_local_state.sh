@@ -38,6 +38,15 @@
 # Usage:
 #   bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh \
 #        --connection <conn> [--yes] [--only repo|tmp|docker]
+#   bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh \
+#        --check-tmp-coverage
+#
+# --check-tmp-coverage runs ONLY the /tmp coverage self-check (section 2) and
+# exits: no connection, no clean-tree requirement, no machine changes. It is
+# the static gate `reset_tmp_coverage`, so an uncovered /tmp literal fails in CI
+# instead of first surfacing when someone runs this reset (it did: a docstring
+# that named the SA and admin build logs in shell brace form yielded the bare
+# literal `/tmp/fleet_`, which blocked a fresh-machine loop).
 #
 # --only limits the run to one area (default: all three). It exists so the repo
 # half can be exercised in a scratch clone without touching the machine's real
@@ -50,17 +59,19 @@ set -euo pipefail
 CONNECTION=""
 APPLY=0
 ONLY=""
+CHECK_TMP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -c|--connection) CONNECTION="${2:-}"; shift 2 ;;
     --yes) APPLY=1; shift ;;
+    --check-tmp-coverage) CHECK_TMP=1; shift ;;
     --only) ONLY="${2:-}"; shift 2
             case "$ONLY" in repo|tmp|docker) ;; *) echo "ERROR: --only takes repo, tmp or docker"; exit 2 ;; esac ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) echo "ERROR: unknown argument '$1'"; exit 2 ;;
   esac
 done
-[ -n "$CONNECTION" ] || { echo "ERROR: --connection <name> is required (it names the SPCS registry to log out of)"; exit 2; }
+[ -n "$CONNECTION" ] || [ "$CHECK_TMP" = "1" ] || { echo "ERROR: --connection <name> is required (it names the SPCS registry to log out of)"; exit 2; }
 
 REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -75,13 +86,14 @@ note "repo=$REPO_ROOT  connection=$CONNECTION  mode=$MODE"
 
 # ── 1. gates ─────────────────────────────────────────────────────────────────
 DIRTY="$(git status --porcelain --untracked-files=all)"
-if [ -n "$DIRTY" ]; then
+if [ "$CHECK_TMP" != "1" ] && [ -n "$DIRTY" ]; then
   echo "ERROR: the working tree differs from a fresh clone of $(git branch --show-current):"
   echo "$DIRTY" | sed 's/^/  /' | head -40
   echo "Commit, stash or remove these first - an install from this tree would not be a fresh-clone install."
   exit 1
 fi
-MANIFEST="$(python3 "$CLASSIFIER" --manifest)" || {
+MANIFEST=""
+[ "$CHECK_TMP" = "1" ] || MANIFEST="$(python3 "$CLASSIFIER" --manifest)" || {
   python3 "$CLASSIFIER" || true
   echo "ERROR: refusing to reset - the files above are source hidden by .gitignore, and deleting them would lose the only copy."
   exit 1
@@ -98,7 +110,10 @@ tmp_covered() { # <basename>
   return 1
 }
 UNCOVERED=""
-for lit in $(git ls-files '.cortex/skills/install-fleet-apps/**.sh' '.cortex/skills/install-fleet-apps/**.py' \
+# --others --exclude-standard: a new script not yet committed is scanned too
+# (the gate runs on a working tree; a plain ls-files would miss it).
+for lit in $(git ls-files --cached --others --exclude-standard \
+               '.cortex/skills/install-fleet-apps/**.sh' '.cortex/skills/install-fleet-apps/**.py' \
                '.cortex/skills/install-fleet-apps/*.sh' '.cortex/skills/routing-agent/**.sh' \
              | grep -v '/node_modules/' | xargs grep -hoE '/tmp/[A-Za-z0-9_.-]+' 2>/dev/null | sort -u); do
   tmp_covered "${lit#/tmp/}" || UNCOVERED="$UNCOVERED ${lit}"
@@ -107,6 +122,10 @@ if [ -n "$UNCOVERED" ]; then
   echo "ERROR: install scripts write /tmp paths this reset does not clear:$UNCOVERED"
   echo "Add the prefix to TMP_PREFIXES (or the file to TMP_EXACT) in $0."
   exit 1
+fi
+if [ "$CHECK_TMP" = "1" ]; then
+  note "tmp coverage OK: every /tmp literal in the install scripts is cleared by this reset"
+  exit 0
 fi
 
 # ── 3. repo: delete GENERATED, keep PERSONAL ─────────────────────────────────

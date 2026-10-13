@@ -3,8 +3,8 @@
 warnings".
 
 What happened (wgb26798, fresh-machine install on dev): both production builds
-printed " ⚠ Compiled with warnings" into /tmp/fleet_{sa,admin}_build.log while
-the deploy step reported OK:
+printed " ⚠ Compiled with warnings" into /tmp/fleet_sa_build.log and
+/tmp/fleet_admin_build.log while the deploy step reported OK:
   - SA:    vega-canvas (via vega) does `try { require('canvas') } catch {}`; the
            package is not installed, so webpack printed "Module not found: Can't
            resolve 'canvas'" for the server bundle
