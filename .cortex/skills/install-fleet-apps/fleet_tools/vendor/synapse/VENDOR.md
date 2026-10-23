@@ -36,7 +36,7 @@ explicit un-ignore for it. Do not remove it.
 
 ## Local patches (MUST survive every re-vendor)
 
-Nine deviations from upstream, plus three new local files. Each is load-bearing: dropping
+Ten deviations from upstream, plus three new local files. Each is load-bearing: dropping
 one does not degrade gracefully, it breaks a fresh install. `patches/*.patch` are the
 replayable record and are already applied to this tree. Patches 01-05 and 07 are scoped by
 FILE, not by concern, so `git apply` never has two of them editing the same file.
@@ -47,6 +47,7 @@ separable by file without splitting one guard across five patches. It is a diff 
 post-01-05 tree, so it MUST be applied last of 01-06 - `git apply patches/*.patch` does that
 naturally, since shell glob order is lexicographic. Do not reorder it. Patch 07 also touches
 `src/ddl.ts` and is a diff of the post-06 tree, so it sorts after 06 and must stay there.
+Patch 10 likewise touches `src/runtime/envelope.ts` after 06 and is a diff of the post-06 tree.
 
 ### patches/01-tracking-tags.patch
 
@@ -331,6 +332,17 @@ package returns to this lockfile.
 
 Not changed: `src/cli/materialize.ts` still writes `snowflake-sdk ^1.11.0` into
 the `local` runtime's emitted `package.json`. Nothing in this repo installs it.
+
+### patches/10-nullable-returns-omittable.patch
+
+Files: `src/runtime/envelope.ts`, `tests/unit/nullable-returns.test.ts` (new). Applies after 06.
+
+Upstream `parseRecord` copies every DECLARED return key, so a nullable key the proc did
+not set came back as `key: null`. The routing verbs declare `rows` (a CoWork data_to_map
+row set) as nullable and set it only on a successful, drawable call; CoWork reads any
+`rows` key as the thing to draw, so a failed call must not carry `rows` at all. The patch
+skips a nullable RETURN key that is absent from the proc's output. An explicit `null` is
+still returned as `null`, and args are unchanged (patch 08 covers those).
 
 ## Re-vendoring procedure
 
