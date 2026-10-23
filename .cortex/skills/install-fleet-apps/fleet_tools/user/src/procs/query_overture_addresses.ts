@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, withMapRows, featurePoints } from '../map_rows.js';
 import { OvertureCodes, OVERTURE_ADDRESSES_GROUP_BY } from '../codes.js';
 
 /**
@@ -42,6 +43,7 @@ export const query_overture_addresses = defineProc({
     result: t
       .object({})
       .describe('Overture address response: status, mode, count, bbox, and rows (addresses or per-city counts).'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
   },
   validate: (args, ctx) => {
     if (args.group_by != null && args.group_by.trim() !== '' &&
@@ -71,6 +73,6 @@ export const query_overture_addresses = defineProc({
       args.max_lon,
       args.max_lat,
     ]);
-    return { result };
+    return withMapRows(ctx.conn, result, featurePoints);
   },
 });
