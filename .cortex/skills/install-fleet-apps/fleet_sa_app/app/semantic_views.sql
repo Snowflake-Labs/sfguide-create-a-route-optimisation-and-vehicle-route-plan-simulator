@@ -183,8 +183,8 @@ ORDER BY origin_region, rnk NULLS LAST'
 -- FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS, which projects both as simplified
 -- GeoJSON strings, unpivoted to one row per (trip, path type). That was the
 -- missing link that made "show the actual and expected path" unanswerable
--- outside the app - data_to_map accepts only a SQL / analyst result as its source
--- and rejects an MCP verb result (cortex#156984), so geometry the agent fetched
+-- outside the app - data_to_map then accepted only a SQL / analyst result as its source
+-- and rejected an MCP verb result (cortex#156984), so geometry the agent fetched
 -- through run_sql could never be drawn.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
@@ -388,7 +388,7 @@ LIMIT 15'
 -- its lat/lon pair IS exposed as DWELL_LAT/DWELL_LON so any H3 resolution can be
 -- derived through the GOVERNED path. Before that, H3_CELL_R7 was the only
 -- resolution obtainable here, so "use resolution 9" forced the agent onto run_sql
--- and CoWork's data_to_map rejects an MCP result - the question was unanswerable.
+-- and CoWork's data_to_map then rejected an MCP result - the question was unanswerable.
 -- Two independent facts.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
