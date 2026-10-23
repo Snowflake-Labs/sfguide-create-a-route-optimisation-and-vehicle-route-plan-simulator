@@ -191,6 +191,18 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint_negative.py
     scope: static
     why: an agent spec offers data_to_chart without naming what it accepts
+  - id: cowork_rows
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_rows.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_rows_negative.py
+    scope: static
+    why: a routing verb result is not drawable in CoWork, or the agent is not told to draw it
+  - id: cowork_rows_shapes
+    run: npx tsx verify_cowork_rows_shapes.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_cowork_rows_shapes_negative.py
+    scope: static
+    why: a TOOL_* geometry shape is not turned into one-shape CoWork rows
   - id: map_guidance
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance_negative.py

@@ -172,13 +172,20 @@ def main() -> int:
                 f"where it is referenced.")
 
         if MAP_TOOL in tools or MAP_TOOL in orchestration:
-            if not re.search(
-                r"data_to_map accepts only a sql/analyst tool result", norm(orchestration)
-            ):
+            o = norm(orchestration)
+            if not (re.search(r"data_to_map accepts only two sources", o)
+                    and re.search(r"routing verb result that carries a top-level rows array", o)):
                 problems.append(
                     f"{spec_path.name}: the sibling {MAP_TOOL} source constraint is gone. "
                     f"The chart rule was derived from it; losing the original leaves maps "
                     f"open to exactly the failure the chart rule now prevents.")
+            # The pre-rows wording said a routing verb result can never be mapped.
+            # It is false now and it is what made the agent deep_link instead of draw.
+            if re.search(r"data_to_map accepts only a sql/analyst tool result", o):
+                problems.append(
+                    f"{spec_path.name}: the orchestration still says {MAP_TOOL} accepts only a "
+                    f"SQL/analyst result. Routing verbs now return a top-level rows array "
+                    f"that {MAP_TOOL} draws.")
 
     if problems:
         print("FAIL: agent specs offer data_to_chart without its source constraint:")
