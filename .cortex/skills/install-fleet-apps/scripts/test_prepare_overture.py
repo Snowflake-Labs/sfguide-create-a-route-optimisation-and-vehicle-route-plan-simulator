@@ -61,7 +61,7 @@ def describe(theme, table):
 
 class ContractTests(unittest.TestCase):
     def test_all_nine_schemas(self):
-        expected = {"PLACE": 17, "ADDRESS": 12, "DIVISION": 21, "DIVISION_AREA": 14,
+        expected = {"PLACE": 16, "ADDRESS": 12, "DIVISION": 21, "DIVISION_AREA": 14,
                     "DIVISION_BOUNDARY": 15, "SEGMENT": 21, "CONNECTOR": 5,
                     "BUILDING": 24, "BUILDING_PART": 22}
         for theme, tables in contract.LAYOUTS.items():

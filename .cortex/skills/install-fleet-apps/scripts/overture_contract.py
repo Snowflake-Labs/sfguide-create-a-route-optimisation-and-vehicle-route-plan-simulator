@@ -1,11 +1,14 @@
-"""Versioned CARTO table contract from PR #160's explicit theme DDL.
+"""Versioned CARTO table contract, verified against live Marketplace shares.
 
-Baseline captured by the source package on 2026-08-26, not a claim about the
-latest share. Keep column order and native GEOGRAPHY; metadata lives separately.
+Baseline: PR #160's explicit theme DDL (2026-08-26), corrected 2026-10-23 against
+the imported shares in account wgb26798 (INFORMATION_SCHEMA.COLUMNS, all nine
+tables). Two corrections: PLACE no longer carries CATEGORIES (the vendor dropped
+it; TAXONOMY replaces it), and SEGMENT.SUBCLASS is VARCHAR, not VARIANT.
+Keep column order and native GEOGRAPHY; metadata lives separately.
 """
 from __future__ import annotations
 
-CONTRACT_VERSION = "carto-2026-08-26"
+CONTRACT_VERSION = "carto-2026-10-23"
 LISTINGS = {
     "places": "GZT0Z4CM1E9KR", "addresses": "GZT0Z4CM1E9NQ",
     "divisions": "GZT0Z4CM1E9M9", "transportation": "GZT0Z4CM1E9KJ",
@@ -16,7 +19,7 @@ TYPES = {"s": "VARCHAR", "v": "VARIANT", "g": "GEOGRAPHY",
          "n": "NUMBER(38,0)", "f": "FLOAT", "b": "BOOLEAN"}
 LAYOUTS = {
     "places": {
-        "PLACE": "ID:s GEOMETRY:g CATEGORIES:v CONFIDENCE:f WEBSITES:v EMAILS:v SOCIALS:v PHONES:v BRAND:v ADDRESSES:v NAMES:v SOURCES:v OPERATING_STATUS:s BASIC_CATEGORY:s TAXONOMY:v VERSION:n BBOX:v",
+        "PLACE": "ID:s GEOMETRY:g CONFIDENCE:f WEBSITES:v EMAILS:v SOCIALS:v PHONES:v BRAND:v ADDRESSES:v NAMES:v SOURCES:v OPERATING_STATUS:s BASIC_CATEGORY:s TAXONOMY:v VERSION:n BBOX:v",
     },
     "addresses": {
         "ADDRESS": "ID:s STREET:s NUMBER:s UNIT:s POSTCODE:s POSTAL_CITY:s ADDRESS_LEVELS:v COUNTRY:s GEOMETRY:g SOURCES:v VERSION:n BBOX:v",
@@ -27,7 +30,7 @@ LAYOUTS = {
         "DIVISION_BOUNDARY": "ID:s GEOMETRY:g DIVISION_IDS:v SUBTYPE:s ADMIN_LEVEL:n CLASS:s SOURCES:v PERSPECTIVES:v IS_DISPUTED:b IS_LAND:b IS_TERRITORIAL:b COUNTRY:s REGION:s VERSION:n BBOX:v",
     },
     "transportation": {
-        "SEGMENT": "ID:s NAMES:v SUBTYPE:s CLASS:s SUBCLASS:v SUBCLASS_RULES:v CONNECTORS:v ROAD_SURFACE:v ROAD_FLAGS:v RAIL_FLAGS:v WIDTH_RULES:v LEVEL_RULES:v ACCESS_RESTRICTIONS:v SPEED_LIMITS:v PROHIBITED_TRANSITIONS:v ROUTES:v DESTINATIONS:v SOURCES:v GEOMETRY:g VERSION:n BBOX:v",
+        "SEGMENT": "ID:s NAMES:v SUBTYPE:s CLASS:s SUBCLASS:s SUBCLASS_RULES:v CONNECTORS:v ROAD_SURFACE:v ROAD_FLAGS:v RAIL_FLAGS:v WIDTH_RULES:v LEVEL_RULES:v ACCESS_RESTRICTIONS:v SPEED_LIMITS:v PROHIBITED_TRANSITIONS:v ROUTES:v DESTINATIONS:v SOURCES:v GEOMETRY:g VERSION:n BBOX:v",
         "CONNECTOR": "ID:s SOURCES:v GEOMETRY:g VERSION:n BBOX:v",
     },
     "buildings": {
