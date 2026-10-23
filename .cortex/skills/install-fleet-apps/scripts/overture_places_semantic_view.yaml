@@ -1,0 +1,396 @@
+name: OVERTUREMAPS_PLACES_SEMANTIC_VIEW
+description: 'This semantic model connects to Overture Maps'' Places dataset. This dataset offers Points of interest data including basic attributes like location, phone, mail, website, category and brand for each place. '
+tables:
+- name: PLACE
+  synonyms:
+  - points of interest
+  description: 'This table contains more than 66 million point representations of real-world entities: schools, businesses, hospitals, religious organizations, landmarks, mountain peaks, and much more.'
+  base_table:
+    database: OVERTURE_MAPS__PLACES
+    schema: CARTO
+    table: PLACE
+  dimensions:
+  - name: ADDRESSES
+    synonyms:
+    - location
+    - mailing_address
+    - physical_address
+    - street_address
+    - contact_address
+    - residence
+    - mailing_list
+    - postal_address
+    - geographical_location
+    description: This column stores address information for various locations, including country, freeform address, locality, postcode, and region, providing a comprehensive geographical reference for each entry.
+    expr: ADDRESSES
+    data_type: VARIANT
+    access_modifier: public_access
+    unique: false
+  - name: ALTERNATE_CATEGORY
+    description: 'Extracts relevant information from the CATEGORY dimension: the type of POI. Use this information to complement searches for PRIMARY_CATEGORY'
+    expr: CAST(TAXONOMY:alternates AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: BBOX
+    synonyms:
+    - bounding_box
+    - box_coordinates
+    - spatial_bounds
+    - geographic_extent
+    - rectangular_bounds
+    - box_limits
+    description: Bounding box coordinates for geographic locations, representing the maximum and minimum x (longitude) and y (latitude) values that define a rectangular area on a map.
+    expr: BBOX
+    data_type: VARIANT
+    access_modifier: public_access
+    sample_values:
+    - "{\n  \"xmax\": 3.726080417633057e+00,\n  \"xmin\": 3.726079940795898e+00,\n  \"ymax\": 5.109118652343750e+01,\n  \"ymin\": 5.109117889404297e+01\n}"
+    - "{\n  \"xmax\": 3.722748517990112e+00,\n  \"xmin\": 3.722748041152954e+00,\n  \"ymax\": 5.108733749389648e+01,\n  \"ymin\": 5.108732986450195e+01\n}"
+    - "{\n  \"xmax\": 3.723251104354858e+00,\n  \"xmin\": 3.723250627517700e+00,\n  \"ymax\": 5.108769989013672e+01,\n  \"ymin\": 5.108769226074219e+01\n}"
+    unique: false
+  - name: BRAND
+    synonyms:
+    - company
+    - manufacturer
+    - label
+    - trademark
+    - name
+    - maker
+    - firm
+    description: The BRAND column represents the name of the brand or company associated with a particular place, such as a store or location, and is used to categorize and identify the brand affiliation of each place in the dataset.
+    expr: BRAND
+    data_type: VARIANT
+    access_modifier: public_access
+    sample_values:
+    - "{\n  \"names\": {\n    \"primary\": \"Kelebek Mutfak-Banyo\"\n  }\n}"
+    - "{\n  \"names\": {\n    \"primary\": \"kajun bring more\"\n  }\n}"
+    unique: false
+  - name: BRAND_NAME
+    description: 'Extracts relevant information from the BRAND dimension: the name of the brand.'
+    expr: CAST(GET_PATH(brand, 'names.primary') AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: CATEGORIES
+    synonyms:
+    - types
+    - classifications
+    - labels
+    - tags
+    - groups
+    - kinds
+    - genres
+    - sorts
+    - divisions
+    description: This column represents the categories of a place, including both primary and alternate categories, providing a comprehensive understanding of the place's business or purpose.
+    expr: TAXONOMY
+    data_type: VARIANT
+    access_modifier: public_access
+    unique: false
+  - name: CONFIDENCE
+    synonyms:
+    - reliability
+    - accuracy
+    - certainty
+    - trustworthiness
+    - faith
+    - credence
+    - assurance
+    - sureness
+    - dependability
+    description: A measure of the reliability or trustworthiness of the data associated with a particular place, with higher values indicating greater confidence. We can use the confidence score to filter out data below a certain threshold to remove any suspect data.
+    expr: CONFIDENCE
+    data_type: FLOAT
+    access_modifier: public_access
+    sample_values:
+    - '0.3505154639'
+    - '0.7106958763'
+    - '0.9781719885'
+    unique: false
+  - name: COUNTRY
+    description: 'Extracts relevant information from the ADDRESSES dimension: the name of the country using the alpha2-digit code.'
+    expr: CAST(ADDRESSES[0]:country AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: EMAILS
+    synonyms:
+    - email_addresses
+    - email_list
+    - contact_emails
+    - email_contacts
+    - email_info
+    description: The email addresses associated with a specific geographic location or place.
+    expr: EMAILS
+    data_type: VARIANT
+    access_modifier: public_access
+    unique: false
+  - name: GEOMETRY
+    synonyms:
+    - shape
+    - location
+    - coordinates
+    - spatial_data
+    - geographic_coordinates
+    - map_data
+    - spatial_location
+    - geographic_shape
+    description: The GEOMETRY column represents the geographic location of a place, storing the coordinates (longitude and latitude) of a point on the Earth's surface, allowing for spatial analysis and mapping.
+    expr: TO_VARIANT(ST_ASGEOJSON(GEOMETRY))
+    data_type: VARIANT
+    access_modifier: public_access
+    sample_values:
+    - "{\n  \"coordinates\": [\n    76.6195594,\n    27.5699305\n  ],\n  \"type\": \"Point\"\n}"
+    - "{\n  \"coordinates\": [\n    21.05793,\n    44.5481\n  ],\n  \"type\": \"Point\"\n}"
+    - "{\n  \"coordinates\": [\n    76.621262,\n    27.562374\n  ],\n  \"type\": \"Point\"\n}"
+    unique: false
+  - name: ID
+    synonyms:
+    - identifier
+    - unique_id
+    - record_id
+    - entity_id
+    - object_id
+    - key
+    - reference_id
+    - code
+    description: Unique identifier for a specific geographic location or place.
+    expr: ID
+    data_type: VARCHAR(16777216)
+    access_modifier: public_access
+    sample_values:
+    - 08f1f836502560120304c1fdb0ff5d74
+    - 08f1f830cdcdecd803a5deb5588c1642
+    - 08f1f830cdc8a822038fe5a6fa09ce60
+    unique: false
+  - name: LOCALITY
+    description: 'Extracts relevant information from the ADDRESSES dimension: the name of the locality.'
+    expr: CAST(ADDRESSES[0]:locality AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: NAMES
+    synonyms:
+    - name
+    - title
+    - label
+    - designation
+    - appellation
+    - moniker
+    - denomination
+    - nomenclature
+    description: This column appears to represent the names of various businesses or companies, likely related to real estate or property services, based on the names provided.
+    expr: NAMES
+    data_type: VARIANT
+    access_modifier: public_access
+    sample_values:
+    - "{\n  \"primary\": \"SUMUH VIP Services\"\n}"
+    - "{\n  \"primary\": \"Your Home Turkey\"\n}"
+    - "{\n  \"primary\": \"Enorm Teknoloji ve Yazilim\"\n}"
+    unique: false
+  - name: PHONE
+    synonyms:
+    - phone_numbers
+    - contact_numbers
+    - telephone_numbers
+    - mobile_numbers
+    - landline_numbers
+    - contact_phones
+    - phone_details
+    description: List of phone numbers associated with a specific place or location.
+    expr: CAST(PHONES[0] AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+    unique: false
+  - name: POSTCODE
+    synonyms:
+    - zip code
+    - postal code
+    description: 'Extracts relevant information from the ADDRESSES dimension: the postal code.'
+    expr: CAST(ADDRESSES[0]:postcode AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: PRIMARY_CATEGORY
+    synonyms:
+    - main category
+    - principal category
+    - places
+    description: 'Extracts relevant information from the CATEGORY dimension: the type of POI.'
+    expr: CAST(TAXONOMY:primary AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: PRIMARY_NAME
+    description: 'Extracts relevant information from the NAMES dimension: the name of the POI. This provides similar identifying information as the BRAND_NAME dimension and may be used when BRAND_NAME is unavailable or to offer complementary naming details.'
+    expr: CAST(GET_PATH(names, 'primary') AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: REGION
+    synonyms:
+    - state
+    - municipality
+    description: 'Extracts relevant information from the ADDRESSES dimension: the name of the region. It can contain names and/or codes (e.g. ''California'' or ''CA'').'
+    expr: CAST(ADDRESSES[0]:region AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: SOCIALS_URL
+    synonyms:
+    - social_media
+    - online_profiles
+    - social_networks
+    - social_handles
+    - online_presence
+    description: The social media handle of the place, specifically the Facebook page URL.
+    expr: CAST(SOCIALS[0] AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+    unique: false
+  - name: SOURCES
+    synonyms:
+    - origin
+    - provenance
+    - references
+    - citations
+    - credits
+    - attribution
+    - providers
+    - data_providers
+    - information_sources
+    - originators
+    description: The SOURCES column contains information about the origin of the data in the PLACE table, including the dataset name, confidence level, and update time, providing context and provenance for the data.
+    expr: SOURCES
+    data_type: VARIANT
+    access_modifier: public_access
+    unique: false
+  - name: STREET
+    synonyms:
+    - freeform
+    description: 'Extracts relevant information from the ADDRESSES dimension: the name of the street.'
+    expr: CAST(ADDRESSES[0]:freeform AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+  - name: VERSION
+    synonyms:
+    - revision
+    - release
+    - iteration
+    - edition
+    - update
+    - build
+    - modification
+    - patch
+    - revision_number
+    description: The version number of the data in the table, indicating the iteration or release of the data.
+    expr: VERSION
+    data_type: NUMBER(38,0)
+    access_modifier: public_access
+    sample_values:
+    - '0'
+    unique: false
+  - name: WEBSITE
+    synonyms:
+    - urls
+    - site_urls
+    - website_urls
+    - online_presence
+    - web_addresses
+    - site_addresses
+    description: Websites visited or associated with the place.
+    expr: CAST(WEBSITES[0] AS TEXT)
+    data_type: VARCHAR(134217728)
+    access_modifier: public_access
+    unique: false
+  metrics:
+  - name: AVG_CONFIDENCE
+    synonyms:
+    - certainty. assurance
+    - quality
+    - reliability
+    - trust
+    description: The average (mean) confidence score of POIs in the aggregated result set. This provides an overall indicator of data quality for a collection of POIs. Helps in summarizing the general trustworthiness of the dataset.
+    expr: AVG(CONFIDENCE)
+    access_modifier: public_access
+  - name: MAX_CONFIDENCE
+    synonyms:
+    - certainty. assurance
+    - quality
+    - reliability
+    - trust
+    description: The highest confidence score among aggregated POIs. This metric shows the most reliable data point in the group, showcasing the best available quality. This metric is useful when you want to understand the upper limit of data accuracy for a specific region, category, or filter.
+    expr: MAX(CONFIDENCE)
+    access_modifier: public_access
+  - name: MIN_CONFIDENCE
+    synonyms:
+    - certainty. assurance
+    - quality
+    - reliability
+    - trust
+    description: The lowest confidence score among aggregated POIs. This metric identifies the least reliable data point in the result set. It is useful to assess the weakest link in a group of POIs, ensuring that no critical decisions are made based on low-confidence data.
+    expr: MIN(CONFIDENCE)
+    access_modifier: public_access
+  filters:
+  - name: restaurants
+    description: Filter to restrict data to different types of restaurants.
+    expr: primary_category ILIKE '%restaurant%'
+  - name: coffee
+    synonyms:
+    - coffee shop
+    - cafeteria
+    - cafe
+    description: Filter to restrict data to different types of coffee places.
+    expr: primary_category ILIKE '%coffee%' OR primary_category ILIKE '%cafe%'
+  time_dimensions:
+  - name: _META_LOADED_AT
+    synonyms:
+    - load_timestamp
+    - import_date
+    - data_loaded_at
+    - timestamp_loaded
+    - data_import_time
+    - load_time
+    - data_loaded_timestamp
+    - import_timestamp
+    description: Timestamp when the metadata for this place was last loaded or updated.
+    expr: CAST(NULL AS TIMESTAMP_TZ(9))
+    data_type: TIMESTAMP_TZ(9)
+    access_modifier: public_access
+    sample_values:
+    - 2025-05-05T09:17:42.203-0700
+    unique: false
+custom_instructions: 'Ensure that when your answers include values obtained from columns of the VARIANT format you only provide the specific data on the elements of the variant structure.
+
+
+  Ensure that your answers do not include NULL or empty values (e.g. when ranking).
+
+
+  When asked to filter by a Point of Interest (POI) category, interpret the request broadly to include all relevant or synonymous categories. Use the filters ''restaurants'' and ''coffee'' as reference examples. Aim to maximize coverage of relevant categories in the filter. If needed, use the ALTERNATE_CATEGORY dimension to enrich the search, otherwise stick to the PRIMARY_CATEGORY dimension.
+
+
+  When filtering by a specific brand, make sure to check both the BRAND_NAME and PRIMARY_NAME dimensions. A match in either should qualify the POI. This ensures robustness, as brand names may appear in one field but not the other. Treat the two fields as equivalent for filtering purposes.
+
+
+  When filtering, make sure to look for case-insensitive matches unless strictly specified otherwise. Also, avoid having blank spaces in the strings to look for ocurrences (e.g. use ILIKE ''%coffee%shop'' rather than LIKE ''coffee shop'').
+
+
+  When asked about the confidence or trust on the results, make sure to include the MIN_CONFIDENCE, AVG_CONFIDENCE and MAX_CONFIDENCE metrics in your query. These metrics should reflect the overall data quality by summarizing the certainty levels of the individual POIs. Do not provide these metrics unless asked to do so.'
+verified_queries:
+- name: BRAND_COUNTS
+  sql: SELECT COUNT(*) FROM place WHERE country = 'US' AND (region ILIKE '%California%' OR region = 'CA') AND (brand_name ILIKE '%Starbucks%' OR primary_name ILIKE '%Starbucks%') AND confidence > 0.95
+  question: How many Starbucks are there in California? I want to be reasonably confident (at least 95%) that the results are reliable.
+  verified_at: 1747231058
+  verified_by: TEAM_USER_DATA_SCIENCE_LGARCIADUARTE
+  use_as_onboarding_question: false
+- name: CATEGORY_COUNTS
+  sql: SELECT COUNT(*) FROM place WHERE country = 'US' AND locality = 'New York' AND (primary_category ILIKE '%coffee%' OR primary_category ILIKE '%cafe%')
+  question: How many coffee shops are there in New York?
+  verified_at: 1747044218
+  verified_by: TEAM_USER_DATA_SCIENCE_LGARCIADUARTE
+  use_as_onboarding_question: false
+- name: MOST_FREQUENT
+  sql: SELECT primary_name, COUNT(*) AS num FROM PLACE WHERE country = 'GB' AND locality = 'London' AND primary_category ILIKE '%supermarket%' GROUP BY primary_name ORDER BY num DESC NULLS LAST LIMIT 1
+  question: What is the most frequent supermarket chain in London?
+  verified_at: 1747044261
+  verified_by: TEAM_USER_DATA_SCIENCE_LGARCIADUARTE
+  use_as_onboarding_question: false
+- name: RANK_CITIES
+  sql: SELECT locality, COUNT(*) AS num FROM PLACE WHERE country = 'US' AND primary_category = 'fast_food_restaurant' GROUP BY locality ORDER BY num DESC NULLS LAST LIMIT 10
+  question: What are the top 10 cities in the US with the most fast-food restaurants?
+  verified_at: 1747044273
+  verified_by: TEAM_USER_DATA_SCIENCE_LGARCIADUARTE
+  use_as_onboarding_question: false

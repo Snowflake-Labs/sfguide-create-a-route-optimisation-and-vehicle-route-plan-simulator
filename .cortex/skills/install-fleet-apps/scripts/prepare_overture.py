@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import re
 import sys
 import urllib.request
@@ -17,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 
 from overture_contract import (
-    CONTRACT_VERSION, LAYOUTS, LISTINGS, columns, database, definitions,
+    CONTRACT_VERSION, LAYOUTS, LISTINGS, SEMANTIC_VIEWS, columns, database, definitions,
     projection, schema_errors,
 )
 
@@ -28,6 +29,7 @@ COMMENT = json.dumps(TRACK, separators=(",", ":"))
 CONTROL = "FLEET_INTELLIGENCE.OVERTURE_LOAD"
 STAC_URL = "https://stac.overturemaps.org/catalog.json"
 RELEASE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\.\d+")
+SCRIPTS = pathlib.Path(__file__).resolve().parent
 
 
 def identifier(value):
@@ -173,10 +175,28 @@ class Preparer:
             self.run(f"GRANT USAGE ON SCHEMA {target_db}.CARTO TO ROLE {role_sql}")
             for table in LAYOUTS[theme]:
                 self.run(f"GRANT SELECT ON TABLE {target_db}.CARTO.{table} TO ROLE {role_sql}")
+            for view in SEMANTIC_VIEWS.get(theme, {}):
+                self.run(f"GRANT SELECT ON SEMANTIC VIEW {target_db}.CARTO.{view} TO ROLE {role_sql}")
         else:
             raise RuntimeError(f"{theme}: existing local source is not loader-owned; "
                                "its owner must grant reader access explicitly")
         return "reader access granted"
+
+    def ensure_semantic_views(self, theme):
+        """Recreate the vendor semantic views a share ships alongside its tables.
+
+        Only for loader-owned copies: a share brings its own. Created from the
+        vendor's exported YAML (overture_places_semantic_view.yaml) so member
+        names, types, synonyms, descriptions, instructions and verified queries
+        match; only expressions that no longer resolve on the current table
+        columns are corrected. SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML replaces
+        with COPY GRANTS, so a rerun keeps reader grants.
+        """
+        for view, spec in SEMANTIC_VIEWS.get(theme, {}).items():
+            text = (SCRIPTS / spec).read_text()
+            self.run("CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)",
+                     (f"{database(theme)}.CARTO", text))
+            print(f"  semantic view {database(theme)}.CARTO.{view} created", flush=True)
 
     def import_listing(self, theme):
         listing = LISTINGS[theme]
@@ -199,6 +219,8 @@ class Preparer:
             return "marketplace: acquired and schema checked"
         if existing and self.loaded(theme) and not self.refresh:
             self.describe(theme, exact=True)
+            if not self.check:
+                self.ensure_semantic_views(theme)
             return "s3: reused validated global copy"
         if self.check:
             return "PENDING: S3 fallback needed; public stage access and load budget checked during install"
@@ -208,6 +230,7 @@ class Preparer:
         self.log(theme, "STARTED", "global S3 fallback")
         try:
             self.load_theme(theme, existing)
+            self.ensure_semantic_views(theme)
         except Exception as exc:
             self.log(theme, "FAILED", str(exc)[:2000])
             raise
@@ -308,6 +331,8 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--grant-role", help="Grant access to existing sources only; never load")
+    parser.add_argument("--force-s3", action="store_true",
+                        help="Ignore available listings and load absent themes from S3 (testing, or avoiding listing terms)")
     parser.add_argument("--release")
     parser.add_argument("--max-bytes", type=int, default=500_000_000_000)
     parser.add_argument("--timeout", type=int, default=1800)
@@ -331,7 +356,7 @@ def main(argv=None):
         databases = {row["name"]: row for row in session.run("SHOW DATABASES LIKE 'OVERTURE_MAPS__%'")}
         listing_error = None
         try:
-            listings = {} if args.grant_role else {
+            listings = {} if (args.grant_role or args.force_s3) else {
                 row["global_name"]: row for row in session.run("SHOW AVAILABLE LISTINGS")}
         except Exception as exc:
             listings = {}
@@ -351,8 +376,8 @@ def main(argv=None):
             except Exception as exc:
                 failures += 1
                 print(f"FAILED {theme}: {exc}", flush=True)
-        print("S3 copies use the versioned " + CONTRACT_VERSION + " table contract; "
-              "Marketplace semantic views are not copied. Existing agent pruning reports unavailable tools.")
+        print("S3 copies use the versioned " + CONTRACT_VERSION + " table contract and "
+              "recreate the vendor Places semantic view from its exported YAML.")
         return 2 if failures else 0
     finally:
         session.close()

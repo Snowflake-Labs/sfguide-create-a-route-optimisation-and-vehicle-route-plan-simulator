@@ -103,8 +103,8 @@ GRANT SELECT ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_AP
 -- Overture grants are applied by prepare_overture.py --grant-role FLEET_APP_USER
 -- after this file. Imported sources need IMPORTED PRIVILEGES; loader-owned S3
 -- copies need USAGE + SELECT. Never issue IMPORTED PRIVILEGES on a local database.
--- The source resolver grants only the CARTO contract tables, not staging/control
--- metadata. Missing vendor semantic views are reported by prune_agent_specs.py.
+-- The source resolver grants only the CARTO contract tables and the recreated
+-- Places semantic view, not staging/control metadata.
 EXECUTE IMMEDIATE $$
 BEGIN
   GRANT IMPORTED PRIVILEGES ON DATABASE SAFEGRAPH_OPEN_CENSUS_FREE TO ROLE FLEET_APP_USER;

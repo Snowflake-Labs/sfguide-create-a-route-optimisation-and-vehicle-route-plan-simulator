@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Offline regression tests for the Overture source resolver and publication path."""
 import pathlib
+import re
 import unittest
 from contextlib import contextmanager
+
+import yaml
 
 import overture_contract as contract
 from prepare_overture import (
@@ -69,8 +72,7 @@ class ContractTests(unittest.TestCase):
                 with self.subTest(table=table):
                     self.assertEqual(len(contract.columns(theme, table)), expected[table])
                     self.assertEqual(contract.schema_errors(theme, table, describe(theme, table), exact=True), [])
-                    self.assertIn("TRY_TO_GEOGRAPHY($1:geometry::BINARY)", contract.projection(theme, table))
-                    self.assertNotIn("TRUE)", contract.projection(theme, table))
+                    self.assertIn("TRY_TO_GEOGRAPHY($1:geometry::BINARY, TRUE)", contract.projection(theme, table))
 
     def test_missing_or_wrong_columns_fail(self):
         rows = describe("addresses", "ADDRESS")
@@ -134,7 +136,9 @@ class ResolverTests(unittest.TestCase):
         session = FakeSession(ready=True)
         result = Preparer(session).prepare("places", {"comment": COMMENT}, None)
         self.assertIn("reused", result)
-        self.assertFalse(any("CREATE" in sql for sql in session.sql))
+        # No table rebuild: the only write is the semantic view restore.
+        writes = [sql for sql in session.sql if "CREATE" in sql or sql.startswith(("INSERT", "DELETE"))]
+        self.assertEqual(writes, ["CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)"])
 
     def test_partial_database_retried_without_describing_missing_tables(self):
         session = FakeSession()
@@ -173,7 +177,8 @@ class LoadTests(unittest.TestCase):
                 deletes = [index for index, sql in enumerate(queries) if sql.startswith("DELETE FROM OVERTURE")]
                 self.assertTrue(all(begin < index < commit for index in deletes))
                 self.assertFalse(any(sql.startswith("CREATE") for sql in queries[begin:commit]))
-                self.assertTrue(queries[-1].startswith("DROP SCHEMA"))
+                self.assertTrue(queries[-1].startswith("DROP SCHEMA") or "SEMANTIC_VIEW_FROM_YAML" in queries[-1])
+                self.assertTrue(any(sql.startswith("DROP SCHEMA") for sql in queries[commit:]))
                 self.assertFalse(any("OR REPLACE" in sql for sql in queries))
 
     def test_budget_and_missing_files_abort_before_scan(self):
@@ -216,6 +221,66 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.load(session)
             self.assertNotIn("BEGIN", session.sql)
+
+
+class SemanticViewTests(unittest.TestCase):
+    SV_CALL = "SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML"
+
+    def test_s3_places_recreates_vendor_view_with_same_name(self):
+        session = FakeSession()
+        Preparer(session, release="2026-10-21.0", max_bytes=1000).prepare("places", None, None)
+        calls = [p for sql, p in zip(session.sql, session.params) if self.SV_CALL in sql]
+        self.assertEqual(len(calls), 1)
+        schema, text = calls[0]
+        self.assertEqual(schema, "OVERTURE_MAPS__PLACES.CARTO")
+        self.assertIn("name: OVERTUREMAPS_PLACES_SEMANTIC_VIEW", text)
+        # Created only after the tables publish.
+        self.assertLess(session.sql.index("COMMIT"), next(
+            i for i, sql in enumerate(session.sql) if self.SV_CALL in sql))
+
+    def test_reused_s3_copy_restores_view(self):
+        session = FakeSession(ready=True)
+        Preparer(session).prepare("places", {"comment": COMMENT}, None)
+        self.assertTrue(any(self.SV_CALL in sql for sql in session.sql))
+
+    def test_imported_share_and_check_never_create_view(self):
+        for preparer, existing in ((Preparer(FakeSession()), {"origin": "share"}),
+                                   (Preparer(FakeSession(ready=True), check=True), {"comment": COMMENT})):
+            preparer.prepare("places", existing, None)
+            self.assertFalse(any(self.SV_CALL in sql for sql in preparer.session.sql))
+
+    def test_other_themes_have_no_view(self):
+        session = FakeSession()
+        Preparer(session, release="2026-10-21.0", max_bytes=1000).prepare("addresses", None, None)
+        self.assertFalse(any(self.SV_CALL in sql for sql in session.sql))
+
+    def test_owned_places_grant_includes_view(self):
+        session = FakeSession(ready=True)
+        Preparer(session).grant("places", {"comment": COMMENT}, "FLEET_APP_USER")
+        self.assertTrue(any("ON SEMANTIC VIEW OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW"
+                            in sql for sql in session.sql))
+
+    def test_yaml_matches_vendor_members_and_current_columns(self):
+        spec = yaml.safe_load((pathlib.Path(__file__).parent / "overture_places_semantic_view.yaml").read_text())
+        table = spec["tables"][0]
+        self.assertEqual(table["base_table"], {"database": "OVERTURE_MAPS__PLACES", "schema": "CARTO", "table": "PLACE"})
+        members = {m["name"] for k in ("dimensions", "time_dimensions", "metrics") for m in table[k]}
+        self.assertEqual(len(members), 27)   # 23 dimensions + 1 time dimension + 3 metrics, as vendor
+        live = {name for name, _ in contract.columns("places", "PLACE")}
+        dead = {"CATEGORIES", "_META_LOADED_AT", "PRIMARY_CATEGORY_NAME"}
+        text = " ".join(m["expr"] for k in ("dimensions", "time_dimensions", "metrics") for m in table[k])
+        text += " " + " ".join(f["expr"] for f in table.get("filters") or [])
+        self.assertNotRegex(text, r"\blist\[0\]\.element|\bCATEGORIES:|\bprimary_category_name\b")
+        # Every bare identifier must be a live column, a member, or SQL syntax.
+        # Literals, function names and variant path keys (after ':') are skipped.
+        bare = re.sub(r"'[^']*'", "''", text)
+        syntax = {"AS", "TEXT", "NULL", "TIMESTAMP_TZ", "ILIKE", "OR", "AND"}
+        for column in re.findall(r"(?<![:\w])([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()", bare):
+            name = column.upper()
+            if name in syntax:
+                continue
+            self.assertNotIn(name, dead, f"expression references removed column {name}")
+            self.assertIn(name, live | members, f"expression references unknown column {name}")
 
 
 class IntegrationTests(unittest.TestCase):

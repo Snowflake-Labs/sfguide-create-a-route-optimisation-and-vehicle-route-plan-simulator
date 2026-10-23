@@ -9,6 +9,9 @@ Keep column order and native GEOGRAPHY; metadata lives separately.
 from __future__ import annotations
 
 CONTRACT_VERSION = "carto-2026-10-23"
+# Semantic views a share ships next to its tables, recreated for S3 copies from
+# the vendor's exported YAML (repaired where its expressions no longer resolve).
+SEMANTIC_VIEWS = {"places": {"OVERTUREMAPS_PLACES_SEMANTIC_VIEW": "overture_places_semantic_view.yaml"}}
 LISTINGS = {
     "places": "GZT0Z4CM1E9KR", "addresses": "GZT0Z4CM1E9NQ",
     "divisions": "GZT0Z4CM1E9M9", "transportation": "GZT0Z4CM1E9KJ",
@@ -50,10 +53,13 @@ def definitions(theme, table):
 
 
 def projection(theme, table):
-    # TRUE on TO_GEOGRAPHY means allow_invalid, NOT try-conversion. Use the
-    # actual TRY function and reject NULL geometries before publication.
+    # TRY_TO_GEOGRAPHY(wkb, TRUE): allow_invalid KEEPS parseable-but-invalid
+    # shapes (Overture ships a few self-intersecting division polygons, and the
+    # Marketplace share keeps those rows), while corrupt WKB still yields NULL
+    # and is rejected before publication. Measured: strict conversion dropped
+    # 7 of 1,084,259 DIVISION_AREA geometries.
     return ", ".join(
-        "TRY_TO_GEOGRAPHY($1:geometry::BINARY)" if kind == "GEOGRAPHY"
+        "TRY_TO_GEOGRAPHY($1:geometry::BINARY, TRUE)" if kind == "GEOGRAPHY"
         else f'$1:{name.lower()}::{kind}'
         for name, kind in columns(theme, table))
 
