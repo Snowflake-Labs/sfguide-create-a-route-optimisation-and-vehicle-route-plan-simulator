@@ -274,7 +274,7 @@ tools:
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_overture_global
-      description: "Global Overture Maps places catalog (66M+ POIs worldwide) via the vendor semantic view. Use for WORLDWIDE place questions outside the active region and for place attributes/quality: filter or list by category, brand, country, region, city, name, and data confidence. NOTE: exposes only confidence metrics (no row count) - for counts use query_catchment or tool_overture_search."
+      description: "Global Overture Maps places catalog (66M+ POIs worldwide) via the Overture Places semantic view. Use for WORLDWIDE place questions outside the active region and for place attributes/quality: filter or list by category, brand, country, region, city, name, and data confidence. NOTE: exposes only confidence metrics (no row count) - for counts use query_catchment or tool_overture_search."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_asset_velocity
@@ -350,7 +350,7 @@ tool_resources:
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_overture_global:
-    semantic_view: OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW
+    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_asset_velocity:

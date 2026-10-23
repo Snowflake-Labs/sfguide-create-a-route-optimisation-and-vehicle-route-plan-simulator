@@ -12,6 +12,10 @@ CONTRACT_VERSION = "carto-2026-10-23"
 # Semantic views a share ships next to its tables, recreated for S3 copies from
 # the vendor's exported YAML (repaired where its expressions no longer resolve).
 SEMANTIC_VIEWS = {"places": {"OVERTUREMAPS_PLACES_SEMANTIC_VIEW": "overture_places_semantic_view.yaml"}}
+# The fleet-owned copy the agents use, built for EVERY Places source: the
+# vendor view inside the share is itself broken and a share cannot be patched.
+FLEET_SEMANTIC_VIEWS = {"places": ("FLEET_INTELLIGENCE.SEMANTIC", "SV_OVERTURE_PLACES",
+                                   "overture_places_semantic_view.yaml")}
 LISTINGS = {
     "places": "GZT0Z4CM1E9KR", "addresses": "GZT0Z4CM1E9NQ",
     "divisions": "GZT0Z4CM1E9M9", "transportation": "GZT0Z4CM1E9KJ",

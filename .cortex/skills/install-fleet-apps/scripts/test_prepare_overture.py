@@ -13,6 +13,16 @@ from prepare_overture import (
 )
 
 
+def view_calls(session, schema):
+    """(schema, yaml) params of every semantic view created in a schema."""
+    return [p for sql, p in zip(session.sql, session.params)
+            if "SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML" in sql and p[0] == schema]
+
+
+FLEET_SCHEMA = "FLEET_INTELLIGENCE.SEMANTIC"
+SHARE_SCHEMA = "OVERTURE_MAPS__PLACES.CARTO"
+
+
 class FakeSession:
     def __init__(self, fail_at=None, files=None, ready=False, foreign_table=False):
         self.sql = []
@@ -130,15 +140,21 @@ class ResolverTests(unittest.TestCase):
     def test_imported_never_replaced_even_with_refresh(self):
         session = FakeSession()
         Preparer(session, refresh=True).prepare("places", {"origin": "share"}, None)
-        self.assertTrue(all(sql.startswith("DESCRIBE") for sql in session.sql))
+        # The share is only read; the sole writes target the fleet-owned schema.
+        writes = [sql for sql in session.sql if not sql.startswith("DESCRIBE")]
+        self.assertEqual(writes, [f"CREATE SCHEMA IF NOT EXISTS {FLEET_SCHEMA}",
+                                  "CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)"])
+        self.assertEqual(view_calls(session, SHARE_SCHEMA), [])
 
     def test_validated_local_copy_reused(self):
         session = FakeSession(ready=True)
         result = Preparer(session).prepare("places", {"comment": COMMENT}, None)
         self.assertIn("reused", result)
-        # No table rebuild: the only write is the semantic view restore.
+        # No table rebuild: the only writes are the two semantic view restores.
         writes = [sql for sql in session.sql if "CREATE" in sql or sql.startswith(("INSERT", "DELETE"))]
-        self.assertEqual(writes, ["CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)"])
+        self.assertEqual(writes, ["CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)",
+                                  f"CREATE SCHEMA IF NOT EXISTS {FLEET_SCHEMA}",
+                                  "CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)"])
 
     def test_partial_database_retried_without_describing_missing_tables(self):
         session = FakeSession()
@@ -229,10 +245,9 @@ class SemanticViewTests(unittest.TestCase):
     def test_s3_places_recreates_vendor_view_with_same_name(self):
         session = FakeSession()
         Preparer(session, release="2026-10-21.0", max_bytes=1000).prepare("places", None, None)
-        calls = [p for sql, p in zip(session.sql, session.params) if self.SV_CALL in sql]
+        calls = view_calls(session, SHARE_SCHEMA)
         self.assertEqual(len(calls), 1)
         schema, text = calls[0]
-        self.assertEqual(schema, "OVERTURE_MAPS__PLACES.CARTO")
         self.assertIn("name: OVERTUREMAPS_PLACES_SEMANTIC_VIEW", text)
         # Created only after the tables publish.
         self.assertLess(session.sql.index("COMMIT"), next(
@@ -243,16 +258,63 @@ class SemanticViewTests(unittest.TestCase):
         Preparer(session).prepare("places", {"comment": COMMENT}, None)
         self.assertTrue(any(self.SV_CALL in sql for sql in session.sql))
 
-    def test_imported_share_and_check_never_create_view(self):
-        for preparer, existing in ((Preparer(FakeSession()), {"origin": "share"}),
-                                   (Preparer(FakeSession(ready=True), check=True), {"comment": COMMENT})):
-            preparer.prepare("places", existing, None)
-            self.assertFalse(any(self.SV_CALL in sql for sql in preparer.session.sql))
+    def test_imported_share_never_gets_in_share_view_and_check_writes_nothing(self):
+        session = FakeSession()
+        Preparer(session).prepare("places", {"origin": "share"}, None)
+        self.assertEqual(view_calls(session, SHARE_SCHEMA), [])
+        session = FakeSession(ready=True)
+        Preparer(session, check=True).prepare("places", {"comment": COMMENT}, None)
+        self.assertFalse(any(self.SV_CALL in sql or "CREATE" in sql for sql in session.sql))
+
+    def test_fleet_view_built_for_every_places_source(self):
+        cases = {
+            "imported": (FakeSession(), {"origin": "share"}, None, {}),
+            "existing-local": (FakeSession(), {"comment": "someone else"}, None, {}),
+            "marketplace": (FakeSession(), None, {"is_ready_for_import": "true"}, {}),
+            "s3 load": (FakeSession(), None, None, {"release": "2026-10-21.0", "max_bytes": 1000}),
+            "s3 reuse": (FakeSession(ready=True), {"comment": COMMENT}, None, {}),
+        }
+        for label, (session, existing, listing, kwargs) in cases.items():
+            with self.subTest(source=label):
+                result = Preparer(session, **kwargs).prepare("places", existing, listing)
+                calls = view_calls(session, FLEET_SCHEMA)
+                self.assertEqual(len(calls), 1, result)
+                text = calls[0][1]
+                self.assertRegex(text, r"(?m)^name: SV_OVERTURE_PLACES$")
+                self.assertNotIn("OVERTUREMAPS_PLACES_SEMANTIC_VIEW", text)
+                self.assertIn("semantic view FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES built", result)
+
+    def test_rename_changes_only_the_view_name(self):
+        session = FakeSession()
+        Preparer(session).prepare("places", {"origin": "share"}, None)
+        built = view_calls(session, FLEET_SCHEMA)[0][1]
+        source = (pathlib.Path(__file__).parent / "overture_places_semantic_view.yaml").read_text()
+        self.assertEqual(built, source.replace("name: OVERTUREMAPS_PLACES_SEMANTIC_VIEW", "name: SV_OVERTURE_PLACES", 1))
+
+    def test_fleet_view_failure_is_reported_not_fatal(self):
+        session = FakeSession(fail_at="CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE")
+        result = Preparer(session).prepare("places", {"origin": "share"}, None)
+        self.assertIn("WARN fleet semantic view not built", result)
+        self.assertFalse(result.startswith("PENDING"))
+
+    def test_agents_target_fleet_view_not_vendor_view(self):
+        app = pathlib.Path(__file__).resolve().parents[1] / "fleet_sa_app" / "app"
+        repo = pathlib.Path(__file__).resolve().parents[4]
+        for path in (app / "agent-spec.json", app / "super-agent-spec.json"):
+            with self.subTest(spec=path.name):
+                import json
+                spec = json.loads(path.read_text())
+                self.assertEqual(spec["tool_resources"]["query_overture_global"]["semantic_view"],
+                                 "FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES")
+        for path in (app / "agent-spec.json", app / "super-agent-spec.json",
+                     repo / "semantic" / "extend_routing_agent.sql"):
+            with self.subTest(file=path.name):
+                self.assertNotIn("CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW", path.read_text())
 
     def test_other_themes_have_no_view(self):
         session = FakeSession()
         Preparer(session, release="2026-10-21.0", max_bytes=1000).prepare("addresses", None, None)
-        self.assertFalse(any(self.SV_CALL in sql for sql in session.sql))
+        self.assertFalse(any(self.SV_CALL in sql or FLEET_SCHEMA in sql for sql in session.sql))
 
     def test_owned_places_grant_includes_view(self):
         session = FakeSession(ready=True)

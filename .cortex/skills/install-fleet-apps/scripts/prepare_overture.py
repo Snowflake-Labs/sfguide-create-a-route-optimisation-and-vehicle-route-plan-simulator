@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 
 from overture_contract import (
-    CONTRACT_VERSION, LAYOUTS, LISTINGS, SEMANTIC_VIEWS, columns, database, definitions,
+    CONTRACT_VERSION, FLEET_SEMANTIC_VIEWS, LAYOUTS, LISTINGS, SEMANTIC_VIEWS, columns, database, definitions,
     projection, schema_errors,
 )
 
@@ -206,7 +206,37 @@ class Preparer:
         # also rejects a database created by another installer after our probe.
         self.run(f"CREATE DATABASE {database(theme)} FROM LISTING {listing}")
 
+    def ensure_fleet_semantic_view(self, theme):
+        """Build the agents' fleet-owned semantic view over whichever source won.
+
+        Same YAML as the S3 in-share copy, only renamed: the base table name is
+        identical for a share and an S3 copy, and both carry the contract schema.
+        FLEET_APP_USER needs no share privilege for it (verified): the existing
+        ALL/FUTURE semantic view grants on the schema are sufficient.
+        """
+        if theme not in FLEET_SEMANTIC_VIEWS:
+            return None
+        schema, view, spec = FLEET_SEMANTIC_VIEWS[theme]
+        text, count = re.subn(r"(?m)^name: \S+$", f"name: {view}", (SCRIPTS / spec).read_text(), count=1)
+        if count != 1:
+            raise RuntimeError(f"{spec}: no top-level name to override")
+        self.run(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+        self.run("CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)", (schema, text))
+        return f"{schema}.{view}"
+
     def prepare(self, theme, existing, listing):
+        result = self.resolve(theme, existing, listing)
+        if self.check or result.startswith("PENDING"):
+            return result
+        # Non-fatal: the tables are usable without it; prune_agent_specs.py then
+        # removes query_overture_global, exactly as for any missing view.
+        try:
+            fqn = self.ensure_fleet_semantic_view(theme)
+        except Exception as exc:
+            return result + f"; WARN fleet semantic view not built: {str(exc)[:300]}"
+        return result + (f"; semantic view {fqn} built" if fqn else "")
+
+    def resolve(self, theme, existing, listing):
         source = choose_source(existing, listing)
         if source in ("imported", "existing-local"):
             self.describe(theme)
