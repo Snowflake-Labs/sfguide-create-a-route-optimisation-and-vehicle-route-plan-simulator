@@ -711,23 +711,27 @@ $$;
 -- Install-time build for the active CONFIG region (force = TRUE for a clean rebuild).
 --
 -- GUARDED, and the guard is load-bearing. This is the ONLY statement in this file
--- that depends on the five Overture Marketplace listings acquired above, which is
+-- that depends on the five Overture sources resolved by prepare_overture.py (a
+-- share, an existing copy, or the public S3 fallback), which is
 -- the most likely thing to fail on a brand-new account (listing availability,
 -- ORGDATACLOUD access, region). Because `snow sql -f` is stop-on-first-error, an
 -- unguarded failure here abandoned the remaining ~1,400 lines of this file - the
 -- LOCATION diagnostics, the ZIP enrichment, the SOURCING diagnostics and the
 -- FLEET_APP.SOURCING views - so one missing listing silently emptied five views
 -- that have nothing to do with Overture. Catchment is allowed to fail alone.
+-- The region is read ONCE so the coverage counts describe exactly the region
+-- that was built, not whatever CONFIG holds a moment later.
 EXECUTE IMMEDIATE $$
 BEGIN
-  CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
-    (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
+  LET build_region VARCHAR := '';
+  SELECT REGION INTO :build_region FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;
+  CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(:build_region, TRUE);
   LET poi_count INTEGER := 0;
   LET address_count INTEGER := 0;
   SELECT COUNT(*) INTO :poi_count FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
-    WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1);
+    WHERE REGION = :build_region;
   SELECT COUNT(*) INTO :address_count FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
-    WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1);
+    WHERE REGION = :build_region;
   IF (poi_count = 0 OR address_count = 0) THEN
     RETURN 'WARN: Overture geographic coverage incomplete: ' || poi_count || ' POIs, '
       || address_count || ' addresses. Site Impact / Closure Impact household results '
