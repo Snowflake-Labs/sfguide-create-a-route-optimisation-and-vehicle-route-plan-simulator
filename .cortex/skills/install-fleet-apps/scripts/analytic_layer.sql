@@ -510,26 +510,23 @@ WHEN NOT MATCHED THEN INSERT (PARAM_KEY, PARAM_VALUE, PARAM_TYPE, CATEGORY, ENAB
 --    Runs LAST: depends on the two Overture listings + (optionally) REGION_CATALOG.
 --    A failure here (no Overture coverage / engine absent) does NOT block 1-3.
 -- =============================================================================
--- 4a. Acquire the Overture listings (idempotent; no-op when already imported).
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
-CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
-CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KJ');
-CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__TRANSPORTATION FROM LISTING GZT0Z4CM1E9KJ;
--- Overture Buildings (CARTO.BUILDING polygons -> depot centroids via ST_CENTROID)
--- and Divisions (CARTO.DIVISION_AREA admin polygons -> real region boundaries).
--- Both free, same CARTO/Overture provider as the three themes above.
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KN');
-CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__BUILDINGS FROM LISTING GZT0Z4CM1E9KN;
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9M9');
-CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__DIVISIONS FROM LISTING GZT0Z4CM1E9M9;
+-- 4a. Overture sources are prepared by prepare_overture.py before this file.
+-- Both Marketplace shares and S3-loaded tables expose OVERTURE_MAPS__*.CARTO.
+-- Keep acquisition out of the analytic file so a regional listing failure cannot
+-- abort unrelated LOCATION/SOURCING definitions below.
 -- SafeGraph Open Census: FULL-coverage free US demographics (242k census block
 -- groups, ACS tables + geometry). Backs the demographics generator (Wave 2).
 -- NOTE: "free" demographics listings are usually tiny samples (e.g. No Fret
 -- GZ1M6ZYDCF2 = 24 rows); SafeGraph Open Census is the real full-coverage one.
-CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZSNZ2UNN0');
-CREATE DATABASE IF NOT EXISTS SAFEGRAPH_OPEN_CENSUS_FREE FROM LISTING GZSNZ2UNN0;
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZSNZ2UNN0');
+  CREATE DATABASE IF NOT EXISTS SAFEGRAPH_OPEN_CENSUS_FREE FROM LISTING GZSNZ2UNN0;
+  RETURN 'SafeGraph source ready';
+EXCEPTION WHEN OTHER THEN
+  RETURN 'WARN: optional SafeGraph demographics unavailable: ' || SQLERRM;
+END;
+$$;
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -725,6 +722,17 @@ EXECUTE IMMEDIATE $$
 BEGIN
   CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT(
     (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1), TRUE);
+  LET poi_count INTEGER := 0;
+  LET address_count INTEGER := 0;
+  SELECT COUNT(*) INTO :poi_count FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+    WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1);
+  SELECT COUNT(*) INTO :address_count FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+    WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1);
+  IF (poi_count = 0 OR address_count = 0) THEN
+    RETURN 'WARN: Overture geographic coverage incomplete: ' || poi_count || ' POIs, '
+      || address_count || ' addresses. Site Impact / Closure Impact household results '
+      || 'are unavailable. S3 cannot fill missing Overture coverage; configure a regional address source.';
+  END IF;
   RETURN 'catchment built';
 EXCEPTION
   WHEN OTHER THEN
@@ -1200,6 +1208,15 @@ $$;
 -- which shares no dependency with either.
 EXECUTE IMMEDIATE $$
 BEGIN
+  LET missing_regions INTEGER := 0;
+  SELECT COUNT(*) INTO :missing_regions
+    FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG c
+    WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p WHERE p.REGION = c.REGION)
+       OR NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES a WHERE a.REGION = c.REGION);
+  IF (missing_regions > 0) THEN
+    RETURN 'WARN: Location diagnostics skipped: configured region lacks Overture POIs or addresses. '
+      || 'Site Impact / Closure Impact household results require a source with local coverage.';
+  END IF;
   CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
   RETURN 'location diagnostics built';
 EXCEPTION

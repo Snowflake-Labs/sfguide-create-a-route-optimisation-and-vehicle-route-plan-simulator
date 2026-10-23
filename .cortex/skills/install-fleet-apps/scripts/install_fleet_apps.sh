@@ -648,6 +648,19 @@ fi
 # combination. The three builder CALLs in analytic_layer.sql are now individually
 # guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
+  note "[3.5/8] Overture sources: reuse / Marketplace / public S3 fallback..."
+  note "  S3 copies are global; file-byte cap=${OVERTURE_MAX_BYTES:-500000000000}, per-statement timeout=${OVERTURE_TIMEOUT:-1800}s."
+  note "  Local storage and cross-region/cloud transfer may cost extra. Set OVERTURE_MAX_BYTES lower to bound fallback loads."
+  if python3 "$SCRIPTS/prepare_overture.py" --connection "$CONNECTION" \
+      --warehouse "${OVERTURE_WAREHOUSE:-ROUTING_ANALYTICS}" \
+      --max-bytes "${OVERTURE_MAX_BYTES:-500000000000}" \
+      --timeout "${OVERTURE_TIMEOUT:-1800}" >/tmp/ifa_overture.log 2>&1; then
+    step "3.5 Overture sources" OK
+  else
+    note "  WARN: Overture sources incomplete; see /tmp/ifa_overture.log"
+    tail -12 /tmp/ifa_overture.log
+    step "3.5 Overture sources" WARN
+  fi
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
   # --enable-templating NONE is REQUIRED: authored prose in the file contains
   # ampersands (e.g. "P&L" in a comment), which snow CLI's default templating
@@ -1236,6 +1249,15 @@ if [ "${SKIP_ROLES:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
     && step "8 roles" OK \
     || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
+  if python3 "$SCRIPTS/prepare_overture.py" --connection "$CONNECTION" \
+      --warehouse "${OVERTURE_WAREHOUSE:-ROUTING_ANALYTICS}" \
+      --grant-role FLEET_APP_USER >/tmp/ifa_overture_grants.log 2>&1; then
+    step "8 Overture grants" OK
+  else
+    note "  WARN: Overture reader grants incomplete; see /tmp/ifa_overture_grants.log"
+    tail -8 /tmp/ifa_overture_grants.log
+    step "8 Overture grants" WARN
+  fi
 else
   step "8 roles" SKIPPED
 fi

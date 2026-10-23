@@ -29,6 +29,11 @@
 version: 1
 
 gates:
+  - id: overture_source_fallback
+    run: python3 .cortex/skills/install-fleet-apps/scripts/test_prepare_overture.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_fallback_negative.py
+    scope: static
+    why: missing listings, schema drift, failed loads and wrong grants must not silently publish unusable Overture sources
   # ── repo hygiene ────────────────────────────────────────────────────────────
   - id: no_ignored_source
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py
