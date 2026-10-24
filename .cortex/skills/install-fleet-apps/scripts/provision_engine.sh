@@ -342,7 +342,7 @@ note "[6/6] engine services (ORS_SERVICE_${REGION} builds its graph on first boo
 # one character per line in a terminal and shows no readable state at all.
 snow sql -c "$CONN" --format CSV -q "$TAG_SQL SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP
   ->> SELECT \"name\", \"status\" FROM \$1;" 2>/dev/null \
-  | grep -Ev '^(status|Statement executed.*|name,status|)$' | sed 's/^/    /' | tail -12 || true
+  | grep -Ev '^$|^status$|^name,status$|^Statement executed' | sed 's/^/    /' | tail -12 || true
 
 echo
 echo "================================================================"

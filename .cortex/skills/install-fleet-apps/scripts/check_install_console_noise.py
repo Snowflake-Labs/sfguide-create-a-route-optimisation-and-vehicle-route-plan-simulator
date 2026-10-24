@@ -18,9 +18,12 @@ RULE E - the install summary prints AUTO_SUSPEND_SECS=0 as no-suspend: the
          reader used `or "-"`, which turned 0 into "idle-suspend -s".
 RULE F - "endpoint still provisioning" advice prints only when a URL is empty;
          it was unconditional and pointed at a command shown only in that case.
+RULE G - the SHOW SERVICES filter, executed through the platform grep on a
+         recorded sample, prints exactly the service rows and no grep error.
 """
 import pathlib
 import re
+import subprocess
 import sys
 
 S = pathlib.Path(__file__).resolve().parent
@@ -71,6 +74,21 @@ def main() -> int:
     hint = re.search(r'^(.*)\n.*echo "   4\. .*provisioning', inst, re.M)
     if not hint or not re.search(r'if \[ -z "\$\{SA_URL:-\}" \]', hint.group(1)):
         errs.append("RULE F endpoint-provisioning advice is printed even when both URLs resolved")
+
+    # RULE G - run the service-status filter through the platform grep. macOS
+    # grep rejects an empty alternative ("(a|b|)"), so a pattern that passed a
+    # read-through printed "grep: empty (sub)expression" and no services at all.
+    filt = re.search(r"SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP.*?grep -Ev '([^']+)'", pe, re.S)
+    if not filt:
+        errs.append("RULE G service-status filter (grep -Ev '...') not found after SHOW SERVICES")
+    else:
+        sample = ("status\nStatement executed successfully.\n\nname,status\n"
+                  "DOWNLOADER,RUNNING\nORS_SERVICE_SANFRANCISCO,RUNNING\n\n")
+        p = subprocess.run(["grep", "-Ev", filt.group(1)], input=sample, capture_output=True, text=True)
+        want = "DOWNLOADER,RUNNING\nORS_SERVICE_SANFRANCISCO,RUNNING\n"
+        if p.stderr.strip() or p.returncode not in (0, 1) or p.stdout != want:
+            errs.append(f"RULE G service-status filter misbehaves under grep: rc={p.returncode} "
+                        f"stderr={p.stderr.strip()!r} stdout={p.stdout!r}")
 
     for e in errs:
         print("FAIL", e)

@@ -41,5 +41,14 @@ h.replace(INST, 'if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then\n  ech
           'if true; then\n  echo "   4.',
           expect="RULE F endpoint-provisioning advice is printed even when both URLs resolved",
           name="F: provisioning advice printed unconditionally")
+# The shipped regression: an empty alternative BSD grep rejects.
+h.replace(PE, "grep -Ev '^$|^status$|^name,status$|^Statement executed'",
+          "grep -Ev '^(status|Statement executed.*|name,status|)$'",
+          expect="RULE G service-status filter misbehaves under grep",
+          name="G: filter with an empty alternative")
+h.replace(PE, "grep -Ev '^$|^status$|^name,status$|^Statement executed'",
+          "grep -Ev '^$|^status$'",
+          expect="RULE G service-status filter misbehaves under grep",
+          name="G: filter that leaks the header lines")
 
 sys.exit(h.finish())
