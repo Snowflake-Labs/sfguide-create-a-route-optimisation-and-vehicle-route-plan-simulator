@@ -56,6 +56,17 @@ h.replace(DWELL, "ALTER TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGON
           "ALTER TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS SET DATA_RETENTION_TIME_IN_DAYS = 0, X_COMMENT",
           expect="CREATE TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS has no COMMENT tracking tag",
           name="B: CTAS whose ALTER ... SET COMMENT was dropped")
+# Rendered templates: `comment = $comment` is the tag ONLY inside the template dir.
+h.replace(f"{S}/overture_semantic/buildings.sql",
+          "create or replace view $ns.BUILDING comment = $comment as",
+          "create or replace view $ns.BUILDING as",
+          expect="CREATE VIEW $ns.BUILDING has no COMMENT tracking tag",
+          name="B: rendered template view without its $comment placeholder")
+h.add(f"{S}/negtest_placeholder_outside_templates.sql",
+      "ALTER SESSION SET query_tag = '{\"origin\":\"sf_sit-is-fleet\"}';\n"
+      "CREATE VIEW X.Y.Z comment = $comment AS SELECT 1;\n",
+      expect="CREATE VIEW X.Y.Z has no COMMENT tracking tag",
+      name="B: $comment placeholder outside the rendered-template dir")
 
 # ── C. tag schema ───────────────────────────────────────────────────────────
 h.replace(SEED, SEED_DB + SEED_TAG,

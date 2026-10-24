@@ -12,20 +12,26 @@ import argparse
 import json
 import pathlib
 import re
+import string
 import sys
 import urllib.request
 import uuid
 from contextlib import contextmanager
 
 from overture_contract import (
-    CONTRACT_VERSION, FLEET_SEMANTIC_VIEWS, LAYOUTS, LISTINGS, SEMANTIC_VIEWS, columns, database, definitions,
-    projection, schema_errors,
+    CATEGORY_SEARCH, CONTRACT_VERSION, FLEET_LAYER_SCHEMA, FLEET_SEMANTIC_VIEWS, FLEET_SV_SCHEMA, LAYOUTS,
+    LISTINGS, SEMANTIC_VIEWS, columns, database, definitions, projection, schema_errors,
 )
 
 TRACK = {"origin": "sf_sit-is-fleet", "name": "oss-install-fleet-apps",
          "version": {"major": 1, "minor": 0},
          "attributes": {"is_quickstart": 1, "source": "sql", "component": "overture-s3"}}
 COMMENT = json.dumps(TRACK, separators=(",", ":"))
+# The semantic layer is tagged for cleanup but is NOT an S3 copy: owned() must
+# never mistake it for loader-owned source data.
+LAYER_COMMENT = json.dumps(dict(TRACK, attributes=dict(TRACK["attributes"], component="overture-semantic")),
+                           separators=(",", ":"))
+STATEMENT_SEPARATOR = "\n-- statement\n"
 CONTROL = "FLEET_INTELLIGENCE.OVERTURE_LOAD"
 STAC_URL = "https://stac.overturemaps.org/catalog.json"
 RELEASE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\.\d+")
@@ -67,6 +73,26 @@ def choose_source(existing, listing):
     if ready in ("false", "no", "0"):
         return "s3"
     raise RuntimeError("Listing readiness is unknown; refusing to infer S3 fallback")
+
+
+def sql_literal(value):
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def render_layer(theme, warehouse):
+    """Render a theme's semantic-layer template into ordered statements.
+
+    Every substitution is a contract constant or a validated identifier, and
+    Template.substitute rejects any placeholder the template did not declare.
+    """
+    _, spec = FLEET_SEMANTIC_VIEWS[theme]
+    text = (SCRIPTS / spec).read_text()
+    if "$warehouse" in text and not warehouse:
+        raise RuntimeError(f"{spec}: a warehouse is required for the category search service")
+    rendered = string.Template(text).substitute(
+        ns=FLEET_LAYER_SCHEMA, sv=FLEET_SV_SCHEMA, src=database(theme) + ".CARTO",
+        comment=sql_literal(LAYER_COMMENT), warehouse=identifier(warehouse) if warehouse else "")
+    return [part.strip() for part in rendered.split(STATEMENT_SEPARATOR) if part.strip()]
 
 
 def published_release(document):
@@ -117,8 +143,9 @@ class Session:
 
 class Preparer:
     def __init__(self, session, *, check=False, max_bytes=500_000_000_000,
-                 refresh=False, release=None):
+                 refresh=False, release=None, warehouse=None):
         self.session = session
+        self.warehouse = warehouse
         self.check = check
         self.max_bytes = max_bytes
         self.refresh = refresh
@@ -207,29 +234,38 @@ class Preparer:
         self.run(f"CREATE DATABASE {database(theme)} FROM LISTING {listing}")
 
     def ensure_fleet_semantic_view(self, theme):
-        """Build the agents' fleet-owned semantic view over whichever source won.
+        """Build the theme's fleet-owned semantic layer over whichever source won.
 
-        Same YAML as the S3 in-share copy, only renamed: the base table name is
-        identical for a share and an S3 copy, and both carry the contract schema.
-        FLEET_APP_USER needs no share privilege for it (verified): the existing
-        ALL/FUTURE semantic view grants on the schema are sufficient.
+        Normalized views in FLEET_LAYER_SCHEMA, then the theme's semantic view in
+        FLEET_SV_SCHEMA (Places also builds the category vocabulary and search).
+        The source name is identical for a share and an S3 copy, and both carry
+        the contract schema, so one template serves every source.
         """
         if theme not in FLEET_SEMANTIC_VIEWS:
             return None
-        schema, view, spec = FLEET_SEMANTIC_VIEWS[theme]
-        text, count = re.subn(r"(?m)^name: \S+$", f"name: {view}", (SCRIPTS / spec).read_text(), count=1)
-        if count != 1:
-            raise RuntimeError(f"{spec}: no top-level name to override")
-        self.run(f"CREATE SCHEMA IF NOT EXISTS {schema}")
-        self.run("CALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(%s, %s)", (schema, text))
-        return f"{schema}.{view}"
+        view, _ = FLEET_SEMANTIC_VIEWS[theme]
+        statements = render_layer(theme, self.warehouse)
+        for schema in (FLEET_LAYER_SCHEMA, FLEET_SV_SCHEMA):
+            self.run(f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT = {sql_literal(LAYER_COMMENT)}")
+        for statement in statements:
+            self.run(statement)
+        return f"{FLEET_SV_SCHEMA}.{view}"
+
+    def grant_layer(self, role):
+        """Reader access to the semantic layer the agents query on the user's behalf."""
+        role_sql = identifier(role)
+        self.run(f"GRANT USAGE ON SCHEMA {FLEET_LAYER_SCHEMA} TO ROLE {role_sql}")
+        self.run(f"GRANT SELECT ON ALL VIEWS IN SCHEMA {FLEET_LAYER_SCHEMA} TO ROLE {role_sql}")
+        self.run(f"GRANT SELECT ON ALL TABLES IN SCHEMA {FLEET_LAYER_SCHEMA} TO ROLE {role_sql}")
+        self.run(f"GRANT USAGE ON CORTEX SEARCH SERVICE {CATEGORY_SEARCH} TO ROLE {role_sql}")
+        return "semantic layer reader access granted"
 
     def prepare(self, theme, existing, listing):
         result = self.resolve(theme, existing, listing)
         if self.check or result.startswith("PENDING"):
             return result
         # Non-fatal: the tables are usable without it; prune_agent_specs.py then
-        # removes query_overture_global, exactly as for any missing view.
+        # removes that theme's query_overture_* tool, as for any missing view.
         try:
             fqn = self.ensure_fleet_semantic_view(theme)
         except Exception as exc:
@@ -392,7 +428,8 @@ def main(argv=None):
             listings = {}
             listing_error = str(exc)
         preparer = Preparer(session, check=args.check, max_bytes=args.max_bytes,
-                            refresh=args.refresh, release=args.release)
+                            refresh=args.refresh, release=args.release,
+                            warehouse=args.warehouse or identity["WAREHOUSE"])
         failures = 0
         for theme, listing_id in LISTINGS.items():
             try:
@@ -406,6 +443,12 @@ def main(argv=None):
             except Exception as exc:
                 failures += 1
                 print(f"FAILED {theme}: {exc}", flush=True)
+        if args.grant_role:
+            try:
+                print("semantic layer: " + preparer.grant_layer(args.grant_role), flush=True)
+            except Exception as exc:
+                failures += 1
+                print(f"FAILED semantic layer grants: {exc}", flush=True)
         print("S3 copies use the versioned " + CONTRACT_VERSION + " table contract and "
               "recreate the vendor Places semantic view from its exported YAML.")
         return 2 if failures else 0

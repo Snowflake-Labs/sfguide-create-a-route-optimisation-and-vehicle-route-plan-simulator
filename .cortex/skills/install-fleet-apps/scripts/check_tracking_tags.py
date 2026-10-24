@@ -98,6 +98,21 @@ CREATE_RE = re.compile(
 
 QUERY_TAG_RE = re.compile(r"query_tag\s*=", re.IGNORECASE)
 
+# SQL TEMPLATES that are never run by `snow sql -f`: prepare_overture.py renders
+# them in its own session (QUERY_TAG = the tracking tag, set in Session.__init__)
+# and substitutes `$comment` with LAYER_COMMENT, whose origin and render are
+# asserted by test_prepare_overture.py. So rule A is the renderer's, and the
+# literal `comment = $comment` placeholder is the tag. Nothing else qualifies.
+RENDERED_TEMPLATE_DIRS = (
+    pathlib.Path(__file__).resolve().parent / "overture_semantic",
+)
+TEMPLATE_TAG_RE = re.compile(r"\bCOMMENT\s*=\s*\$comment\b", re.IGNORECASE)
+TEMPLATE_SEPARATOR = "\n-- statement\n"   # prepare_overture.STATEMENT_SEPARATOR
+
+
+def is_rendered_template(path: pathlib.Path) -> bool:
+    return any(path.resolve().parent == d for d in RENDERED_TEMPLATE_DIRS)
+
 # A JSON tracking tag, in either the plain or the doubled-single-quote (dynamic
 # SQL) form. Non-greedy up to the matching close of the nested attributes object.
 TAG_RE = re.compile(r'\{\s*""?origin""?\s*:\s*""?[^"\']*?""?.*?\}\s*\}', re.DOTALL)
@@ -266,9 +281,12 @@ def check_sql_file(path: pathlib.Path, problems: list, stats: dict):
     text = strip_comments(raw)
     rel = path.relative_to(REPO_ROOT)
     stats["sql_files"] += 1
+    template = is_rendered_template(path)
 
     # ── A. session query_tag ────────────────────────────────────────────
-    if not QUERY_TAG_RE.search(text):
+    if template:
+        pass
+    elif not QUERY_TAG_RE.search(text):
         problems.append(
             f"{rel}: no `ALTER SESSION SET query_tag` - every SQL session must "
             f"be tagged (AGENTS.md)."
@@ -290,6 +308,13 @@ def check_sql_file(path: pathlib.Path, problems: list, stats: dict):
     }
 
     units = split_statements(text)
+    if template:
+        # A template has no `;` - its statements are split by the renderer's own
+        # separator, so split the same way or one $comment would cover the file.
+        units, cursor = [], 0
+        for part in raw.split(TEMPLATE_SEPARATOR):
+            units.append((strip_comments(part), raw.index(part, cursor)))
+            cursor = units[-1][1] + len(part)
     units += [u for s, o in units for u in inner_statements(s, o)]
 
     for stmt, off in units:
@@ -311,7 +336,7 @@ def check_sql_file(path: pathlib.Path, problems: list, stats: dict):
         if exc:
             stats["exempt"] += 1
             continue
-        if has_comment_clause(stmt):
+        if has_comment_clause(stmt) or (template and TEMPLATE_TAG_RE.search(stmt)):
             continue
         # CTAS / dynamic-SQL fallback: ALTER ... SET COMMENT elsewhere in file.
         short = oname.split(".")[-1].upper()

@@ -84,7 +84,8 @@ fallback when no region is provisioned).
 | **Deterministic verb** | `query_overture_places` -> `ROUTING_TOOLS.TOOL_OVERTURE_SEARCH` | region/bbox-bounded place search, counts, map-ready rows | region OR explicit bbox + hard LIMIT |
 | **Deterministic verb** | `query_overture_addresses` -> `ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES` | address density/coverage | region OR explicit bbox + hard LIMIT |
 | **Region SV (Analyst)** | `query_catchment` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT` | "how many / per-city" counts within the active fleet region (POIs + addresses) | active region (data pre-scoped by `analytic_layer.sql`) |
-| **Global SV (Analyst)** | `query_overture_global` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES` | worldwide place filtering/listing + attributes (brand, website) + data confidence | Analyst-generated filters only |
+| **Global SV (Analyst)** | `query_overture_global` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES` | worldwide place filtering, counts and maps by category, brand, locality; resolve categories with `overture_category_search` | bbox_* filters + Analyst guidance |
+| **Global SVs (Analyst)** | `query_overture_divisions`, `query_overture_address_catalog`, `query_overture_roads`, `query_overture_buildings` -> `SV_OVERTURE_DIVISIONS/ADDRESSES/TRANSPORTATION/BUILDINGS` | worldwide boundaries and reverse geocoding, addresses, road network composition, building footprints | addresses/roads/buildings REQUIRE a bbox (see install-fleet-apps SKILL.md, "Overture semantic layer") |
 
 ### Why we build the global SV instead of using the vendor's
 
@@ -100,15 +101,13 @@ the view cannot be fixed in place.
 
 `prepare_overture.py` therefore builds `FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES`
 for every Places source (imported share, existing copy, or S3 fallback) from
-`install-fleet-apps/scripts/overture_places_semantic_view.yaml`. That file is the
-vendor view's own YAML export, with only the broken expressions rewritten, so
-names, synonyms, descriptions, instructions and verified queries are the vendor's.
-**Caveat (unchanged from the vendor model):** it exposes only confidence
-metrics (`AVG/MIN/MAX_CONFIDENCE`), **no row-count metric**, so "how many"
-questions are routed to `query_catchment` (region-scoped, has `total_pois` /
-`total_addresses` COUNT metrics) or to the deterministic verbs. The ADDRESSES
-share ships no semantic view, so address questions are served by
-`query_overture_addresses` and `SV_CATCHMENT`'s `total_addresses` metric.
+`install-fleet-apps/scripts/overture_semantic/places.sql`. It sits over a
+normalized view `FLEET_INTELLIGENCE.OVERTURE.PLACE`, reads `TAXONOMY` for the
+category, and has a `place_count` metric, so worldwide "how many" questions work.
+Region-scoped counts still prefer `query_catchment` and the deterministic verbs.
+The other four themes get the same treatment (`SV_OVERTURE_DIVISIONS`,
+`SV_OVERTURE_ADDRESSES`, `SV_OVERTURE_TRANSPORTATION`, `SV_OVERTURE_BUILDINGS`).
+The vendor YAML is now used only to recreate the vendor-named view on S3 copies.
 
 It is still an *additive* convenience, not a contract dependency: if Places is
 unavailable the view is not built, and `prune_agent_specs.py` removes the tool.

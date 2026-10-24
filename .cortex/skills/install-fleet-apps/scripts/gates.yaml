@@ -34,6 +34,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_fallback_negative.py
     scope: static
     why: missing listings, schema drift, failed loads and wrong grants must not silently publish unusable Overture sources
+  - id: overture_semantic_layer
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_semantic_layer.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_semantic_layer_negative.py
+    scope: static
+    why: an Overture semantic view that lets the agent run an unbounded query scans up to 644 GB, or is untagged, unwired or reads the wrong theme
   # ── repo hygiene ────────────────────────────────────────────────────────────
   - id: no_ignored_source
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py

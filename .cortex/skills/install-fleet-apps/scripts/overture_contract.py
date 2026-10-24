@@ -12,10 +12,24 @@ CONTRACT_VERSION = "carto-2026-10-23"
 # Semantic views a share ships next to its tables, recreated for S3 copies from
 # the vendor's exported YAML (repaired where its expressions no longer resolve).
 SEMANTIC_VIEWS = {"places": {"OVERTUREMAPS_PLACES_SEMANTIC_VIEW": "overture_places_semantic_view.yaml"}}
-# The fleet-owned copy the agents use, built for EVERY Places source: the
-# vendor view inside the share is itself broken and a share cannot be patched.
-FLEET_SEMANTIC_VIEWS = {"places": ("FLEET_INTELLIGENCE.SEMANTIC", "SV_OVERTURE_PLACES",
-                                   "overture_places_semantic_view.yaml")}
+# The fleet-owned semantic layer the agents use, one semantic view per theme,
+# built for EVERY source over normalized views in FLEET_LAYER_SCHEMA. The vendor
+# view inside the Places share is itself broken and a share cannot be patched.
+# Each template is rendered with contract constants only (see prepare_overture).
+FLEET_SV_SCHEMA = "FLEET_INTELLIGENCE.SEMANTIC"
+FLEET_LAYER_SCHEMA = "FLEET_INTELLIGENCE.OVERTURE"
+FLEET_SEMANTIC_VIEWS = {
+    "places": ("SV_OVERTURE_PLACES", "overture_semantic/places.sql"),
+    "divisions": ("SV_OVERTURE_DIVISIONS", "overture_semantic/divisions.sql"),
+    "addresses": ("SV_OVERTURE_ADDRESSES", "overture_semantic/addresses.sql"),
+    "transportation": ("SV_OVERTURE_TRANSPORTATION", "overture_semantic/transportation.sql"),
+    "buildings": ("SV_OVERTURE_BUILDINGS", "overture_semantic/buildings.sql"),
+}
+# Themes too large for an unbounded scan: their semantic views must steer every
+# query onto the BBOX columns (measured: bbox filter 15 GB / 1.8 s vs geometry
+# predicate 644 GB / 14.5 min on BUILDING).
+BOUNDED_THEMES = ("addresses", "transportation", "buildings")
+CATEGORY_SEARCH = FLEET_LAYER_SCHEMA + ".OVERTURE_CATEGORY_SEARCH"
 LISTINGS = {
     "places": "GZT0Z4CM1E9KR", "addresses": "GZT0Z4CM1E9NQ",
     "divisions": "GZT0Z4CM1E9M9", "transportation": "GZT0Z4CM1E9KJ",
