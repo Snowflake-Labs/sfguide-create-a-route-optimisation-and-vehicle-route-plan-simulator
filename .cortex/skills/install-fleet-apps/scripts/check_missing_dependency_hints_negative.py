@@ -44,4 +44,9 @@ h.replace(MAP, "It is not produced by the admin app Data Studio; there is no Loc
           expect="FLEET_APP.LOCATION. tells the user to generate a dataset",
           name="M6 a note sends the user to generate a dataset")
 
+h.replace(ROUTE, "    const embedded = detectSuspendedInRows(rows);\n",
+          "    const embedded = { suspended: false } as ReturnType<typeof detectSuspendedInRows>;\n",
+          expect="E route.ts: the success path never calls detectSuspendedInRows(rows)",
+          name="M7 the success path stops scanning rows for embedded engine errors")
+
 sys.exit(h.finish())

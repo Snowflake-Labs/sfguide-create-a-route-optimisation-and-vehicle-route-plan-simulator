@@ -19,6 +19,9 @@ Rules:
      what "does not exist" means and names BUILD_LOCATION_DIAGNOSTICS
   D  the Location repair entry's fix names BUILD_LOCATION_DIAGNOSTICS and no
      repair text tells the user to generate a dataset
+  E  /api/query's SUCCESS path runs detectSuspendedInRows() on the rows before
+     returning them: a sleeping engine can come back as an error object in a
+     cell of a query that succeeded, and the panel then rendered blank
 
 Usage:  python3 .cortex/skills/install-fleet-apps/scripts/check_missing_dependency_hints.py
 Exit:   0 clean, 1 violation
@@ -96,6 +99,15 @@ for e in entries:
     text = " ".join([*(e.get("fix") or []), e.get("note", "")])
     if re.search(r"\bgenerate (a|the) [a-z ]*dataset\b", text, re.I):
         fail(f"D repair-map.json: {e['prefix']} tells the user to generate a dataset")
+
+# E
+try_at = route.find("try {")
+success_return = route.find("columns: columns.map(", try_at)
+scan_at = route.find("detectSuspendedInRows(rows)", try_at)
+if scan_at < 0:
+    fail("E route.ts: the success path never calls detectSuspendedInRows(rows)")
+elif success_return >= 0 and scan_at > success_return:
+    fail("E route.ts: detectSuspendedInRows(rows) runs after the rows are returned")
 
 if failures:
     print("missing-dependency hints: %d violation(s)" % len(failures))
