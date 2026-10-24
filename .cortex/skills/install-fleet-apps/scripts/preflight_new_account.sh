@@ -17,16 +17,15 @@
 # The builders are now individually guarded, but "catchment will be empty" is
 # still something you want to know BEFORE the run, not after.
 #
-# Read-only apart from the listing databases themselves (CREATE DATABASE ... FROM
-# LISTING is the only way to test acquisition, and it is exactly what the install
-# does; it is idempotent via IF NOT EXISTS).
+# Source selection is shared with prepare_overture.py. This preflight is read-only:
+# it does not accept listing terms, create databases, or scan S3 files.
 #
 # Usage:  bash preflight_new_account.sh [-c CONNECTION] [--no-listings]
 # Exit:   0 = ready, 1 = blocking problem, 2 = ready with degraded features
 # =============================================================================
 set -uo pipefail
 
-CONNECTION="${CONNECTION:-fleet_test_evals}"
+CONNECTION="${CONNECTION:-}"
 CHECK_LISTINGS=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,6 +35,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
+[ -n "$CONNECTION" ] || { echo "ERROR: --connection is required"; exit 1; }
 
 BLOCKING=0
 DEGRADED=0
@@ -126,21 +126,15 @@ fi
 echo
 echo "[4] Overture Marketplace listings (catchment, location, sourcing depend on these)"
 if [ "$CHECK_LISTINGS" = "1" ]; then
-  # id:database pairs exactly as analytic_layer.sql acquires them.
-  for pair in "GZT0Z4CM1E9KR:OVERTURE_MAPS__PLACES" \
-              "GZT0Z4CM1E9NQ:OVERTURE_MAPS__ADDRESSES" \
-              "GZT0Z4CM1E9KJ:OVERTURE_MAPS__TRANSPORTATION" \
-              "GZT0Z4CM1E9KN:OVERTURE_MAPS__BUILDINGS" \
-              "GZT0Z4CM1E9M9:OVERTURE_MAPS__DIVISIONS"; do
-    lid="${pair%%:*}"; db="${pair##*:}"
-    OUT=$(q "CALL SYSTEM\$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', '$lid'); CREATE DATABASE IF NOT EXISTS $db FROM LISTING $lid;")
-    if has_i "$OUT" "error" || has_i "$OUT" "denied" || has_i "$OUT" "not authorized"; then
-      warn "$db (listing $lid) NOT acquirable - the catchment view will be empty; site_impact / closure_impact / sourcing need PLACES + ADDRESSES"
-      printf '%s\n' "$OUT" | grep -iE "error|denied|not authorized" | head -1 | sed 's/^/       /'
-    else
-      pass "$db acquirable"
-    fi
-  done
+  python3 "$(dirname "$0")/prepare_overture.py" --connection "$CONNECTION" --check
+  rc=$?
+  if [ "$rc" = "0" ]; then
+    pass "Overture sources reusable or available via Marketplace"
+  elif [ "$rc" = "2" ]; then
+    warn "Overture sources need S3 loading or remediation; see per-theme output above"
+  else
+    fail "Overture source capability could not be checked"
+  fi
 else
   warn "listing probe skipped (--no-listings)"
 fi

@@ -161,7 +161,17 @@ export function ViewPicker() {
                     fontSize: '13px',
                   }}
                 >
-                  <div style={{ fontWeight: 500, color: 'var(--text-primary, #111827)' }}>{v.label}</div>
+                  <div style={{ fontWeight: 500, color: v.unavailable ? 'var(--text-tertiary, #9ca3af)' : 'var(--text-primary, #111827)' }}>
+                    {v.label}
+                    {v.unavailable && (
+                      <span
+                        title={`Data layer not built: ${v.unavailable.label || v.unavailable.schemas.join(', ')}`}
+                        style={{ marginLeft: '6px', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 600, backgroundColor: 'var(--surface-secondary, #f3f4f6)', color: 'var(--text-secondary, #6b7280)' }}
+                      >
+                        Data layer not built
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginTop: '2px' }}>
                     {v.description}
                   </div>

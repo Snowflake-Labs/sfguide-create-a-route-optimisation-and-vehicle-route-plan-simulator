@@ -1,5 +1,7 @@
 {
   "vrp_simulator": {
+    "requires": [],
+    "requiresNote": "No data layer: it calls the optimize_routes verb, gated by the routing engine notice.",
     "label": "Route Optimization Simulator",
     "description": "Plan multi-stop vehicle routes from a depot and view them on the map.",
     "category": "Optimization",
@@ -61,6 +63,7 @@
     }
   },
   "emergency_response": {
+    "requires": ["FLEET_APP.EMERGENCY_RESPONSE.VW_CARE_CENTERS", "FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES"],
     "label": "Emergency Response",
     "description": "Plan a capacitated multi-depot evacuation for the active region: hazard-zone risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.",
     "category": "Optimization",
@@ -132,6 +135,7 @@
     }
   },
   "backload_matching": {
+    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES", "FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS"],
     "label": "Backload Matching",
     "description": "Fill empty return legs by matching idle vehicles to waiting internal loads and external freight offers, internal-first, and view the proposed backhaul tours on the map.",
     "category": "Optimization",
@@ -199,6 +203,8 @@
     }
   },
   "backload_proposals": {
+    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS"],
+    "requiresExists": ["FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED"],
     "label": "Backload Proposals",
     "description": "Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.",
     "category": "Optimization",
@@ -264,6 +270,8 @@
     }
   },
   "ops_console": {
+    "requires": [],
+    "requiresNote": "No data layer: it runs ops verbs only and is gated by role.",
     "label": "Ops Console",
     "description": "Operator controls: suspend/resume services, set the active region, and check platform health.",
     "category": "Admin",
@@ -324,6 +332,9 @@
     }
   },
   "triangle_proposals": {
+    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS"],
+    "requiresExists": ["FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES"],
+    "requiresNote": "VW_TRIANGLES is a computed result (no two-hop chains in the current window is legitimate, measured empty on wgb26798), so it must only exist.",
     "label": "Triangle Proposals",
     "description": "Chained two-hop backhaul: when no single load brings a vehicle back, carry one load part of the way and a second load the rest. Internal loads are exhausted before an outside exchange is consulted, every leg is costed live on the road network, and each chain is shown against the cost of simply running home empty.",
     "category": "Optimization",

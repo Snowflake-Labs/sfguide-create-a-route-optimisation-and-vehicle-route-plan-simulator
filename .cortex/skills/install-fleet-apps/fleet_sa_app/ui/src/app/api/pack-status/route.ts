@@ -5,50 +5,47 @@ import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
+import { schemaProbes, type LayerStatus } from '@/lib/view-deps';
+import { findRepairEntry } from '@/lib/missing-dependency';
+import packViews from '@/lib/packs/fleet/pack-views.json';
 
-// Surfacing gate signal. A domain pack's dashboards/agent tools should only appear
-// when the pack's data resolves. We derive the set of <DB>.<SCHEMA>.<VIEW>
-// objects the configured views actually query, probe one representative view per
-// schema (LIMIT 1), and return { schema: present }. The app-shell hides views whose
-// schema is absent/empty. Mirrors packs/_lib/install.py --probe.
+// Code-registered pack views write their SQL in components, so they declare
+// the objects they read in pack-views.json `requires` (any database: the
+// backload cockpit reads FLEET_INTELLIGENCE.BACKLOAD_MATCHING too). The FQN is
+// interpolated into a FROM, so it must be a plain three-part identifier.
+const FQN_RE = /^[A-Z0-9_]+\.[A-Z0-9_]+\.[A-Z0-9_]+$/;
+// `requires` objects must exist AND return a row (an input layer the builder
+// left empty is not built). `requiresExists` objects only have to exist: they
+// are computed results, where zero rows is a legitimate answer (VW_TRIANGLES
+// was measured empty on a healthy account) and a row probe would grey out a
+// working page.
+type ProbeMode = 'rows' | 'exists';
+function packRequiredObjects(): Map<string, ProbeMode> {
+  const out = new Map<string, ProbeMode>();
+  for (const meta of Object.values(packViews as Record<string, { requires?: string[]; requiresExists?: string[] }>)) {
+    for (const fqn of meta.requiresExists ?? []) if (FQN_RE.test(fqn) && !out.has(fqn)) out.set(fqn, 'exists');
+    for (const fqn of meta.requires ?? []) if (FQN_RE.test(fqn)) out.set(fqn, 'rows');
+  }
+  return out;
+}
+
+// Surfacing gate signal. For every <DB>.<SCHEMA> the configured views read
+// (every nested query, see lib/view-deps.ts), probe one representative object
+// and report the schema as present / absent / unverified, with the label and
+// rebuild steps from repair-map.json when absent. The app shows a view whose
+// layer is absent as DISABLED with that reason, instead of hiding it with none.
+// `schemas` (boolean) and `degraded` are kept for older clients.
 // The data-layer DB defaults to FLEET_APP but is config-driven (dataLayer.database).
 const DEFAULT_DATA_LAYER_DB = 'FLEET_APP';
 
-function collectSchemaProbes(
-  viewsConfig: Record<string, unknown>,
-  db: string,
-): Record<string, string> {
-  // schema -> a representative fully-qualified view to probe
-  const probes: Record<string, string> = {};
-  const fqnRe = new RegExp(`${db}\\.([A-Za-z0-9_]+)\\.([A-Za-z0-9_]+)`, 'g');
-  const scan = (sql: string) => {
-    let m: RegExpExecArray | null;
-    fqnRe.lastIndex = 0;
-    while ((m = fqnRe.exec(sql)) !== null) {
-      const [, schema, view] = m;
-      // Skip table-function calls (e.g. TABLE(FLEET_APP.X.F_VW_*_SCOPED(...))):
-      // a UDTF can't be probed as a plain table (`SELECT 1 FROM fn LIMIT 1` fails),
-      // which would wrongly mark the schema empty and hide its dashboards. A
-      // function reference is always immediately followed by '('.
-      const next = sql[m.index + m[0].length];
-      if (next === '(') continue;
-      if (!probes[schema]) probes[schema] = `${db}.${schema}.${view}`;
-    }
-  };
-  for (const def of Object.values(viewsConfig)) {
-    const areas = (def as { areas?: Record<string, { data?: { query?: string } }> }).areas ?? {};
-    for (const area of Object.values(areas)) {
-      const q = area?.data?.query;
-      if (typeof q === 'string') scan(q);
-    }
-  }
-  return probes;
-}
+// schema -> the object to probe: schemaProbes() in lib/view-deps.ts, shared
+// with the agent catalog so both probe the same object.
 
 async function handleGet() {
   const configPath = process.env.APP_VIEWS_CONFIG;
   const status: Record<string, boolean> = {};
-  if (!configPath) return NextResponse.json({ schemas: status });
+  const layers: Record<string, LayerStatus> = {};
+  if (!configPath) return NextResponse.json({ schemas: status, layers, degraded: [] });
 
   let viewsConfig: Record<string, unknown> = {};
   try {
@@ -56,22 +53,44 @@ async function handleGet() {
     viewsConfig = JSON.parse(readFileSync(fullPath, 'utf-8'));
   } catch (err) {
     logger.error('pack-status-config-load', { path: configPath }, err);
-    return NextResponse.json({ schemas: status });
+    return NextResponse.json({ schemas: status, layers, degraded: [] });
   }
 
   const dataLayerDb = getServerConfig().dataLayer?.database ?? DEFAULT_DATA_LAYER_DB;
-  const probes = collectSchemaProbes(viewsConfig, dataLayerDb);
+  const probes = schemaProbes(viewsConfig, dataLayerDb);
   const degraded: string[] = [];
+  const absent = (schema: string, fqn: string) => {
+    const e = findRepairEntry(fqn);
+    layers[schema] = { state: 'absent', object: fqn, label: e?.label ?? e?.layer, fix: e?.fix ?? (e ? [e.action] : undefined), note: e?.note };
+    status[schema] = false;
+  };
   await Promise.all(
-    Object.entries(probes).map(async ([schema, fqn]) => {
+    Object.entries(probes).map(async ([schema, ref]) => {
+      const fqn = `${dataLayerDb}.${schema}.${ref.object}`;
       try {
-        const rows = await query<Record<string, unknown>>(`SELECT 1 AS X FROM ${fqn} LIMIT 1`);
-        status[schema] = rows.length > 0;
+        let present: boolean;
+        if (ref.isFunction) {
+          // Identifiers cannot be bound into a FROM, but INFORMATION_SCHEMA
+          // filters can; the DB name comes from server config, not the client.
+          const rows = await query<{ N?: number }>(
+            `SELECT COUNT(*) AS N FROM ${dataLayerDb}.INFORMATION_SCHEMA.FUNCTIONS WHERE FUNCTION_SCHEMA = ? AND FUNCTION_NAME = ?`,
+            [schema, ref.object],
+          );
+          present = Number(rows[0]?.N ?? 0) > 0;
+        } else {
+          const rows = await query<Record<string, unknown>>(`SELECT 1 AS X FROM ${fqn} LIMIT 1`);
+          present = rows.length > 0;
+        }
+        if (present) {
+          layers[schema] = { state: 'present', object: fqn };
+          status[schema] = true;
+        } else {
+          absent(schema, fqn);
+        }
       } catch (err) {
-        // Two very different failures used to land here identically, and both
-        // hid the pack:
-        //   (a) the object does not exist or the role cannot see it -> the pack
-        //       genuinely is not installed, so hiding it is correct;
+        // Two very different failures used to land here identically:
+        //   (a) the object does not exist or the role cannot see it -> the layer
+        //       genuinely is not built, so its views are shown unavailable;
         //   (b) the probe could not COMPLETE - a statement timeout, a busy
         //       warehouse, a transport error. Nothing is known about the pack.
         // Treating (b) as (a) is why every dashboard vanished during a
@@ -84,18 +103,52 @@ async function handleGet() {
         const missing = /does not exist|not authorized|Unknown user-defined|Insufficient privileges/i.test(msg);
         if (missing) {
           logger.warn('pack-status-probe-absent', { schema, fqn, err: msg });
-          status[schema] = false;
+          absent(schema, fqn);
         } else {
           // Could not measure. Keep the pack VISIBLE rather than silently
           // deleting a working dashboard, and tell the caller it is unverified.
           logger.error('pack-status-probe-unverified', { schema, fqn, err: msg });
           degraded.push(schema);
+          layers[schema] = { state: 'unverified', object: fqn };
           status[schema] = true;
         }
       }
     }),
   );
-  return NextResponse.json({ schemas: status, degraded });
+  // Pack-view objects: same rules, keyed by FQN.
+  const objects: Record<string, LayerStatus> = {};
+  await Promise.all(
+    [...packRequiredObjects()].map(async ([fqn, mode]) => {
+      const e = findRepairEntry(fqn);
+      const absentStatus: LayerStatus = { state: 'absent', object: fqn, label: e?.label ?? e?.layer, fix: e?.fix ?? (e ? [e.action] : undefined), note: e?.note };
+      try {
+        let present: boolean;
+        if (mode === 'exists') {
+          const [db, schema, name] = fqn.split('.');
+          const rows = await query<{ N?: number }>(
+            `SELECT COUNT(*) AS N FROM ${db}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+            [schema, name],
+          );
+          present = Number(rows[0]?.N ?? 0) > 0;
+        } else {
+          const rows = await query<Record<string, unknown>>(`SELECT 1 AS X FROM ${fqn} LIMIT 1`);
+          present = rows.length > 0;
+        }
+        objects[fqn] = present ? { state: 'present', object: fqn } : absentStatus;
+      } catch (err) {
+        const msg = String(err);
+        if (/does not exist|not authorized|Unknown user-defined|Insufficient privileges/i.test(msg)) {
+          logger.warn('pack-status-object-absent', { fqn, err: msg });
+          objects[fqn] = absentStatus;
+        } else {
+          logger.error('pack-status-object-unverified', { fqn, err: msg });
+          objects[fqn] = { state: 'unverified', object: fqn };
+          if (!degraded.includes(fqn)) degraded.push(fqn);
+        }
+      }
+    }),
+  );
+  return NextResponse.json({ schemas: status, layers, objects, degraded });
 }
 
 export const GET = withLogging(handleGet);

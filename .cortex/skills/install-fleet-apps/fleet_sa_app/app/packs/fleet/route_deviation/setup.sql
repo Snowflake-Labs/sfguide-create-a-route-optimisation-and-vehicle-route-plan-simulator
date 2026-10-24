@@ -113,7 +113,7 @@ CREATE OR REPLACE VIEW FLEET_APP.ROUTE_DEVIATION.VW_TRIP_PATHS
 -- is reachable from a Cortex agent: a semantic view cannot hold a GEOGRAPHY
 -- column, so SV_ROUTE_DEVIATION excluded both and no agent could ever draw a
 -- driven route. Outside the app the only mappable source is a query_* result
--- (data_to_map rejects an MCP verb result - cortex#156984), which made an
+-- (data_to_map then rejected an MCP verb result - cortex#156984), which made an
 -- actual-vs-expected map structurally impossible rather than merely awkward.
 --
 -- Unpivoted because data_to_map draws exactly ONE layer (MapSpec.Layer is a

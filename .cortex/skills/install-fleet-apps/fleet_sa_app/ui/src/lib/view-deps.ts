@@ -1,0 +1,87 @@
+// What a declarative view reads: every <DB>.<SCHEMA>.<OBJECT> reference in every
+// nested `data.query` (top-level areas, map layers, filter option queries).
+//
+// Used by /api/pack-status (what to probe) and load-views (what a view needs).
+// Both used to scan only `areas[*].data.query`, so a view whose layer or filter
+// query read a missing schema was never gated. scripts/layer_impact.py walks
+// the same way for the installer and the agent catalog; check_view_availability
+// asserts the two agree on every shipped view.
+
+export interface DataRef {
+  schema: string;
+  object: string;
+  /** Followed by '(' - a UDTF/function, which cannot be probed with SELECT. */
+  isFunction: boolean;
+}
+
+export function collectQueries(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const v of node) collectQueries(v, out);
+  } else if (node && typeof node === 'object') {
+    const o = node as Record<string, unknown>;
+    const data = o.data as { query?: unknown } | undefined;
+    if (data && typeof data === 'object' && typeof data.query === 'string') out.push(data.query);
+    for (const v of Object.values(o)) collectQueries(v, out);
+  }
+  return out;
+}
+
+export function dataRefs(sql: string, db: string): DataRef[] {
+  const re = new RegExp(`\\b${db}\\.([A-Za-z0-9_]+)\\.([A-Za-z0-9_]+)`, 'g');
+  const out: DataRef[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) {
+    const rest = sql.slice(m.index + m[0].length);
+    out.push({ schema: m[1].toUpperCase(), object: m[2].toUpperCase(), isFunction: /^\s*\(/.test(rest) });
+  }
+  return out;
+}
+
+export function viewDataRefs(view: unknown, db: string): DataRef[] {
+  const seen = new Map<string, DataRef>();
+  for (const q of collectQueries(view)) {
+    for (const r of dataRefs(q, db)) {
+      const k = `${r.schema}.${r.object}`;
+      const prev = seen.get(k);
+      // A name used as a function anywhere is a function.
+      seen.set(k, prev ? { ...prev, isFunction: prev.isFunction || r.isFunction } : r);
+    }
+  }
+  return [...seen.values()];
+}
+
+// schema -> the one object to probe for it, across every view in order. A plain
+// view/table is preferred; a schema only referenced through table functions
+// (LIVE_* UDTFs) used to be skipped entirely - never probed, so always
+// "present" - and is checked in INFORMATION_SCHEMA.FUNCTIONS instead, since
+// `SELECT 1 FROM fn` cannot run. scripts/layer_impact.py schema_probes()
+// mirrors this so the agent catalog probes the same object.
+export function schemaProbes(views: Record<string, unknown>, db: string): Record<string, DataRef> {
+  const probes: Record<string, DataRef> = {};
+  for (const def of Object.values(views)) {
+    for (const ref of viewDataRefs(def, db)) {
+      const prev = probes[ref.schema];
+      if (!prev || (prev.isFunction && !ref.isFunction)) probes[ref.schema] = ref;
+    }
+  }
+  return probes;
+}
+
+export function viewSchemas(view: unknown, db: string): Set<string> {
+  return new Set(viewDataRefs(view, db).map((r) => r.schema));
+}
+
+// Per-schema availability from /api/pack-status.
+//   present    - the probe object returned rows (or the function exists)
+//   absent     - the object does not exist, the role cannot read it, or the
+//                builder left it empty: the layer was not built
+//   unverified - the probe could not complete (timeout, busy warehouse), so
+//                nothing is known; the view stays usable
+export type LayerState = 'present' | 'absent' | 'unverified';
+export interface LayerStatus {
+  state: LayerState;
+  object: string;
+  label?: string;
+  fix?: string[];
+  note?: string;
+}

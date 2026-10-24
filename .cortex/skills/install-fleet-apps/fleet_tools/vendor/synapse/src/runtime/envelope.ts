@@ -27,7 +27,12 @@ function parseRecord<R extends Record<string, unknown>>(
   const obj = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape)) {
-    out[key] = (shape[key as keyof typeof shape] as Schema<unknown>).parse(obj[key], `${what}.${key}`);
+    const schema = shape[key as keyof typeof shape] as Schema<unknown>;
+    // LOCAL PATCH 10 (see ../../VENDOR.md): a nullable RETURN key the proc did
+    // not set stays absent instead of becoming `key: null`. A verb's `rows`
+    // (CoWork data_to_map row set) must not appear at all on a failed call.
+    if (what === 'returns' && schema.kind === 'nullable' && !(key in obj)) continue;
+    out[key] = schema.parse(obj[key], `${what}.${key}`);
   }
   return out as R;
 }

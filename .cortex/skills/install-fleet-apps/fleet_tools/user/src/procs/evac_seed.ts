@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 // Region-generic Emergency Response participant seeder. Wraps TOOL_EVAC_SEED:
 // builds the drive-time isochrone union over the active region's health-anchor
@@ -35,6 +36,7 @@ export const evac_seed = defineProc({
   },
   returns: {
     result: t.object({}).describe('Seed response: union_geojson coverage polygon + risk-tagged participants[].'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.evacSeed, [
@@ -43,6 +45,6 @@ export const evac_seed = defineProc({
       args.range_minutes,
       args.target_count,
     ]);
-    return { result };
+    return withMapRows(ctx.conn, result, geometryAt('union_geojson'));
   },
 });

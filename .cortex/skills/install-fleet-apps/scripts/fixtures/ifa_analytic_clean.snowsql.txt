@@ -1,0 +1,15 @@
+EXECUTE IMMEDIATE $$
+BEGIN
+  CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();
+  RETURN 'location diagnostics built';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'WARN: BUILD_LOCATION_DIAGNOSTICS failed; site_impact / closure_impact '
+        || 'will be empty. Detail: ' || SQLERRM;
+END;
+$$;
++----------------------------+
+| anonymous block            |
+|----------------------------|
+| location diagnostics built |
++----------------------------+

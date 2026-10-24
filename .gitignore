@@ -94,3 +94,6 @@ benchmarks/matrix-access/results/blogpost-blurb.md
 
 # Agent behavioral eval run artifacts
 .cortex/skills/evals/results/agent/
+
+# Fleet field-enablement hub lives in its own folder (../fleet-field-hub), not here.
+apps/fleet-field-hub/

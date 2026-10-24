@@ -7,6 +7,7 @@ import { Header } from './header';
 import { ContextBar, type ContextBarField } from './context-bar';
 import { registerInlineComponents, registerToolMaps } from './inline';
 import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
+import type { LayerStatus } from '@/lib/view-deps';
 import { registerWorkflowViews, registerRoleAccessView } from '@/lib/framework-views';
 import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
@@ -92,6 +93,7 @@ export function AppShell() {
   const [contextBarFields, setContextBarFields] = useState<ContextBarField[]>([]);
   const [showAbout, setShowAbout] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [availabilityUnverified, setAvailabilityUnverified] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -133,9 +135,9 @@ export function AppShell() {
     Promise.all([
       fetch('/api/app-config').then((r) => r.json()),
       fetch('/api/views-config').then((r) => r.json()),
-      fetch('/api/pack-status').then((r) => r.json()).catch(() => ({ schemas: {} })),
+      fetch('/api/pack-status').then((r) => r.json()).catch(() => ({ schemas: {}, layers: {}, objects: {}, failed: true })),
     ])
-      .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean> }]) => {
+      .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean>; layers?: Record<string, LayerStatus>; objects?: Record<string, LayerStatus>; degraded?: string[]; failed?: boolean }]) => {
         setAppConfig({ ...DEFAULT_APP_CONFIG, ...appConfig });
 
         // Publish the display config (labels/units/thresholds) to the store AND the
@@ -162,11 +164,12 @@ export function AppShell() {
           }
         }
 
-        // Surfacing gate: schemas whose pack data did not resolve are hidden.
-        const schemaStatus = packStatus?.schemas ?? {};
-        const disabledSchemas = new Set(
-          Object.entries(schemaStatus).filter(([, present]) => !present).map(([s]) => s),
-        );
+        // Surfacing gate: views over an ABSENT layer (declarative views) or
+        // ABSENT required object (pack views) are shown unavailable with the
+        // reason - see load-views and packs/fleet/index.ts.
+        // Fail-open is deliberate (a probe outage must not empty the app), but
+        // it is no longer silent: an unmeasured state is flagged in the shell.
+        setAvailabilityUnverified(!!packStatus?.failed || (packStatus?.degraded?.length ?? 0) > 0);
 
         if (appConfig.contextBar) {
           setContextBarFields(appConfig.contextBar as ContextBarField[]);
@@ -200,7 +203,7 @@ export function AppShell() {
         }
 
         if (Object.keys(viewsConfig).length > 0) {
-          registerViewsFromConfig(viewsConfig, disabledSchemas, appConfig.dataLayer?.database);
+          registerViewsFromConfig(viewsConfig, packStatus?.layers, appConfig.dataLayer?.database);
         }
         // Bind this domain's map-producing tools to the inline map (config-driven).
         registerToolMaps(appConfig.tools?.mapTools ?? [], appConfig.tools?.geometryTools ?? []);
@@ -213,7 +216,7 @@ export function AppShell() {
         const resolvedPacks =
           appConfig.domainPacks ?? (appConfig.domainPack ? [appConfig.domainPack] : []);
         for (const id of resolvedPacks) {
-          PACK_REGISTRY[id]?.registerViews(disabledSchemas);
+          PACK_REGISTRY[id]?.registerViews(packStatus?.objects);
         }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
           // Always set the FQN - it's used by the write layer and other framework features.
@@ -302,6 +305,11 @@ export function AppShell() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       <Header name={appConfig?.name || ''} onAboutClick={() => setShowAbout(true)} />
       {contextBarFields.length > 0 && <ContextBar fields={contextBarFields} />}
+      {availabilityUnverified && (
+        <div role="status" style={{ padding: '4px 16px', backgroundColor: 'var(--surface-secondary, #f9fafb)', color: 'var(--text-secondary, #6b7280)', fontSize: '12px', borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
+          Data-layer availability could not be verified, so every view is listed. A view whose data was not built will show an error when opened.
+        </div>
+      )}
       {configError && (
         <div role="alert" style={{ padding: '8px 16px', backgroundColor: 'var(--surface-warning, #fffbeb)', color: 'var(--text-warning, #92400e)', fontSize: '13px', borderBottom: '1px solid var(--border-warning, #fde68a)' }}>
           {configError}

@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 export const network_optimization = defineProc({
   name: 'network_optimization',
@@ -21,9 +22,10 @@ export const network_optimization = defineProc({
   },
   returns: {
     result: t.object({}).describe('Optimization response: optimized routes and summary metrics.'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.networkOptimization, [args.profile, args.region]);
-    return { result };
+    return withMapRows(ctx.conn, result, geometryAt('geometry'));
   },
 });

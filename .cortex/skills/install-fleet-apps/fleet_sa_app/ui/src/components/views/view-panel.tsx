@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, Component, useState, type ReactNode } from 'react';
+import { UnavailableViewNotice } from './UnavailableViewNotice';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import { ViewPicker } from './view-picker';
@@ -71,7 +72,9 @@ export function ViewPanel() {
         )}
       </div>
       <div style={{ flex: 1, overflow: 'auto' }}>
-        {viewDef ? (
+        {viewDef?.unavailable ? (
+          <UnavailableViewNotice label={viewDef.label} info={viewDef.unavailable} />
+        ) : viewDef ? (
           <ViewErrorBoundary>
             <Suspense fallback={<ViewSkeleton />}>
               <viewDef.component

@@ -194,9 +194,9 @@ The contract, from the upstream source:
 | Layers per map | **exactly one** (`MapSpec.Layer` is a single struct, not a slice) |
 | Layer types | `latlon` (lat + lon columns), `geojson` (GeoJSON string), `h3` (H3 cell strings) |
 | Colour | one optional `color_column` + `color_scheme` (`sequential`, `categorical`, `divergent`, `snowflake`) |
-| Source | `tool_result_id` = the `tool_use_id` of a **prior SQL / analyst tool result** |
+| Source | `tool_result_id` = the `tool_use_id` of a prior SQL / analyst tool result, **or** of an MCP result whose structured content is one JSON document with a top-level `rows` array of objects (the routing verbs - see "Routing verb results are mappable") |
 | Citation | a **map** tag, never a chart tag (charts are Vega-Lite; a map cited as a chart does not render) |
-| Row payload | rows are inlined into the spec with a cap - an oversized payload renders **blank**, not an error |
+| Row payload | rows are inlined into the spec with a cap - an oversized payload renders **blank**, not an error. For an MCP source: one cell under 64 KB (else `unmappable_rows`), all rows under ~200 KB |
 
 Account switches (already set on tib85385, internal so `SHOW PARAMETERS` will not display
 them): `COPILOT_ORCHESTRATOR_PARAM_474`, `AI_ML__SI_ENABLE_MAP_CHART`,
@@ -274,9 +274,8 @@ Three traps, all observed:
 3. **Selecting `path_geojson` doubles the rows**, so it cannot be combined with a trip-level
    aggregate. Choose the trip first, then fetch its geometry.
 
-Engine-computed geometry (`DIRECTIONS` / `ISOCHRONES` / `OPTIMIZATION`) is still NOT
-mappable, for the reason in the section below: it is reachable only through `run_sql`, and
-an MCP result is rejected as a map source.
+Engine-computed geometry (`DIRECTIONS` / `ISOCHRONES` / `OPTIMIZATION`) is drawn from the
+routing verb's own top-level `rows`, not from a semantic view - see the section below.
 
 ## Live routing geometry (Tenet 9)
 
@@ -442,25 +441,41 @@ On that last one: MapViewer fetches the unkeyed CARTO **raster** endpoint
 basemap, and no server-side check can detect it. This is the same trap that made us migrate
 both of our own apps to the keyless vector positron style.
 
-## MCP tool results are not mappable
+## Routing verb results are mappable
 
-`data_to_map` requires `tool_result_id` from a **SQL / analyst** tool result
-(`system_execute_sql` or `cortex_analyst_text_to_sql`). An MCP server tool result - such as
-`run_sql`, `get_directions`, or any other synapse verb - is **not accepted** as a source.
-The call is silently ignored and the agent burns the rest of the turn trying alternatives.
+`data_to_map` accepts an MCP result only when its structured content is ONE JSON document
+with a top-level `rows` array of objects (`rows`, `results`, `data`, `records` or `items`).
+A single object under `result` is ignored, and so is a FeatureCollection stuffed into one
+cell. Two concatenated JSON documents are rejected outright.
 
-Tracked upstream as [cortex#156984](https://github.com/snowflake-eng/cortex/issues/156984).
+So every routing verb that has something to draw returns `{ result, rows }` on SUCCESS
+(`fleet_tools/user/src/map_rows.ts`). `result` is exactly what the TOOL_* procedure returned
+- the SA app renders it, multi-layer and at full resolution. `rows` is a projection of the
+ONE primary geometry, in one of two shapes, never mixed:
 
-Practical consequence for routing geometry: a routed LineString from `get_directions` (MCP)
-cannot be fed to `data_to_map`. To draw a route on a CoWork map, the geometry must come from
-a `query_*` semantic-view result that projects a GeoJSON column.
+| Verbs | rows | data_to_map |
+|---|---|---|
+| get_directions, compute_isochrone, map_match, optimize_routes, delivery_optimization, network_optimization, catchment, find_poi, evac_seed, evac_solve, vrp_solve | `{ GEOJSON }`, one line or polygon per row (FeatureCollections and route lists exploded; points dropped) | `layer_type "geojson"`, `geo_column "GEOJSON"` |
+| snap_to_road (snapped points only), query_overture_places, query_overture_addresses (list mode) | `{ LON, LAT }` | `layer_type "latlon"`, `lat_column "LAT"`, `lon_column "LON"` |
 
-For a **recorded** trip route that is now possible: `query_route_deviation` projects
-`path_geojson` (see "Drawing a trip's actual vs expected route" above). For geometry the
-engine computes **live** - a fresh `DIRECTIONS` route, an isochrone, a solved tour - it is
-still not, because there is no `query_*` path to it at all; report the distance and duration
-figures and offer `deep_link` to the app view that renders it. Note `lane_geojson` in
-`query_backload` is a straight line, not an ORS route, so it is not a substitute.
+A catchment or POI-in-isochrone result carries the polygon only, not its POIs: one call draws
+one layer. Every geometry is `ST_SIMPLIFY`'d at 250 m, then 1 km, then 5 km until the cell is
+under 60 KB, and dropped if even 5 km does not fit (a 180-part MultiPolygon such as Alaska
+stays over 100 KB at 5 km, because ST_SIMPLIFY never drops a ring). Point rows are capped at
+2,000 and the whole array at ~190 KB. A FAILED result has no `rows` key at all - vendored
+synapse patch 10 keeps an omitted nullable return key absent instead of `null`.
+`backload_solve` and `backload_chain_solve` request `g:false` from VROOM, so they carry no
+route geometry and return no rows. Gate: `check_cowork_rows.py`.
+
+Transport note: the managed MCP server delivers a verb's output to the agent as
+`{"json": {"result": "<the {result, rows} document as a string>"}}`, measured through
+`DATA_AGENT_RUN`. That a CoWork data_to_map call actually draws from it has NOT yet been
+observed in a CoWork session; it is the one link SQL cannot test, because data_to_map does
+not exist outside CoWork.
+
+For a **recorded** trip route, `query_route_deviation` projects `path_geojson` (see
+"Drawing a trip's actual vs expected route" above). Note `lane_geojson` in `query_backload`
+is a straight line, not an ORS route, so it is not a substitute for a routed path.
 
 ## Choosing between a map and a link
 

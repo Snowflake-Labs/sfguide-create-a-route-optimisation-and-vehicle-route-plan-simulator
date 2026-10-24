@@ -78,8 +78,8 @@ json_case(h, VIEWS,
 json_case(h, VIEWS, lambda v: v["site_impact"].update(info="Free-text prose."),
           expect="site_impact carries the retired top-level 'info' key",
           name="retired top-level info key reintroduced")
-h.replace(f"{PACK_DIR}/index.ts", "    ...metaFor('vrp_simulator'),",
-          "    ...metaFor('vrp_simulator'),\n    useCase: { headline: 'inline' },",
+h.replace(f"{PACK_DIR}/index.ts", "    ...packMeta('vrp_simulator', objects),",
+          "    ...packMeta('vrp_simulator', objects),\n    useCase: { headline: 'inline' },",
           expect="vrp_simulator declares an inline 'useCase:' block",
           name="pack metadata re-inlined into index.ts")
 json_case(h, VIEWS,

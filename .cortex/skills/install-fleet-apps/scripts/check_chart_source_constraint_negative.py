@@ -15,7 +15,8 @@ SECTION = "CHARTING (data_to_chart):\n"
 NEXT_SECTION = "VISUAL HANDOVER ("
 MCP_SENTENCE = ("An MCP tool result - backload_solve, backload_chain_solve, get_directions, "
                 "or any synapse verb - is NOT accepted. Do not attempt it. ")
-MAP_SENTENCE = "data_to_map accepts ONLY a SQL/analyst tool result as tool_result_id."
+MAP_SENTENCE = "data_to_map accepts ONLY two sources as tool_result_id:"
+OLD_MAP_SENTENCE = "data_to_map accepts ONLY a SQL/analyst tool result as tool_result_id:"
 
 h = Harness("check_chart_source_constraint.py")
 
@@ -80,6 +81,13 @@ spec_case("CHARTING header renamed, 'see CHARTING' pointers left dangling", "age
 # The sibling map rule the chart rule was copied from.
 spec_case("sibling data_to_map source constraint deleted", "agent-spec.json",
           orch(MAP_SENTENCE, "data_to_map draws a prior tool result."),
+          expect="agent-spec.json: the sibling data_to_map source constraint is gone")
+# The pre-rows sentence coming back (as a revert would bring it) is its own failure.
+spec_case("old 'accepts ONLY a SQL/analyst result' map sentence restored", "agent-spec.json",
+          orch(MAP_SENTENCE, OLD_MAP_SENTENCE),
+          expect="agent-spec.json: the orchestration still says data_to_map accepts only a SQL/analyst result")
+spec_case("routing-verb rows source dropped from the map sentence", "agent-spec.json",
+          orch("routing verb result that carries a top-level rows array", "routing verb result"),
           expect="agent-spec.json: the sibling data_to_map source constraint is gone")
 
 h.add(f"{APP}/negtest-agent-spec.json", "{ not json",

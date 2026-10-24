@@ -1,17 +1,19 @@
 import { lazy } from 'react';
 import { viewRegistry } from '@/lib/view-registry';
-import type { AgentKnowledge, AppRole, UseCase } from '@/lib/types';
+import type { AgentKnowledge, AppRole, UseCase, ViewUnavailable } from '@/lib/types';
+import type { LayerStatus } from '@/lib/view-deps';
 import packViews from './pack-views.json';
 
 // Fleet domain pack: registers the Tier-3 showcase views (custom full-page
 // components, not YAML area-views). They call User routing verbs via /api/tool
 // and render results on a deck.gl map.
 //
-// This pack is vehicle/industry-AGNOSTIC: the routing/ops showcases
-// (vrp_simulator, emergency_wizard, ops_console) are tool-driven and always
-// register. Backload Matching is a neutral, customer-agnostic showcase gated by
-// its pack probe (FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS). The remaining
-// industry-vertical showcases (freight exchange) stay excluded.
+// This pack is vehicle/industry-AGNOSTIC. Every view always registers; one whose
+// declared `requires` object (pack-views.json) /api/pack-status reports absent
+// is registered `unavailable`, so it stays in the picker and opens to the
+// reason and rebuild steps. vrp_simulator and ops_console read no data layer
+// and declare none. The remaining industry-vertical showcases (freight
+// exchange) stay excluded.
 //
 // This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
 // it generically via the configured `domainPacks` array - there is no fleet
@@ -36,6 +38,9 @@ interface PackViewMeta {
   roles?: AppRole[];
   useCase?: UseCase;
   agentKnowledge?: AgentKnowledge;
+  requires?: string[];
+  requiresExists?: string[];
+  requiresNote?: string;
 }
 
 const meta = packViews as unknown as Record<string, PackViewMeta>;
@@ -48,10 +53,29 @@ function metaFor(id: string): PackViewMeta {
   return m;
 }
 
-export function registerViews(_disabledSchemas?: Set<string>): void {
+// Registration metadata for one view: its pack-views.json entry minus the
+// dependency fields, plus `unavailable` from the first absent required object.
+function packMeta(id: string, objects?: Record<string, LayerStatus>) {
+  const { requires, requiresExists, requiresNote: _note, ...rest } = metaFor(id);
+  const missing = [...(requires ?? []), ...(requiresExists ?? [])].filter((fqn) => objects?.[fqn]?.state === 'absent');
+  let unavailable: ViewUnavailable | undefined;
+  if (missing.length) {
+    const first = objects![missing[0]];
+    unavailable = {
+      schemas: [...new Set(missing.map((f) => f.split('.').slice(0, 2).join('.')))],
+      object: first.object,
+      label: first.label,
+      fix: first.fix,
+      note: first.note,
+    };
+  }
+  return { ...rest, unavailable };
+}
+
+export function registerViews(objects?: Record<string, LayerStatus>): void {
   viewRegistry.register({
     id: 'vrp_simulator',
-    ...metaFor('vrp_simulator'),
+    ...packMeta('vrp_simulator', objects),
     component: lazy(() =>
       import('@/components/views/areas/vrp-simulator').then((mod) => ({
         default: mod.VrpSimulatorView,
@@ -61,7 +85,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
 
   viewRegistry.register({
     id: 'emergency_response',
-    ...metaFor('emergency_response'),
+    ...packMeta('emergency_response', objects),
     component: lazy(() =>
       import('@/components/views/areas/emergency-response').then((mod) => ({
         default: mod.EmergencyResponseView,
@@ -74,7 +98,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // pack, builds a VROOM challenge, and solves via /api/backload/solve (contract seam).
   viewRegistry.register({
     id: 'backload_matching',
-    ...metaFor('backload_matching'),
+    ...packMeta('backload_matching', objects),
     component: lazy(() =>
       import('@/components/views/areas/backload-matching').then((mod) => ({
         default: mod.BackloadMatchingView,
@@ -89,7 +113,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // VW_CANDIDATES_SCORED, and a Cortex rationale. Solves via /api/backload/solve.
   viewRegistry.register({
     id: 'backload_proposals',
-    ...metaFor('backload_proposals'),
+    ...packMeta('backload_proposals', objects),
     component: lazy(() =>
       import('@/components/views/areas/backload-proposals').then((mod) => ({
         default: mod.BackloadProposalsView,
@@ -104,7 +128,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // This is the case single-hop matching structurally cannot find.
   viewRegistry.register({
     id: 'triangle_proposals',
-    ...metaFor('triangle_proposals'),
+    ...packMeta('triangle_proposals', objects),
     component: lazy(() =>
       import('@/components/views/areas/triangle-proposals').then((mod) => ({
         default: mod.TriangleProposalsView,
@@ -117,7 +141,7 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   // app role (FLEET_APP_OPS) in production (Phase 3E).
   viewRegistry.register({
     id: 'ops_console',
-    ...metaFor('ops_console'),
+    ...packMeta('ops_console', objects),
     component: lazy(() =>
       import('@/components/views/areas/ops-console').then((mod) => ({
         default: mod.OpsConsoleView,

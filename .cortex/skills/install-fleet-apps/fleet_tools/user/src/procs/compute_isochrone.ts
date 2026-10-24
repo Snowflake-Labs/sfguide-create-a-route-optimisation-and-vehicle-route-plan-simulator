@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 export const compute_isochrone = defineProc({
   name: 'compute_isochrone',
@@ -22,6 +23,7 @@ export const compute_isochrone = defineProc({
   },
   returns: {
     result: t.object({}).describe('Isochrone response: GeoJSON polygon(s) for the reachable area.'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.isochrone, [
@@ -29,6 +31,6 @@ export const compute_isochrone = defineProc({
       args.range_minutes,
       args.profile,
     ]);
-    return { result };
+    return withMapRows(ctx.conn, result, geometryAt('geometry'));
   },
 });

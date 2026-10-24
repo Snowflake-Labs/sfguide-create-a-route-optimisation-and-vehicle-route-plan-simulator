@@ -422,6 +422,17 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
       fi
     fi
   fi
+  # Missing-layer remediation: a view over a layer the installer skipped must
+  # name the builder that creates it. A customer was once sent to an Admin-app
+  # "Location dataset generator" that does not exist.
+  if [ "${MISSING_DEP_VERIFY:-1}" != "0" ]; then
+    echo "[1/7] Verify missing-layer errors name the real builder..."
+    python3 "$SKILL_DIR/scripts/check_missing_dependency_hints.py" \
+      || { echo "ERROR: missing-dependency hints gate failed (see above)."; exit 1; }
+    ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npx tsx scripts/verify-missing-dependency.mts >/dev/null ) \
+      || { echo "ERROR: missing-dependency message test failed. Re-run for detail:"; \
+           echo "         (cd '$UI_DIR' && npx tsx scripts/verify-missing-dependency.mts)"; exit 1; }
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   # Clear the Next/webpack cache first: @fleet-kit/core is a symlinked file:
   # dependency, and webpack's filesystem cache does not reliably invalidate when
