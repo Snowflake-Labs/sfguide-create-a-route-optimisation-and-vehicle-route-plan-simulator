@@ -321,7 +321,10 @@ if [ "${SKIP_MODULES:-0}" != "1" ]; then
   for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql \
            07_studio_jobs.sql 08_observability.sql 15_route_optimization_seed.sql; do
-    bash "$SCRIPTS/run_sql_module.sh" "$CONN" "$MODULES_DIR/$m" || exit 1
+    # QUIET=1: the statement echo of these 9 modules is ~11,400 lines (measured on
+    # a fresh install) that buried every installer message. The full echo stays in
+    # /tmp/<module>.log; on failure the module's own error lines are printed.
+    QUIET=1 bash "$SCRIPTS/run_sql_module.sh" "$CONN" "$MODULES_DIR/$m" || exit 1
   done
   # Resume observability ingest + retention tasks (created suspended by module 08).
   snow sql -c "$CONN" -q "
@@ -335,12 +338,20 @@ fi
 
 # ── 6. verify ───────────────────────────────────────────────────
 note "[6/6] engine services (ORS_SERVICE_${REGION} builds its graph on first boot, 5-15 min):"
-snow sql -c "$CONN" -q "$TAG_SQL SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 2>/dev/null | tail -12 || true
+# CSV, not the default table: SHOW SERVICES has ~30 columns, so the table renders
+# one character per line in a terminal and shows no readable state at all.
+snow sql -c "$CONN" --format CSV -q "$TAG_SQL SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP
+  ->> SELECT \"name\", \"status\" FROM \$1;" 2>/dev/null \
+  | grep -Ev '^(status|Statement executed.*|name,status|)$' | sed 's/^/    /' | tail -12 || true
 
 echo
 echo "================================================================"
 echo " ORS engine provisioning complete."
 echo "   region (default bootstrap): $REGION"
 echo "   ORS_SERVICE_${REGION} may take 5-15 min to finish building graphs."
-echo "   Re-run install_fleet_apps.sh (idempotent) - layer 3 will report LIVE."
+if [ "${FLEET_INSTALLER:-0}" = "1" ]; then
+  echo "   The installer continues and waits for the graph before it finishes."
+else
+  echo "   Re-run install_fleet_apps.sh (idempotent) - layer 3 will report LIVE."
+fi
 echo "================================================================"

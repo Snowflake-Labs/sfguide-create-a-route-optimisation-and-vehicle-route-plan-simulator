@@ -60,6 +60,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_silent_waits_negative.py
     scope: static
     why: a bare wait on a backgrounded install phase prints nothing for ~30 min, indistinguishable from a hang
+  - id: install_console_noise
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_install_console_noise.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_console_noise_negative.py
+    scope: static
+    why: the engine module load printed ~11,400 statement-echo lines and told the customer to re-run mid-install
   - id: image_versions
     run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py

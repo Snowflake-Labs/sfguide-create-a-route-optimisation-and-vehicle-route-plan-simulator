@@ -506,7 +506,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # SKIP_IMAGES=1 only when the forked phase actually completed above; otherwise
     # this call builds them itself, so the serial path stays intact.
     SKIP_IMAGES="$([ "$ENGINE_IMAGES_DONE" = "1" ] && echo 1 || echo "${SKIP_IMAGES:-0}")" \
-      bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
+      FLEET_INSTALLER=1 bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
       || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
     note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
     DEPLOYMENT_MODE="engine"
