@@ -351,6 +351,18 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_chart_spec_negative.py
     scope: static
     why: an agent chart payload fails to extract, theme, compile or cite in place
+  - id: missing_dependency_message
+    run: npx tsx scripts/verify-missing-dependency.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_sa_app/ui
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_missing_dependency_negative.py
+    scope: static
+    why: a view over a skipped layer shows a raw "does not exist" error instead of the builder that creates it
+  - id: missing_dependency_hints
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_missing_dependency_hints.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_missing_dependency_hints_negative.py
+    scope: static
+    why: a schema the views read has no repair entry, or the app or agent can point a user at a generator that does not exist
   - id: map_spec
     run: npx tsx verify_map_spec.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
