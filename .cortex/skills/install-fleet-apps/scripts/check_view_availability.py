@@ -9,7 +9,8 @@ The app's gate could only HIDE (no reason), scanned only top-level queries,
 never probed function-only schemas, and the agent catalog had no availability.
 
 Rules:
-  A  lib/view-deps.ts and layer_impact.py find the SAME schemas for every view
+  A  lib/view-deps.ts and layer_impact.py find the SAME schemas for every view,
+     and choose the SAME probe object per schema
      in app-views.json (tsx probe), so the app gate, the installer summary and
      the agent catalog agree on what a view needs
   B  view_catalog.sql carries REQUIRED_SCHEMAS and site_impact lists LOCATION
@@ -38,7 +39,7 @@ SKILL = HERE.parent
 UI = SKILL / "fleet_sa_app" / "ui"
 SRC = UI / "src"
 sys.path.insert(0, str(HERE))
-from layer_impact import load_views, view_schemas  # noqa: E402
+from layer_impact import load_views, schema_probes, view_schemas  # noqa: E402
 
 failures: list[str] = []
 
@@ -55,7 +56,13 @@ p = subprocess.run(["npx", "tsx", "scripts/print-view-schemas.mts"], cwd=UI,
 if p.returncode != 0:
     failures.append("A tsx probe failed: %s" % p.stderr.strip()[-300:])
 else:
-    ts = json.loads(p.stdout.strip().splitlines()[-1])
+    probe_out = json.loads(p.stdout.strip().splitlines()[-1])
+    ts = probe_out["schemas"]
+    py_probes = {s: [o, fn] for s, (o, fn) in schema_probes(load_views()).items()}
+    if probe_out["probes"] != py_probes:
+        bad = sorted(k for k in set(py_probes) | set(probe_out["probes"])
+                     if py_probes.get(k) != probe_out["probes"].get(k))
+        failures.append("A probe choice differs between view-deps.ts and layer_impact.py for: %s" % bad)
     for vid, v in load_views().items():
         py = view_schemas(v)
         if ts.get(vid) != py:
@@ -66,9 +73,13 @@ cat = (SKILL / "fleet_sa_app" / "app" / "view_catalog.sql").read_text()
 if not re.search(r"^\s*REQUIRED_SCHEMAS\s+ARRAY\b", cat, re.M):
     failures.append("B view_catalog.sql has no REQUIRED_SCHEMAS column")
 else:
-    m = re.search(r"\$\$site_impact\$\$.*?ARRAY_CONSTRUCT\(([^()]*)\);?\s*(?:UNION ALL|;|$)", cat, re.S)
+    m = re.search(r"\$\$site_impact\$\$.*?ARRAY_CONSTRUCT\(([^()]*)\),\s*ARRAY_CONSTRUCT\(([^()]*)\);?\s*(?:UNION ALL|;|$)", cat, re.S)
     if not m or "$$LOCATION$$" not in m.group(1):
         failures.append("B site_impact's REQUIRED_SCHEMAS does not list LOCATION")
+    if not re.search(r"^\s*REQUIRED_OBJECTS\s+ARRAY\b", cat, re.M):
+        failures.append("B view_catalog.sql has no REQUIRED_OBJECTS column (agents cannot see an empty layer)")
+    elif not m or "$$rows:FLEET_APP.LOCATION." not in m.group(2):
+        failures.append("B site_impact's REQUIRED_OBJECTS has no rows: probe on a LOCATION object")
 
 # C
 lv = code(SRC / "lib" / "load-views.tsx")
@@ -85,7 +96,7 @@ if not re.search(r"\.unavailable\s*\?\s*\(\s*<UnavailableViewNotice", vp):
 
 # E
 ps = code(SRC / "app" / "api" / "pack-status" / "route.ts")
-for needle, why in (("viewDataRefs(", "nested query walk"),
+for needle, why in (("schemaProbes(", "shared nested-query probe choice"),
                     ("INFORMATION_SCHEMA.FUNCTIONS WHERE FUNCTION_SCHEMA", "function-only schema probe"),
                     ("layers", "per-schema layers in the response")):
     if needle not in ps:

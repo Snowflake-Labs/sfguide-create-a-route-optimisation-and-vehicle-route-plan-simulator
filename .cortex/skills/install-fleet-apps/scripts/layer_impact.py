@@ -79,6 +79,42 @@ def view_schemas(view, db: str = DB) -> list[str]:
     return sorted({s for n in collect_query_nodes(view) for s, _, _ in data_refs(n["query"], db)})
 
 
+def view_refs(view, db: str = DB) -> list[tuple[str, str, bool]]:
+    """(schema, object, is_function) in first-seen order; a name used as a
+    function anywhere is a function. Mirrors viewDataRefs in view-deps.ts."""
+    seen: dict[tuple[str, str], bool] = {}
+    for n in collect_query_nodes(view):
+        for s, o, fn in data_refs(n["query"], db):
+            seen[(s, o)] = seen.get((s, o), False) or fn
+    return [(s, o, fn) for (s, o), fn in seen.items()]
+
+
+def schema_probes(views: dict, db: str = DB) -> dict[str, tuple[str, bool]]:
+    """schema -> (object, is_function) to probe it with. Mirrors schemaProbes()
+    in view-deps.ts, so the app and the agent catalog probe the same object."""
+    probes: dict[str, tuple[str, bool]] = {}
+    for v in views.values():
+        for s, o, fn in view_refs(v, db):
+            prev = probes.get(s)
+            if prev is None or (prev[1] and not fn):
+                probes[s] = (o, fn)
+    return probes
+
+
+def required_objects(view, probes: dict[str, tuple[str, bool]], db: str = DB) -> list[str]:
+    """Probe spec per dependency: 'rows:FQN' must exist and return a row,
+    'exists:FQN' must only exist, 'function:FQN' must exist as a function.
+    Pack views declare theirs in pack-views.json (requires / requiresExists)."""
+    if "requires" in view or "requiresExists" in view:
+        return (["rows:%s" % f for f in view.get("requires") or []]
+                + ["exists:%s" % f for f in view.get("requiresExists") or []])
+    out = []
+    for s in view_schemas(view, db):
+        o, fn = probes[s]
+        out.append("%s:%s.%s.%s" % ("function" if fn else "rows", db, s, o))
+    return out
+
+
 def load_views() -> dict:
     return json.loads(APP_VIEWS.read_text())
 

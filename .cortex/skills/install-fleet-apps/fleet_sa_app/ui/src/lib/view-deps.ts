@@ -50,6 +50,23 @@ export function viewDataRefs(view: unknown, db: string): DataRef[] {
   return [...seen.values()];
 }
 
+// schema -> the one object to probe for it, across every view in order. A plain
+// view/table is preferred; a schema only referenced through table functions
+// (LIVE_* UDTFs) used to be skipped entirely - never probed, so always
+// "present" - and is checked in INFORMATION_SCHEMA.FUNCTIONS instead, since
+// `SELECT 1 FROM fn` cannot run. scripts/layer_impact.py schema_probes()
+// mirrors this so the agent catalog probes the same object.
+export function schemaProbes(views: Record<string, unknown>, db: string): Record<string, DataRef> {
+  const probes: Record<string, DataRef> = {};
+  for (const def of Object.values(views)) {
+    for (const ref of viewDataRefs(def, db)) {
+      const prev = probes[ref.schema];
+      if (!prev || (prev.isFunction && !ref.isFunction)) probes[ref.schema] = ref;
+    }
+  }
+  return probes;
+}
+
 export function viewSchemas(view: unknown, db: string): Set<string> {
   return new Set(viewDataRefs(view, db).map((r) => r.schema));
 }

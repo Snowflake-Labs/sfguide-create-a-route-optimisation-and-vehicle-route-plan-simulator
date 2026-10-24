@@ -42,14 +42,15 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG (
   KEY_METRICS           ARRAY,
   EXAMPLE_QUESTIONS     ARRAY,
   CHUNK_TEXT            STRING,
-  REQUIRED_SCHEMAS      ARRAY
+  REQUIRED_SCHEMAS      ARRAY,
+  REQUIRED_OBJECTS      ARRAY
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 INSERT INTO FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG
   (VIEW_ID, LABEL, DOMAIN, DESCRIPTION, HEADLINE, BUSINESS_QUESTION, AUDIENCE,
    INDUSTRIES, TALK_TRACK, SNOWFLAKE_CAPABILITIES, DATA_REQUIRED, VALUE_DRIVERS,
    METHOD, CAVEATS, PREFERRED_TOOL, KEY_METRICS, EXAMPLE_QUESTIONS, CHUNK_TEXT,
-   REQUIRED_SCHEMAS)
+   REQUIRED_SCHEMAS, REQUIRED_OBJECTS)
 SELECT
   $$ops_console$$, $$Ops Console$$, $$Admin$$,
   $$Operator controls: suspend/resume services, set the active region, and check platform health.$$,
@@ -80,6 +81,7 @@ Caveats: Operator-facing, not a customer demo. Resuming a large region loads its
 Key metrics on screen: live service inventory with per-service status (RUNNING / SUSPENDED) and the compute pool each runs in; the active routing region and the active dashboard context (region, asset mode); healthcheck rollup: ORS CORE function count, TOOL_* procedure count, routing gateway status; the synapse verb audit trail (recent_verb_attempts): verb, outcome, error code, timestamp.
 Example questions: which services are running right now? resume the routing service for the active region suspend everything so we stop accruing cost is the platform healthy? show me the recent verb calls and any that failed
 Gotchas: This page drives the OPERATOR verb bundle, which is role-gated to FLEET_APP_OPS and is a separate tool surface from the consumer agent's. A service reading SUSPENDED is the NORMAL idle state, not a fault - say so and offer to resume rather than reporting a problem. A service showing no-suspend (AUTO_SUSPEND_SECS=0) is also expected: it means an active build or the keep-warm window is deliberately pinning it. Resuming a region reloads its road graph and is not instant, so a RUNNING status does not by itself mean routing is answerable yet. Suspending the SA or admin app itself is blocked deliberately.$$,
+  ARRAY_CONSTRUCT(),
   ARRAY_CONSTRUCT()
 UNION ALL
 SELECT
@@ -113,7 +115,8 @@ Key metrics on screen: idle vehicle count; total cost of idleness (USD); project
 Example questions: Which vehicle has the highest cost of idleness? What is the total cost of idleness? Which dispatcher has the most idle vehicles? How many CRITICAL-severity vehicles are there?
 Gotchas: query_asset_velocity (SV_ASSET_VELOCITY) is the dedicated tool for idle vehicles, cost of idleness, projected savings, and lane demand; use it for ranking and breakdown questions. The four headline KPIs are published as on-screen metric values. idle_min is the active idle-day threshold and selected_vehicle is the clicked row. The AI repositioning rationale is generated on screen and is not in panel context.
 Preferred analytics tool: query_asset_velocity.$$,
-  ARRAY_CONSTRUCT($$ROUTE_OPTIMIZATION$$)
+  ARRAY_CONSTRUCT($$ROUTE_OPTIMIZATION$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS$$)
 UNION ALL
 SELECT
   $$delivery_sync$$, $$Delivery Sync$$, $$Core$$,
@@ -146,7 +149,8 @@ Key metrics on screen: site visits detected for the service date; sites READY (u
 Example questions: Which sites are ready for the crew right now? Has the vehicle left site X yet? How long did the vehicle spend at site X? Which vehicles are within 15 minutes of their next site? Which sites are still waiting on a delivery?
 Gotchas: ANSWER ROUTING, read this first. "Which vehicles are on site now?" and any other question about a VEHICLE's current state must be answered from the map's 'vehicles' layer memo (statuses On site now / Just left / Approaching / En route / Idle), NEVER from the readiness table or the 'Unloads In Progress' KPI. Those two describe different populations and routinely disagree by design: the KPI and the readiness table count VISITS whose unload window brackets the replay instant, while the map counts VEHICLES inside a site geofence. A vehicle whose unload is already complete can still be On site now while it has not physically left (its detail reads "On site, unload complete"), and a vehicle mid-unload reads "Unloading" - so 2 vehicles on site alongside 1 unload in progress is a correct pair of numbers, not a contradiction. Say which of the two a number came from. Note also that query_delivery_sync is HISTORICAL: it cannot see live status at all, so never re-query it to settle a "right now" question - use the on-screen map memo. Readiness is evaluated AT the replay hour, not at wall-clock now, so the same site reads EXPECTED earlier in the day and READY later. IMPORTANT: EXPECTED is NOT a forecast. A visit only exists because it was detected from telemetry, so at an early replay instant a later visit reads EXPECTED purely because the rest of the day is already in the data - it is hindsight. In production that state would come from the dispatch plan instead. READY and IN_PROGRESS are direct detections and carry no such caveat. On the map, sites are hollow grey rings and do NOT encode readiness; readiness lives in the KPI cards, the readiness table and the site tooltip. Vehicle colour carries the actionable state, and only three states are coloured (on site, just left, approaching) - en route and idle are both Snowflake blue on purpose. ON_SITE is a containment test on the same position the map plots (inside the geofence of a site served on the day shown), NOT the unload window, so the marker and the status always agree; readiness is the one that uses the unload window, so a site reads READY as soon as unloading finished even though the vehicle may still be standing on it. The day scope is part of that agreement, not an optimisation: the eligible sites are exactly the ones whose geofence circles, grey markers, approach rings and feed rows the page draws, so ON_SITE can never name a site the page is silent about. The cost is that a vehicle parked in a yard that is not on the day's plan reads idle - surfacing unplanned stops would need its own state and its own layer. A vehicle whose telemetry ends while it is on site therefore stays ON_SITE until the staleness guard drops it from the layer entirely, rather than claiming a departure that was never observed. JUST_LEFT is gated on DISTANCE as well as time: it means departed within the window AND still inside the site's live drive-time band, which is exactly the ring drawn on the map, so a red dot outside the ring is impossible. Elapsed minutes are not drive-time minutes (the telemetry moves faster than the engine's free-flow estimate), which is why the gate uses a live measurement rather than the clock. The window and the ring both come from PARAMS.APPROACH_SECONDS, so they cannot drift apart. APPROACHING is a LIVE ROAD-TIME threshold from the routing engine, not a straight-line radius. IDLE means no further visit today and carries IDLE_REASON to say which kind: DAY_COMPLETE when the vehicle already worked before the instant, NO_VISITS_TODAY when it has no delivery recorded that day at all. That second value is the absence of a DETECTION, not a plan lookup - the dataset has no dispatch plan - so read it as "nothing recorded", never as "nothing assigned". A visit is only counted once the vehicle was genuinely stationary inside the geofence for at least MIN_STOP_SECONDS, so a vehicle that merely drove past a site produces no event. Approach rings are drawn for every site on the day (the focus site's ring is stronger); they are computed outward FROM each site so it only approximates drive time toward it; the quoted minutes-out always comes from the live matrix call instead. If the routing engine is suspended the ring and the inbound ETA RAISE rather than return nothing, so the app shows a resume notice instead of a silently empty map; the optional geofence layer needs no routing and keeps working regardless. SOURCE_STATUS_HINT separates deliveries from pickups and idles but is descriptive only and plays no part in detection. THE FEED HAS THREE EVENT TYPES and they are not interchangeable: Arrived (became stationary inside the fence), Unload complete (stopped being stationary - STILL ON SITE, this is the product-ready moment), and Departed (first ping actually observed outside the fence). Only Departed answers "has it left?". Unload complete deliberately does NOT, because on the reference day not one visit had the vehicle outside its geofence at that instant - the real exit came a median 85 seconds later. A visit with NO Departed row means no departure was ever observed, usually because the telemetry ends on site: say exactly that, never that the vehicle is still unloading and never that it left. In the readiness table the Ready at column shows "ready HH:MI" while a visit is IN_PROGRESS and a bare time once it is READY; a dash means the visit has not started yet. That column is unload completion, NOT departure - every detected visit has a recorded unload completion, otherwise it would not be a visit, but many have no observed departure at all.
 Preferred analytics tool: query_delivery_sync.$$,
-  ARRAY_CONSTRUCT($$DELIVERY_SYNC$$)
+  ARRAY_CONSTRUCT($$DELIVERY_SYNC$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS$$)
 UNION ALL
 SELECT
   $$dispatch_execution_board$$, $$Dispatch Execution Board$$, $$Core$$,
@@ -179,7 +183,8 @@ Key metrics on screen: scheduled work items; distinct entities (vehicles); assig
 Example questions: How many scheduled jobs are there? Are there any missed or late jobs? Which entity has the most jobs? Which site receives the most jobs?
 Gotchas: The KPI counts (scheduled, entities, operators, destination sites) are published as on-screen metric values; quote those. Dispatch/work-item status (MISSED, LATE, DELAYED), plan adherence, and planned-vs-actual-by-day are NOT modeled in any semantic view. query_fleet_ops (SV_FLEET_OPS) only covers trips, operators, and origins, so answer status and adherence questions from the on-screen metric values and the jobs table rather than implying the tool can compute them.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$dwell_facilities$$, $$Facility Utilization$$, $$Core$$,
@@ -212,7 +217,8 @@ Key metrics on screen: distinct facilities; total visits; average dwell minutes;
 Example questions: Which facility has the longest total dwell? Which facility type gets the most visits? How many total visits across all facilities? Which Facilities cost us the most turnaround time?
 Gotchas: The four headline KPIs (facilities, total visits, avg dwell, max dwell) are published as on-screen metric values. query_dwell (SV_DWELL_ANALYTICS) answers facility-level and facility-type rankings. This view shows utilization only and has no geographic data; for facility locations on a map, use the SLA Alerts view.
 Preferred analytics tool: query_dwell.$$,
-  ARRAY_CONSTRUCT($$DWELL$$)
+  ARRAY_CONSTRUCT($$DWELL$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.DWELL.VW_DWELL_SESSIONS$$)
 UNION ALL
 SELECT
   $$dwell_overview$$, $$Dwell Overview$$, $$Core$$,
@@ -245,7 +251,8 @@ Key metrics on screen: total dwell sessions; average dwell minutes; SLA complian
 Example questions: What is the average dwell time? What is the SLA compliance rate? Which facility has the most visits? Are dwells trending up or down?
 Gotchas: SLA compliance is the fraction of dwell sessions at or under the 30-minute threshold. The four headline KPIs are published as on-screen metric values. The KPIs count STATUS LIKE 'DWELL%' on dispatched vehicles only - the same basis as the trend and facility charts. Two traps this closes: the KPI used to include IDLE while its sibling charts did not, and it counted DISTINCT SESSION_ID, which is a PER-VEHICLE counter, so the headline read 628 where the true session count was 2,802. A vehicle with IS_DISPATCHED = FALSE never left its base, so it has no trip and no route; if asked for its path, say it never moved rather than reporting missing data. query_dwell (SV_DWELL_ANALYTICS) can answer the 30-day daily trend and top-facility questions. This view has no map; for dwell hotspots on a map, use the SLA Alerts view.
 Preferred analytics tool: query_dwell.$$,
-  ARRAY_CONSTRUCT($$DWELL$$)
+  ARRAY_CONSTRUCT($$DWELL$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.DWELL.VW_DWELL_SESSIONS$$)
 UNION ALL
 SELECT
   $$dwell_sla$$, $$SLA Alerts$$, $$Core$$,
@@ -278,7 +285,8 @@ Key metrics on screen: total SLA alerts; critical vs warning breaches; average m
 Example questions: Which facilities breached SLA the most? How many critical dwell alerts this week?
 Gotchas: Dwell sessions are sessionized from position pings; a stop shorter than the SLA threshold is not counted as a breach.
 Preferred analytics tool: query_dwell.$$,
-  ARRAY_CONSTRUCT($$DWELL$$)
+  ARRAY_CONSTRUCT($$DWELL$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.DWELL.VW_DWELL_SESSIONS$$)
 UNION ALL
 SELECT
   $$fleetops_origins$$, $$Top Origins$$, $$Core$$,
@@ -311,7 +319,8 @@ Key metrics on screen: distinct origin locations; total trips from origins; aver
 Example questions: Which origin has the most trips? What are the top 5 origins by trip count? How many distinct location types are there?
 Gotchas: Only origins with more than zero trips are shown, and the map is capped at 2000 dots, so the map feature count is not the true origin total; quote the origins count from the on-screen metric values. query_fleet_ops (SV_FLEET_OPS) explicitly covers top origins and trip volume by origin for ranking questions.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$FLEET_OPS$$)
+  ARRAY_CONSTRUCT($$FLEET_OPS$$),
+  ARRAY_CONSTRUCT($$function:FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED$$)
 UNION ALL
 SELECT
   $$journey_inspector$$, $$Trip Inspector$$, $$Core$$,
@@ -344,7 +353,8 @@ Key metrics on screen: journey distance vs planned distance; duration and averag
 Example questions: How far did this journey deviate from the plan? What was the average speed on this trip? How many stops and how much dwell time? Were there any safety events on this journey?
 Gotchas: The journey KPIs on screen (distance, planned, duration, avg speed, stops, dwell, safety events, deviation %) are published to panel context as on-screen metric values; quote those for the selected journey. query_fleet_ops (SV_FLEET_OPS) answers trip, distance, duration, speed, and operator questions. Deviation of actual vs planned per trip is best answered with query_route_deviation (SV_ROUTE_DEVIATION). A vehicle that was never dispatched has no journey here at all and no path to draw - say it never moved rather than reporting missing data, and check query_dwell's is_dispatched before promising a route for a vehicle that a dwell ranking selected. Per-stop SLA status and safety events are not modeled in any semantic view, so answer those from the on-screen metric values, not a tool.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$labor_overtime$$, $$Labour and Overtime$$, $$Core$$,
@@ -377,7 +387,8 @@ Key metrics on screen: headcount and FTE for the current week; overtime as a per
 Example questions: who is projected to exceed 60 hours this week? which rule binds our highest-hours drivers? what is our overtime percentage, and of what denominator? what could we actually save on overtime? which depot is generating the overtime? is anyone close to the DOT on-duty limit? are any drivers losing driver-salesperson status? is our overtime concentrated or spread across the fleet?
 Gotchas: query_labor (SV_LABOR) models this whole view. Use projected_week_hours, NOT hours_to_date, for any 'will exceed' question - hours_to_date is mid-week and always under the limit. Filter is_current_week = TRUE for the projectable week; a completed week projects to its actual. A week with is_partial_start = TRUE is cut off at its BEGINNING by the dataset boundary, so its low totals are an artifact and must never be presented as a drop in hours. Two cost columns exist and they differ by design: est_ot_premium is the AVOIDABLE half-time portion and is the right answer to 'what could we save'; est_ot_cost is the fully loaded cost of those hours. Quoting the loaded figure as the saving overstates it threefold. Overtime percentage has a named denominator - ot_pct_of_paid and ot_pct_of_straight are different numbers and are not interchangeable, so say which one you used. Thresholds are DATA (ot_threshold_1/2/3, dot_onduty_limit), not a fixed 40/50/60; read them. Only 40 and 60/70 have regulatory force and the 50 is a policy tier. binding_constraint says which rule applies. dot_onduty_7d_hours and driver_salesperson_ok are NULL for light vehicles because they are NOT APPLICABLE there, not because data is missing - DOT hours-of-service and driver-salesperson status are defined for commercial motor vehicles. Never merge dot_onduty_7d_hours into a paid-hours total: on-duty time is a different clock that includes waiting, inspection and loading. Hours are derived from real trips; pay rates, team and supervisor are synthesized, so qualify money and not hours. Never mix the duty grain into weekly totals: a duty period straddling a week boundary counts in both weeks in the weekly fact but once in the duty fact. Current-week headcount FOLLOWS THE SELECTED DATE RANGE, so a figure below the full roster means the range excludes days, not that operators are missing - say which interval you used before calling a headcount low. An operator is identified by (region, vehicle_type, operator_id), never by operator_id alone: driver ids are reused across regions, so counting the bare id merges different people and understates headcount whenever more than one region is in scope.
 Preferred analytics tool: query_labor.$$,
-  ARRAY_CONSTRUCT($$CORE$$, $$LABOR$$, $$UNIFIED_FLEET$$)
+  ARRAY_CONSTRUCT($$CORE$$, $$LABOR$$, $$UNIFIED_FLEET$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$, $$function:FLEET_APP.LABOR.F_FACT_LABOR_WEEK_SCOPED$$, $$function:FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED$$)
 UNION ALL
 SELECT
   $$live_asset_operations$$, $$Live Vehicle Operations$$, $$Core$$,
@@ -410,7 +421,8 @@ Key metrics on screen: active Vehicles; movement utilization %; empty miles %; a
 Example questions: How many Vehicles are moving right now? What is our empty miles percentage? Which Vehicles are moving, idle, or on site at this moment? Where do we start if we want to reduce empty miles?
 Gotchas: Positions are GPS pings; utilization is the share of pings in a MOVING state, not a duty-cycle measure.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$plan_vs_actual_performance$$, $$Plan-vs-Actual Performance$$, $$Core$$,
@@ -443,7 +455,8 @@ Key metrics on screen: deviation rate; deviated Trips; excess distance vs plan.
 Example questions: Which Trips deviated most from plan? How much excess distance did deviations add?
 Gotchas: Deviation compares the actual path against the planned route; a journey with no planned route is excluded, not counted as zero deviation.
 Preferred analytics tool: query_route_deviation.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$responsible_party_performance$$, $$Driver Performance$$, $$Core$$,
@@ -476,7 +489,8 @@ Key metrics on screen: operator (driver) count; total journeys; average trip dis
 Example questions: Who has the most safety events? Which operator covers the most distance? How does operator X compare to operator Y? What is the safety event rate per journey?
 Gotchas: query_fleet_ops (SV_FLEET_OPS) covers operator trip counts, distance, speed, shift, and driver profile. The per-operator safety-event counts in the table and chart come from the safety event data, which is NOT in the semantic view; quote those from the on-screen metric values or state they are event-derived rather than implying the tool can rank them. The leaderboard is sorted by safety events descending.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$route_plan_standards$$, $$Route Plan Standards$$, $$Core$$,
@@ -509,7 +523,8 @@ Key metrics on screen: routes planned and the share meeting every standard; per-
 Example questions: Which route planners are least consistent? Which planners build routes that run past the shift limit? What would the optimizer have done with this route? Which depots cannot start building sessions on time? What is our route plan compliance in San Francisco?
 Gotchas: Compliance and consistency are DIFFERENT questions and do not move together: compliance asks whether a planner follows the standard, the standard deviation of km per stop asks whether they plan the same way twice, and for a team working to one standard the second is usually the real complaint - say which one you answered. Name the breached standard rather than only quoting a compliance score, because a planner cannot act on a blended percentage. A territory breach is ALSO recorded when no stop on the route could be geocoded, so check the geocoded stop count before calling it a planning failure. Planner attribution and plan release time are both derived, not recorded, so release figures bound lateness rather than measure it. Use service_date for operational questions, never plan_date: on San Francisco plan_date sits 40 days earlier, so a recent-window filter on it returns nothing without erroring. The two sliders OVERRIDE the stored thresholds, so a compliance number on screen may have been re-scored against a threshold the user chose - read max_shift and max_density from the panel before quoting compliance as the official figure. The optimizer comparison is a LIVE call for ONE route and exists only for the route selected on screen; it cannot be aggregated across routes.
 Preferred analytics tool: query_plan_standards.$$,
-  ARRAY_CONSTRUCT($$PLAN_STANDARDS$$)
+  ARRAY_CONSTRUCT($$PLAN_STANDARDS$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.PLAN_STANDARDS.VW_ROUTE_PLAN$$)
 UNION ALL
 SELECT
   $$safety_risk_scorecard$$, $$Safety / Risk Scorecard$$, $$Core$$,
@@ -541,7 +556,8 @@ Caveats: Synthetic events, and they are not modelled in any semantic view. The a
 Key metrics on screen: total safety / risk events; high, medium, and low severity counts; event types (speeding, harsh braking, and similar).
 Example questions: How many high-severity events are there? How do high, medium, and low counts compare? What severity filter is active?
 Gotchas: Safety events (severity, event type, per-driver counts) live in the scoped event data and are NOT modeled in any semantic view, so there is no Cortex Analyst tool that can recompute them. Answer count and severity-breakdown questions from the on-screen metric values (total events and high/medium/low counts published to panel context) and never invent event types, per-driver counts, or trends. The filters selected_severity and selected_entity show the active tile and row. A dedicated safety-event semantic view would be required to answer event-type rankings or trends via a tool.$$,
-  ARRAY_CONSTRUCT($$CORE$$)
+  ARRAY_CONSTRUCT($$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$space_time_density$$, $$Space-Time Density$$, $$Core$$,
@@ -574,7 +590,8 @@ Key metrics on screen: activity density by H3 hex; time spent (dwell minutes) pe
 Example questions: Where does fleet activity concentrate? What are the top places by dwell? Which hour of day is busiest?
 Gotchas: The H3 hex heatmap and the hour-of-day animation are computed client-side from vehicle telemetry and are not in a semantic view. query_fleet_ops answers trip and origin volume aggregates, not per-hex or per-hour density. The filters selected_metric (time or entities), selected_hour, and aggregate_all describe what is currently rendered on the map.
 Preferred analytics tool: query_fleet_ops.$$,
-  ARRAY_CONSTRUCT($$UNIFIED_FLEET$$)
+  ARRAY_CONSTRUCT($$UNIFIED_FLEET$$),
+  ARRAY_CONSTRUCT($$function:FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED$$)
 UNION ALL
 SELECT
   $$sap_binding$$, $$SAP Binding$$, $$Help$$,
@@ -606,6 +623,7 @@ Caveats: SAP and telematics must be co-located in one Snowflake account before b
 Example questions: How do I match my SAP equipment to telematics devices? What are the steps to bind my SAP data into the fleet dashboards? Which join strategy should I use if SAP has no EQUI? Which SAP tables can I bind in MOCK_SAP?
 Gotchas: This is conceptual how-to knowledge, not analytics over fleet data. SAP and telematics must be co-located into one account first, and the ASSET_CROSSWALK is mandatory.
 Preferred analytics tool: search_sap_binding.$$,
+  ARRAY_CONSTRUCT(),
   ARRAY_CONSTRUCT()
 UNION ALL
 SELECT
@@ -639,7 +657,8 @@ Key metrics on screen: reachable population and households; median income; venue
 Example questions: How many people live within a 10-minute drive of this site? How many restaurants compete inside the 15-minute catchment? What is the median income of the 5-minute catchment?
 Gotchas: Drive-time bands are cumulative (within X min); never sum population or venues across band rows. Population, households and median income are real US Census figures (0 outside the US); venue and address counts come from Overture and work in any region. Isochrones are live - the region routing service must be running.
 Preferred analytics tool: catchment.$$,
-  ARRAY_CONSTRUCT($$CATCHMENT$$, $$CORE$$)
+  ARRAY_CONSTRUCT($$CATCHMENT$$, $$CORE$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CATCHMENT.VW_POIS$$, $$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$)
 UNION ALL
 SELECT
   $$closure_impact$$, $$Closure Impact$$, $$Location$$,
@@ -672,7 +691,8 @@ Key metrics on screen: revenue retained by surviving stores; revenue at risk; cl
 Example questions: If we close this store, which store inherits the most sales? How much revenue is at risk if we close this store? What is the closure risk score for this store?
 Gotchas: A postcode (ZIP) is RETAINED if at least one surviving store's drive-time catchment reaches its centroid within the band, otherwise AT_RISK (its revenue is the closure leakage). Revenue and EBITDA are derived from the user-supplied value per household, retention rate and EBITDA margin; the Home Visit / Sample / Walk-in split comes from the closing store's interaction mix. Closure risk score = at-risk revenue / total closing-store revenue. Overlap rows are pairwise (closed store vs one surviving store); do not sum households across rows because surviving catchments overlap.
 Preferred analytics tool: query_location.$$,
-  ARRAY_CONSTRUCT($$LOCATION$$)
+  ARRAY_CONSTRUCT($$LOCATION$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.LOCATION.VW_STORES$$)
 UNION ALL
 SELECT
   $$mix_sourcing$$, $$Product Mix Sourcing$$, $$Location$$,
@@ -705,7 +725,8 @@ Key metrics on screen: total consolidation savings; orders where consolidation w
 Example questions: For customers buying several glass products, is it cheaper to consolidate at one plant or ship from several? Which orders should we consolidate to cut freight cost? How much handling cost do we pay to consolidate?
 Gotchas: Consolidation adds a handling-per-ton penalty on every transferred product, so it only wins when the saved outbound freight beats that penalty. Single-line orders show ~0 savings. Costs use live road distance from ORS. The semantic view (query_sourcing) reports current customers/products/spend only; this consolidate-vs-direct tradeoff is computed live on this page.
 Preferred analytics tool: query_sourcing.$$,
-  ARRAY_CONSTRUCT($$CORE$$, $$SOURCING$$)
+  ARRAY_CONSTRUCT($$CORE$$, $$SOURCING$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$, $$rows:FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND$$)
 UNION ALL
 SELECT
   $$site_impact$$, $$Site Impact$$, $$Location$$,
@@ -738,7 +759,8 @@ Key metrics on screen: net new revenue; cannibalisation rate %; cannibalised rev
 Example questions: How much of this site's revenue is genuinely new rather than taken from our own stores? Which of our stores bears the largest share of the transfer? What is the payback on the candidate against its rent and rates? How does the answer change if households are less willing to travel?
 Gotchas: Net new revenue is demand taken from COMPETITOR stores; cannibalised revenue is demand taken from our own. They sum to captured revenue, so never add net new to captured. Payback divides occupancy cost by NET NEW EBITDA only - charging a site for profit merely moved from a store we already own would double-count. Share of loss is a distribution across our estate summing to 100, NOT a percentage of a store's turnover; per-store loss INTENSITY is deliberately not shown because in a gravity model it is identical for every incumbent in a given anchor and printed 99.5 on all ten stores at once. Household counts are real address density; all money is modelled from the on-screen value per household, capture rate and EBITDA margin. Raising the decay exponent beta does not simply shrink the candidate's catch - it concentrates demand on the nearest store, so a well-placed candidate can capture MORE as beta rises. The Overlaps panel can be empty while the transfer table is populated: it needs isochrones to physically intersect, the gravity model does not.
 Preferred analytics tool: query_location.$$,
-  ARRAY_CONSTRUCT($$CORE$$, $$LOCATION$$)
+  ARRAY_CONSTRUCT($$CORE$$, $$LOCATION$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$, $$rows:FLEET_APP.LOCATION.VW_STORES$$)
 UNION ALL
 SELECT
   $$sourcing_optimizer$$, $$Freight Sourcing Optimizer$$, $$Location$$,
@@ -771,7 +793,8 @@ Key metrics on screen: current annual freight spend; optimized annual freight sp
 Example questions: Based on our plant locations, where would location swaps reduce freight costs? Which customer has the biggest freight saving from switching source plant? How much can we save in total by re-sourcing?
 Gotchas: Savings only consider plants that can make the customer's product. Freight cost is per truckload and uses live road distance from ORS; the current-source baseline is the nearest capable plant by straight-line distance. Annual savings = per-load saving x the customer's annual truckloads. The semantic view (query_sourcing) reports current estate/spend only; the swap recommendation is computed live on this page.
 Preferred analytics tool: query_sourcing.$$,
-  ARRAY_CONSTRUCT($$CORE$$, $$SOURCING$$)
+  ARRAY_CONSTRUCT($$CORE$$, $$SOURCING$$),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.CORE.VW_REGION_GRAPH_BBOX$$, $$rows:FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND$$)
 UNION ALL
 SELECT
   $$backload_matching$$, $$Backload Matching$$, $$Optimization$$,
@@ -804,7 +827,8 @@ Key metrics on screen: assignments_count (trips in the plan), internal_matched, 
 Example questions: give me a list of assignments with delivery and revenue details for each which trips deliver where? how much net benefit does the plan reclaim? how much deadhead did the plan avoid? how many internal vs external loads were matched? which trailer has the most profitable backload?
 Gotchas: Results are computed in this view (client-side) via a single live VROOM solve after the user clicks Solve Backloads; every metric and the __memo_backload_matching list are null until then. ONE EXCEPTION: if you have just run backload_solve yourself, follow it with show_view carrying selection='solve_key=<the key it returned>' and this page will display YOUR plan instead of solving again - the on-screen trips are then the ones you already reported, and the page says so. Opening it without the key makes it run a second, different solve whose numbers may not match yours. A rehydrated plan starts with straight-line distances and refines to road distance a moment later, and a proposal for a vehicle outside the page's current pool is dropped and counted rather than drawn. The query_backload semantic view models the INPUTS (idle trailers, external offers, proposal decisions), NOT the live solved plan, so use it for questions about what is available to match and answer questions about THIS solve only from the injected __memo_backload_matching / summary panel context - never invent trailer ids, offers, cities, km, or dollars. A trip may hold more than one load: read the loads and the ordered stop chain from the memo entry and report the FINAL dropoff as the destination, never the first one, and never describe a CHAINED tour as a single match. Unnamed sites appear as "unnamed site for <load id>"; the bare tokens Destination, Origin, Dropoff and Depot are placeholders, not place names, so never present one as a city or a delivery point. Empty km covers BOTH deadhead legs (idle location -> first pickup, and last task stop -> tour end); "deadhead avoided" is the vehicle's reposition baseline (real ORS distance from its idle location to its end point) minus the empty km actually driven, so it can never exceed that baseline, and it is omitted entirely for open-ended tours where no baseline exists. Numbers change with the sliders (max trailers/internal/external, internal-first, detour/deviation) and the Hide unprofitable toggle. The solver only ever sees the slider's worth of loads (max internal defaults to 30, ceiling 80), so it never sees the whole internal pool and a change in pool size does NOT by itself change the solved plan - say which of the two a number describes. The load subset is ranked by straight-line proximity to the nearest idle trailer and by nothing else, so it ignores the pickup window, weight fit and revenue; the trailer subset is not ranked at all, just the first N by id. The list is capped at the top 12 net-desc trips AND at a character budget, so it may end in "(+N more trips, not listed)" or "(+N more)" - treat it as a top-N slice of assignments_count, never as the whole plan. Requires the active region routing/VROOM service to be running.
 Preferred analytics tool: backload_solve.$$,
-  ARRAY_CONSTRUCT()
+  ARRAY_CONSTRUCT(),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS$$, $$rows:FLEET_APP.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES$$, $$rows:FLEET_APP.BACKLOAD_MATCHING.VW_VEHICLE_CLASS$$)
 UNION ALL
 SELECT
   $$backload_proposals$$, $$Backload Proposals$$, $$Optimization$$,
@@ -837,7 +861,8 @@ Key metrics on screen: vehicles_matched, internal_matched, total_empty_km, total
 Example questions: which vehicles have the best backload proposals? how many empty km does the plan reclaim? how many internal loads were filled versus external offers? why is a load ineligible for a vehicle? give me a list of proposals with delivery and revenue details for each what is on the map right now?
 Gotchas: Proposals are computed in this view (client-side) after Run: Quick scan is great-circle nearest-load (no solve); Per-load VRP / Fleet 1:1 / Profit-max each call the routing engine once via /api/backload/solve, and ensemble mode fuses all four. ONE EXCEPTION: if you have just run backload_solve at PAIR granularity, follow it with show_view carrying selection='solve_key=<the key it returned>' and this cockpit displays YOUR graded pairs instead of solving again, with the weight sliders re-ranking them locally. Pass the key only for a pair-granularity solve - a vehicle-granularity result has no pairs to rank, and the page will say so rather than render an empty grid. Numbers are null until Run and change with the strategy, max vehicles/loads, and (in ensemble mode) the ranking weights. Accept/Reject/Flag is session-only and not persisted. The query_backload semantic view models the candidate INPUTS and recorded proposal decisions, not this live cockpit run, so answer questions about the current proposals from the injected __memo_backload / summary context and never invent trailer ids, loads, grades, or km. Requires the active region routing/VROOM service to be running for the VRP strategies.
 Preferred analytics tool: backload_solve.$$,
-  ARRAY_CONSTRUCT()
+  ARRAY_CONSTRUCT(),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS$$, $$rows:FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS$$, $$exists:FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED$$)
 UNION ALL
 SELECT
   $$emergency_response$$, $$Emergency Response$$, $$Optimization$$,
@@ -869,7 +894,8 @@ Caveats: The hazard model is procedural, not an official hazard map, and the par
 Key metrics on screen: evacuees and evacuated (assigned) counts; number of trips, completion time in minutes, and total/longest route distance in km (total_km, longest_trip_km); per-risk-band participant counts for the active hazard (risk_bands) and the other hazard (other_hazard_bands), plus high_on_both_hazards; participant addresses grouped by risk band for the active hazard (addresses_by_band); hazard zones (counties) with both wildfire and flood risk levels (hazard_zones) and per-county participant rollup (participants_by_county); per-care-center workload (centers_workload) and van seat utilization (seat_utilization); unassigned / overflow participants that could not be seated.
 Example questions: how many evacuation trips are there, and what is the total distance in km? list the evacuation trips and their stops give me all trips and stops for a specific care center what are the addresses of the Very High risk participants? which counties are Very High wildfire risk? which county has the most at-risk participants? how many participants are high risk for both flood and wildfire? which care center is handling the most evacuees? what is on the map right now, and is any layer blank?
 Gotchas: The evacuation plan is computed client-side in this view and lives in the panel context. Trip roster: trips_detail is GROUPED BY CARE CENTER, centers ordered busiest-first (matching centers_workload); each center block reads "Center (N evacuees, N trips, N vans): T<n> Vehicle <n> <mins>m [load/capacity]: <stop addresses> [bN]..." so per-center "all trips and stops for X" questions are answerable directly. Risk<->address join: addresses_by_band lists participant addresses grouped by risk band for the active hazard, and each trip stop carries a "[bN]" risk-band marker matching the risk_bands legend (b5 = Very High). Area risk: hazard_zones lists each county with BOTH wildfire and flood band levels (WF bN/FL bN), and participants_by_county rolls up seeded vs at/above-threshold counts per county. Cross-hazard: risk_bands is the ACTIVE hazard, other_hazard_bands is the other one, and high_on_both_hazards counts people at/above threshold for both. Plan rollups: centers_workload (per depot), seat_utilization, total_km/longest_trip_km (null if the router did not return distance). If a center block or the trip list ends with "(+N more)", those trips/centers exceeded the display cap - the full breakdown is in the on-screen plan panel and the map routes layer; do not invent the remainder. There is no SQL or verb tool that returns the specific on-screen solved set (evac_seed re-samples a new random set), so answer from the panel context and never invent stops, addresses, counts, risk bands, or distances. Re-seeding or changing the risk threshold or hazard updates the numbers.$$,
-  ARRAY_CONSTRUCT()
+  ARRAY_CONSTRUCT(),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.EMERGENCY_RESPONSE.VW_CARE_CENTERS$$, $$rows:FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES$$)
 UNION ALL
 SELECT
   $$triangle_proposals$$, $$Triangle Proposals$$, $$Optimization$$,
@@ -901,7 +927,8 @@ Caveats: Vehicles, loads and offers are synthetic, and revenue per loaded km and
 Key metrics on screen: chains (costed two-hop candidates), vehicles covered, and the cascade rung the ladder stopped at (1 own-loads-only .. 4 external-on-both-hops); per chain: both hops as pickup -> delivery with own/external on each, the three empty legs (to hop 1, between hops, residual to target), loaded km, grade and eligibility; empty km per chain INCLUDES the residual run from the second delivery to the target, so it is directly comparable with the empty-run-home baseline; status-quo comparison per chain: chain empty km against the empty run home, chain net against doing nothing, and whether the chain beats that baseline (a chain can beat it on net while still running more empty km, because it earns revenue); the on-screen chains are published as __memo_triangle_proposals (trailer, rung, both hops, empty incl. residual and loaded km, net vs baseline, beats-baseline, grade).
 Example questions: which vehicles have a two-hop chain home? did we need to go to an external exchange for any of these chains? which chains do not beat simply running home empty? why is there no chain for this vehicle? how much empty running does the best chain save?
 Preferred analytics tool: backload_chain_solve.$$,
-  ARRAY_CONSTRUCT()
+  ARRAY_CONSTRUCT(),
+  ARRAY_CONSTRUCT($$rows:FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS$$, $$rows:FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS$$, $$exists:FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES$$)
 UNION ALL
 SELECT
   $$vrp_simulator$$, $$Route Optimization Simulator$$, $$Optimization$$,
@@ -933,6 +960,7 @@ Caveats: A demonstration of the solver rather than a production planning system:
 Key metrics on screen: number of solved routes returned by the optimizer, one per assigned vehicle; the depot, vehicle count and stop count the user set before solving; per-route distance and duration as returned by the routing engine; stops the solver could not assign.
 Example questions: how many routes did the optimizer produce? plan routes for 4 vehicles from the depot why were some stops left unassigned? what is the total distance of the solved plan?
 Gotchas: The plan is solved client-side in this view via a live optimizer call after the user presses Solve, and nothing exists until then. This view publishes NO per-route agent memo - only a run-log line naming how many routes were returned - so do not claim to know individual stop sequences, per-route km, or durations from panel context here; if the user wants those, either read them from the on-screen route list or re-run the optimization yourself with the optimize_routes verb, which returns the full solved plan. Every number changes when the depot, vehicle count or stop count changes. Requires the active region routing and optimizer services to be running.$$,
+  ARRAY_CONSTRUCT(),
   ARRAY_CONSTRUCT();
 
 -- Cortex Search over the flattened prose so any agent can answer 'what can

@@ -5,7 +5,7 @@ import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
-import { viewDataRefs, type DataRef, type LayerStatus } from '@/lib/view-deps';
+import { schemaProbes, type LayerStatus } from '@/lib/view-deps';
 import { findRepairEntry } from '@/lib/missing-dependency';
 import packViews from '@/lib/packs/fleet/pack-views.json';
 
@@ -38,20 +38,8 @@ function packRequiredObjects(): Map<string, ProbeMode> {
 // The data-layer DB defaults to FLEET_APP but is config-driven (dataLayer.database).
 const DEFAULT_DATA_LAYER_DB = 'FLEET_APP';
 
-// schema -> the object to probe. A plain view/table is preferred; a schema only
-// referenced through table functions (LIVE_* UDTFs) used to be skipped
-// entirely - never probed, so always "present" - and is now checked in
-// INFORMATION_SCHEMA.FUNCTIONS, since `SELECT 1 FROM fn` cannot run.
-function collectSchemaProbes(viewsConfig: Record<string, unknown>, db: string): Record<string, DataRef> {
-  const probes: Record<string, DataRef> = {};
-  for (const def of Object.values(viewsConfig)) {
-    for (const ref of viewDataRefs(def, db)) {
-      const prev = probes[ref.schema];
-      if (!prev || (prev.isFunction && !ref.isFunction)) probes[ref.schema] = ref;
-    }
-  }
-  return probes;
-}
+// schema -> the object to probe: schemaProbes() in lib/view-deps.ts, shared
+// with the agent catalog so both probe the same object.
 
 async function handleGet() {
   const configPath = process.env.APP_VIEWS_CONFIG;
@@ -69,7 +57,7 @@ async function handleGet() {
   }
 
   const dataLayerDb = getServerConfig().dataLayer?.database ?? DEFAULT_DATA_LAYER_DB;
-  const probes = collectSchemaProbes(viewsConfig, dataLayerDb);
+  const probes = schemaProbes(viewsConfig, dataLayerDb);
   const degraded: string[] = [];
   const absent = (schema: string, fqn: string) => {
     const e = findRepairEntry(fqn);
