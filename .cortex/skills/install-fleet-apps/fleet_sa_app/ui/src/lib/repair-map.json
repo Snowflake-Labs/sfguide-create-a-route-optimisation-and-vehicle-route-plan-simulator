@@ -68,6 +68,17 @@
       "action": "@PACK:backload_matching"
     },
     {
+      "prefix": "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.",
+      "layer": "backload_cockpit",
+      "label": "Backload cockpit (Backload Proposals, Triangle Proposals)",
+      "action": "@MANUAL",
+      "fix": [
+        "ALTER SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP SUSPEND;",
+        "ALTER SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP RESUME;  -- the admin app rebuilds these views at startup"
+      ],
+      "note": "Built by the admin app at startup from the active dataset, so the region needs a generated dataset with freight data first (admin app Data Studio)."
+    },
+    {
       "prefix": "FLEET_APP.CORE.",
       "layer": "core_contract",
       "label": "Core data contract",

@@ -535,6 +535,12 @@ def repair(sess, connection, results, datasets):
                            if r["status"] in ("ERROR", "EMPTY", "FILTER_EMPTY")).upper()
         if prefix.upper() not in blobs and prefix.upper() not in details:
             continue
+        if action.startswith("@MANUAL"):
+            # Restarting a service is not something --repair should do on its
+            # own; print the operator steps from repair-map.json instead.
+            print("\nrepair[%s]: manual - see repair-map.json fix for %s" % (name, prefix))
+            done.append((name, False))
+            continue
         if action.startswith("@PACK:"):
             pack = action.split(":", 1)[1]
             path = (SKILL / "fleet_sa_app" / "app" / "packs" / "fleet" / pack
