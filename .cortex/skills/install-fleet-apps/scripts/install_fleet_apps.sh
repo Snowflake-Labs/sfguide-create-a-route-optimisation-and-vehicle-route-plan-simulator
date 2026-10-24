@@ -1461,6 +1461,15 @@ FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
 # used to be invisible there: the summary only counted FAILED, so "all steps OK"
 # printed while a load-bearing script had actually failed and only WARNed.
 WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
+# Which use cases this run left broken, and the command that rebuilds each. A
+# guarded builder (Catchment, Location, Sourcing) returns 'WARN: ...' instead of
+# failing, so the install "succeeded" and a customer found the dead Site Impact
+# page before anyone read /tmp/ifa_analytic.log. layer_impact.py reads every
+# log THIS run wrote plus step 9's view report and names the views each broken
+# layer takes down.
+DEGRADED_ARGS=(--warn-glob '/tmp/ifa_*.log' --since "$START_TS" --view-report /tmp/ifa_view_report.json)
+DEGRADED_MD="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" --markdown 2>/dev/null || true)"
+DEGRADED_TXT="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" 2>/dev/null || true)"
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
@@ -1478,6 +1487,13 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
   echo "|------|--------|"
   for s in "${STEP_STATUS[@]}"; do echo "| ${s%%|*} | ${s##*|} |"; done
   echo
+  if [ -n "$DEGRADED_MD" ]; then
+    echo "## DEGRADED USE CASES"
+    echo "These layers did not build, so the views listed are empty or broken. Each fix rebuilds the layer; reload the view afterwards."
+    echo
+    echo "$DEGRADED_MD"
+    echo
+  fi
   echo "## Routing tool substrate"
   echo "- ROUTING_TOOLS.TOOL_* (routing verb dependency): **${ROUTING_SUBSTRATE}**"
   case "$ROUTING_SUBSTRATE" in
@@ -1535,12 +1551,17 @@ if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
 elif [ "${WARN_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps finished with ${WARN_STEPS} DEGRADED step(s) (${ELAPSED}s)"
   echo " nothing aborted, but at least one step did not do all of its work - see the status table"
+  [ -n "$DEGRADED_TXT" ] && echo " and DEGRADED USE CASES below for the views it broke"
 elif [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
   # NEVER say "all steps OK" here. Every step genuinely succeeded, but the
   # deployment is half a solution: the engine-facing surfaces do not work. Saying
   # "all steps OK" for this state is what let three engine-less installs be signed
   # off as clean.
   echo " install-fleet-apps complete (${ELAPSED}s) - ANALYTICS-ONLY (no routing engine)"
+elif [ -n "$DEGRADED_TXT" ]; then
+  # Every step exited cleanly but a view check found a layer missing: "all
+  # steps OK" here is exactly the silent success this block exists to end.
+  echo " install-fleet-apps complete (${ELAPSED}s) - steps OK, but use cases are DEGRADED (see below)"
 else
   echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
 fi
@@ -1555,6 +1576,11 @@ echo "   deployment mode:   $DEPLOYMENT_MODE"
 echo "   routing substrate: $ROUTING_SUBSTRATE"
 echo "   SAP mock:          $SAP_MOCK"
 echo "   friction log:      $FRICTION_LOG"
+if [ -n "$DEGRADED_TXT" ]; then
+  echo "----------------------------------------------------------------"
+  echo " !! DEGRADED USE CASES - these views are empty or broken until fixed"
+  echo "$DEGRADED_TXT"
+fi
 case "$ROUTING_SUBSTRATE" in
   OK*|SKIPPED*) : ;;
   *) echo "   !! ROUTING SUBSTRATE DEGRADED - see friction log for the restore command" ;;

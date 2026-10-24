@@ -148,7 +148,7 @@ def warn_lines(paths: list[str]) -> list[str]:
     return out
 
 
-def degraded(warn_paths: list[str], view_report: str | None) -> list[dict]:
+def degraded(warn_paths: list[str], view_report: str | None, since: float = 0.0) -> list[dict]:
     """One item per broken layer: label, reasons, views it breaks, fix."""
     views, entries = load_views(), load_entries()
     items: dict[str, dict] = {}
@@ -170,6 +170,9 @@ def degraded(warn_paths: list[str], view_report: str | None) -> list[dict]:
         else:
             unmapped.append(w)
 
+    import os
+    if view_report and os.path.exists(view_report) and os.path.getmtime(view_report) < since:
+        view_report = None  # left by an earlier run
     if view_report:
         try:
             rep = json.loads(pathlib.Path(view_report).read_text())
@@ -226,7 +229,7 @@ def main() -> int:
     ap.add_argument("--region", help="fills {region} in the fix")
     a = ap.parse_args()
     logs = list(a.warn_log) + (run_logs(a.warn_glob, a.since) if a.warn_glob else [])
-    items = degraded(logs, a.view_report)
+    items = degraded(logs, a.view_report, a.since)
     if a.json:
         print(json.dumps(items, indent=1))
     else:
