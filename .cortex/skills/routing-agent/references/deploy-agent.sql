@@ -20,6 +20,42 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ============================================================================
+-- ROUTING_RESULT_GEOMETRY: the map rows of each successful routing verb call,
+-- keyed by the result_id the verb returns.
+--
+-- WHY: CoWork's data_to_map cannot draw a routing verb's own result. The managed
+-- MCP server hands the agent {"json":{"result":"<whole document as a STRING>"}},
+-- so the top-level `rows` array data_to_map needs is never at the top level
+-- (observed failing in CoWork 2026-10-24: get_directions ok, no map). A Cortex
+-- Analyst result IS a source data_to_map draws, so the verb persists its rows
+-- here and SV_ROUTING_RESULTS (semantic_views.sql) serves them back by id.
+--
+-- Written by the synapse verbs (EXECUTE AS OWNER, see fleet_tools/user/src/
+-- map_rows.ts) and read ONLY through VW_ROUTING_RESULT_GEOMETRY, which returns
+-- the current user's own rows. Rows older than 7 days are purged on each write.
+-- Created here because this file runs before both the bundles and the semantic
+-- views.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY (
+    RESULT_ID  STRING        NOT NULL,
+    VERB       STRING        NOT NULL,
+    ACTOR      STRING        NOT NULL,
+    CREATED_AT TIMESTAMP_LTZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    SEQ        NUMBER        NOT NULL,
+    GEOJSON    STRING,
+    LON        FLOAT,
+    LAT        FLOAT
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE OR REPLACE SECURE VIEW FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT RESULT_ID, VERB, CREATED_AT, SEQ, GEOJSON, LON, LAT
+FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY
+WHERE ACTOR = CURRENT_USER();
+
+-- ============================================================================
 -- RESOLVE_PROFILE: pure resolver shared by every TOOL_* proc. Given the caller's
 -- requested profile/vehicle, the canonical ORS profile the whitelist mapped it
 -- to, and the list of profiles ACTUALLY built in the target region (from

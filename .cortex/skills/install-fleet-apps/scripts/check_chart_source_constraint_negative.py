@@ -86,8 +86,8 @@ spec_case("sibling data_to_map source constraint deleted", "agent-spec.json",
 spec_case("old 'accepts ONLY a SQL/analyst result' map sentence restored", "agent-spec.json",
           orch(MAP_SENTENCE, OLD_MAP_SENTENCE),
           expect="agent-spec.json: the orchestration still says data_to_map accepts only a SQL/analyst result")
-spec_case("routing-verb rows source dropped from the map sentence", "agent-spec.json",
-          orch("routing verb result that carries a top-level rows array", "routing verb result"),
+spec_case("query_routing_results source dropped from the map sentence", "agent-spec.json",
+          orch("a query_routing_results result for the result_id", "a routing verb result"),
           expect="agent-spec.json: the sibling data_to_map source constraint is gone")
 
 h.add(f"{APP}/negtest-agent-spec.json", "{ not json",

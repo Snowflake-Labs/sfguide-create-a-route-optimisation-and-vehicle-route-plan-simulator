@@ -297,6 +297,106 @@ def apply_routing_rows(spec: dict) -> bool:
     return True
 
 
+# --- eighth pass: routing results are drawn THROUGH query_routing_results ------
+# The seventh pass told the agent to hand the routing verb's own tool_use_id to
+# data_to_map. In a real CoWork session that failed: get_directions returned ok,
+# data_to_map could not resolve the result, the agent fell back to run_sql (also
+# an MCP verb, same failure) and then to deep_link. The managed MCP server
+# delivers every verb as {"json":{"result":"<whole document as a STRING>"}}, so
+# the top-level `rows` data_to_map needs is never at the top level. The verbs now
+# persist their rows and return a result_id; SV_ROUTING_RESULTS serves them back
+# as a Cortex Analyst result, which data_to_map does draw.
+QUERY_ROUTING_RESULTS_TOOL = "query_routing_results"
+QUERY_ROUTING_RESULTS_DESCRIPTION = (
+    "Map geometry of a routing result the user just computed, by the result_id a routing verb "
+    "returned (get_directions, compute_isochrone, optimize_routes, find_poi, catchment, snap_to_road "
+    "and the other routing verbs). Use it ONLY to draw that result in CoWork: ask for the geometry of "
+    "that exact result_id, then pass THIS call's tool_use_id to data_to_map. It stores no distance or "
+    "duration; quote those from the routing verb result."
+)
+ANALYST_SOURCE_MARKER = "a query_routing_results result for the result_id"
+ANALYST_SOURCE_ORCH = [
+    (
+        "(b) a routing verb result that carries a top-level rows array (",
+        "(b) a query_routing_results result for the result_id returned by one of the routing verbs (",
+    ),
+    (
+        "). A backload_solve or backload_chain_solve result, or a routing verb result with no rows, "
+        "is NOT a map source and will silently fail.",
+        "). The routing verb's OWN result is NOT a source, and neither is run_sql or any other MCP "
+        "result: the MCP server hands it over as one JSON string, so data_to_map cannot resolve it "
+        "and NO MAP APPEARS. A backload_solve or backload_chain_solve result, or a routing verb "
+        "result with no result_id, has nothing to draw.",
+    ),
+    (
+        "returns status SUCCESS and its payload has rows, call data_to_map ONCE with THAT call's "
+        "tool_use_id. Rows with GEOJSON",
+        "returns status SUCCESS with a result_id, call query_routing_results for the geometry of "
+        "that exact result_id, then call data_to_map ONCE with the query_routing_results call's "
+        "tool_use_id - never the routing verb's own tool_use_id. Rows with GEOJSON",
+    ),
+    (
+        "A FAILED result has no rows: report the refusal and do not draw.",
+        "A FAILED result has no result_id: report the refusal and do not draw. If "
+        "query_routing_results returns no rows, report the figures and deep_link.",
+    ),
+    (
+        "is drawn from the routing verb's own rows (see DRAWING A ROUTING RESULT IN COWORK)",
+        "is drawn through query_routing_results (see DRAWING A ROUTING RESULT IN COWORK)",
+    ),
+]
+ANALYST_SOURCE_RESP = (
+    "After a routing verb succeeds with rows, pass that call's tool_use_id to data_to_map. When "
+    "NEITHER is available, or the geometry has no source data_to_map accepts (a query_* result, or "
+    "a routing verb result carrying rows),",
+    "After a routing verb succeeds with a result_id, fetch its geometry with query_routing_results "
+    "and pass THAT call's tool_use_id to data_to_map. When NEITHER is available, or the geometry has "
+    "no source data_to_map accepts (a query_* result, including query_routing_results),",
+)
+
+
+def apply_analyst_source(spec: dict) -> bool:
+    """Eighth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    changed = False
+    tools = spec.setdefault("tools", [])
+    entry = {
+        "tool_spec": {
+            "type": "cortex_analyst_text_to_sql",
+            "name": QUERY_ROUTING_RESULTS_TOOL,
+            "description": QUERY_ROUTING_RESULTS_DESCRIPTION,
+        }
+    }
+    hit = [i for i, t in enumerate(tools) if t.get("tool_spec", {}).get("name") == QUERY_ROUTING_RESULTS_TOOL]
+    if not hit:
+        tools.append(entry)
+        changed = True
+    elif tools[hit[0]] != entry:
+        tools[hit[0]] = entry
+        changed = True
+    res = {
+        "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTING_RESULTS",
+        "execution_environment": {"type": "warehouse", "warehouse": "ROUTING_ANALYTICS"},
+    }
+    if spec.setdefault("tool_resources", {}).get(QUERY_ROUTING_RESULTS_TOOL) != res:
+        spec["tool_resources"][QUERY_ROUTING_RESULTS_TOOL] = res
+        changed = True
+
+    ins = spec["instructions"]
+    if ANALYST_SOURCE_MARKER in ins["orchestration"]:
+        return changed
+    o = ins["orchestration"]
+    for old, new in ANALYST_SOURCE_ORCH:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: analyst-source anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = ANALYST_SOURCE_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: analyst-source response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
 def main() -> int:
     src = SPEC.read_text()
     spec = json.loads(src)
@@ -401,6 +501,12 @@ def main() -> int:
         changed.append("orchestration+response(routing rows)")
     else:
         print("orchestration: routing-rows rule already present")
+
+    # --- Eighth pass: draw routing results through query_routing_results --------
+    if apply_analyst_source(spec):
+        changed.append("tools+orchestration+response(query_routing_results)")
+    else:
+        print("orchestration: query_routing_results rule already present")
 
     if not changed:
         return 0

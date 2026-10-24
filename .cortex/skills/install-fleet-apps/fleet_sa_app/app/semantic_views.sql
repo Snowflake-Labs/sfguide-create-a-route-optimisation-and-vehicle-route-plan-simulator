@@ -1586,3 +1586,51 @@ ORDER BY avg_build_start_delay_min DESC NULLS LAST'
     )
   )
 ;
+
+-- ============ SV_ROUTING_RESULTS (FLEET_INTELLIGENCE.ROUTING_TOOLS) ============
+-- SV_ROUTING_RESULTS - map rows of the caller's own routing verb calls, by result_id.
+-- Source: FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY (secure view,
+--         ACTOR = CURRENT_USER()), written by fleet_tools/user/src/map_rows.ts.
+-- WHY: CoWork's data_to_map cannot draw a routing verb's own MCP result (the
+-- managed MCP server delivers it as one JSON STRING, so `rows` is never top-level).
+-- It does draw a Cortex Analyst result, so get_directions & co. persist their rows
+-- and return a result_id, and the agent fetches them back through this view.
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTING_RESULTS
+
+  TABLES (
+    geom AS FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY
+      PRIMARY KEY (RESULT_ID, SEQ)
+  )
+
+  DIMENSIONS (
+    geom.result_id AS RESULT_ID
+      WITH SYNONYMS ('result id', 'route id', 'routing result')
+      COMMENT = 'The result_id a routing verb (get_directions, compute_isochrone, optimize_routes, ...) returned. Always filter on exactly one.'
+    , geom.verb AS VERB COMMENT = 'Routing verb that produced the rows (get_directions, compute_isochrone, ...)'
+    , geom.created_at AS CREATED_AT COMMENT = 'When the routing verb ran'
+    , geom.seq AS SEQ COMMENT = 'Row order within the result (route or polygon index)'
+    , geom.geojson AS GEOJSON
+      WITH SYNONYMS ('route geometry', 'route line', 'isochrone polygon', 'shape')
+      COMMENT = 'Map-ready GeoJSON string (LineString or Polygon), simplified for the map. Use as geo_column of a geojson layer. NULL on point rows.'
+    , geom.lon AS LON COMMENT = 'Point longitude (snap_to_road, Overture place/address lists). NULL on geojson rows.'
+    , geom.lat AS LAT COMMENT = 'Point latitude (snap_to_road, Overture place/address lists). NULL on geojson rows.'
+  )
+
+  COMMENT = 'Map rows of routing results the CURRENT USER computed in the last 7 days, keyed by the result_id each routing verb returns. Exists so a live route, isochrone, optimized plan or snapped point set can be drawn with data_to_map in CoWork. Always filter result_id = the exact id from the routing verb, select every row (no aggregation), and draw GEOJSON as a geojson layer, or LAT/LON as a latlon layer when GEOJSON is null. Figures such as distance and duration are NOT stored here: quote them from the routing verb result.'
+
+  AI_SQL_GENERATION 'Routing result geometry, one row per drawable shape of one routing verb call.
+- Every question names or implies ONE result_id from a routing verb call. Filter result_id = that exact string; never return rows of several results, and never aggregate.
+- Select result_id, seq, geojson, lon, lat ordered by seq. That row set is passed straight to data_to_map: geojson rows -> layer_type geojson, geo_column GEOJSON; point rows (geojson null) -> layer_type latlon, lat_column LAT, lon_column LON.
+- No rows for an id means it was not computed by this user, is older than 7 days, or the verb failed: say so, do not guess another id.'
+  AI_VERIFIED_QUERIES (
+    geometry_for_result AS (
+      QUESTION 'Get the map geometry for routing result_id 00000000-0000-0000-0000-000000000000'
+      VERIFIED_AT 1789000000
+      VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
+      SQL 'SELECT result_id, seq, geojson, lon, lat
+FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY
+WHERE result_id = ''00000000-0000-0000-0000-000000000000''
+ORDER BY seq'
+    )
+  )
+;

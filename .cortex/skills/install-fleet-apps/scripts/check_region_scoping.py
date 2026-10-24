@@ -233,6 +233,7 @@ SV_EXEMPT = {
     "SV_SOURCING": "plant/customer estate keyed by site, not region",
     "SV_DELIVERY_SYNC": "site visits carry SITE_ID + REGION on the base view",
     "SV_FLEET_DEPLOYMENT": "ops/installer history; region is an ORS host attribute",
+    "SV_ROUTING_RESULTS": "per-call routing geometry keyed by result_id; always filtered to one id",
 }
 REGION_DIM = re.compile(r"\.\s*region\s+AS\s+REGION\b", re.IGNORECASE)
 LABEL_DIM = re.compile(r"\.\s*(?:region_label|city)\s+AS\s+(?:REGION_LABEL|CITY)\b", re.IGNORECASE)

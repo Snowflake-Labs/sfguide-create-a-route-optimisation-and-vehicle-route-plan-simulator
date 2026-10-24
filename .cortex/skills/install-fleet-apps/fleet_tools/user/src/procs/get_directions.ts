@@ -1,7 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 export const get_directions = defineProc({
   name: 'get_directions',
@@ -37,6 +37,7 @@ export const get_directions = defineProc({
   returns: {
     result: t.object({}).describe('Routing service response: route geometry, distance, duration, the region and profile actually used, a profile_note when substituted, and an error_code when refused.'),
     rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.directions, [
@@ -44,6 +45,6 @@ export const get_directions = defineProc({
       args.profile,
       args.region,
     ]);
-    return withMapRows(ctx.conn, result, geometryAt('geometry'));
+    return withMapRows(ctx, 'get_directions', result, geometryAt('geometry'));
   },
 });

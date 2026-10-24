@@ -1,6 +1,7 @@
 import type { ProcContext } from '@snowflake/synapse';
 
 type Conn = ProcContext['conn'];
+type Identity = ProcContext['identity'];
 type Obj = Record<string, unknown>;
 
 /**
@@ -35,6 +36,17 @@ type Obj = Record<string, unknown>;
  * BEST EFFORT
  * A failure here never fails the verb: the routing answer stands and the
  * response simply carries no `rows`.
+ *
+ * WHY rows ALONE DOES NOT DRAW IN COWORK, AND result_id
+ * The managed MCP server delivers a verb's output to the agent as
+ * {"json":{"result":"<this whole document as a STRING>"}}, so `rows` is never
+ * at the top level and data_to_map cannot read it (observed failing in CoWork
+ * on 2026-10-24: get_directions ok, no map). The same rows are therefore
+ * persisted to FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY under a
+ * fresh `result_id`; SV_ROUTING_RESULTS (Analyst tool query_routing_results)
+ * serves them back, and a Cortex Analyst result IS a source data_to_map draws.
+ * `rows` stays in the response for the SA app and any client that reads
+ * structured content directly.
  */
 
 const CELL_MAX = 60_000;
@@ -183,23 +195,64 @@ async function simplifiedRows(conn: Conn, geoms: Obj[]): Promise<Obj[]> {
   return rows;
 }
 
-// `rows` is declared nullable on each verb but is OMITTED, not null, when there
-// is nothing to draw (vendored synapse patch 10 keeps an absent key absent).
-type MapReturn = { result: Obj; rows: Obj[] | null };
+const GEOMETRY_TABLE = 'FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY';
+
+// One statement for the whole row set: geojson rows fill GEOJSON, point rows
+// fill LON/LAT. TO_JSON keeps the geometry a compact GeoJSON string.
+const PERSIST_SQL = `
+INSERT INTO ${GEOMETRY_TABLE} (RESULT_ID, VERB, ACTOR, SEQ, GEOJSON, LON, LAT)
+SELECT ?, ?, ?, f.INDEX,
+       IFF(f.VALUE:GEOJSON IS NULL, NULL, TO_JSON(f.VALUE:GEOJSON)),
+       f.VALUE:LON::FLOAT, f.VALUE:LAT::FLOAT
+FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) f`;
+
+const PURGE_SQL = `DELETE FROM ${GEOMETRY_TABLE} WHERE CREATED_AT < DATEADD(day, -7, CURRENT_TIMESTAMP())`;
 
 /**
- * Return `{ result }`, plus top-level `rows` when the call SUCCEEDED and there
- * is something to draw. `result` is returned exactly as the tool produced it.
+ * Persist `rows` and return the id they are stored under, or null when the
+ * write failed (the verb still answers; the agent then has no map source).
  */
-export async function withMapRows(conn: Conn, result: Obj, spec: MapSpec): Promise<MapReturn> {
+async function persistRows(conn: Conn, identity: Identity, verb: string, rows: Obj[]): Promise<string | null> {
+  try {
+    const id = await conn.execScalar<string>('SELECT UUID_STRING()');
+    if (!id) return null;
+    await conn.exec(PERSIST_SQL, [id, verb, identity.user, JSON.stringify(rows)]);
+    try {
+      await conn.exec(PURGE_SQL);
+    } catch {
+      // Retention is housekeeping; it never costs the caller the id.
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+// `rows` and `result_id` are declared nullable on each verb but are OMITTED,
+// not null, when absent (vendored synapse patch 10 keeps an absent key absent).
+type MapReturn = { result: Obj; rows: Obj[] | null; result_id: string | null };
+
+/**
+ * Return `{ result }`, plus top-level `rows` and `result_id` when the call
+ * SUCCEEDED and there is something to draw. `result` is returned exactly as
+ * the tool produced it.
+ */
+export async function withMapRows(
+  ctx: Pick<ProcContext, 'conn' | 'identity'>,
+  verb: string,
+  result: Obj,
+  spec: MapSpec,
+): Promise<MapReturn> {
   const bare = { result } as MapReturn;
   if (String(result.status ?? '') !== 'SUCCESS') return bare;
   try {
     const rows =
       spec.kind === 'points'
         ? pointRows(spec.pick(result))
-        : await simplifiedRows(conn, collectGeometries(spec.pick(result)));
-    return rows.length > 0 ? { result, rows } : bare;
+        : await simplifiedRows(ctx.conn, collectGeometries(spec.pick(result)));
+    if (rows.length === 0) return bare;
+    const id = await persistRows(ctx.conn, ctx.identity, verb, rows);
+    return id ? { result, rows, result_id: id } : ({ result, rows } as MapReturn);
   } catch {
     return bare;
   }
@@ -243,3 +296,9 @@ export const ROWS_DESCRIPTION =
   'Present only on SUCCESS when there is something to draw. A map-ready row set for CoWork data_to_map: ' +
   'rows of { GEOJSON } (layer_type "geojson", geo_column "GEOJSON") or rows of { LON, LAT } ' +
   '(layer_type "latlon"), never both. Simplified and size-capped; `result` holds the full geometry.';
+
+/** Shared `returns.result_id` description. */
+export const RESULT_ID_DESCRIPTION =
+  'Present only when rows is present. The id the map rows are stored under. In CoWork, data_to_map ' +
+  'cannot read this verb result directly: call query_routing_results asking for the geometry of this ' +
+  'result_id, then pass THAT call\'s tool_use_id to data_to_map.';

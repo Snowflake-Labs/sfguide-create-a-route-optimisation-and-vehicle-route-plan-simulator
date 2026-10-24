@@ -1,7 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { ROWS_DESCRIPTION, withMapRows, snappedPoints } from '../map_rows.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, snappedPoints } from '../map_rows.js';
 
 export const snap_to_road = defineProc({
   name: 'snap_to_road',
@@ -28,6 +28,7 @@ export const snap_to_road = defineProc({
   returns: {
     result: t.object({}).describe('Snap response: per-point input/snapped coordinates, snapped_distance_m, street name, unsnapped_count, and requested/used profile.'),
     rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.snap, [
@@ -35,6 +36,6 @@ export const snap_to_road = defineProc({
       args.radius_meters,
       args.profile,
     ]);
-    return withMapRows(ctx.conn, result, snappedPoints);
+    return withMapRows(ctx, 'snap_to_road', result, snappedPoints);
   },
 });

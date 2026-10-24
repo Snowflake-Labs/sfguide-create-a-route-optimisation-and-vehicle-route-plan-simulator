@@ -1,7 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 // Solve the evacuation VRP. Wraps TOOL_EVAC_SOLVE (a thin wrapper over ORS
 // OPTIMIZATION). The multi-depot / multi-trip pickup challenge is built by the
@@ -28,9 +28,10 @@ export const evac_solve = defineProc({
   returns: {
     result: t.object({}).describe('Optimization response: routes[], unassigned[], summary, and route geometry.'),
     rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.evacSolve, [args.challenge, args.region]);
-    return withMapRows(ctx.conn, result, geometryAt('geometry'));
+    return withMapRows(ctx, 'evac_solve', result, geometryAt('geometry'));
   },
 });

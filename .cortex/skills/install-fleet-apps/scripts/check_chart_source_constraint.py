@@ -174,7 +174,7 @@ def main() -> int:
         if MAP_TOOL in tools or MAP_TOOL in orchestration:
             o = norm(orchestration)
             if not (re.search(r"data_to_map accepts only two sources", o)
-                    and re.search(r"routing verb result that carries a top-level rows array", o)):
+                    and re.search(r"a query_routing_results result for the result_id", o)):
                 problems.append(
                     f"{spec_path.name}: the sibling {MAP_TOOL} source constraint is gone. "
                     f"The chart rule was derived from it; losing the original leaves maps "

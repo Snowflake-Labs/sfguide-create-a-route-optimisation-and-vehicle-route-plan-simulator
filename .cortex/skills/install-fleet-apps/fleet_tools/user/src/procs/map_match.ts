@@ -1,7 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { ROWS_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 export const map_match = defineProc({
   name: 'map_match',
@@ -24,12 +24,13 @@ export const map_match = defineProc({
   returns: {
     result: t.object({}).describe('Map-matching response: matched_geometry (GeoJSON of the road segments), matched_edges count, raw edge_ids, and requested/used profile.'),
     rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.match, [
       args.locations_description,
       args.profile,
     ]);
-    return withMapRows(ctx.conn, result, geometryAt('matched_geometry'));
+    return withMapRows(ctx, 'map_match', result, geometryAt('matched_geometry'));
   },
 });
