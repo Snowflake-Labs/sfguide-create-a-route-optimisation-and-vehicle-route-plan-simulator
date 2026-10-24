@@ -682,7 +682,9 @@ if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
     # no gate: it trains the operator to ignore the one signal that matters.
     if grep -qE '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log; then
       note "  WARN: analytic layer completed with degraded sections; see /tmp/ifa_analytic.log"
-      grep -E '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log | head -6 | sed 's/^/    /'
+      # Whole messages, not first lines: snow wraps result cells at 80 columns
+      # even into a file, so a grep of WARN lines cut every reason short.
+      python3 "$SCRIPTS/layer_impact.py" --warn-log /tmp/ifa_analytic.log 2>/dev/null | sed 's/^/ /'
       step "3.5 analytic" WARN
     else
       step "3.5 analytic" OK
@@ -1467,7 +1469,13 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 # page before anyone read /tmp/ifa_analytic.log. layer_impact.py reads every
 # log THIS run wrote plus step 9's view report and names the views each broken
 # layer takes down.
+# The region the guarded builders ran for, so each fix is copy-pasteable rather
+# than '<region>'. CATCHMENT.CONFIG is created before the builders, so it exists
+# even when Location failed. CSV + blank-line strip, as for the account below.
+SUMMARY_REGION="$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 | tr -d '"\r')"
+case "$SUMMARY_REGION" in REGION|""|*" "*|*error*) SUMMARY_REGION="" ;; esac
 DEGRADED_ARGS=(--warn-glob '/tmp/ifa_*.log' --since "$START_TS" --view-report /tmp/ifa_view_report.json)
+[ -n "$SUMMARY_REGION" ] && DEGRADED_ARGS+=(--region "$SUMMARY_REGION")
 DEGRADED_MD="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" --markdown 2>/dev/null || true)"
 DEGRADED_TXT="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" 2>/dev/null || true)"
 {

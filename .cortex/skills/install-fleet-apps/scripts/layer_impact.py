@@ -33,10 +33,6 @@ APP_VIEWS = SKILL / "fleet_sa_app" / "app" / "app-views.json"
 REPAIR_MAP = SKILL / "fleet_sa_app" / "ui" / "src" / "lib" / "repair-map.json"
 DB = "FLEET_APP"
 
-# A rendered result row from `snow sql`: "| WARN: ... |". The SQL source is
-# echoed too, so only pipe-led rows count (same rule as install step 3.5).
-WARN_ROW = re.compile(r"^\|\s*(WARN:.*?)\s*\|?\s*$")
-
 
 def collect_query_nodes(view) -> list[dict]:
     """Every node carrying data.query, labelled by its id when it has one.
@@ -214,17 +210,44 @@ def run_logs(pattern: str, since: float) -> list[str]:
 
 
 def warn_lines(paths: list[str]) -> list[str]:
+    """Every 'WARN: ...' builder result, as ONE message per result cell.
+
+    `snow sql` renders results as a table wrapped at 80 columns even into a
+    file (measured), so a builder message spans several `| ... |` lines and
+    the continuation lines do not start with WARN. Reading line by line kept
+    only the first line - the reason was cut before its SQLERRM. A result
+    block is `+---+`, header, `|---|`, data lines, `+---+`; builder blocks are
+    single-row scalars, so all data lines of a block join into one message.
+    Echoed SQL source is never inside a block, so a `RETURN 'WARN: ...'`
+    literal in the script cannot be read as a result.
+    """
     out = []
     for p in paths:
         try:
             text = pathlib.Path(p).read_text(errors="replace")
         except OSError:
             continue
-        for line in text.splitlines():
-            m = WARN_ROW.match(line.strip())
-            if m and m.group(1) not in out:
-                out.append(m.group(1))
+        for msg in _result_cells(text.splitlines()):
+            if msg.startswith("WARN:") and msg not in out:
+                out.append(msg)
     return out
+
+
+def _result_cells(lines: list[str]) -> list[str]:
+    cells, data, state = [], [], "out"
+    for raw in lines:
+        line = raw.rstrip()
+        if line.startswith("+-"):
+            if state == "data" and data:
+                cells.append(" ".join(data))
+            data, state = [], ("header" if state == "out" else "out")
+        elif state == "header" and line.startswith("|-"):
+            state = "data"
+        elif state == "data" and line.startswith("|"):
+            part = line[1:].rstrip("|").strip()
+            if part:
+                data.append(part)
+    return cells
 
 
 def degraded(warn_paths: list[str], view_report: str | None, since: float = 0.0) -> list[dict]:

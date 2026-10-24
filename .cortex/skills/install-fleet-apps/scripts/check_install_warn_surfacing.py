@@ -21,6 +21,11 @@ Rules (fixtures are in snow sql's real log shape: echoed source + result table):
   E  a view-check ERROR is blamed on the layer owning the object it NAMES, not
      on every schema the view reads (one missing Location object used to
      blame the Core contract and 11 views), and labels carry no {{tokens}}
+  F  a WARN cell that snow wrapped across several lines (80 columns even into
+     a file - fixture captured from snow itself) is read WHOLE, through its
+     SQLERRM tail
+  G  the installer reads the region from FLEET_INTELLIGENCE.CATCHMENT.CONFIG and
+     passes it as --region, so fixes are copy-pasteable
 
 Usage:  python3 .cortex/skills/install-fleet-apps/scripts/check_install_warn_surfacing.py
 Exit:   0 clean, 1 violation
@@ -41,6 +46,7 @@ HELPER = HERE / "layer_impact.py"
 INSTALLER = HERE / "install_fleet_apps.sh"
 WARN_FIX = HERE / "fixtures" / "ifa_analytic_location_warn.snowsql.txt"
 CLEAN_FIX = HERE / "fixtures" / "ifa_analytic_clean.snowsql.txt"
+WRAPPED_FIX = HERE / "fixtures" / "ifa_analytic_location_warn_wrapped.snowsql.txt"
 
 failures: list[str] = []
 
@@ -61,7 +67,10 @@ for needle in ("Site Impact", "Closure Impact", "BUILD_LOCATION_DIAGNOSTICS()"):
 # A2
 with tempfile.TemporaryDirectory() as d:
     f = pathlib.Path(d) / "skipped.txt"
-    f.write_text("| WARN: Location diagnostics skipped: configured region lacks Overture POIs or addresses. |\n")
+    # A result block in the shape snow prints (see the wrapped fixture).
+    f.write_text("+---+\n| anonymous block |\n|---|\n"
+                 "| WARN: Location diagnostics skipped: configured region lacks Overture POIs or addresses. |\n"
+                 "+---+\n")
     if "Site Impact" not in run("--warn-log", str(f)):
         failures.append("A2 the 'Location diagnostics skipped' WARN does not map to Location")
 
@@ -104,6 +113,17 @@ with tempfile.TemporaryDirectory() as d:
         failures.append("E a view-check ERROR blamed every schema the view reads (Core contract)")
     if "{{" in out:
         failures.append("E the summary prints raw {{label}} tokens")
+
+# F
+wrapped = run("--warn-log", str(WRAPPED_FIX))
+if "REGIONAL_ADDRESSES' does not exist or not authorized." not in " ".join(wrapped.split()):
+    failures.append("F a wrapped WARN cell lost its tail (only the first wrapped line was read)")
+
+# G
+if not re.search(r"SELECT REGION FROM FLEET_INTELLIGENCE\.CATCHMENT\.CONFIG", sh):
+    failures.append("G installer does not read the region from CATCHMENT.CONFIG")
+if not re.search(r"DEGRADED_ARGS\+=\(--region", sh):
+    failures.append("G installer does not pass --region to layer_impact.py")
 
 if failures:
     print("install warn surfacing: %d violation(s)" % len(failures))

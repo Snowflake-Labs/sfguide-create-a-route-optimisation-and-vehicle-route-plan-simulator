@@ -13,10 +13,19 @@ INSTALLER = f"{S}/install_fleet_apps.sh"
 
 h = Harness("check_install_warn_surfacing.py")
 
-h.replace(HELPER, 'WARN_ROW = re.compile(r"^\\|\\s*(WARN:.*?)\\s*\\|?\\s*$")',
-          'WARN_ROW = re.compile(r".*?(WARN:.*?)\\s*\\|?\\s*$")',
+h.replace(HELPER, "        for msg in _result_cells(text.splitlines()):\n",
+          "        for msg in _result_cells(text.splitlines()) + [l.split(\"'\", 1)[-1] for l in text.splitlines() if \"'WARN:\" in l]:\n",
           expect="B the builder's echoed RETURN 'WARN:' source was reported as a failure",
-          name="M1 unanchored match warns on every run (the original step-3.5 trap)")
+          name="M1 echoed builder source is read as a result (the original step-3.5 trap)")
+
+h.replace(HELPER, "            if part:\n                data.append(part)\n",
+          "            if part and not data:\n                data.append(part)\n",
+          expect="F a wrapped WARN cell lost its tail",
+          name="M8 only the first wrapped line of a cell is kept (the line-regex behaviour)")
+
+h.replace(INSTALLER, '[ -n "$SUMMARY_REGION" ] && DEGRADED_ARGS+=(--region "$SUMMARY_REGION")\n', "",
+          expect="G installer does not pass --region to layer_impact.py",
+          name="M9 fixes print '<region>' again")
 
 h.replace(HELPER, "    return sorted(p for p in glob.glob(pattern) if os.path.getmtime(p) >= since)",
           "    return sorted(glob.glob(pattern))",
