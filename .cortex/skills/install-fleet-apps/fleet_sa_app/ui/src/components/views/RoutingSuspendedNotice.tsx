@@ -1,7 +1,22 @@
 'use client';
 
-import { useState } from 'react';
-import type { SuspendedInfo } from '@/lib/routing-suspend';
+import { useEffect, useRef, useState } from 'react';
+import { autoRetryDelayMs, type SuspendedInfo } from '@/lib/routing-suspend';
+
+// First time a notice was shown for each region in this tab. Module scope on
+// purpose: every retry refetches, the view shows its loading state, and this
+// component unmounts - component state would restart the window on each
+// attempt and retry forever. A notice after a long quiet gap starts a new
+// episode.
+const firstSeen = new Map<string, { first: number; last: number }>();
+const NEW_EPISODE_GAP_MS = 15 * 60_000;
+
+function episodeStart(region: string, now: number): number {
+  const prev = firstSeen.get(region);
+  const first = prev && now - prev.last < NEW_EPISODE_GAP_MS ? prev.first : now;
+  firstSeen.set(region, { first, last: now });
+  return first;
+}
 
 // Shared notice shown wherever a suspended routing engine is detected. The
 // server has already triggered a resume by the time this renders, so the copy
@@ -27,6 +42,27 @@ export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspen
       ? 'Routing engine did not answer in time'
       : 'Routing engine is starting';
   const showRetry = !!onRetry && !notProvisioned;
+
+  // Auto-retry: re-check on a timer while the engine is coming up, so the view
+  // fills in on its own instead of waiting for a click.
+  const [nextIn, setNextIn] = useState<number | null>(null);
+  // Held in a ref, not the effect deps: callers pass inline lambdas, and the
+  // countdown re-renders every second, so a dep would restart the timer on
+  // every tick and it would never fire.
+  const retryRef = useRef(onRetry);
+  retryRef.current = onRetry;
+  const canRetry = !!onRetry;
+  useEffect(() => {
+    if (!canRetry) return;
+    const now = Date.now();
+    const delay = autoRetryDelayMs(info.state, episodeStart(info.region, now), now);
+    if (delay === null) { setNextIn(null); return; }
+    const due = now + delay;
+    setNextIn(Math.ceil(delay / 1000));
+    const tick = setInterval(() => setNextIn(Math.max(0, Math.ceil((due - Date.now()) / 1000))), 1000);
+    const fire = setTimeout(() => retryRef.current?.(), delay);
+    return () => { clearInterval(tick); clearTimeout(fire); };
+  }, [info.region, info.state, canRetry]);
 
   const handleRetry = async () => {
     if (!onRetry) return;
@@ -62,6 +98,11 @@ export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspen
         <div>
           <div style={{ fontWeight: 600, marginBottom: '2px' }}>{heading}</div>
           <div>{info.message}</div>
+          {nextIn !== null && (
+            <div style={{ marginTop: '4px', opacity: 0.85 }}>
+              This view checks again automatically{nextIn > 0 ? ` in ${nextIn}s` : '...'}.
+            </div>
+          )}
         </div>
       </div>
       {showRetry && (

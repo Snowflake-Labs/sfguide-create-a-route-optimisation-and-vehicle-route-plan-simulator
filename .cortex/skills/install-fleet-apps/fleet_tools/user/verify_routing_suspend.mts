@@ -22,6 +22,10 @@ import {
   detectOrsSuspended,
   detectSuspendedInResult,
   detectSuspendedInRows,
+  classifyServiceStatus,
+  suspendedMessage,
+  autoRetryDelayMs,
+  AUTO_RETRY_WINDOW_MS,
   isOutOfGraph,
   parseOutOfGraphPoints,
   outOfGraphMessage,
@@ -117,5 +121,21 @@ chk('a GeoJSON cell -> nothing',
 chk('an off-graph error cell is not an outage',
   !detectSuspendedInRows([{ r: JSON.stringify(live) }]).suspended);
 
-console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${25} assertions passed`);
+// --- a service already coming up is STARTING, not SUSPENDED ----------------
+// PENDING used to read as SUSPENDED, so each retry issued another RESUME and
+// told the user "a resume has been triggered" for one this request never made.
+chk('PENDING -> STARTING', classifyServiceStatus('PENDING') === 'STARTING');
+chk('RESUMING -> STARTING', classifyServiceStatus('resuming') === 'STARTING');
+chk('SUSPENDING -> SUSPENDED (resumed on the next check)', classifyServiceStatus('SUSPENDING') === 'SUSPENDED');
+chk('RUNNING -> RUNNING', classifyServiceStatus('RUNNING') === 'RUNNING');
+chk('starting copy claims no resume',
+  !/resume has been triggered/i.test(suspendedMessage('London', '3 to 4 minutes', 'starting')));
+
+// --- auto-retry: bounded, and never for an engine that does not exist ------
+chk('auto-retry soon after the first notice', autoRetryDelayMs('suspended', 0, 5_000) === 10_000);
+chk('auto-retry backs off after a minute', autoRetryDelayMs('starting', 0, 90_000) === 20_000);
+chk('auto-retry stops after the window', autoRetryDelayMs('suspended', 0, AUTO_RETRY_WINDOW_MS) === null);
+chk('no auto-retry when not provisioned', autoRetryDelayMs('not_provisioned', 0, 1_000) === null);
+
+console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${34} assertions passed`);
 process.exit(fails ? 1 : 0);

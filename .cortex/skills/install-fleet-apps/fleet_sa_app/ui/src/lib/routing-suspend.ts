@@ -31,10 +31,14 @@ export type RoutingServiceKind = 'ORS' | 'VROOM' | 'GATEWAY';
 //                      claim one.
 //   'not_provisioned'- the region has no ORS service at all. Neither a resume
 //                      nor waiting will help.
+//   'starting'       - the service is already coming up (PENDING / RESUMING),
+//                      typically from an earlier resume. Issuing another is
+//                      pointless and "a resume has been triggered" would claim
+//                      an action this request did not take.
 // The distinction exists because the honest message differs, and because
 // claiming "a resume has been triggered" for a running-but-slow engine sends
 // the user off to wait for something that already happened.
-export type EngineState = 'suspended' | 'not_ready' | 'not_provisioned';
+export type EngineState = 'suspended' | 'not_ready' | 'not_provisioned' | 'starting';
 
 // Typed payload the API routes return (HTTP 503) and the client renders.
 export interface SuspendedInfo {
@@ -290,6 +294,42 @@ export function detectSuspendedInRows(rows: ReadonlyArray<Record<string, unknown
   return { suspended: false };
 }
 
+// Actual SPCS state of a region's ORS service.
+//   SUSPENDED - resume it (SUSPENDING is folded in: it will be SUSPENDED within
+//               a minute, and the notice's auto-retry re-resumes it then).
+//   STARTING  - PENDING / RESUMING / STARTING: already coming up, do NOT resume.
+//   RUNNING   - already up; it is warming or overloaded, so do NOT resume.
+//   MISSING   - the region has no ORS service at all.
+export type RegionServiceState = 'SUSPENDED' | 'STARTING' | 'RUNNING' | 'MISSING';
+
+export function classifyServiceStatus(status: string): Exclude<RegionServiceState, 'MISSING'> {
+  const s = status.toUpperCase();
+  if (s === 'RUNNING' || s === 'READY') return 'RUNNING';
+  if (s === 'PENDING' || s === 'RESUMING' || s === 'STARTING') return 'STARTING';
+  return 'SUSPENDED';
+}
+
+// Auto-retry policy for RoutingSuspendedNotice. A cold engine used to leave the
+// panel on a notice until the user found the Retry button; the region is
+// usually ready within minutes, so the notice re-checks on its own.
+//   - never for 'not_provisioned' (waiting cannot help)
+//   - only inside a window from the FIRST notice for the region, sized above the
+//     largest tier's cold start ("up to 5 minutes"), then Retry is manual
+//   - short delays first (the gateway wakes in ~30 s), longer after
+// `firstSeenMs` must survive the notice unmounting on each refetch, so the
+// caller keeps it outside component state.
+export const AUTO_RETRY_WINDOW_MS = 6 * 60_000;
+export function autoRetryDelayMs(
+  state: EngineState | undefined,
+  firstSeenMs: number,
+  nowMs: number,
+): number | null {
+  if (state === 'not_provisioned') return null;
+  const elapsed = nowMs - firstSeenMs;
+  if (elapsed >= AUTO_RETRY_WINDOW_MS) return null;
+  return elapsed < 60_000 ? 10_000 : 20_000;
+}
+
 // Region-size -> friendly wait estimate. Region tier is REGION_ORS_MAP.COMPUTE_SIZE
 // (S / L / XXL). Cold graph load scales with region size, so the estimate does too.
 export function waitCopyForTier(tier: RegionTier | null | undefined): string {
@@ -315,6 +355,12 @@ export function suspendedMessage(
 ): string {
   if (state === 'not_provisioned') {
     return notProvisionedMessage(region);
+  }
+  if (state === 'starting') {
+    return (
+      `The routing engine for ${region} is starting up. ` +
+      `It usually takes ${waitCopy} to become ready.`
+    );
   }
   if (state === 'not_ready') {
     return (

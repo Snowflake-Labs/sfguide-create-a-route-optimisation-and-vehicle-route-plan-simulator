@@ -72,4 +72,19 @@ h.replace(MOD, "      if (!t.startsWith('{') || !t.includes('\"error\"')) contin
           expect="FAIL  plain text saying timeout -> nothing",
           name="row scan reads plain text cells")
 
+# PENDING read as SUSPENDED: every retry re-resumed and claimed it had.
+h.replace(MOD, "  if (s === 'PENDING' || s === 'RESUMING' || s === 'STARTING') return 'STARTING';\n", "",
+          expect="FAIL  PENDING -> STARTING",
+          name="a starting service is classified as suspended")
+
+# An unbounded auto-retry polls a broken region forever.
+h.replace(MOD, "  if (elapsed >= AUTO_RETRY_WINDOW_MS) return null;\n", "",
+          expect="FAIL  auto-retry stops after the window",
+          name="auto-retry has no window")
+
+# Waiting cannot provision an engine.
+h.replace(MOD, "  if (state === 'not_provisioned') return null;\n  const elapsed", "  const elapsed",
+          expect="FAIL  no auto-retry when not provisioned",
+          name="auto-retry for a region with no engine")
+
 sys.exit(h.finish())
