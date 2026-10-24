@@ -59,9 +59,28 @@ export function RoutingSuspendedNotice({ info, onRetry, compact }: RoutingSuspen
     if (delay === null) { setNextIn(null); return; }
     const due = now + delay;
     setNextIn(Math.ceil(delay / 1000));
+    // polling-gate: ui-only -- one-second countdown label; it issues no request.
     const tick = setInterval(() => setNextIn(Math.max(0, Math.ceil((due - Date.now()) / 1000))), 1000);
-    const fire = setTimeout(() => retryRef.current?.(), delay);
-    return () => { clearInterval(tick); clearTimeout(fire); };
+    // The re-check itself queries Snowflake and can resume an engine, so a
+    // hidden tab defers it until the user comes back rather than keeping a
+    // warehouse and a region awake for nobody.
+    const onVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener('visibilitychange', onVisible);
+      retryRef.current?.();
+    };
+    const fire = setTimeout(() => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        document.addEventListener('visibilitychange', onVisible);
+        return;
+      }
+      retryRef.current?.();
+    }, delay);
+    return () => {
+      clearInterval(tick);
+      clearTimeout(fire);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [info.region, info.state, canRetry]);
 
   const handleRetry = async () => {
