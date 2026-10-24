@@ -121,3 +121,47 @@ export async function persistSolve(
     return null;
   }
 }
+
+/**
+ * FLEET_APP schemas a catalog view reads that do not exist for the caller's
+ * role. VIEW_CATALOG.REQUIRED_SCHEMAS (build_view_catalog.py) lists them; a
+ * schema counts as present when INFORMATION_SCHEMA shows any table, view or
+ * function in it. This catches a layer that was never built - a customer
+ * install had no FLEET_APP.LOCATION at all, yet the agent offered Site Impact.
+ * A layer that exists but is empty is caught by the app's own row probe
+ * (/api/pack-status), which opens such a view to its rebuild steps.
+ *
+ * Fails open (returns []) on an older catalog without the column, matching the
+ * verbs' existing "no catalog -> do not block" stance.
+ */
+export const MISSING_LAYERS_SQL =
+  `SELECT COALESCE(ARRAY_AGG(f.VALUE::STRING), ARRAY_CONSTRUCT())::STRING
+     FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG c,
+          LATERAL FLATTEN(INPUT => c.REQUIRED_SCHEMAS) f
+    WHERE c.VIEW_ID = ?
+      AND f.VALUE::STRING NOT IN (
+            SELECT TABLE_SCHEMA FROM FLEET_APP.INFORMATION_SCHEMA.TABLES
+            UNION ALL
+            SELECT FUNCTION_SCHEMA FROM FLEET_APP.INFORMATION_SCHEMA.FUNCTIONS)`;
+
+export async function missingLayers(conn: Conn, viewId: string): Promise<string[]> {
+  try {
+    const raw = await conn.execScalar<string>(MISSING_LAYERS_SQL, [viewId]);
+    const parsed = raw == null ? [] : JSON.parse(String(raw));
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The caveat a verb passes on when the view it is about to hand over is dead. */
+export function unavailableNote(label: string, layers: string[]): string {
+  return (
+    `${label} is NOT usable in this deployment: its data layer ` +
+    `(FLEET_APP.${layers.join(', FLEET_APP.')}) was never built, so it opens to rebuild ` +
+    `steps instead of results. Say so plainly and do not describe its results. ` +
+    `An operator rebuilds it with scripts/validate_app_views.py -c <connection> --repair ` +
+    `(for Location: CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()). ` +
+    `There is no dataset generator for it in the admin app.`
+  );
+}

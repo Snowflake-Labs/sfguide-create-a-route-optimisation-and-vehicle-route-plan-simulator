@@ -43,7 +43,9 @@ export const list_use_cases = defineProc({
       .array(t.object({}))
       .describe(
         'Catalog entries: view_id, label, domain, headline, business_question, audience, ' +
-          'industries, value_drivers, snowflake_capabilities, caveats, preferred_tool.',
+          'industries, value_drivers, snowflake_capabilities, caveats, preferred_tool, ' +
+          'available, missing_layers. An entry with available=false reads a data layer that was ' +
+          'never built here: say so and name the layer instead of recommending it.',
       ),
   },
   execute: async (args, ctx) => {
@@ -55,8 +57,53 @@ export const list_use_cases = defineProc({
         : 30;
 
     // ARRAY_TO_STRING on INDUSTRIES so the industry filter is a plain ILIKE
-    // rather than a FLATTEN + EXISTS subquery.
-    const json = await ctx.conn.execScalar<string>(
+    // rather than a FLATTEN + EXISTS subquery. `missing_layers` lists the
+    // FLEET_APP schemas a use case reads that do not exist here (never built),
+    // so the agent does not offer it as a working demo.
+    const binds = [domain, domain, industry, industry];
+    // An older catalog has no REQUIRED_SCHEMAS column: list without the
+    // availability fields rather than failing the whole verb.
+    let json: string | null;
+    try {
+      json = await ctx.conn.execScalar<string>(
+      `WITH present AS (
+         SELECT TABLE_SCHEMA AS S FROM FLEET_APP.INFORMATION_SCHEMA.TABLES
+         UNION SELECT FUNCTION_SCHEMA FROM FLEET_APP.INFORMATION_SCHEMA.FUNCTIONS
+       ), missing AS (
+         SELECT c.VIEW_ID, ARRAY_AGG(f.VALUE::STRING) AS M
+         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG c,
+              LATERAL FLATTEN(INPUT => c.REQUIRED_SCHEMAS) f
+         WHERE f.VALUE::STRING NOT IN (SELECT S FROM present)
+         GROUP BY c.VIEW_ID
+       )
+       SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+           'view_id', VIEW_ID,
+           'label', LABEL,
+           'domain', DOMAIN,
+           'headline', HEADLINE,
+           'business_question', BUSINESS_QUESTION,
+           'audience', AUDIENCE,
+           'industries', INDUSTRIES,
+           'value_drivers', VALUE_DRIVERS,
+           'snowflake_capabilities', SNOWFLAKE_CAPABILITIES,
+           'caveats', CAVEATS,
+           'preferred_tool', PREFERRED_TOOL,
+           'available', M IS NULL,
+           'missing_layers', M
+         )) WITHIN GROUP (ORDER BY DOMAIN, VIEW_ID), ARRAY_CONSTRUCT())::STRING
+       FROM (
+         SELECT v.*, m.M
+         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG v
+         LEFT JOIN missing m ON m.VIEW_ID = v.VIEW_ID
+         WHERE (? IS NULL OR UPPER(v.DOMAIN) = UPPER(?))
+           AND (? IS NULL OR ARRAY_TO_STRING(v.INDUSTRIES, ', ') ILIKE '%' || ? || '%')
+         ORDER BY v.DOMAIN, v.VIEW_ID
+         LIMIT ${limit}
+       )`,
+      binds,
+      );
+    } catch {
+      json = await ctx.conn.execScalar<string>(
       `SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
            'view_id', VIEW_ID,
            'label', LABEL,
@@ -71,15 +118,16 @@ export const list_use_cases = defineProc({
            'preferred_tool', PREFERRED_TOOL
          )) WITHIN GROUP (ORDER BY DOMAIN, VIEW_ID), ARRAY_CONSTRUCT())::STRING
        FROM (
-         SELECT *
-         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG
-         WHERE (? IS NULL OR UPPER(DOMAIN) = UPPER(?))
-           AND (? IS NULL OR ARRAY_TO_STRING(INDUSTRIES, ', ') ILIKE '%' || ? || '%')
-         ORDER BY DOMAIN, VIEW_ID
+         SELECT v.*
+         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG v
+         WHERE (? IS NULL OR UPPER(v.DOMAIN) = UPPER(?))
+           AND (? IS NULL OR ARRAY_TO_STRING(v.INDUSTRIES, ', ') ILIKE '%' || ? || '%')
+         ORDER BY v.DOMAIN, v.VIEW_ID
          LIMIT ${limit}
        )`,
-      [domain, domain, industry, industry],
-    );
+      binds,
+      );
+    }
 
     let rows: Record<string, unknown>[] = [];
     try {
