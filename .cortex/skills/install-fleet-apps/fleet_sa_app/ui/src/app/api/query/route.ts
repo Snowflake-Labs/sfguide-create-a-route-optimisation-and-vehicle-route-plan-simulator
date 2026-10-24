@@ -9,6 +9,7 @@ import {
   OUT_OF_GRAPH_REASON,
 } from '@/lib/routing-suspend';
 import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
+import { missingDependencyMessage, MISSING_DEPENDENCY_REASON } from '@/lib/missing-dependency';
 // Warehouse comes from lib/warehouse.ts (single owner). Do not reintroduce a
 // `|| 'COMPUTE_WH'` fallback: that named a warehouse this stack never creates.
 import { WAREHOUSE } from '@/lib/warehouse';
@@ -402,6 +403,13 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     if (resumeRegion) {
       const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
+    }
+    // A layer the installer skipped: name the builder that creates it, so
+    // nobody (user or agent) has to guess a remedy from a compilation error.
+    const missing = missingDependencyMessage(rawMsg, regionHint);
+    if (missing) {
+      logger.warn('sf-missing-dependency', { region: regionHint, detail: rawMsg.slice(0, 200) });
+      return NextResponse.json({ error: missing, reason: MISSING_DEPENDENCY_REASON }, { status: 424 });
     }
     logger.error('sf-error', { warehouse: WAREHOUSE }, err);
     return NextResponse.json(
