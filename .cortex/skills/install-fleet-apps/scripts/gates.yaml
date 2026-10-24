@@ -55,6 +55,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags_negative.py
     scope: static
     why: every CREATE carries a tracking COMMENT and every session a query_tag
+  - id: no_silent_waits
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_silent_waits.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_silent_waits_negative.py
+    scope: static
+    why: a bare wait on a backgrounded install phase prints nothing for ~30 min, indistinguishable from a hang
   - id: image_versions
     run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py

@@ -300,6 +300,22 @@ _bg_cleanup() {
 }
 trap _bg_cleanup EXIT
 
+# Collect a backgrounded job WITHOUT going silent. A bare `wait` printed nothing
+# for the whole engine image push (~30 min measured on a fresh account), so a
+# customer saw one "collecting..." line and no sign of life. Prints elapsed time
+# and the job log's last line every HEARTBEAT_SECS, then returns the job's rc.
+wait_with_progress() {
+  local pid="$1" label="$2" log="$3" start=$SECONDS last
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "${HEARTBEAT_SECS:-60}" &
+    wait $! 2>/dev/null || true
+    kill -0 "$pid" 2>/dev/null || break
+    last=$(tail -n 1 "$log" 2>/dev/null | cut -c1-120)
+    note "    $label still running ($(( (SECONDS - start) / 60 )) min): ${last:-no output yet}"
+  done
+  wait "$pid"
+}
+
 if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
    && [ "${OVERLAP_ENGINE_IMAGES:-1}" = "1" ] \
    && ! obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
@@ -476,7 +492,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # as an inscrutable CREATE SERVICE error against a missing image.
     if [ -n "$ENGINE_IMAGES_PID" ]; then
       note "  collecting the backgrounded engine image phase (pid $ENGINE_IMAGES_PID)..."
-      if wait "$ENGINE_IMAGES_PID"; then
+      if wait_with_progress "$ENGINE_IMAGES_PID" "engine image build+push" /tmp/ifa_engine_images.log; then
         note "  engine images ready (built while the seed uploaded)"
         ENGINE_IMAGES_DONE=1
       else
@@ -1211,8 +1227,8 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
     ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
       >/tmp/ifa_admin_deploy.log 2>&1 & APP_ADMIN_PID=$!
     SA_RC=0; ADMIN_RC=0
-    wait "$APP_SA_PID" || SA_RC=$?
-    wait "$APP_ADMIN_PID" || ADMIN_RC=$?
+    wait_with_progress "$APP_SA_PID" "SA app deploy" /tmp/ifa_sa_deploy.log || SA_RC=$?
+    wait_with_progress "$APP_ADMIN_PID" "admin app deploy" /tmp/ifa_admin_deploy.log || ADMIN_RC=$?
     if [ "$SA_RC" -ne 0 ]; then
       echo "ERROR: SA app deploy failed (rc=$SA_RC); see /tmp/ifa_sa_deploy.log"
       tail -30 /tmp/ifa_sa_deploy.log
@@ -1229,8 +1245,8 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   EP_SA_PID=$!
   resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app > /tmp/ifa_admin_url.txt &
   EP_ADMIN_PID=$!
-  wait "$EP_SA_PID" || true
-  wait "$EP_ADMIN_PID" || true
+  wait_with_progress "$EP_SA_PID" "SA endpoint" /tmp/ifa_sa_url.txt || true
+  wait_with_progress "$EP_ADMIN_PID" "admin endpoint" /tmp/ifa_admin_url.txt || true
   SA_URL=$(cat /tmp/ifa_sa_url.txt 2>/dev/null || echo "")
   ADMIN_URL=$(cat /tmp/ifa_admin_url.txt 2>/dev/null || echo "")
   step "7 apps" OK
@@ -1412,7 +1428,7 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
     # produced - the classification is unchanged, only the scheduling moved.
     note "  collecting the backgrounded view verification (pid $VERIFY_VIEWS_PID)..."
     VERIFY_RC=0
-    wait "$VERIFY_VIEWS_PID" || VERIFY_RC=$?
+    wait_with_progress "$VERIFY_VIEWS_PID" "view verification" /tmp/ifa_verify.log || VERIFY_RC=$?
     VERIFY_VIEWS_PID=""
     VERIFY_READY=1
   elif python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
