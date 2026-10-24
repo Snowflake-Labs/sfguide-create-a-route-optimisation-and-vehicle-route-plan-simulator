@@ -20,9 +20,12 @@ A  Each GEOMETRY verb declares nullable `rows` AND `result_id` beside `result`
    and returns `withMapRows(ctx, '<its own verb name>', result, <spec>)`.
 B  No other user verb calls withMapRows (run_sql, render_map, deep_link, ...
    have nothing to draw through this path).
-C  map_rows.ts returns `{ result }` alone unless status is SUCCESS, simplifies
-   every geometry with ST_SIMPLIFY(G, 250) first, and keeps the cell cap
-   <= 64 KB and the row-set cap <= 200 KB.
+C  map_rows.ts returns `{ result }` alone unless status is SUCCESS, keeps FULL
+   detail first (tolerance ladder starts at 0 = unsimplified, strictly
+   increasing, ends at 5000 m), picks ONE shared tolerance as the finest tier
+   whose row set fits ROWS_MAX, and keeps the cell cap <= 64 KB and the
+   row-set cap <= 200 KB. (A fixed 250 m first tier drew a 151-point city
+   route as 7 segments.)
 D  The vendored synapse envelope keeps an omitted nullable return key absent
    (patch 10), so a FAILED call carries no `rows: null`.
 E  Every agent spec carrying the CoWork map block has the routing-result rule:
@@ -124,9 +127,22 @@ def main() -> int:
         mm = re.search(rf"const {const} = ([\d_]+);", m)
         if not mm or int(mm.group(1).replace("_", "")) > cap:
             problems.append(f"C map_rows.ts: {const} missing or above {cap} - CoWork drops the map")
-    first = re.search(r"ST_SIMPLIFY\(G,\s*(\d+)\)", m)
-    if not first or first.group(1) != "250":
-        problems.append("C map_rows.ts: geometry is not simplified with ST_SIMPLIFY(G, 250) first")
+    lad = re.search(r"const TOLERANCES_M = \[([\d,\s]+)\];", m)
+    tol = [int(x) for x in lad.group(1).split(",")] if lad else []
+    if not tol or tol[0] != 0:
+        problems.append("C map_rows.ts: the tolerance ladder does not start at 0 (full detail) - "
+                        "routes are simplified even when the full line fits")
+    elif any(b <= a for a, b in zip(tol, tol[1:])) or tol[-1] != 5000:
+        problems.append(f"C map_rows.ts: the tolerance ladder {tol} is not strictly increasing to 5000")
+    if "${TOLERANCES_M.join(" not in m or not re.search(r"COALESCE\(MIN\(IFF\(BYTES <= \$\{ROWS_MAX\}", m):
+        problems.append("C map_rows.ts: SIMPLIFY_SQL does not pick the FINEST tier of TOLERANCES_M "
+                        "whose row set fits ROWS_MAX")
+    if not re.search(r"WHERE LAD\.TOL = PICK\.T", m):
+        problems.append("C map_rows.ts: rows are not all emitted at the one picked tolerance - "
+                        "a multi-route result can drop routes")
+    if not re.search(r"BEST AS \(SELECT MAX\(FIT\) AS F FROM TIERS\)", m) or "FIT = BEST.F" not in m:
+        problems.append("C map_rows.ts: the tier target is not the MAX fit over all tiers - ST_SIMPLIFY "
+                        "collapses a short line to NULL at 5 km, so a 5 km target draws no map")
 
     # --- F: persistence ----------------------------------------------------------
     if not re.search(rf"INSERT INTO \$\{{GEOMETRY_TABLE\}}\s*\(RESULT_ID, VERB, ACTOR,", m) \

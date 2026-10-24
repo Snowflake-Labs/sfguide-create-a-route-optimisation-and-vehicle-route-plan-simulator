@@ -28,10 +28,17 @@ type Obj = Record<string, unknown>;
  * SIZE
  * An MCP result has no query id: the map is an inline snapshot. A cell over
  * 64 KB is dropped (the map then fails with unmappable_rows) and the inlined
- * rows together must stay under ~200 KB. Every geometry is ST_SIMPLIFY'd at
- * 250 m, retried coarser when a cell is still over CELL_MAX, and dropped if
- * even 5 km does not fit. The simplification uses built-in functions only, so
- * it needs no grant and no deployed helper object.
+ * rows together must stay under ~200 KB. DETAIL FIRST, COARSEN ONLY TO FIT:
+ * one tolerance is chosen for the whole call - the finest of full resolution,
+ * 5 / 25 / 100 / 250 / 1000 / 5000 m at which every geometry that can fit a
+ * cell does, and the row set stays under ROWS_MAX. A geometry over CELL_MAX
+ * even at 5 km is dropped. Measured: Civic Center -> Golden Gate is 151 points
+ * / 3.6 KB at full resolution and was 7 straight segments under the old fixed
+ * 250 m first tier. One shared tolerance (rather than a per-row share of
+ * ROWS_MAX) means a multi-route result is coarsened together and keeps every
+ * route; an equal per-row share dropped ALL rows of a set whose rows each
+ * slightly exceeded it. The simplification uses built-in functions only, so it
+ * needs no grant and no deployed helper object.
  *
  * BEST EFFORT
  * A failure here never fails the verb: the routing answer stands and the
@@ -156,23 +163,44 @@ export function pointRows(pts: { lon: unknown; lat: unknown }[]): Obj[] {
   return rows;
 }
 
-// One statement for the whole batch. Each tolerance is tried in order and the
-// first output under CELL_MAX wins; NULL (dropped) when even 5 km is too big or
-// the input is not a valid geography. ARRAY_AGG skips the NULLs.
+// One statement for the whole batch. Every geometry is rendered at each tier of
+// the ladder (0 = unsimplified). PICK is the finest tier at which the MOST
+// geometries fit a cell AND the row set fits ROWS_MAX; when no tier does, the
+// coarsest tier that still fits the most (the TS loop below then truncates as a
+// backstop). "The most" is the maximum over ALL tiers, not the 5 km count:
+// ST_SIMPLIFY collapses a short line to NULL at 5 km, so measured against the
+// 5 km tier a 3.5 km city route matched nothing and drew no map at all.
+// A geometry that does not fit a cell at the picked tier, or is not a valid
+// geography, is dropped.
+const TOLERANCES_M = [0, 5, 25, 100, 250, 1000, 5000];
+// Bytes the { GEOJSON: ... } wrapper and the array separator add to each cell.
+const ROW_OVERHEAD = 16;
 const SIMPLIFY_SQL = `
-SELECT ARRAY_AGG(GJ) WITHIN GROUP (ORDER BY I) FROM (
-  SELECT I,
-    CASE
-      WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(G, 250))::STRING)  <= ${CELL_MAX} THEN ST_ASGEOJSON(ST_SIMPLIFY(G, 250))
-      WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(G, 1000))::STRING) <= ${CELL_MAX} THEN ST_ASGEOJSON(ST_SIMPLIFY(G, 1000))
-      WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(G, 5000))::STRING) <= ${CELL_MAX} THEN ST_ASGEOJSON(ST_SIMPLIFY(G, 5000))
-    END AS GJ
+WITH LAD AS (
+  SELECT g.I, t.VALUE::NUMBER AS TOL,
+         ST_ASGEOJSON(IFF(t.VALUE = 0, g.G, ST_SIMPLIFY(g.G, t.VALUE::NUMBER)))::STRING AS GJ
   FROM (
     SELECT f.INDEX AS I, TRY_TO_GEOGRAPHY(f.VALUE::STRING, TRUE) AS G
     FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) f
-  )
-  WHERE G IS NOT NULL
-)`;
+  ) g,
+  TABLE(FLATTEN(INPUT => ARRAY_CONSTRUCT(${TOLERANCES_M.join(', ')}))) t
+  WHERE g.G IS NOT NULL
+),
+TIERS AS (
+  SELECT TOL,
+         COUNT_IF(LENGTH(GJ) <= ${CELL_MAX}) AS FIT,
+         SUM(IFF(LENGTH(GJ) <= ${CELL_MAX}, LENGTH(GJ) + ${ROW_OVERHEAD}, 0)) AS BYTES
+  FROM LAD GROUP BY TOL
+),
+BEST AS (SELECT MAX(FIT) AS F FROM TIERS),
+PICK AS (
+  SELECT COALESCE(MIN(IFF(BYTES <= ${ROWS_MAX} AND FIT = BEST.F, TOL, NULL)),
+                  MAX(IFF(FIT = BEST.F, TOL, NULL))) AS T
+  FROM TIERS, BEST
+)
+SELECT ARRAY_AGG(GJ) WITHIN GROUP (ORDER BY I)
+FROM LAD, PICK
+WHERE LAD.TOL = PICK.T AND LENGTH(GJ) <= ${CELL_MAX}`;
 
 async function simplifiedRows(conn: Conn, geoms: Obj[]): Promise<Obj[]> {
   if (geoms.length === 0) return [];
@@ -188,6 +216,7 @@ async function simplifiedRows(conn: Conn, geoms: Obj[]): Promise<Obj[]> {
     const row = { GEOJSON: geo };
     const len = JSON.stringify(row).length;
     if (len > CELL_MAX) continue;
+    // Backstop only: the picked tolerance already keeps the sum under ROWS_MAX.
     if (bytes + len + 1 > ROWS_MAX) break;
     bytes += len + 1;
     rows.push(row);
@@ -295,7 +324,8 @@ export const featurePoints: MapSpec = {
 export const ROWS_DESCRIPTION =
   'Present only on SUCCESS when there is something to draw. A map-ready row set for CoWork data_to_map: ' +
   'rows of { GEOJSON } (layer_type "geojson", geo_column "GEOJSON") or rows of { LON, LAT } ' +
-  '(layer_type "latlon"), never both. Simplified and size-capped; `result` holds the full geometry.';
+  '(layer_type "latlon"), never both. Full detail where it fits, simplified only to stay within the map ' +
+  'size caps; `result` holds the full geometry.';
 
 /** Shared `returns.result_id` description. */
 export const RESULT_ID_DESCRIPTION =

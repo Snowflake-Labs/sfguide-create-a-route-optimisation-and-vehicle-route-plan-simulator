@@ -51,8 +51,21 @@ h.replace(MAP_ROWS, "const CELL_MAX = 60_000;", "const CELL_MAX = 70_000;",
           expect="C map_rows.ts: CELL_MAX missing or above 64000", name="cell cap above 64 KB")
 h.replace(MAP_ROWS, "const ROWS_MAX = 190_000;", "const ROWS_MAX = 400_000;",
           expect="C map_rows.ts: ROWS_MAX missing or above 200000", name="row-set cap above 200 KB")
-h.replace(MAP_ROWS, "ST_SIMPLIFY(G, 250))::STRING)", "ST_SIMPLIFY(G, 10))::STRING)",
-          expect="C map_rows.ts: geometry is not simplified with ST_SIMPLIFY(G, 250) first", name="tolerance 10 m")
+# C: the SHIPPED defect - a fixed 250 m first tier drew a city route as 7 segments.
+h.replace(MAP_ROWS, "const TOLERANCES_M = [0, 5, 25, 100, 250, 1000, 5000];",
+          "const TOLERANCES_M = [250, 1000, 5000];",
+          expect="C map_rows.ts: the tolerance ladder does not start at 0", name="250 m first tier restored")
+h.replace(MAP_ROWS, "const TOLERANCES_M = [0, 5, 25, 100, 250, 1000, 5000];",
+          "const TOLERANCES_M = [0, 250, 25, 1000, 5000];",
+          expect="is not strictly increasing to 5000", name="ladder not monotonic")
+h.replace(MAP_ROWS, "COALESCE(MIN(IFF(BYTES <= ${ROWS_MAX}", "COALESCE(MAX(IFF(BYTES <= ${ROWS_MAX}",
+          expect="C map_rows.ts: SIMPLIFY_SQL does not pick the FINEST tier", name="coarsest tier picked")
+h.replace(MAP_ROWS, "WHERE LAD.TOL = PICK.T AND", "WHERE",
+          expect="C map_rows.ts: rows are not all emitted at the one picked tolerance", name="tiers not pinned")
+# C: the first version of the ladder - target = the 5 km count, which is 0 for a short route.
+h.replace(MAP_ROWS, "BEST AS (SELECT MAX(FIT) AS F FROM TIERS)",
+          "BEST AS (SELECT FIT AS F FROM TIERS WHERE TOL = 5000)",
+          expect="C map_rows.ts: the tier target is not the MAX fit over all tiers", name="5 km target restored")
 # D: framework patch reverted -> rows: null on every failure.
 h.replace(ENVELOPE, "    if (what === 'returns' && schema.kind === 'nullable' && !(key in obj)) continue;\n", "",
           expect="D envelope.ts: patch 10 is gone", name="envelope patch reverted")

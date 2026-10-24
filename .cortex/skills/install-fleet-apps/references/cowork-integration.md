@@ -477,10 +477,16 @@ shapes, never mixed:
 | snap_to_road (snapped points only), query_overture_places, query_overture_addresses (list mode) | `{ LON, LAT }` | `layer_type "latlon"`, `lat_column "LAT"`, `lon_column "LON"` |
 
 A catchment or POI-in-isochrone result carries the polygon only, not its POIs: one call draws
-one layer. Every geometry is `ST_SIMPLIFY`'d at 250 m, then 1 km, then 5 km until the cell is
-under 60 KB, and dropped if even 5 km does not fit (a 180-part MultiPolygon such as Alaska
-stays over 100 KB at 5 km, because ST_SIMPLIFY never drops a ring). Point rows are capped at
-2,000 and the whole array at ~190 KB. A FAILED result has no `rows` and no `result_id` -
+one layer. Detail first, coarsen only to fit: ONE tolerance is chosen per call, the finest of
+full resolution, 5, 25, 100, 250, 1000 or 5000 m `ST_SIMPLIFY` at which every geometry that can
+fit a 60 KB cell does and the whole row set stays under 190 KB. A geometry over 60 KB even at
+5 km is dropped (a 180-part MultiPolygon such as Alaska stays over 100 KB at 5 km, because
+ST_SIMPLIFY never drops a ring). Measured for Civic Center to Golden Gate Bridge: full 151
+points / 3.6 KB, 10 m 20 points, 250 m 7 points - the old fixed 250 m first tier is what drew
+city routes as a handful of straight segments. A shared tolerance coarsens a multi-route result
+together instead of truncating its last routes; an equal per-row share of 190 KB was tried and
+rejected, because a set whose rows each slightly exceed their share lost ALL of them. Point rows
+are capped at 2,000 and the whole array at ~190 KB. A FAILED result has no `rows` and no `result_id` -
 vendored synapse patch 10 keeps an omitted nullable return key absent instead of `null`.
 `backload_solve` and `backload_chain_solve` request `g:false` from VROOM, so they carry no
 route geometry and return no rows. Gate: `check_cowork_rows.py` (rules A-G).
