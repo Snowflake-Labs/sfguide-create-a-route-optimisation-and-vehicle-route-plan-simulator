@@ -1,0 +1,89 @@
+{
+  "_comment": "Which artifact owns which schema. The ONLY place the mapping from 'this object is missing' to 'run this' is written down. Read by scripts/validate_app_views.py (--repair runs `action`) and by the SA app (lib/missing-dependency.ts turns a 'does not exist' query error into `fix`). `action` is a CALL, @FILE:<path relative to scripts/> or @PACK:<fleet pack>. `fix` is operator-facing; when omitted it is derived from `action`. `note` says what the layer depends on and, where true, that the admin app cannot produce it.",
+  "entries": [
+    {
+      "prefix": "FLEET_APP.CATCHMENT.",
+      "layer": "catchment",
+      "label": "Catchment",
+      "action": "CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT('{region}', TRUE)",
+      "note": "Built from the Overture Places and Addresses data for the region. It is not produced by the admin app Data Studio."
+    },
+    {
+      "prefix": "FLEET_APP.LOCATION.",
+      "layer": "location",
+      "label": "Location diagnostics (Site Impact, Closure Impact)",
+      "action": "CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()",
+      "fix": [
+        "CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT('{region}', TRUE);  -- only if catchment is missing",
+        "CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS();"
+      ],
+      "note": "Needs Overture POIs and household addresses for the region (the catchment layer). It is not produced by the admin app Data Studio; there is no Location dataset generator."
+    },
+    {
+      "prefix": "FLEET_APP.SOURCING.",
+      "layer": "sourcing",
+      "label": "Sourcing diagnostics",
+      "action": "CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS()"
+    },
+    {
+      "prefix": "FLEET_APP.DELIVERY_SYNC.",
+      "layer": "delivery_sync",
+      "label": "Delivery sync",
+      "action": "@FILE:delivery_sync_layer.sql"
+    },
+    {
+      "prefix": "FLEET_APP.DWELL.",
+      "layer": "dwell",
+      "label": "Dwell",
+      "action": "@PACK:dwell"
+    },
+    {
+      "prefix": "FLEET_APP.UNIFIED_FLEET.",
+      "layer": "unified_fleet",
+      "label": "Unified fleet",
+      "action": "@PACK:unified_fleet"
+    },
+    {
+      "prefix": "FLEET_APP.ROUTE_OPTIMIZATION.",
+      "layer": "route_optimization",
+      "label": "Route optimization",
+      "action": "@PACK:route_optimization"
+    },
+    {
+      "prefix": "FLEET_APP.BACKLOAD_MATCHING.",
+      "layer": "backload_matching",
+      "label": "Backload matching",
+      "action": "@PACK:backload_matching"
+    },
+    {
+      "prefix": "FLEET_APP.CORE.",
+      "layer": "core_contract",
+      "label": "Core data contract",
+      "action": "@FILE:../fleet_sa_app/app/scoped_contract.sql"
+    },
+    {
+      "prefix": "FLEET_APP.FLEET_OPS.",
+      "layer": "core_contract",
+      "label": "Core data contract",
+      "action": "@FILE:../fleet_sa_app/app/scoped_contract.sql"
+    },
+    {
+      "prefix": "FLEET_APP.EMERGENCY_RESPONSE.",
+      "layer": "core_contract",
+      "label": "Core data contract",
+      "action": "@FILE:../fleet_sa_app/app/scoped_contract.sql"
+    },
+    {
+      "prefix": "SYNTHETIC_DATASETS.UNIFIED.V_",
+      "layer": "projections",
+      "label": "Dataset projection views",
+      "action": "@FILE:projection_views.sql"
+    },
+    {
+      "prefix": "FLEET_INTELLIGENCE.CORE.DIM_VEHICLE",
+      "layer": "catalog",
+      "label": "Vehicle profile catalog",
+      "action": "@FILE:vehicle_profile_catalog.sql"
+    }
+  ]
+}

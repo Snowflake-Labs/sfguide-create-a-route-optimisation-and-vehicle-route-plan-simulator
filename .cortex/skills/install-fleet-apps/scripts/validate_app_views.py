@@ -89,28 +89,13 @@ ORS_DOWN_TOKENS = ("service_unreachable", "ors-service-", "all_chunks_failed")
 # CLICK, so its first-render value is NULL - see viewstate_binds.
 QUERY_INITIALISED_CONTROLS = ("ComboBox", "Select", "Dropdown", "Filter", "FilterBar")
 
-# Which artifact owns which schema. Used by --repair, and worth reading as
-# documentation in its own right: it is the only place the mapping from "this
-# view is empty" to "run this" is written down.
-REPAIR_MAP = [
-    ("FLEET_APP.CATCHMENT.", "catchment",
-     "CALL FLEET_INTELLIGENCE.CATCHMENT.BUILD_CATCHMENT('{region}', TRUE)"),
-    ("FLEET_APP.LOCATION.", "location",
-     "CALL FLEET_INTELLIGENCE.LOCATION.BUILD_LOCATION_DIAGNOSTICS()"),
-    ("FLEET_APP.SOURCING.", "sourcing",
-     "CALL FLEET_INTELLIGENCE.SOURCING.BUILD_SOURCING_DIAGNOSTICS()"),
-    ("FLEET_APP.DELIVERY_SYNC.", "delivery_sync", "@FILE:delivery_sync_layer.sql"),
-    ("FLEET_APP.DWELL.", "dwell", "@PACK:dwell"),
-    ("FLEET_APP.UNIFIED_FLEET.", "unified_fleet", "@PACK:unified_fleet"),
-    ("FLEET_APP.ROUTE_OPTIMIZATION.", "route_optimization", "@PACK:route_optimization"),
-    ("FLEET_APP.BACKLOAD_MATCHING.", "backload_matching", "@PACK:backload_matching"),
-    ("FLEET_APP.CORE.", "core_contract", "@FILE:../fleet_sa_app/app/scoped_contract.sql"),
-    ("FLEET_APP.FLEET_OPS.", "core_contract", "@FILE:../fleet_sa_app/app/scoped_contract.sql"),
-    ("FLEET_APP.EMERGENCY_RESPONSE.", "core_contract",
-     "@FILE:../fleet_sa_app/app/scoped_contract.sql"),
-    ("SYNTHETIC_DATASETS.UNIFIED.V_", "projections", "@FILE:projection_views.sql"),
-    ("FLEET_INTELLIGENCE.CORE.DIM_VEHICLE", "catalog", "@FILE:vehicle_profile_catalog.sql"),
-]
+# Which artifact owns which schema. Used by --repair. The mapping itself lives in
+# the SA app's lib/repair-map.json, the only place "this object is missing" ->
+# "run this" is written down: the app reads the same file to tell a user how to
+# rebuild a missing layer, so the two can never drift.
+REPAIR_MAP_FILE = SKILL / "fleet_sa_app" / "ui" / "src" / "lib" / "repair-map.json"
+REPAIR_MAP = [(e["prefix"], e["layer"], e["action"])
+              for e in json.loads(REPAIR_MAP_FILE.read_text())["entries"]]
 
 
 def find_binds(sql: str) -> list[str]:
