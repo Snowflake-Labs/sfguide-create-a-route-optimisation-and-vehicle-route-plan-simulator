@@ -121,9 +121,52 @@ def views_reading(entry: dict, views: dict) -> list[dict]:
     hits = []
     for vid, v in views.items():
         if any(("%s.%s." % (DB, s)).startswith(pfx) for s in view_schemas(v)):
-            hits.append({"id": vid, "label": v.get("label", vid),
-                         "headline": (v.get("useCase") or {}).get("headline", "")})
+            hits.append({"id": vid, "label": display_text(v.get("label", vid)),
+                         "headline": display_text((v.get("useCase") or {}).get("headline", ""))})
     return hits
+
+
+def display_text(text):
+    """Fill {{labels.*}} tokens the way the app does, so the summary names
+    'Live Vehicle Operations', not 'Live {{labels.entity}} Operations'."""
+    if not isinstance(text, str) or "{{" not in text:
+        return text
+    from build_view_catalog import interpolate  # lazy: it imports this module
+    try:
+        cfg = json.loads((SKILL / "fleet_sa_app" / "app" / "app-config.json").read_text())
+    except (OSError, ValueError):
+        return text
+    return interpolate(text, cfg.get("display") or {})
+
+
+# Same two shapes lib/missing-dependency.ts matches (measured on Snowflake).
+MISSING_OBJ = re.compile(
+    r"(?:(?:Object|Schema|Table|View|Function)\s+'([^']+)'\s+does not exist"
+    r"|Unknown user-defined (?:table )?function\s+([A-Za-z0-9_$.\"]+))", re.I)
+
+
+def entry_for_object(text: str, entries: list[dict]) -> dict | None:
+    """The layer owning the object a view-check error names, if any."""
+    m = MISSING_OBJ.search(text or "")
+    if not m:
+        return None
+    name = (m.group(1) or m.group(2) or "").replace('"', "").upper()
+    return next((e for e in entries if name.startswith(e["prefix"].upper())), None)
+
+
+def fix_steps(entry: dict) -> list[str]:
+    """Runnable steps; @FILE/@PACK actions become the snow command that runs
+    them (mirrors fixSteps in lib/missing-dependency.ts)."""
+    if entry.get("fix"):
+        return list(entry["fix"])
+    a = entry["action"]
+    if a.startswith("@PACK:"):
+        return ["snow sql -c <connection> -f .cortex/skills/install-fleet-apps/fleet_sa_app/app/"
+                "packs/fleet/%s/setup.sql --enable-templating NONE" % a[6:]]
+    if a.startswith("@FILE:"):
+        return ["snow sql -c <connection> -f .cortex/skills/install-fleet-apps/scripts/%s "
+                "--enable-templating NONE" % a[6:]]
+    return [a + ";"]
 
 
 def run_logs(pattern: str, since: float) -> list[str]:
@@ -158,7 +201,7 @@ def degraded(warn_paths: list[str], view_report: str | None, since: float = 0.0)
         if key not in items:
             items[key] = {"layer": key, "label": entry.get("label", key), "reasons": [],
                           "views": views_reading(entry, views),
-                          "fix": entry.get("fix") or [entry["action"]],
+                          "fix": fix_steps(entry),
                           "note": entry.get("note", "")}
         return items[key]
 
@@ -180,16 +223,28 @@ def degraded(warn_paths: list[str], view_report: str | None, since: float = 0.0)
             rep = None
         rows = rep.get("results", rep) if isinstance(rep, dict) else (rep or [])
         for r in rows if isinstance(rows, list) else []:
-            if r.get("status") not in ("ERROR", "EMPTY"):
+            status = r.get("status")
+            if status not in ("ERROR", "EMPTY"):
                 continue
-            v = views.get(r.get("view"))
-            for s in view_schemas(v) if v else []:
-                e = entry_for_schema(s, entries)
-                if e and (e["layer"] in items or r.get("status") == "ERROR"):
-                    it = item(e)
-                    msg = "view check: %s %s %s" % (r.get("view"), r.get("area"), r.get("status"))
-                    if msg not in it["reasons"]:
-                        it["reasons"].append(msg)
+            msg = "view check: %s %s %s" % (r.get("view"), r.get("area"), status)
+            # An ERROR is attributed to the layer owning the object it names -
+            # never to every schema the view reads (that blamed the Core
+            # contract, and 11 views, for one missing Location object). An
+            # EMPTY area only corroborates a layer a WARN already flagged:
+            # empty is often legitimate for a region.
+            if status == "ERROR":
+                e = entry_for_object(r.get("detail", ""), entries)
+                if e is None:
+                    continue
+                targets = [e]
+            else:
+                v = views.get(r.get("view"))
+                targets = [e for s in (view_schemas(v) if v else [])
+                           for e in [entry_for_schema(s, entries)] if e and e["layer"] in items]
+            for e in targets:
+                it = item(e)
+                if msg not in it["reasons"]:
+                    it["reasons"].append(msg)
     out = list(items.values())
     if unmapped:
         out.append({"layer": "unmapped", "label": "Other best-effort steps", "reasons": unmapped,
