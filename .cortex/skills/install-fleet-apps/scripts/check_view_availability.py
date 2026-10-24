@@ -19,8 +19,10 @@ Rules:
   D  view-panel renders UnavailableViewNotice for an unavailable view
   E  pack-status walks nested queries (viewDataRefs), probes function-only
      schemas in INFORMATION_SCHEMA.FUNCTIONS, and returns `layers`
-  F  show_view and deep_link call missingLayers(); list_use_cases returns
-     missing_layers
+  F  show_view, deep_link and list_use_cases call layerGapsFor();
+     list_use_cases returns missing_layers and empty_layers
+  G  the agent row probe only touches objects that exist, from validated
+     three-part names in allowed databases
 
 Needs the SA app's node_modules (tsx).
 Usage:  python3 .cortex/skills/install-fleet-apps/scripts/check_view_availability.py
@@ -104,11 +106,25 @@ for needle, why in (("schemaProbes(", "shared nested-query probe choice"),
 
 # F
 procs = SKILL / "fleet_tools" / "user" / "src" / "procs"
-for verb in ("show_view.ts", "deep_link.ts"):
-    if "missingLayers(" not in code(procs / verb):
-        failures.append("F %s never checks missingLayers()" % verb)
-if "'missing_layers'" not in code(procs / "list_use_cases.ts"):
-    failures.append("F list_use_cases does not return missing_layers")
+for verb in ("show_view.ts", "deep_link.ts", "list_use_cases.ts"):
+    if "layerGapsFor(" not in code(procs / verb):
+        failures.append("F %s never checks layerGapsFor()" % verb)
+luc = code(procs / "list_use_cases.ts")
+for field in ("missing_layers", "empty_layers"):
+    if not re.search(r"\br\.%s\s*=" % field, luc):
+        failures.append("F list_use_cases does not return %s" % field)
+
+# G  the agent probe: rows only over objects that EXIST (one missing object
+#    inside a UNION ALL fails the whole probe), and FQNs validated before
+#    being interpolated into FROM
+help_ = code(SKILL / "fleet_tools" / "user" / "src" / "helpers.ts")
+m = re.search(r"const probe = \[(.*?)\];", help_, re.S)
+if not m or "existing.has(" not in m.group(1):
+    failures.append("G the row probe is not restricted to objects that exist")
+if not re.search(r"SPEC_RE\s*=\s*/\^\(rows\|exists\|function\):\(\[A-Z0-9_\]\+\)", help_) or "SPEC_RE.exec(" not in help_:
+    failures.append("G probe specs are not validated against a strict three-part identifier")
+if "PROBE_DATABASES.has(" not in help_:
+    failures.append("G probe specs are not restricted to the allowed databases")
 
 if failures:
     print("view availability: %d violation(s)" % len(failures))

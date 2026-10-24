@@ -1,4 +1,5 @@
 import { defineProc, t } from '@snowflake/synapse';
+import { hasGaps, layerGapsFor } from '../helpers.js';
 
 /**
  * Deterministic listing of the use cases THIS deployment can demonstrate.
@@ -44,8 +45,8 @@ export const list_use_cases = defineProc({
       .describe(
         'Catalog entries: view_id, label, domain, headline, business_question, audience, ' +
           'industries, value_drivers, snowflake_capabilities, caveats, preferred_tool, ' +
-          'available, missing_layers. An entry with available=false reads a data layer that was ' +
-          'never built here: say so and name the layer instead of recommending it.',
+          'available, missing_layers, empty_layers. An entry with available=false reads a data layer ' +
+          'that was never built or is empty here: say so and name the layer instead of recommending it.',
       ),
   },
   execute: async (args, ctx) => {
@@ -57,53 +58,8 @@ export const list_use_cases = defineProc({
         : 30;
 
     // ARRAY_TO_STRING on INDUSTRIES so the industry filter is a plain ILIKE
-    // rather than a FLATTEN + EXISTS subquery. `missing_layers` lists the
-    // FLEET_APP schemas a use case reads that do not exist here (never built),
-    // so the agent does not offer it as a working demo.
-    const binds = [domain, domain, industry, industry];
-    // An older catalog has no REQUIRED_SCHEMAS column: list without the
-    // availability fields rather than failing the whole verb.
-    let json: string | null;
-    try {
-      json = await ctx.conn.execScalar<string>(
-      `WITH present AS (
-         SELECT TABLE_SCHEMA AS S FROM FLEET_APP.INFORMATION_SCHEMA.TABLES
-         UNION SELECT FUNCTION_SCHEMA FROM FLEET_APP.INFORMATION_SCHEMA.FUNCTIONS
-       ), missing AS (
-         SELECT c.VIEW_ID, ARRAY_AGG(f.VALUE::STRING) AS M
-         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG c,
-              LATERAL FLATTEN(INPUT => c.REQUIRED_SCHEMAS) f
-         WHERE f.VALUE::STRING NOT IN (SELECT S FROM present)
-         GROUP BY c.VIEW_ID
-       )
-       SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
-           'view_id', VIEW_ID,
-           'label', LABEL,
-           'domain', DOMAIN,
-           'headline', HEADLINE,
-           'business_question', BUSINESS_QUESTION,
-           'audience', AUDIENCE,
-           'industries', INDUSTRIES,
-           'value_drivers', VALUE_DRIVERS,
-           'snowflake_capabilities', SNOWFLAKE_CAPABILITIES,
-           'caveats', CAVEATS,
-           'preferred_tool', PREFERRED_TOOL,
-           'available', M IS NULL,
-           'missing_layers', M
-         )) WITHIN GROUP (ORDER BY DOMAIN, VIEW_ID), ARRAY_CONSTRUCT())::STRING
-       FROM (
-         SELECT v.*, m.M
-         FROM FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG v
-         LEFT JOIN missing m ON m.VIEW_ID = v.VIEW_ID
-         WHERE (? IS NULL OR UPPER(v.DOMAIN) = UPPER(?))
-           AND (? IS NULL OR ARRAY_TO_STRING(v.INDUSTRIES, ', ') ILIKE '%' || ? || '%')
-         ORDER BY v.DOMAIN, v.VIEW_ID
-         LIMIT ${limit}
-       )`,
-      binds,
-      );
-    } catch {
-      json = await ctx.conn.execScalar<string>(
+    // rather than a FLATTEN + EXISTS subquery.
+    const json = await ctx.conn.execScalar<string>(
       `SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
            'view_id', VIEW_ID,
            'label', LABEL,
@@ -125,9 +81,8 @@ export const list_use_cases = defineProc({
          ORDER BY v.DOMAIN, v.VIEW_ID
          LIMIT ${limit}
        )`,
-      binds,
-      );
-    }
+      [domain, domain, industry, industry],
+    );
 
     let rows: Record<string, unknown>[] = [];
     try {
@@ -135,6 +90,17 @@ export const list_use_cases = defineProc({
       if (Array.isArray(parsed)) rows = parsed as Record<string, unknown>[];
     } catch {
       rows = [];
+    }
+    // available / missing_layers / empty_layers: whether each use case's data
+    // layer was built and has rows here, so the agent never offers a dead demo.
+    // Two statements for the whole list (see layerGapsFor); no gaps on an
+    // older catalog.
+    const gaps = await layerGapsFor(ctx.conn, rows.map((r) => String(r.view_id)));
+    for (const r of rows) {
+      const g = gaps[String(r.view_id)];
+      r.available = !hasGaps(g);
+      r.missing_layers = g?.missing ?? [];
+      r.empty_layers = g?.empty ?? [];
     }
     return { count: rows.length, use_cases: rows };
   },

@@ -1,6 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { DataCodes } from '../codes.js';
-import { missingLayers, unavailableNote } from '../helpers.js';
+import { hasGaps, layerGapsFor, unavailableNote } from '../helpers.js';
 
 /**
  * Navigate the SA app's panel to a view, already scoped.
@@ -144,16 +144,16 @@ export const show_view = defineProc({
     add('dataset', args.dataset_id);
     add('select', args.selection);
 
-    // A view whose data layer was never built opens to rebuild steps, not
-    // results. The agent must not hand it over as a working demo.
-    const missing = await missingLayers(ctx.conn, viewId);
+    // A view whose data layer was never built, or was built empty, opens to
+    // rebuild steps, not results. The agent must not hand it over as a working demo.
+    const gaps = (await layerGapsFor(ctx.conn, [viewId]))[viewId];
 
     return {
       viewId,
       params,
       label,
-      note: missing.length
-        ? unavailableNote(label, missing)
+      note: hasGaps(gaps)
+        ? unavailableNote(label, gaps)
         : 'The app panel opens this view with the given scope applied. If the user is in Snowflake ' +
         'Intelligence or Cowork rather than the app, nothing will move on screen - give them a ' +
         'deep_link URL instead. A routing view also needs that region\'s services running.',
