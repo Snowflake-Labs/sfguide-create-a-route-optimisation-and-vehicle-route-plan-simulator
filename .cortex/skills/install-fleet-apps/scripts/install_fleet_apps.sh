@@ -1309,6 +1309,26 @@ else
   step "8.2 multidrop preset" SKIPPED
 fi
 
+# ── 8.3 prewarm the routing engine ──────────────────────────────
+# An install could end with the region's ORS/VROOM services SUSPENDED (a long
+# install outlives the gateway's 1h idle timer), so the first page load hit a
+# cold engine and every live view rendered blank. Resume, wait for RUNNING, and
+# make one ORS_STATUS call per region so the gateway's cold-start failure is
+# absorbed here rather than by the user. Runs BEFORE the 8.4/9 view validation,
+# which otherwise measures a cold engine. Degraded (WARN), never fatal: the app
+# still resumes on first use. Skip with SKIP_PREWARM=1.
+if [ "$WITH_ENGINE" = "1" ] && [ "${SKIP_PREWARM:-0}" != "1" ]; then
+  note "[8.3] prewarming the routing engine..."
+  if bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" >/tmp/ifa_prewarm.log 2>&1; then
+    step "8.3 prewarm engine" OK
+  else
+    note "  WARN: routing engine not ready after prewarm; see /tmp/ifa_prewarm.log"
+    step "8.3 prewarm engine" WARN
+  fi
+else
+  step "8.3 prewarm engine" SKIPPED
+fi
+
 # ── 8.5 deployment coherence verification ───────────────────────
 # Asserts the deployment matches the mode it was installed in. Distinct from step 9
 # below: that one asks "do the views return rows", this one asks "are the objects
@@ -1496,7 +1516,12 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
   echo "2. Open the Admin app (build console / Data Studio): $ADMIN_URL_DISP"
   echo "   Both apps require Snowflake OAuth login; a fresh endpoint returns HTTP 302 to the login page."
   echo "3. Smoke-test live routing: ask the SA app agent \"what can I reach within 10 minutes of downtown SanFrancisco\" (needs the ORS engine RUNNING)."
-  echo "4. Verify services: \`snow sql -c $CONNECTION -q \"SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;\"\` (all should be RUNNING)."
+  if [ "$WITH_ENGINE" = "1" ]; then
+    echo "4. Routing services at the end of install (idle services auto-suspend after the time shown; the app resumes them on first use):"
+    echo '```'
+    bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" --status 2>/dev/null || echo "   (could not read service state)"
+    echo '```'
+  fi
   echo
   echo "## Friction points"
   echo "_None recorded automatically. Add manual observations here._"
@@ -1546,6 +1571,11 @@ if [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
   echo "   To make the above work, build the engine (heavy, tens of minutes):"
   echo "     bash .cortex/skills/install-fleet-apps/scripts/provision_engine.sh $CONNECTION"
   echo "     bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c $CONNECTION --expect-engine"
+fi
+if [ "$WITH_ENGINE" = "1" ]; then
+  echo "----------------------------------------------------------------"
+  echo " Routing engine (idle services auto-suspend; the app resumes them on first use)"
+  bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" --status 2>/dev/null || echo "   (could not read service state)"
 fi
 echo "----------------------------------------------------------------"
 echo " Next steps"
