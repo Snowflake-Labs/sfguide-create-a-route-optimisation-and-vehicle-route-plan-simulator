@@ -60,4 +60,16 @@ h.replace(MOD, "  /circuit_open/i,\n];", "  /circuit_open/i,\n  /service_warming
           expect="FAIL  service_warming_up -> not_ready",
           name="service_warming_up classified as suspended")
 
+# A blank panel over a sleeping engine: the row scan must find an error CELL...
+h.replace(MOD, "      const det = detectSuspendedInResult(obj);\n      if (det.suspended) return det;",
+          "      void obj;",
+          expect="FAIL  embedded error cell -> suspended",
+          name="row scan never classifies an error cell")
+
+# ...and must read ONLY error objects, or ordinary text saying 'timeout' trips it.
+h.replace(MOD, "      if (!t.startsWith('{') || !t.includes('\"error\"')) continue;\n",
+          "      if (!t.startsWith('{') || !t.includes('\"error\"')) { if (detectOrsSuspended(v).suspended) return detectOrsSuspended(v); continue; }\n",
+          expect="FAIL  plain text saying timeout -> nothing",
+          name="row scan reads plain text cells")
+
 sys.exit(h.finish())

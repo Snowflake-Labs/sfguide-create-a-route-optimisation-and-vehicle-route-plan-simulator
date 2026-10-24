@@ -21,6 +21,7 @@
 import {
   detectOrsSuspended,
   detectSuspendedInResult,
+  detectSuspendedInRows,
   isOutOfGraph,
   parseOutOfGraphPoints,
   outOfGraphMessage,
@@ -99,5 +100,22 @@ chk('view column-count error -> nothing',
 chk('Snowflake statement timeout -> nothing',
   !isOutOfGraph('Statement reached its statement or warehouse timeout'));
 
-console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${19} assertions passed`);
+// --- an error object returned as a CELL of a successful query -------------
+// The query succeeds, so only a row scan sees it; the panel used to go blank.
+const embeddedCell = '{"error":"service_unreachable","message":"Cannot connect to ORS (host: ors-service-usnewjersey). Service appears suspended."}';
+const emb = detectSuspendedInRows([{ store_id: 'S1', ring_geojson: embeddedCell }]);
+chk('embedded error cell -> suspended', emb.suspended === true);
+chk('embedded error cell names its region', emb.region === 'usnewjersey');
+// A log/message column that MENTIONS an outage is data, not an outage. The raw
+// detector does flag this text, so the assertion proves the cell scoping.
+const logLine = 'retried after service_unreachable on ors-service-europe';
+chk('raw detector flags the log line (precondition)', detectOrsSuspended(logLine).suspended === true);
+chk('plain text saying timeout -> nothing',
+  !detectSuspendedInRows([{ note: logLine }]).suspended);
+chk('a GeoJSON cell -> nothing',
+  !detectSuspendedInRows([{ g: '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}' }]).suspended);
+chk('an off-graph error cell is not an outage',
+  !detectSuspendedInRows([{ r: JSON.stringify(live) }]).suspended);
+
+console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${25} assertions passed`);
 process.exit(fails ? 1 : 0);

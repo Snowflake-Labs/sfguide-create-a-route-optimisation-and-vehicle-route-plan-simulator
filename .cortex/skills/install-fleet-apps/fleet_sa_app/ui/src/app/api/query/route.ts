@@ -4,6 +4,7 @@ import { withLogging } from '@/lib/api-handler';
 import { getSnowflakeAuth } from '@/lib/sf-auth';
 import {
   detectOrsSuspended,
+  detectSuspendedInRows,
   outOfGraphMessage,
   parseOutOfGraphPoints,
   OUT_OF_GRAPH_REASON,
@@ -371,6 +372,17 @@ async function handleQuery(request: NextRequest): Promise<Response> {
       });
       return obj;
     });
+
+    // A live view over a sleeping engine does not always raise: the wrapper can
+    // return the gateway's error object as a cell, the query succeeds, and the
+    // panel renders blank. Treat that exactly like the raised form.
+    const embedded = detectSuspendedInRows(rows);
+    const embeddedRegion = embedded.suspended ? resolveResumeRegion(embedded.region, regionHint) : null;
+    if (embeddedRegion) {
+      logger.warn('sf-embedded-routing-error', { region: embeddedRegion, kind: embedded.kind });
+      const payload = await resumeAndBuildPayload(embeddedRegion, embedded.kind, embedded.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
 
     return NextResponse.json({
       // `type` is carried through deliberately. The client needs the declared

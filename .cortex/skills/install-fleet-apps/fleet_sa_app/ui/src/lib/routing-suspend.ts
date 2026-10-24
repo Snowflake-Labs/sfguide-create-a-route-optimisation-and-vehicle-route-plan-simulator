@@ -264,6 +264,32 @@ export function detectSuspendedInResult(result: unknown): SuspendDetection {
   return detectOrsSuspended(serialized);
 }
 
+// Detect a suspended engine reported INSIDE a successful result set. A live
+// view whose ORS wrapper did not raise returns rows whose cell holds the
+// gateway's error object, e.g.
+//   {"error":"service_unreachable","message":"Cannot connect to ORS (host: ors-service-usnewjersey)..."}
+// The query succeeds, the layer compiler drops the geometry, and the panel
+// renders blank with no notice. Only cells that ARE an error object are read -
+// a JSON object with a top-level "error" key - so an ordinary text column that
+// happens to say "timeout" can never trip the notice. Off-graph errors are not
+// reported from here: one bad row is not an outage.
+const ERROR_CELL_MAX = 20000;
+export function detectSuspendedInRows(rows: ReadonlyArray<Record<string, unknown>>): SuspendDetection {
+  for (const row of rows) {
+    for (const v of Object.values(row)) {
+      if (typeof v !== 'string' || v.length > ERROR_CELL_MAX) continue;
+      const t = v.trimStart();
+      if (!t.startsWith('{') || !t.includes('"error"')) continue;
+      let obj: unknown;
+      try { obj = JSON.parse(t); } catch { continue; }
+      if (!obj || typeof obj !== 'object' || !('error' in (obj as object))) continue;
+      const det = detectSuspendedInResult(obj);
+      if (det.suspended) return det;
+    }
+  }
+  return { suspended: false };
+}
+
 // Region-size -> friendly wait estimate. Region tier is REGION_ORS_MAP.COMPUTE_SIZE
 // (S / L / XXL). Cold graph load scales with region size, so the estimate does too.
 export function waitCopyForTier(tier: RegionTier | null | undefined): string {
