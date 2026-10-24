@@ -18,12 +18,16 @@ Rules (fixtures are in snow sql's real log shape: echoed source + result table):
   D  install_fleet_apps.sh feeds the run's logs (--warn-glob + --since START_TS
      + the view report) to layer_impact.py and prints the result in BOTH the
      console summary and the friction log (comments stripped)
+  E  a view-check ERROR is blamed on the layer owning the object it NAMES, not
+     on every schema the view reads (one missing Location object used to
+     blame the Core contract and 11 views), and labels carry no {{tokens}}
 
 Usage:  python3 .cortex/skills/install-fleet-apps/scripts/check_install_warn_surfacing.py
 Exit:   0 clean, 1 violation
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -86,6 +90,20 @@ if not re.search(r'echo\s+"\$DEGRADED_MD"', sh):
     failures.append("D the friction log never prints DEGRADED_MD")
 if not re.search(r'echo\s+"\$DEGRADED_TXT"', sh):
     failures.append("D the console summary never prints DEGRADED_TXT")
+
+# E
+with tempfile.TemporaryDirectory() as d:
+    rep = pathlib.Path(d) / "report.json"
+    rep.write_text(json.dumps([{
+        "view": "site_impact", "area": "areas.metrics", "status": "ERROR",
+        "detail": "Object 'FLEET_APP.LOCATION.VW_STORES' does not exist or not authorized."}]))
+    out = run("--view-report", str(rep))
+    if "Location diagnostics" not in out:
+        failures.append("E a view-check ERROR naming a Location object is not blamed on Location")
+    if "Core data contract" in out:
+        failures.append("E a view-check ERROR blamed every schema the view reads (Core contract)")
+    if "{{" in out:
+        failures.append("E the summary prints raw {{label}} tokens")
 
 if failures:
     print("install warn surfacing: %d violation(s)" % len(failures))

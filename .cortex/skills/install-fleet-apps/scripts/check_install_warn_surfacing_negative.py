@@ -41,4 +41,9 @@ h.replace(INSTALLER, '  echo "$DEGRADED_TXT"\n', "",
           expect="D the console summary never prints DEGRADED_TXT",
           name="M6 the console summary drops the block (a bare WARN again)")
 
+h.replace(HELPER, "                targets = [e]\n",
+          "                v = views.get(r.get(\"view\"))\n                targets = [x for s in view_schemas(v) for x in [entry_for_schema(s, entries)] if x]\n",
+          expect="E a view-check ERROR blamed every schema the view reads",
+          name="M7 an ERROR is blamed on every schema the view reads (the original over-attribution)")
+
 sys.exit(h.finish())
