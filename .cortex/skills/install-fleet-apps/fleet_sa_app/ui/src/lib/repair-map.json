@@ -32,6 +32,18 @@
       "action": "@FILE:delivery_sync_layer.sql"
     },
     {
+      "prefix": "FLEET_APP.LABOR.",
+      "layer": "labor",
+      "label": "Labor",
+      "action": "@FILE:../fleet_sa_app/app/labor_layer.sql"
+    },
+    {
+      "prefix": "FLEET_APP.PLAN_STANDARDS.",
+      "layer": "plan_standards",
+      "label": "Route plan standards",
+      "action": "@FILE:plan_standards_layer.sql"
+    },
+    {
       "prefix": "FLEET_APP.DWELL.",
       "layer": "dwell",
       "label": "Dwell",
