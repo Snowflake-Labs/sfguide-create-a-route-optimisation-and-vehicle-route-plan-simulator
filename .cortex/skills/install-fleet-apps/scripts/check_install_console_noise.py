@@ -20,6 +20,8 @@ RULE F - "endpoint still provisioning" advice prints only when a URL is empty;
          it was unconditional and pointed at a command shown only in that case.
 RULE G - the SHOW SERVICES filter, executed through the platform grep on a
          recorded sample, prints exactly the service rows and no grep error.
+RULE H - no `snow sql -f` in the installer, engine or agent scripts streams to
+         the console (create_agents.sh printed four full agent specs).
 """
 import pathlib
 import re
@@ -89,6 +91,16 @@ def main() -> int:
         if p.stderr.strip() or p.returncode not in (0, 1) or p.stdout != want:
             errs.append(f"RULE G service-status filter misbehaves under grep: rc={p.returncode} "
                         f"stderr={p.stderr.strip()!r} stdout={p.stdout!r}")
+
+    # RULE H - a `snow sql -f` echoes every statement and result box, so one
+    # whose stdout reaches the console floods it (create_agents.sh printed the
+    # four full agent specs, ~1,700 lines). Each must redirect or pipe.
+    for name in ("install_fleet_apps.sh", "provision_engine.sh", "create_agents.sh"):
+        for ln in code(name).splitlines():
+            if re.search(r'\b(note|echo)\s+"[^"]*snow sql', ln):
+                continue
+            if re.search(r"\bsnow sql\b[^;]*\s-f\s", ln) and not re.search(r"[>|]|\$\(", ln.split("snow sql", 1)[1]):
+                errs.append(f"RULE H {name} streams a snow sql -f file run to the console: {ln.strip()[:110]}")
 
     for e in errs:
         print("FAIL", e)

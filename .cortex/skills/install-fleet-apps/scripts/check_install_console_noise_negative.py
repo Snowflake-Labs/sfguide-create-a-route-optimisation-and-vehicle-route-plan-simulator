@@ -50,5 +50,15 @@ h.replace(PE, "grep -Ev '^$|^status$|^name,status$|^Statement executed'",
           "grep -Ev '^$|^status$'",
           expect="RULE G service-status filter misbehaves under grep",
           name="G: filter that leaks the header lines")
+CA = f"{S}/create_agents.sh"
+# The shipped defect: agent DDL files run straight to the console.
+h.replace(CA, '  if snow sql -c "$CONNECTION" -f "$1" >"$log" 2>&1; then return 0; fi',
+          '  if snow sql -c "$CONNECTION" -f "$1"; then return 0; fi',
+          expect="RULE H create_agents.sh streams a snow sql -f file run to the console",
+          name="H: agent specs echoed to the console")
+h.replace(CA, 'run_file "$GRANT_FILE" grants || { note "ERROR: agent grants failed"; exit 1; }',
+          'snow sql -c "$CONNECTION" -f "$GRANT_FILE"',
+          expect="RULE H create_agents.sh streams a snow sql -f file run to the console",
+          name="H: grant file echoed to the console")
 
 sys.exit(h.finish())
