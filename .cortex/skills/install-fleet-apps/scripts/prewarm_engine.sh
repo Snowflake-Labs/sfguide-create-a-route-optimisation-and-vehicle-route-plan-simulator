@@ -44,7 +44,10 @@ except Exception:
 for r in rows:
     n = r.get("name", "")
     if n.startswith(("ORS_SERVICE_", "VROOM_SERVICE_")) or n == "ROUTING_GATEWAY_SERVICE":
-        print(n, r.get("status", "?"), r.get("auto_suspend_secs") or "-")
+        s = r.get("auto_suspend_secs")
+        # 0 is the keep-warm/no-suspend pin, NOT a missing value: `s or "-"`
+        # rendered it as "idle-suspend -s" in the install summary.
+        print(n, r.get("status", "?"), "-" if s in (None, "") else s)
 '
 }
 
@@ -52,7 +55,11 @@ print_status() {
   local any=0
   while read -r name status secs; do
     any=1
-    printf '   %-30s %-10s idle-suspend %ss\n' "$name" "$status" "$secs"
+    case "$secs" in
+      0)  printf '   %-30s %-10s no-suspend (keep-warm; reset to the default once idle)\n' "$name" "$status" ;;
+      -)  printf '   %-30s %-10s idle-suspend unknown\n' "$name" "$status" ;;
+      *)  printf '   %-30s %-10s idle-suspend %ss\n' "$name" "$status" "$secs" ;;
+    esac
   done < <(services)
   [ "$any" = 1 ] || { echo "   (no routing services found in $SCHEMA)"; return 1; }
 }

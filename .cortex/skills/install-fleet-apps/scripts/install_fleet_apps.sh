@@ -1632,5 +1632,7 @@ echo " Next steps"
 echo "   1. Open the SA app above and log in via Snowflake OAuth."
 echo "   2. Open the Admin app to run Data Studio / provision more regions."
 echo "   3. Smoke-test routing in the SA app agent (e.g. isochrone/directions in SanFrancisco)."
-echo "   4. Endpoints still 'provisioning'? re-run the SHOW ENDPOINTS command shown above in ~1-2 min."
+if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then
+  echo "   4. An endpoint is still provisioning: run its SHOW ENDPOINTS command (URLs above) in ~1-2 min."
+fi
 echo "================================================================"

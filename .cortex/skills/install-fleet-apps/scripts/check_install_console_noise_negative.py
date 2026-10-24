@@ -28,5 +28,18 @@ h.replace(PE, 'if [ "${FLEET_INSTALLER:-0}" = "1" ]; then\n  echo "   The instal
 h.replace(INST, '      FLEET_INSTALLER=1 bash "$SCRIPTS/provision_engine.sh"', '      bash "$SCRIPTS/provision_engine.sh"',
           expect="RULE D install_fleet_apps.sh calls provision_engine.sh without FLEET_INSTALLER=1",
           name="D: installer does not identify itself to provision_engine.sh")
+PW = f"{S}/prewarm_engine.sh"
+# The shipped defect: 0 printed as "idle-suspend -s".
+h.replace(PW, 'print(n, r.get("status", "?"), "-" if s in (None, "") else s)',
+          'print(n, r.get("status", "?"), r.get("auto_suspend_secs") or "-")',
+          expect="RULE E prewarm_engine.sh collapses AUTO_SUSPEND_SECS=0 into a missing value",
+          name="E: 0 collapsed into '-'")
+h.replace(PW, "      0)  printf", "      9)  printf",
+          expect="RULE E prewarm_engine.sh does not print AUTO_SUSPEND_SECS=0 as no-suspend",
+          name="E: no-suspend branch removed")
+h.replace(INST, 'if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then\n  echo "   4.',
+          'if true; then\n  echo "   4.',
+          expect="RULE F endpoint-provisioning advice is printed even when both URLs resolved",
+          name="F: provisioning advice printed unconditionally")
 
 sys.exit(h.finish())

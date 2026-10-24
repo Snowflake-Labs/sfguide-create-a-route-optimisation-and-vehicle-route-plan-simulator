@@ -14,6 +14,10 @@ RULE B - in QUIET mode run_sql_module.sh still prints the SQL error lines on
 RULE C - SHOW SERVICES printed to the console uses --format CSV.
 RULE D - the "Re-run install_fleet_apps.sh" advice is gated on FLEET_INSTALLER,
          and install_fleet_apps.sh passes FLEET_INSTALLER=1 to provision_engine.sh.
+RULE E - the install summary prints AUTO_SUSPEND_SECS=0 as no-suspend: the
+         reader used `or "-"`, which turned 0 into "idle-suspend -s".
+RULE F - "endpoint still provisioning" advice prints only when a URL is empty;
+         it was unconditional and pointed at a command shown only in that case.
 """
 import pathlib
 import re
@@ -57,6 +61,16 @@ def main() -> int:
             errs.append(f"RULE D install_fleet_apps.sh calls provision_engine.sh without FLEET_INSTALLER=1: {ln.strip()[:120]}")
     if not calls:
         errs.append("RULE D no foreground provision_engine.sh call found in install_fleet_apps.sh")
+
+    pw = (S / "prewarm_engine.sh").read_text()
+    if re.search(r'auto_suspend_secs"\)\s*or\b', pw):
+        errs.append("RULE E prewarm_engine.sh collapses AUTO_SUSPEND_SECS=0 into a missing value")
+    if not re.search(r'^\s*0\)\s*printf .*no-suspend', pw, re.M):
+        errs.append("RULE E prewarm_engine.sh does not print AUTO_SUSPEND_SECS=0 as no-suspend")
+
+    hint = re.search(r'^(.*)\n.*echo "   4\. .*provisioning', inst, re.M)
+    if not hint or not re.search(r'if \[ -z "\$\{SA_URL:-\}" \]', hint.group(1)):
+        errs.append("RULE F endpoint-provisioning advice is printed even when both URLs resolved")
 
     for e in errs:
         print("FAIL", e)
