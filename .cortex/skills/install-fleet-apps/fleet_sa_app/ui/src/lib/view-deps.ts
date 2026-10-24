@@ -53,3 +53,18 @@ export function viewDataRefs(view: unknown, db: string): DataRef[] {
 export function viewSchemas(view: unknown, db: string): Set<string> {
   return new Set(viewDataRefs(view, db).map((r) => r.schema));
 }
+
+// Per-schema availability from /api/pack-status.
+//   present    - the probe object returned rows (or the function exists)
+//   absent     - the object does not exist, the role cannot read it, or the
+//                builder left it empty: the layer was not built
+//   unverified - the probe could not complete (timeout, busy warehouse), so
+//                nothing is known; the view stays usable
+export type LayerState = 'present' | 'absent' | 'unverified';
+export interface LayerStatus {
+  state: LayerState;
+  object: string;
+  label?: string;
+  fix?: string[];
+  note?: string;
+}
