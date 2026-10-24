@@ -52,7 +52,11 @@ with literal coordinates spanning at most about 0.5 degrees. A city or postcode 
 geometry predicate alone, scans the whole table; if no area is given, ask for one instead of querying.
 Match street with ILIKE. Use ST_DWITHIN / ST_DISTANCE on geometry with literal coordinates (longitude
 first) for radius queries, in metres. Geometry is GEOGRAPHY: never GET_PATH or GROUP BY it.
-Group map coordinates by address_id. Use literal values, not semantic variables.'
+Group map coordinates by address_id. Use literal values, not semantic variables.
+Distance kinds are not interchangeable: a radius or straight-line distance is ST_DWITHIN / ST_DISTANCE
+in metres; travel time or drive distance ("within 15 minutes drive", "reachable") is NOT answerable here,
+get the compute_isochrone polygon from the routing tools first; "inside" a named city, county or borough
+is boundary containment against SV_OVERTURE_DIVISIONS area geometry, while city is only an address label.'
 ai_verified_queries (
     street_addresses as (
         question 'List the addresses on Hyde Street near Pine Street in San Francisco on a map.'

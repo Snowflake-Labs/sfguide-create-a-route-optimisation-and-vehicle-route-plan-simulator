@@ -70,6 +70,24 @@ MUTATIONS = [
     ("agent loses the buildings tool", drop_resource("query_overture_buildings")),
     ("agent loses the category search", drop_resource("overture_category_search")),
     ("bounded tool no longer asks for an area", strip_area_rule("query_overture_roads")),
+    ("places guidance re-asserts region as a bare code",
+     mutate_template("places", "outside the US filter by bbox and country, never region.", "filter by region code."), "R6"),
+    ("places verified query filters region without country",
+     mutate_template("places", "and region = ''CA'' and country = ''US''", "and region = ''CA''"), "R6"),
+    ("postcode loses its zip-code synonyms",
+     mutate_template("places", "places.postcode as POSTCODE with synonyms = ('zip code', 'zip', 'postal code'),",
+                     "places.postcode as POSTCODE,"), "R7"),
+    ("places guidance drops the travel-time routing rule",
+     mutate_template("places", "get the compute_isochrone polygon", "use a larger radius"), "R8"),
+    ("divisions guidance drops the travel-time routing rule",
+     mutate_template("divisions", "needs the compute_isochrone routing tool", "is a larger radius"), "R8"),
+    ("division areas back to a flat 100 m display tolerance",
+     mutate_template("divisions", "st_simplify(geometry, case when subtype in ('country', 'dependency') then 5000\n"
+                     "           when subtype in ('macroregion', 'region') then 1000 else 100 end))::varchar as geojson,",
+                     "st_simplify(geometry, 100))::varchar as geojson,"), "R9"),
+    ("verified query tests containment on display geojson",
+     mutate_template("divisions", "st_contains(geom, st_makepoint(-122.4194, 37.7749))",
+                     "st_contains(to_geography(geojson), st_makepoint(-122.4194, 37.7749))"), "R9"),
 ]
 
 
@@ -79,13 +97,16 @@ def main():
         print("FAIL: gate is red on the unmodified tree; fix that first")
         return 1
     failed = 0
-    for label, apply in MUTATIONS:
+    for label, apply, *rule in MUTATIONS:
         t, s = dict(templates), copy.deepcopy(specs)
         try:
             apply(t, s)
         except AssertionError as error:
             print(f"FAIL: {label}: {error}"); failed += 1; continue
-        if gate.check(t, s):
+        errors = gate.check(t, s)
+        if rule and not any(e.startswith(rule[0] + " ") for e in errors):
+            print(f"FAIL: {label}: not convicted by {rule[0]} ({errors[:1]})"); failed += 1
+        elif errors:
             print(f"PASS: mutation rejected: {label}")
         else:
             print(f"FAIL: mutation survived: {label}"); failed += 1

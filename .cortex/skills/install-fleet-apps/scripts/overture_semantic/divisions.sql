@@ -1,5 +1,8 @@
 -- Overture Divisions semantic layer: administrative areas, labels and borders.
 -- Rendered by prepare_overture.py from contract constants only.
+-- geojson is display only, simplified by subtype. Metres do not bound vertices:
+-- at a flat 100 m the 219 land countries were 53 MB (one 179k points); tiered
+-- (5 km country, 1 km region, 100 m below) they are 4 MB / 13k max (measured).
 create or replace view $ns.DIVISION comment = $comment as
 select id::varchar as id, geometry as geom, names:primary::varchar as name,
        country::varchar as country, region::varchar as region,
@@ -16,7 +19,8 @@ select id::varchar as id, division_id::varchar as division_id, geometry as geom,
        is_land::boolean as is_land,
        st_area(geometry) / 1e6 as area_sqkm,
        st_isvalid(geometry) as is_valid_geometry,
-       st_asgeojson(st_simplify(geometry, 100))::varchar as geojson,
+       st_asgeojson(st_simplify(geometry, case when subtype in ('country', 'dependency') then 5000
+           when subtype in ('macroregion', 'region') then 1000 else 100 end))::varchar as geojson,
        bbox:xmin::float as bbox_xmin, bbox:xmax::float as bbox_xmax,
        bbox:ymin::float as bbox_ymin, bbox:ymax::float as bbox_ymax
 from $src.DIVISION_AREA
@@ -27,7 +31,8 @@ select id::varchar as id, geometry as geom, country::varchar as country,
        class::varchar as class, is_land::boolean as is_land,
        is_disputed::boolean as is_disputed,
        st_length(geometry) / 1000 as length_km,
-       st_asgeojson(st_simplify(geometry, 100))::varchar as geojson
+       st_asgeojson(st_simplify(geometry, case when subtype in ('country', 'dependency') then 5000
+           when subtype in ('macroregion', 'region') then 1000 else 100 end))::varchar as geojson
 from $src.DIVISION_BOUNDARY
 -- statement
 create or replace semantic view $sv.SV_OVERTURE_DIVISIONS
@@ -84,7 +89,7 @@ metrics (
     areas.area_count as count(areas.ID),
     areas.total_area_sqkm as sum(areas.AREA_SQKM),
     areas.geojson as any_value(areas.GEOJSON)
-        comment = 'Map shape simplified by 100 m. Group by area_id, never name alone.',
+        comment = 'Display-only map shape, simplified 5 km for countries, 1 km for regions, 100 m below. Never measure or test containment with it. Group by area_id, never name alone.',
     divisions.division_count as count(divisions.ID),
     divisions.total_population as sum(divisions.POPULATION)
         comment = 'Population coverage is incomplete; not a census total.',
@@ -100,7 +105,9 @@ area_sqkm is NULL where the source polygon is invalid: always ORDER BY area_sqkm
 which areas had no measurable area.
 For point containment also filter bbox_xmin <= lon AND bbox_xmax >= lon AND bbox_ymin <= lat AND
 bbox_ymax >= lat: it prunes storage. Geometry is GEOGRAPHY: never GET_PATH or GROUP BY it.
-There is no modeled relationship to places, addresses, roads or buildings. Use literal values.'
+There is no modeled relationship to places, addresses, roads or buildings. Use literal values.
+Containment is not reachability: an area polygon answers "inside", ST_DWITHIN answers straight-line
+radius in metres, and travel time or drive distance needs the compute_isochrone routing tool.'
 ai_verified_queries (
     ca_counties as (
         question 'Show California county land boundaries on a map, colored by area in square kilometres.'

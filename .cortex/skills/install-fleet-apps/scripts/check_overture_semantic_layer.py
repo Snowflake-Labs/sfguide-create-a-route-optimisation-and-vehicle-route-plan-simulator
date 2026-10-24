@@ -13,7 +13,15 @@ GB per unbounded query: measured on BUILDING, a bbox filter scanned 15 GB in
       table carries them (an example is what the model copies);
   R4  verified queries read the normalized views ($ns), never raw $src tables;
   R5  every semantic view and the category search are wired into the agent and
-      super-agent specs, and bounded tools tell the agent to ask for an area.
+      super-agent specs, and bounded tools tell the agent to ask for an area;
+  R6  Places region is a bare code only in the US (measured: GB mixes ENG, WSM,
+      Greater London and borough codes, a third empty), so the guidance says so
+      and every verified query filtering region also filters country = 'US';
+  R7  the Places fields users name by everyday words carry synonyms;
+  R8  themes with point or area geometry separate travel-time reachability
+      (compute_isochrone) from straight-line radius and boundary containment;
+  R9  division map geojson is simplified by subtype (a flat 100 m made the
+      land countries 53 MB) and no verified query measures or tests it.
 
 Exit 0 when clean, 1 with one line per violation.
 """
@@ -38,6 +46,9 @@ STATEMENT = "\n-- statement\n"
 # is exempt: its examples select by region/subtype on a ~1M-row table, and a
 # containment example needs a point test, not a box (it still adds one).
 BOXED_EXAMPLES = contract.BOUNDED_THEMES + ("places",)
+SYNONYM_FIELDS = ("NAME", "CATEGORY", "BRAND", "REGION", "LOCALITY", "POSTCODE", "STREET_ADDRESS")
+REACHABILITY_THEMES = ("places", "addresses", "divisions")
+GEOJSON_SIMPLIFY = re.compile(r"st_simplify\(geometry,\s*((?:(?!st_simplify).)*?)\)\)::varchar as geojson", re.S)
 
 
 def strip_comments(text):
@@ -111,6 +122,23 @@ def check(templates, specs, views=None, bounded=None):
                 errors.append(f"R3 {theme}.{name}: verified query is not bounded by all four bbox_* filters")
             if theme in bounded and not read & boxed:
                 errors.append(f"R3 {theme}.{name}: verified query on a bounded theme reads no bbox view")
+            if theme == "places" and re.search(r"\bregion\s*=", sql) and "country = ''US''" not in sql:
+                errors.append(f"R6 places.{name}: filters region without country = 'US'")
+            if theme == "divisions" and re.search(r"\b(?:st_\w+|(?:try_)?to_geography)\(\s*geojson|st_\w+\([^)]*,\s*geojson", sql, re.I):
+                errors.append(f"R9 divisions.{name}: measures or tests the display geojson")
+        if theme == "places":
+            if "never region" not in semantic:
+                errors.append("R6 places: guidance does not say region is unreliable outside the US")
+            for field in SYNONYM_FIELDS:
+                if not re.search(rf"places\.\w+ as {field} with synonyms", semantic):
+                    errors.append(f"R7 places: dimension {field} has no synonyms")
+        if theme in REACHABILITY_THEMES and not ("compute_isochrone" in semantic and "ST_DWITHIN" in semantic
+                                                 and "containment" in semantic):
+            errors.append(f"R8 {theme}: guidance does not separate travel time, radius and containment")
+        if theme == "divisions":
+            tolerances = GEOJSON_SIMPLIFY.findall(body)
+            if not tolerances or any("subtype" not in t for t in tolerances):
+                errors.append("R9 divisions: display geojson is not simplified by subtype")
     # R5
     for spec_name, spec in specs.items():
         resources = spec.get("tool_resources", {})

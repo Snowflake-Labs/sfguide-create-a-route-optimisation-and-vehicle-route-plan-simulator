@@ -55,17 +55,19 @@ facts (
 )
 dimensions (
     places.place_id as ID,
-    places.name as NAME,
-    places.category as CATEGORY
+    places.name as NAME with synonyms = ('place name', 'business name', 'poi name'),
+    places.category as CATEGORY with synonyms = ('type', 'main category', 'kind of place', 'poi type')
         comment = 'Exact primary category tag, e.g. hospital, cafe. Resolve with overture_category_search first.',
     places.basic_category as BASIC_CATEGORY comment = 'Coarser category group, e.g. financial_service.',
-    places.brand as BRAND,
+    places.brand as BRAND with synonyms = ('chain', 'company', 'franchise'),
     places.operating_status as OPERATING_STATUS,
-    places.country as COUNTRY comment = 'ISO 3166-1 alpha-2, e.g. US, GB.',
-    places.region as REGION comment = 'Bare region code, e.g. CA, NY, ENG. Not US-CA.',
-    places.locality as LOCALITY comment = 'Address locality (city). Not exact boundary containment.',
-    places.postcode as POSTCODE,
-    places.street_address as STREET_ADDRESS,
+    places.country as COUNTRY with synonyms = ('nation') comment = 'ISO 3166-1 alpha-2, e.g. US, GB.',
+    places.region as REGION with synonyms = ('state', 'province')
+        comment = 'Address region as written by the source. US: a bare state code (CA), names are rare. Elsewhere mixed and often empty (GB: ENG, WSM, Greater London, borough codes). Outside the US scope by bbox and country, not region.',
+    places.locality as LOCALITY with synonyms = ('city', 'town')
+        comment = 'Address locality (city) label. Not boundary containment.',
+    places.postcode as POSTCODE with synonyms = ('zip code', 'zip', 'postal code'),
+    places.street_address as STREET_ADDRESS with synonyms = ('street', 'address'),
     places.website as WEBSITE,
     places.phone as PHONE,
     places.h3_cell as H3_CELL comment = 'H3 index string at fixed resolution 8.'
@@ -84,14 +86,19 @@ Scope spatially with bbox_xmin >= W AND bbox_xmax <= E AND bbox_ymin >= S AND bb
 whenever a place, city or coordinate is given: it prunes storage. Use ST_DWITHIN / ST_DISTANCE
 on geometry with literal coordinates (longitude first) for radius and distance, in metres.
 Geometry is GEOGRAPHY, not JSON; never GET_PATH or GROUP BY it. Group map coordinates by place_id,
-never name alone. Region is a bare code (CA). Use the exposed h3_cell (resolution 8).
+never name alone. Region is a bare state code only in the US (CA); elsewhere it is mixed or empty, so
+outside the US filter by bbox and country, never region. Use the exposed h3_cell (resolution 8).
+Distance kinds are not interchangeable: a radius or straight-line distance is ST_DWITHIN / ST_DISTANCE
+in metres; travel time or drive distance ("within 15 minutes drive", "reachable") is NOT answerable here,
+get the compute_isochrone polygon from the routing tools first; "inside" a named city, county or borough
+is boundary containment against SV_OVERTURE_DIVISIONS area geometry, while locality is only an address label.
 Use literal values, not semantic variables.'
 ai_verified_queries (
     sf_hospitals as (
         question 'Show up to 200 hospitals in San Francisco, California on a map with their names.'
         sql 'select id as place_id, name, latitude, longitude from $ns.PLACE
 where bbox_xmin >= -122.52 and bbox_xmax <= -122.35 and bbox_ymin >= 37.70 and bbox_ymax <= 37.83
-  and category = ''hospital'' and locality = ''San Francisco'' and region = ''CA''
+  and category = ''hospital'' and locality = ''San Francisco'' and region = ''CA'' and country = ''US''
 order by name limit 200'),
     nearby_cafes as (
         question 'Find the 20 nearest cafes within 1 km of longitude -122.3937, latitude 37.7955 with distance in metres.'
@@ -105,7 +112,7 @@ order by distance_m limit 20'),
         question 'Map the density of places in San Francisco, California using H3 hexagons, colored by place count, top 500 cells.'
         sql 'select h3_cell, count(id) as place_count from $ns.PLACE
 where bbox_xmin >= -122.52 and bbox_xmax <= -122.35 and bbox_ymin >= 37.70 and bbox_ymax <= 37.83
-  and locality = ''San Francisco'' and region = ''CA''
+  and locality = ''San Francisco'' and region = ''CA'' and country = ''US''
 group by h3_cell order by place_count desc limit 500'),
     top_brands_london as (
         question 'Which 10 brands have the most places in London?'
