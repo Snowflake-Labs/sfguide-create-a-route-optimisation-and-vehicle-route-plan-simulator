@@ -70,6 +70,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     , trips.operator_id AS OPERATOR_ID
       WITH SYNONYMS ('operator', 'driver', 'rider', 'courier')
       COMMENT = 'Mode-neutral operator identifier'
+    , trips.vehicle_id AS VEHICLE_ID
+      WITH SYNONYMS ('vehicle', 'asset', 'van', 'truck', 'bike', 'unit')
+      COMMENT = 'Vehicle identifier. Ids are index-derived per dataset and repeat across regions, so group by region with it when more than one region is in scope.'
     , trips.status AS STATUS
       WITH SYNONYMS ('trip state')
       COMMENT = 'Trip status'
@@ -101,6 +104,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     , trips.total_operators AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || OPERATOR_ID)
       WITH SYNONYMS ('number of operators', 'active operators', 'drivers')
       COMMENT = 'Distinct count of operators. Keyed on (region, vehicle_type, operator_id) because operator ids are index-derived per dataset and repeat across regions, so counting the bare id merges different people whenever more than one region is in scope.'
+    , trips.total_vehicles AS COUNT(DISTINCT REGION || '|' || VEHICLE_TYPE || '|' || VEHICLE_ID)
+      WITH SYNONYMS ('number of vehicles', 'active vehicles', 'fleet size')
+      COMMENT = 'Distinct count of vehicles that ran a trip, keyed on (region, vehicle_type, vehicle_id) for the same reason as total_operators.'
     , trips.total_distance_km AS ROUND(SUM(distance_km), 2)
       WITH SYNONYMS ('total km driven', 'total distance')
       COMMENT = 'Total actual distance driven (km)'
@@ -132,7 +138,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
   AI_SQL_GENERATION 'Universal fleet analytics semantic view for the Route Optimisation & Fleet Intelligence solution. It replaces the per-vehicle taxi / food-delivery / fleet-operations views with ONE mode-agnostic model.
 
 Entities:
-- trips: THE fact, one row per actual trip (distance_km, duration_minutes, is_detour, status), keyed by TRIP_ID. region, vehicle_type (asset mode), and operator_id live here. All trip + operator productivity metrics derive from this table.
+- trips: THE fact, one row per actual trip (distance_km, duration_minutes, is_detour, status), keyed by TRIP_ID. region, vehicle_type (asset mode), vehicle_id and operator_id live here. All trip, vehicle and operator productivity metrics derive from this table; "which vehicles drove the most" groups total_distance_km by vehicle_id.
 - operators: a DIMENSION (parent of trips by OPERATOR_ID) holding descriptive operator attributes shift_type and driver_profile. Use it to group trip metrics by shift or operator profile. It has no metrics of its own.
 - origins: a standalone fact, one row per origin POI (origin_total_trips), keyed by ORIGIN_POI_ID. Use for "busiest / top origins" questions; filter origin_location_type for a specific origin category (DEPOT, WAREHOUSE, RESTAURANT).
 
@@ -207,9 +213,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.expected_distance_km AS EXPECTED_DISTANCE_KM COMMENT = 'Expected distance km'
     , trip_dev.expected_duration_min AS EXPECTED_DURATION_MIN COMMENT = 'Expected duration minutes'
     , trip_dev.distance_deviation_km AS DISTANCE_DEVIATION_KM COMMENT = 'Excess distance km vs expected'
-    , trip_dev.distance_deviation_pct AS DISTANCE_DEVIATION_PCT COMMENT = 'Distance deviation percent'
+    , trip_dev.distance_deviation_pct AS DISTANCE_DEVIATION_PCT COMMENT = 'Distance deviation versus the planned distance, ALREADY in percent units (81.45 means 81.45 percent). Do not multiply by 100.'
     , trip_dev.duration_deviation_min AS DURATION_DEVIATION_MIN COMMENT = 'Excess duration minutes vs expected'
-    , trip_dev.duration_deviation_pct AS DURATION_DEVIATION_PCT COMMENT = 'Duration deviation percent'
+    , trip_dev.duration_deviation_pct AS DURATION_DEVIATION_PCT COMMENT = 'Duration deviation versus the planned duration, ALREADY in percent units. Do not multiply by 100.'
   )
 
   DIMENSIONS (
@@ -248,9 +254,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.deviation_trips AS COUNT_IF(IS_ROUTE_DEVIATION) WITH SYNONYMS ('deviated trips', 'number of deviations') COMMENT = 'Trips flagged as route deviations'
     , trip_dev.deviation_rate_pct AS ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2) WITH SYNONYMS ('deviation rate', 'percent deviated') COMMENT = 'Percent of trips that deviated'
     , trip_dev.total_excess_km AS ROUND(SUM(distance_deviation_km), 2) WITH SYNONYMS ('total excess distance') COMMENT = 'Total excess km from deviations'
-    , trip_dev.avg_distance_deviation_pct AS ROUND(AVG(distance_deviation_pct), 2) COMMENT = 'Average distance deviation percent'
+    , trip_dev.avg_distance_deviation_pct AS ROUND(AVG(distance_deviation_pct), 2) COMMENT = 'Average distance deviation, in percent units (22.28 means 22.28 percent)'
     , trip_dev.total_time_lost_min AS ROUND(SUM(duration_deviation_min), 2) WITH SYNONYMS ('time lost', 'total delay') COMMENT = 'Total excess minutes from deviations'
-    , trip_dev.avg_duration_deviation_pct AS ROUND(AVG(duration_deviation_pct), 2) COMMENT = 'Average duration deviation percent'
+    , trip_dev.avg_duration_deviation_pct AS ROUND(AVG(duration_deviation_pct), 2) COMMENT = 'Average duration deviation, in percent units'
     , trip_dev.avg_route_deviation_factor AS ROUND(AVG(route_deviation_factor), 4) COMMENT = 'Average actual/expected route factor'
   )
 
@@ -269,6 +275,7 @@ Conventions:
 - "deviation rate" -> deviation_rate_pct; raw counts -> deviation_trips.
 - "excess km" -> total_excess_km; "time lost" -> total_time_lost_min.
 - Group by driver_id for per-driver deviation; by trip_date for daily trends; by route_variation for classification.
+- Every _pct column and metric here is ALREADY a percentage (distance_deviation_pct max is about 81, not 0.81). Never multiply it by 100, and do not tell the user the stored value needs dividing.
 
 DRAWING A ROUTE (actual vs expected):
 - Select path_geojson plus path_type, one trip at a time, and map it as a geojson layer colored by path_type. Both lines then land on ONE layer, which is all a map spec supports.
@@ -398,6 +405,13 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
       PRIMARY KEY (VEHICLE_ID, SESSION_ID)
     , driver_dwell AS FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY
       PRIMARY KEY (VEHICLE_ID)
+    , alerts AS FLEET_APP.DWELL.VW_SLA_ALERTS
+      PRIMARY KEY (VEHICLE_ID, SESSION_ID)
+      COMMENT = 'One row per dwell session that breached its configured SLA (WARNING or CRITICAL), judged against DIM_VEHICLE_DWELL_SLA. Child of sessions.'
+  )
+
+  RELATIONSHIPS (
+    alerts_to_sessions AS alerts(VEHICLE_ID, SESSION_ID) REFERENCES sessions(VEHICLE_ID, SESSION_ID)
   )
 
   FACTS (
@@ -409,6 +423,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
     , driver_dwell.d_avg_session_min AS AVG_SESSION_MIN COMMENT = 'Per-driver average session minutes'
     , driver_dwell.d_sla_breach_count AS SLA_BREACH_COUNT COMMENT = 'Per-driver SLA breach count'
     , driver_dwell.d_critical_breach_count AS CRITICAL_BREACH_COUNT COMMENT = 'Per-driver critical SLA breach count'
+    , alerts.minutes_over_warning AS MINUTES_OVER_WARNING COMMENT = 'Minutes this breaching session ran past its WARNING threshold'
   )
 
   DIMENSIONS (
@@ -425,6 +440,8 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
       WITH SYNONYMS ('asset mode', 'vehicle class', 'fleet type', 'mode')
       COMMENT = 'Asset mode (car, hgv, ebike). A data value, not a fixed set.'
     , sessions.location_name AS LOCATION_NAME WITH SYNONYMS ('facility name', 'place') COMMENT = 'Dwell location name'
+    , sessions.vehicle_id AS VEHICLE_ID WITH SYNONYMS ('vehicle', 'asset') COMMENT = 'Vehicle that dwelled. Ids repeat across regions, so group by region with it when more than one region is in scope.'
+    , alerts.sla_status AS SLA_STATUS WITH SYNONYMS ('breach severity', 'sla severity', 'alert level') COMMENT = 'Breach severity of the session against its configured SLA: WARNING or CRITICAL'
     , sessions.h3_cell AS H3_CELL_R7 WITH SYNONYMS ('hex cell', 'h3') COMMENT = 'H3 cell id, STORED at resolution 7 (~1.2 km edge). Pre-computed, so it is the cheapest hexmap. For ANY OTHER resolution do not use this column - re-bin from dwell_lat/dwell_lon (see the resolution rule in the SQL generation instructions).'
     , sessions.dwell_lat AS DWELL_LAT
       WITH SYNONYMS ('dwell latitude', 'session latitude')
@@ -456,15 +473,19 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
     , driver_dwell.total_critical_breaches AS ROUND(SUM(d_critical_breach_count), 2) WITH SYNONYMS ('critical breaches') COMMENT = 'Total critical SLA breaches'
     , driver_dwell.driver_total_dwell_hours AS ROUND(SUM(d_total_dwell_hours), 2) COMMENT = 'Total dwell hours (driver summary)'
     , driver_dwell.avg_driver_session_min AS ROUND(AVG(d_avg_session_min), 2) COMMENT = 'Average per-driver session minutes'
+    , alerts.breach_sessions AS COUNT(*) WITH SYNONYMS ('sla breaches by site', 'breaching sessions', 'breach count') COMMENT = 'Dwell sessions that breached their configured SLA. Group by sessions dimensions (location_name, facility_type, city, vehicle_id) for where breaches happen.'
+    , alerts.critical_breach_sessions AS COUNT_IF(SLA_STATUS = 'CRITICAL') COMMENT = 'Breaching sessions at CRITICAL severity'
+    , alerts.total_minutes_over_warning AS ROUND(SUM(minutes_over_warning), 2) WITH SYNONYMS ('minutes over sla') COMMENT = 'Total minutes breaching sessions ran past their WARNING threshold'
   )
 
   COMMENT = 'Dwell analysis: vehicle dwell sessions (where/how long vehicles stop), facility utilization, H3 congestion, and per-driver SLA breaches. Covers EVERY loaded region and asset mode - filter by region (key) or city (label).'
 
   AI_SQL_GENERATION 'Dwell analysis semantic view for the Route Optimisation & Fleet Intelligence solution.
 
-Entities (two independent facts):
+Entities:
 - sessions (FLEET_APP.DWELL.VW_DWELL_SESSIONS): one row per dwell session (a vehicle stopped at a location). Use for dwell time, facility utilization (group by facility_type/city/location_name), and congestion (group by h3_cell).
-- driver_dwell (DT_DRIVER_DWELL_SUMMARY): per-driver aggregates including SLA breach counts. Use for SLA / per-driver dwell questions.
+- alerts (FLEET_APP.DWELL.VW_SLA_ALERTS): one row per session that breached its CONFIGURED SLA, with sla_status WARNING or CRITICAL. A child of sessions, so its metrics group by any sessions dimension. Use it for every "where / which site / which facility / which vehicle breached" question.
+- driver_dwell (DT_DRIVER_DWELL_SUMMARY): per-driver aggregates including SLA breach counts. Use for per-driver SLA totals.
 
 REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 - This view holds EVERY loaded region and asset mode at once. It is never pre-filtered to one region, so an unfiltered aggregate MIXES regions. When the user names a place, filter on it.
@@ -474,7 +495,7 @@ REGION IS A DIMENSION, NOT A GLOBAL SETTING:
 
 Conventions:
 - "congestion" / "heatmap" / "density" / "hotspots" / "where do vehicles stop" -> group sessions by h3_cell, AND select a measure alongside it (total_dwell_minutes or total_sessions). A cell id with no measure cannot be shaded, so a bare h3_cell list is not an answer. This is the SPATIAL question: a breakdown by facility_type or city answers a DIFFERENT one, so do not silently substitute it (see the chart_customization block below for how to draw it).
-- "SLA breaches" / "violations" -> driver_dwell.total_sla_breaches or total_critical_breaches.
+- "SLA breaches" / "violations" by facility, site, location, city or vehicle -> alerts.breach_sessions (and critical_breach_sessions) grouped by the sessions dimension. These use the configured per-class thresholds; never approximate a breach with a fixed minutes cut-off. Per-driver totals -> driver_dwell.total_sla_breaches or total_critical_breaches.
 
 H3 RESOLUTION IS A PARAMETER, NOT A FIXED PROPERTY OF THIS VIEW:
 - h3_cell is STORED at resolution 7. For resolution 7 just select it - it is pre-computed and free.

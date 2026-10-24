@@ -45,7 +45,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
     , offers.road_min AS ROAD_MIN COMMENT = 'ORS-routed road duration in minutes'
     , offers.price_per_km_usd AS PRICE_PER_KM_USD COMMENT = 'Price per straight-line km'
     , offers.price_per_road_km_usd AS PRICE_PER_ROAD_KM_USD COMMENT = 'Price per routed road km'
-    , offers.price_delta_pct AS PRICE_DELTA_PCT COMMENT = 'Percent deviation from market median rate'
+    , offers.price_delta_pct AS PRICE_DELTA_PCT COMMENT = 'Deviation from the market median rate, ALREADY in percent units (-21.9 means 21.9 percent below). Do not multiply by 100.'
     , offers.posted_age_min AS POSTED_AGE_MIN COMMENT = 'Minutes since the delivery was posted'
     , offers.partner_credit_score AS PARTNER_CREDIT_SCORE COMMENT = 'Partner credit score 0-100'
     , lane_history.shipments AS SHIPMENTS COMMENT = 'Historical deliveries on this lane'

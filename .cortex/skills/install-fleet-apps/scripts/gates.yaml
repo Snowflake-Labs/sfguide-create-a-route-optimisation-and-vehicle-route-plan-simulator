@@ -65,6 +65,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_console_noise_negative.py
     scope: static
     why: the engine module load printed ~11,400 statement-echo lines and told the customer to re-run mid-install
+  - id: semantic_view_coverage
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_semantic_view_coverage.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_semantic_view_coverage_negative.py
+    scope: static
+    why: a use-case question the semantic view cannot answer makes the agent fall back to raw SQL or a fake SLA proxy
   - id: image_versions
     run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py
