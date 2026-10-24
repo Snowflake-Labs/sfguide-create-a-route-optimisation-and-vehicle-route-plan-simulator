@@ -7,6 +7,27 @@ import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
 import { viewDataRefs, type DataRef, type LayerStatus } from '@/lib/view-deps';
 import { findRepairEntry } from '@/lib/missing-dependency';
+import packViews from '@/lib/packs/fleet/pack-views.json';
+
+// Code-registered pack views write their SQL in components, so they declare
+// the objects they read in pack-views.json `requires` (any database: the
+// backload cockpit reads FLEET_INTELLIGENCE.BACKLOAD_MATCHING too). The FQN is
+// interpolated into a FROM, so it must be a plain three-part identifier.
+const FQN_RE = /^[A-Z0-9_]+\.[A-Z0-9_]+\.[A-Z0-9_]+$/;
+// `requires` objects must exist AND return a row (an input layer the builder
+// left empty is not built). `requiresExists` objects only have to exist: they
+// are computed results, where zero rows is a legitimate answer (VW_TRIANGLES
+// was measured empty on a healthy account) and a row probe would grey out a
+// working page.
+type ProbeMode = 'rows' | 'exists';
+function packRequiredObjects(): Map<string, ProbeMode> {
+  const out = new Map<string, ProbeMode>();
+  for (const meta of Object.values(packViews as Record<string, { requires?: string[]; requiresExists?: string[] }>)) {
+    for (const fqn of meta.requiresExists ?? []) if (FQN_RE.test(fqn) && !out.has(fqn)) out.set(fqn, 'exists');
+    for (const fqn of meta.requires ?? []) if (FQN_RE.test(fqn)) out.set(fqn, 'rows');
+  }
+  return out;
+}
 
 // Surfacing gate signal. For every <DB>.<SCHEMA> the configured views read
 // (every nested query, see lib/view-deps.ts), probe one representative object
@@ -106,7 +127,40 @@ async function handleGet() {
       }
     }),
   );
-  return NextResponse.json({ schemas: status, layers, degraded });
+  // Pack-view objects: same rules, keyed by FQN.
+  const objects: Record<string, LayerStatus> = {};
+  await Promise.all(
+    [...packRequiredObjects()].map(async ([fqn, mode]) => {
+      const e = findRepairEntry(fqn);
+      const absentStatus: LayerStatus = { state: 'absent', object: fqn, label: e?.label ?? e?.layer, fix: e?.fix ?? (e ? [e.action] : undefined), note: e?.note };
+      try {
+        let present: boolean;
+        if (mode === 'exists') {
+          const [db, schema, name] = fqn.split('.');
+          const rows = await query<{ N?: number }>(
+            `SELECT COUNT(*) AS N FROM ${db}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+            [schema, name],
+          );
+          present = Number(rows[0]?.N ?? 0) > 0;
+        } else {
+          const rows = await query<Record<string, unknown>>(`SELECT 1 AS X FROM ${fqn} LIMIT 1`);
+          present = rows.length > 0;
+        }
+        objects[fqn] = present ? { state: 'present', object: fqn } : absentStatus;
+      } catch (err) {
+        const msg = String(err);
+        if (/does not exist|not authorized|Unknown user-defined|Insufficient privileges/i.test(msg)) {
+          logger.warn('pack-status-object-absent', { fqn, err: msg });
+          objects[fqn] = absentStatus;
+        } else {
+          logger.error('pack-status-object-unverified', { fqn, err: msg });
+          objects[fqn] = { state: 'unverified', object: fqn };
+          if (!degraded.includes(fqn)) degraded.push(fqn);
+        }
+      }
+    }),
+  );
+  return NextResponse.json({ schemas: status, layers, objects, degraded });
 }
 
 export const GET = withLogging(handleGet);

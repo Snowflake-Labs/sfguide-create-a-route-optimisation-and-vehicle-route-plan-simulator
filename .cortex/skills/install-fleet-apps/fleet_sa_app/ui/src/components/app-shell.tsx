@@ -135,9 +135,9 @@ export function AppShell() {
     Promise.all([
       fetch('/api/app-config').then((r) => r.json()),
       fetch('/api/views-config').then((r) => r.json()),
-      fetch('/api/pack-status').then((r) => r.json()).catch(() => ({ schemas: {}, layers: {}, failed: true })),
+      fetch('/api/pack-status').then((r) => r.json()).catch(() => ({ schemas: {}, layers: {}, objects: {}, failed: true })),
     ])
-      .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean>; layers?: Record<string, LayerStatus>; degraded?: string[]; failed?: boolean }]) => {
+      .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean>; layers?: Record<string, LayerStatus>; objects?: Record<string, LayerStatus>; degraded?: string[]; failed?: boolean }]) => {
         setAppConfig({ ...DEFAULT_APP_CONFIG, ...appConfig });
 
         // Publish the display config (labels/units/thresholds) to the store AND the
@@ -164,12 +164,9 @@ export function AppShell() {
           }
         }
 
-        // Surfacing gate: views over an ABSENT layer are shown unavailable with
-        // the reason (see load-views). Packs still take the bare set.
-        const schemaStatus = packStatus?.schemas ?? {};
-        const disabledSchemas = new Set(
-          Object.entries(schemaStatus).filter(([, present]) => !present).map(([s]) => s),
-        );
+        // Surfacing gate: views over an ABSENT layer (declarative views) or
+        // ABSENT required object (pack views) are shown unavailable with the
+        // reason - see load-views and packs/fleet/index.ts.
         // Fail-open is deliberate (a probe outage must not empty the app), but
         // it is no longer silent: an unmeasured state is flagged in the shell.
         setAvailabilityUnverified(!!packStatus?.failed || (packStatus?.degraded?.length ?? 0) > 0);
@@ -219,7 +216,7 @@ export function AppShell() {
         const resolvedPacks =
           appConfig.domainPacks ?? (appConfig.domainPack ? [appConfig.domainPack] : []);
         for (const id of resolvedPacks) {
-          PACK_REGISTRY[id]?.registerViews(disabledSchemas);
+          PACK_REGISTRY[id]?.registerViews(packStatus?.objects);
         }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
           // Always set the FQN - it's used by the write layer and other framework features.

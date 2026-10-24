@@ -203,7 +203,8 @@
     }
   },
   "backload_proposals": {
-    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED"],
+    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS"],
+    "requiresExists": ["FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED"],
     "label": "Backload Proposals",
     "description": "Multi-strategy backhaul recommendations for idle vehicles: run one optimizer strategy or fuse them all into a graded, internal-first proposal per vehicle, with per-constraint pass/fail chips and a Cortex rationale.",
     "category": "Optimization",
@@ -331,7 +332,9 @@
     }
   },
   "triangle_proposals": {
-    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES"],
+    "requires": ["FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS", "FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_LOADS"],
+    "requiresExists": ["FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES"],
+    "requiresNote": "VW_TRIANGLES is a computed result (no two-hop chains in the current window is legitimate, measured empty on wgb26798), so it must only exist.",
     "label": "Triangle Proposals",
     "description": "Chained two-hop backhaul: when no single load brings a vehicle back, carry one load part of the way and a second load the rest. Internal loads are exhausted before an outside exchange is consulted, every leg is costed live on the road network, and each chain is shown against the cost of simply running home empty.",
     "category": "Optimization",
