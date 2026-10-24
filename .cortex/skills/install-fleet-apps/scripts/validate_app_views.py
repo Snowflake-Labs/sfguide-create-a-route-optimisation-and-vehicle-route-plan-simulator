@@ -48,6 +48,8 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
 try:
     import snowflake.connector
 except ImportError:  # pragma: no cover
@@ -159,33 +161,9 @@ class Session:
             pass
 
 
-def collect_query_nodes(view: dict):
-    """Every node carrying data.query, labelled by its id when it has one.
-
-    Labels prefer `id` over the positional path because inserting one layer
-    renumbers every path after it, which would silently move an expectations
-    entry onto a different query.
-    """
-    found = []
-
-    def walk(node, path):
-        if isinstance(node, dict):
-            data = node.get("data")
-            if isinstance(data, dict) and isinstance(data.get("query"), str):
-                found.append({
-                    "label": node.get("id") or node.get("name") or path or "root",
-                    "path": path,
-                    "query": data["query"],
-                    "params": data.get("params") or {},
-                })
-            for key, val in node.items():
-                walk(val, ("%s.%s" % (path, key)) if path else key)
-        elif isinstance(node, list):
-            for i, val in enumerate(node):
-                walk(val, "%s[%d]" % (path, i))
-
-    walk(view, "")
-    return found
+# The nested data.query walk lives in layer_impact.py, shared with the installer
+# summary and the agent catalog so every consumer sees the same queries.
+from layer_impact import collect_query_nodes  # noqa: E402
 
 
 def context_binds(sess: Session, region: str, vehicle_type: str, cfg: list) -> dict:
