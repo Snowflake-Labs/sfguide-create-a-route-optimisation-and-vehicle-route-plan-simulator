@@ -356,6 +356,12 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_warn_surfacing_negative.py
     scope: static
     why: a best-effort layer that did not build reaches the install summary as a bare WARN, without the views it breaks or the fix
+  - id: view_availability
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_availability.py
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_availability_negative.py
+    scope: static
+    why: a view over a layer that was never built is hidden without a reason, opens to failing panels, or is recommended by the agent
   - id: missing_dependency_message
     run: npx tsx scripts/verify-missing-dependency.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_sa_app/ui
