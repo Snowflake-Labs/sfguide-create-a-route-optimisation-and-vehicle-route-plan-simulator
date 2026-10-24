@@ -15,7 +15,7 @@ app's repair-map.json. Three consumers:
     queries the same way
 
 Usage:
-  layer_impact.py --warn-log /tmp/ifa_analytic.log [--warn-log ...] \\
+  layer_impact.py [--warn-log F ...] [--warn-glob '/tmp/ifa_*.log' --since EPOCH] \\
                   [--view-report /tmp/ifa_view_report.json] [--region R] [--markdown]
 Exit 0 always (it reports; the installer decides severity). Prints nothing when
 there is nothing degraded.
@@ -126,6 +126,14 @@ def views_reading(entry: dict, views: dict) -> list[dict]:
     return hits
 
 
+def run_logs(pattern: str, since: float) -> list[str]:
+    """Logs matching `pattern` written by THIS run. A /tmp log left by an
+    earlier install would otherwise report that run's failures as this one's."""
+    import glob
+    import os
+    return sorted(p for p in glob.glob(pattern) if os.path.getmtime(p) >= since)
+
+
 def warn_lines(paths: list[str]) -> list[str]:
     out = []
     for p in paths:
@@ -210,12 +218,15 @@ def render(items: list[dict], markdown: bool, region: str | None = None) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--warn-log", action="append", default=[])
+    ap.add_argument("--warn-glob", help="also read every log matching this glob ...")
+    ap.add_argument("--since", type=float, default=0.0, help="... modified at/after this epoch")
     ap.add_argument("--view-report")
     ap.add_argument("--markdown", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--region", help="fills {region} in the fix")
     a = ap.parse_args()
-    items = degraded(a.warn_log, a.view_report)
+    logs = list(a.warn_log) + (run_logs(a.warn_glob, a.since) if a.warn_glob else [])
+    items = degraded(logs, a.view_report)
     if a.json:
         print(json.dumps(items, indent=1))
     else:
