@@ -28,6 +28,9 @@ MODE="${2:-}"
 WAIT_S="${PREWARM_WAIT_S:-900}"
 POLL_S=15
 SCHEMA="OPENROUTESERVICE_APP.CORE"
+# Every `snow sql` invocation is a new session, so the tag rides in each payload.
+TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"prewarm"}}'
+TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
 
 # NAME STATUS AUTO_SUSPEND_SECS, one line per routing service (DOWNLOADER excluded).
 services() {
@@ -69,7 +72,7 @@ resume_suspended() {
   while read -r name status _; do
     [ "$status" = "SUSPENDED" ] || continue
     echo "[prewarm] resuming $name"
-    snow sql -c "$CONNECTION" -q "ALTER SERVICE IF EXISTS $SCHEMA.$name RESUME" >/dev/null 2>&1 \
+    snow sql -c "$CONNECTION" -q "$TAG_SQL ALTER SERVICE IF EXISTS $SCHEMA.$name RESUME" >/dev/null 2>&1 \
       || echo "[prewarm]   WARN: RESUME $name failed"
   done <<< "$1"
 }
