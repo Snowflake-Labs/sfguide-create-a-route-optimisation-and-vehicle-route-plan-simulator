@@ -45,6 +45,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source_negative.py
     scope: static
     why: source files hidden by a generic .gitignore rule exist only on one machine
+  - id: no_tracked_ignored
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_tracked_ignored.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_tracked_ignored_negative.py
+    scope: static
+    why: files committed before their .gitignore rule (dated run logs naming another account) ship in every clone
   - id: no_brands
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands_negative.py
