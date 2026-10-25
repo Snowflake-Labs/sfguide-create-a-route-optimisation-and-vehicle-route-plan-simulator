@@ -24,6 +24,10 @@ Rules (fixtures are in snow sql's real log shape: echoed source + result table):
   F  a WARN cell that snow wrapped across several lines (80 columns even into
      a file - fixture captured from snow itself) is read WHOLE, through its
      SQLERRM tail
+  H  the console finale names each non-OK step (NONOK_STEPS) and never points
+     at "the status table", which is written only to the friction log
+  I  step 9's WARN prints the failing view lines from /tmp/ifa_verify.log, not
+     just the tally (EMPTY=1 named no view)
   G  the installer reads the region from FLEET_INTELLIGENCE.CATCHMENT.CONFIG and
      passes it as --region, so fixes are copy-pasteable
 
@@ -124,6 +128,16 @@ if not re.search(r"SELECT REGION FROM FLEET_INTELLIGENCE\.CATCHMENT\.CONFIG", sh
     failures.append("G installer does not read the region from CATCHMENT.CONFIG")
 if not re.search(r"DEGRADED_ARGS\+=\(--region", sh):
     failures.append("G installer does not pass --region to layer_impact.py")
+
+# H
+if "see the status table" in sh:
+    failures.append("H the console points at a status table it never prints (it is in the friction log only)")
+if not re.search(r'echo " not OK: \$\{NONOK_STEPS\}', sh):
+    failures.append("H the console finale does not name the non-OK steps (NONOK_STEPS)")
+
+# I
+if not re.search(r"sed -n '/\^FAILED:/,\$p' /tmp/ifa_verify\.log[^\n]*\n[^\n]*note \"[^\"]*failing: ", sh):
+    failures.append("I step 9 WARN does not name the failing views from /tmp/ifa_verify.log")
 
 if failures:
     print("install warn surfacing: %d violation(s)" % len(failures))

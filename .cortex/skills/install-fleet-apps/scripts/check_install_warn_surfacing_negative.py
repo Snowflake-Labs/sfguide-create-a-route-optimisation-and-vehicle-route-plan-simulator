@@ -55,4 +55,13 @@ h.replace(HELPER, "                targets = [e]\n",
           expect="E a view-check ERROR blamed every schema the view reads",
           name="M7 an ERROR is blamed on every schema the view reads (the original over-attribution)")
 
+h.replace(INSTALLER, '  echo " not OK: ${NONOK_STEPS} (details in that step\'s output above)"\n',
+          '  echo " - see the status table"\n',
+          expect="H the console points at a status table",
+          name="M10 the finale points at the friction-log-only status table again")
+
+h.replace(INSTALLER, '| while IFS= read -r l; do note "        failing: $l"; done\n', "",
+          expect="I step 9 WARN does not name the failing views",
+          name="M11 step 9 prints only the tally (EMPTY=1, no view named)")
+
 sys.exit(h.finish())
