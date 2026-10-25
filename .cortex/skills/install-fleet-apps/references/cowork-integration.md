@@ -467,6 +467,17 @@ then to `deep_link`. The envelope is Snowflake's, so the fix is on the source si
    `result_id`, then `data_to_map` on the **Analyst** call's tool_use_id. A Cortex Analyst
    result is a source data_to_map does draw.
 
+**Update (cortex PR 157597, merged and deployed 2026-10-22): the direct path is now primary.**
+data_to_map now reads any tool result whose text is a JSON array of objects, or an object
+carrying one under `rows`, so the routing verb's (and `run_sql`'s) OWN tool_use_id draws. The
+agent spec (tenth pass of `patch_agent_spec_render_map.py`, marker `MCP RESULT IS A MAP SOURCE`)
+says: draw the verb call directly; use steps 1-3 above only as the FALLBACK, when data_to_map
+rejects the direct source (a build without the PR) or the user wants a map they can refresh,
+explore or download (a direct MCP map is snapshot-only, inline rows capped at ~200 KB).
+`run_sql` also persists drawable rows (an H3 cell STRING, LAT+LON or GEOJSON column, plus
+VALUE/LABEL) so a run_sql density has the same fallback. Send H3 as a string: synapse encodes
+JSON in JS, so a 64-bit H3 integer is rounded before the platform's number handling sees it.
+
 `result` is exactly what the TOOL_* procedure returned - the SA app renders it, multi-layer
 and at full resolution. `rows` is a projection of the ONE primary geometry, in one of two
 shapes, never mixed:

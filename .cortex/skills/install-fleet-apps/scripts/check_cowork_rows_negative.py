@@ -108,17 +108,28 @@ spec_case("old 'not mappable' sentence restored", SPEC,
           "Geometry computed LIVE by the routing engine is drawn through query_routing_results",
           "Geometry computed LIVE by the routing engine is still not mappable; see",
           expect="E agent-spec.json: still says 'is still not mappable'")
-# E: the SHIPPED seventh-pass wording - the one that failed in CoWork - must fail.
-spec_case("shipped verb-tool_use_id wording restored", SPEC,
-          "returns status SUCCESS with a result_id, call query_routing_results for the geometry of that exact "
-          "result_id, then call data_to_map ONCE with the query_routing_results call's tool_use_id - never "
-          "the routing verb's own tool_use_id.",
-          "returns status SUCCESS and its payload has rows, call data_to_map ONCE with THAT call's tool_use_id.",
-          expect="still says \"with that call's tool_use_id\"")
-spec_case("verb result offered as a source again (super spec)", SUPER,
-          "(b) a query_routing_results result for the result_id returned by one of the routing verbs (",
-          "(b) a routing verb result that carries a top-level rows array (",
-          expect="still says 'a routing verb result that carries a top-level rows array'")
+# E: the NINTH-pass wording - "MCP is not a source" - is false since cortex PR 157597 and must fail.
+spec_case("ninth-pass 'not a source' sentence restored", SPEC,
+          "A direct (b) map is a snapshot:",
+          "The routing verb's OWN result is NOT a source, and neither is run_sql's own result. A direct (b) map is a snapshot:",
+          expect="still says \"the routing verb's own result is not a source\"")
+spec_case("query_routing_results detour made primary again (super spec)", SUPER,
+          "tatus SUCCESS, call data_to_map ONCE with THAT routing verb call's own tool_use_id. Only if "
+          "data_to_map rejects it as not mappable, or the user wants a refreshable map, call",
+          "tatus SUCCESS with a result_id, call",
+          expect="does not draw the routing verb's own tool_use_id first")
+spec_case("fallback trigger dropped", SPEC,
+          "Only if data_to_map rejects it as not mappable, or the user wants a refreshable map, call",
+          "Then also call",
+          expect="lost the fallback trigger")
+spec_case("fallback removed entirely", SPEC,
+          " call query_routing_results for the geometry of its result_id, then call data_to_map ONCE with the "
+          "query_routing_results call's tool_use_id.",
+          " report the figures.",
+          expect=f"does not keep query_routing_results as the FALLBACK")
+spec_case("direct-source rule header dropped", SPEC,
+          "- Source constraint (MCP RESULT IS A MAP SOURCE):", "- Source constraint:",
+          expect="lost the direct MCP source rule")
 spec_case("latlon layer instruction dropped (super spec)", SUPER,
           'Rows with LAT and LON -> layer_type "latlon", lat_column "LAT", lon_column "LON". ', "",
           expect="E super-agent-spec.json: the DRAWING A ROUTING RESULT IN COWORK bullet lost the LAT/LON layer")

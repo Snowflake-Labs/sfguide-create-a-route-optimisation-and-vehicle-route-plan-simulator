@@ -54,6 +54,11 @@ type Obj = Record<string, unknown>;
  * serves them back, and a Cortex Analyst result IS a source data_to_map draws.
  * `rows` stays in the response for the SA app and any client that reads
  * structured content directly.
+ *
+ * UPDATE: cortex PR 157597 (deployed 2026-10-22) lets data_to_map read `rows`
+ * from the MCP result itself, so CoWork draws the verb's own tool_use_id first.
+ * The persisted result_id is now the FALLBACK (older builds, and refreshable /
+ * explorable maps, which a snapshot-only MCP map cannot offer).
  */
 
 const CELL_MAX = 60_000;

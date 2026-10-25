@@ -15,7 +15,7 @@ SECTION = "CHARTING (data_to_chart):\n"
 NEXT_SECTION = "VISUAL HANDOVER ("
 MCP_SENTENCE = ("An MCP tool result - backload_solve, backload_chain_solve, get_directions, "
                 "or any synapse verb - is NOT accepted. Do not attempt it. ")
-MAP_SENTENCE = "data_to_map accepts ONLY two sources as tool_result_id:"
+MAP_SENTENCE = "data_to_map accepts three sources as tool_result_id:"
 OLD_MAP_SENTENCE = "data_to_map accepts ONLY a SQL/analyst tool result as tool_result_id:"
 
 h = Harness("check_chart_source_constraint.py")

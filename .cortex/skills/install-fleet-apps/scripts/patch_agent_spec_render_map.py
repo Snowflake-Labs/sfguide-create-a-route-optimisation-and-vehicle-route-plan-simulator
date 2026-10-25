@@ -311,7 +311,9 @@ QUERY_ROUTING_RESULTS_DESCRIPTION = (
     "Map geometry of a routing result the user just computed, by the result_id a routing verb "
     "returned (get_directions, compute_isochrone, optimize_routes, find_poi, catchment, snap_to_road "
     "and the other routing verbs), or by the result_id run_sql returned for a drawable result "
-    "(an H3 density, points or shapes). Use it ONLY to draw that result in CoWork: ask for the "
+    "(an H3 density, points or shapes). Use it to draw that result in CoWork ONLY as the fallback: "
+    "when data_to_map rejected the verb's own result as not mappable, or the user wants a map they can "
+    "refresh, explore or download. Ask for the "
     "geometry of that exact result_id, then pass THIS call's tool_use_id to data_to_map. It "
     "stores no distance or duration; quote those from the routing verb result."
 )
@@ -441,6 +443,84 @@ def apply_run_sql_map(spec: dict) -> bool:
     return True
 
 
+# --- tenth pass: an MCP result IS a data_to_map source --------------------------
+# cortex PR 157597 (merged + deployed 2026-10-22) made data_to_map read any tool
+# result whose text is a JSON array of objects, or an object carrying one under
+# `rows`. Every routing verb already returns { result, rows, result_id } and
+# run_sql returns { rows, ... }, so the verb's OWN tool_use_id now draws - as a
+# snapshot (no refresh / explore / download). The ninth-pass text said the
+# opposite ("NOT a source ... NO MAP APPEARS"), which kept the model on the
+# query_routing_results detour or off the direct path entirely. The persisted
+# result_id path stays as the FALLBACK: when data_to_map rejects the direct
+# source (an older build), or when the user wants a refreshable map.
+MCP_SOURCE_MARKER = "MCP RESULT IS A MAP SOURCE"
+MCP_SOURCE_EDITS = [
+    (
+        "- Source constraint: data_to_map accepts ONLY two sources as tool_result_id: (a) a query_* "
+        "Cortex Analyst result, and (b) a query_routing_results result for the result_id returned by "
+        "one of the routing verbs (",
+        "- Source constraint (MCP RESULT IS A MAP SOURCE): data_to_map accepts three sources as "
+        "tool_result_id: (a) a query_* Cortex Analyst result; (b) a SUCCESSFUL routing verb or run_sql "
+        "call whose payload carries rows - pass THAT call's own tool_use_id, the default; and (c) the "
+        "fallback, a query_routing_results result for the result_id returned by one of the routing verbs (",
+    ),
+    (
+        "The routing verb's OWN result is NOT a source, and neither is run_sql's own result or any "
+        "other MCP result: the MCP server hands it over as one JSON string, so data_to_map cannot "
+        "resolve it and NO MAP APPEARS.",
+        "A direct (b) map is a snapshot: it cannot be refreshed, explored or downloaded. Use (c) "
+        "instead when the user asks for a map they can refresh, explore or download, and as the retry "
+        "when data_to_map rejects a (b) source as not mappable.",
+    ),
+    (
+        "plus one numeric value column; then draw the result_id it returns through "
+        "query_routing_results.",
+        "plus one numeric value column, and keep the mapped result to a few hundred rows; then draw "
+        "that run_sql call directly, falling back to its result_id through query_routing_results.",
+    ),
+    (
+        "if run_sql returns no result_id, show the numbers and say the result could not be drawn.",
+        "if neither path draws, show the numbers and say the result could not be drawn.",
+    ),
+    (
+        "tatus SUCCESS with a result_id, call query_routing_results for the geometry of that exact "
+        "result_id, then call data_to_map ONCE with the query_routing_results call's tool_use_id - "
+        "never the routing verb's own tool_use_id.",
+        "tatus SUCCESS, call data_to_map ONCE with THAT routing verb call's own tool_use_id. Only if "
+        "data_to_map rejects it as not mappable, or the user wants a refreshable map, call "
+        "query_routing_results for the geometry of its result_id, then call data_to_map ONCE with the "
+        "query_routing_results call's tool_use_id.",
+    ),
+]
+MCP_SOURCE_RESP = (
+    "After a routing verb succeeds with a result_id, fetch its geometry with query_routing_results "
+    "and pass THAT call's tool_use_id to data_to_map. When NEITHER is available, or the geometry has "
+    "no source data_to_map accepts (a query_* result, including query_routing_results),",
+    "After a routing verb or run_sql call succeeds with rows, pass THAT call's own tool_use_id to "
+    "data_to_map; fall back to query_routing_results for its result_id if that is rejected or a "
+    "refreshable map is wanted. When NEITHER is available, or the geometry has no source data_to_map "
+    "accepts (a query_* result, a routing verb or run_sql result with rows, or query_routing_results),",
+)
+
+
+def apply_mcp_source(spec: dict) -> bool:
+    """Tenth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    o = ins["orchestration"]
+    if MCP_SOURCE_MARKER in o:
+        return False
+    for old, new in MCP_SOURCE_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: mcp-source anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = MCP_SOURCE_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: mcp-source response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
 def main() -> int:
     src = SPEC.read_text()
     spec = json.loads(src)
@@ -557,6 +637,12 @@ def main() -> int:
         changed.append("orchestration(run_sql map rows)")
     else:
         print("orchestration: run_sql map rule already present")
+
+    # --- Tenth pass: the verb's own MCP result is the primary map source ------
+    if apply_mcp_source(spec):
+        changed.append("orchestration+response(MCP result is a map source)")
+    else:
+        print("orchestration: MCP-source rule already present")
 
     if not changed:
         return 0

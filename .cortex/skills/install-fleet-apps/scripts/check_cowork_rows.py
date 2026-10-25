@@ -70,9 +70,9 @@ OLD_WORDING = [
     "is still not mappable",
     "an mcp result is rejected as a map source",
     "the same one data_to_map has",
-    # the seventh-pass wording that failed in CoWork: the verb's own result as a source
-    "a routing verb result that carries a top-level rows array",
-    "with that call's tool_use_id",
+    # the ninth-pass wording, false since cortex PR 157597 made MCP results map sources
+    "the routing verb's own result is not a source",
+    "never the routing verb's own tool_use_id",
 ]
 
 
@@ -183,14 +183,19 @@ def main() -> int:
             problems.append(f"E {spec.name}: no '{RULE_HEAD}' bullet")
             continue
         bullet = orch[i:orch.find("\n", i) if orch.find("\n", i) >= 0 else len(orch)]
+        direct = bullet.find("call data_to_map ONCE with THAT routing verb call's own tool_use_id")
         q = bullet.find(f"call {TOOL}")
         dm = bullet.find(f"data_to_map ONCE with the {TOOL} call's tool_use_id")
-        if q < 0 or dm < 0 or dm < q:
-            problems.append(f"E {spec.name}: the {RULE_HEAD} bullet does not say to call {TOOL} "
-                            f"first and pass ITS tool_use_id to data_to_map")
-        if "never the routing verb's own tool_use_id" not in bullet:
-            problems.append(f"E {spec.name}: the {RULE_HEAD} bullet no longer forbids the routing "
-                            f"verb's own tool_use_id (the path that failed in CoWork)")
+        if direct < 0:
+            problems.append(f"E {spec.name}: the {RULE_HEAD} bullet does not draw the routing verb's "
+                            f"own tool_use_id first - the model takes the {TOOL} detour on every map")
+        if q < 0 or dm < 0 or dm < q or (direct >= 0 and q < direct):
+            problems.append(f"E {spec.name}: the {RULE_HEAD} bullet does not keep {TOOL} as the "
+                            f"FALLBACK after the direct path (call {TOOL}, then pass ITS tool_use_id)")
+        fb = bullet[direct:q] if 0 <= direct < q else ""
+        if "rejects it as not mappable" not in fb or "refreshable map" not in fb:
+            problems.append(f"E {spec.name}: the {RULE_HEAD} bullet lost the fallback trigger (rejected "
+                            f"as not mappable, or a refreshable map wanted)")
         tools = {t.get("tool_spec", {}).get("name"): t.get("tool_spec", {}) for t in d.get("tools", [])}
         if tools.get(TOOL, {}).get("type") != "cortex_analyst_text_to_sql":
             problems.append(f"E {spec.name}: no cortex_analyst_text_to_sql tool named {TOOL}")
@@ -274,6 +279,8 @@ def main() -> int:
         for need, why in (
             ("MAPPING A run_sql RESULT", "the run_sql mapping rule"),
             ("or by run_sql when it returns a result_id", "run_sql as a query_routing_results source"),
+            ("MCP RESULT IS A MAP SOURCE", "the direct MCP source rule"),
+            ("a SUCCESSFUL routing verb or run_sql call whose payload carries rows", "run_sql/verb as a direct source"),
             ("NEVER swap a computed result for an approximation", "the no-approximation rule"),
         ):
             if need not in orch:

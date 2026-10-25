@@ -29,6 +29,9 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 -- (observed failing in CoWork 2026-10-24: get_directions ok, no map). A Cortex
 -- Analyst result IS a source data_to_map draws, so the verb persists its rows
 -- here and SV_ROUTING_RESULTS (semantic_views.sql) serves them back by id.
+-- Since cortex PR 157597 (2026-10-22) data_to_map also reads the verb's own MCP
+-- rows, so this table is the FALLBACK: builds without that PR, and maps the user
+-- wants to refresh, explore or download (an MCP-sourced map is snapshot-only).
 --
 -- Written by the synapse verbs (EXECUTE AS OWNER, see fleet_tools/user/src/
 -- map_rows.ts) and read ONLY through VW_ROUTING_RESULT_GEOMETRY, which returns
