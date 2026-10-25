@@ -28,6 +28,8 @@ Rules (fixtures are in snow sql's real log shape: echoed source + result table):
      at "the status table", which is written only to the friction log
   I  step 9's WARN prints the failing view lines from /tmp/ifa_verify.log, not
      just the tally (EMPTY=1 named no view)
+  J  both pipelines EXECUTED under `set -euo pipefail` with nothing to match
+     (a clean run) still reach the finale
   G  the installer reads the region from FLEET_INTELLIGENCE.CATCHMENT.CONFIG and
      passes it as --region, so fixes are copy-pasteable
 
@@ -138,6 +140,28 @@ if not re.search(r'echo " not OK: \$\{NONOK_STEPS\}', sh):
 # I
 if not re.search(r"sed -n '/\^FAILED:/,\$p' /tmp/ifa_verify\.log[^\n]*\n[^\n]*note \"[^\"]*failing: ", sh):
     failures.append("I step 9 WARN does not name the failing views from /tmp/ifa_verify.log")
+
+# J
+# EXECUTE both new pipelines under the installer's own `set -euo pipefail` with
+# inputs that match nothing (a clean run). Cycle 3 of the 2026-10-25 e2e loop:
+# the NONOK_STEPS grep matched nothing, set -e killed the installer before the
+# finale and a fully clean install exited 1.
+nonok = re.search(r"^NONOK_STEPS=.*$", sh, re.M)
+step9 = re.search(r"^\s*sed -n '/\^FAILED:/,\$p' /tmp/ifa_verify\.log.*\\\n.*$", sh, re.M)
+if not nonok or not step9:
+    failures.append("J could not find the NONOK_STEPS / step-9 failing-view lines to execute")
+else:
+    with tempfile.TemporaryDirectory() as d:
+        log = pathlib.Path(d) / "verify.log"
+        log.write_text("OK=10\n")
+        script = ("set -euo pipefail\nnote() { echo \"$*\"; }\n"
+                  "STEP_STATUS=('1 a|OK' '9 verify-views|OK')\n"
+                  + nonok.group(0) + "\n"
+                  + step9.group(0).replace("/tmp/ifa_verify.log", str(log)) + "\n"
+                  + "echo REACHED_FINALE\n")
+        p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        if "REACHED_FINALE" not in p.stdout:
+            failures.append("J a clean run aborts under set -euo pipefail before the finale (rc=%d)" % p.returncode)
 
 if failures:
     print("install warn surfacing: %d violation(s)" % len(failures))

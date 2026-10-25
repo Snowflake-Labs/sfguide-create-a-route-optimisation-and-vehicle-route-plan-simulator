@@ -60,8 +60,16 @@ h.replace(INSTALLER, '  echo " not OK: ${NONOK_STEPS} (details in that step\'s o
           expect="H the console points at a status table",
           name="M10 the finale points at the friction-log-only status table again")
 
-h.replace(INSTALLER, '| while IFS= read -r l; do note "        failing: $l"; done\n', "",
+h.replace(INSTALLER, '| while IFS= read -r l; do note "        failing: $l"; done || true\n', "",
           expect="I step 9 WARN does not name the failing views",
           name="M11 step 9 prints only the tally (EMPTY=1, no view named)")
+
+h.replace(INSTALLER, "sed 's/,/, /g' || true)\n", "sed 's/,/, /g')\n",
+          expect="J a clean run aborts under set -euo pipefail before the finale",
+          name="M12 NONOK_STEPS grep without || true (the cycle-3 exit 1)")
+
+h.replace(INSTALLER, 'note "        failing: $l"; done || true\n', 'note "        failing: $l"; done\n',
+          expect="J a clean run aborts under set -euo pipefail before the finale",
+          name="M13 step-9 failing-view pipeline without || true")
 
 sys.exit(h.finish())

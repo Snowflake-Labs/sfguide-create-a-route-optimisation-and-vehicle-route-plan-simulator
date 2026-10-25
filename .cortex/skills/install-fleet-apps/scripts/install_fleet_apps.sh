@@ -1460,7 +1460,7 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
       # Name the failing views here: the tally alone said "EMPTY=1" and the
       # view it meant was only in /tmp/ifa_verify.log.
       sed -n '/^FAILED:/,$p' /tmp/ifa_verify.log | grep -E '^ +\[' | sed 's/^ *//' | head -10 \
-        | while IFS= read -r l; do note "        failing: $l"; done
+        | while IFS= read -r l; do note "        failing: $l"; done || true
       note "        repair attempt: python3 $SCRIPTS/validate_app_views.py -c $CONNECTION --repair"
       step "9 verify-views" WARN
     fi
@@ -1484,8 +1484,10 @@ FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
 # printed while a load-bearing script had actually failed and only WARNed.
 WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
 # The non-OK steps by name, for the console. The headline used to say "see the
-# status table", which is written only to the friction log file.
-NONOK_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -E '\|(WARN|FAILED)$' | sed 's/|/ (/; s/$/)/' | paste -sd, - | sed 's/,/, /g')
+# status table", which is written only to the friction log file. `|| true`: on a
+# clean run grep matches nothing and, under `set -euo pipefail`, would abort the
+# script before the finale is printed.
+NONOK_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -E '\|(WARN|FAILED)$' | sed 's/|/ (/; s/$/)/' | paste -sd, - | sed 's/,/, /g' || true)
 # Which use cases this run left broken, and the command that rebuilds each. A
 # guarded builder (Catchment, Location, Sourcing) returns 'WARN: ...' instead of
 # failing, so the install "succeeded" and a customer found the dead Site Impact
