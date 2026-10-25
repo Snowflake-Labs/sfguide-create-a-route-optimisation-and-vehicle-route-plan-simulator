@@ -14,6 +14,7 @@
 # Usage:
 #   bash .cortex/skills/install-fleet-apps/scripts/install_synapse_bundles.sh <connection>
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/npm_retry.sh"
 
 CONNECTION="${1:?usage: install_synapse_bundles.sh <connection>}"
 REPO_ROOT=$(git rev-parse --show-toplevel)
