@@ -44,14 +44,44 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOME
     SEQ        NUMBER        NOT NULL,
     GEOJSON    STRING,
     LON        FLOAT,
-    LAT        FLOAT
+    LAT        FLOAT,
+    H3         STRING,
+    VALUE      FLOAT,
+    LABEL      STRING
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE OR REPLACE SECURE VIEW FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY
+-- H3 / VALUE / LABEL carry run_sql map rows (an H3 density, or labelled points
+-- or shapes). Upgrade path for a table created before they existed: ALTER TABLE
+-- ADD COLUMN IF NOT EXISTS is NOT idempotent here (it raises "ambiguous column
+-- name" when the column is present), so each column is added only when
+-- INFORMATION_SCHEMA says it is missing.
+EXECUTE IMMEDIATE $$
+DECLARE
+  defs ARRAY DEFAULT ARRAY_CONSTRUCT('H3 STRING', 'VALUE FLOAT', 'LABEL STRING');
+  def STRING;
+  col STRING;
+  n INTEGER;
+BEGIN
+  FOR i IN 0 TO 2 DO
+    def := GET(:defs, :i)::STRING;
+    col := SPLIT_PART(:def, ' ', 1);
+    SELECT COUNT(*) INTO :n FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = 'ROUTING_TOOLS' AND TABLE_NAME = 'ROUTING_RESULT_GEOMETRY' AND COLUMN_NAME = :col;
+    IF (n = 0) THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY ADD COLUMN ' || :def;
+    END IF;
+  END FOR;
+  RETURN 'ok';
+END;
+$$;
+
+-- COPY GRANTS: re-running this file alone must not revoke role_binding.sql's
+-- SELECT grant to FLEET_APP_USER (SV_ROUTING_RESULTS would then return nothing).
+CREATE OR REPLACE SECURE VIEW FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY COPY GRANTS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-SELECT RESULT_ID, VERB, CREATED_AT, SEQ, GEOJSON, LON, LAT
+SELECT RESULT_ID, VERB, CREATED_AT, SEQ, GEOJSON, LON, LAT, H3, VALUE, LABEL
 FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY
 WHERE ACTOR = CURRENT_USER();
 

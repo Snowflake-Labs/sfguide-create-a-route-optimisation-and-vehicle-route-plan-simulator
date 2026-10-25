@@ -1,6 +1,6 @@
 // Offline: the extractor handles every geometry shape the TOOL_* procs return.
 // Run with: npx tsx verify_cowork_rows_shapes.mts   (from fleet_tools/user)
-import { collectGeometries, pointRows, routeGeometries, snappedPoints, featurePoints } from './src/map_rows.js';
+import { collectGeometries, pointRows, routeGeometries, snappedPoints, featurePoints, sqlMapRows } from './src/map_rows.js';
 
 let bad = 0;
 const eq = (name: string, got: unknown, want: unknown) => {
@@ -36,6 +36,18 @@ const many = Array.from({ length: 5000 }, (_, i) => ({ lon: -122 - i / 1e4, lat:
 const capped = pointRows(many);
 eq('point cap holds row count <= 2000', capped.length <= 2000, true);
 eq('point cap holds bytes < 200 KB', JSON.stringify(capped).length < 200_000, true);
+
+// run_sql rows: the shape is read off the column names (snowflake-sdk returns UPPERCASE keys).
+eq('run_sql H3 density -> H3 + VALUE', sqlMapRows([
+  { H3_CELL: '881fb46625fffff', RESTAURANT_COUNT: 42 }, { H3_CELL: '881FB46627FFFFF', RESTAURANT_COUNT: 7 }]),
+  [{ H3: '881fb46625fffff', VALUE: 42 }, { H3: '881fb46627fffff', VALUE: 7 }]);
+eq('run_sql H3 INT column is not drawn (64-bit precision lost in JS)', sqlMapRows([{ H3: 613196571542028287, N: 1 }]), []);
+eq('run_sql LAT/LON + label', sqlMapRows([{ NAME: 'Cafe', LATITUDE: 48.85, LONGITUDE: 2.29, RATING: 4.5 }]),
+  [{ LON: 2.29, LAT: 48.85, VALUE: 4.5, LABEL: 'Cafe' }]);
+eq('run_sql GEOGRAPHY column (GeoJSON string)', sqlMapRows([{ GEOM: JSON.stringify(poly), AREA_KM2: 3 }]),
+  [{ GEOJSON: poly, VALUE: 3 }]);
+eq('run_sql non-spatial result -> nothing to draw', sqlMapRows([{ REGION: 'Paris', TRIPS: 10 }]), []);
+eq('run_sql empty result', sqlMapRows([]), []);
 
 console.log(bad ? `${bad} failure(s)` : 'all shapes OK');
 process.exit(bad ? 1 : 0);

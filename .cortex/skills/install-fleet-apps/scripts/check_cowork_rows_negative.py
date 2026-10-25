@@ -156,4 +156,32 @@ tool_case("query_routing_results bound to the wrong view", SUPER,
               "semantic_view", "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION"),
           expect="E super-agent-spec.json: query_routing_results is not bound to")
 
+# H: run_sql results drawable (the Eiffel-tower H3 density that was redrawn as a bbox).
+h.replace(f"{PROCS}/run_sql.ts", "await persistSqlMapRows(ctx, rows)", "null",
+          expect="H run_sql.ts: execute does not persist its rows", name="run_sql persists nothing")
+h.replace(f"{PROCS}/run_sql.ts", "      result_id: resultId,\n", "",
+          expect="H run_sql.ts: execute does not persist its rows", name="run_sql drops result_id")
+h.replace(f"{PROCS}/run_sql.ts", "    result_id: t\n      .string()\n      .nullable()", "    result_id_x: t\n      .string()\n      .nullable()",
+          expect="H run_sql.ts: returns does not declare a nullable `result_id`", name="run_sql result_id undeclared")
+h.replace(MAP_ROWS, "persistRows(ctx.conn, ctx.identity, 'run_sql', mapRows)", "persistRows(ctx.conn, ctx.identity, 'get_directions', mapRows)",
+          expect="H map_rows.ts: persistSqlMapRows does not project", name="run_sql rows filed under another verb")
+h.replace(MAP_ROWS, "SEQ, GEOJSON, LON, LAT, H3, VALUE, LABEL)", "SEQ, GEOJSON, LON, LAT)",
+          expect="H map_rows.ts: PERSIST_SQL does not write H3, VALUE, LABEL", name="H3 not persisted")
+h.replace(DEPLOY, "    H3         STRING,\n", "",
+          expect="H deploy-agent.sql: FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY has no H3 column",
+          name="table lacks H3")
+h.replace(DEPLOY, "'H3 STRING', 'VALUE FLOAT', 'LABEL STRING'", "'VALUE FLOAT', 'LABEL STRING'",
+          expect="H deploy-agent.sql: the upgrade block does not add H3", name="upgrade skips H3")
+h.replace(DEPLOY, "LON, LAT, H3, VALUE, LABEL\nFROM", "LON, LAT\nFROM",
+          expect="does not select H3", name="view hides H3")
+h.replace(SVS, "    , geom.value AS VALUE\n", "    , geom.value AS VAL\n",
+          expect="H semantic_views.sql: FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTING_RESULTS has no VALUE dimension",
+          name="SV lacks VALUE")
+spec_case("no-approximation rule dropped", SPEC,
+          "NEVER swap a computed result for an approximation", "Prefer the computed result over an approximation",
+          expect="H agent-spec.json: lost the no-approximation rule")
+spec_case("run_sql mapping rule dropped (super spec)", SUPER,
+          "MAPPING A run_sql RESULT", "RUN_SQL RESULTS",
+          expect="H super-agent-spec.json: lost the run_sql mapping rule")
+
 sys.exit(h.finish())

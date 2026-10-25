@@ -227,12 +227,14 @@ async function simplifiedRows(conn: Conn, geoms: Obj[]): Promise<Obj[]> {
 const GEOMETRY_TABLE = 'FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY';
 
 // One statement for the whole row set: geojson rows fill GEOJSON, point rows
-// fill LON/LAT. TO_JSON keeps the geometry a compact GeoJSON string.
+// fill LON/LAT, H3 rows fill H3. VALUE/LABEL are only set by run_sql rows.
+// TO_JSON keeps the geometry a compact GeoJSON string.
 const PERSIST_SQL = `
-INSERT INTO ${GEOMETRY_TABLE} (RESULT_ID, VERB, ACTOR, SEQ, GEOJSON, LON, LAT)
+INSERT INTO ${GEOMETRY_TABLE} (RESULT_ID, VERB, ACTOR, SEQ, GEOJSON, LON, LAT, H3, VALUE, LABEL)
 SELECT ?, ?, ?, f.INDEX,
        IFF(f.VALUE:GEOJSON IS NULL, NULL, TO_JSON(f.VALUE:GEOJSON)),
-       f.VALUE:LON::FLOAT, f.VALUE:LAT::FLOAT
+       f.VALUE:LON::FLOAT, f.VALUE:LAT::FLOAT,
+       f.VALUE:H3::STRING, f.VALUE:VALUE::FLOAT, f.VALUE:LABEL::STRING
 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) f`;
 
 const PURGE_SQL = `DELETE FROM ${GEOMETRY_TABLE} WHERE CREATED_AT < DATEADD(day, -7, CURRENT_TIMESTAMP())`;
@@ -319,6 +321,94 @@ export const featurePoints: MapSpec = {
     });
   },
 };
+
+// --- run_sql ----------------------------------------------------------------
+//
+// run_sql has no fixed geometry field: its rows are whatever the query selected.
+// The drawable shape is read off the COLUMN NAMES of the first row, one shape per
+// result (never mixed, same rule as the verbs):
+//   H3 cell string column (name has H3/CELL/HEX) -> { H3 }     layer_type h3
+//   LAT + LON/LNG/LONGITUDE                     -> { LON, LAT }  layer_type latlon
+//   GEOJSON / GEOM / GEOMETRY / GEOG           -> { GEOJSON }   layer_type geojson
+// plus the first other numeric column as VALUE (colour/height) and the first
+// other string column as LABEL. H3 must be the hex STRING form: a 64-bit H3 INT
+// does not survive the JS number round trip, so an integer H3 column is not drawn.
+// Geometry is NOT simplified (the caller chose it); a cell over CELL_MAX is dropped.
+
+const H3_HEX = /^[0-9a-f]{15,16}$/i;
+const LAT_KEYS = ['LAT', 'LATITUDE'];
+const LON_KEYS = ['LON', 'LNG', 'LONGITUDE'];
+const GEO_KEYS = ['GEOJSON', 'GEOM', 'GEOMETRY', 'GEOG', 'GEOGRAPHY'];
+
+function findKey(keys: string[], names: string[]): string | undefined {
+  return keys.find((k) => names.includes(k.toUpperCase()));
+}
+
+function asGeometry(v: unknown): Obj | null {
+  const g = collectGeometries(v);
+  if (g.length === 0) return null;
+  return g.length === 1 ? (g[0] as Obj) : { type: 'GeometryCollection', geometries: g };
+}
+
+/** Project run_sql result rows to map rows, or [] when nothing is drawable. */
+export function sqlMapRows(rows: Obj[]): Obj[] {
+  const first = rows[0];
+  if (!first || typeof first !== 'object') return [];
+  const keys = Object.keys(first);
+  const h3Key = keys.find((k) => /H3|CELL|HEX/.test(k.toUpperCase()) && typeof first[k] === 'string' && H3_HEX.test(String(first[k])));
+  const latKey = findKey(keys, LAT_KEYS);
+  const lonKey = findKey(keys, LON_KEYS);
+  const geoKey = findKey(keys, GEO_KEYS);
+  const shape = h3Key ? 'h3' : latKey && lonKey ? 'latlon' : geoKey ? 'geojson' : null;
+  if (!shape) return [];
+  const used = new Set([h3Key, latKey, lonKey, geoKey].filter(Boolean) as string[]);
+  const valueKey = keys.find((k) => !used.has(k) && num(first[k]) !== null && typeof first[k] !== 'boolean');
+  const labelKey = keys.find((k) => !used.has(k) && k !== valueKey && typeof first[k] === 'string');
+
+  const out: Obj[] = [];
+  let bytes = 2;
+  for (const r of rows) {
+    if (out.length >= POINT_CAP) break;
+    let row: Obj | null = null;
+    if (shape === 'h3') {
+      const h = r[h3Key as string];
+      if (typeof h === 'string' && H3_HEX.test(h)) row = { H3: h.toLowerCase() };
+    } else if (shape === 'latlon') {
+      const lon = num(r[lonKey as string]);
+      const lat = num(r[latKey as string]);
+      if (lon !== null && lat !== null) row = { LON: lon, LAT: lat };
+    } else {
+      const g = asGeometry(r[geoKey as string]);
+      if (g) row = { GEOJSON: g };
+    }
+    if (!row) continue;
+    if (valueKey) row.VALUE = num(r[valueKey]);
+    if (labelKey && r[labelKey] != null) row.LABEL = String(r[labelKey]).slice(0, 200);
+    const len = JSON.stringify(row).length;
+    if (len > CELL_MAX) continue;
+    if (bytes + len + 1 > ROWS_MAX) break;
+    bytes += len + 1;
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * Persist run_sql's drawable rows and return their result_id, or null when the
+ * result has nothing to draw or the write failed. Never throws.
+ */
+export async function persistSqlMapRows(
+  ctx: Pick<ProcContext, 'conn' | 'identity'>,
+  rows: Obj[],
+): Promise<string | null> {
+  try {
+    const mapRows = sqlMapRows(rows);
+    if (mapRows.length === 0) return null;
+    return await persistRows(ctx.conn, ctx.identity, 'run_sql', mapRows);
+  } catch {
+    return null;
+  }
+}
 
 /** Shared `returns.rows` description, so every verb documents the same contract. */
 export const ROWS_DESCRIPTION =

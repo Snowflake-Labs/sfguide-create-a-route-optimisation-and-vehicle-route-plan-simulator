@@ -1614,20 +1614,27 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTING_RESULTS
       COMMENT = 'Map-ready GeoJSON string (LineString or Polygon), simplified for the map. Use as geo_column of a geojson layer. NULL on point rows.'
     , geom.lon AS LON COMMENT = 'Point longitude (snap_to_road, Overture place/address lists). NULL on geojson rows.'
     , geom.lat AS LAT COMMENT = 'Point latitude (snap_to_road, Overture place/address lists). NULL on geojson rows.'
+    , geom.h3 AS H3
+      WITH SYNONYMS ('h3 cell', 'hexagon', 'hex cell')
+      COMMENT = 'H3 cell index STRING of a run_sql density result (e.g. restaurants per res-8 cell). Draw as an h3 layer. NULL on geojson and point rows. The resolution is chosen per call: it is whatever the run_sql query used, and LAT/LON are NULL on these rows, so never re-bin from them. For another resolution, re-run run_sql with H3_POINT_TO_CELL_STRING(geom, N) and draw the new result_id.'
+    , geom.value AS VALUE
+      WITH SYNONYMS ('count', 'density', 'metric value')
+      COMMENT = 'Numeric value run_sql selected beside the shape (a count, sum or score). Colour or size the layer by it. Already aggregated per row: never re-aggregate.'
+    , geom.label AS LABEL COMMENT = 'Text run_sql selected beside the shape (a name or category), for tooltips.'
   )
 
-  COMMENT = 'Map rows of routing results the CURRENT USER computed in the last 7 days, keyed by the result_id each routing verb returns. Exists so a live route, isochrone, optimized plan or snapped point set can be drawn with data_to_map in CoWork. Always filter result_id = the exact id from the routing verb, select every row (no aggregation), and draw GEOJSON as a geojson layer, or LAT/LON as a latlon layer when GEOJSON is null. Figures such as distance and duration are NOT stored here: quote them from the routing verb result.'
+  COMMENT = 'Map rows of routing results the CURRENT USER computed in the last 7 days, keyed by the result_id each routing verb (and run_sql, for drawable results) returns. Exists so a live route, isochrone, optimized plan, snapped point set or H3 density can be drawn with data_to_map in CoWork. Always filter result_id = the exact id from the verb, select every row (no aggregation), and draw H3 as an h3 layer coloured by VALUE when H3 is set, GEOJSON as a geojson layer, or LAT/LON as a latlon layer. Figures such as distance and duration are NOT stored here: quote them from the routing verb result.'
 
   AI_SQL_GENERATION 'Routing result geometry, one row per drawable shape of one routing verb call.
-- Every question names or implies ONE result_id from a routing verb call. Filter result_id = that exact string; never return rows of several results, and never aggregate.
-- Select result_id, seq, geojson, lon, lat ordered by seq. That row set is passed straight to data_to_map: geojson rows -> layer_type geojson, geo_column GEOJSON; point rows (geojson null) -> layer_type latlon, lat_column LAT, lon_column LON.
+- Every question names or implies ONE result_id from a routing verb or run_sql call. Filter result_id = that exact string; never return rows of several results, and never aggregate (VALUE is already per row).
+- Select result_id, seq, geojson, lon, lat, h3, value, label ordered by seq. That row set is passed straight to data_to_map: h3 rows (h3 set) -> layer_type h3 on column H3, coloured by VALUE; geojson rows -> layer_type geojson, geo_column GEOJSON; point rows -> layer_type latlon, lat_column LAT, lon_column LON.
 - No rows for an id means it was not computed by this user, is older than 7 days, or the verb failed: say so, do not guess another id.'
   AI_VERIFIED_QUERIES (
     geometry_for_result AS (
       QUESTION 'Get the map geometry for routing result_id 00000000-0000-0000-0000-000000000000'
       VERIFIED_AT 1789000000
       VERIFIED_BY '(STEWARD = sf_sit_is_fleet)'
-      SQL 'SELECT result_id, seq, geojson, lon, lat
+      SQL 'SELECT result_id, seq, geojson, lon, lat, h3, value, label
 FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY
 WHERE result_id = ''00000000-0000-0000-0000-000000000000''
 ORDER BY seq'

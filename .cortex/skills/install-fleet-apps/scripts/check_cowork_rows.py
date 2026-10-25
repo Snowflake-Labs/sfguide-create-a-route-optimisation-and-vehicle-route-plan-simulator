@@ -235,6 +235,50 @@ def main() -> int:
     if re.search(rf"(?im)^\s*GRANT[^;]*\b{re.escape(TABLE)}\b", rb):
         problems.append(f"G role_binding.sql: grants the raw table {TABLE} - it holds every user's routes")
 
+    # --- H: run_sql results are drawable (H3 density, points, shapes) -----------
+    # Observed in CoWork: run_sql computed the exact H3 density inside an
+    # isochrone, persisted nothing, and the agent drew a bounding-box
+    # approximation instead. Every link of the run_sql path is checked here.
+    rs = strip_ts_comments((PROCS / "run_sql.ts").read_text())
+    if not re.search(r"result_id:\s*t\s*\.string\(\)\s*\.nullable\(\)", returns_block(rs)):
+        problems.append("H run_sql.ts: returns does not declare a nullable `result_id` - the envelope drops it")
+    if not re.search(r"await\s+persistSqlMapRows\(\s*ctx\s*,\s*rows\s*\)", rs) \
+            or not re.search(r"result_id:\s*resultId\b", rs):
+        problems.append("H run_sql.ts: execute does not persist its rows via persistSqlMapRows and return the "
+                        "result_id - a run_sql density cannot be drawn in CoWork")
+    sq = m[m.find("export async function persistSqlMapRows"):]
+    sq = sq[:sq.find("\n}\n")]
+    if not re.search(r"sqlMapRows\(rows\)", sq) or "persistRows(ctx.conn, ctx.identity, 'run_sql'" not in sq:
+        problems.append("H map_rows.ts: persistSqlMapRows does not project with sqlMapRows and persist as verb 'run_sql'")
+    if not re.search(r"\(RESULT_ID, VERB, ACTOR, SEQ, GEOJSON, LON, LAT, H3, VALUE, LABEL\)", m):
+        problems.append("H map_rows.ts: PERSIST_SQL does not write H3, VALUE, LABEL - an H3 density persists empty")
+    tbl = da[da.find(f"CREATE TABLE IF NOT EXISTS {TABLE}"):]
+    tbl = tbl[:tbl.find(";")]
+    upgrade = re.search(r"defs ARRAY DEFAULT ARRAY_CONSTRUCT\(([^)]*)\)", da)
+    upgrade_cols = upgrade.group(1) if upgrade and "ADD COLUMN" in da else ""
+    for col in ("H3", "VALUE", "LABEL"):
+        if not re.search(rf"\b{col}\s+(STRING|FLOAT)", tbl):
+            problems.append(f"H deploy-agent.sql: {TABLE} has no {col} column")
+        if f"'{col} " not in upgrade_cols:
+            problems.append(f"H deploy-agent.sql: the upgrade block does not add {col} to an existing table")
+        if not re.search(rf"\b{col}\b", vbody.split("FROM")[0]):
+            problems.append(f"H deploy-agent.sql: {VIEW} does not select {col}")
+        if not re.search(rf"geom\.{col.lower()} AS {col}\b", sbody):
+            problems.append(f"H semantic_views.sql: {SV} has no {col} dimension")
+    if "layer_type h3 on column H3" not in sbody:
+        problems.append(f"H semantic_views.sql: {SV} does not say how to draw H3 rows")
+    for spec in sorted(APP.glob("*agent-spec.json")):
+        orch = json.loads(spec.read_text()).get("instructions", {}).get("orchestration", "")
+        if "DRAWING A MAP IN COWORK" not in orch:
+            continue
+        for need, why in (
+            ("MAPPING A run_sql RESULT", "the run_sql mapping rule"),
+            ("or by run_sql when it returns a result_id", "run_sql as a query_routing_results source"),
+            ("NEVER swap a computed result for an approximation", "the no-approximation rule"),
+        ):
+            if need not in orch:
+                problems.append(f"H {spec.name}: lost {why} ({need!r})")
+
     if problems:
         print("FAIL: CoWork routing rows:")
         for p in problems:

@@ -310,9 +310,10 @@ QUERY_ROUTING_RESULTS_TOOL = "query_routing_results"
 QUERY_ROUTING_RESULTS_DESCRIPTION = (
     "Map geometry of a routing result the user just computed, by the result_id a routing verb "
     "returned (get_directions, compute_isochrone, optimize_routes, find_poi, catchment, snap_to_road "
-    "and the other routing verbs). Use it ONLY to draw that result in CoWork: ask for the geometry of "
-    "that exact result_id, then pass THIS call's tool_use_id to data_to_map. It stores no distance or "
-    "duration; quote those from the routing verb result."
+    "and the other routing verbs), or by the result_id run_sql returned for a drawable result "
+    "(an H3 density, points or shapes). Use it ONLY to draw that result in CoWork: ask for the "
+    "geometry of that exact result_id, then pass THIS call's tool_use_id to data_to_map. It "
+    "stores no distance or duration; quote those from the routing verb result."
 )
 ANALYST_SOURCE_MARKER = "a query_routing_results result for the result_id"
 ANALYST_SOURCE_ORCH = [
@@ -394,6 +395,49 @@ def apply_analyst_source(spec: dict) -> bool:
         raise SystemExit("ERROR: analyst-source response anchor not found")
     ins["orchestration"] = o
     ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
+# --- ninth pass: run_sql results are drawable too --------------------------------
+# Observed in CoWork: "restaurant density within 15 min of the Eiffel Tower at H3
+# res 8". run_sql computed the exact answer (ST_WITHIN the isochrone, 118 cells),
+# but run_sql persisted nothing, so the agent drew a BOUNDING-BOX approximation
+# through a semantic view instead (169 cells, 51 outside the isochrone) and told
+# the user a "governance wall" blocked the right query. run_sql now persists
+# drawable rows (H3 cell string, LAT+LON or GEOJSON, plus VALUE/LABEL) and returns
+# a result_id that query_routing_results serves back.
+RUN_SQL_MAP_MARKER = "MAPPING A run_sql RESULT"
+RUN_SQL_MAP_EDITS = [
+    (
+        "query_overture_places, query_overture_addresses). The routing verb's OWN result is NOT a "
+        "source, and neither is run_sql or any other MCP result:",
+        "query_overture_places, query_overture_addresses), or by run_sql when it returns a "
+        "result_id. The routing verb's OWN result is NOT a source, and neither is run_sql's own "
+        "result or any other MCP result:",
+    ),
+    (
+        "has nothing to draw.",
+        "has nothing to draw. MAPPING A run_sql RESULT (e.g. an H3 density inside an isochrone): "
+        "select an H3 cell STRING column (H3_POINT_TO_CELL_STRING(geom, res)), or LAT+LON, or a "
+        "GEOJSON column, plus one numeric value column; then draw the result_id it returns through "
+        "query_routing_results. NEVER swap a computed result for an approximation (a bounding box, "
+        "a coarser or different query) just to get a map; if run_sql returns no result_id, show "
+        "the numbers and say the result could not be drawn.",
+    ),
+]
+
+
+def apply_run_sql_map(spec: dict) -> bool:
+    """Ninth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    o = ins["orchestration"]
+    if RUN_SQL_MAP_MARKER in o:
+        return False
+    for old, new in RUN_SQL_MAP_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: run_sql-map anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    ins["orchestration"] = o
     return True
 
 
@@ -507,6 +551,12 @@ def main() -> int:
         changed.append("tools+orchestration+response(query_routing_results)")
     else:
         print("orchestration: query_routing_results rule already present")
+
+    # --- Ninth pass: run_sql results draw through query_routing_results --------
+    if apply_run_sql_map(spec):
+        changed.append("orchestration(run_sql map rows)")
+    else:
+        print("orchestration: run_sql map rule already present")
 
     if not changed:
         return 0
