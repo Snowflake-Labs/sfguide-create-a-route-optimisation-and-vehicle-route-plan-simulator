@@ -1,6 +1,6 @@
 // Offline: the extractor handles every geometry shape the TOOL_* procs return.
 // Run with: npx tsx verify_cowork_rows_shapes.mts   (from fleet_tools/user)
-import { collectGeometries, pointRows, routeGeometries, snappedPoints, featurePoints, sqlMapRows } from './src/map_rows.js';
+import { collectGeometries, pointRows, routeGeometries, snappedPoints, featurePoints, sqlMapRows, escapedLen } from './src/map_rows.js';
 
 let bad = 0;
 const eq = (name: string, got: unknown, want: unknown) => {
@@ -48,6 +48,17 @@ eq('run_sql GEOGRAPHY column (GeoJSON string)', sqlMapRows([{ GEOM: JSON.stringi
   [{ GEOJSON: poly, VALUE: 3 }]);
 eq('run_sql non-spatial result -> nothing to draw', sqlMapRows([{ REGION: 'Paris', TRIPS: 10 }]), []);
 eq('run_sql empty result', sqlMapRows([]), []);
+
+// Budget is in ESCAPED bytes (the unit of cortex PR 157597's 200 KB ceiling):
+// a quote-heavy label set must stop at ROWS_MAX once escaped, not raw.
+eq('escapedLen counts JSON escapes', escapedLen('{"a":"x\\y"}'), 16);
+const quoty = Array.from({ length: 5000 }, (_, i) => ({
+  LATITUDE: 37 + i / 1e4, LONGITUDE: -122, NAME: `"Joe's" "Bar" #${i} ${'"'.repeat(120)}` }));
+const bounded = sqlMapRows(quoty);
+const esc = escapedLen(JSON.stringify(bounded));
+eq('run_sql rows <= 190 KB escaped', esc <= 190_000, true);
+eq('run_sql rows budget binds (> 180 KB escaped)', esc > 180_000, true);
+eq('raw count would have under-measured', JSON.stringify(bounded).length < esc, true);
 
 console.log(bad ? `${bad} failure(s)` : 'all shapes OK');
 process.exit(bad ? 1 : 0);

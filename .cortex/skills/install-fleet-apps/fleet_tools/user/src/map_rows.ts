@@ -28,7 +28,12 @@ type Obj = Record<string, unknown>;
  * SIZE
  * An MCP result has no query id: the map is an inline snapshot. A cell over
  * 64 KB is dropped (the map then fails with unmappable_rows) and the inlined
- * rows together must stay under ~200 KB. DETAIL FIRST, COARSEN ONLY TO FIT:
+ * rows together must stay under ~200 KB. That ceiling (cortex PR 157597) is
+ * measured in ESCAPED bytes, because the map spec carries the rows as a JSON
+ * string: every `"` and `\` costs one more byte. ROWS_MAX is therefore counted
+ * with escapedLen (and the SQL picker adds the same escape count), leaving
+ * ~10 KB for the rest of the spec. CELL_MAX guards our own table cell and stays
+ * raw. DETAIL FIRST, COARSEN ONLY TO FIT:
  * one tolerance is chosen for the whole call - the finest of full resolution,
  * 5 / 25 / 100 / 250 / 1000 / 5000 m at which every geometry that can fit a
  * cell does, and the row set stays under ROWS_MAX. A geometry over CELL_MAX
@@ -64,6 +69,9 @@ type Obj = Record<string, unknown>;
 const CELL_MAX = 60_000;
 const ROWS_MAX = 190_000;
 const POINT_CAP = 2_000;
+
+/** Bytes `s` occupies once embedded in a JSON string (quotes/backslashes escaped). */
+export const escapedLen = (s: string): number => JSON.stringify(s).length - 2;
 const DRAWABLE = new Set(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon']);
 
 export type MapSpec =
@@ -161,7 +169,7 @@ export function pointRows(pts: { lon: unknown; lat: unknown }[]): Obj[] {
     const lat = num(p.lat);
     if (lon === null || lat === null) continue;
     const row = { LON: lon, LAT: lat };
-    bytes += JSON.stringify(row).length + 1;
+    bytes += escapedLen(JSON.stringify(row)) + 1;
     if (bytes > ROWS_MAX) break;
     rows.push(row);
   }
@@ -178,8 +186,8 @@ export function pointRows(pts: { lon: unknown; lat: unknown }[]): Obj[] {
 // A geometry that does not fit a cell at the picked tier, or is not a valid
 // geography, is dropped.
 const TOLERANCES_M = [0, 5, 25, 100, 250, 1000, 5000];
-// Bytes the { GEOJSON: ... } wrapper and the array separator add to each cell.
-const ROW_OVERHEAD = 16;
+// Escaped bytes the {"GEOJSON":...} wrapper and the array separator add to each cell.
+const ROW_OVERHEAD = 18;
 const SIMPLIFY_SQL = `
 WITH LAD AS (
   SELECT g.I, t.VALUE::NUMBER AS TOL,
@@ -194,7 +202,8 @@ WITH LAD AS (
 TIERS AS (
   SELECT TOL,
          COUNT_IF(LENGTH(GJ) <= ${CELL_MAX}) AS FIT,
-         SUM(IFF(LENGTH(GJ) <= ${CELL_MAX}, LENGTH(GJ) + ${ROW_OVERHEAD}, 0)) AS BYTES
+         SUM(IFF(LENGTH(GJ) <= ${CELL_MAX},
+                 LENGTH(GJ) + REGEXP_COUNT(GJ, '["\\\\\\\\]') + ${ROW_OVERHEAD}, 0)) AS BYTES
   FROM LAD GROUP BY TOL
 ),
 BEST AS (SELECT MAX(FIT) AS F FROM TIERS),
@@ -219,8 +228,9 @@ async function simplifiedRows(conn: Conn, geoms: Obj[]): Promise<Obj[]> {
     // ST_SIMPLIFY can collapse a short line to a point; that is not drawable here.
     if (!geo || typeof geo !== 'object' || !DRAWABLE.has(String((geo as Obj).type))) continue;
     const row = { GEOJSON: geo };
-    const len = JSON.stringify(row).length;
-    if (len > CELL_MAX) continue;
+    const text = JSON.stringify(row);
+    if (text.length > CELL_MAX) continue;
+    const len = escapedLen(text);
     // Backstop only: the picked tolerance already keeps the sum under ROWS_MAX.
     if (bytes + len + 1 > ROWS_MAX) break;
     bytes += len + 1;
@@ -389,8 +399,9 @@ export function sqlMapRows(rows: Obj[]): Obj[] {
     if (!row) continue;
     if (valueKey) row.VALUE = num(r[valueKey]);
     if (labelKey && r[labelKey] != null) row.LABEL = String(r[labelKey]).slice(0, 200);
-    const len = JSON.stringify(row).length;
-    if (len > CELL_MAX) continue;
+    const text = JSON.stringify(row);
+    if (text.length > CELL_MAX) continue;
+    const len = escapedLen(text);
     if (bytes + len + 1 > ROWS_MAX) break;
     bytes += len + 1;
     out.push(row);

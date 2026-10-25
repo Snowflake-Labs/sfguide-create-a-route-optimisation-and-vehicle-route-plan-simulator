@@ -39,6 +39,12 @@ F  map_rows.ts persists the rows (INSERT into ROUTING_RESULT_GEOMETRY with the
 G  The table and the ACTOR = CURRENT_USER() secure view exist in deploy-agent.sql,
    SV_ROUTING_RESULTS reads the VIEW (never the table), and role_binding.sql
    grants the view, never the table.
+I  ROWS_MAX is counted in ESCAPED bytes, the unit cortex PR 157597 applies its
+   200 KB ceiling in (the spec carries rows as a JSON string): escapedLen is
+   JSON.stringify(s).length - 2, every `bytes +=` and every `const len =` in
+   map_rows.ts goes through it, and the SQL tier picker's BYTES adds
+   REGEXP_COUNT of quotes/backslashes. A raw count passes a point/label-heavy
+   set that the PR then truncates (data_omitted).
 """
 from __future__ import annotations
 
@@ -143,6 +149,21 @@ def main() -> int:
     if not re.search(r"BEST AS \(SELECT MAX\(FIT\) AS F FROM TIERS\)", m) or "FIT = BEST.F" not in m:
         problems.append("C map_rows.ts: the tier target is not the MAX fit over all tiers - ST_SIMPLIFY "
                         "collapses a short line to NULL at 5 km, so a 5 km target draws no map")
+
+    # --- I: ROWS_MAX is measured in escaped bytes --------------------------------
+    if not re.search(r"const escapedLen = \(s: string\): number => JSON\.stringify\(s\)\.length - 2;", m):
+        problems.append("I map_rows.ts: escapedLen is missing or no longer JSON.stringify(s).length - 2")
+    adds = re.findall(r"bytes \+= ([^;]+);", m)
+    lens = re.findall(r"const len = ([^;]+);", m)
+    if not adds or any(not (a.startswith("escapedLen(") or re.fullmatch(r"len \+ 1", a)) for a in adds) \
+            or any(not x.startswith("escapedLen(") for x in lens):
+        problems.append("I map_rows.ts: a ROWS_MAX accumulator counts raw bytes, not escapedLen - the "
+                        "PR's 200 KB ceiling is in escaped bytes and truncates the map (data_omitted)")
+    head = m.find("SUM(IFF(LENGTH(GJ) <= ${CELL_MAX},")
+    tail = m.find("AS BYTES", head)
+    if head < 0 or tail < 0 or "REGEXP_COUNT(GJ," not in m[head:tail]:
+        problems.append("I map_rows.ts: the SQL tier picker's BYTES does not add the escape count "
+                        "(REGEXP_COUNT of quotes/backslashes) - it picks a tier the PR then truncates")
 
     # --- F: persistence ----------------------------------------------------------
     if not re.search(rf"INSERT INTO \$\{{GEOMETRY_TABLE\}}\s*\(RESULT_ID, VERB, ACTOR,", m) \

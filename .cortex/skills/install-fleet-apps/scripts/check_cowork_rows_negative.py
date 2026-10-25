@@ -195,4 +195,26 @@ spec_case("run_sql mapping rule dropped (super spec)", SUPER,
           "MAPPING A run_sql RESULT", "RUN_SQL RESULTS",
           expect="H super-agent-spec.json: lost the run_sql mapping rule")
 
+# I: ROWS_MAX counted in raw bytes - the PR's 200 KB ceiling is escaped bytes.
+h.replace(MAP_ROWS, "    bytes += escapedLen(JSON.stringify(row)) + 1;",
+          "    bytes += JSON.stringify(row).length + 1;",
+          expect="I map_rows.ts: a ROWS_MAX accumulator counts raw bytes", name="point rows raw bytes")
+h.replace(MAP_ROWS, "    const len = escapedLen(text);\n    // Backstop",
+          "    const len = text.length;\n    // Backstop",
+          expect="I map_rows.ts: a ROWS_MAX accumulator counts raw bytes", name="geojson rows raw bytes")
+h.replace(MAP_ROWS, "    const len = escapedLen(text);\n    if (bytes",
+          "    const len = text.length;\n    if (bytes",
+          expect="I map_rows.ts: a ROWS_MAX accumulator counts raw bytes", name="run_sql rows raw bytes")
+h.replace(MAP_ROWS, "LENGTH(GJ) + REGEXP_COUNT(GJ, '[\"\\\\\\\\\\\\\\\\]') + ${ROW_OVERHEAD}",
+          "LENGTH(GJ) + ${ROW_OVERHEAD}",
+          expect="I map_rows.ts: the SQL tier picker's BYTES does not add the escape count",
+          name="SQL picker raw bytes")
+h.replace(MAP_ROWS, "JSON.stringify(s).length - 2;", "s.length;",
+          expect="I map_rows.ts: escapedLen is missing", name="escapedLen measures raw")
+# I: the escape term survives only in a comment.
+h.replace(MAP_ROWS, "LENGTH(GJ) + REGEXP_COUNT(GJ, '[\"\\\\\\\\\\\\\\\\]') + ${ROW_OVERHEAD}",
+          "LENGTH(GJ) /* + REGEXP_COUNT(GJ, x) */ + ${ROW_OVERHEAD}",
+          expect="I map_rows.ts: the SQL tier picker's BYTES does not add the escape count",
+          name="escape term only in a comment")
+
 sys.exit(h.finish())
