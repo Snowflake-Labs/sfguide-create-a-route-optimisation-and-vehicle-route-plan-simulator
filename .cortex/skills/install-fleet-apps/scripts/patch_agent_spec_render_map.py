@@ -521,6 +521,70 @@ def apply_mcp_source(spec: dict) -> bool:
     return True
 
 
+# --- eleventh pass: no map claim without a successful draw in THIS turn ------
+# CoWork thread 155915584433, record a9c25d6f (2026-10-25): get_directions
+# returned rows, the model never called data_to_map, and answered "shown on the
+# map above" - which this spec TOLD it to say: the render_map block's "A ROUTING
+# TOOL RESULT IS ALREADY ON A MAP ... Say 'shown on the map above'" bullet is
+# unconditional, and the CoWork bullet ends "If data_to_map is absent you are in
+# the SA app: ... drawn inline". Both are true only in the SA app panel. The
+# follow-up turn (c7229088) then pointed data_to_map at the PREVIOUS turn's
+# tool_use_id, which failed; whether the PR resolves cross-turn ids is
+# unverified, so the draw is required in the SAME turn as the verb.
+MAP_CLAIM_MARKER = "NO MAP CLAIM WITHOUT A DRAW THIS TURN"
+MAP_CLAIM_EDITS = [
+    (
+        "have their geometry drawn inline automatically, under your answer.",
+        "have their geometry drawn inline automatically, under your answer - IN THE SA APP ONLY. "
+        "In CoWork nothing is drawn until you call data_to_map.",
+    ),
+    (
+        "Say 'shown on the map above' and move on.",
+        "In the SA app say 'shown on the map above' and move on; in CoWork that sentence is "
+        "false until data_to_map has succeeded in this turn.",
+    ),
+    (
+        "the routing verb's geometry is drawn inline from result, so do not call render_map for "
+        "the same geometry.",
+        "the routing verb's geometry is drawn inline from result, so do not call render_map for "
+        "the same geometry. A missing data_to_map is NOT proof of the SA app: if you have not "
+        "loaded map_generation_instructions, load it before answering and look again.",
+    ),
+    (
+        "call data_to_map ONCE with THAT routing verb call's own tool_use_id.",
+        "call data_to_map ONCE with THAT routing verb call's own tool_use_id, IN THE SAME TURN, "
+        "before writing the answer - never defer the draw to a later turn. When the user says "
+        "the map is missing, re-run the routing verb and draw its fresh tool_use_id rather than "
+        "an earlier turn's.",
+    ),
+]
+MAP_CLAIM_RESP = (
+    "Never describe map contents as if you had seen them",
+    "NO MAP CLAIM WITHOUT A DRAW THIS TURN: say a map is shown (above, below, on the map) "
+    "ONLY when data_to_map (CoWork) or render_map (SA app) returned success in THIS turn, and "
+    "cite it with a map tag; otherwise the user sees no map, so say plainly that no map was "
+    "drawn and give the figures. Never describe map contents as if you had seen them",
+)
+
+
+def apply_map_claim(spec: dict) -> bool:
+    """Eleventh pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    if MAP_CLAIM_MARKER in ins["response"]:
+        return False
+    o = ins["orchestration"]
+    for old, new in MAP_CLAIM_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: map-claim anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = MAP_CLAIM_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: map-claim response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
 def main() -> int:
     src = SPEC.read_text()
     spec = json.loads(src)
@@ -643,6 +707,12 @@ def main() -> int:
         changed.append("orchestration+response(MCP result is a map source)")
     else:
         print("orchestration: MCP-source rule already present")
+
+    # --- Eleventh pass: no map claim without a draw this turn ----------------
+    if apply_map_claim(spec):
+        changed.append("orchestration+response(no map claim without a draw)")
+    else:
+        print("response: map-claim rule already present")
 
     if not changed:
         return 0

@@ -45,6 +45,11 @@ I  ROWS_MAX is counted in ESCAPED bytes, the unit cortex PR 157597 applies its
    map_rows.ts goes through it, and the SQL tier picker's BYTES adds
    REGEXP_COUNT of quotes/backslashes. A raw count passes a point/label-heavy
    set that the PR then truncates (data_omitted).
+J  No map claim without a draw this turn: the routing bullet draws IN THE SAME
+   TURN before the fallback; a missing data_to_map is not proof of the SA app;
+   "drawn inline automatically" and "shown on the map above" are SA-app only;
+   the response rule names data_to_map, THIS turn and "no map was drawn".
+   (CoWork record a9c25d6f said "shown on the map above" with nothing drawn.)
 """
 from __future__ import annotations
 
@@ -238,6 +243,27 @@ def main() -> int:
             problems.append(f"E {spec.name}: the data_to_map source sentence names {sorted(named)}, "
                             f"not the geometry verbs (missing {sorted(GEOMETRY - named)}, "
                             f"extra {sorted(named - GEOMETRY)})")
+        # --- J: no map claim without a draw in THIS turn --------------------
+        resp = ins.get("response", "")
+        same = bullet.find("IN THE SAME TURN")
+        if same < 0 or (q >= 0 and same > q):
+            problems.append(f"J {spec.name}: the {RULE_HEAD} bullet does not draw IN THE SAME TURN "
+                            f"before the {TOOL} fallback - a deferred draw points at an old turn's id")
+        if "is NOT proof of the SA app" not in bullet:
+            problems.append(f"J {spec.name}: the SA-app branch treats a missing data_to_map as proof "
+                            f"of the SA app - the model claimed an inline map in CoWork")
+        auto = "have their geometry drawn inline automatically, under your answer"
+        if orch.count(auto) != orch.count(auto + " - IN THE SA APP ONLY"):
+            problems.append(f"J {spec.name}: 'drawn inline automatically' is not limited to the SA "
+                            f"app - in CoWork it licenses a map claim with nothing drawn")
+        said = "say 'shown on the map above'"
+        if orch.lower().count(said.lower()) != orch.count("In the SA app " + said):
+            problems.append(f"J {spec.name}: 'shown on the map above' is not limited to the SA app")
+        k = resp.find("NO MAP CLAIM WITHOUT A DRAW THIS TURN:")
+        claim = resp[k:resp.find(". Never describe", k)] if k >= 0 else ""
+        for need in ("data_to_map", "THIS turn", "no map was drawn"):
+            if need not in claim:
+                problems.append(f"J {spec.name}: the response map-claim rule lost {need!r}")
 
     # --- G: table, secure view, semantic view, grant -----------------------------------
     da = DEPLOY_AGENT.read_text()

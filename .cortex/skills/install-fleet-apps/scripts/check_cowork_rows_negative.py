@@ -103,6 +103,47 @@ def spec_case(name, rel, old, new, expect):
     h.custom(name, apply, lambda: p.write_text(original), expect)
 
 
+def resp_case(name, rel, old, new, expect):
+    p = h.path(rel)
+    original = p.read_text()
+
+    def apply():
+        d = json.loads(original)
+        r = d["instructions"]["response"]
+        assert old in r, f"anchor not found: {old[:60]!r}"
+        d["instructions"]["response"] = r.replace(old, new, 1)
+        p.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+
+    h.custom(name, apply, lambda: p.write_text(original), expect)
+
+
+# J: the shipped wording behind CoWork record a9c25d6f - "drawn inline" and
+# "shown on the map above" unconditional, so the model claimed a map it never drew.
+spec_case("inline-map sentence unqualified (a9c25d6f)", SPEC,
+          "under your answer - IN THE SA APP ONLY. In CoWork nothing is drawn until you call data_to_map.",
+          "under your answer.", expect="J agent-spec.json: 'drawn inline automatically' is not limited")
+spec_case("'shown on the map above' unqualified (super spec)", SUPER,
+          "In the SA app say 'shown on the map above' and move on; in CoWork that sentence is "
+          "false until data_to_map has succeeded in this turn.",
+          "Say 'shown on the map above' and move on.",
+          expect="J super-agent-spec.json: 'shown on the map above' is not limited")
+spec_case("missing data_to_map treated as proof of SA app", SPEC,
+          " A missing data_to_map is NOT proof of the SA app: if you have not loaded "
+          "map_generation_instructions, load it before answering and look again.", "",
+          expect="J agent-spec.json: the SA-app branch treats a missing data_to_map")
+spec_case("same-turn draw dropped", SPEC, ", IN THE SAME TURN, before writing the answer", "",
+          expect="J agent-spec.json: the DRAWING A ROUTING RESULT IN COWORK bullet does not draw IN THE SAME TURN")
+resp_case("claim rule loses THIS turn", SPEC,
+          "returned success in THIS turn", "returned success",
+          expect="J agent-spec.json: the response map-claim rule lost 'THIS turn'")
+resp_case("claim rule names tools but drops the consequence", SPEC,
+          "say plainly that no map was drawn and give the figures", "give the figures",
+          expect="J agent-spec.json: the response map-claim rule lost 'no map was drawn'")
+resp_case("claim rule deleted (super spec)", SUPER,
+          "NO MAP CLAIM WITHOUT A DRAW THIS TURN:", "MAPS:",
+          expect="J super-agent-spec.json: the response map-claim rule lost 'data_to_map'")
+
+
 # E: the agent rule.
 spec_case("old 'not mappable' sentence restored", SPEC,
           "Geometry computed LIVE by the routing engine is drawn through query_routing_results",
@@ -114,7 +155,10 @@ spec_case("ninth-pass 'not a source' sentence restored", SPEC,
           "The routing verb's OWN result is NOT a source, and neither is run_sql's own result. A direct (b) map is a snapshot:",
           expect="still says \"the routing verb's own result is not a source\"")
 spec_case("query_routing_results detour made primary again (super spec)", SUPER,
-          "tatus SUCCESS, call data_to_map ONCE with THAT routing verb call's own tool_use_id. Only if "
+          "tatus SUCCESS, call data_to_map ONCE with THAT routing verb call's own tool_use_id, IN THE "
+          "SAME TURN, before writing the answer - never defer the draw to a later turn. When the user "
+          "says the map is missing, re-run the routing verb and draw its fresh tool_use_id rather than "
+          "an earlier turn's. Only if "
           "data_to_map rejects it as not mappable, or the user wants a refreshable map, call",
           "tatus SUCCESS with a result_id, call",
           expect="does not draw the routing verb's own tool_use_id first")
