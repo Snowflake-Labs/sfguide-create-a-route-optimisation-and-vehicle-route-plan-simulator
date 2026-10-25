@@ -478,6 +478,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_labor_layer_negative.py
     scope: live
     why: the labour layer produces a number that must not be shown (any FAIL assertion)
+  - id: labor_partial_week_grain
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_labor_partial_week.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_labor_partial_week_negative.py
+    scope: static
+    why: a timestamp-grain partial-start compare flags a full week and empties the overtime trend one install day in seven
   - id: gateway_version
     run: bash .cortex/skills/install-fleet-apps/scripts/verify_gateway_version.sh {conn}
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_gateway_version_negative.py

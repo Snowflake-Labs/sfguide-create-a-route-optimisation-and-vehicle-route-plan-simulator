@@ -888,7 +888,14 @@ $$
       -- low, so it must be labelled rather than silently compared against a full
       -- week. Without this the first week of any dataset reads as a fleet-wide
       -- drop in hours.
-      (w.FIRST_TS > w.WEEK_START::TIMESTAMP_NTZ)                                 AS IS_PARTIAL_S,
+      --
+      -- Compared at DAY grain. A timestamp compare flags the week whenever the
+      -- first trip is later than 00:00 on the week-start day, i.e. always: the
+      -- seed is a 7-day window re-anchored to the install time, so on an install
+      -- run on the week-start day the first week (data from 13:51 that day) was
+      -- partial-start, the second lay past the as-of anchor, and the weekly
+      -- trend chart was empty one day in seven.
+      (w.FIRST_TS::DATE > w.WEEK_START)                                          AS IS_PARTIAL_S,
       -- The whole week lies PAST the region's trimmed as-of anchor: it is the
       -- tapering tail of the dataset (a handful of trips on the last calendar day
       -- before the data stops), not a real operating week. This is the symmetric
