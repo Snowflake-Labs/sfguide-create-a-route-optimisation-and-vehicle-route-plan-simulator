@@ -89,6 +89,13 @@ NO_SUBDIVIDE_RE = re.compile(
 )
 # "does NOT exist" style framing that makes naming a fake function legitimate.
 ABSENT_FRAMING_RE = re.compile(r"do(?:es)?\s+NOT\s+exist", re.IGNORECASE)
+# RULE E: a view whose cells carry no fixed resolution (SV_ROUTING_RESULTS holds
+# whatever H3 density a run_sql call computed). Rules A and B cannot apply: there
+# is no stored grain to state, and its LAT/LON are NULL on H3 rows, so re-binning
+# from them would draw nothing. The declaration must be backed by the only valid
+# route to another resolution: re-run run_sql with the H3 function CALLED.
+PER_CALL_RE = re.compile(r"resolution\s+is\s+chosen\s+per\s+call", re.IGNORECASE)
+PER_CALL_REBIN_RE = re.compile(r"re-run\s+run_sql\b[^.]*h3_point_to_cell_string\s*\(", re.IGNORECASE)
 
 
 def norm(text: str) -> str:
@@ -146,6 +153,17 @@ def main() -> int:
                 continue
             h3_views.append(name)
             nbody = norm(body)
+
+            # --- RULE E: per-call resolution replaces A and B ------------------
+            if PER_CALL_RE.search(body):
+                if not PER_CALL_REBIN_RE.search(body):
+                    problems.append(
+                        f"{fname} {name}: declares its resolution is chosen per call but "
+                        f"never says to re-run run_sql with H3_POINT_TO_CELL_STRING(geom, N) "
+                        f"for another resolution - the declaration then states a limit "
+                        f"with no way through it."
+                    )
+                continue
 
             # --- RULE A: state the stored resolution -------------------------
             if not STORED_RES_RE.search(body):

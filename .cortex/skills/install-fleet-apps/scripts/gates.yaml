@@ -29,12 +29,27 @@
 version: 1
 
 gates:
+  - id: overture_source_fallback
+    run: python3 .cortex/skills/install-fleet-apps/scripts/test_prepare_overture.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_fallback_negative.py
+    scope: static
+    why: missing listings, schema drift, failed loads and wrong grants must not silently publish unusable Overture sources
+  - id: overture_semantic_layer
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_semantic_layer.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_overture_semantic_layer_negative.py
+    scope: static
+    why: an Overture semantic view that lets the agent run an unbounded query scans up to 644 GB, or is untagged, unwired or reads the wrong theme
   # ── repo hygiene ────────────────────────────────────────────────────────────
   - id: no_ignored_source
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_ignored_source_negative.py
     scope: static
     why: source files hidden by a generic .gitignore rule exist only on one machine
+  - id: no_tracked_ignored
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_tracked_ignored.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_tracked_ignored_negative.py
+    scope: static
+    why: files committed before their .gitignore rule (dated run logs naming another account) ship in every clone
   - id: no_brands
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_no_brands_negative.py
@@ -45,6 +60,21 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_tracking_tags_negative.py
     scope: static
     why: every CREATE carries a tracking COMMENT and every session a query_tag
+  - id: no_silent_waits
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_silent_waits.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_silent_waits_negative.py
+    scope: static
+    why: a bare wait on a backgrounded install phase prints nothing for ~30 min, indistinguishable from a hang
+  - id: install_console_noise
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_install_console_noise.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_console_noise_negative.py
+    scope: static
+    why: the engine module load printed ~11,400 statement-echo lines and told the customer to re-run mid-install
+  - id: semantic_view_coverage
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_semantic_view_coverage.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_semantic_view_coverage_negative.py
+    scope: static
+    why: a use-case question the semantic view cannot answer makes the agent fall back to raw SQL or a fake SLA proxy
   - id: image_versions
     run: bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_image_versions_negative.py
@@ -186,6 +216,18 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_chart_source_constraint_negative.py
     scope: static
     why: an agent spec offers data_to_chart without naming what it accepts
+  - id: cowork_rows
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_rows.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_cowork_rows_negative.py
+    scope: static
+    why: a routing verb result is not drawable in CoWork, or the agent is not told to draw it
+  - id: cowork_rows_shapes
+    run: npx tsx verify_cowork_rows_shapes.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_cowork_rows_shapes_negative.py
+    scope: static
+    why: a TOOL_* geometry shape is not turned into one-shape CoWork rows
   - id: map_guidance
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_map_guidance_negative.py
@@ -334,6 +376,29 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_chart_spec_negative.py
     scope: static
     why: an agent chart payload fails to extract, theme, compile or cite in place
+  - id: install_warn_surfacing
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_install_warn_surfacing.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_install_warn_surfacing_negative.py
+    scope: static
+    why: a best-effort layer that did not build reaches the install summary as a bare WARN, without the views it breaks or the fix
+  - id: view_availability
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_view_availability.py
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_view_availability_negative.py
+    scope: static
+    why: a view over a layer that was never built is hidden without a reason, opens to failing panels, or is recommended by the agent
+  - id: missing_dependency_message
+    run: npx tsx scripts/verify-missing-dependency.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_sa_app/ui
+    needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_missing_dependency_negative.py
+    scope: static
+    why: a view over a skipped layer shows a raw "does not exist" error instead of the builder that creates it
+  - id: missing_dependency_hints
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_missing_dependency_hints.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_missing_dependency_hints_negative.py
+    scope: static
+    why: a schema the views read has no repair entry, or the app or agent can point a user at a generator that does not exist
   - id: map_spec
     run: npx tsx verify_map_spec.mts
     cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
@@ -376,6 +441,13 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_shift_overrun_negative.py
     scope: static
     why: the generator's shift-overrun allowance escapes its roster or legal cap
+  - id: layer_gaps_probe
+    run: npx tsx verify_layer_gaps.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_layer_gaps_negative.py
+    scope: static
+    why: the deep_link dependency probe reports a working function-backed view as never built, so the agent tells the customer it is unavailable
 
   # ── gateway (imports the real routing_service.py; deps in a cached venv) ────
   - id: gateway_non_json
@@ -418,6 +490,16 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_labor_layer_negative.py
     scope: live
     why: the labour layer produces a number that must not be shown (any FAIL assertion)
+  - id: npm_retry
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_npm_retry.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_npm_retry_negative.py
+    scope: static
+    why: one transient npm ECONNRESET aborted a fresh install 69 minutes in
+  - id: labor_partial_week_grain
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_labor_partial_week.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_labor_partial_week_negative.py
+    scope: static
+    why: a timestamp-grain partial-start compare flags a full week and empties the overtime trend one install day in seven
   - id: gateway_version
     run: bash .cortex/skills/install-fleet-apps/scripts/verify_gateway_version.sh {conn}
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_gateway_version_negative.py

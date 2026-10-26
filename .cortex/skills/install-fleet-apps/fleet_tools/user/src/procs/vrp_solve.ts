@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, geometryAt } from '../map_rows.js';
 
 // Generic, use-case-agnostic vehicle-routing solve. Wraps TOOL_VRP_SOLVE (a thin
 // wrapper over OPTIMIZATION). The caller builds the VROOM challenge client-side
@@ -26,9 +27,11 @@ export const vrp_solve = defineProc({
   },
   returns: {
     result: t.object({}).describe('Optimization response: routes[], unassigned[], summary, and route geometry.'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.vrpSolve, [args.challenge, args.region]);
-    return { result };
+    return withMapRows(ctx, 'vrp_solve', result, geometryAt('geometry'));
   },
 });

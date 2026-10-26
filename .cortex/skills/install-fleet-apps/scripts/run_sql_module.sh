@@ -78,6 +78,11 @@ fi
 # code) while catching every real SQL error regardless of box framing.
 if sed 's/^[^[:alnum:]]*//' "$LOG" | grep -Eq '^[0-9]{6} \([0-9A-Z]{5}\)'; then
   echo "FAIL: $BASE emitted SQL errors (see $LOG)" >&2
+  # QUIET hid the echo, so show the failing statements' errors here rather than
+  # leaving only a log path.
+  if [ "$QUIET" = "1" ]; then
+    sed 's/^[^[:alnum:]]*//' "$LOG" | grep -E '^[0-9]{6} \([0-9A-Z]{5}\)' | head -5 | sed 's/^/  /' >&2
+  fi
   _status "FAIL" "$BASE"
   exit 2
 fi

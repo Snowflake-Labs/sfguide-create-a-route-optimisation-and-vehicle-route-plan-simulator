@@ -84,28 +84,36 @@ fallback when no region is provisioned).
 | **Deterministic verb** | `query_overture_places` -> `ROUTING_TOOLS.TOOL_OVERTURE_SEARCH` | region/bbox-bounded place search, counts, map-ready rows | region OR explicit bbox + hard LIMIT |
 | **Deterministic verb** | `query_overture_addresses` -> `ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES` | address density/coverage | region OR explicit bbox + hard LIMIT |
 | **Region SV (Analyst)** | `query_catchment` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT` | "how many / per-city" counts within the active fleet region (POIs + addresses) | active region (data pre-scoped by `analytic_layer.sql`) |
-| **Global SV (Analyst)** | `query_overture_global` -> `OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW` | worldwide place filtering/listing + attributes (brand, website) + data confidence | Analyst-generated filters only |
+| **Global SV (Analyst)** | `query_overture_global` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES` | worldwide place filtering, counts and maps by category, brand, locality; resolve categories with `overture_category_search` | bbox_* filters + Analyst guidance |
+| **Global SVs (Analyst)** | `query_overture_divisions`, `query_overture_address_catalog`, `query_overture_roads`, `query_overture_buildings` -> `SV_OVERTURE_DIVISIONS/ADDRESSES/TRANSPORTATION/BUILDINGS` | worldwide boundaries and reverse geocoding, addresses, road network composition, building footprints | addresses/roads/buildings REQUIRE a bbox (see install-fleet-apps SKILL.md, "Overture semantic layer") |
 
-### Why both an SV we build and the vendor SV
+### Why we build the global SV instead of using the vendor's
 
-The CARTO PLACES share ships a rich Cortex Analyst semantic view
-(`OVERTUREMAPS_PLACES_SEMANTIC_VIEW`, extension `CA`) with clean derived
-dimensions (`PRIMARY_CATEGORY`, `PRIMARY_NAME`, `BRAND_NAME`, `COUNTRY`,
-`REGION`, `LOCALITY`, `POSTCODE`, `STREET`, `CONFIDENCE`) and synonyms. We reuse
-it directly (attached to `FLEET_AGENT` as `query_overture_global`) rather than
-rebuild it. **Caveat:** it exposes only confidence metrics (`AVG/MIN/MAX_CONFIDENCE`),
-**no row-count metric** - so "how many" questions are routed to `query_catchment`
-(region-scoped, has `total_pois` / `total_addresses` COUNT metrics) or the
-deterministic verbs instead. The ADDRESSES share ships no semantic view, so
-address questions are served by `query_overture_addresses` and `SV_CATCHMENT`'s
-`total_addresses` metric.
+The CARTO PLACES share ships a Cortex Analyst semantic view
+(`OVERTUREMAPS_PLACES_SEMANTIC_VIEW`, extension `CA`) with derived dimensions
+(`PRIMARY_CATEGORY`, `PRIMARY_NAME`, `BRAND_NAME`, `COUNTRY`, `REGION`, `LOCALITY`,
+`POSTCODE`, `STREET`, `CONFIDENCE`) and synonyms. It no longer matches its own
+table (checked live, October 23, 2026). The category dimensions error because
+they read the removed `CATEGORIES` column. The address, phone, website and
+socials dimensions return NULL for every row because they read a
+`list[0].element` nesting the arrays no longer have. A share is read-only, so
+the view cannot be fixed in place.
 
-The vendor SV is global and lives in a share we do not control, so it is an
-*additive* convenience, not a contract dependency - the region-scoped SV and the
-verbs remain the contract-bound path. The consumer role (`FLEET_APP_USER`) needs
-`GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES` for the Analyst
-tool to read it (granted in `role_binding.sql`); the verbs run owner's-rights and
-do not depend on that grant.
+`prepare_overture.py` therefore builds `FLEET_INTELLIGENCE.SEMANTIC.SV_OVERTURE_PLACES`
+for every Places source (imported share, existing copy, or S3 fallback) from
+`install-fleet-apps/scripts/overture_semantic/places.sql`. It sits over a
+normalized view `FLEET_INTELLIGENCE.OVERTURE.PLACE`, reads `TAXONOMY` for the
+category, and has a `place_count` metric, so worldwide "how many" questions work.
+Region-scoped counts still prefer `query_catchment` and the deterministic verbs.
+The other four themes get the same treatment (`SV_OVERTURE_DIVISIONS`,
+`SV_OVERTURE_ADDRESSES`, `SV_OVERTURE_TRANSPORTATION`, `SV_OVERTURE_BUILDINGS`).
+The vendor YAML is now used only to recreate the vendor-named view on S3 copies.
+
+It is still an *additive* convenience, not a contract dependency: if Places is
+unavailable the view is not built, and `prune_agent_specs.py` removes the tool.
+`FLEET_APP_USER` reads it through the schema-wide semantic view grants in
+`role_binding.sql`; querying it needs no privilege on the share itself (verified).
+The verbs run owner's-rights and do not depend on either grant.
 
 ## Rendering results on the inline chat map
 
@@ -122,4 +130,4 @@ correct for a counts answer (no map). Point markers expose name/category on hove
 - Procs `TOOL_OVERTURE_SEARCH` / `TOOL_OVERTURE_ADDRESSES`: `references/deploy-agent.sql`.
 - Verbs `query_overture_places` / `query_overture_addresses`: `install-fleet-apps/fleet_tools/user/src/procs/`.
 - `SV_CATCHMENT` (with the addresses entity): `install-fleet-apps/fleet_sa_app/app/semantic_views.sql`.
-- `query_overture_global` tool + share grants: `install-fleet-apps/fleet_sa_app/app/agent-spec.json` + `role_binding.sql`.
+- `query_overture_global` tool: `install-fleet-apps/fleet_sa_app/app/agent-spec.json`; its view is built by `install-fleet-apps/scripts/prepare_overture.py`.

@@ -14,6 +14,8 @@ import {
   type RegionTier,
   type EngineState,
   regionServiceName,
+  classifyServiceStatus,
+  type RegionServiceState,
   sanitizeRegion,
   waitCopyForTier,
   suspendedMessage,
@@ -21,11 +23,8 @@ import {
   gatewayWakingMessage,
 } from './routing-suspend';
 
-// Actual SPCS state of a region's ORS service.
-//   SUSPENDED - resume it.
-//   RUNNING   - already up; it is warming or overloaded, so do NOT resume.
-//   MISSING   - the region has no ORS service at all.
-export type RegionServiceState = 'SUSPENDED' | 'RUNNING' | 'MISSING';
+// RegionServiceState and classifyServiceStatus live in routing-suspend.ts
+// (dependency-free, so verify_routing_suspend.mts can test the mapping).
 
 // Ask Snowflake what the service is actually doing, instead of inferring it from
 // an error string. String matching alone is fragile: the gateway has several
@@ -43,8 +42,8 @@ export async function getRegionServiceState(region: string): Promise<RegionServi
     if (!rows.length) return 'MISSING';
     // SHOW output column case varies by driver settings.
     const raw = rows[0] as Record<string, unknown>;
-    const status = String(raw.status ?? raw.STATUS ?? '').toUpperCase();
-    return status === 'RUNNING' || status === 'READY' ? 'RUNNING' : 'SUSPENDED';
+    const status = String(raw.status ?? raw.STATUS ?? '');
+    return classifyServiceStatus(status);
   } catch (err) {
     logger.warn('routing-resume-state-lookup-failed', { region, service: svc, error: String(err) });
     // Unknown state: fall back to the old behavior (attempt a resume). An
@@ -139,7 +138,8 @@ export async function resumeAndBuildPayload(
   // Only resume something that is actually down. A RUNNING service that cannot
   // answer is warming up or overloaded; resuming it changes nothing and the
   // "a resume has been triggered" copy would be false.
-  const state: EngineState = svcState === 'SUSPENDED' ? 'suspended' : 'not_ready';
+  const state: EngineState =
+    svcState === 'SUSPENDED' ? 'suspended' : svcState === 'STARTING' ? 'starting' : 'not_ready';
   if (state === 'suspended') {
     await triggerRegionResume(region);
   } else {

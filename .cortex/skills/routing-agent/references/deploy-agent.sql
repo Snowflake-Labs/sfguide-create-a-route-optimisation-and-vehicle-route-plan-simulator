@@ -20,6 +20,75 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ============================================================================
+-- ROUTING_RESULT_GEOMETRY: the map rows of each successful routing verb call,
+-- keyed by the result_id the verb returns.
+--
+-- WHY: CoWork's data_to_map cannot draw a routing verb's own result. The managed
+-- MCP server hands the agent {"json":{"result":"<whole document as a STRING>"}},
+-- so the top-level `rows` array data_to_map needs is never at the top level
+-- (observed failing in CoWork 2026-10-24: get_directions ok, no map). A Cortex
+-- Analyst result IS a source data_to_map draws, so the verb persists its rows
+-- here and SV_ROUTING_RESULTS (semantic_views.sql) serves them back by id.
+-- Since cortex PR 157597 (2026-10-22) data_to_map also reads the verb's own MCP
+-- rows, so this table is the FALLBACK: builds without that PR, and maps the user
+-- wants to refresh, explore or download (an MCP-sourced map is snapshot-only).
+--
+-- Written by the synapse verbs (EXECUTE AS OWNER, see fleet_tools/user/src/
+-- map_rows.ts) and read ONLY through VW_ROUTING_RESULT_GEOMETRY, which returns
+-- the current user's own rows. Rows older than 7 days are purged on each write.
+-- Created here because this file runs before both the bundles and the semantic
+-- views.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY (
+    RESULT_ID  STRING        NOT NULL,
+    VERB       STRING        NOT NULL,
+    ACTOR      STRING        NOT NULL,
+    CREATED_AT TIMESTAMP_LTZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    SEQ        NUMBER        NOT NULL,
+    GEOJSON    STRING,
+    LON        FLOAT,
+    LAT        FLOAT,
+    H3         STRING,
+    VALUE      FLOAT,
+    LABEL      STRING
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- H3 / VALUE / LABEL carry run_sql map rows (an H3 density, or labelled points
+-- or shapes). Upgrade path for a table created before they existed: ALTER TABLE
+-- ADD COLUMN IF NOT EXISTS is NOT idempotent here (it raises "ambiguous column
+-- name" when the column is present), so each column is added only when
+-- INFORMATION_SCHEMA says it is missing.
+EXECUTE IMMEDIATE $$
+DECLARE
+  defs ARRAY DEFAULT ARRAY_CONSTRUCT('H3 STRING', 'VALUE FLOAT', 'LABEL STRING');
+  def STRING;
+  col STRING;
+  n INTEGER;
+BEGIN
+  FOR i IN 0 TO 2 DO
+    def := GET(:defs, :i)::STRING;
+    col := SPLIT_PART(:def, ' ', 1);
+    SELECT COUNT(*) INTO :n FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = 'ROUTING_TOOLS' AND TABLE_NAME = 'ROUTING_RESULT_GEOMETRY' AND COLUMN_NAME = :col;
+    IF (n = 0) THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY ADD COLUMN ' || :def;
+    END IF;
+  END FOR;
+  RETURN 'ok';
+END;
+$$;
+
+-- COPY GRANTS: re-running this file alone must not revoke role_binding.sql's
+-- SELECT grant to FLEET_APP_USER (SV_ROUTING_RESULTS would then return nothing).
+CREATE OR REPLACE SECURE VIEW FLEET_INTELLIGENCE.ROUTING_TOOLS.VW_ROUTING_RESULT_GEOMETRY COPY GRANTS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT RESULT_ID, VERB, CREATED_AT, SEQ, GEOJSON, LON, LAT, H3, VALUE, LABEL
+FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.ROUTING_RESULT_GEOMETRY
+WHERE ACTOR = CURRENT_USER();
+
+-- ============================================================================
 -- RESOLVE_PROFILE: pure resolver shared by every TOOL_* proc. Given the caller's
 -- requested profile/vehicle, the canonical ORS profile the whitelist mapped it
 -- to, and the list of profiles ACTUALLY built in the target region (from

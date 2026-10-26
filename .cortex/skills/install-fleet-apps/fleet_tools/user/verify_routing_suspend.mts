@@ -21,6 +21,11 @@
 import {
   detectOrsSuspended,
   detectSuspendedInResult,
+  detectSuspendedInRows,
+  classifyServiceStatus,
+  suspendedMessage,
+  autoRetryDelayMs,
+  AUTO_RETRY_WINDOW_MS,
   isOutOfGraph,
   parseOutOfGraphPoints,
   outOfGraphMessage,
@@ -99,5 +104,38 @@ chk('view column-count error -> nothing',
 chk('Snowflake statement timeout -> nothing',
   !isOutOfGraph('Statement reached its statement or warehouse timeout'));
 
-console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${19} assertions passed`);
+// --- an error object returned as a CELL of a successful query -------------
+// The query succeeds, so only a row scan sees it; the panel used to go blank.
+const embeddedCell = '{"error":"service_unreachable","message":"Cannot connect to ORS (host: ors-service-usnewjersey). Service appears suspended."}';
+const emb = detectSuspendedInRows([{ store_id: 'S1', ring_geojson: embeddedCell }]);
+chk('embedded error cell -> suspended', emb.suspended === true);
+chk('embedded error cell names its region', emb.region === 'usnewjersey');
+// A log/message column that MENTIONS an outage is data, not an outage. The raw
+// detector does flag this text, so the assertion proves the cell scoping.
+const logLine = 'retried after service_unreachable on ors-service-europe';
+chk('raw detector flags the log line (precondition)', detectOrsSuspended(logLine).suspended === true);
+chk('plain text saying timeout -> nothing',
+  !detectSuspendedInRows([{ note: logLine }]).suspended);
+chk('a GeoJSON cell -> nothing',
+  !detectSuspendedInRows([{ g: '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}' }]).suspended);
+chk('an off-graph error cell is not an outage',
+  !detectSuspendedInRows([{ r: JSON.stringify(live) }]).suspended);
+
+// --- a service already coming up is STARTING, not SUSPENDED ----------------
+// PENDING used to read as SUSPENDED, so each retry issued another RESUME and
+// told the user "a resume has been triggered" for one this request never made.
+chk('PENDING -> STARTING', classifyServiceStatus('PENDING') === 'STARTING');
+chk('RESUMING -> STARTING', classifyServiceStatus('resuming') === 'STARTING');
+chk('SUSPENDING -> SUSPENDED (resumed on the next check)', classifyServiceStatus('SUSPENDING') === 'SUSPENDED');
+chk('RUNNING -> RUNNING', classifyServiceStatus('RUNNING') === 'RUNNING');
+chk('starting copy claims no resume',
+  !/resume has been triggered/i.test(suspendedMessage('London', '3 to 4 minutes', 'starting')));
+
+// --- auto-retry: bounded, and never for an engine that does not exist ------
+chk('auto-retry soon after the first notice', autoRetryDelayMs('suspended', 0, 5_000) === 10_000);
+chk('auto-retry backs off after a minute', autoRetryDelayMs('starting', 0, 90_000) === 20_000);
+chk('auto-retry stops after the window', autoRetryDelayMs('suspended', 0, AUTO_RETRY_WINDOW_MS) === null);
+chk('no auto-retry when not provisioned', autoRetryDelayMs('not_provisioned', 0, 1_000) === null);
+
+console.log(fails ? `\n${fails} FAILURE(S)` : `\nall ${34} assertions passed`);
 process.exit(fails ? 1 : 0);

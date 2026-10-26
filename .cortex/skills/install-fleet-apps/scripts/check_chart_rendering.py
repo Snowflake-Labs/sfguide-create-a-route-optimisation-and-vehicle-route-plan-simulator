@@ -128,6 +128,9 @@ RAW_JSON_ALLOWLIST = {
     "search_solution_catalog",
     "list_use_cases",
     "search_sap_binding",
+    # Resolves a place type to an Overture category tag that the agent then
+    # passes to query_overture_global and names in prose; never drawn.
+    "overture_category_search",
     "introspect_sap",
     "run_sql",
     # Host tools with their own host-side rendering.

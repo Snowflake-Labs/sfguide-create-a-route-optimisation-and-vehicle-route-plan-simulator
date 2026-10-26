@@ -183,6 +183,18 @@ export interface ViewDef {
   // viewState binds emitted by required filters, keyed to the filter label.
   // Seeded into blockedBinds when the view opens (see store.showView).
   requiredBinds?: Record<string, string>;
+  // Set when a data layer this view reads was not built (from /api/pack-status).
+  // The view stays in the picker, greyed, and opens to UnavailableViewNotice
+  // with the reason and rebuild steps instead of panels that would each error.
+  unavailable?: ViewUnavailable;
+}
+
+export interface ViewUnavailable {
+  schemas: string[];
+  object: string;
+  label?: string;
+  fix?: string[];
+  note?: string;
 }
 
 // Zero-code retargeting surface (agnostic-view report section 6.3). Every field is

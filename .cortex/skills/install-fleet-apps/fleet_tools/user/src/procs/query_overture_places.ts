@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, featurePoints } from '../map_rows.js';
 import { OvertureCodes, OVERTURE_PLACES_GROUP_BY } from '../codes.js';
 
 /**
@@ -47,6 +48,8 @@ export const query_overture_places = defineProc({
     result: t
       .object({})
       .describe('Overture search response: status, mode, count, bbox, and rows (places or per-group counts).'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   validate: (args, ctx) => {
     if (args.group_by != null && args.group_by.trim() !== '' &&
@@ -77,6 +80,6 @@ export const query_overture_places = defineProc({
       args.max_lon,
       args.max_lat,
     ]);
-    return { result };
+    return withMapRows(ctx, 'query_overture_places', result, featurePoints);
   },
 });
