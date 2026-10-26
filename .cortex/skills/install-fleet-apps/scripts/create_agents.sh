@@ -106,6 +106,14 @@ SCHEMA_SQL="CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.SYNAPSE_USER COMMENT 
 
 note() { echo "[create_agents] $*"; }
 q()    { snow sql -c "$CONNECTION" -q "$TAG_SQL $1" --enable-templating NONE 2>&1; }
+# Run a generated agent DDL file into a per-agent log. Echoing it to the console
+# printed every full agent spec (~1,700 lines on a fresh install) between the
+# installer's step lines; the log keeps it, and a failure prints its tail.
+run_file() {
+  local log="/tmp/ifa_agent_$2.log"
+  if snow sql -c "$CONNECTION" -f "$1" >"$log" 2>&1; then return 0; fi
+  tail -30 "$log"; echo "[create_agents]   full output: $log"; return 1
+}
 
 # Agent name -> spec file -> display name -> color
 AGENTS=(
@@ -173,7 +181,7 @@ for entry in "${AGENTS[@]}"; do
       echo "ALTER AGENT ${FQN} COMMIT COMMENT = 'deploy ${STAMP}';"
     } > "$SQL_FILE"
 
-    snow sql -c "$CONNECTION" -f "$SQL_FILE" \
+    run_file "$SQL_FILE" "$AGENT_NAME" \
       || { note "ERROR: ALTER path failed for $AGENT_NAME"; exit 1; }
 
     # Assign the PRODUCTION alias to the version just committed. MODIFY VERSION
@@ -229,7 +237,7 @@ print(named[0]['name'] if named else '')
       echo "\$\$;"
     } > "$SQL_FILE"
 
-    snow sql -c "$CONNECTION" -f "$SQL_FILE" \
+    run_file "$SQL_FILE" "$AGENT_NAME" \
       || { note "ERROR: CREATE path failed for $AGENT_NAME"; exit 1; }
 
     # CREATE auto-creates VERSION$1 as default. Set the PRODUCTION alias.
@@ -339,7 +347,8 @@ $$;
 GRANTSQL
 
 note "applying agent USAGE grants ..."
-snow sql -c "$CONNECTION" -f "$GRANT_FILE"
+run_file "$GRANT_FILE" grants || { note "ERROR: agent grants failed"; exit 1; }
+grep -o 'agent grants: [0-9]* applied, [0-9]* skipped' /tmp/ifa_agent_grants.log | sed 's/^/[create_agents]   /' || true
 
 # Verify per agent: USAGE grant present + committed version + PRODUCTION alias.
 note "verifying agents ..."

@@ -60,6 +60,9 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from layer_impact import required_objects, schema_probes, view_schemas  # noqa: E402
+
 SKILL = pathlib.Path(__file__).resolve().parents[1]
 APP_DIR = SKILL / "fleet_sa_app" / "app"
 DEFAULT_VIEWS = APP_DIR / "app-views.json"
@@ -205,6 +208,7 @@ def load_views(views_path, pack_views_path):
 
 def rows_from(views_path, config_path, pack_views_path=None):
     views = load_views(views_path, pack_views_path)
+    probes = schema_probes(views)
     display = {}
     if config_path.exists():
         display = (json.loads(config_path.read_text()) or {}).get("display") or {}
@@ -240,6 +244,15 @@ def rows_from(views_path, config_path, pack_views_path=None):
                 "key_metrics": as_list(ak.get("keyMetrics")),
                 "example_questions": as_list(ak.get("exampleQuestions")),
                 "chunk_text": build_prose(view_id, label, domain, uc, ak),
+                # FLEET_APP schemas the view reads (layer_impact.py walk). The
+                # catalog verbs check them live so an agent never recommends or
+                # links a view whose layer was not built. Code-registered pack
+                # views carry no queries in JSON, so they list none.
+                "required_schemas": view_schemas(raw),
+                # The object to probe per dependency, same choice as the app's
+                # /api/pack-status, so the agent can tell "built but empty" from
+                # "built" - REQUIRED_SCHEMAS alone only catches never-built.
+                "required_objects": required_objects(raw, probes),
             }
         )
 
@@ -302,13 +315,16 @@ def render(rows, views_path):
         "  PREFERRED_TOOL        STRING,",
         "  KEY_METRICS           ARRAY,",
         "  EXAMPLE_QUESTIONS     ARRAY,",
-        "  CHUNK_TEXT            STRING",
+        "  CHUNK_TEXT            STRING,",
+        "  REQUIRED_SCHEMAS      ARRAY,",
+        "  REQUIRED_OBJECTS      ARRAY",
         f") COMMENT = '{TRACK}';",
         "",
         "INSERT INTO FLEET_INTELLIGENCE.SEMANTIC.VIEW_CATALOG",
         "  (VIEW_ID, LABEL, DOMAIN, DESCRIPTION, HEADLINE, BUSINESS_QUESTION, AUDIENCE,",
         "   INDUSTRIES, TALK_TRACK, SNOWFLAKE_CAPABILITIES, DATA_REQUIRED, VALUE_DRIVERS,",
-        "   METHOD, CAVEATS, PREFERRED_TOOL, KEY_METRICS, EXAMPLE_QUESTIONS, CHUNK_TEXT)",
+        "   METHOD, CAVEATS, PREFERRED_TOOL, KEY_METRICS, EXAMPLE_QUESTIONS, CHUNK_TEXT,",
+        "   REQUIRED_SCHEMAS, REQUIRED_OBJECTS)",
     ]
     chunks = []
     for r in rows:
@@ -329,7 +345,9 @@ def render(rows, views_path):
             f"  {dollar(r['preferred_tool'])},\n"
             f"  {json_array(r['key_metrics'])},\n"
             f"  {json_array(r['example_questions'])},\n"
-            f"  {dollar(r['chunk_text'])}"
+            f"  {dollar(r['chunk_text'])},\n"
+            f"  {json_array(r['required_schemas'])},\n"
+            f"  {json_array(r['required_objects'])}"
         )
     # ARRAY_CONSTRUCT cannot appear in a VALUES clause, so union per-row SELECTs.
     out.append("\nUNION ALL\n".join(chunks) + ";")

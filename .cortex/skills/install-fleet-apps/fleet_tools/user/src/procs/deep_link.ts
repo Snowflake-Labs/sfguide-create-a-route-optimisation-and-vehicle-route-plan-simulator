@@ -1,5 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { DataCodes } from '../codes.js';
+import { hasGaps, layerGapsFor, unavailableNote } from '../helpers.js';
 
 /**
  * Build a URL that opens a specific SA app view, already scoped.
@@ -263,12 +264,17 @@ export const deep_link = defineProc({
     add('dataset', args.dataset_id);
     add('select', args.selection);
 
+    // A view whose data layer was never built, or was built empty, opens to
+    // rebuild steps, not results. The agent must not hand it over as a working demo.
+    const gaps = (await layerGapsFor(ctx.conn, [viewId]))[viewId];
+
     return {
       url: `https://${host}/?${parts.join('&')}`,
       view_id: viewId,
       label,
-      note:
-        'Opening the link applies the region and selection on load. The app requires the ' +
+      note: hasGaps(gaps)
+        ? unavailableNote(label, gaps)
+        : 'Opening the link applies the region and selection on load. The app requires the ' +
         "user's own Snowflake login, and a routing view needs that region's services running.",
     };
   },

@@ -222,6 +222,369 @@ H3_RES_BULLET = (
 )
 
 
+# --- seventh pass: routing verbs return a drawable row set -----------------------
+# Every routing verb now returns top-level `rows` beside `result` on success (see
+# fleet_tools/user/src/map_rows.ts), which is exactly the row-set shape CoWork's
+# data_to_map draws. The spec still said an MCP result can never be mapped and told
+# the agent to deep_link, so a successful route produced no map in CoWork.
+ROUTING_ROWS_MARKER = "DRAWING A ROUTING RESULT IN COWORK"
+ROUTING_ROWS_VERBS = (
+    "get_directions, compute_isochrone, map_match, snap_to_road, optimize_routes, "
+    "delivery_optimization, network_optimization, catchment, find_poi, evac_seed, evac_solve, "
+    "vrp_solve, query_overture_places, query_overture_addresses"
+)
+ROUTING_ROWS_ORCH = [
+    (
+        "- Source constraint: data_to_map accepts ONLY a SQL/analyst tool result as tool_result_id. "
+        "An MCP tool result (run_sql, get_directions, or any synapse verb) is NOT accepted and will "
+        "silently fail. Sequence: retrieve geometry with a query_* Cortex Analyst tool, then pass THAT "
+        "step's tool_use_id to data_to_map. For live routing geometry that no semantic view projects, "
+        "report the figures (distance, duration) and use deep_link to hand over to the app view. Cite "
+        "the map result with a map tag, never a chart tag.",
+        "- Source constraint: data_to_map accepts ONLY two sources as tool_result_id: (a) a query_* "
+        "Cortex Analyst result, and (b) a routing verb result that carries a top-level rows array ("
+        + ROUTING_ROWS_VERBS
+        + "). A backload_solve or backload_chain_solve result, or a routing verb result with no rows, "
+        "is NOT a map source and will silently fail. Cite the map result with a map tag, never a "
+        "chart tag.\n"
+        "- DRAWING A ROUTING RESULT IN COWORK: after one of those routing verbs returns status SUCCESS "
+        "and its payload has rows, call data_to_map ONCE with THAT call's tool_use_id. Rows with "
+        "GEOJSON -> layer_type \"geojson\", geo_column \"GEOJSON\". Rows with LAT and LON -> layer_type "
+        "\"latlon\", lat_column \"LAT\", lon_column \"LON\". Do NOT call render_map for that geometry "
+        "(CoWork cannot draw a render_map result), and do NOT deep_link instead of drawing it. rows "
+        "holds only the primary geometry (the route lines, or the polygon of a catchment or isochrone; "
+        "never the POIs beside it), simplified for the map; quote figures from result. A FAILED result "
+        "has no rows: report the refusal and do not draw. If data_to_map returns unmappable_rows, say "
+        "the geometry was too large to draw and still report the figures (distance, duration, area, "
+        "unsnapped count). If data_to_map is absent you are in the SA app: the routing verb's geometry "
+        "is drawn inline from result, so do not call render_map for the same geometry.",
+    ),
+    (
+        "Geometry computed LIVE by the routing engine (DIRECTIONS/ISOCHRONES/OPTIMIZATION) is still "
+        "not mappable: it can only be fetched through run_sql, and an MCP result is rejected as a map "
+        "source - report the figures and deep_link instead.",
+        "Geometry computed LIVE by the routing engine is drawn from the routing verb's own rows (see "
+        "DRAWING A ROUTING RESULT IN COWORK), not from a column here.",
+    ),
+    (
+        "Source constraint, the same one data_to_map has: data_to_chart accepts",
+        "Source constraint (data_to_chart only): data_to_chart accepts",
+    ),
+]
+ROUTING_ROWS_RESP = (
+    "When NEITHER is available, or the geometry has no SQL/analyst source to pass to data_to_map,",
+    "After a routing verb succeeds with rows, pass that call's tool_use_id to data_to_map. When "
+    "NEITHER is available, or the geometry has no source data_to_map accepts (a query_* result, or "
+    "a routing verb result carrying rows),",
+)
+
+
+def apply_routing_rows(spec: dict) -> bool:
+    """Seventh pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    if ROUTING_ROWS_MARKER in ins["orchestration"]:
+        return False
+    o = ins["orchestration"]
+    for old, new in ROUTING_ROWS_ORCH:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: routing-rows anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = ROUTING_ROWS_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: routing-rows response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
+# --- eighth pass: routing results are drawn THROUGH query_routing_results ------
+# The seventh pass told the agent to hand the routing verb's own tool_use_id to
+# data_to_map. In a real CoWork session that failed: get_directions returned ok,
+# data_to_map could not resolve the result, the agent fell back to run_sql (also
+# an MCP verb, same failure) and then to deep_link. The managed MCP server
+# delivers every verb as {"json":{"result":"<whole document as a STRING>"}}, so
+# the top-level `rows` data_to_map needs is never at the top level. The verbs now
+# persist their rows and return a result_id; SV_ROUTING_RESULTS serves them back
+# as a Cortex Analyst result, which data_to_map does draw.
+QUERY_ROUTING_RESULTS_TOOL = "query_routing_results"
+QUERY_ROUTING_RESULTS_DESCRIPTION = (
+    "Map geometry of a routing result the user just computed, by the result_id a routing verb "
+    "returned (get_directions, compute_isochrone, optimize_routes, find_poi, catchment, snap_to_road "
+    "and the other routing verbs), or by the result_id run_sql returned for a drawable result "
+    "(an H3 density, points or shapes). Use it to draw that result in CoWork ONLY as the fallback: "
+    "when data_to_map rejected the verb's own result as not mappable, or the user wants a map they can "
+    "refresh, explore or download. Ask for the "
+    "geometry of that exact result_id, then pass THIS call's tool_use_id to data_to_map. It "
+    "stores no distance or duration; quote those from the routing verb result."
+)
+ANALYST_SOURCE_MARKER = "a query_routing_results result for the result_id"
+ANALYST_SOURCE_ORCH = [
+    (
+        "(b) a routing verb result that carries a top-level rows array (",
+        "(b) a query_routing_results result for the result_id returned by one of the routing verbs (",
+    ),
+    (
+        "). A backload_solve or backload_chain_solve result, or a routing verb result with no rows, "
+        "is NOT a map source and will silently fail.",
+        "). The routing verb's OWN result is NOT a source, and neither is run_sql or any other MCP "
+        "result: the MCP server hands it over as one JSON string, so data_to_map cannot resolve it "
+        "and NO MAP APPEARS. A backload_solve or backload_chain_solve result, or a routing verb "
+        "result with no result_id, has nothing to draw.",
+    ),
+    (
+        "returns status SUCCESS and its payload has rows, call data_to_map ONCE with THAT call's "
+        "tool_use_id. Rows with GEOJSON",
+        "returns status SUCCESS with a result_id, call query_routing_results for the geometry of "
+        "that exact result_id, then call data_to_map ONCE with the query_routing_results call's "
+        "tool_use_id - never the routing verb's own tool_use_id. Rows with GEOJSON",
+    ),
+    (
+        "A FAILED result has no rows: report the refusal and do not draw.",
+        "A FAILED result has no result_id: report the refusal and do not draw. If "
+        "query_routing_results returns no rows, report the figures and deep_link.",
+    ),
+    (
+        "is drawn from the routing verb's own rows (see DRAWING A ROUTING RESULT IN COWORK)",
+        "is drawn through query_routing_results (see DRAWING A ROUTING RESULT IN COWORK)",
+    ),
+]
+ANALYST_SOURCE_RESP = (
+    "After a routing verb succeeds with rows, pass that call's tool_use_id to data_to_map. When "
+    "NEITHER is available, or the geometry has no source data_to_map accepts (a query_* result, or "
+    "a routing verb result carrying rows),",
+    "After a routing verb succeeds with a result_id, fetch its geometry with query_routing_results "
+    "and pass THAT call's tool_use_id to data_to_map. When NEITHER is available, or the geometry has "
+    "no source data_to_map accepts (a query_* result, including query_routing_results),",
+)
+
+
+def apply_analyst_source(spec: dict) -> bool:
+    """Eighth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    changed = False
+    tools = spec.setdefault("tools", [])
+    entry = {
+        "tool_spec": {
+            "type": "cortex_analyst_text_to_sql",
+            "name": QUERY_ROUTING_RESULTS_TOOL,
+            "description": QUERY_ROUTING_RESULTS_DESCRIPTION,
+        }
+    }
+    hit = [i for i, t in enumerate(tools) if t.get("tool_spec", {}).get("name") == QUERY_ROUTING_RESULTS_TOOL]
+    if not hit:
+        tools.append(entry)
+        changed = True
+    elif tools[hit[0]] != entry:
+        tools[hit[0]] = entry
+        changed = True
+    res = {
+        "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTING_RESULTS",
+        "execution_environment": {"type": "warehouse", "warehouse": "ROUTING_ANALYTICS"},
+    }
+    if spec.setdefault("tool_resources", {}).get(QUERY_ROUTING_RESULTS_TOOL) != res:
+        spec["tool_resources"][QUERY_ROUTING_RESULTS_TOOL] = res
+        changed = True
+
+    ins = spec["instructions"]
+    if ANALYST_SOURCE_MARKER in ins["orchestration"]:
+        return changed
+    o = ins["orchestration"]
+    for old, new in ANALYST_SOURCE_ORCH:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: analyst-source anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = ANALYST_SOURCE_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: analyst-source response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
+# --- ninth pass: run_sql results are drawable too --------------------------------
+# Observed in CoWork: "restaurant density within 15 min of the Eiffel Tower at H3
+# res 8". run_sql computed the exact answer (ST_WITHIN the isochrone, 118 cells),
+# but run_sql persisted nothing, so the agent drew a BOUNDING-BOX approximation
+# through a semantic view instead (169 cells, 51 outside the isochrone) and told
+# the user a "governance wall" blocked the right query. run_sql now persists
+# drawable rows (H3 cell string, LAT+LON or GEOJSON, plus VALUE/LABEL) and returns
+# a result_id that query_routing_results serves back.
+RUN_SQL_MAP_MARKER = "MAPPING A run_sql RESULT"
+RUN_SQL_MAP_EDITS = [
+    (
+        "query_overture_places, query_overture_addresses). The routing verb's OWN result is NOT a "
+        "source, and neither is run_sql or any other MCP result:",
+        "query_overture_places, query_overture_addresses), or by run_sql when it returns a "
+        "result_id. The routing verb's OWN result is NOT a source, and neither is run_sql's own "
+        "result or any other MCP result:",
+    ),
+    (
+        "has nothing to draw.",
+        "has nothing to draw. MAPPING A run_sql RESULT (e.g. an H3 density inside an isochrone): "
+        "select an H3 cell STRING column (H3_POINT_TO_CELL_STRING(geom, res)), or LAT+LON, or a "
+        "GEOJSON column, plus one numeric value column; then draw the result_id it returns through "
+        "query_routing_results. NEVER swap a computed result for an approximation (a bounding box, "
+        "a coarser or different query) just to get a map; if run_sql returns no result_id, show "
+        "the numbers and say the result could not be drawn.",
+    ),
+]
+
+
+def apply_run_sql_map(spec: dict) -> bool:
+    """Ninth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    o = ins["orchestration"]
+    if RUN_SQL_MAP_MARKER in o:
+        return False
+    for old, new in RUN_SQL_MAP_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: run_sql-map anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    ins["orchestration"] = o
+    return True
+
+
+# --- tenth pass: an MCP result IS a data_to_map source --------------------------
+# cortex PR 157597 (merged + deployed 2026-10-22) made data_to_map read any tool
+# result whose text is a JSON array of objects, or an object carrying one under
+# `rows`. Every routing verb already returns { result, rows, result_id } and
+# run_sql returns { rows, ... }, so the verb's OWN tool_use_id now draws - as a
+# snapshot (no refresh / explore / download). The ninth-pass text said the
+# opposite ("NOT a source ... NO MAP APPEARS"), which kept the model on the
+# query_routing_results detour or off the direct path entirely. The persisted
+# result_id path stays as the FALLBACK: when data_to_map rejects the direct
+# source (an older build), or when the user wants a refreshable map.
+MCP_SOURCE_MARKER = "MCP RESULT IS A MAP SOURCE"
+MCP_SOURCE_EDITS = [
+    (
+        "- Source constraint: data_to_map accepts ONLY two sources as tool_result_id: (a) a query_* "
+        "Cortex Analyst result, and (b) a query_routing_results result for the result_id returned by "
+        "one of the routing verbs (",
+        "- Source constraint (MCP RESULT IS A MAP SOURCE): data_to_map accepts three sources as "
+        "tool_result_id: (a) a query_* Cortex Analyst result; (b) a SUCCESSFUL routing verb or run_sql "
+        "call whose payload carries rows - pass THAT call's own tool_use_id, the default; and (c) the "
+        "fallback, a query_routing_results result for the result_id returned by one of the routing verbs (",
+    ),
+    (
+        "The routing verb's OWN result is NOT a source, and neither is run_sql's own result or any "
+        "other MCP result: the MCP server hands it over as one JSON string, so data_to_map cannot "
+        "resolve it and NO MAP APPEARS.",
+        "A direct (b) map is a snapshot: it cannot be refreshed, explored or downloaded. Use (c) "
+        "instead when the user asks for a map they can refresh, explore or download, and as the retry "
+        "when data_to_map rejects a (b) source as not mappable.",
+    ),
+    (
+        "plus one numeric value column; then draw the result_id it returns through "
+        "query_routing_results.",
+        "plus one numeric value column, and keep the mapped result to a few hundred rows; then draw "
+        "that run_sql call directly, falling back to its result_id through query_routing_results.",
+    ),
+    (
+        "if run_sql returns no result_id, show the numbers and say the result could not be drawn.",
+        "if neither path draws, show the numbers and say the result could not be drawn.",
+    ),
+    (
+        "tatus SUCCESS with a result_id, call query_routing_results for the geometry of that exact "
+        "result_id, then call data_to_map ONCE with the query_routing_results call's tool_use_id - "
+        "never the routing verb's own tool_use_id.",
+        "tatus SUCCESS, call data_to_map ONCE with THAT routing verb call's own tool_use_id. Only if "
+        "data_to_map rejects it as not mappable, or the user wants a refreshable map, call "
+        "query_routing_results for the geometry of its result_id, then call data_to_map ONCE with the "
+        "query_routing_results call's tool_use_id.",
+    ),
+]
+MCP_SOURCE_RESP = (
+    "After a routing verb succeeds with a result_id, fetch its geometry with query_routing_results "
+    "and pass THAT call's tool_use_id to data_to_map. When NEITHER is available, or the geometry has "
+    "no source data_to_map accepts (a query_* result, including query_routing_results),",
+    "After a routing verb or run_sql call succeeds with rows, pass THAT call's own tool_use_id to "
+    "data_to_map; fall back to query_routing_results for its result_id if that is rejected or a "
+    "refreshable map is wanted. When NEITHER is available, or the geometry has no source data_to_map "
+    "accepts (a query_* result, a routing verb or run_sql result with rows, or query_routing_results),",
+)
+
+
+def apply_mcp_source(spec: dict) -> bool:
+    """Tenth pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    o = ins["orchestration"]
+    if MCP_SOURCE_MARKER in o:
+        return False
+    for old, new in MCP_SOURCE_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: mcp-source anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = MCP_SOURCE_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: mcp-source response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
+# --- eleventh pass: no map claim without a successful draw in THIS turn ------
+# CoWork thread 155915584433, record a9c25d6f (2026-10-25): get_directions
+# returned rows, the model never called data_to_map, and answered "shown on the
+# map above" - which this spec TOLD it to say: the render_map block's "A ROUTING
+# TOOL RESULT IS ALREADY ON A MAP ... Say 'shown on the map above'" bullet is
+# unconditional, and the CoWork bullet ends "If data_to_map is absent you are in
+# the SA app: ... drawn inline". Both are true only in the SA app panel. The
+# follow-up turn (c7229088) then pointed data_to_map at the PREVIOUS turn's
+# tool_use_id, which failed; whether the PR resolves cross-turn ids is
+# unverified, so the draw is required in the SAME turn as the verb.
+MAP_CLAIM_MARKER = "NO MAP CLAIM WITHOUT A DRAW THIS TURN"
+MAP_CLAIM_EDITS = [
+    (
+        "have their geometry drawn inline automatically, under your answer.",
+        "have their geometry drawn inline automatically, under your answer - IN THE SA APP ONLY. "
+        "In CoWork nothing is drawn until you call data_to_map.",
+    ),
+    (
+        "Say 'shown on the map above' and move on.",
+        "In the SA app say 'shown on the map above' and move on; in CoWork that sentence is "
+        "false until data_to_map has succeeded in this turn.",
+    ),
+    (
+        "the routing verb's geometry is drawn inline from result, so do not call render_map for "
+        "the same geometry.",
+        "the routing verb's geometry is drawn inline from result, so do not call render_map for "
+        "the same geometry. A missing data_to_map is NOT proof of the SA app: if you have not "
+        "loaded map_generation_instructions, load it before answering and look again.",
+    ),
+    (
+        "call data_to_map ONCE with THAT routing verb call's own tool_use_id.",
+        "call data_to_map ONCE with THAT routing verb call's own tool_use_id, IN THE SAME TURN, "
+        "before writing the answer - never defer the draw to a later turn. When the user says "
+        "the map is missing, re-run the routing verb and draw its fresh tool_use_id rather than "
+        "an earlier turn's.",
+    ),
+]
+MAP_CLAIM_RESP = (
+    "Never describe map contents as if you had seen them",
+    "NO MAP CLAIM WITHOUT A DRAW THIS TURN: say a map is shown (above, below, on the map) "
+    "ONLY when data_to_map (CoWork) or render_map (SA app) returned success in THIS turn, and "
+    "cite it with a map tag; otherwise the user sees no map, so say plainly that no map was "
+    "drawn and give the figures. Never describe map contents as if you had seen them",
+)
+
+
+def apply_map_claim(spec: dict) -> bool:
+    """Eleventh pass. Returns True when it changed the spec; raises on a half-applied spec."""
+    ins = spec["instructions"]
+    if MAP_CLAIM_MARKER in ins["response"]:
+        return False
+    o = ins["orchestration"]
+    for old, new in MAP_CLAIM_EDITS:
+        if o.count(old) != 1:
+            raise SystemExit(f"ERROR: map-claim anchor not found once: {old[:60]!r}")
+        o = o.replace(old, new, 1)
+    old, new = MAP_CLAIM_RESP
+    if ins["response"].count(old) != 1:
+        raise SystemExit("ERROR: map-claim response anchor not found")
+    ins["orchestration"] = o
+    ins["response"] = ins["response"].replace(old, new, 1)
+    return True
+
+
 def main() -> int:
     src = SPEC.read_text()
     spec = json.loads(src)
@@ -320,6 +683,36 @@ def main() -> int:
     else:
         print("ERROR: h3 layer bullet anchor not found", file=sys.stderr)
         return 1
+
+    # --- Seventh pass: routing verbs return a drawable row set -----------------
+    if apply_routing_rows(spec):
+        changed.append("orchestration+response(routing rows)")
+    else:
+        print("orchestration: routing-rows rule already present")
+
+    # --- Eighth pass: draw routing results through query_routing_results --------
+    if apply_analyst_source(spec):
+        changed.append("tools+orchestration+response(query_routing_results)")
+    else:
+        print("orchestration: query_routing_results rule already present")
+
+    # --- Ninth pass: run_sql results draw through query_routing_results --------
+    if apply_run_sql_map(spec):
+        changed.append("orchestration(run_sql map rows)")
+    else:
+        print("orchestration: run_sql map rule already present")
+
+    # --- Tenth pass: the verb's own MCP result is the primary map source ------
+    if apply_mcp_source(spec):
+        changed.append("orchestration+response(MCP result is a map source)")
+    else:
+        print("orchestration: MCP-source rule already present")
+
+    # --- Eleventh pass: no map claim without a draw this turn ----------------
+    if apply_map_claim(spec):
+        changed.append("orchestration+response(no map claim without a draw)")
+    else:
+        print("response: map-claim rule already present")
 
     if not changed:
         return 0

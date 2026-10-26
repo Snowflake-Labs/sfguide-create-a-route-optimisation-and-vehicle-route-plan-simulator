@@ -60,4 +60,31 @@ h.replace(MOD, "  /circuit_open/i,\n];", "  /circuit_open/i,\n  /service_warming
           expect="FAIL  service_warming_up -> not_ready",
           name="service_warming_up classified as suspended")
 
+# A blank panel over a sleeping engine: the row scan must find an error CELL...
+h.replace(MOD, "      const det = detectSuspendedInResult(obj);\n      if (det.suspended) return det;",
+          "      void obj;",
+          expect="FAIL  embedded error cell -> suspended",
+          name="row scan never classifies an error cell")
+
+# ...and must read ONLY error objects, or ordinary text saying 'timeout' trips it.
+h.replace(MOD, "      if (!t.startsWith('{') || !t.includes('\"error\"')) continue;\n",
+          "      if (!t.startsWith('{') || !t.includes('\"error\"')) { if (detectOrsSuspended(v).suspended) return detectOrsSuspended(v); continue; }\n",
+          expect="FAIL  plain text saying timeout -> nothing",
+          name="row scan reads plain text cells")
+
+# PENDING read as SUSPENDED: every retry re-resumed and claimed it had.
+h.replace(MOD, "  if (s === 'PENDING' || s === 'RESUMING' || s === 'STARTING') return 'STARTING';\n", "",
+          expect="FAIL  PENDING -> STARTING",
+          name="a starting service is classified as suspended")
+
+# An unbounded auto-retry polls a broken region forever.
+h.replace(MOD, "  if (elapsed >= AUTO_RETRY_WINDOW_MS) return null;\n", "",
+          expect="FAIL  auto-retry stops after the window",
+          name="auto-retry has no window")
+
+# Waiting cannot provision an engine.
+h.replace(MOD, "  if (state === 'not_provisioned') return null;\n  const elapsed", "  const elapsed",
+          expect="FAIL  no auto-retry when not provisioned",
+          name="auto-retry for a region with no engine")
+
 sys.exit(h.finish())

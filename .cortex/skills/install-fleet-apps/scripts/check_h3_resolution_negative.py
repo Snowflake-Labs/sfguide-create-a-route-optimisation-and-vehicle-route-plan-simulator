@@ -130,10 +130,19 @@ def m8_no_h3_view_in_scope(app):
     s = p.read_text()
     s = s.replace("sessions.h3_cell AS H3_CELL_R7", "sessions.zone_id AS ZONE_ID")
     s = s.replace("hh_cells.cell_h3 AS H3", "hh_cells.zone_id AS ZONE_ID")
+    s = s.replace("geom.h3 AS H3", "geom.zone_id AS ZONE_ID")
     p.write_text(s)
 
 
+def m9_per_call_without_rebin(app):
+    """Per-call declaration kept, the only valid way to another resolution dropped."""
+    edit_view(app, "SV_ROUTING_RESULTS",
+              sub(r"re-run run_sql with H3_POINT_TO_CELL_STRING\(geom, N\)", "ask again"))
+
+
 MUTATIONS = [
+    ("M9 per-call resolution with no re-run path", m9_per_call_without_rebin,
+     "never says to re-run run_sql"),
     ("M1 stored resolution not stated", m1_drop_stored_resolution, "never states the STORED resolution"),
     ("M2 H3 cell with no point (THE ORIGINAL DEFECT)", m2_drop_the_point, "NO point dimension"),
     ("M3 point exposed but no re-bin function named", m3_drop_rebin_function, "names no re-bin function CALLED ON"),

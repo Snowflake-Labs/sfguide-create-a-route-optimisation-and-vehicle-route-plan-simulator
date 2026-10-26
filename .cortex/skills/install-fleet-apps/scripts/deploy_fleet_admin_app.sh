@@ -101,6 +101,7 @@ echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  pool=$COMPUTE_POOL  co
 # else the FLEET-owned repo, else the ORS one. Fails loudly rather than guessing.
 # shellcheck source=lib/resolve_image_repo.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/resolve_image_repo.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/npm_retry.sh"
 IMAGE_REPO_SQL_NAME=$(resolve_image_repo "$CONNECTION" fleet_admin_app "$SERVICE_FQN") || exit 1
 echo "  image repo=$IMAGE_REPO_SQL_NAME"
 

@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { ROWS_DESCRIPTION, RESULT_ID_DESCRIPTION, withMapRows, routeGeometries } from '../map_rows.js';
 import { RoutingCodes } from '../codes.js';
 
 export const optimize_routes = defineProc({
@@ -33,6 +34,8 @@ export const optimize_routes = defineProc({
   },
   returns: {
     result: t.object({}).describe('Optimization response: per-vehicle ordered stop sequence, route geometry, and totals.'),
+    rows: t.array(t.object({})).nullable().describe(ROWS_DESCRIPTION),
+    result_id: t.string().nullable().describe(RESULT_ID_DESCRIPTION),
   },
   validate: async (args, ctx) => {
     // 1. Vehicle count must be a positive integer (zero-SQL guard).
@@ -72,6 +75,6 @@ export const optimize_routes = defineProc({
       args.profile,
       args.region,
     ]);
-    return { result };
+    return withMapRows(ctx, 'optimize_routes', result, routeGeometries);
   },
 });

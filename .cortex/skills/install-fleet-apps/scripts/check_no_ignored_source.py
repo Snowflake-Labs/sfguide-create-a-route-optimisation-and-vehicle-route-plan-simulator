@@ -62,7 +62,7 @@ GENERATED = {
 # `*.log` is PERSONAL: inside the repo it only ever matches dated run histories
 # under logs/ (the installer writes its own logs to /tmp, cleared separately).
 PERSONAL = {
-    "*.log", "**/logs/*.md", "/logs/sa_regression/", ".env", ".env.local", "*.p8",
+    "*.log", "**/logs/*.md", "/logs/_*", "/logs/sa_regression/", ".env", ".env.local", "*.p8",
     "*.pem", "rsa_key*", ".idea/", ".vscode/", ".snowflake/cortex/plans/",
     "drafts/FINAL.md", "drafts/PLAN.md", "drafts/v1-critique.md",
     "drafts/v1.md", "drafts/v2-critique.md", "drafts/v2.md", "/docs/blogpost",

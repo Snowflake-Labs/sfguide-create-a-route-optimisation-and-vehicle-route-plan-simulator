@@ -300,6 +300,22 @@ _bg_cleanup() {
 }
 trap _bg_cleanup EXIT
 
+# Collect a backgrounded job WITHOUT going silent. A bare `wait` printed nothing
+# for the whole engine image push (~30 min measured on a fresh account), so a
+# customer saw one "collecting..." line and no sign of life. Prints elapsed time
+# and the job log's last line every HEARTBEAT_SECS, then returns the job's rc.
+wait_with_progress() {
+  local pid="$1" label="$2" log="$3" start=$SECONDS last
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "${HEARTBEAT_SECS:-60}" &
+    wait $! 2>/dev/null || true
+    kill -0 "$pid" 2>/dev/null || break
+    last=$(tail -n 1 "$log" 2>/dev/null | cut -c1-120)
+    note "    $label still running ($(( (SECONDS - start) / 60 )) min): ${last:-no output yet}"
+  done
+  wait "$pid"
+}
+
 if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
    && [ "${OVERLAP_ENGINE_IMAGES:-1}" = "1" ] \
    && ! obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
@@ -476,7 +492,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # as an inscrutable CREATE SERVICE error against a missing image.
     if [ -n "$ENGINE_IMAGES_PID" ]; then
       note "  collecting the backgrounded engine image phase (pid $ENGINE_IMAGES_PID)..."
-      if wait "$ENGINE_IMAGES_PID"; then
+      if wait_with_progress "$ENGINE_IMAGES_PID" "engine image build+push" /tmp/ifa_engine_images.log; then
         note "  engine images ready (built while the seed uploaded)"
         ENGINE_IMAGES_DONE=1
       else
@@ -490,7 +506,7 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     # SKIP_IMAGES=1 only when the forked phase actually completed above; otherwise
     # this call builds them itself, so the serial path stays intact.
     SKIP_IMAGES="$([ "$ENGINE_IMAGES_DONE" = "1" ] && echo 1 || echo "${SKIP_IMAGES:-0}")" \
-      bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
+      FLEET_INSTALLER=1 bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
       || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
     note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
     DEPLOYMENT_MODE="engine"
@@ -648,6 +664,19 @@ fi
 # combination. The three builder CALLs in analytic_layer.sql are now individually
 # guarded so they fail alone, and this step reports WARN when anything failed.
 if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
+  note "[3.5/8] Overture sources: reuse / Marketplace / public S3 fallback..."
+  note "  S3 copies are global; file-byte cap=${OVERTURE_MAX_BYTES:-500000000000}, per-statement timeout=${OVERTURE_TIMEOUT:-1800}s."
+  note "  Local storage and cross-region/cloud transfer may cost extra. Set OVERTURE_MAX_BYTES lower to bound fallback loads."
+  if python3 "$SCRIPTS/prepare_overture.py" --connection "$CONNECTION" \
+      --warehouse "${OVERTURE_WAREHOUSE:-ROUTING_ANALYTICS}" \
+      --max-bytes "${OVERTURE_MAX_BYTES:-500000000000}" \
+      --timeout "${OVERTURE_TIMEOUT:-1800}" >/tmp/ifa_overture.log 2>&1; then
+    step "3.5 Overture sources" OK
+  else
+    note "  WARN: Overture sources incomplete; see /tmp/ifa_overture.log"
+    tail -12 /tmp/ifa_overture.log
+    step "3.5 Overture sources" WARN
+  fi
   note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
   # --enable-templating NONE is REQUIRED: authored prose in the file contains
   # ampersands (e.g. "P&L" in a comment), which snow CLI's default templating
@@ -669,7 +698,9 @@ if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
     # no gate: it trains the operator to ignore the one signal that matters.
     if grep -qE '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log; then
       note "  WARN: analytic layer completed with degraded sections; see /tmp/ifa_analytic.log"
-      grep -E '^\|[[:space:]]*WARN' /tmp/ifa_analytic.log | head -6 | sed 's/^/    /'
+      # Whole messages, not first lines: snow wraps result cells at 80 columns
+      # even into a file, so a grep of WARN lines cut every reason short.
+      python3 "$SCRIPTS/layer_impact.py" --warn-log /tmp/ifa_analytic.log 2>/dev/null | sed 's/^/ /'
       step "3.5 analytic" WARN
     else
       step "3.5 analytic" OK
@@ -1196,8 +1227,8 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
     ALLOW_DIRTY=1 COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
       >/tmp/ifa_admin_deploy.log 2>&1 & APP_ADMIN_PID=$!
     SA_RC=0; ADMIN_RC=0
-    wait "$APP_SA_PID" || SA_RC=$?
-    wait "$APP_ADMIN_PID" || ADMIN_RC=$?
+    wait_with_progress "$APP_SA_PID" "SA app deploy" /tmp/ifa_sa_deploy.log || SA_RC=$?
+    wait_with_progress "$APP_ADMIN_PID" "admin app deploy" /tmp/ifa_admin_deploy.log || ADMIN_RC=$?
     if [ "$SA_RC" -ne 0 ]; then
       echo "ERROR: SA app deploy failed (rc=$SA_RC); see /tmp/ifa_sa_deploy.log"
       tail -30 /tmp/ifa_sa_deploy.log
@@ -1214,8 +1245,8 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
   EP_SA_PID=$!
   resolve_endpoint FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP fleet-admin-app > /tmp/ifa_admin_url.txt &
   EP_ADMIN_PID=$!
-  wait "$EP_SA_PID" || true
-  wait "$EP_ADMIN_PID" || true
+  wait_with_progress "$EP_SA_PID" "SA endpoint" /tmp/ifa_sa_url.txt || true
+  wait_with_progress "$EP_ADMIN_PID" "admin endpoint" /tmp/ifa_admin_url.txt || true
   SA_URL=$(cat /tmp/ifa_sa_url.txt 2>/dev/null || echo "")
   ADMIN_URL=$(cat /tmp/ifa_admin_url.txt 2>/dev/null || echo "")
   step "7 apps" OK
@@ -1236,6 +1267,15 @@ if [ "${SKIP_ROLES:-0}" != "1" ]; then
   snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
     && step "8 roles" OK \
     || { note "  WARN: some grants failed; see /tmp/ifa_roles.log"; step "8 roles" WARN; }
+  if python3 "$SCRIPTS/prepare_overture.py" --connection "$CONNECTION" \
+      --warehouse "${OVERTURE_WAREHOUSE:-ROUTING_ANALYTICS}" \
+      --grant-role FLEET_APP_USER >/tmp/ifa_overture_grants.log 2>&1; then
+    step "8 Overture grants" OK
+  else
+    note "  WARN: Overture reader grants incomplete; see /tmp/ifa_overture_grants.log"
+    tail -8 /tmp/ifa_overture_grants.log
+    step "8 Overture grants" WARN
+  fi
 else
   step "8 roles" SKIPPED
 fi
@@ -1285,6 +1325,26 @@ if [ "${SKIP_GENERATION_PRESETS:-0}" != "1" ]; then
   fi
 else
   step "8.2 multidrop preset" SKIPPED
+fi
+
+# ── 8.3 prewarm the routing engine ──────────────────────────────
+# An install could end with the region's ORS/VROOM services SUSPENDED (a long
+# install outlives the gateway's 1h idle timer), so the first page load hit a
+# cold engine and every live view rendered blank. Resume, wait for RUNNING, and
+# make one ORS_STATUS call per region so the gateway's cold-start failure is
+# absorbed here rather than by the user. Runs BEFORE the 8.4/9 view validation,
+# which otherwise measures a cold engine. Degraded (WARN), never fatal: the app
+# still resumes on first use. Skip with SKIP_PREWARM=1.
+if [ "$WITH_ENGINE" = "1" ] && [ "${SKIP_PREWARM:-0}" != "1" ]; then
+  note "[8.3] prewarming the routing engine..."
+  if bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" >/tmp/ifa_prewarm.log 2>&1; then
+    step "8.3 prewarm engine" OK
+  else
+    note "  WARN: routing engine not ready after prewarm; see /tmp/ifa_prewarm.log"
+    step "8.3 prewarm engine" WARN
+  fi
+else
+  step "8.3 prewarm engine" SKIPPED
 fi
 
 # ── 8.5 deployment coherence verification ───────────────────────
@@ -1368,7 +1428,7 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
     # produced - the classification is unchanged, only the scheduling moved.
     note "  collecting the backgrounded view verification (pid $VERIFY_VIEWS_PID)..."
     VERIFY_RC=0
-    wait "$VERIFY_VIEWS_PID" || VERIFY_RC=$?
+    wait_with_progress "$VERIFY_VIEWS_PID" "view verification" /tmp/ifa_verify.log || VERIFY_RC=$?
     VERIFY_VIEWS_PID=""
     VERIFY_READY=1
   elif python3 -c "import snowflake.connector, yaml" 2>/dev/null; then
@@ -1397,6 +1457,10 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
     else
       note "  WARN: some views returned no data or errored - see /tmp/ifa_verify.log"
       note "        summary: ${VERIFY_TALLY:-see log}"
+      # Name the failing views here: the tally alone said "EMPTY=1" and the
+      # view it meant was only in /tmp/ifa_verify.log.
+      sed -n '/^FAILED:/,$p' /tmp/ifa_verify.log | grep -E '^ +\[' | sed 's/^ *//' | head -10 \
+        | while IFS= read -r l; do note "        failing: $l"; done || true
       note "        repair attempt: python3 $SCRIPTS/validate_app_views.py -c $CONNECTION --repair"
       step "9 verify-views" WARN
     fi
@@ -1419,6 +1483,26 @@ FAILED_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|FAILED' || true)
 # used to be invisible there: the summary only counted FAILED, so "all steps OK"
 # printed while a load-bearing script had actually failed and only WARNed.
 WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
+# The non-OK steps by name, for the console. The headline used to say "see the
+# status table", which is written only to the friction log file. `|| true`: on a
+# clean run grep matches nothing and, under `set -euo pipefail`, would abort the
+# script before the finale is printed.
+NONOK_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -E '\|(WARN|FAILED)$' | sed 's/|/ (/; s/$/)/' | paste -sd, - | sed 's/,/, /g' || true)
+# Which use cases this run left broken, and the command that rebuilds each. A
+# guarded builder (Catchment, Location, Sourcing) returns 'WARN: ...' instead of
+# failing, so the install "succeeded" and a customer found the dead Site Impact
+# page before anyone read /tmp/ifa_analytic.log. layer_impact.py reads every
+# log THIS run wrote plus step 9's view report and names the views each broken
+# layer takes down.
+# The region the guarded builders ran for, so each fix is copy-pasteable rather
+# than '<region>'. CATCHMENT.CONFIG is created before the builders, so it exists
+# even when Location failed. CSV + blank-line strip, as for the account below.
+SUMMARY_REGION="$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1;" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 | tr -d '"\r')"
+case "$SUMMARY_REGION" in REGION|""|*" "*|*error*) SUMMARY_REGION="" ;; esac
+DEGRADED_ARGS=(--warn-glob '/tmp/ifa_*.log' --since "$START_TS" --view-report /tmp/ifa_view_report.json)
+[ -n "$SUMMARY_REGION" ] && DEGRADED_ARGS+=(--region "$SUMMARY_REGION")
+DEGRADED_MD="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" --markdown 2>/dev/null || true)"
+DEGRADED_TXT="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" 2>/dev/null || true)"
 {
   echo "# install-fleet-apps friction log - $(date)"
   echo
@@ -1436,6 +1520,13 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
   echo "|------|--------|"
   for s in "${STEP_STATUS[@]}"; do echo "| ${s%%|*} | ${s##*|} |"; done
   echo
+  if [ -n "$DEGRADED_MD" ]; then
+    echo "## DEGRADED USE CASES"
+    echo "These layers did not build, so the views listed are empty or broken. Each fix rebuilds the layer; reload the view afterwards."
+    echo
+    echo "$DEGRADED_MD"
+    echo
+  fi
   echo "## Routing tool substrate"
   echo "- ROUTING_TOOLS.TOOL_* (routing verb dependency): **${ROUTING_SUBSTRATE}**"
   case "$ROUTING_SUBSTRATE" in
@@ -1474,7 +1565,12 @@ WARN_STEPS=$(printf '%s\n' "${STEP_STATUS[@]}" | grep -c '|WARN' || true)
   echo "2. Open the Admin app (build console / Data Studio): $ADMIN_URL_DISP"
   echo "   Both apps require Snowflake OAuth login; a fresh endpoint returns HTTP 302 to the login page."
   echo "3. Smoke-test live routing: ask the SA app agent \"what can I reach within 10 minutes of downtown SanFrancisco\" (needs the ORS engine RUNNING)."
-  echo "4. Verify services: \`snow sql -c $CONNECTION -q \"SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;\"\` (all should be RUNNING)."
+  if [ "$WITH_ENGINE" = "1" ]; then
+    echo "4. Routing services at the end of install (idle services auto-suspend after the time shown; the app resumes them on first use):"
+    echo '```'
+    bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" --status 2>/dev/null || echo "   (could not read service state)"
+    echo '```'
+  fi
   echo
   echo "## Friction points"
   echo "_None recorded automatically. Add manual observations here._"
@@ -1484,16 +1580,23 @@ echo
 echo "================================================================"
 if [ "${FAILED_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps FINISHED WITH ${FAILED_STEPS} FAILED STEP(S) (${ELAPSED}s)"
-  [ "${WARN_STEPS:-0}" -gt 0 ] && echo " plus ${WARN_STEPS} DEGRADED step(s) - see the status table"
+  [ "${WARN_STEPS:-0}" -gt 0 ] && echo " plus ${WARN_STEPS} DEGRADED step(s)"
+  echo " not OK: ${NONOK_STEPS}"
 elif [ "${WARN_STEPS:-0}" -gt 0 ]; then
   echo " install-fleet-apps finished with ${WARN_STEPS} DEGRADED step(s) (${ELAPSED}s)"
-  echo " nothing aborted, but at least one step did not do all of its work - see the status table"
+  echo " nothing aborted, but at least one step did not do all of its work"
+  echo " not OK: ${NONOK_STEPS} (details in that step's output above)"
+  [ -n "$DEGRADED_TXT" ] && echo " and DEGRADED USE CASES below for the views it broke"
 elif [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
   # NEVER say "all steps OK" here. Every step genuinely succeeded, but the
   # deployment is half a solution: the engine-facing surfaces do not work. Saying
   # "all steps OK" for this state is what let three engine-less installs be signed
   # off as clean.
   echo " install-fleet-apps complete (${ELAPSED}s) - ANALYTICS-ONLY (no routing engine)"
+elif [ -n "$DEGRADED_TXT" ]; then
+  # Every step exited cleanly but a view check found a layer missing: "all
+  # steps OK" here is exactly the silent success this block exists to end.
+  echo " install-fleet-apps complete (${ELAPSED}s) - steps OK, but use cases are DEGRADED (see below)"
 else
   echo " install-fleet-apps complete (${ELAPSED}s) - all steps OK"
 fi
@@ -1508,6 +1611,11 @@ echo "   deployment mode:   $DEPLOYMENT_MODE"
 echo "   routing substrate: $ROUTING_SUBSTRATE"
 echo "   SAP mock:          $SAP_MOCK"
 echo "   friction log:      $FRICTION_LOG"
+if [ -n "$DEGRADED_TXT" ]; then
+  echo "----------------------------------------------------------------"
+  echo " !! DEGRADED USE CASES - these views are empty or broken until fixed"
+  echo "$DEGRADED_TXT"
+fi
 case "$ROUTING_SUBSTRATE" in
   OK*|SKIPPED*) : ;;
   *) echo "   !! ROUTING SUBSTRATE DEGRADED - see friction log for the restore command" ;;
@@ -1525,10 +1633,17 @@ if [ "$DEPLOYMENT_MODE" = "analytics-only" ]; then
   echo "     bash .cortex/skills/install-fleet-apps/scripts/provision_engine.sh $CONNECTION"
   echo "     bash .cortex/skills/install-fleet-apps/scripts/verify_deployment.sh -c $CONNECTION --expect-engine"
 fi
+if [ "$WITH_ENGINE" = "1" ]; then
+  echo "----------------------------------------------------------------"
+  echo " Routing engine (idle services auto-suspend; the app resumes them on first use)"
+  bash "$SCRIPTS/prewarm_engine.sh" "$CONNECTION" --status 2>/dev/null || echo "   (could not read service state)"
+fi
 echo "----------------------------------------------------------------"
 echo " Next steps"
 echo "   1. Open the SA app above and log in via Snowflake OAuth."
 echo "   2. Open the Admin app to run Data Studio / provision more regions."
 echo "   3. Smoke-test routing in the SA app agent (e.g. isochrone/directions in SanFrancisco)."
-echo "   4. Endpoints still 'provisioning'? re-run the SHOW ENDPOINTS command shown above in ~1-2 min."
+if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then
+  echo "   4. An endpoint is still provisioning: run its SHOW ENDPOINTS command (URLs above) in ~1-2 min."
+fi
 echo "================================================================"

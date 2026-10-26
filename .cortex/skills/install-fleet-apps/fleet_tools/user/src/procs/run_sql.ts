@@ -1,5 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { DataCodes } from '../codes.js';
+import { persistSqlMapRows } from '../map_rows.js';
 
 /**
  * Read-only SQL escape hatch.
@@ -221,7 +222,9 @@ export const run_sql = defineProc({
     'and EXPLAIN are accepted - anything that writes is rejected - and exactly one statement ' +
     'per call. Results are capped (100 rows by default, 1000 maximum) and the response ' +
     'reports whether it was truncated; if it was, say so rather than presenting a partial ' +
-    'answer as complete. Call describe_data first if you need the schema.',
+    'answer as complete. Call describe_data first if you need the schema. To MAP the result in ' +
+    'CoWork, select an H3 cell STRING column (H3_POINT_TO_CELL_STRING), LAT+LON, or a GEOJSON ' +
+    'geography, plus one numeric value column; the response then carries result_id.',
   roles: ['user'],
   args: {
     sql: t
@@ -242,6 +245,14 @@ export const run_sql = defineProc({
       .describe('True when the query had more rows than the cap. Tell the user when true.'),
     row_limit: t.number().describe('The cap that was applied.'),
     rows: t.array(t.object({})).describe('The result rows.'),
+    result_id: t
+      .string()
+      .nullable()
+      .describe(
+        'Present only when the rows are drawable (an H3 cell string column, LAT+LON, or a ' +
+          'GEOJSON/GEOM column). To draw them in CoWork call query_routing_results with this ' +
+          'exact id and pass that result to data_to_map. Never redraw an approximation instead.',
+      ),
     governed_note: t
       .string()
       .nullable()
@@ -324,11 +335,14 @@ export const run_sql = defineProc({
     const truncated = rows.length > limit;
     if (truncated) rows = rows.slice(0, limit);
 
+    const resultId = metadataOnly ? null : await persistSqlMapRows(ctx, rows);
+
     return {
       row_count: rows.length,
       truncated,
       row_limit: limit,
       rows,
+      result_id: resultId,
       governed_note: await governedNote(ctx, sql),
     };
   },

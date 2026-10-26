@@ -1,8 +1,9 @@
 import { lazy } from 'react';
-import type { ViewDef, AgentKnowledge, AppRole, UseCase } from './types';
+import type { ViewDef, AgentKnowledge, AppRole, UseCase, ViewUnavailable } from './types';
 import type { ParsedViewDef } from '@/components/views/view-renderer';
 import { viewRegistry } from './view-registry';
 import { getDisplayConfigGlobal, interpolateTokens } from './display-config';
+import { viewSchemas, type LayerStatus } from './view-deps';
 
 interface AreaDef {
   component: string;
@@ -44,18 +45,20 @@ export type ViewsConfig = Record<string, Omit<YamlViewDef, 'id'>>;
 // Neutral data-layer DB the dashboards bind to (config-driven; FLEET_APP default).
 const DEFAULT_DATA_LAYER_DB = 'FLEET_APP';
 
-// Schemas a view's area queries reference, e.g. <DB>.DWELL.VW_X -> "DWELL".
-function viewSchemas(view: YamlViewDef, db: string): Set<string> {
-  const out = new Set<string>();
-  const fqnRe = new RegExp(`${db}\\.([A-Za-z0-9_]+)\\.`, 'g');
-  for (const area of Object.values(view.areas ?? {})) {
-    const q = (area?.data as { query?: string } | undefined)?.query;
-    if (typeof q !== 'string') continue;
-    let m: RegExpExecArray | null;
-    fqnRe.lastIndex = 0;
-    while ((m = fqnRe.exec(q)) !== null) out.add(m[1]);
-  }
-  return out;
+// Schemas a view reads come from lib/view-deps.ts (every nested query, not just
+// top-level areas).
+
+// The first absent layer this view reads, as the reason it is unavailable.
+function unavailableFor(
+  view: YamlViewDef,
+  layers: Record<string, LayerStatus> | undefined,
+  db: string,
+): ViewUnavailable | undefined {
+  if (!layers) return undefined;
+  const missing = [...viewSchemas(view, db)].filter((s) => layers[s]?.state === 'absent');
+  if (!missing.length) return undefined;
+  const first = layers[missing[0]];
+  return { schemas: missing, object: first.object, label: first.label, fix: first.fix, note: first.note };
 }
 
 function createLazyViewComponent(viewDef: YamlViewDef) {
@@ -68,10 +71,11 @@ function createLazyViewComponent(viewDef: YamlViewDef) {
   );
 }
 
-// Surfacing gate: a view whose query references a schema in `disabledSchemas`
-// (the pack's data did not resolve - see /api/pack-status) is registered but
-// hidden, so the view-picker (which filters !hidden) omits it. Pass an empty
-// set to surface everything. `dataLayerDb` is the neutral DB prefix used to
+// Surfacing gate: a view that reads a layer /api/pack-status reports ABSENT is
+// registered with `unavailable` set - it stays in the picker, greyed, and opens
+// to the reason and rebuild steps. It used to be hidden with no reason, which
+// left nobody able to tell a missing layer from a missing feature. Pass no
+// layers to surface everything. `dataLayerDb` is the neutral DB prefix used to
 // derive each view's schema set (defaults to FLEET_APP for fleet back-compat).
 function interpolateAgentKnowledge(
   ak: AgentKnowledge | undefined,
@@ -110,20 +114,20 @@ function interpolateUseCase(
 
 export function registerViewsFromConfig(
   config: ViewsConfig,
-  disabledSchemas?: Set<string>,
+  layers?: Record<string, LayerStatus>,
   dataLayerDb: string = DEFAULT_DATA_LAYER_DB,
 ): void {
   const views: YamlViewDef[] = Object.entries(config).map(([id, def]) => ({ id, ...def } as YamlViewDef));
   const display = getDisplayConfigGlobal();
   for (const view of views) {
-    const schemas = disabledSchemas?.size ? viewSchemas(view, dataLayerDb) : null;
-    const gatedOff = schemas ? [...schemas].some((s) => disabledSchemas!.has(s)) : false;
+    const unavailable = unavailableFor(view, layers, dataLayerDb);
     const registration: ViewDef = {
       id: view.id,
       label: interpolateTokens(view.label, display),
       description: interpolateTokens(view.description, display),
       useCase: interpolateUseCase(view.useCase, display),
-      hidden: view.hidden || gatedOff,
+      hidden: view.hidden,
+      unavailable,
       category: view.category ?? 'Core',
       roles: view.roles,
       agentKnowledge: interpolateAgentKnowledge(view.agentKnowledge, display),

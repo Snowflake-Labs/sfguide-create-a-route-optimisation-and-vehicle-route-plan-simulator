@@ -4,11 +4,13 @@ import { withLogging } from '@/lib/api-handler';
 import { getSnowflakeAuth } from '@/lib/sf-auth';
 import {
   detectOrsSuspended,
+  detectSuspendedInRows,
   outOfGraphMessage,
   parseOutOfGraphPoints,
   OUT_OF_GRAPH_REASON,
 } from '@/lib/routing-suspend';
 import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume';
+import { missingDependencyMessage, MISSING_DEPENDENCY_REASON } from '@/lib/missing-dependency';
 // Warehouse comes from lib/warehouse.ts (single owner). Do not reintroduce a
 // `|| 'COMPUTE_WH'` fallback: that named a warehouse this stack never creates.
 import { WAREHOUSE } from '@/lib/warehouse';
@@ -371,6 +373,17 @@ async function handleQuery(request: NextRequest): Promise<Response> {
       return obj;
     });
 
+    // A live view over a sleeping engine does not always raise: the wrapper can
+    // return the gateway's error object as a cell, the query succeeds, and the
+    // panel renders blank. Treat that exactly like the raised form.
+    const embedded = detectSuspendedInRows(rows);
+    const embeddedRegion = embedded.suspended ? resolveResumeRegion(embedded.region, regionHint) : null;
+    if (embeddedRegion) {
+      logger.warn('sf-embedded-routing-error', { region: embeddedRegion, kind: embedded.kind });
+      const payload = await resumeAndBuildPayload(embeddedRegion, embedded.kind, embedded.state);
+      return NextResponse.json(payload, { status: 503 });
+    }
+
     return NextResponse.json({
       // `type` is carried through deliberately. The client needs the declared
       // Snowflake type to bind a map layer from a GEOGRAPHY column without a
@@ -402,6 +415,13 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     if (resumeRegion) {
       const payload = await resumeAndBuildPayload(resumeRegion, det.kind, det.state);
       return NextResponse.json(payload, { status: 503 });
+    }
+    // A layer the installer skipped: name the builder that creates it, so
+    // nobody (user or agent) has to guess a remedy from a compilation error.
+    const missing = missingDependencyMessage(rawMsg, regionHint);
+    if (missing) {
+      logger.warn('sf-missing-dependency', { region: regionHint, detail: rawMsg.slice(0, 200) });
+      return NextResponse.json({ error: missing, reason: MISSING_DEPENDENCY_REASON }, { status: 424 });
     }
     logger.error('sf-error', { warehouse: WAREHOUSE }, err);
     return NextResponse.json(
