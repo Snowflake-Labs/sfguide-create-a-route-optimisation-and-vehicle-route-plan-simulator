@@ -441,6 +441,13 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_shift_overrun_negative.py
     scope: static
     why: the generator's shift-overrun allowance escapes its roster or legal cap
+  - id: layer_gaps_probe
+    run: npx tsx verify_layer_gaps.mts
+    cwd: .cortex/skills/install-fleet-apps/fleet_tools/user
+    needs: [npm-build:.cortex/skills/install-fleet-apps/fleet_tools/vendor/synapse, npm-ci:.cortex/skills/install-fleet-apps/fleet_tools/user]
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/verify_layer_gaps_negative.py
+    scope: static
+    why: the deep_link dependency probe reports a working function-backed view as never built, so the agent tells the customer it is unavailable
 
   # ── gateway (imports the real routing_service.py; deps in a cached venv) ────
   - id: gateway_non_json

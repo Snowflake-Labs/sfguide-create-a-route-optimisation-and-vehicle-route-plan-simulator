@@ -206,7 +206,10 @@ export async function layerGapsFor(conn: Conn, viewIds: string[]): Promise<Recor
         binds.push(...tbl.map((s) => `${s.schema}.${s.name}`));
       }
       if (fn.length) {
-        parts.push(`SELECT '${db}.' || FUNCTION_SCHEMA || '.' || FUNCTION_NAME FROM ${db}.INFORMATION_SCHEMA.FUNCTIONS
+        // Aliased in EVERY branch: a UNION takes its column name from the
+        // FIRST branch, so a function-only view left the column unnamed, r.F
+        // undefined, and the view reported "never built" while it worked.
+        parts.push(`SELECT '${db}.' || FUNCTION_SCHEMA || '.' || FUNCTION_NAME AS F FROM ${db}.INFORMATION_SCHEMA.FUNCTIONS
                      WHERE FUNCTION_SCHEMA || '.' || FUNCTION_NAME IN (${fn.map(() => '?').join(', ')})`);
         binds.push(...fn.map((s) => `${s.schema}.${s.name}`));
       }
