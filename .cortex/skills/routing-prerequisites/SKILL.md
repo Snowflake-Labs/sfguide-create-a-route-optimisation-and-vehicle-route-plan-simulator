@@ -14,9 +14,10 @@ Verify all required tools are installed and guide installation of missing depend
 The checks below are the COMPLETE set of commands `install-fleet-apps` calls. A tool the
 installer needs and this skill does not check is a defect here, because the installer then
 fails partway through a long run instead of before it starts. The two easy ones to miss:
-the installer's own preflight and both app image builds call `docker` directly, so Podman
-alone is NOT sufficient; and three Python packages are imported by install steps, so
-`python3` being present is not enough either.
+a container CLI being installed is not enough - the installer picks Docker or Podman by
+HEALTH (`install-fleet-apps/scripts/lib/container_runtime.sh`: `info` answers AND a
+local no-network build succeeds), so this skill runs that same probe; and three Python
+packages are imported by install steps, so `python3` being present is not enough either.
 
 ## Prerequisites
 
@@ -40,12 +41,15 @@ None - this skill helps you install prerequisites!
    # Check Cortex Code CLI
    cortex --version 2>/dev/null && echo "Cortex Code: INSTALLED" || echo "Cortex Code: NOT FOUND"
    
-   # Check Docker (REQUIRED: install_fleet_apps.sh preflight and both app image builds call `docker`)
-   docker --version 2>/dev/null && echo "Docker: INSTALLED" || echo "Docker: NOT FOUND"
-   docker info >/dev/null 2>&1 && echo "Docker Daemon: RUNNING" || echo "Docker Daemon: NOT RUNNING"
-   
-   # Check Podman (optional: only usable for the ENGINE image build via CONTAINER_CMD=podman)
-   podman --version 2>/dev/null && echo "Podman: INSTALLED" || echo "Podman: NOT FOUND (optional)"
+   # Check a usable container runtime (REQUIRED: Docker OR Podman). This is the exact
+   # probe the installer, the engine build and both app deploys use; --no-start means
+   # it reports a stopped podman machine instead of starting it.
+   docker --version 2>/dev/null || echo "Docker: NOT FOUND"
+   podman --version 2>/dev/null || echo "Podman: NOT FOUND"
+   bash -c 'source .cortex/skills/install-fleet-apps/scripts/lib/container_runtime.sh \
+     && resolve_container_runtime --no-start \
+     && echo "Container runtime: $CONTAINER_CMD (usable)" \
+     || echo "Container runtime: NONE usable - $CONTAINER_RUNTIME_ERROR"'
    
    # Check crane (recommended: avoids the SPCS registry push hang on the manifest commit)
    crane version 2>/dev/null && echo "crane: INSTALLED" || echo "crane: NOT FOUND (recommended)"
@@ -83,8 +87,7 @@ None - this skill helps you install prerequisites!
    | Prerequisite | Status | Required |
    |--------------|--------|----------|
    | Cortex Code CLI | ✅/❌ | Yes |
-   | Docker (CLI + running daemon) | ✅/❌ | Yes |
-   | Podman | ✅/❌ | No (optional, engine build only) |
+   | Container runtime (Docker or Podman, usable per the probe) | ✅/❌ | Yes |
    | crane | ✅/❌ | Recommended |
    | Node.js >= 20 + npm | ✅/❌ | Yes |
    | Python 3 | ✅/❌ | Yes |
@@ -114,19 +117,22 @@ None - this skill helps you install prerequisites!
 - **Installation:** See [Cortex Code documentation](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli)
 - **Verify:** `cortex --version`
 
-#### Container Runtime Installation (Docker required, Podman optional)
+#### Container Runtime Installation (Docker or Podman)
 
-Docker is required: `install_fleet_apps.sh` refuses to start without the `docker` command,
-and both app images are built with `docker build`. Podman is an optional extra for the
-engine image build only (`CONTAINER_CMD=podman`); it does not replace Docker. Note the
-engine build auto-detects docker first because a default 2 GB podman machine OOMs on the
-ORS image.
+One usable runtime is required; either works for the engine build and both app images.
+The installer prefers Docker when it is usable, else Podman (starting an existing
+stopped machine). Force one with `CONTAINER_CMD=docker|podman`. Prefer Docker if you
+can: a default 2 GB podman machine runs out of memory building the ORS image, so give a
+podman machine at least 8 GB (`podman machine init --memory 8192`, or
+`podman machine set --memory 8192` on a stopped one). Docker Desktop under an
+organization sign-in policy answers `docker info` but refuses builds until you sign in;
+the probe above reports that case.
 
-**Podman** (optional, engine image build only):
+**Podman**:
 - **macOS:**
   ```bash
   brew install podman
-  podman machine init
+  podman machine init --memory 8192
   podman machine start
   ```
 
@@ -144,7 +150,7 @@ ORS image.
 
 - **Verify:** `podman --version && podman info`
 
-**Docker** (required):
+**Docker** (preferred):
 - **macOS:**
   ```bash
   brew install --cask docker
@@ -286,8 +292,8 @@ After completion, all these commands should succeed:
 
 ```bash
 cortex --version        # Cortex Code CLI  
-docker --version        # Docker CLI
-docker info             # Docker daemon running
+docker --version || podman --version   # a container CLI
+bash -c 'source .cortex/skills/install-fleet-apps/scripts/lib/container_runtime.sh && resolve_container_runtime --no-start'   # usable runtime (installer probe)
 node --version          # Node.js >= 20
 npm --version           # npm
 python3 -c 'import yaml, snowflake.connector, requests'   # Python 3 + packages
@@ -297,7 +303,7 @@ git --version           # Git
 crane version           # crane (recommended)
 ```
 
-**Note:** Docker is required. Podman is optional and only used for the engine image build when `CONTAINER_CMD=podman` is set.
+**Note:** one usable runtime, Docker or Podman, is required. Docker is preferred; a Podman machine needs at least 8 GB for the engine image build.
 
 ## Common Issues
 

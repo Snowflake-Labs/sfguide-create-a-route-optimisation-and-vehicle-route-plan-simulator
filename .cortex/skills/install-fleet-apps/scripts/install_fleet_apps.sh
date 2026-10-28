@@ -186,6 +186,17 @@ else
 fi
 snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
+# Say up front whether this is a first install or a reuse of an earlier one: a
+# fresh-clone run on an already-installed account otherwise looks like a first
+# install while silently taking the reuse path. Read-only; never changes what runs.
+EXISTING_DBS=$(snow sql -c "$CONNECTION" --format csv -q "$TAG_SQL SELECT DATABASE_NAME FROM SNOWFLAKE.INFORMATION_SCHEMA.DATABASES WHERE DATABASE_NAME IN ('FLEET_INTELLIGENCE','FLEET_APP','SYNTHETIC_DATASETS','ROUTING_PLATFORM','OPENROUTESERVICE_APP') ORDER BY 1;" 2>/dev/null \
+  | grep -E '^[A-Z_]+$' | grep -v '^DATABASE_NAME$' | tr '\n' ' ' || true)
+if [ -n "$EXISTING_DBS" ]; then
+  note "  existing install detected (${EXISTING_DBS% }): re-using it, so this run upgrades rather than installs from scratch"
+  note "  to start over instead, see README 'Re-installing or starting over' (routing-solution-cleanup)"
+else
+  note "  no earlier install found: first install"
+fi
 step "0 preflight" OK
 
 # ── 0.5 pre-create FLEET_APP_* roles (before any GRANT target needs them) ──
@@ -1613,7 +1624,7 @@ DEGRADED_TXT="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" 2>/dev/
   echo "## Next steps"
   echo "1. Open the SA app (consumer/analytics): $SA_URL_DISP"
   echo "2. Open the Admin app (build console / Data Studio): $ADMIN_URL_DISP"
-  echo "   Both apps require Snowflake OAuth login; a fresh endpoint returns HTTP 302 to the login page."
+  echo "   Each app is a separate endpoint with its own Snowflake OAuth sign-in (you sign in once per app); a fresh endpoint returns HTTP 302 to the login page."
   echo "3. Smoke-test live routing: ask the SA app agent \"what can I reach within 10 minutes of downtown SanFrancisco\" (needs the ORS engine RUNNING)."
   if [ "$WITH_ENGINE" = "1" ]; then
     echo "4. Routing services at the end of install (idle services auto-suspend after the time shown; the app resumes them on first use):"
@@ -1691,7 +1702,7 @@ fi
 echo "----------------------------------------------------------------"
 echo " Next steps"
 echo "   1. Open the SA app above and log in via Snowflake OAuth."
-echo "   2. Open the Admin app to run Data Studio / provision more regions."
+echo "   2. Open the Admin app to run Data Studio / provision more regions (a separate endpoint: sign in again)."
 echo "   3. Smoke-test routing in the SA app agent (e.g. isochrone/directions in SanFrancisco)."
 if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then
   echo "   4. An endpoint is still provisioning: run its SHOW ENDPOINTS command (URLs above) in ~1-2 min."
