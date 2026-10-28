@@ -44,7 +44,9 @@ SHARE_SCHEMA = "OVERTURE_MAPS__PLACES.CARTO"
 
 
 class FakeSession:
-    def __init__(self, fail_at=None, files=None, ready=False, foreign_table=False):
+    def __init__(self, fail_at=None, files=None, ready=False, foreign_table=False,
+                 request_reply="Success: Listing X is ready to be imported"):
+        self.request_reply = request_reply
         self.sql = []
         self.params = []
         self.query_id = "query-1"
@@ -63,6 +65,8 @@ class FakeSession:
             table = sql.split(".")[-1]
             theme = next(theme for theme, tables in contract.LAYOUTS.items() if table in tables)
             return describe(theme, table)
+        if "SYSTEM$REQUEST_LISTING_AND_WAIT" in sql:
+            return [{"SYSTEM$REQUEST_LISTING_AND_WAIT": self.request_reply}]
         if sql.startswith("LIST @"):
             return self.files
         if sql.startswith("SHOW TABLES"):
@@ -137,7 +141,7 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(choose_source({"comment": COMMENT}, None), "s3")
         self.assertEqual(choose_source({"comment": "not ours"}, None), "existing-local")
         self.assertEqual(choose_source(None, {"is_ready_for_import": "true"}), "marketplace")
-        self.assertEqual(choose_source(None, {"is_ready_for_import": False}), "s3")
+        self.assertEqual(choose_source(None, {"is_ready_for_import": False}), "request")
         self.assertEqual(choose_source(None, None), "s3")
         with self.assertRaises(RuntimeError):
             choose_source(None, {})
@@ -150,6 +154,48 @@ class ResolverTests(unittest.TestCase):
         self.assertIn("marketplace", preparer.prepare("places", None, {"is_ready_for_import": True}))
         self.assertIn("reused", preparer.prepare("divisions", {"origin": "share"}, None))
         self.assertTrue(all(sql.startswith("DESCRIBE") for sql in session.sql))
+
+    def test_not_ready_listing_is_requested_not_s3(self):
+        # Every fresh account reports is_ready_for_import=false for all themes;
+        # that used to go straight to a bulk S3 load.
+        session = FakeSession()
+        result = Preparer(session).prepare("divisions", None, {"is_ready_for_import": "false"})
+        self.assertIn("marketplace: requested", result)
+        self.assertTrue(any("SYSTEM$REQUEST_LISTING_AND_WAIT" in sql for sql in session.sql))
+        self.assertTrue(any("FROM LISTING" in sql for sql in session.sql))
+        self.assertFalse(any("CREATE STAGE" in sql for sql in session.sql))
+
+    def test_request_timeout_falls_back_to_s3_with_reason(self):
+        session = FakeSession(request_reply="Error: Timed out waiting for the listing")
+        result = Preparer(session, release="2026-10-21.0").prepare(
+            "divisions", None, {"is_ready_for_import": "false"})
+        self.assertIn("s3: global divisions loaded", result)
+        self.assertFalse(any("FROM LISTING" in sql for sql in session.sql))
+        started = [p for sql, p in zip(session.sql, session.params)
+                   if "LOAD_LOG VALUES" in sql and p[4] == "STARTED"]
+        self.assertIn("Timed out", started[0][5])
+
+    def test_request_error_falls_back_to_s3(self):
+        session = FakeSession(fail_at="SYSTEM$REQUEST_LISTING_AND_WAIT")
+        result = Preparer(session, release="2026-10-21.0").prepare(
+            "divisions", None, {"is_ready_for_import": "false"})
+        self.assertIn("s3:", result)
+
+    def test_prefired_request_failure_skips_second_wait(self):
+        session = FakeSession(request_reply="Error: listing not available")
+        preparer = Preparer(session, release="2026-10-21.0")
+        preparer.request_listings(["divisions"])
+        self.assertIn("divisions", preparer.request_errors)
+        preparer.prepare("divisions", None, {"is_ready_for_import": "false"})
+        waits = [p for sql, p in zip(session.sql, session.params)
+                 if "SYSTEM$REQUEST_LISTING_AND_WAIT" in sql]
+        self.assertEqual(waits, [(contract.LISTINGS["divisions"], 0)])
+
+    def test_check_reports_requestable_without_requesting(self):
+        session = FakeSession()
+        result = Preparer(session, check=True).prepare("places", None, {"is_ready_for_import": "false"})
+        self.assertIn("install requests it", result)
+        self.assertFalse(any("REQUEST_LISTING" in sql for sql in session.sql))
 
     def test_import_error_does_not_fallback(self):
         session = FakeSession(fail_at="FROM LISTING")

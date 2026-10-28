@@ -490,25 +490,30 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     echo "  OK: app sentinel present in built chunks."
   fi
 
-  echo "[2/7] Login to SPCS image registry..."
-  snow spcs image-registry login -c "$CONNECTION" >/dev/null
+  # Runtime chosen by health, not CLI presence (docker daemon down -> podman).
+  # shellcheck disable=SC1091
+  source "$(dirname "${BASH_SOURCE[0]}")/lib/container_runtime.sh"
+  resolve_container_runtime || { echo "ERROR: no usable container runtime: $CONTAINER_RUNTIME_ERROR"; exit 1; }
+  echo "[2/7] Login to SPCS image registry (runtime=$CONTAINER_CMD)..."
   REPO_URL=$(snow spcs image-repository url "$IMAGE_REPO_SQL_NAME" -c "$CONNECTION")
+  container_registry_login "$CONNECTION" "$REPO_URL"
   echo "  registry=$REPO_URL"
 
   echo "[3/7] Docker build (prebuilt .next) + push tag=$IMAGE_TAG..."
   # FLEET_DOCKER_BUILD_FLAGS (e.g. "--no-cache --pull") makes a fresh-machine
   # reinstall build with no cached layer or base image; empty by default.
   # shellcheck disable=SC2086
-  docker build --platform linux/amd64 ${FLEET_DOCKER_BUILD_FLAGS:-} \
+  "$CONTAINER_CMD" build --platform linux/amd64 ${FLEET_DOCKER_BUILD_FLAGS:-} \
     --label "git.sha=$GIT_SHA" --label "git.branch=$GIT_BRANCH" \
     -f "$UI_DIR/Dockerfile" \
     -t "$REPO_URL/fleet_sa_app:$IMAGE_TAG" \
-    "$UI_DIR" > /tmp/fleet_sa_docker.log 2>&1 || { echo "ERROR: docker build failed"; tail -40 /tmp/fleet_sa_docker.log; exit 1; }
+    "$UI_DIR" > /tmp/fleet_sa_docker.log 2>&1 || { echo "ERROR: $CONTAINER_CMD build failed"; tail -40 /tmp/fleet_sa_docker.log; exit 1; }
   # Prefer crane for the SPCS push: plain `docker push` intermittently hangs on the
   # final manifest/blob commit ("timeout awaiting response headers") when the bearer
   # token expires mid-upload; crane commits reliably. Mirrors provision_engine.sh.
   # Falls back to `docker push` if crane is absent or the crane path errors.
-  if command -v crane >/dev/null 2>&1 && [ "${USE_CRANE_PUSH:-1}" = "1" ]; then
+  # crane reads ~/.docker/config.json, which only the docker login writes.
+  if [ "$CONTAINER_CMD" = docker ] && command -v crane >/dev/null 2>&1 && [ "${USE_CRANE_PUSH:-1}" = "1" ]; then
     snow spcs image-registry login -c "$CONNECTION" >/dev/null 2>&1 || true
     _tar="$(mktemp -t fleetsaimg.XXXXXX).tar"
     if docker save "$REPO_URL/fleet_sa_app:$IMAGE_TAG" -o "$_tar" \
@@ -517,10 +522,10 @@ if [ "${SKIP_IMAGE:-0}" != "1" ]; then
     else
       rm -f "$_tar"
       echo "  crane push failed; falling back to 'docker push' (see /tmp/fleet_sa_push.log)"
-      docker push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: docker push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
+      "$CONTAINER_CMD" push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: $CONTAINER_CMD push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
     fi
   else
-    docker push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: docker push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
+    "$CONTAINER_CMD" push "$REPO_URL/fleet_sa_app:$IMAGE_TAG" >/tmp/fleet_sa_push.log 2>&1 || { echo "ERROR: $CONTAINER_CMD push failed"; tail -30 /tmp/fleet_sa_push.log; exit 1; }
   fi
 else
   echo "[1-3/7] SKIP_IMAGE=1, skipping build/push."
