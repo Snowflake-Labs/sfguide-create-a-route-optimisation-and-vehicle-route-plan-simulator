@@ -167,9 +167,23 @@ resolve_endpoint() {
 
 # ── 0. preflight ────────────────────────────────────────────────
 note "[0/8] preflight..."
-for t in snow docker node npm python3; do
+for t in snow node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
+# Image builds need a WORKING runtime, docker or podman. Probe health here (no
+# machine start) so a stopped Docker Desktop is reported in seconds instead of
+# failing the first image build; the deploy scripts re-resolve and may start a
+# stopped podman machine.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib/container_runtime.sh"
+if resolve_container_runtime --no-start; then
+  note "  container runtime: $CONTAINER_CMD"
+elif [ "${CONTAINER_CMD:-podman}" = podman ] && command -v podman >/dev/null 2>&1 \
+     && [ -n "$(podman machine list --format '{{.Name}}' 2>/dev/null | head -1)" ]; then
+  note "  WARN: $CONTAINER_RUNTIME_ERROR - will start the podman machine at the first image build"
+else
+  echo "ERROR: $CONTAINER_RUNTIME_ERROR"; exit 1
+fi
 snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
 step "0 preflight" OK
@@ -326,6 +340,22 @@ if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
   note "  engine image phase pid=$ENGINE_IMAGES_PID"
 fi
 
+# ── 1.6 reconcile a previously used account (before anything assumes fresh) ──
+# Adds seed columns an older table lacks, re-enables AUTO_RESUME on (and resumes)
+# a reused pool, and renames a TABLE / DYNAMIC TABLE that holds a name this
+# installer replaces with a view (to <NAME>_LEGACY_<date>, rows kept). Each of
+# those failed a reuse install far from its cause; see reconcile_existing.py.
+# No-op on a fresh account.
+note "[1.6/8] reconciling pre-existing objects (log: /tmp/ifa_reconcile.log)..."
+if python3 "$SCRIPTS/reconcile_existing.py" -c "$CONNECTION" --apply >/tmp/ifa_reconcile.log 2>&1; then
+  sed 's/^/  /' /tmp/ifa_reconcile.log
+  step "1.6 reconcile" OK
+else
+  sed 's/^/  /' /tmp/ifa_reconcile.log
+  note "  WARN: some reconcile changes failed (above); later steps may hit the same objects"
+  step "1.6 reconcile" WARN
+fi
+
 # ── 2. data (reuse rows else seed the agnostic SF/ebike preset) ──
 if [ "${SKIP_DATA:-0}" != "1" ]; then
   note "[2/8] resolving data layer..."
@@ -396,6 +426,26 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
       grep -iE 'error|does not exist|not authorized' /tmp/ifa_load.log 2>/dev/null \
         | tail -5 | sed 's/^/          /' || true
       SEED_STEP_STATUS=WARN
+    fi
+    # A WARN is right for engine-only sections, NOT for a loader that stopped
+    # early: `snow sql -f` aborts at the first error, so everything after it is
+    # never created. On a reused account a stale LOOKUP aborted section 2j and
+    # CORE.DIM_DATASETS (section 3a-ter) never existed - which surfaced only at
+    # step 2.5 as an unrelated-looking "DIM_DATASETS absent". Every table a later
+    # step reads must exist and hold rows, or the install stops here.
+    SEED_MISSING=""
+    for t in FLEET_INTELLIGENCE.CORE.DIM_DATASETS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS \
+             SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET \
+             SYNTHETIC_DATASETS.UNIFIED.DIM_POIS; do
+      n=$(snow sql -c "$CONNECTION" --format=CSV -q "$TAG_SQL SELECT COUNT(*) AS N FROM $t;" \
+            2>/dev/null | grep -oE '^[0-9]+$' | tail -1 || true)
+      [ "${n:-0}" -gt 0 ] 2>/dev/null || SEED_MISSING="$SEED_MISSING $t"
+    done
+    if [ -n "$SEED_MISSING" ]; then
+      echo "ERROR: seed load incomplete - missing or empty:$SEED_MISSING"
+      echo "  first loader error (/tmp/ifa_load.log):"
+      grep -m1 -iE -B2 'error' /tmp/ifa_load.log 2>/dev/null | sed 's/^/    /' || true
+      step "2 data" FAILED; exit 1
     fi
   fi
   step "2 data" "${SEED_STEP_STATUS:-OK}"

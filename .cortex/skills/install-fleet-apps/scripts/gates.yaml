@@ -142,6 +142,21 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_engine_guards_negative.py
     scope: static
     why: installer SQL creates an engine-dependent object outside a guard
+  - id: container_runtime
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_container_runtime.sh
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_container_runtime_negative.sh
+    scope: static
+    why: runtime picked by CLI presence (docker daemon down, podman never tried) or an image build hardcodes docker
+  - id: seed_copy_columns
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py
+    scope: static
+    why: a seed COPY binds by position, so an older pre-existing table shape aborts the loader mid-file
+  - id: reconcile_existing
+    run: python3 .cortex/skills/install-fleet-apps/scripts/test_reconcile_existing.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_reconcile_existing_negative.py
+    scope: static
+    why: a reused account keeps stale seed columns, a suspended no-auto-resume pool, or a table at a view's name
   - id: geography_carrier
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_geography_carrier.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_geography_carrier_negative.py
