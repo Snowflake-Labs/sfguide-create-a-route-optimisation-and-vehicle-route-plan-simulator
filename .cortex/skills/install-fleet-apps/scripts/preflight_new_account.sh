@@ -174,12 +174,28 @@ fi
 #        non-empty, so a partially-loaded account is never re-seeded). ---
 echo
 echo "[6] pre-existing fleet objects (clean install vs reuse)"
+# A database is enough to make this a reuse install: an account holding
+# FLEET_INTELLIGENCE / SYNTHETIC_DATASETS from an older install but no
+# CORE.DIM_DATASETS used to be reported "clean", and its stale tables, pool and
+# view-name conflicts then failed the install several steps in.
+DBS_OUT=$(qc "SHOW DATABASES;")
+DB_NAMES=" $(printf '%s\n' "$DBS_OUT" | awk -F, 'NR>1 {gsub(/"/,"",$2); print toupper($2)}' | tr '\n' ' ') "
+EXISTING=""
+for db in FLEET_INTELLIGENCE SYNTHETIC_DATASETS OPENROUTESERVICE_APP FLEET_APP ROUTING_PLATFORM; do
+  has "$DB_NAMES" " $db " && EXISTING="$EXISTING $db"
+done
 OUT=$(q "SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS;")
-if has_i "$OUT" "does not exist" || has_i "$OUT" "not authorized"; then
-  pass "no FLEET_INTELLIGENCE - this is a clean install"
+if [ -z "$EXISTING" ]; then
+  pass "none of the solution's databases exist - this is a clean install"
 else
-  N=$(printf '%s\n' "$OUT" | grep -oE "^\| [0-9]+" | grep -oE "[0-9]+" | head -1)
-  warn "FLEET_INTELLIGENCE.CORE.DIM_DATASETS already has ${N:-?} row(s) - step 2 will SKIP seeding. Flush first for a true clean install."
+  warn "reuse install: already present:$EXISTING (step 1.6 reconciles them; detail below)"
+  if ! has_i "$OUT" "does not exist" && ! has_i "$OUT" "not authorized"; then
+    N=$(printf '%s\n' "$OUT" | grep -oE "^\| [0-9]+" | grep -oE "[0-9]+" | head -1)
+    warn "FLEET_INTELLIGENCE.CORE.DIM_DATASETS already has ${N:-?} row(s) - step 2 will SKIP seeding. Flush first for a true clean install."
+  fi
+  RECON=$(python3 "$(dirname "${BASH_SOURCE[0]}")/reconcile_existing.py" -c "$CONNECTION" --check 2>&1) \
+    || warn "reconcile check could not complete"
+  printf '%s\n' "$RECON" | sed 's/^/     /'
 fi
 
 # --- 7. Python deps the post-install harness needs. Checked here so the
