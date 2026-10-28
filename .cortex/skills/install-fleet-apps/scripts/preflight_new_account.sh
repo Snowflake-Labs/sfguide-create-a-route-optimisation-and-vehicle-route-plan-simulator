@@ -82,9 +82,20 @@ echo "=== install-fleet-apps pre-flight (connection=$CONNECTION)"
 #        tool costs a second rather than surfacing after the first SQL step) ---
 echo
 echo "[1] local toolchain"
-for t in snow docker node npm python3; do
+for t in snow node npm python3; do
   if command -v "$t" >/dev/null 2>&1; then pass "$t present"; else fail "$t NOT found"; fi
 done
+# Health, not presence: a docker CLI with no running daemon used to pass here
+# and then fail the engine build. --no-start: preflight changes no state.
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/container_runtime.sh"
+if resolve_container_runtime --no-start; then
+  pass "container runtime $CONTAINER_CMD is running"
+elif command -v podman >/dev/null 2>&1 && [ -n "$(podman machine list --format '{{.Name}}' 2>/dev/null | head -1)" ]; then
+  warn "$CONTAINER_RUNTIME_ERROR - the installer will start the podman machine"
+else
+  fail "$CONTAINER_RUNTIME_ERROR"
+fi
 if command -v crane >/dev/null 2>&1; then
   pass "crane present (preferred for SPCS image push)"
 else

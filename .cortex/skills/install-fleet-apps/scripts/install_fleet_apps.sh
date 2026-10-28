@@ -167,9 +167,23 @@ resolve_endpoint() {
 
 # ── 0. preflight ────────────────────────────────────────────────
 note "[0/8] preflight..."
-for t in snow docker node npm python3; do
+for t in snow node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
+# Image builds need a WORKING runtime, docker or podman. Probe health here (no
+# machine start) so a stopped Docker Desktop is reported in seconds instead of
+# failing the first image build; the deploy scripts re-resolve and may start a
+# stopped podman machine.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib/container_runtime.sh"
+if resolve_container_runtime --no-start; then
+  note "  container runtime: $CONTAINER_CMD"
+elif [ "${CONTAINER_CMD:-podman}" = podman ] && command -v podman >/dev/null 2>&1 \
+     && [ -n "$(podman machine list --format '{{.Name}}' 2>/dev/null | head -1)" ]; then
+  note "  WARN: $CONTAINER_RUNTIME_ERROR - will start the podman machine at the first image build"
+else
+  echo "ERROR: $CONTAINER_RUNTIME_ERROR"; exit 1
+fi
 snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
 step "0 preflight" OK

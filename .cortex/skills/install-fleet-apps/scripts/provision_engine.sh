@@ -45,13 +45,13 @@ TRACK='{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"m
 TAG_SQL="ALTER SESSION SET query_tag = '$TRACK';"
 
 # ── 0. preflight: container runtime ─────────────────────────────
-# Auto-detect prefers docker: a default podman machine is 2 GB and OOMs the ORS
-# image build, and Docker Desktop is usually larger-provisioned. Override with
-# CONTAINER_CMD=docker|podman.
-if [ -z "${CONTAINER_CMD:-}" ]; then
-  if command -v docker >/dev/null 2>&1; then CONTAINER_CMD=docker
-  elif command -v podman >/dev/null 2>&1; then CONTAINER_CMD=podman
-  else echo "ERROR: neither docker nor podman found"; exit 1; fi
+# Selected by health (`<cmd> info`), not CLI presence: docker when its daemon
+# answers, else podman (starting an existing stopped machine). See
+# lib/container_runtime.sh. Override with CONTAINER_CMD=docker|podman.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib/container_runtime.sh"
+if ! resolve_container_runtime; then
+  echo "ERROR: no usable container runtime: $CONTAINER_RUNTIME_ERROR"; exit 1
 fi
 note "container runtime: $CONTAINER_CMD (override with CONTAINER_CMD=docker|podman)"
 # Warn on a small podman machine - the ORS image build is memory-heavy.
@@ -135,12 +135,7 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
   note "[3/6] building + pushing 4 engine images (see references/build-images.md)..."
   # shellcheck disable=SC1091
   source "$SKILL_DIR/image-versions.env"
-  if [ "$CONTAINER_CMD" = "podman" ]; then
-    REGISTRY_HOST=$(snow spcs image-repository url "$ENGINE_REPO" -c "$CONN" | cut -d'/' -f1)
-    snow spcs image-registry token --format=JSON -c "$CONN" | "$CONTAINER_CMD" login "$REGISTRY_HOST" -u 0sessiontoken --password-stdin
-  else
-    snow spcs image-registry login -c "$CONN" >/dev/null
-  fi
+  container_registry_login "$CONN" "$(snow spcs image-repository url "$ENGINE_REPO" -c "$CONN")"
   REPO_URL=$(snow spcs image-repository url "$ENGINE_REPO" -c "$CONN" --format JSON \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['message'])")
   note "  registry=$REPO_URL"

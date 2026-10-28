@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Resolve each Overture theme: reuse, Marketplace, then public S3.
+"""Resolve each Overture theme: reuse, Marketplace (requesting it when not yet
+in region), then public S3.
 
 --check is read-only and never accepts terms, creates stages, or loads data.
 S3 copies are global so existing global Overture tools do not silently return an
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import string
@@ -70,8 +72,11 @@ def choose_source(existing, listing):
     ready = str(listing.get("is_ready_for_import", "")).lower()
     if ready in ("true", "yes", "1"):
         return "marketplace"
+    # False means "not yet replicated to this region", not "unavailable": the
+    # documented remedy is SYSTEM$REQUEST_LISTING_AND_WAIT. Mapping it to S3 sent
+    # every fresh account (all five listings report false) to a bulk S3 load.
     if ready in ("false", "no", "0"):
-        return "s3"
+        return "request"
     raise RuntimeError("Listing readiness is unknown; refusing to infer S3 fallback")
 
 
@@ -143,8 +148,11 @@ class Session:
 
 class Preparer:
     def __init__(self, session, *, check=False, max_bytes=500_000_000_000,
-                 refresh=False, release=None, warehouse=None):
+                 refresh=False, release=None, warehouse=None, listing_wait_mins=20):
         self.session = session
+        self.listing_wait_mins = listing_wait_mins
+        # theme -> reason a request already failed in request_listings()
+        self.request_errors = {}
         self.warehouse = warehouse
         self.check = check
         self.max_bytes = max_bytes
@@ -225,6 +233,22 @@ class Preparer:
                      (f"{database(theme)}.CARTO", text))
             print(f"  semantic view {database(theme)}.CARTO.{view} created", flush=True)
 
+    def _request(self, listing, mins):
+        rows = self.run("CALL SYSTEM$REQUEST_LISTING_AND_WAIT(%s, %s)", (listing, mins))
+        message = str(next(iter(rows[0].values()))) if rows else ""
+        if not message.lower().startswith("success"):
+            raise RuntimeError(message or "empty response")
+        return message
+
+    def request_listings(self, themes):
+        """Fire every fulfillment request without waiting, so regions replicate in
+        parallel and resolve() then waits on each in turn instead of serially."""
+        for theme in themes:
+            try:
+                self._request(LISTINGS[theme], 0)
+            except Exception as exc:
+                self.request_errors[theme] = str(exc)[:500]
+
     def import_listing(self, theme):
         listing = LISTINGS[theme]
         self.run(f"CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', '{listing}')")
@@ -283,6 +307,25 @@ class Preparer:
             self.import_listing(theme)
             self.describe(theme)
             return "marketplace: acquired and schema checked"
+        fallback_reason = "global S3 fallback"
+        if source == "request":
+            if self.check:
+                return ("marketplace: listed but not yet in this region; install requests it "
+                        f"and waits up to {self.listing_wait_mins} min before any S3 fallback")
+            reason = self.request_errors.get(theme)
+            if reason is None:
+                try:
+                    self._request(LISTINGS[theme], self.listing_wait_mins)
+                except Exception as exc:
+                    reason = str(exc)[:500]
+            if reason is None:
+                # Same no-S3-retry policy as a ready listing: once fulfilled, an
+                # import error is a terms/permission problem, not availability.
+                self.import_listing(theme)
+                self.describe(theme)
+                return "marketplace: requested, acquired and schema checked"
+            print(f"  {theme}: Marketplace request did not complete ({reason}); using S3", flush=True)
+            fallback_reason = "global S3 fallback after listing request: " + reason
         if existing and self.loaded(theme) and not self.refresh:
             self.describe(theme, exact=True)
             if not self.check:
@@ -293,7 +336,7 @@ class Preparer:
         self.ensure_control()
         if self.release is None:
             self.release = fetch_release()
-        self.log(theme, "STARTED", "global S3 fallback")
+        self.log(theme, "STARTED", fallback_reason)
         try:
             self.load_theme(theme, existing)
             self.ensure_semantic_views(theme)
@@ -402,11 +445,16 @@ def main(argv=None):
     parser.add_argument("--release")
     parser.add_argument("--max-bytes", type=int, default=500_000_000_000)
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--listing-wait-mins", type=int,
+                        default=int(os.environ.get("OVERTURE_LISTING_WAIT_MINS", "20")),
+                        help="Per-theme wait for a requested listing before S3 fallback")
     args = parser.parse_args(argv)
     if args.check and args.grant_role:
         parser.error("--check cannot grant privileges")
     if args.grant_role:
         identifier(args.grant_role)
+    if args.listing_wait_mins < 0 or args.listing_wait_mins * 60 >= args.timeout:
+        parser.error("--listing-wait-mins must be >= 0 and shorter than --timeout")
     if args.max_bytes <= 0 or args.timeout <= 0:
         parser.error("Budget and timeout must be positive")
     if args.release and not RELEASE_RE.fullmatch(args.release):
@@ -429,7 +477,14 @@ def main(argv=None):
             listing_error = str(exc)
         preparer = Preparer(session, check=args.check, max_bytes=args.max_bytes,
                             refresh=args.refresh, release=args.release,
-                            warehouse=args.warehouse or identity["WAREHOUSE"])
+                            warehouse=args.warehouse or identity["WAREHOUSE"],
+                            listing_wait_mins=args.listing_wait_mins)
+        if not (args.check or args.grant_role):
+            preparer.request_listings([
+                theme for theme, listing_id in LISTINGS.items()
+                if not databases.get(database(theme))
+                and str((listings.get(listing_id) or {}).get("is_ready_for_import", "")).lower()
+                in ("false", "no", "0")])
         failures = 0
         for theme, listing_id in LISTINGS.items():
             try:
