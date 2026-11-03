@@ -78,7 +78,7 @@ CREATE COMPUTE POOL IF NOT EXISTS FLEET_APPS_COMPUTE_POOL
   MIN_NODES = 1
   MAX_NODES = 4
   AUTO_RESUME = TRUE
-  AUTO_SUSPEND_SECS = 3600;
+  AUTO_SUSPEND_SECS = 7200;
 -- Idempotent: bring an already-created pool up to the current MAX_NODES too,
 -- since CREATE ... IF NOT EXISTS is a no-op on a pre-existing (smaller) pool.
 ALTER COMPUTE POOL FLEET_APPS_COMPUTE_POOL SET MAX_NODES = 4;
