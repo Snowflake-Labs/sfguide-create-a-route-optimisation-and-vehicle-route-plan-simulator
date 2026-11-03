@@ -85,6 +85,16 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
     scope: static
     why: an image build runs pip as root and prints pip's root-user WARNING into the install log
+  - id: skill_scope_table
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_skill_scope_table.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_skill_scope_table_negative.py
+    scope: static
+    why: the install skill's scope lists call shipped views or semantic views excluded, or omit them
+  - id: prereq_runtime_doc
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_prereq_runtime_doc.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_prereq_runtime_doc_negative.py
+    scope: static
+    why: the prerequisites skill demands Docker while the installer accepts a healthy Podman
   - id: reset_tmp_coverage
     run: bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --check-tmp-coverage
     negative: python3 .cortex/skills/install-fleet-apps/scripts/reset_tmp_coverage_negative.py

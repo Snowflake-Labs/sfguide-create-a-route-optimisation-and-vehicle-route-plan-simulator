@@ -20,9 +20,9 @@ Deploy and extend the solution using [Cortex Code](https://docs.snowflake.com/en
 
 - [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) with an active Snowflake connection
 - A Snowflake account and a role holding the privileges below
-- Docker or Podman (required only for building container images)
+- Docker or Podman, running and able to build images (the installer picks whichever is healthy, Docker first; a Podman machine needs at least 8 GB for the engine image)
 
-**Estimated deployment time:** roughly 30 minutes on a recent run, dominated by the routing-engine build and the container image upload. Expect up to about 90 minutes on a constrained uplink. Adding `--no-engine` skips the engine build and completes in a few minutes.
+**Estimated deployment time:** about 55 minutes for a first install on a machine with no cached images (measured October 28, 2026 on a fast uplink: seed upload 3 min, routing engine 6 min, app image builds 5 min, view verification 8 min, the rest spread across about 30 smaller steps). Re-running over an existing install reuses what is there and is shorter. A constrained uplink can stretch a first install to about 90 minutes, because the container image upload dominates. Adding `--no-engine` skips the engine build.
 
 ### Required privileges
 
@@ -53,9 +53,13 @@ No application packages are created, so no provider privileges are needed.
 1. Open this repository in Cortex Code
 2. Say **"check build prerequisites"** to verify your environment
 3. Say **"install the fleet apps"** to deploy the whole stack in one command: the two web apps, the four Cortex agents, the MCP tool bundles, the neutral data contract, and (by default) the live ORS/VROOM routing engine
-4. Open the two app endpoints printed at the end, then ask the analytics agent a question or explore the dashboards
+4. Open the two app endpoints printed at the end, then ask the analytics agent a question or explore the dashboards. Each app is its own endpoint, so each asks you to sign in to Snowflake once.
 
 > The installer builds the routing engine by default. Add `--no-engine` to skip the heavy engine build (the analytics apps still run; only live routing verbs go inert).
+
+### Re-installing or starting over
+
+If the account already has an install, the installer reuses it: preflight prints `existing install detected (...)` and step 1.6 reconciles the older objects, so you get an upgrade rather than a first install. To see what would be reused before you start, run `bash .cortex/skills/install-fleet-apps/scripts/preflight_new_account.sh -c <connection>` (read-only). To start from nothing instead, say **"full teardown and reinstall"** (the `routing-solution-cleanup` skill). It drops the solution's objects from the account, resets this checkout and the local images to fresh-clone state, and reinstalls without build caches; it shows a dry run before anything is removed. To keep the routing engine while you iterate on the analytics stack, use its `KEEP_FLEET_ENGINE` mode, which saves roughly the engine image pushes and graph build.
 
 ## What you get
 
