@@ -178,7 +178,9 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
       // for San Francisco. The result is not merely noisy: it proposes a backload
       // the vehicle physically cannot reach, and it scores WELL, because the empty
       // leg is computed from coordinates that are perfectly valid in isolation.
-      // The FLEET_APP contract views do carry REGION, so scope through them.
+      // The FLEET_APP contract views do carry REGION, so scope through them - AND
+      // filter the physical row's OPERATING_COUNTRY, because the scope yields ids
+      // and trailer ids repeat across regions (Europe's id set matched 68 US rows).
       const scope = { region: cfgRegion };
       const scopedTrailerIds = `SELECT TRAILER_ID FROM ${BM}.VW_TRAILERS WHERE REGION = :region`;
       const scopedLoadIds =
@@ -186,7 +188,7 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
         + ` UNION ALL SELECT OFFER_ID AS LOAD_ID FROM ${BM}.VW_EXTERNAL_OFFERS WHERE REGION = :region`;
       const [clsRows, tRows, lRows, scRows, pRows] = await Promise.all([
         sfRead(`SELECT * FROM ${BM}.VW_VEHICLE_CLASS WHERE VEHICLE_TYPE = '${sqlLiteral(vehicleType)}' LIMIT 1`),
-        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        sfRead(`SELECT TRAILER_ID, OPERATING_COUNTRY, HOME_LON, HOME_LAT, EMPTY_CITY, EMPTY_LON, EMPTY_LAT, EMPTY_FROM_TS, NEXT_START_LON, NEXT_START_LAT, MAX_PAYLOAD_KG, HAZMAT_CERT FROM ${PHYS}.VW_TRAILERS_GEO WHERE OPERATING_COUNTRY = :region AND TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         // The id set MUST be a CTE joined in: Snowflake rejects an IN (...) with a
         // UNION ALL inside it as "Unsupported subquery type cannot be evaluated".
         sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT, l.DELIVERY_CITY, l.DELIVERY_LON, l.DELIVERY_LAT, l.REQUESTED_PICKUP_TS, l.WEIGHT_KG, l.PRODUCT, l.HAZMAT, l.PRICE_USD, l.APPROX_DISTANCE_KM FROM ${PHYS}.VW_LOADS l JOIN scoped s ON s.LOAD_ID = l.LOAD_ID`, { params: scope }),
@@ -195,7 +197,7 @@ export function BackloadProposalsView({ viewState, onStateChange }: Partial<View
         // vehicles paired with out-of-region loads and inflate the number the
         // dispatcher reads. A COUNT, not the rows: the page needs the size, and the
         // per-pair booleans now arrive with each pair from the verb.
-        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT COUNT(*) AS N FROM ${PHYS}.VW_CANDIDATES_SCORED c JOIN scoped s ON s.LOAD_ID = c.LOAD_ID WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT COUNT(*) AS N FROM ${PHYS}.VW_CANDIDATES_SCORED c JOIN scoped s ON s.LOAD_ID = c.LOAD_ID WHERE c.ELIGIBLE = TRUE AND c.OPERATING_COUNTRY = :region AND c.TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
       ]);
       setCls((clsRows[0] as unknown as VehicleClass) ?? null);

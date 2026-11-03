@@ -585,13 +585,99 @@ def check_rule6() -> tuple[list[str], int]:
     return problems, inspected
 
 
+# ---------------------------------------------------------------------------
+# RULE 7 - an id-scoped read of a physical per-region view must ALSO filter its
+#          own OPERATING_COUNTRY.
+#
+# RULE 4 makes the consumer scope the CONTRACT views by REGION, and the backload
+# procs and pages did: `TRAILER_ID IN (SELECT TRAILER_ID FROM ...VW_TRAILERS WHERE
+# REGION = ?)`. That scope yields IDS, and 48 trailer ids exist in more than one
+# region. Measured on tib85385: Europe's id set matched 117 VW_TRAILERS_GEO rows
+# (49 Europe, 41 USA, 27 UsTexas), the solve's LIMIT 20 took US trucks, and
+# ors-service-europe rejected the matrix with 6010 - every road strategy skipped,
+# the result silently degraded to great-circle estimates.
+#
+# The physical views carry the row's region as OPERATING_COUNTRY, so the fix is a
+# predicate on the read itself. Only id-scoped reads are checked (`TRAILER_ID IN (`
+# or `TRAILER_ID = ?|:x`): a view body joining `t.TRAILER_ID = c.TRAILER_ID` is a
+# definition, not a consumer read.
+# ---------------------------------------------------------------------------
+ID_KEYED_VIEWS = ("VW_TRAILERS_GEO", "VW_CANDIDATES_SCORED", "VW_TRIANGLES")
+RULE7_GLOBS = [
+    (REPO_ROOT / ".cortex" / "skills" / "routing-agent" / "references", "*.sql"),
+    (SKILL_DIR / "fleet_sa_app" / "ui" / "src", "**/*.ts"),
+    (SKILL_DIR / "fleet_sa_app" / "ui" / "src", "**/*.tsx"),
+]
+RULE7_READ = re.compile(
+    r"FROM\s+(?:\$\{[A-Za-z_]+\}|FLEET_INTELLIGENCE\.BACKLOAD_MATCHING)\.("
+    + "|".join(ID_KEYED_VIEWS) + r")\b")
+# The statement ends at its ordering/limit clause, a template close, or a
+# statement terminator - whichever comes first.
+RULE7_END = re.compile(r"ORDER\s+BY|QUALIFY|\bLIMIT\b|`|;", re.IGNORECASE)
+RULE7_ID_SCOPE = re.compile(r"TRAILER_ID\s+IN\s*\(|TRAILER_ID\s*=\s*[?:]", re.IGNORECASE)
+RULE7_REGION = re.compile(r"OPERATING_COUNTRY\s*=\s*(?:\?|:[A-Za-z_]+)", re.IGNORECASE)
+
+# The tool route hands every page `body.result`. A synapse verb's `{result}` must be
+# peeled there, or the page reads its payload one level too high: the Europe solve
+# returned 12 pairs and rendered "No proposals produced".
+TOOL_ROUTE = SKILL_DIR / "fleet_sa_app" / "ui" / "src" / "app" / "api" / "tool" / "route.ts"
+
+
+def check_rule7() -> tuple[list[str], int]:
+    problems: list[str] = []
+    reads = 0
+    for base, pattern in RULE7_GLOBS:
+        if not base.exists():
+            continue
+        for path in sorted(base.glob(pattern)):
+            if not path.is_file() or "node_modules" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for m in RULE7_READ.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                if text.splitlines()[line - 1].lstrip().startswith(("--", "#", "//", "*")):
+                    continue
+                end = RULE7_END.search(text, m.end())
+                stmt = text[m.end(): end.start() if end else m.end() + 900]
+                if not RULE7_ID_SCOPE.search(stmt):
+                    continue
+                reads += 1
+                if RULE7_REGION.search(stmt):
+                    continue
+                rel = path.relative_to(REPO_ROOT)
+                problems.append(
+                    f"{rel}:{line}: {m.group(1)} is scoped by TRAILER_ID only.\n"
+                    f"    Trailer ids repeat across regions, so a region's id set admits the "
+                    f"other region's copy of the same vehicle (ORS 6010).\n"
+                    f"    Add `OPERATING_COUNTRY = ?` (or `= :region`) to this read."
+                )
+    route = TOOL_ROUTE.read_text(encoding="utf-8") if TOOL_ROUTE.exists() else ""
+    if route.count("peelVerbEnvelope(") < 3:  # definition + solver + non-solver path
+        problems.append(
+            f"{TOOL_ROUTE.relative_to(REPO_ROOT)}: both CALL paths must pass the parsed "
+            f"column through peelVerbEnvelope.\n"
+            f"    A verb's `{{result}}` envelope left in place puts the payload one level "
+            f"below `body.result`, and the page renders an empty plan."
+        )
+    return problems, reads
+
+
 def main() -> int:
     rule5, rule5_seen, rule5_scoped = check_rule5()
     rule6, rule6_seen = check_rule6()
+    rule7, rule7_reads = check_rule7()
     problems = (
         check_rule1() + check_rule1_twins() + check_semantic_views() + check_rule4()
-        + rule5 + rule6
+        + rule5 + rule6 + rule7
     )
+    if rule7_reads == 0:
+        problems.append(
+            "RULE 7 found ZERO id-scoped reads of per-region physical views - the glob "
+            "or the statement window is broken, not the code."
+        )
     # Vacuity counters. A rule that inspected nothing is not a rule, and this
     # repo has shipped exactly that failure before (a gate whose repo-root index
     # was one level short silently scanned zero files and passed).
