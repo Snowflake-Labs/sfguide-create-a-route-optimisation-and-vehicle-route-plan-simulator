@@ -85,6 +85,17 @@ echo "[1] local toolchain"
 for t in snow node npm python3; do
   if command -v "$t" >/dev/null 2>&1; then pass "$t present"; else fail "$t NOT found"; fi
 done
+# Read-only: reuses python3 or an existing repo .venv, never creates one. When
+# neither has the packages, the Python-backed probes below are SKIPPED with
+# this reason instead of failing under an unrelated name.
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/python_env.sh"
+PY_READY=0
+if ensure_python_env --no-create; then
+  PY_READY=1; pass "python packages importable from $PYTHON_ENV_SOURCE"
+else
+  warn "$PYTHON_ENV_ERROR"
+fi
 # Health, not presence: a docker CLI with no running daemon used to pass here
 # and then fail the engine build. --no-start: preflight changes no state.
 # shellcheck disable=SC1091
@@ -136,7 +147,9 @@ fi
 #        five to seven views, so it is probed explicitly rather than inferred. ---
 echo
 echo "[4] Overture Marketplace listings (catchment, location, sourcing depend on these)"
-if [ "$CHECK_LISTINGS" = "1" ]; then
+if [ "$PY_READY" = "0" ]; then
+  warn "listing probe skipped: python packages not installed yet (the installer creates .venv)"
+elif [ "$CHECK_LISTINGS" = "1" ]; then
   python3 "$(dirname "$0")/prepare_overture.py" --connection "$CONNECTION" --check
   rc=$?
   if [ "$rc" = "0" ]; then
@@ -193,9 +206,13 @@ else
     N=$(printf '%s\n' "$OUT" | grep -oE "^\| [0-9]+" | grep -oE "[0-9]+" | head -1)
     warn "FLEET_INTELLIGENCE.CORE.DIM_DATASETS already has ${N:-?} row(s) - step 2 will SKIP seeding. Flush first for a true clean install."
   fi
-  RECON=$(python3 "$(dirname "${BASH_SOURCE[0]}")/reconcile_existing.py" -c "$CONNECTION" --check 2>&1) \
-    || warn "reconcile check could not complete"
-  printf '%s\n' "$RECON" | sed 's/^/     /'
+  if [ "$PY_READY" = "1" ]; then
+    RECON=$(python3 "$(dirname "${BASH_SOURCE[0]}")/reconcile_existing.py" -c "$CONNECTION" --check 2>&1) \
+      || warn "reconcile check could not complete"
+    printf '%s\n' "$RECON" | sed 's/^/     /'
+  else
+    warn "reconcile check skipped: python packages not installed yet"
+  fi
 fi
 
 # --- 7. Python deps the post-install harness needs. Checked here so the
@@ -203,12 +220,11 @@ fi
 #        discovers a missing package. ---
 echo
 echo "[7] verification harness dependencies"
-python3 -c "import snowflake.connector" 2>/dev/null \
-  && pass "snowflake-connector-python present" \
-  || warn "snowflake-connector-python missing - validate_app_views.py cannot run"
-python3 -c "import yaml" 2>/dev/null \
-  && pass "PyYAML present" \
-  || warn "PyYAML missing - validate_app_views.py cannot run"
+if [ "$PY_READY" = "1" ]; then
+  pass "PyYAML, snowflake-connector-python, requests importable ($PYTHON_ENV_SOURCE)"
+else
+  warn "not installed yet; the installer's step 0 creates .venv with them (see [1])"
+fi
 
 # --- 8. Cowork / Snowflake Intelligence discoverability of the agents.
 #        The agents are only visible in the Cowork agent picker to a role that

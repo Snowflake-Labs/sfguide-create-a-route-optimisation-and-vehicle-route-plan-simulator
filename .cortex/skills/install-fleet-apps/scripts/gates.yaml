@@ -157,6 +157,11 @@ gates:
     negative: bash .cortex/skills/install-fleet-apps/scripts/check_container_runtime_negative.sh
     scope: static
     why: runtime picked by CLI presence (docker daemon down, podman never tried) or an image build hardcodes docker
+  - id: python_env
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_python_env.sh
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_python_env_negative.sh
+    scope: static
+    why: python3 without the helper packages (Homebrew PEP 668 refuses a global pip) kills the first python helper; installer must provide a .venv, preflight stays read-only
   - id: seed_copy_columns
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py

@@ -170,6 +170,13 @@ note "[0/8] preflight..."
 for t in snow node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
+# Python helpers need PyYAML / snowflake-connector-python / requests. Homebrew
+# Python refuses a global pip install (PEP 668), so a repo-local .venv is
+# created when python3 lacks them; every later `python3` resolves to it.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib/python_env.sh"
+ensure_python_env || { echo "ERROR: $PYTHON_ENV_ERROR"; exit 1; }
+note "  python packages: $PYTHON_ENV_SOURCE"
 # Image builds need a WORKING runtime, docker or podman. Probe health here (no
 # machine start) so a stopped Docker Desktop is reported in seconds instead of
 # failing the first image build; the deploy scripts re-resolve and may start a

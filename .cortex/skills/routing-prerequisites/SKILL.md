@@ -64,8 +64,11 @@ None - this skill helps you install prerequisites!
    #   snowflake-connector-python  -> view verification (step 9) is SKIPPED without it
    #   requests                    -> engine map download helper
    python3 --version 2>/dev/null && echo "Python 3: INSTALLED" || echo "Python 3: NOT FOUND"
+   # The installer provides these itself: when python3 lacks them it creates a
+   # repo-local .venv and installs them there (Homebrew Python rejects a global
+   # pip install under PEP 668). Missing here is therefore NOT a blocker.
    python3 -c 'import yaml, snowflake.connector, requests' 2>/dev/null \
-     && echo "Python packages: INSTALLED" || echo "Python packages: MISSING (PyYAML / snowflake-connector-python / requests)"
+     && echo "Python packages: INSTALLED" || echo "Python packages: not in python3 (installer will create .venv)"
    
    # Check Snowflake CLI
    snow --version 2>/dev/null && echo "Snowflake CLI: INSTALLED" || echo "Snowflake CLI: NOT FOUND"
@@ -91,7 +94,7 @@ None - this skill helps you install prerequisites!
    | crane | ✅/❌ | Recommended |
    | Node.js >= 20 + npm | ✅/❌ | Yes |
    | Python 3 | ✅/❌ | Yes |
-   | PyYAML, snowflake-connector-python, requests | ✅/❌ | Yes |
+   | PyYAML, snowflake-connector-python, requests | ✅/auto | No (installer creates .venv) |
    | Snowflake CLI | ✅/❌ | Yes |
    | Snowflake Connection | ✅/❌ | Yes |
    | Git | ✅/❌ | Yes |
@@ -184,11 +187,11 @@ the probe above reports that case.
 
 #### Python 3 + Packages Installation
 - **Python 3:** `brew install python` (macOS) or https://www.python.org/downloads/
-- **Packages:**
-  ```bash
-  python3 -m pip install pyyaml snowflake-connector-python requests
-  ```
-- **Verify:** `python3 -c 'import yaml, snowflake.connector, requests'`
+- **Packages:** nothing to do. The installer's step 0 (`lib/python_env.sh`) uses
+  python3 if it already imports them, otherwise creates `.venv` at the repo root
+  and installs them there. Do not `pip install` into Homebrew Python: it is
+  externally managed (PEP 668) and refuses.
+- **Verify (optional):** `bash -c 'source .cortex/skills/install-fleet-apps/scripts/lib/python_env.sh && ensure_python_env && echo $PYTHON_ENV_SOURCE'`
 
 #### Snowflake CLI Installation
 - **All platforms:**
@@ -296,7 +299,7 @@ docker --version || podman --version   # a container CLI
 bash -c 'source .cortex/skills/install-fleet-apps/scripts/lib/container_runtime.sh && resolve_container_runtime --no-start'   # usable runtime (installer probe)
 node --version          # Node.js >= 20
 npm --version           # npm
-python3 -c 'import yaml, snowflake.connector, requests'   # Python 3 + packages
+python3 --version       # Python 3 (packages: installer creates .venv if missing)
 snow --version          # Snowflake CLI
 snow connection list    # At least one connection configured
 git --version           # Git
