@@ -21,6 +21,8 @@ fake() {
   mkdir -p "$bin"
   cat >"$bin/$name" <<EOF
 #!/usr/bin/env bash
+# FAKE_DELAY simulates a loaded machine (slow process spawn) for every call.
+[ -n "\${FAKE_DELAY:-}" ] && sleep "\$FAKE_DELAY"
 state="$WORK/$name.started"
 case "\$1" in
   info)
@@ -41,10 +43,14 @@ EOF
 }
 
 # case <label> <expect: docker|podman|ERROR> <resolve args> -- env assignments...
+# Probe deadline is generous (PROBE_SECS, default 30) so only the case that is
+# ABOUT the deadline depends on it: at 1s every case flipped under parallel
+# gate load (`run_gates --jobs 8`) because a slow `info` spawn read as wedged.
 run_case() {
   local label="$1" expect="$2" args="$3"; shift 3
   local out
-  out=$(env -i PATH="$WORK/bin:/usr/bin:/bin" CONTAINER_PROBE_SECS=1 "$@" bash -c \
+  out=$(env -i PATH="$WORK/bin:/usr/bin:/bin" CONTAINER_PROBE_SECS="${PROBE_SECS:-30}" \
+      FAKE_DELAY="${FAKE_DELAY:-}" "$@" bash -c \
     "source '$LIB'; if resolve_container_runtime $args; then echo \"\$CONTAINER_CMD\"; else echo \"ERROR \$CONTAINER_RUNTIME_ERROR\"; fi" 2>/dev/null)
   case "$out" in
     "$expect"*) echo "  ok    $label -> ${out%% *}" ;;
@@ -60,7 +66,7 @@ run_case "docker CLI, daemon down; podman up" podman ""
 reset; fake docker ok; fake podman ok
 run_case "both healthy prefers docker" docker ""
 reset; fake docker hang; fake podman ok
-run_case "wedged docker info times out" podman ""
+run_case "wedged docker info times out" podman "" CONTAINER_PROBE_SECS=3
 reset; fake docker fail; fake podman fail stopped
 run_case "stopped podman machine is started" podman ""
 reset; fake docker fail; fake podman fail stopped
