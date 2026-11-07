@@ -32,6 +32,10 @@ def _supports(field: str) -> bool:
 
 
 KEEP_ALIVE = "enable_server_session_keep_alive_auto_detection"
+# The connector registers its own atexit hook per connection, AFTER ours
+# (import time), so LIFO runs it first and it warns before we close. Turning
+# it off hands exit-time closing to _close_all below.
+AUTO_CLEANUP = "auto_cleanup"
 
 
 def connect(connection_name: str, **kwargs):
@@ -41,6 +45,8 @@ def connect(connection_name: str, **kwargs):
     # running, so there is nothing for the server to keep alive.
     if _supports(KEEP_ALIVE):
         kwargs.setdefault(KEEP_ALIVE, False)
+    if _supports(AUTO_CLEANUP):
+        kwargs.setdefault(AUTO_CLEANUP, False)
     con = snowflake.connector.connect(connection_name=connection_name, **kwargs)
     _OPEN.append(con)
     return con

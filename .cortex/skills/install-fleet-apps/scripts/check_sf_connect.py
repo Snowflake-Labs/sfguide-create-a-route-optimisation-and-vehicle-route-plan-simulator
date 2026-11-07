@@ -31,11 +31,21 @@ STANDALONE = {"download_map.py"}
 FAKE_PKG = {
     "new": {
         "snowflake/__init__.py": "",
+        # Mirrors 5.x: connect() registers its OWN atexit hook (after the caller's,
+        # so LIFO runs it first) which warns on a still-open connection, unless
+        # auto_cleanup=False.
         "snowflake/connector/__init__.py": textwrap.dedent('''
-            import json, os
+            import atexit, json, os
             class _Con:
-                def __init__(self, kw): self.kw = kw
+                def __init__(self, kw):
+                    self.kw, self.closed = kw, False
+                    if kw.get("auto_cleanup", True):
+                        atexit.register(self._at_exit)
+                def _at_exit(self):
+                    if not self.closed:
+                        open(os.environ["FAKE_LOG"], "a").write("warned\\n")
                 def close(self):
+                    self.closed = True
                     open(os.environ["FAKE_LOG"], "a").write("closed\\n")
             def connect(**kw):
                 open(os.environ["FAKE_LOG"], "a").write(json.dumps(sorted(kw.items())) + "\\n")
@@ -46,6 +56,7 @@ FAKE_PKG = {
             @dataclasses.dataclass
             class ConnectionConfig:
                 {FIELD}: object = None
+                auto_cleanup: object = None
         '''),
     },
     "old": {
@@ -56,8 +67,8 @@ FAKE_PKG = {
                 def close(self):
                     open(os.environ["FAKE_LOG"], "a").write("closed\\n")
             def connect(**kw):
-                if "{FIELD}" in kw:
-                    raise TypeError("unknown parameter {FIELD}")
+                if "{FIELD}" in kw or "auto_cleanup" in kw:
+                    raise TypeError("unknown parameter " + ",".join(sorted(kw)))
                 open(os.environ["FAKE_LOG"], "a").write(json.dumps(sorted(kw.items())) + "\\n")
                 return _Con()
         '''),
@@ -96,6 +107,8 @@ def behave(kind: str) -> tuple[bool, str]:
             return False, f"{lab} connector: connection_name not forwarded ({lines[0]})"
         if "closed" not in lines[1:]:
             return False, f"{lab} connector: connection not closed at exit"
+        if "warned" in lines[1:]:
+            return False, f"{lab} connector: connector's own exit hook warned before sf_connect closed"
         return True, f"{lab} connector ok"
 
 
