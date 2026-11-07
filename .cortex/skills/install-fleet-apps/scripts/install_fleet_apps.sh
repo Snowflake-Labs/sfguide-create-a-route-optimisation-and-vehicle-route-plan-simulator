@@ -348,6 +348,16 @@ wait_with_progress() {
   wait "$pid"
 }
 
+# Run a foreground step that can take minutes with the same heartbeat: output
+# to $log, a progress note every HEARTBEAT_SECS, the command's exit status.
+#   with_heartbeat <label> <log> <cmd...>
+with_heartbeat() {
+  local label="$1" log="$2"
+  shift 2
+  "$@" >"$log" 2>&1 &
+  wait_with_progress "$!" "$label" "$log"
+}
+
 if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
    && [ "${OVERLAP_ENGINE_IMAGES:-1}" = "1" ] \
    && ! obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
@@ -392,8 +402,9 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     # Upload each top-level directory in parallel (the loader COPY INTOs by directory path, so
     # concurrency across directories is safe). The two root-level SQL files (load-seed-data.sql,
     # export-preset.sql) are uploaded separately.
-    note "  uploading ~204 MB seed parquet (parallel per directory; expect ~2-3 min)..."
+    note "  uploading ~204 MB seed parquet (parallel per directory; ~2-7 min, shares bandwidth with the engine image push)..."
     STAGE_PIDS=()
+    STAGE_LOGS=()
     for d in "$REPO_ROOT"/datasets/*/; do
       [ -d "$d" ] || continue
       dname=$(basename "$d")
@@ -401,6 +412,7 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
         -c "$CONNECTION" --overwrite --recursive --parallel 8 \
         >/tmp/ifa_stage_${dname}.log 2>&1 &
       STAGE_PIDS+=($!)
+      STAGE_LOGS+=("/tmp/ifa_stage_${dname}.log")
     done
     # Root-level SQL files (loader + export-preset) go to the stage root.
     for f in "$REPO_ROOT"/datasets/*.sql; do
@@ -408,10 +420,12 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
       snow stage copy "$f" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ \
         -c "$CONNECTION" --overwrite >/tmp/ifa_stage_rootsql.log 2>&1 &
       STAGE_PIDS+=($!)
+      STAGE_LOGS+=(/tmp/ifa_stage_rootsql.log)
     done
     STAGE_FAIL=0
-    for pid in "${STAGE_PIDS[@]}"; do
-      wait "$pid" || STAGE_FAIL=$((STAGE_FAIL + 1))
+    for i in "${!STAGE_PIDS[@]}"; do
+      wait_with_progress "${STAGE_PIDS[$i]}" "seed upload" "${STAGE_LOGS[$i]}" \
+        || STAGE_FAIL=$((STAGE_FAIL + 1))
     done
     if [ "$STAGE_FAIL" -gt 0 ]; then
       echo "ERROR: $STAGE_FAIL seed upload process(es) failed"
@@ -436,7 +450,9 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     # to trace back from "the dashboards are blank". Same class as the
     # analytic-layer gate at step 3.5 and the delivery-sync validator.
     SEED_LOAD_RC=0
-    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 || SEED_LOAD_RC=$?
+    note "  loading seed tables (log: /tmp/ifa_load.log)..."
+    with_heartbeat "seed load" /tmp/ifa_load.log \
+      snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql || SEED_LOAD_RC=$?
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
     if [ "$SEED_LOAD_RC" != "0" ]; then
       note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
