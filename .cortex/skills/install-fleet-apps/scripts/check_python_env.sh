@@ -89,27 +89,21 @@ case "$err" in *snowflake-connector-python*"$W/c3/root/.venv"*) ;; *) bad "pip f
 IFS='|' read -r rc py n err head <<<"$(run_case "$W/c3b" 0 2 "")"
 [ "$rc" = 1 ] || bad "pip rc 0 without importable packages: rc=$rc, expected 1"
 
-# 4. --no-create (preflight): no venv created, rc 1 with a reason.
-IFS='|' read -r rc py n err head <<<"$(run_case "$W/c4" 0 0 "--no-create")"
-[ "$rc" = 1 ] || bad "--no-create: rc=$rc, expected 1"
-[ ! -e "$W/c4/root/.venv" ] || bad "--no-create: created .venv (preflight must not change state)"
-[ -n "$err" ] || bad "--no-create: no PYTHON_ENV_ERROR"
-
-# 5. installer: sources the lib and calls ensure_python_env (creating) before the
-#    first executable python3 line after the toolchain loop.
-src_ln=$(grep -nE '^[[:space:]]*source .*lib/python_env\.sh' "$INSTALLER" | head -1 | cut -d: -f1)
-call_ln=$(grep -nE '^[[:space:]]*ensure_python_env( |$)' "$INSTALLER" | grep -v -- '--no-create' | head -1 | cut -d: -f1)
-py_ln=$(grep -nE '^[^#]*python3 ["$]' "$INSTALLER" | head -1 | cut -d: -f1)
-if [ -z "$src_ln" ] || [ -z "$call_ln" ]; then
-  bad "installer does not source lib/python_env.sh and call ensure_python_env"
-elif [ -n "$py_ln" ] && [ "$call_ln" -gt "$py_ln" ]; then
-  bad "installer runs python3 (line $py_ln) before ensure_python_env (line $call_ln)"
-fi
-
-# 6. preflight: read-only call, and Python probes gated on it.
-grep -qE 'ensure_python_env --no-create' "$PREFLIGHT" || bad "preflight does not call ensure_python_env --no-create"
-grep -nE '^[[:space:]]*(if )?ensure_python_env' "$PREFLIGHT" | grep -qv -- '--no-create' \
-  && bad "preflight calls ensure_python_env without --no-create (would create .venv)"
+# 5/6. installer AND preflight: source the lib and call ensure_python_env before
+#      their first executable python3 line (preflight runs prepare_overture.py).
+order() {
+  local f="$1" who="$2" src_ln call_ln py_ln
+  src_ln=$(grep -nE '^[[:space:]]*source .*lib/python_env\.sh' "$f" | head -1 | cut -d: -f1)
+  call_ln=$(grep -nE '^[[:space:]]*(if )?ensure_python_env( |;|$)' "$f" | head -1 | cut -d: -f1)
+  py_ln=$(grep -nE '^[^#]*python3 ["$]' "$f" | head -1 | cut -d: -f1)
+  if [ -z "$src_ln" ] || [ -z "$call_ln" ]; then
+    bad "$who does not source lib/python_env.sh and call ensure_python_env"
+  elif [ -n "$py_ln" ] && [ "$call_ln" -gt "$py_ln" ]; then
+    bad "$who runs python3 (line $py_ln) before ensure_python_env (line $call_ln)"
+  fi
+}
+order "$INSTALLER" installer
+order "$PREFLIGHT" preflight
 awk '
   { buf[NR % 7] = $0 }
   /^[^#]*python3 "/ {
@@ -124,4 +118,4 @@ grep -nE 'pip3? install[^`]*(snowflake-connector-python|pyyaml)' "$PREREQ" | gre
   && bad "routing-prerequisites/SKILL.md still prescribes a global pip install"
 
 if [ "$FAILS" -gt 0 ]; then echo "python_env: $FAILS failure(s)"; exit 1; fi
-echo "python_env: OK (6 behavioural cases, installer order, preflight read-only, doc)"
+echo "python_env: OK (5 behavioural cases, installer+preflight order, doc)"

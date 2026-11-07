@@ -45,16 +45,19 @@ S=$'\x1f'
 
 mutate always_venv     lib  "  if _python_env_ok python3; then${S}  if false; then"
 mutate no_path_prepend lib  '  PATH="$venv/bin:$PATH"'"${S}"'  :'
-mutate ignore_no_create lib '  [ "${1:-}" = "--no-create" ] && create=0'"${S}"'  :'
 mutate pip_unchecked   lib  '      && _python_env_ok "$venv/bin/python3" || {'"${S}"'      || {'
 mutate vague_error     lib  'PYTHON_ENV_ERROR="pip install $PYTHON_ENV_PKGS into $venv failed'"${S}"'PYTHON_ENV_ERROR="pip failed'
 mutate inst_no_call    inst 'ensure_python_env || { echo "ERROR: $PYTHON_ENV_ERROR"; exit 1; }'"${S}"':'
 mutate inst_late_call  inst 'ensure_python_env || { echo "ERROR: $PYTHON_ENV_ERROR"; exit 1; }'"${S}"'python3 "$SCRIPTS/x.py"
 ensure_python_env || { echo "ERROR: $PYTHON_ENV_ERROR"; exit 1; }'
-mutate pre_creates     pre  'if ensure_python_env --no-create; then'"${S}"'if ensure_python_env; then'
 mutate pre_ungated     pre  'if [ "$PY_READY" = "0" ]; then
-  warn "listing probe skipped: python packages not installed yet (the installer creates .venv)"
+  warn "listing probe skipped: python packages unavailable (see [1])"
 elif [ "$CHECK_LISTINGS" = "1" ]; then'"${S}"'if [ "$CHECK_LISTINGS" = "1" ]; then'
+mutate pre_no_call     pre  'if ensure_python_env; then'"${S}"'if true; then'
+mutate pre_late_call   pre  'PY_READY=0
+if ensure_python_env; then'"${S}"'python3 "$(dirname "$0")/x.py"
+PY_READY=0
+if ensure_python_env; then'
 mutate doc_global_pip  doc  '- **Packages:** nothing to do.'"${S}"'- **Packages:** `python3 -m pip install pyyaml snowflake-connector-python requests`'
 
 if [ "$SURVIVED" -gt 0 ]; then echo "python_env negative: $SURVIVED mutation(s) survived"; exit 1; fi

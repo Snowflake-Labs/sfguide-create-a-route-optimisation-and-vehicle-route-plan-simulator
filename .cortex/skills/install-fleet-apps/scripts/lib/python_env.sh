@@ -10,12 +10,14 @@
 # died with "No module named 'snowflake'", which preflight then reported as
 # "Overture source capability could not be checked".
 #
-#   ensure_python_env [--no-create]
-#     If python3 already imports all three, does nothing. Otherwise uses (or,
-#     unless --no-create, creates) the repo-root .venv, installs the packages
-#     there, and prepends .venv/bin to PATH so every child script's bare
-#     `python3` resolves to it. .venv/ is GENERATED (check_no_ignored_source.py),
-#     so reset_local_state.sh removes it and a fresh clone starts without one.
+#   ensure_python_env
+#     If python3 already imports all three, does nothing. Otherwise uses or
+#     creates the repo-root .venv, installs the packages there, and prepends
+#     .venv/bin to PATH so every child script's bare `python3` resolves to it.
+#     .venv/ is GENERATED (check_no_ignored_source.py), so reset_local_state.sh
+#     removes it and a fresh clone starts without one. Preflight calls this too:
+#     it changes no account state, and without it preflight cannot run its
+#     Python probes on exactly the machines that need them.
 #     Returns 1 with PYTHON_ENV_ERROR set when it cannot provide the packages.
 
 PYTHON_ENV_PKGS="pyyaml snowflake-connector-python requests"
@@ -24,8 +26,7 @@ PYTHON_ENV_IMPORTS="import yaml, snowflake.connector, requests"
 _python_env_ok() { "$1" -c "$PYTHON_ENV_IMPORTS" >/dev/null 2>&1; }
 
 ensure_python_env() {
-  local create=1 root venv
-  [ "${1:-}" = "--no-create" ] && create=0
+  local root venv
   PYTHON_ENV_ERROR=""
   PYTHON_ENV_SOURCE=""
 
@@ -41,10 +42,6 @@ ensure_python_env() {
   venv="$root/.venv"
 
   if [ ! -x "$venv/bin/python3" ]; then
-    if [ "$create" = 0 ]; then
-      PYTHON_ENV_ERROR="python3 lacks $PYTHON_ENV_PKGS; the installer creates $venv with them"
-      return 1
-    fi
     python3 -m venv "$venv" >/dev/null 2>&1 || {
       PYTHON_ENV_ERROR="python3 -m venv $venv failed (install a full Python 3, e.g. 'brew install python')"
       return 1
@@ -52,10 +49,6 @@ ensure_python_env() {
   fi
 
   if ! _python_env_ok "$venv/bin/python3"; then
-    if [ "$create" = 0 ]; then
-      PYTHON_ENV_ERROR="$venv exists but lacks $PYTHON_ENV_PKGS; the installer installs them"
-      return 1
-    fi
     # One retry: a transient index/network failure was seen once and would
     # otherwise abort the whole install at step 0.
     # shellcheck disable=SC2086
