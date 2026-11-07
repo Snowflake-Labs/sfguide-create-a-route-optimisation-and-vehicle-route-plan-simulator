@@ -172,6 +172,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_preflight_verdict_negative.py
     scope: static
     why: a clean first-install account read as "degraded" (engine absent, packages not yet installed) and skipped the Overture probe
+  - id: seed_determinism
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_determinism.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_determinism_negative.py
+    scope: static
+    why: unordered LIMIT 1 selection seeds made identical installs report different BY_DESIGN counts (20 vs 17)
   - id: seed_copy_columns
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py
