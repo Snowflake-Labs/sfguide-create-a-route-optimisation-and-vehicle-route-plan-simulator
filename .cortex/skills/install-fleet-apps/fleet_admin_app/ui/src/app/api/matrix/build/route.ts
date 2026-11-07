@@ -23,6 +23,21 @@ export const POST = withLogging(async (req: NextRequest) => {
   const safeProfileUpper = profile.replace(/-/g, '_').toUpperCase();
 
   try {
+    // Single flight per (region, profile, res): jobs of one key share their
+    // tables, so a second launch truncates the first one's inputs. The wrapper
+    // refuses too; checking here keeps the refusal out of the failed-jobs list.
+    const resLabels = safeResolutions.map((r) => `'RES${r}'`).join(', ');
+    const busy = await runSql(
+      `SELECT RESOLUTION FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+       WHERE (STATUS = 'RUNNING' OR (STATUS = 'PENDING' AND CREATED_AT > DATEADD('MINUTE', -15, SYSDATE())))
+         AND UPPER(REGION) = UPPER('${escapeString(safeRegion)}')
+         AND UPPER(REPLACE(PROFILE, '-', '_')) = '${escapeString(safeProfileUpper)}' AND RESOLUTION IN (${resLabels})`,
+    );
+    if (busy && busy.length > 0) {
+      const which = Array.from(new Set(busy.map((b) => String(b.RESOLUTION)))).join(', ');
+      return NextResponse.json({ error: `A build is already running for ${safeRegion} / ${profile} / ${which}. Wait for it or cancel it.` }, { status: 409 });
+    }
+
     const preflightWarnings: string[] = [];
     for (const resolution of safeResolutions) {
       const listTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion.toUpperCase()}_${safeProfileUpper}_LIST_RES${resolution}`;
