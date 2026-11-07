@@ -16,7 +16,7 @@ export const GET = withLogging(async () => {
       const rows = await runSql(
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE, HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
                 PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE, ROAD_FILTER,
-                HEXAGONS_BEFORE_ROUTABILITY, HEXAGONS_AFTER_ROUTABILITY, ROUTABILITY_NOTE, FILTER_WARNING,
+                HEXAGONS_BEFORE_ROUTABILITY, HEXAGONS_AFTER_ROUTABILITY, ROUTABILITY_NOTE, FILTER_WARNING, DISMISSED,
                 TO_VARCHAR(CREATED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS CREATED_AT,
                 TO_VARCHAR(STARTED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS STARTED_AT,
                 TO_VARCHAR(COMPLETED_AT,'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS COMPLETED_AT
@@ -32,6 +32,7 @@ export const GET = withLogging(async () => {
         hexagons_after_routability: Number(r.HEXAGONS_AFTER_ROUTABILITY) || 0,
         routability_note: r.ROUTABILITY_NOTE || '',
         filter_warning: r.FILTER_WARNING || '',
+        dismissed: r.DISMISSED === true || String(r.DISMISSED).toLowerCase() === 'true',
       })) as unknown as Job[];
       await Promise.all(jobs.filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0).map(async (j) => {
         const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');

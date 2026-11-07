@@ -1466,7 +1466,7 @@ BEGIN
                     -- during provisioning to keep the build container alive
                     -- across silent CH/LM phases.
                     BEGIN
-                        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
+                        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 7200';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
                     -- REBUILD_GRAPHS is now always false in the service spec, so
@@ -2321,7 +2321,7 @@ BEGIN
 
     EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
         ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
-        ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
+        ' AUTO_SUSPEND_SECS = 7200 AUTO_RESUME = TRUE' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"multi-region","region":"' || :P_REGION || '"}}''';
 
     -- Pass the resolved instance_family so the spec's JVM heap matches the node
@@ -4589,7 +4589,7 @@ BEGIN
                 EXCEPTION WHEN OTHER THEN NULL;
                 END;
                 BEGIN
-                    EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
+                    EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 7200';
                 EXCEPTION WHEN OTHER THEN NULL;
                 END;
                 RETURN :terminal_reason || ':' || :P_REGION;
@@ -4693,7 +4693,7 @@ BEGIN
     -- CH/LM phases; restore to default cost-guard interval now that build
     -- is done.
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 7200';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     -- REBUILD_GRAPHS is always false in the service spec now; no flag flip is
@@ -4929,7 +4929,7 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:region) || ' SET AUTO_SUSPEND_SECS = 3600';
+            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:region) || ' SET AUTO_SUSPEND_SECS = 7200';
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN

@@ -89,7 +89,7 @@ ALTER DATABASE IF EXISTS ROUTING_PLATFORM     SET DATA_RETENTION_TIME_IN_DAYS = 
 -- timer). Safe to run any time; RECONCILE_AUTO_SUSPEND re-pins to 0 during builds.
 ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL SET MIN_NODES = 1 MAX_NODES = 5;
 ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET MIN_INSTANCES = 1 MAX_INSTANCES = 3;
-ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
 
 -- =============================================================================
 -- RESUME BLOCK - run this before your next demo to bring the stack back
