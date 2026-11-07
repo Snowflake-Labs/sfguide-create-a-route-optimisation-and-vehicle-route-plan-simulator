@@ -137,7 +137,8 @@ class Session:
     """
 
     def __init__(self, connection: str):
-        self.con = snowflake.connector.connect(connection_name=connection)
+        from sf_connect import connect
+        self.con = connect(connection)
         cur = self.con.cursor()
         cur.execute("ALTER SESSION SET query_tag = '%s'" % QUERY_TAG)
         cur.close()

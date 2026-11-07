@@ -162,6 +162,11 @@ gates:
     negative: bash .cortex/skills/install-fleet-apps/scripts/check_python_env_negative.sh
     scope: static
     why: python3 without the helper packages (Homebrew PEP 668 refuses a global pip) kills the first python helper; installer must provide a .venv, preflight stays read-only
+  - id: sf_connect
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_sf_connect.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_sf_connect_negative.py
+    scope: static
+    why: connector 5.x FutureWarnings (keep-alive unset, connection not closed) printed into every install console from helpers calling connect() directly
   - id: seed_copy_columns
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py
