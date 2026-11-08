@@ -87,6 +87,13 @@ AGENTS=(
 )
 
 note() { echo "[agent-evals] $*"; }
+# Raw START/STATUS output of the baseline runs; the console gets one line each.
+EVAL_RUN_LOG=/tmp/ifa_agent_evals_run.log
+: >"$EVAL_RUN_LOG"
+EVAL_POLL_MINS="${EVAL_POLL_MINS:-30}"
+EVAL_POLL_SECS="${EVAL_POLL_SECS:-30}"
+EVAL_SETTLE_POLLS="${EVAL_SETTLE_POLLS:-6}"
+EVAL_FAILS=0
 q()    { snow sql -c "$CONNECTION" -q "$TAG_SQL $1" --enable-templating NONE 2>&1; }
 
 selected() {
@@ -239,31 +246,69 @@ for entry in "${AGENTS[@]}"; do
   run_name="baseline-${STAMP}"
   cfg="@${EVAL_DB}.${EVAL_SCHEMA}.${STAGE}/${yaml}"
   note "START $agent run=$run_name"
+  # Output goes to the log, not the console: each call used to print the raw
+  # "Function executed successfully" box and every poll a wide STATUS table.
   out=$(q "CALL EXECUTE_AI_EVALUATION('START', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');")
-  echo "$out" | tail -5
+  printf '%s\n' "$out" >>"$EVAL_RUN_LOG"
   if echo "$out" | grep -qiE "^.*Error |exception"; then
-    note "WARN: could not start the run for $agent - continuing with the others"
+    note "WARN: could not start the run for $agent (see $EVAL_RUN_LOG) - continuing with the others"
+    EVAL_FAILS=$((EVAL_FAILS + 1))
     continue
   fi
 
-  # Bounded poll. A run walks the whole dataset through the agent, so minutes is
-  # normal; this is a progress report, not a gate.
+  # Poll the STATUS column (CSV, width-independent) every EVAL_POLL_SECS for up to
+  # EVAL_POLL_MINS. Terminal values per the EXECUTE_AI_EVALUATION docs are exactly
+  # COMPLETED, PARTIALLY_COMPLETED and CANCELLED. INVOCATION_COMPLETED is NOT one:
+  # the agent calls are done but the judges have not scored yet
+  # (COMPUTATION_IN_PROGRESS follows), so a substring match on COMPLETED declared
+  # runs finished before any metric existed. FAILED/_ERROR are undocumented and
+  # kept only as a safety net. Every q() call also prints "Statement executed
+  # successfully", so only the parsed column is ever matched.
   #
-  # Match ONLY the documented terminal STATUS tokens. A generic /SUCCESS/ match
-  # is wrong here: every q() call prints the session preamble's "Statement
-  # executed successfully", so the loop declared victory on its first pass while
-  # the run was still INVOCATION_IN_PROGRESS.
-  for _ in $(seq 1 40); do
-    sleep 30
-    status=$(q "CALL EXECUTE_AI_EVALUATION('STATUS', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');" || true)
-    if echo "$status" | grep -qE "COMPLETED|EVALUATION_COMPLETED|FAILED|CANCELLED|_ERROR"; then
-      echo "$status" | tail -8
-      break
-    fi
-    note "  $agent still running ..."
+  # A NON-success terminal value is not trusted on one read: on TIB a run read
+  # PARTIALLY_COMPLETED and then COMPLETED a minute later, with every metric
+  # scored. Failure is reported only once it holds for EVAL_SETTLE_POLLS
+  # consecutive reads; COMPLETED is accepted at once.
+  # Bounded by a POLL COUNT, not wall-clock: the same EVAL_POLL_MINS on a real run
+  # (60 x 30 s = 30 min), and a finite number of calls when EVAL_POLL_SECS=0.
+  t0=$SECONDS; st=""; bad=0; polls=0
+  max_polls=$(( EVAL_POLL_MINS * 60 / (EVAL_POLL_SECS > 0 ? EVAL_POLL_SECS : 30) ))
+  while [ "$polls" -lt "$max_polls" ]; do
+    polls=$((polls + 1))
+    sleep "$EVAL_POLL_SECS"
+    # $TAG_SQL as in q(): query_tag plus the session warehouse and schema the
+    # evaluation is bound to. Its preamble rows come first; awk reads the header
+    # of the LAST result set (the CALL), so they cannot be mistaken for STATUS.
+    st=$(snow sql -c "$CONNECTION" --format csv --enable-templating NONE \
+      -q "$TAG_SQL CALL EXECUTE_AI_EVALUATION('STATUS', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');" 2>>"$EVAL_RUN_LOG" \
+      | awk -F, '/^RUN_NAME,/ {c=0; for (i=1;i<=NF;i++) if ($i=="STATUS") c=i; next} c && NF {v=$c} END {print v}')
+    case "$st" in
+      COMPLETED) break ;;
+      PARTIALLY_COMPLETED|CANCELLED|*FAILED*|*_ERROR*)
+        bad=$((bad + 1))
+        [ "$bad" -ge "$EVAL_SETTLE_POLLS" ] && break
+        note "  $agent $st ($(( (SECONDS - t0) / 60 )) min) - re-checking before reporting it" ;;
+      *)
+        bad=0
+        note "  $agent ${st:-starting} ($(( (SECONDS - t0) / 60 )) min)" ;;
+    esac
   done
+  case "$st" in
+    COMPLETED)
+      note "  $agent COMPLETED in $(( (SECONDS - t0) / 60 )) min" ;;
+    PARTIALLY_COMPLETED|CANCELLED|*FAILED*|*_ERROR*)
+      note "  $agent FAILED: $st after $(( (SECONDS - t0) / 60 )) min (details: $EVAL_RUN_LOG)"
+      EVAL_FAILS=$((EVAL_FAILS + 1)) ;;
+    *)
+      note "  $agent still ${st:-unknown} after ${EVAL_POLL_MINS} min - stopped waiting (it keeps running server-side; raise EVAL_POLL_MINS)"
+      EVAL_FAILS=$((EVAL_FAILS + 1)) ;;
+  esac
 done
 
 note "done. Inspect results in Snowsight (AI & ML > Agents > <agent> > Evaluations),"
 note "or with SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA('${EVAL_DB}','SYNAPSE_USER','<agent>','CORTEX AGENT','baseline-${STAMP}')."
 note "Scheduled tasks: SHOW TASKS IN SCHEMA ${EVAL_DB}.${EVAL_SCHEMA}; resume with ALTER TASK ... RESUME or ENABLE_SCHEDULED_EVALS=1."
+if [ "$EVAL_FAILS" -gt 0 ]; then
+  note "WARN: $EVAL_FAILS baseline run(s) did not complete"
+  exit 1
+fi

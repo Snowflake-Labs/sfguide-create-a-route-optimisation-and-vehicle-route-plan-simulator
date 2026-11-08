@@ -177,6 +177,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_determinism_negative.py
     scope: static
     why: unordered LIMIT 1 selection seeds made identical installs report different BY_DESIGN counts (20 vs 17)
+  - id: agent_eval_poll
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_agent_eval_poll.sh
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_agent_eval_poll_negative.sh
+    scope: static
+    why: baseline eval poll printed raw snow tables, a timeless "still running ..." heartbeat, and exited 0 on a failed or abandoned run
   - id: seed_copy_columns
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py
