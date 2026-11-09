@@ -98,20 +98,6 @@ views:
 
   plan_vs_actual_performance:
     areas:
-      planned:
-        expect: may_be_empty
-        reason: >-
-          The planned-path map layer filters journeys whose deviation fraction
-          exceeds the threshold (default 0.10). The harness seeds a journey
-          with PLANNED_PATH_GEOG IS NOT NULL, but that journey may not meet
-          the deviation threshold or may be excluded by the LIMIT 1 non-
-          deterministic pick. The idle pass always returns rows (all journeys);
-          the selection pass narrows to one journey which may be filtered out.
-      actual:
-        expect: may_be_empty
-        reason: >-
-          Same as planned - the actual-path layer shares the same deviation
-          threshold filter and selection narrowing.
       actual_on_plan:
         expect: may_be_empty
         reason: Mutually exclusive with actual_deviation - see journey_inspector.
@@ -369,7 +355,7 @@ selection_seeds:
   dispatch_execution_board:
     selected_entity: >-
       SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
-      WHERE ENTITY_ID IS NOT NULL LIMIT 1
+      WHERE ENTITY_ID IS NOT NULL ORDER BY ENTITY_ID LIMIT 1
 
   journey_inspector:
     # Order matters: the journey is chosen first and the vehicle is derived FROM
@@ -390,20 +376,32 @@ selection_seeds:
     selected_journey: >-
       SELECT JOURNEY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
       WHERE JOURNEY_ID IS NOT NULL AND ACTUAL_PATH_GEOG IS NOT NULL
-        AND PLANNED_PATH_GEOG IS NOT NULL LIMIT 1
+        AND PLANNED_PATH_GEOG IS NOT NULL ORDER BY JOURNEY_ID LIMIT 1
     selected_vehicle: >-
       SELECT ENTITY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
-      WHERE JOURNEY_ID = :selected_journey LIMIT 1
+      WHERE JOURNEY_ID = :selected_journey ORDER BY ENTITY_ID LIMIT 1
 
   plan_vs_actual_performance:
+    # The journey a user clicks first: the TOP row of the view's own table, which
+    # lists journeys over the deviation threshold, most deviated first. A bare
+    # LIMIT 1 over planned journeys picked one under the threshold on some runs and
+    # not others, so the same install reported `planned`/`actual` as OK in one
+    # cycle and BY_DESIGN-empty in the next (TIB, 2026-11-07).
     selected_journey: >-
-      SELECT JOURNEY_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
-      WHERE JOURNEY_ID IS NOT NULL AND PLANNED_PATH_GEOG IS NOT NULL LIMIT 1
+      WITH jp AS (
+        SELECT JOURNEY_ID, PLANNED_PATH_GEOG AS pg FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
+        WHERE PLANNED_PATH_GEOG IS NOT NULL AND ACTUAL_PATH_GEOG IS NOT NULL),
+      dev AS (
+        SELECT p.JOURNEY_ID AS jid, AVG(IFF(ST_DISTANCE(p.LOCATION_GEOG, jp.pg) > 40, 1, 0)) AS dev_frac
+        FROM jp JOIN TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(:region, NULL::VARCHAR)) p ON p.JOURNEY_ID = jp.JOURNEY_ID
+        WHERE p.LOCATION_GEOG IS NOT NULL GROUP BY 1)
+      SELECT jid FROM dev WHERE dev_frac >= COALESCE(TRY_TO_DOUBLE(CAST(:deviation_threshold AS VARCHAR)), 0.10)
+      ORDER BY dev_frac DESC, jid LIMIT 1
 
   responsible_party_performance:
     selected_operator: >-
       SELECT OPERATOR_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(:region, NULL::VARCHAR))
-      WHERE OPERATOR_ID IS NOT NULL LIMIT 1
+      WHERE OPERATOR_ID IS NOT NULL ORDER BY OPERATOR_ID LIMIT 1
 
   asset_velocity:
     # MUST filter by region. The idle-vehicle view is multi-region now, so an
@@ -414,30 +412,30 @@ selection_seeds:
     # site_impact below.
     selected_vehicle: >-
       SELECT VEHICLE_ID FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_VEHICLE_COST_OF_IDLENESS
-      WHERE REGION = :region LIMIT 1
+      WHERE REGION = :region ORDER BY VEHICLE_ID LIMIT 1
 
   delivery_sync:
     selected_site: >-
       SELECT SITE_ID FROM FLEET_APP.DELIVERY_SYNC.VW_SITE_VISITS
-      WHERE REGION = :region LIMIT 1
+      WHERE REGION = :region ORDER BY SITE_ID LIMIT 1
 
   site_impact:
     selected_store: >-
       SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORES
-      WHERE REGION = :region AND STORE_ROLE = 'OWNED' LIMIT 1
+      WHERE REGION = :region AND STORE_ROLE = 'OWNED' ORDER BY STORE_ID LIMIT 1
 
   closure_impact:
     selected_store: >-
       SELECT STORE_ID FROM FLEET_APP.LOCATION.VW_STORES
-      WHERE REGION = :region AND STORE_ROLE = 'OWNED' LIMIT 1
+      WHERE REGION = :region AND STORE_ROLE = 'OWNED' ORDER BY STORE_ID LIMIT 1
 
   sourcing_optimizer:
     selected_customer: >-
-      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND LIMIT 1
+      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND ORDER BY CUSTOMER_ID LIMIT 1
 
   mix_sourcing:
     selected_customer: >-
-      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND LIMIT 1
+      SELECT CUSTOMER_ID FROM FLEET_APP.SOURCING.VW_CUSTOMER_DEMAND ORDER BY CUSTOMER_ID LIMIT 1
 
   catchment:
     # LIVE_CATCHMENT resolves the anchor by POI *NAME*, not id, and the three
@@ -453,7 +451,7 @@ selection_seeds:
       ORDER BY POI_NAME LIMIT 1
     anchor_lat: >-
       SELECT LATITUDE FROM FLEET_APP.CATCHMENT.VW_POIS
-      WHERE REGION = :region AND POI_NAME = :selected_poi LIMIT 1
+      WHERE REGION = :region AND POI_NAME = :selected_poi ORDER BY LATITUDE, LONGITUDE LIMIT 1
     anchor_lng: >-
       SELECT LONGITUDE FROM FLEET_APP.CATCHMENT.VW_POIS
-      WHERE REGION = :region AND POI_NAME = :selected_poi LIMIT 1
+      WHERE REGION = :region AND POI_NAME = :selected_poi ORDER BY LATITUDE, LONGITUDE LIMIT 1

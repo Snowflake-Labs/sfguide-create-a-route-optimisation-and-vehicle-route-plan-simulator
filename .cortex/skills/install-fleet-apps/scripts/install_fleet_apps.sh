@@ -170,6 +170,13 @@ note "[0/8] preflight..."
 for t in snow node npm python3; do
   command -v "$t" >/dev/null 2>&1 || { echo "ERROR: '$t' not found"; exit 1; }
 done
+# Python helpers need PyYAML / snowflake-connector-python / requests. Homebrew
+# Python refuses a global pip install (PEP 668), so a repo-local .venv is
+# created when python3 lacks them; every later `python3` resolves to it.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib/python_env.sh"
+ensure_python_env || { echo "ERROR: $PYTHON_ENV_ERROR"; exit 1; }
+note "  python packages: $PYTHON_ENV_SOURCE"
 # Image builds need a WORKING runtime, docker or podman. Probe health here (no
 # machine start) so a stopped Docker Desktop is reported in seconds instead of
 # failing the first image build; the deploy scripts re-resolve and may start a
@@ -186,6 +193,17 @@ else
 fi
 snow sql -c "$CONNECTION" -q "$TAG_SQL SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
+# Say up front whether this is a first install or a reuse of an earlier one: a
+# fresh-clone run on an already-installed account otherwise looks like a first
+# install while silently taking the reuse path. Read-only; never changes what runs.
+EXISTING_DBS=$(snow sql -c "$CONNECTION" --format csv -q "$TAG_SQL SELECT DATABASE_NAME FROM SNOWFLAKE.INFORMATION_SCHEMA.DATABASES WHERE DATABASE_NAME IN ('FLEET_INTELLIGENCE','FLEET_APP','SYNTHETIC_DATASETS','ROUTING_PLATFORM','OPENROUTESERVICE_APP') ORDER BY 1;" 2>/dev/null \
+  | grep -E '^[A-Z_]+$' | grep -v '^DATABASE_NAME$' | tr '\n' ' ' || true)
+if [ -n "$EXISTING_DBS" ]; then
+  note "  existing install detected (${EXISTING_DBS% }): re-using it, so this run upgrades rather than installs from scratch"
+  note "  to start over instead, see README 'Re-installing or starting over' (routing-solution-cleanup)"
+else
+  note "  no earlier install found: first install"
+fi
 step "0 preflight" OK
 
 # ── 0.5 pre-create FLEET_APP_* roles (before any GRANT target needs them) ──
@@ -330,6 +348,16 @@ wait_with_progress() {
   wait "$pid"
 }
 
+# Run a foreground step that can take minutes with the same heartbeat: output
+# to $log, a progress note every HEARTBEAT_SECS, the command's exit status.
+#   with_heartbeat <label> <log> <cmd...>
+with_heartbeat() {
+  local label="$1" log="$2"
+  shift 2
+  "$@" >"$log" 2>&1 &
+  wait_with_progress "$!" "$label" "$log"
+}
+
 if [ "${SKIP_ROUTING:-0}" != "1" ] && [ "$WITH_ENGINE" = "1" ] \
    && [ "${OVERLAP_ENGINE_IMAGES:-1}" = "1" ] \
    && ! obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
@@ -374,8 +402,9 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     # Upload each top-level directory in parallel (the loader COPY INTOs by directory path, so
     # concurrency across directories is safe). The two root-level SQL files (load-seed-data.sql,
     # export-preset.sql) are uploaded separately.
-    note "  uploading ~204 MB seed parquet (parallel per directory; expect ~2-3 min)..."
+    note "  uploading ~204 MB seed parquet (parallel per directory; ~2-7 min, shares bandwidth with the engine image push)..."
     STAGE_PIDS=()
+    STAGE_LOGS=()
     for d in "$REPO_ROOT"/datasets/*/; do
       [ -d "$d" ] || continue
       dname=$(basename "$d")
@@ -383,6 +412,7 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
         -c "$CONNECTION" --overwrite --recursive --parallel 8 \
         >/tmp/ifa_stage_${dname}.log 2>&1 &
       STAGE_PIDS+=($!)
+      STAGE_LOGS+=("/tmp/ifa_stage_${dname}.log")
     done
     # Root-level SQL files (loader + export-preset) go to the stage root.
     for f in "$REPO_ROOT"/datasets/*.sql; do
@@ -390,10 +420,12 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
       snow stage copy "$f" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ \
         -c "$CONNECTION" --overwrite >/tmp/ifa_stage_rootsql.log 2>&1 &
       STAGE_PIDS+=($!)
+      STAGE_LOGS+=(/tmp/ifa_stage_rootsql.log)
     done
     STAGE_FAIL=0
-    for pid in "${STAGE_PIDS[@]}"; do
-      wait "$pid" || STAGE_FAIL=$((STAGE_FAIL + 1))
+    for i in "${!STAGE_PIDS[@]}"; do
+      wait_with_progress "${STAGE_PIDS[$i]}" "seed upload" "${STAGE_LOGS[$i]}" \
+        || STAGE_FAIL=$((STAGE_FAIL + 1))
     done
     if [ "$STAGE_FAIL" -gt 0 ]; then
       echo "ERROR: $STAGE_FAIL seed upload process(es) failed"
@@ -418,7 +450,9 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     # to trace back from "the dashboards are blank". Same class as the
     # analytic-layer gate at step 3.5 and the delivery-sync validator.
     SEED_LOAD_RC=0
-    snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 || SEED_LOAD_RC=$?
+    note "  loading seed tables (log: /tmp/ifa_load.log)..."
+    with_heartbeat "seed load" /tmp/ifa_load.log \
+      snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql || SEED_LOAD_RC=$?
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
     if [ "$SEED_LOAD_RC" != "0" ]; then
       note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
@@ -1241,8 +1275,11 @@ if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]
     note "[6.6/8] creating agent eval sets only (pass RUN_AGENT_EVALS=1 for a baseline run)..."
     EVAL_ARGS="--no-run"
   fi
-  bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
-      >/tmp/ifa_agent_evals.log 2>&1 \
+  # with_heartbeat: a baseline run takes ~17 min for the four agents and was
+  # silent in the console; the heartbeat surfaces its per-agent status line.
+  # shellcheck disable=SC2086
+  with_heartbeat "agent evals" /tmp/ifa_agent_evals.log \
+      bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
     && step "6.6 agent-evals" OK \
     || { note "  WARN: agent eval setup failed; see /tmp/ifa_agent_evals.log"; step "6.6 agent-evals" WARN; }
   if [ -n "$EVAL_ARGS" ]; then
@@ -1613,7 +1650,7 @@ DEGRADED_TXT="$(python3 "$SCRIPTS/layer_impact.py" "${DEGRADED_ARGS[@]}" 2>/dev/
   echo "## Next steps"
   echo "1. Open the SA app (consumer/analytics): $SA_URL_DISP"
   echo "2. Open the Admin app (build console / Data Studio): $ADMIN_URL_DISP"
-  echo "   Both apps require Snowflake OAuth login; a fresh endpoint returns HTTP 302 to the login page."
+  echo "   Each app is a separate endpoint with its own Snowflake OAuth sign-in (you sign in once per app); a fresh endpoint returns HTTP 302 to the login page."
   echo "3. Smoke-test live routing: ask the SA app agent \"what can I reach within 10 minutes of downtown SanFrancisco\" (needs the ORS engine RUNNING)."
   if [ "$WITH_ENGINE" = "1" ]; then
     echo "4. Routing services at the end of install (idle services auto-suspend after the time shown; the app resumes them on first use):"
@@ -1691,7 +1728,7 @@ fi
 echo "----------------------------------------------------------------"
 echo " Next steps"
 echo "   1. Open the SA app above and log in via Snowflake OAuth."
-echo "   2. Open the Admin app to run Data Studio / provision more regions."
+echo "   2. Open the Admin app to run Data Studio / provision more regions (a separate endpoint: sign in again)."
 echo "   3. Smoke-test routing in the SA app agent (e.g. isochrone/directions in SanFrancisco)."
 if [ -z "${SA_URL:-}" ] || [ -z "${ADMIN_URL:-}" ]; then
   echo "   4. An endpoint is still provisioning: run its SHOW ENDPOINTS command (URLs above) in ~1-2 min."

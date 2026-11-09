@@ -42,6 +42,8 @@ DEGRADED=0
 pass() { printf '  OK        %s\n' "$1"; }
 warn() { printf '  DEGRADED  %s\n' "$1"; DEGRADED=1; }
 fail() { printf '  BLOCKING  %s\n' "$1"; BLOCKING=1; }
+# Expected on a first install and handled by the run itself: never a verdict.
+info() { printf '  INFO      %s\n' "$1"; }
 
 # Every `snow sql` invocation opens a NEW session, so the AGENTS.md-mandated
 # query_tag is prepended inside the helpers - one place covers every probe below,
@@ -85,6 +87,17 @@ echo "[1] local toolchain"
 for t in snow node npm python3; do
   if command -v "$t" >/dev/null 2>&1; then pass "$t present"; else fail "$t NOT found"; fi
 done
+# Creates the repo .venv when python3 lacks the packages: GENERATED local state
+# the installer's step 0 creates anyway, and without it [4] cannot answer the
+# Overture question this preflight exists for. Account state stays untouched.
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/python_env.sh"
+PY_READY=0
+if ensure_python_env; then
+  PY_READY=1; pass "python packages importable from $PYTHON_ENV_SOURCE"
+else
+  fail "$PYTHON_ENV_ERROR"
+fi
 # Health, not presence: a docker CLI with no running daemon used to pass here
 # and then fail the engine build. --no-start: preflight changes no state.
 # shellcheck disable=SC1091
@@ -136,7 +149,9 @@ fi
 #        five to seven views, so it is probed explicitly rather than inferred. ---
 echo
 echo "[4] Overture Marketplace listings (catchment, location, sourcing depend on these)"
-if [ "$CHECK_LISTINGS" = "1" ]; then
+if [ "$PY_READY" = "0" ]; then
+  warn "listing probe skipped: python packages unavailable (see [1])"
+elif [ "$CHECK_LISTINGS" = "1" ]; then
   python3 "$(dirname "$0")/prepare_overture.py" --connection "$CONNECTION" --check
   rc=$?
   if [ "$rc" = "0" ]; then
@@ -158,7 +173,7 @@ echo
 echo "[5] ORS engine"
 OUT=$(qc "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;")
 if has_i "$OUT" "does not exist" || has_i "$OUT" "not authorized"; then
-  warn "OPENROUTESERVICE_APP absent - expected on a first install (the engine is built by this run unless --no-engine)"
+  info "OPENROUTESERVICE_APP absent - expected on a first install (the engine is built by this run unless --no-engine)"
 else
   N=$(printf '%s\n' "$OUT" | grep -ciE "ORS_SERVICE|VROOM_SERVICE" || true)
   if [ "${N:-0}" -gt 0 ]; then
@@ -193,9 +208,13 @@ else
     N=$(printf '%s\n' "$OUT" | grep -oE "^\| [0-9]+" | grep -oE "[0-9]+" | head -1)
     warn "FLEET_INTELLIGENCE.CORE.DIM_DATASETS already has ${N:-?} row(s) - step 2 will SKIP seeding. Flush first for a true clean install."
   fi
-  RECON=$(python3 "$(dirname "${BASH_SOURCE[0]}")/reconcile_existing.py" -c "$CONNECTION" --check 2>&1) \
-    || warn "reconcile check could not complete"
-  printf '%s\n' "$RECON" | sed 's/^/     /'
+  if [ "$PY_READY" = "1" ]; then
+    RECON=$(python3 "$(dirname "${BASH_SOURCE[0]}")/reconcile_existing.py" -c "$CONNECTION" --check 2>&1) \
+      || warn "reconcile check could not complete"
+    printf '%s\n' "$RECON" | sed 's/^/     /'
+  else
+    warn "reconcile check skipped: python packages unavailable (see [1])"
+  fi
 fi
 
 # --- 7. Python deps the post-install harness needs. Checked here so the
@@ -203,12 +222,11 @@ fi
 #        discovers a missing package. ---
 echo
 echo "[7] verification harness dependencies"
-python3 -c "import snowflake.connector" 2>/dev/null \
-  && pass "snowflake-connector-python present" \
-  || warn "snowflake-connector-python missing - validate_app_views.py cannot run"
-python3 -c "import yaml" 2>/dev/null \
-  && pass "PyYAML present" \
-  || warn "PyYAML missing - validate_app_views.py cannot run"
+if [ "$PY_READY" = "1" ]; then
+  pass "PyYAML, snowflake-connector-python, requests importable ($PYTHON_ENV_SOURCE)"
+else
+  warn "unavailable (see [1]); view verification at the end of the install cannot run"
+fi
 
 # --- 8. Cowork / Snowflake Intelligence discoverability of the agents.
 #        The agents are only visible in the Cowork agent picker to a role that

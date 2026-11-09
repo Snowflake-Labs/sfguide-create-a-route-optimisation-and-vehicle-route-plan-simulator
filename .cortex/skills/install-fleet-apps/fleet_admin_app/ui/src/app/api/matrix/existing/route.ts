@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
 import { SF_DATABASE } from '@/server/constants';
 import { runSql } from '@/server/lib/sql';
-import { sanitizeIdentifier } from '@/server/lib/sanitize';
+import { sanitizeIdentifier, sanitizeProfile } from '@/server/lib/sanitize';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,9 @@ export const GET = withLogging(async (req: NextRequest) => {
     const region = sp.get('region') || '';
     const profile = sp.get('profile') || 'driving-car';
     const safeRegion = region ? sanitizeIdentifier(region) : 'SAN_FRANCISCO';
-    const safeProfile = profile.replace(/-/g, '_').toUpperCase();
+    // Allowlisted: the profile becomes part of an unquoted table name below.
+    let safeProfile: string;
+    try { safeProfile = sanitizeProfile(profile).upper; } catch { return NextResponse.json({}, { status: 400 }); }
     const prefix = `${safeRegion}_${safeProfile}`;
     const counts: Record<string, number> = {};
     for (const r of [5, 6, 7, 8, 9, 10]) {

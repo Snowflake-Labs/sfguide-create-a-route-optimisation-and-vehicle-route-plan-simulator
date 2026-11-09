@@ -272,19 +272,37 @@ export function MatrixBuilderPage() {
 
   const readyRegions = regions.filter((r) => r.ready);
   const activeJobs = jobs.filter((j) => j.status === 'RUNNING' || j.status === 'PENDING');
-  const failedJobs = jobs.filter((j) => j.status === 'ERROR' && !dismissedErrors.has(j.job_id)).slice(0, 10);
+  const failedJobs = jobs.filter((j) => j.status === 'ERROR' && !j.dismissed && !dismissedErrors.has(j.job_id)).slice(0, 10);
+
+  // Dismissal is persisted on MATRIX_BUILD_JOBS.DISMISSED; the local set only
+  // hides the row until the next poll confirms it. A failed save un-hides it
+  // so the user is not told something was dismissed when it will come back.
+  const persistDismiss = useCallback(async (jobId: string) => {
+    setDismissedErrors(prev => new Set(prev).add(jobId));
+    try {
+      const res = await fetch('/api/matrix/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      if (!res.ok) throw new Error(`dismiss failed: HTTP ${res.status}`);
+    } catch (e) {
+      console.error('[matrix-builder]', (e as Error).message);
+      setDismissedErrors(prev => { const next = new Set(prev); next.delete(jobId); return next; });
+    }
+  }, []);
 
   const retryMatrixBuild = useCallback(async (job: MatrixJob) => {
     const resNum = parseInt(job.resolution.replace('RES', ''));
     setSelectedRegion(job.region);
     setSelectedProfile(job.profile);
     setSelectedRes(new Set([resNum]));
-    setDismissedErrors(prev => new Set(prev).add(job.job_id));
-  }, []);
+    void persistDismiss(job.job_id);
+  }, [persistDismiss]);
 
   const dismissError = useCallback((jobId: string) => {
-    setDismissedErrors(prev => new Set(prev).add(jobId));
-  }, []);
+    void persistDismiss(jobId);
+  }, [persistDismiss]);
 
   return (
     <div className="panel">

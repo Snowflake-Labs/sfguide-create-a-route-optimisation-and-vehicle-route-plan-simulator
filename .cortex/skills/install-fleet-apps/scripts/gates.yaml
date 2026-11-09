@@ -85,6 +85,16 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_dockerfile_pip_negative.py
     scope: static
     why: an image build runs pip as root and prints pip's root-user WARNING into the install log
+  - id: skill_scope_table
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_skill_scope_table.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_skill_scope_table_negative.py
+    scope: static
+    why: the install skill's scope lists call shipped views or semantic views excluded, or omit them
+  - id: prereq_runtime_doc
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_prereq_runtime_doc.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_prereq_runtime_doc_negative.py
+    scope: static
+    why: the prerequisites skill demands Docker while the installer accepts a healthy Podman
   - id: reset_tmp_coverage
     run: bash .cortex/skills/routing-solution-cleanup/scripts/reset_local_state.sh --check-tmp-coverage
     negative: python3 .cortex/skills/install-fleet-apps/scripts/reset_tmp_coverage_negative.py
@@ -147,6 +157,31 @@ gates:
     negative: bash .cortex/skills/install-fleet-apps/scripts/check_container_runtime_negative.sh
     scope: static
     why: runtime picked by CLI presence (docker daemon down, podman never tried) or an image build hardcodes docker
+  - id: python_env
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_python_env.sh
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_python_env_negative.sh
+    scope: static
+    why: python3 without the helper packages (Homebrew PEP 668 refuses a global pip) kills the first python helper; installer must provide a .venv, preflight stays read-only
+  - id: sf_connect
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_sf_connect.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_sf_connect_negative.py
+    scope: static
+    why: connector 5.x FutureWarnings (keep-alive unset, connection not closed) printed into every install console from helpers calling connect() directly
+  - id: preflight_verdict
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_preflight_verdict.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_preflight_verdict_negative.py
+    scope: static
+    why: a clean first-install account read as "degraded" (engine absent, packages not yet installed) and skipped the Overture probe
+  - id: seed_determinism
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_determinism.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_determinism_negative.py
+    scope: static
+    why: unordered LIMIT 1 selection seeds made identical installs report different BY_DESIGN counts (20 vs 17)
+  - id: agent_eval_poll
+    run: bash .cortex/skills/install-fleet-apps/scripts/check_agent_eval_poll.sh
+    negative: bash .cortex/skills/install-fleet-apps/scripts/check_agent_eval_poll_negative.sh
+    scope: static
+    why: baseline eval poll printed raw snow tables, a timeless "still running ..." heartbeat, and exited 0 on a failed or abandoned run
   - id: seed_copy_columns
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns.py
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_seed_copy_columns_negative.py
@@ -275,6 +310,11 @@ gates:
     negative: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_gateway_wake_negative.py
     scope: static
     why: the admin Status & Health page reports a waking routing gateway as a graph-load failure
+  - id: admin_sql_inputs
+    run: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_sql_inputs.py
+    negative: python3 .cortex/skills/install-fleet-apps/scripts/check_admin_sql_inputs_negative.py
+    scope: static
+    why: a raw routing profile or resolution in a matrix route becomes SQL in an unquoted TRAVEL_MATRIX table name (PR 160, CWE-89)
   - id: next_build_warnings
     run: python3 .cortex/skills/install-fleet-apps/scripts/check_next_build_warnings.py
     needs: [npm-ci:.cortex/skills/install-fleet-apps/fleet_sa_app/ui, npm-ci:.cortex/skills/install-fleet-apps/fleet_admin_app/ui]

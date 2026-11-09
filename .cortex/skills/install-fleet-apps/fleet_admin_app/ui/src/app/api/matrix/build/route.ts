@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
 import { SF_DATABASE } from '@/server/constants';
 import { runSql, submitSqlAsync } from '@/server/lib/sql';
-import { sanitizeIdentifier, sanitizeFloat, escapeString } from '@/server/lib/sanitize';
+import { sanitizeIdentifier, sanitizeFloat, escapeString, sanitizeProfile, sanitizeResolutions } from '@/server/lib/sanitize';
 import { requireOps } from '@/lib/ingress-identity';
 
 export const runtime = 'nodejs';
@@ -13,16 +13,36 @@ export const POST = withLogging(async (req: NextRequest) => {
   if (!gate.ok) return NextResponse.json({ error: gate.reason || 'Forbidden' }, { status: gate.status });
   const { region, resolutions, profile: reqProfile, road_filter, force } = await req.json();
   if (!region || !resolutions) return NextResponse.json({ error: 'region and resolutions required' }, { status: 400 });
-  const profile = reqProfile || 'driving-car';
   const roadFilter = road_filter === true;
   let safeRegion: string;
   try { safeRegion = sanitizeIdentifier(region); } catch (err) { return NextResponse.json({ error: `Invalid region: ${(err as Error).message}` }, { status: 400 }); }
-  const safeResolutions = (resolutions as number[]).filter((r) => r >= 5 && r <= 10);
-  if (safeResolutions.length === 0) return NextResponse.json({ error: 'resolutions must be between 5 and 10' }, { status: 400 });
-  const safeProfile = escapeString(profile);
-  const safeProfileUpper = profile.replace(/-/g, '_').toUpperCase();
+  // profile and resolution become parts of unquoted TRAVEL_MATRIX table names,
+  // so they are allowlisted, not escaped (escapeString only protects literals).
+  let safeResolutions: number[];
+  let profileLit: string;
+  let safeProfileUpper: string;
+  try {
+    safeResolutions = sanitizeResolutions(resolutions);
+    ({ profile: profileLit, upper: safeProfileUpper } = sanitizeProfile(reqProfile || 'driving-car'));
+  } catch (err) { return NextResponse.json({ error: (err as Error).message }, { status: 400 }); }
+  const safeProfile = escapeString(profileLit);
 
   try {
+    // Single flight per (region, profile, res): jobs of one key share their
+    // tables, so a second launch truncates the first one's inputs. The wrapper
+    // refuses too; checking here keeps the refusal out of the failed-jobs list.
+    const resLabels = safeResolutions.map((r) => `'RES${r}'`).join(', ');
+    const busy = await runSql(
+      `SELECT RESOLUTION FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+       WHERE (STATUS = 'RUNNING' OR (STATUS = 'PENDING' AND CREATED_AT > DATEADD('MINUTE', -15, SYSDATE())))
+         AND UPPER(REGION) = UPPER('${escapeString(safeRegion)}')
+         AND UPPER(REPLACE(PROFILE, '-', '_')) = '${escapeString(safeProfileUpper)}' AND RESOLUTION IN (${resLabels})`,
+    );
+    if (busy && busy.length > 0) {
+      const which = Array.from(new Set(busy.map((b) => String(b.RESOLUTION)))).join(', ');
+      return NextResponse.json({ error: `A build is already running for ${safeRegion} / ${profileLit} / ${which}. Wait for it or cancel it.` }, { status: 409 });
+    }
+
     const preflightWarnings: string[] = [];
     for (const resolution of safeResolutions) {
       const listTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion.toUpperCase()}_${safeProfileUpper}_LIST_RES${resolution}`;
@@ -45,7 +65,7 @@ export const POST = withLogging(async (req: NextRequest) => {
     const jobs: { job_id: string; resolution: number }[] = [];
     const regionDb = safeRegion;
     const insertValues = safeResolutions.map((resolution, i) => {
-      const jobId = `${safeRegion.toUpperCase()}_${profile.replace(/-/g, '_')}_RES${resolution}_${Date.now() + i}`.toUpperCase();
+      const jobId = `${safeRegion.toUpperCase()}_${safeProfileUpper}_RES${resolution}_${Date.now() + i}`;
       jobs.push({ job_id: jobId, resolution });
       return `('${escapeString(jobId)}', '${escapeString(regionDb)}', '${safeProfile}', 'RES${resolution}', 'PENDING', 'NOT_STARTED')`;
     });
