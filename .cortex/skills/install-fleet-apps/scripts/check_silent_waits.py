@@ -21,8 +21,9 @@ import sys
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 FILES = ["install_fleet_apps.sh"]
 BARE_WAIT = re.compile(r'\bwait\s+"?\$(\{?[A-Za-z_][A-Za-z0-9_]*|!|\{[A-Za-z_][A-Za-z0-9_]*\[)')
-# file -> marker of a long foreground step (measured: seed load ~3 min on TIB).
-LONG_STEPS = {"install_fleet_apps.sh": ["-f /tmp/ifa_loader.sql"]}
+# file -> marker of a long foreground step (measured on TIB: seed load ~3 min,
+# baseline agent evaluations ~17 min).
+LONG_STEPS = {"install_fleet_apps.sh": ["-f /tmp/ifa_loader.sql", "setup_agent_evals.sh\" \"$CONNECTION\""]}
 
 
 def strip_comments(text: str) -> str:

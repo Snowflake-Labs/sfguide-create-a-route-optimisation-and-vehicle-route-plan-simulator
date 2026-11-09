@@ -51,5 +51,10 @@ h.replace(INST, '  "$@" >"$log" 2>&1 &\n  wait_with_progress "$!" "$label" "$log
           '  "$@" >"$log" 2>&1',
           expect="RULE C with_heartbeat() missing",
           name="C: with_heartbeat runs the step without the heartbeat")
+# Cycle-5 defect (TIB): baseline evals silent for ~17 min in step 6.6.
+h.replace(INST, '  with_heartbeat "agent evals" /tmp/ifa_agent_evals.log \\\n      bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \\\n',
+          '  bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \\\n      >/tmp/ifa_agent_evals.log 2>&1 \\\n',
+          expect="RULE C long step runs without a heartbeat",
+          name="C: baseline agent evals back in the foreground, silent")
 
 sys.exit(h.finish())

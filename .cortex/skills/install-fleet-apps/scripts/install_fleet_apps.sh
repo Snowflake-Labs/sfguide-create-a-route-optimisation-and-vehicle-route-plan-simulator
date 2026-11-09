@@ -1275,8 +1275,11 @@ if [ "${SKIP_AGENT_EVALS:-0}" != "1" ] && [ -f "$SCRIPTS/setup_agent_evals.sh" ]
     note "[6.6/8] creating agent eval sets only (pass RUN_AGENT_EVALS=1 for a baseline run)..."
     EVAL_ARGS="--no-run"
   fi
-  bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
-      >/tmp/ifa_agent_evals.log 2>&1 \
+  # with_heartbeat: a baseline run takes ~17 min for the four agents and was
+  # silent in the console; the heartbeat surfaces its per-agent status line.
+  # shellcheck disable=SC2086
+  with_heartbeat "agent evals" /tmp/ifa_agent_evals.log \
+      bash "$SCRIPTS/setup_agent_evals.sh" "$CONNECTION" $EVAL_ARGS \
     && step "6.6 agent-evals" OK \
     || { note "  WARN: agent eval setup failed; see /tmp/ifa_agent_evals.log"; step "6.6 agent-evals" WARN; }
   if [ -n "$EVAL_ARGS" ]; then
