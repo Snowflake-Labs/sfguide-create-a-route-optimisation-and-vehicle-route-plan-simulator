@@ -248,7 +248,8 @@ for entry in "${AGENTS[@]}"; do
   note "START $agent run=$run_name"
   # Output goes to the log, not the console: each call used to print the raw
   # "Function executed successfully" box and every poll a wide STATUS table.
-  out=$(q "CALL EXECUTE_AI_EVALUATION('START', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');")
+  out=$(q "CALL EXECUTE_AI_EVALUATION('START', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');" \
+        || echo "Error START call failed (snow exited non-zero)")
   printf '%s\n' "$out" >>"$EVAL_RUN_LOG"
   if echo "$out" | grep -qiE "^.*Error |exception"; then
     note "WARN: could not start the run for $agent (see $EVAL_RUN_LOG) - continuing with the others"
@@ -279,9 +280,13 @@ for entry in "${AGENTS[@]}"; do
     # $TAG_SQL as in q(): query_tag plus the session warehouse and schema the
     # evaluation is bound to. Its preamble rows come first; awk reads the header
     # of the LAST result set (the CALL), so they cannot be mistaken for STATUS.
+    # `|| true`: under set -euo pipefail one transient connect failure on a single
+    # poll ("Could not connect to Snowflake backend", TIB cycle 5) killed the whole
+    # script mid-run with no message. A failed read is just an unknown status; the
+    # next poll retries and the poll-count bound still ends the wait.
     st=$(snow sql -c "$CONNECTION" --format csv --enable-templating NONE \
       -q "$TAG_SQL CALL EXECUTE_AI_EVALUATION('STATUS', OBJECT_CONSTRUCT('run_name', '$run_name'), '$cfg');" 2>>"$EVAL_RUN_LOG" \
-      | awk -F, '/^RUN_NAME,/ {c=0; for (i=1;i<=NF;i++) if ($i=="STATUS") c=i; next} c && NF {v=$c} END {print v}')
+      | awk -F, '/^RUN_NAME,/ {c=0; for (i=1;i<=NF;i++) if ($i=="STATUS") c=i; next} c && NF {v=$c} END {print v}' || true)
     case "$st" in
       COMPLETED) break ;;
       PARTIALLY_COMPLETED|CANCELLED|*FAILED*|*_ERROR*)

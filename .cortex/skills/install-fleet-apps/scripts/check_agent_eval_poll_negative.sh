@@ -54,5 +54,8 @@ mutate no_settle '        [ "$bad" -ge "$EVAL_SETTLE_POLLS" ] && break'"$S"'    
 mutate blank_line_wins 'c && NF {v=$c}'"$S"'c {v=$c}' "completed run: rc="
 mutate first_line_header '/^RUN_NAME,/ {c=0; for (i=1;i<=NF;i++) if ($i=="STATUS") c=i; next} c && NF {v=$c} END {print v}'"$S"'NR==1 {for (i=1;i<=NF;i++) if ($i=="STATUS") c=i; next} c {print $c; exit}' "completed run: rc="
 
+# Cycle-5 defect: one dropped STATUS connection killed the script under set -e.
+mutate dropped_poll_kills $'END {print v}\' || true)\x1fEND {print v}\')' "one dropped STATUS poll killed the script"
+
 if [ "$SURVIVED" -gt 0 ]; then echo "agent_eval_poll negative: $SURVIVED mutation(s) survived"; exit 1; fi
-echo "agent_eval_poll negative: all 10 mutations killed"
+echo "agent_eval_poll negative: all 11 mutations killed"

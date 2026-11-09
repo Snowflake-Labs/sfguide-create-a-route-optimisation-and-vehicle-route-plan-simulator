@@ -26,6 +26,10 @@ case "$args" in
   *SHOW\ DATASETS*) echo '[{"name":"EVAL_DS_FLEET_AGENT"}]'; exit 0 ;;
   *"'STATUS'"*)
     n=$(cat "$FAKE_DIR/n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$FAKE_DIR/n"
+    # FAKE_FAIL_AT=<poll#>: that poll fails like a dropped connection (TIB cycle 5).
+    if [ "${FAKE_FAIL_AT:-0}" = "$n" ]; then
+      echo "Invalid connection configuration. 250001: Could not connect to Snowflake backend" >&2; exit 1
+    fi
     IFS=, read -ra seq <<<"$FAKE_STATUS"
     i=$(( n <= ${#seq[@]} ? n - 1 : ${#seq[@]} - 1 ))
     st="${seq[$i]}"
@@ -50,7 +54,8 @@ chmod +x "$W/bin/snow"
 # run_case <name> <status sequence> <poll mins> -> sets RC, OUT
 run_case() {
   rm -f "$W/n"
-  OUT=$(cd "$HERE" && PATH="$W/bin:$PATH" FAKE_DIR="$W" FAKE_STATUS="$2" EVAL_POLL_SECS=0 EVAL_POLL_MINS="$3" \
+  OUT=$(cd "$HERE" && PATH="$W/bin:$PATH" FAKE_DIR="$W" FAKE_STATUS="$2" FAKE_FAIL_AT="${FAKE_FAIL_AT:-0}" \
+        EVAL_POLL_SECS=0 EVAL_POLL_MINS="$3" \
         bash "$SCRIPT" FAKE --agents FLEET_AGENT 2>&1)
   RC=$?
   printf '%s\n' "$OUT" >"$W/$1.out"
@@ -79,6 +84,11 @@ grep -q "FLEET_AGENT FAILED: PARTIALLY_COMPLETED" "$W/partial.out" || bad "parti
 # 2c. observed on TIB: PARTIALLY_COMPLETED for one read, then COMPLETED, all scored
 run_case settles "COMPUTATION_IN_PROGRESS,PARTIALLY_COMPLETED,COMPLETED" 5
 [ "$RC" = 0 ] || bad "transient PARTIALLY_COMPLETED reported as a failure (rc=$RC); it settled to COMPLETED"
+
+# 2d. observed on TIB cycle 5: one STATUS poll fails to connect; the run must go on
+FAKE_FAIL_AT=2 run_case dropped "INVOCATION_IN_PROGRESS,INVOCATION_IN_PROGRESS,COMPLETED" 5
+[ "$RC" = 0 ] || bad "one dropped STATUS poll killed the script (rc=$RC)"
+grep -q "FLEET_AGENT COMPLETED in" "$W/dropped.out" || bad "one dropped STATUS poll: run never reported COMPLETED"
 
 # 3. never terminal within the window: rc 1, says it stopped waiting
 run_case timeout "INVOCATION_IN_PROGRESS" 0
