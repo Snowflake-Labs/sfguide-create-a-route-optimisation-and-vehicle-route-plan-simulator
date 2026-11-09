@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
 import { SF_DATABASE } from '@/server/constants';
 import { runSql } from '@/server/lib/sql';
-import { sanitizeIdentifier, sanitizeFloat, escapeString } from '@/server/lib/sanitize';
+import { sanitizeIdentifier, sanitizeFloat, escapeString, sanitizeProfile, sanitizeResolutions } from '@/server/lib/sanitize';
 import { regionCatalogMatch } from '@/server/lib/region-catalog-match';
 
 export const runtime = 'nodejs';
@@ -18,6 +18,12 @@ export const POST = withLogging(async (req: NextRequest) => {
     if (!region || !resolutions) return NextResponse.json({ error: 'region and resolutions required' }, { status: 400 });
     let safeRegion: string;
     try { safeRegion = sanitizeIdentifier(region); } catch { return NextResponse.json({ error: 'Invalid region' }, { status: 400 }); }
+    // Resolutions are interpolated into H3_COVERAGE_STRINGS(...) below: integers 5..10 only.
+    let safeResolutions: number[];
+    try {
+      safeResolutions = sanitizeResolutions(resolutions);
+      if (profile) sanitizeProfile(profile);
+    } catch (err) { return NextResponse.json({ error: (err as Error).message }, { status: 400 }); }
 
     let bbox: Record<string, number> = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
     try {
@@ -83,7 +89,6 @@ export const POST = withLogging(async (req: NextRequest) => {
       };
     };
 
-    const safeResolutions = (resolutions as number[]).filter((r) => r >= 5 && r <= 10);
     const estimatesPromise = Promise.all(safeResolutions.map(computeEstimate));
     const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('COST_ESTIMATE_TIMEOUT')), COST_ESTIMATE_TIMEOUT_MS));
     let estimates: Awaited<ReturnType<typeof computeEstimate>>[];

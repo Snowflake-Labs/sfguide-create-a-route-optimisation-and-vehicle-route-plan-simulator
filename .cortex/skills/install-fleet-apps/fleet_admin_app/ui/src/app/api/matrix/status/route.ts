@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { withLogging } from '@/lib/api-handler';
 import { SF_DATABASE } from '@/server/constants';
 import { runSql } from '@/server/lib/sql';
-import { toIso } from '@/server/lib/sanitize';
+import { toIso, sanitizeIdentifier, sanitizeProfile, sanitizeResolution } from '@/server/lib/sanitize';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,9 +35,11 @@ export const GET = withLogging(async () => {
         dismissed: r.DISMISSED === true || String(r.DISMISSED).toLowerCase() === 'true',
       })) as unknown as Job[];
       await Promise.all(jobs.filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0).map(async (j) => {
-        const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');
-        const safeRegion = String(j.region || '').toUpperCase();
-        const rawTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile}_MATRIX_RAW_${j.resolution}`;
+        // Stored values still go through the allowlists before forming a table name.
+        let rawTable: string;
+        try {
+          rawTable = `${SF_DATABASE}.TRAVEL_MATRIX.${sanitizeIdentifier(String(j.region || '')).toUpperCase()}_${sanitizeProfile(j.profile).upper}_MATRIX_RAW_${sanitizeResolution(j.resolution)}`;
+        } catch { return; }
         try {
           const liveRows = await runSql(`SELECT COUNT(*) AS C FROM ${rawTable}`);
           const c = Number(liveRows?.[0]?.C) || 0;
