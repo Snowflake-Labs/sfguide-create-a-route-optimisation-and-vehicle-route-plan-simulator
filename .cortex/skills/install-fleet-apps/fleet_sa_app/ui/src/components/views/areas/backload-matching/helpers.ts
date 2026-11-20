@@ -178,10 +178,16 @@ export async function callVerb(verb: string, args: unknown[]): Promise<Record<st
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ verb, args }),
   });
-  const body = await res.json();
+  let body = await res.json();
   if (res.status === 503 && isSuspendedBody(body)) throw new RoutingSuspendedError(body);
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  const result = (body.result ?? {}) as Record<string, unknown>;
+  // 202 is NOT a result: a solve past the 45s inline wait keeps running
+  // server-side and hands back a key. Reading `body.result` off it gave {} and
+  // rendered "No proposals produced" for every large solve, so collect it.
+  if (res.status === 202 && body.pending && body.solve_key) {
+    body = await pollSolve(String(body.solve_key));
+  }
+  const result = peelSoleResult(body.result ?? {}) as Record<string, unknown>;
   if (String(result.status ?? '') === 'FAILED') {
     const err = String(result.error ?? 'Verb call failed');
     if (String(result.reason ?? '') === 'OPTIMIZATION_UNAVAILABLE') {
@@ -195,6 +201,32 @@ export async function callVerb(verb: string, args: unknown[]): Promise<Record<st
     throw new Error(err);
   }
   return result;
+}
+
+/** Poll /api/solve-status until the deferred solve finishes (10 min ceiling,
+ *  above the verb's own 600s time_budget_s clamp). */
+const SOLVE_POLL_MS = 3000;
+const SOLVE_POLL_CEILING_MS = 11 * 60 * 1000;
+async function pollSolve(key: string): Promise<{ result?: unknown }> {
+  const deadline = Date.now() + SOLVE_POLL_CEILING_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, SOLVE_POLL_MS));
+    const r = await fetch(`/api/solve-status?key=${encodeURIComponent(key)}`);
+    if (r.status === 202) continue;
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.error || `Solve failed (HTTP ${r.status})`);
+    return b;
+  }
+  throw new Error('The solve is still running after 11 minutes. Reopen the page to collect it.');
+}
+
+/** The deferred path returns the proc's own `{result:{...}}`; peel a SOLE key. */
+function peelSoleResult(v: unknown): unknown {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const keys = Object.keys(v as Record<string, unknown>);
+    if (keys.length === 1 && keys[0] === 'result') return (v as Record<string, unknown>).result;
+  }
+  return v;
 }
 
 export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {

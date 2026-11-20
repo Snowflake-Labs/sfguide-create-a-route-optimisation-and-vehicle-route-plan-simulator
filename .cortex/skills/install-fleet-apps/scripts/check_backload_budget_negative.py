@@ -153,9 +153,9 @@ def m_unscope_trailer_feed(p):
     )
     sub_in_proc(
         p["proc"],
-        "            trailerId ? [region, trailerId] : [region],\n"
+        "            trailerId ? [region, region, trailerId] : [region, region],\n"
         "            ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',",
-        "            [region],\n"
+        "            [region, region],\n"
         "            ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',",
     )
 
@@ -179,7 +179,7 @@ def m_unscope_eligible(p):
     )
     src = src.replace(m.group(1), old_form)
     src = src.replace(
-        "            trailerId ? [region, trailerId] : [region],\n"
+        "            trailerId ? [region, region, trailerId] : [region, region],\n"
         "            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK',",
         "            [],\n            ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK',",
     )

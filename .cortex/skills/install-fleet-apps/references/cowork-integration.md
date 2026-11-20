@@ -229,14 +229,16 @@ Payload sizes measured on this deployment:
 | ZIP boundaries, `ST_SIMPLIFY(GEOG, 100)` | 45 | 7.3 KB | 71 KB |
 | ZIP boundaries, `ST_SIMPLIFY(GEOG, 250)` | 45 | 3.2 KB | 32 KB |
 | Trip paths, raw `ST_ASGEOJSON` | 663 | **388 KB** | - |
-| Trip paths, `ST_SIMPLIFY(..., 250)` (`path_geojson`) | 1326 | 31 KB | 976 KB |
+| Trip paths, size-budgeted (`path_geojson`) | 49521 | 28 KB | - |
 
 Raw ZIP polygons are unusable - hence the 100 m simplification baked into `zip_geojson`.
 Hazard cells are individually tiny but there are ~1200 of them, so filter by
 `composite_rating` or region before mapping. Trip paths are the same story at a different
-scale: the worst raw path is 388 KB on its own, so `path_geojson` is simplified to 250 m
-(well inside GPS noise for a road-following line) and is meant to be selected for ONE trip,
-not swept across a region.
+scale: the worst raw path is 317 KB on its own, so `path_geojson` is sent at full resolution
+when it fits 28 KB and otherwise at the finest of 5, 10, 25, 50, 100 or 250 m that fits. The
+old fixed 250 m drew city trips as chords across blocks (357 -> 7 vertices on a 16 km Chicago
+trip); the budget keeps 100% of Chicago, SF and Antwerp paths unsimplified. It is meant to be
+selected for ONE trip, not swept across a region.
 
 ## Drawing a trip's actual vs expected route
 

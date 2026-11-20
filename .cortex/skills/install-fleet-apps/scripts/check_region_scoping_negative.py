@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Negative tests for RULE 5 and RULE 6 of check_region_scoping.py.
+"""Negative tests for RULES 5, 6 and 7 of check_region_scoping.py.
 
 Every rule is broken here ON A THROWAWAY COPY of the tree and the gate must FAIL
 for the stated reason. Nothing under the real repo is written.
@@ -35,7 +35,9 @@ OFFERS_REL = ".cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/st
 LIST_REL = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/areas/backload-matching/AssignmentList.tsx"
 SEED_REL = ".cortex/skills/backload-matching/references/backfill-freight-offers.sql"
 PROPOSALS_REL = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/areas/backload-proposals.tsx"
-REL = [PROC_REL, OFFERS_REL, LIST_REL, SEED_REL, PROPOSALS_REL]
+TRIANGLE_REL = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/components/views/areas/triangle-proposals.tsx"
+ROUTE_REL = ".cortex/skills/install-fleet-apps/fleet_sa_app/ui/src/app/api/tool/route.ts"
+REL = [PROC_REL, OFFERS_REL, LIST_REL, SEED_REL, PROPOSALS_REL, TRIANGLE_REL, ROUTE_REL]
 
 
 def load_gate():
@@ -69,6 +71,10 @@ def point_gate_at(mod, tmp: Path) -> None:
     mod.TWIN_ONLY_GLOBS = []
     mod.RULE4_GLOBS = []
     mod.SEMANTIC_GLOBS = []
+    ui = tmp / ".cortex" / "skills" / "install-fleet-apps" / "fleet_sa_app" / "ui" / "src"
+    mod.RULE7_GLOBS = [(tmp / ".cortex" / "skills" / "routing-agent" / "references", "*.sql"),
+                       (ui, "**/*.ts"), (ui, "**/*.tsx")]
+    mod.TOOL_ROUTE = tmp / ROUTE_REL
 
 
 def sub(path: Path, old: str, new: str, *, count: int = 1) -> None:
@@ -133,6 +139,40 @@ def m_vacuity_rule5(p):
     return "glob"
 
 
+# RULE 7: each id-scoped read of a per-region physical view loses its own
+# OPERATING_COUNTRY predicate. One mutation per read, because a rule that only
+# catches the FIRST read would pass with the other three still leaking.
+def m7_proc_trailers(p):
+    sub(p[PROC_REL], '"WHERE g.OPERATING_COUNTRY = ? AND g.TRAILER_ID IN ("',
+        '"WHERE g.TRAILER_ID IN ("')
+
+
+def m7_proc_load_prefilter(p):
+    sub(p[PROC_REL], "c.ELIGIBLE = TRUE AND c.OPERATING_COUNTRY = ? AND c.TRAILER_ID = ?)",
+        "c.ELIGIBLE = TRUE AND c.TRAILER_ID = ?)")
+
+
+def m7_proc_triangles(p):
+    sub(p[PROC_REL], '"WHERE t.OPERATING_COUNTRY = ? AND t.TRAILER_ID IN ("',
+        '"WHERE t.TRAILER_ID IN ("')
+
+
+def m7_ui_trailers(p):
+    sub(p[TRIANGLE_REL], "VW_TRAILERS_GEO WHERE OPERATING_COUNTRY = :region AND TRAILER_ID IN",
+        "VW_TRAILERS_GEO WHERE TRAILER_ID IN")
+
+
+def m7_ui_eligible(p):
+    sub(p[PROPOSALS_REL], "c.ELIGIBLE = TRUE AND c.OPERATING_COUNTRY = :region AND c.TRAILER_ID IN",
+        "c.ELIGIBLE = TRUE AND c.TRAILER_ID IN")
+
+
+def m7_route_unpeeled(p):
+    """The solver path stops peeling the verb envelope - the empty-page bug."""
+    sub(p[ROUTE_REL], "const solverResult: unknown = peelVerbEnvelope(solverRaw);",
+        "const solverResult: unknown = typeof solverRaw === 'string' ? JSON.parse(solverRaw) : solverRaw;")
+
+
 # ------------------------------------------------------------------- pass cases
 def pass_no_region_proc(p):
     """A proc with NO region argument reading CONFIG is in scope for nothing.
@@ -173,6 +213,18 @@ MUTATIONS = [
      "EXTERNAL source vocabulary"),
     ("RULE 6: badge colour reads provenance from SOURCE", m6_compare,
      "provenance read out of the SOURCE channel column"),
+    ("RULE 7: proc trailer feed scoped by id only", m7_proc_trailers,
+     "VW_TRAILERS_GEO is scoped by TRAILER_ID only"),
+    ("RULE 7: proc single-vehicle load prefilter scoped by id only", m7_proc_load_prefilter,
+     "VW_CANDIDATES_SCORED is scoped by TRAILER_ID only"),
+    ("RULE 7: chain-solve triangle feed scoped by id only", m7_proc_triangles,
+     "VW_TRIANGLES is scoped by TRAILER_ID only"),
+    ("RULE 7: triangle page trailer read scoped by id only", m7_ui_trailers,
+     "VW_TRAILERS_GEO is scoped by TRAILER_ID only"),
+    ("RULE 7: proposals eligible-pairs KPI scoped by id only", m7_ui_eligible,
+     "VW_CANDIDATES_SCORED is scoped by TRAILER_ID only"),
+    ("RULE 7: tool route no longer peels the verb envelope", m7_route_unpeeled,
+     "must pass the parsed column through peelVerbEnvelope"),
 ]
 
 PASS_CASES = [
@@ -245,10 +297,11 @@ def main() -> int:
         mod.RULE5_GLOBS = [(tmp / "nowhere", "**/*.sql")]
         mod.RULE6_GLOBS = [(tmp / "nowhere", "**/*.ts")]
         mod.RULE6_SQL_GLOBS = [(tmp / "nowhere", "**/*.sql")]
+        mod.RULE7_GLOBS = [(tmp / "nowhere", "**/*.sql")]
         rc, out = run_gate(mod)
         if rc == 0:
             failures.append("NOT CAUGHT: empty globs reported OK (vacuity counters dead)")
-        elif "inspected ZERO" not in out:
+        elif "inspected ZERO" not in out or "RULE 7 found ZERO" not in out:
             failures.append(f"vacuity fired for the wrong reason:\n{out.strip()[:300]}")
         else:
             print("  caught: empty globs (vacuity counters)")

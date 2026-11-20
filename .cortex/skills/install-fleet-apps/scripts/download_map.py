@@ -71,7 +71,16 @@ def main():
     local_file = f"/tmp/{args.map_name}"
     download_file(args.url, local_file)
 
-    conn = snowflake.connector.connect(connection_name=args.connection)
+    # Staged and run on its own, so it cannot import sf_connect; same rule
+    # inline: be explicit on connectors that know the option (5.x warns).
+    kw = {}
+    try:
+        from snowflake.connector.connection_config import ConnectionConfig
+        if "enable_server_session_keep_alive_auto_detection" in getattr(ConnectionConfig, "__dataclass_fields__", {}):
+            kw["enable_server_session_keep_alive_auto_detection"] = False
+    except ImportError:
+        pass
+    conn = snowflake.connector.connect(connection_name=args.connection, **kw)
     try:
         upload_to_stage(conn, local_file, args.region_name)
     finally:

@@ -85,19 +85,21 @@ export async function markRunning(
   try {
     // MERGE, not INSERT: a resubmitted identical solve must adopt the new handle
     // rather than fail on the primary key and lose the ability to be collected.
+    // JSON is BOUND, never inlined: sqlStr doubles quotes but leaves backslashes,
+    // which the single-quoted literal then consumes (`\"` -> `"`), so PARSE_JSON
+    // saw an unterminated string (100069) on every result carrying a nested string.
     await queryBatch(
       `MERGE INTO ${SOLVE_RESULTS_TABLE} t
-         USING (SELECT ${sqlStr(key)} AS SOLVE_KEY) s
+         USING (SELECT ? AS SOLVE_KEY) s
          ON t.SOLVE_KEY = s.SOLVE_KEY
        WHEN MATCHED THEN UPDATE SET
-         STATUS = 'RUNNING', STATEMENT_HANDLE = ${sqlStr(handle)},
+         STATUS = 'RUNNING', STATEMENT_HANDLE = ?,
          RESULT = NULL, ERROR_MESSAGE = NULL,
          SUBMITTED_AT = CURRENT_TIMESTAMP(), COMPLETED_AT = NULL
        WHEN NOT MATCHED THEN INSERT
          (SOLVE_KEY, VERB, STATEMENT_HANDLE, STATUS, ACTOR, PARAMS_JSON, SUBMITTED_AT)
-         VALUES (${sqlStr(key)}, ${sqlStr(verb)}, ${sqlStr(handle)}, 'RUNNING',
-                 ${sqlStr(actor)}, PARSE_JSON(${sqlStr(JSON.stringify(params ?? null))}),
-                 CURRENT_TIMESTAMP())`,
+         VALUES (?, ?, ?, 'RUNNING', ?, PARSE_JSON(?), CURRENT_TIMESTAMP())`,
+      [key, handle, key, verb, handle, actor, JSON.stringify(params ?? null)],
     );
     return true;
   } catch (err) {
@@ -116,11 +118,12 @@ export async function markDone(
     const resultJson = status === 'SUCCESS' ? JSON.stringify(result ?? null) : null;
     await queryBatch(
       `UPDATE ${SOLVE_RESULTS_TABLE}
-          SET STATUS = ${sqlStr(status)},
-              RESULT = ${resultJson === null ? 'NULL' : `PARSE_JSON(${sqlStr(resultJson)})`},
-              ERROR_MESSAGE = ${sqlStr(error)},
+          SET STATUS = ?,
+              RESULT = PARSE_JSON(?),
+              ERROR_MESSAGE = ?,
               COMPLETED_AT = CURRENT_TIMESTAMP()
-        WHERE SOLVE_KEY = ${sqlStr(key)}`,
+        WHERE SOLVE_KEY = ?`,
+      [status, resultJson, error, key],
     );
   } catch (err) {
     logger.warn('solve-store-mark-done-failed', { key, status, error: (err as Error)?.message });

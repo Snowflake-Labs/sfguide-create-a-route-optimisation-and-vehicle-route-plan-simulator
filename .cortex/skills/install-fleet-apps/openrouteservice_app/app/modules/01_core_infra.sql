@@ -119,7 +119,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    SPECIFICATION_FILE = 'routing-gateway-service.yaml'
    MIN_INSTANCES = 1
    MAX_INSTANCES = 3
-   AUTO_SUSPEND_SECS = 3600
+   AUTO_SUSPEND_SECS = 7200
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.

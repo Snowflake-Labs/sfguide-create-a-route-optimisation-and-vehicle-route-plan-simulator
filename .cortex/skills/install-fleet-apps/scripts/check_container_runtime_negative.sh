@@ -39,4 +39,17 @@ mutant() {
 
 mutant "$WORK/presence_only.sh" "docker CLI, daemon down; podman up"
 mutant "$WORK/info_only.sh" "docker answers info but refuses build"
+
+# 3. Load robustness: a loaded machine (every fake call 1.5s slower) must not
+#    change any verdict, and the old 1s probe deadline must be caught by it.
+if FAKE_DELAY=1.5 bash "$HERE/check_container_runtime.sh" >"$WORK/load" 2>&1; then
+  echo "PASS: real resolver verdicts unchanged under simulated load"
+else
+  echo "FAIL: verdicts flip under simulated load"; grep FAIL "$WORK/load"; FAILS=$((FAILS + 1))
+fi
+if FAKE_DELAY=1.5 PROBE_SECS=1 bash "$HERE/check_container_runtime.sh" >"$WORK/tight" 2>&1; then
+  echo "FAIL: a 1s probe deadline passed under load (gate cannot see the flake)"; FAILS=$((FAILS + 1))
+else
+  echo "PASS: 1s probe deadline convicted under load"
+fi
 [ "$FAILS" -eq 0 ] || exit 1

@@ -20,6 +20,29 @@ import { resolveResumeRegion, resumeAndBuildPayload } from '@/lib/routing-resume
 
 const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_USER';
 
+// Synapse verbs return `{ result }`, which arrives here as a JSON string in the
+// CALL's only column. Parsing it leaves `{result:{...payload}}`, and every page
+// reads the payload one level up (`body.result.pairs`) - so without this peel a
+// backload solve that returned 12 pairs rendered "No proposals produced".
+// Peels a SOLE-key envelope only: a payload that merely CONTAINS a `result`
+// field next to others (the `{result, rows}` verbs) is already the payload.
+function peelVerbEnvelope(v: unknown): unknown {
+  let cur = v;
+  for (let hop = 0; hop < 3; hop++) {
+    if (typeof cur === 'string') {
+      const t = cur.trim();
+      if (!t.startsWith('{')) return cur;
+      try { cur = JSON.parse(t); } catch { return cur; }
+      continue;
+    }
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return cur;
+    const keys = Object.keys(cur as Record<string, unknown>);
+    if (keys.length !== 1 || keys[0] !== 'result') return cur;
+    cur = (cur as Record<string, unknown>).result;
+  }
+  return cur;
+}
+
 // verb -> number of business args (excluding the trailing IDEMPOTENCY_KEY).
 const DEFAULT_VERBS: Record<string, number> = {
   optimize_routes: 5,
@@ -157,10 +180,7 @@ async function handlePost(req: Request) {
       const solverRows = (outcome.rows ?? []) as Record<string, unknown>[];
       const solverRow = solverRows[0];
       const solverRaw = solverRow ? Object.values(solverRow)[0] : null;
-      let solverResult: unknown = solverRaw;
-      if (typeof solverRaw === 'string') {
-        try { solverResult = JSON.parse(solverRaw); } catch { /* leave as string */ }
-      }
+      const solverResult: unknown = peelVerbEnvelope(solverRaw);
       // The synapse idempotency guard returns `{replayed: true, result_hash}`
       // with NO payload when a key is reused - it is a double-execution guard,
       // not a result cache. Treating that as a successful solve would render an
@@ -197,10 +217,7 @@ async function handlePost(req: Request) {
     const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);
     const row = rows[0] as Record<string, unknown> | undefined;
     const raw = row ? Object.values(row)[0] : null;
-    let result: unknown = raw;
-    if (typeof raw === 'string') {
-      try { result = JSON.parse(raw); } catch { /* leave as string */ }
-    }
+    const result: unknown = peelVerbEnvelope(raw);
     // A routing verb may succeed at the SQL level but return a typed
     // "OPTIMIZATION_UNAVAILABLE" result when the region's ORS/VROOM service is
     // suspended. Resume it and return the friendly notice instead of the raw shape.

@@ -3213,7 +3213,10 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_SAP_INTROSPECT(VARCHAR, VA
 -- A cross-region pair is not merely noise: it proposes a backload the vehicle
 -- physically cannot reach, and it scores well because the empty leg is computed
 -- from coordinates that are perfectly valid in isolation. Both feeds are
--- therefore filtered through the FLEET_APP contract views, which do carry REGION.
+-- therefore filtered through the FLEET_APP contract views, which do carry REGION,
+-- AND on the physical row's OPERATING_COUNTRY: the contract scope yields ids, and
+-- trailer ids repeat across regions, so an id-only IN still admits the other
+-- region's copy of the same vehicle.
 --
 -- Live routing per Tenet 9: the solve calls ROUTING_PLATFORM.CONTRACT.
 -- _DISPATCH_OPTIMIZATION (the neutral seam, RAW scalar form) at request time.
@@ -3610,12 +3613,16 @@ try {
             "SELECT g.TRAILER_ID, g.OPERATING_COUNTRY, g.EMPTY_CITY, g.EMPTY_LON, g.EMPTY_LAT, "
           + "       g.EMPTY_FROM_TS, g.NEXT_START_LON, g.NEXT_START_LAT, g.MAX_PAYLOAD_KG, g.HAZMAT_CERT "
           + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS_GEO g "
-          + "WHERE g.TRAILER_ID IN ("
+          // OPERATING_COUNTRY is the row's REGION. The IN-scope alone matches by id,
+          // and 48 trailer ids exist in more than one region: measured on tib85385
+          // the Europe scope returned 117 rows (49 Europe, 41 USA, 27 UsTexas), so
+          // US points reached ors-service-europe and 6010 sank every road strategy.
+          + "WHERE g.OPERATING_COUNTRY = ? AND g.TRAILER_ID IN ("
           + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
           + (trailerId ? "AND g.TRAILER_ID = ? " : "")
           + "ORDER BY g.EMPTY_FROM_TS NULLS LAST, g.TRAILER_ID "
           + "LIMIT " + maxVehicles,
-            trailerId ? [region, trailerId] : [region],
+            trailerId ? [region, region, trailerId] : [region, region],
             ['TRAILER_ID', 'OPERATING_COUNTRY', 'EMPTY_CITY', 'EMPTY_LON', 'EMPTY_LAT',
              'EMPTY_FROM_TS', 'NEXT_START_LON', 'NEXT_START_LAT', 'MAX_PAYLOAD_KG', 'HAZMAT_CERT']);
         // A named vehicle that resolves to nothing is its OWN failure. Folding it
@@ -3648,11 +3655,11 @@ try {
           + (trailerId
               ? "WHERE l.LOAD_ID IN (SELECT c.LOAD_ID "
               + "                    FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
-              + "                    WHERE c.ELIGIBLE = TRUE AND c.TRAILER_ID = ?) "
+              + "                    WHERE c.ELIGIBLE = TRUE AND c.OPERATING_COUNTRY = ? AND c.TRAILER_ID = ?) "
               : "")
           + "ORDER BY l.IS_INTERNAL DESC, l.REQUESTED_PICKUP_TS NULLS LAST, l.LOAD_ID "
           + "LIMIT " + maxLoads,
-            trailerId ? [region, region, trailerId] : [region, region],
+            trailerId ? [region, region, region, trailerId] : [region, region],
             ['LOAD_ID', 'IS_INTERNAL', 'SOURCE', 'PICKUP_CITY', 'PICKUP_LON', 'PICKUP_LAT',
              'DELIVERY_CITY', 'DELIVERY_LON', 'DELIVERY_LAT', 'REQUESTED_PICKUP_TS',
              'WEIGHT_KG', 'PRODUCT', 'HAZMAT', 'PRICE_USD', 'APPROX_DISTANCE_KM']);
@@ -3686,12 +3693,12 @@ try {
           + "       COUNT(*) OVER (PARTITION BY c.TRAILER_ID) AS TRAILER_PAIRS_TOTAL "
           + "FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_CANDIDATES_SCORED c "
           + "JOIN scoped_t s ON s.TRAILER_ID = c.TRAILER_ID "
-          + "WHERE c.ELIGIBLE = TRUE "
+          + "WHERE c.ELIGIBLE = TRUE AND c.OPERATING_COUNTRY = ? "
           + (trailerId ? "AND c.TRAILER_ID = ? " : "")
           + "QUALIFY ROW_NUMBER() OVER (PARTITION BY c.TRAILER_ID "
           + "                           ORDER BY c.IS_INTERNAL DESC, c.GREAT_CIRCLE_KM ASC NULLS LAST) <= "
           + maxPairsPerTrailer,
-            trailerId ? [region, trailerId] : [region],
+            trailerId ? [region, region, trailerId] : [region, region],
             ['TRAILER_ID', 'LOAD_ID', 'DIST_CHECK', 'TIME_CHECK', 'HORIZON_CHECK', 'CAP_CHECK', 'HAZMAT_CHECK',
              'TRAILER_PAIRS_TOTAL']);
     } catch (e) {
@@ -4689,9 +4696,9 @@ try {
     try {
         var cs = q(
             "SELECT t.* FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRIANGLES t "
-          + "WHERE t.TRAILER_ID IN ("
+          + "WHERE t.OPERATING_COUNTRY = ? AND t.TRAILER_ID IN ("
           + "  SELECT TRAILER_ID FROM FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS WHERE REGION = ?) "
-          + "ORDER BY t.TRAILER_ID, t.CASCADE_RUNG, t.NET_BENEFIT_USD DESC", [region]);
+          + "ORDER BY t.TRAILER_ID, t.CASCADE_RUNG, t.NET_BENEFIT_USD DESC", [region, region]);
         var cols = cs.getColumnCount();
         var names = [];
         for (var ci = 1; ci <= cols; ci++) names.push(cs.getColumnName(ci));

@@ -145,10 +145,10 @@ class Reconciler:
 
 class Session:
     def __init__(self, connection):
-        import snowflake.connector
         from snowflake.connector import DictCursor
-        self.connection = snowflake.connector.connect(
-            connection_name=connection,
+        from sf_connect import connect
+        self.connection = connect(
+            connection,
             session_parameters={"QUERY_TAG": json.dumps(TRACK, separators=(",", ":"))})
         self.cursor = self.connection.cursor(DictCursor)
 

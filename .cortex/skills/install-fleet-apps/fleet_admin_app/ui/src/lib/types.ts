@@ -134,6 +134,7 @@ export interface MatrixJob {
   routability_note?: string;
   // Set only when road-aware filtering was REQUESTED and could not be applied.
   filter_warning?: string;
+  dismissed?: boolean;
 }
 
 export interface MatrixInventoryItem {

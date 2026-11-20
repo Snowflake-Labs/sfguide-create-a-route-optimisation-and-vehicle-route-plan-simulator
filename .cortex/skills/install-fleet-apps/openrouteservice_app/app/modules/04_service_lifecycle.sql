@@ -822,7 +822,7 @@ BEGIN
             -- 0 while busy above, so a shorter window collapses the shared core
             -- pool sooner without risking mid-build suspension. City/ORS services
             -- keep 14400 (gateway-routed traffic does not reset their idle timer).
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
             reconciled := reconciled + 1;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
@@ -1094,7 +1094,7 @@ BEGIN
                 EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 0';
                 left_zero := left_zero + 1;
             ELSE
-                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 3600';
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 7200';
                 reconciled := reconciled + 1;
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;

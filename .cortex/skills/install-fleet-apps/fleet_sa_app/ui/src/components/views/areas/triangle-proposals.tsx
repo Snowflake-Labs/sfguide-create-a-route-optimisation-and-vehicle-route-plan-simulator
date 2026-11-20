@@ -331,7 +331,7 @@ export function TriangleProposalsView({ onStateChange }: Partial<ViewProps> = {}
         // free to fetch, and the user explicitly asks for road costing.
         callVerb('backload_chain_solve', [scopeRegion, 'great_circle', null, null, CHAIN_FETCH_LIMIT, 'raw']),
         sfRead(`SELECT PARAM_KEY, PARAM_VALUE FROM ${PHYS}.MATCH_PARAMS`),
-        sfRead(`SELECT TRAILER_ID, EMPTY_LON, EMPTY_LAT FROM ${PHYS}.VW_TRAILERS_GEO WHERE TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
+        sfRead(`SELECT TRAILER_ID, EMPTY_LON, EMPTY_LAT FROM ${PHYS}.VW_TRAILERS_GEO WHERE OPERATING_COUNTRY = :region AND TRAILER_ID IN (${scopedTrailerIds})`, { params: scope }),
         // A CTE join, not IN (... UNION ALL ...): Snowflake rejects the latter as
         // "Unsupported subquery type cannot be evaluated".
         sfRead(`WITH scoped AS (${scopedLoadIds}) SELECT l.LOAD_ID, l.IS_INTERNAL, l.SOURCE, l.PICKUP_CITY, l.PICKUP_LON, l.PICKUP_LAT FROM ${PHYS}.VW_LOADS l JOIN scoped s ON s.LOAD_ID = l.LOAD_ID`, { params: scope }),

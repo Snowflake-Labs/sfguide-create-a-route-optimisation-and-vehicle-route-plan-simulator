@@ -2,6 +2,9 @@
 // dependencies on Snowflake / Express / module-level state.
 
 import { readFileSync } from 'fs';
+import { ROUTING_PROFILES } from '@/lib/types';
+
+type RoutingProfile = (typeof ROUTING_PROFILES)[number];
 
 const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9_]{0,254}$/;
 
@@ -25,6 +28,44 @@ export function sanitizeInt(val: any): number {
 
 export function escapeString(val: string): string {
   return val.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '');
+}
+
+// Routing profile and H3 resolution reach SQL as parts of TRAVEL_MATRIX table
+// NAMES (`<REGION>_<PROFILE>_MATRIX_RES<n>`), i.e. unquoted identifiers, where
+// escapeString protects nothing. They are therefore validated against fixed
+// allowlists, never cleaned: `runSql` has no bind parameters to fall back on.
+
+/** Allowlisted ORS profile plus its identifier form (DRIVING_CAR). Throws otherwise. */
+export function sanitizeProfile(val: unknown): { profile: RoutingProfile; upper: string } {
+  if (typeof val !== 'string' || !(ROUTING_PROFILES as readonly string[]).includes(val)) {
+    throw new Error(`Invalid profile: ${String(val)}`);
+  }
+  const profile = val as RoutingProfile;
+  return { profile, upper: profile.replace(/-/g, '_').toUpperCase() };
+}
+
+const MIN_RES = 5;
+const MAX_RES = 10;
+
+/** Non-empty, de-duplicated list of integer H3 resolutions 5..10. Throws otherwise. */
+export function sanitizeResolutions(val: unknown): number[] {
+  if (!Array.isArray(val) || val.length === 0) throw new Error('resolutions must be a non-empty array');
+  const out = new Set<number>();
+  for (const r of val) {
+    if (typeof r !== 'number' || !Number.isInteger(r) || r < MIN_RES || r > MAX_RES) {
+      throw new Error(`resolutions must be integers ${MIN_RES}-${MAX_RES} (got ${String(r)})`);
+    }
+    out.add(r);
+  }
+  return Array.from(out);
+}
+
+/** One resolution from a URL or a stored row: `RES7` or `7` -> canonical `RES7`. Throws otherwise. */
+export function sanitizeResolution(val: unknown): string {
+  const m = /^(?:RES)?(\d{1,2})$/i.exec(String(val ?? ''));
+  const n = m ? Number(m[1]) : NaN;
+  if (!Number.isInteger(n) || n < MIN_RES || n > MAX_RES) throw new Error(`Invalid resolution: ${String(val)}`);
+  return `RES${n}`;
 }
 
 export function getSpcsToken(): string {

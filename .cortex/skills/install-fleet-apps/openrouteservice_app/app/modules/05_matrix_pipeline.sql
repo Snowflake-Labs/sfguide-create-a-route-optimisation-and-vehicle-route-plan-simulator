@@ -43,7 +43,14 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
     -- Previously this reverted to unfiltered tessellation and said so only in
     -- MESSAGE, which MATRIX_PROGRESS does not expose, so the build reported
     -- clean and the user never learned their choice was dropped.
-    FILTER_WARNING VARCHAR
+    FILTER_WARNING VARCHAR,
+    -- Liveness. The zombie sweep used to kill any job RUNNING for 2h by wall
+    -- clock, which killed a healthy 54k-cell RES7 build. A job is now stale only
+    -- when NEITHER this column NOR any of its target tables has moved for
+    -- MATRIX_STALE_MINUTES (see JOB_IS_STALE in the wrapper).
+    LAST_PROGRESS_AT TIMESTAMP_NTZ,
+    -- Set by DISMISS_MATRIX_JOB. A UI-only dismissal came back on every refresh.
+    DISMISSED BOOLEAN DEFAULT FALSE
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix"}}';
 
@@ -68,7 +75,9 @@ DECLARE
                      ('HEXAGONS_AFTER_ROUTABILITY', 'NUMBER DEFAULT 0'),
                      ('ROUTABILITY_DURATION_SECONDS', 'FLOAT DEFAULT 0'),
                      ('ROUTABILITY_NOTE', 'VARCHAR'),
-                     ('FILTER_WARNING', 'VARCHAR')) AS v (NAME, DDL)
+                     ('FILTER_WARNING', 'VARCHAR'),
+                     ('LAST_PROGRESS_AT', 'TIMESTAMP_NTZ'),
+                     ('DISMISSED', 'BOOLEAN DEFAULT FALSE')) AS v (NAME, DDL)
         WHERE v.NAME NOT IN (
             SELECT COLUMN_NAME FROM OPENROUTESERVICE_APP.INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX' AND TABLE_NAME = 'MATRIX_BUILD_JOBS'));
@@ -342,10 +351,32 @@ BEGIN
     road_hexes AS (
         SELECT DISTINCT c.value::VARCHAR AS h3_index
         FROM road_segments r, TABLE(FLATTEN(H3_COVERAGE_STRINGS(r.geometry, ' || resolution || '))) c
+    ),
+    -- Representative point = the road VERTEX nearest the cell centre, not the
+    -- centre itself. The centre is what ORS is asked to route, and on a coast a
+    -- road-qualified cell often has it in the sea: UK RES5 pruned 315 of 1,396
+    -- cells, almost all along the Highland/Hebrides/Devon coasts (85195b73fffffff
+    -- has its centre in Lyme Bay, its nearest road vertex 1.6 km inland).
+    -- Snowflake has no ST_CLOSESTPOINT, so vertices are binned to their own
+    -- cell; a cell a road only clips without a vertex keeps its centre and is
+    -- left to the routability gate. H3_INDEX is unchanged, so every downstream
+    -- key still joins.
+    road_vertices AS (
+        SELECT H3_LATLNG_TO_CELL_STRING(v.value[1]::FLOAT, v.value[0]::FLOAT, ' || resolution || ') AS h3_index,
+               ST_MAKEPOINT(v.value[0]::FLOAT, v.value[1]::FLOAT) AS pt
+        FROM road_segments r, TABLE(FLATTEN(TO_VARIANT(ST_ASGEOJSON(r.geometry)):coordinates)) v
+    ),
+    nearest_vertex AS (
+        SELECT h3_index, pt
+        FROM road_vertices
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY h3_index
+                                   ORDER BY ST_DISTANCE(pt, H3_CELL_TO_POINT(h3_index))) = 1
     )
-    SELECT h3_index, H3_CELL_TO_POINT(h3_index) AS center_point
-    FROM road_hexes h, region_geom r
-    WHERE ST_WITHIN(H3_CELL_TO_POINT(h.h3_index), r.poly)';
+    SELECT h.h3_index, COALESCE(nv.pt, H3_CELL_TO_POINT(h.h3_index)) AS center_point
+    FROM road_hexes h
+    LEFT JOIN nearest_vertex nv ON nv.h3_index = h.h3_index,
+    region_geom r
+    WHERE ST_WITHIN(COALESCE(nv.pt, H3_CELL_TO_POINT(h.h3_index)), r.poly)';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
@@ -360,43 +391,41 @@ $$;
 -- =============================================================================
 -- PRUNE_UNROUTABLE_HEXAGONS: drop cells the routing graph cannot reach
 -- =============================================================================
--- Second and last line of defence after the land clip, for the residue the clip
--- cannot see. Admin polygons include internal waters, and a coarse cell can be
--- qualified by a road at its edge while its CENTROID - the point actually sent
--- to ORS - sits kilometres away: a RES5 cell is 8.5 km across.
+-- Last line of defence after the land clip, and the only one that asks the
+-- engine. The oracle is the MATRIX itself - the call the build is about to make
+-- millions of times - run from ONE anchor cell to every other cell. That
+-- catches both failure classes, which an earlier per-cell /snap gate could not:
 --
--- Why this cannot be skipped as "rare": ORS matrix is all-or-nothing per
--- request, and BUILD_WORK_QUEUE chunks destinations by MOD(HASH(dest_h3), n),
--- which spreads bad cells UNIFORMLY. A single unreachable cell therefore does
--- not cost one row, it nulls every chunk containing it.
+--   1. Off-graph points (open sea, out of the extract). These fail the WHOLE
+--      request (6010 / snap errors), never a single null cell, so the ladder
+--      below splits a failed chunk 1000 -> 100 -> 10 -> 1 and only a structured
+--      ORS error at size 1 convicts a cell.
+--   2. Isolated graph pieces (islands, ferry-only Hebrides/Orkney roads). These
+--      snap PERFECTLY - measured on UK RES5: all 1,081 cells passed /snap, yet
+--      75 of them reached ZERO destinations and the other 1,006 reached each
+--      other, i.e. 156,450 null pairs (13.4%) from cells the old gate could not
+--      see. A successful response gives a per-cell verdict here: a null
+--      duration from the anchor means not in the anchor's component.
 --
--- Two measured facts drive the design:
+-- Cost is about cells / 1000 matrix calls (55 for UK RES7's 54k cells), which
+-- is why there is no longer a 20k ceiling that silently skipped the gate on the
+-- builds that needed it most. P_MAX_HEXES remains only as a runaway guard.
 --
---   1. An out-of-graph point is unsnappable at ANY radius (the Gulf coordinate
---      that broke the UsTexas build fails at 350 m and at 20 km), while genuine
---      Texas road points snap at 3-5 m. So the radius is deliberately GENEROUS.
---      A tight radius would prune valid rural cells; a generous one prunes only
---      what ORS itself refuses, which is the whole point.
+-- Anchor: the cell nearest the cells' centroid. If it reaches under half of the
+-- cells it is itself on an island; the next-nearest candidate is tried (3 max)
+-- rather than convicting the mainland.
 --
---   2. `/snap` is all-or-nothing too. A batch containing ONE off-graph point
---      returns a SINGLE row with IDX NULL - not per-point NULLs - so a naive
---      "snap everything and drop the NULLs" implementation would delete the
---      entire batch, i.e. quietly destroy up to 99 good cells per bad one.
---      Hence the 100 -> 10 -> 1 ladder: a failed batch is re-tried in smaller
---      pieces, and only a failure at size 1 convicts a specific cell.
+-- Reachability is tested anchor -> cell only. A cell reachable one way but not
+-- back (one-way trap) is kept; that is a far smaller class than islands.
 --
--- Bounded on purpose. Above P_MAX_HEXES the gate is skipped with a recorded
--- note rather than run: laddering 1.1M RES8 cells is not affordable, and the
--- land clip plus road-aware filtering already carry the coarse cases where the
--- ratio of water to land is high.
+-- NEVER empties the list. If nothing is reachable the cause is the engine
+-- (suspended service, wrong region, unloaded profile), not geography.
 --
--- NEVER empties the list. If every batch fails the cause is almost certainly
--- the engine (suspended service, wrong region, unloaded profile), not 100%
--- unroutable geography, and deleting everything would turn a recoverable stall
--- into a silent zero-row matrix.
+-- P_RADIUS is retained for signature compatibility and is unused: the matrix
+-- applies the engine's own snapping radius, which is the one the build uses.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PRUNE_UNROUTABLE_HEXAGONS(
     P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR,
-    P_MAX_HEXES INTEGER DEFAULT 20000, P_RADIUS INTEGER DEFAULT 20000)
+    P_MAX_HEXES INTEGER DEFAULT 500000, P_RADIUS INTEGER DEFAULT 20000)
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","feature":"routability-gate"}}'
@@ -408,9 +437,17 @@ DECLARE
     safe_profile VARCHAR;
     hex_count    INTEGER DEFAULT 0;
     unroutable   INTEGER DEFAULT 0;
+    reachable    INTEGER DEFAULT 0;
     undecided    INTEGER DEFAULT 0;
     batch_size   INTEGER;
     pass_no      INTEGER DEFAULT 0;
+    attempt      INTEGER DEFAULT 0;
+    anchor_h3    VARCHAR;
+    anchor_lon   FLOAT;
+    anchor_lat   FLOAT;
+    matrix_head  VARCHAR;
+    is_default   BOOLEAN DEFAULT TRUE;
+    accepted     BOOLEAN DEFAULT FALSE;
     rs           RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -422,140 +459,145 @@ BEGIN
     IF (hex_count = 0) THEN
         RETURN 'SKIPPED: hex list is empty for ' || :P_RES;
     END IF;
+    IF (hex_count < 2) THEN
+        RETURN 'SKIPPED: a single cell has no destination to test against.';
+    END IF;
     IF (hex_count > :P_MAX_HEXES) THEN
         RETURN 'SKIPPED: ' || hex_count || ' cells exceeds the ' || :P_MAX_HEXES
-               || '-cell routability-gate ceiling. Land clip and (if enabled) road-aware'
-               || ' filtering still applied; unreachable cells may remain.';
+               || '-cell routability-gate runaway guard; unreachable cells may remain.';
     END IF;
 
-    -- Session-scoped work tables (exempt from the object COMMENT rule).
-    -- PENDING rows are the ones still to be decided; a row leaves PENDING only
-    -- when a batch it was in returned a per-point verdict.
-    CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK (
-        H3_INDEX VARCHAR, CENTER_POINT GEOGRAPHY, PENDING BOOLEAN, ROUTABLE BOOLEAN);
-    EXECUTE IMMEDIATE 'INSERT INTO OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK
-        (H3_INDEX, CENTER_POINT, PENDING, ROUTABLE)
-        SELECT H3_INDEX, CENTER_POINT, TRUE, NULL FROM ' || hex_table;
-
-    -- Ladder, part 1: batches of 100 then 10. These passes can only ACQUIT or
-    -- convict a point via a SUCCESSFUL response (which returns one row per
-    -- input, so a NULL SNAPPED_GEOG there is a real per-point verdict). A
-    -- REJECTED batch returns a single IDX-NULL row that joins to nothing, so
-    -- the whole batch stays PENDING and is split by the next pass. That is the
-    -- entire point of the ladder: never convict 100 cells for one bad one.
-    FOR pass_no IN 1 TO 2 DO
-        batch_size := CASE pass_no WHEN 1 THEN 100 ELSE 10 END;
-
-        -- Snapshot this pass's batching into an IMMUTABLE table. Numbering the
-        -- batches inside the per-batch statement instead would be a silent bug:
-        -- rows leave PENDING as they are decided, so ROW_NUMBER() over the live
-        -- PENDING set renumbers after every batch and batch ids 1..n would then
-        -- match nothing, leaving most cells permanently undecided.
-        CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_SNAP_BATCH AS
-        SELECT H3_INDEX, CENTER_POINT,
-               ROW_NUMBER() OVER (ORDER BY H3_INDEX) - 1 AS RN,
-               FLOOR((ROW_NUMBER() OVER (ORDER BY H3_INDEX) - 1) / :batch_size) AS BATCH_ID
-        FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK
-        WHERE PENDING;
-
-        LET batch_rs RESULTSET := (
-            SELECT DISTINCT BATCH_ID AS BID FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_BATCH ORDER BY BID);
-        LET bc CURSOR FOR batch_rs;
-        FOR b IN bc DO
-            LET bid INTEGER := b.BID;
-            BEGIN
-                EXECUTE IMMEDIATE '
-                MERGE INTO OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK t
-                USING (
-                    WITH b AS (
-                        SELECT H3_INDEX, CENTER_POINT, RN - MIN(RN) OVER () AS POS
-                        FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_BATCH
-                        WHERE BATCH_ID = ' || bid || '
-                    ),
-                    arr AS (
-                        SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTER_POINT), ST_Y(CENTER_POINT)))
-                                 WITHIN GROUP (ORDER BY POS) AS A
-                        FROM b
-                    ),
-                    s AS (
-                        SELECT IDX, SNAPPED_GEOG
-                        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(
-                            ''' || P_PROFILE || ''', (SELECT A FROM arr), ' || P_RADIUS || ',
-                            ''' || P_REGION || '''))
-                        WHERE IDX IS NOT NULL
-                    )
-                    SELECT b.H3_INDEX, (s.SNAPPED_GEOG IS NOT NULL) AS OK
-                    FROM b JOIN s ON s.IDX = b.POS
-                ) v
-                ON t.H3_INDEX = v.H3_INDEX
-                WHEN MATCHED THEN UPDATE SET t.PENDING = FALSE, t.ROUTABLE = v.OK';
-            EXCEPTION WHEN OTHER THEN
-                NULL;  -- batch stays PENDING; the next pass splits it
-            END;
-        END FOR;
-    END FOR;
-
-    -- Ladder, part 2: a DECISIVE single-point pass over whatever is still
-    -- undecided. This step is load-bearing and its shape is deliberate.
-    --
-    -- Reusing the batched MERGE at size 1 does NOT work, and failing to notice
-    -- that would have shipped a gate that misses the exact cells it exists to
-    -- remove: an out-of-bounds point makes the request return one IDX-NULL row,
-    -- so with `WHERE IDX IS NOT NULL` there is nothing to join to and the point
-    -- stays PENDING - reported "undecided" and KEPT. Measured on a 3-cell
-    -- ocean-only list: 0 convicted, 3 undecided. Only the in-graph
-    -- "no road within radius" cells were ever being caught.
-    --
-    -- So here the verdict is computed as an aggregate that always yields a row:
-    -- zero snapped results means unroutable. At one point per request there is
-    -- no collateral - the only cell that can be convicted is the one asked
-    -- about.
-    LET pend_rs RESULTSET := (
-        SELECT H3_INDEX, ST_X(CENTER_POINT) AS LON, ST_Y(CENTER_POINT) AS LAT
-        FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK WHERE PENDING);
-    LET pc CURSOR FOR pend_rs;
-    FOR p IN pc DO
+    -- Same function selection as BUILD_TRAVEL_TIME_RANGE_REGION, so the gate
+    -- asks exactly the engine the build will.
+    IF (UPPER(P_REGION) != 'DEFAULT') THEN
         BEGIN
-            EXECUTE IMMEDIATE '
-            MERGE INTO OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK t
-            USING (
-                SELECT ''' || p.H3_INDEX || ''' AS H3_INDEX,
-                       (SELECT COUNT(SNAPPED_GEOG)
-                        FROM TABLE(OPENROUTESERVICE_APP.CORE.SNAP_POINTS(
-                            ''' || P_PROFILE || ''',
-                            ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(' || p.LON || '::FLOAT, ' || p.LAT || '::FLOAT)),
-                            ' || P_RADIUS || ', ''' || P_REGION || '''))
-                        WHERE IDX IS NOT NULL) > 0 AS OK
-            ) v
-            ON t.H3_INDEX = v.H3_INDEX
-            WHEN MATCHED THEN UPDATE SET t.PENDING = FALSE, t.ROUTABLE = v.OK';
-        EXCEPTION WHEN OTHER THEN
-            NULL;  -- a hard SQL error is not evidence about the cell; keep it
+            LET svc_rs RESULTSET := (EXECUTE IMMEDIATE
+                'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(P_REGION) || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE');
+            LET svc_c CURSOR FOR svc_rs;
+            FOR r IN svc_c DO is_default := FALSE; END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
         END;
-    END FOR;
+    END IF;
+    matrix_head := IFF(is_default,
+        'OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(''' || P_PROFILE || ''', ',
+        'OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR_W(''' || P_REGION || ''', ''' || P_PROFILE || ''', ');
 
-    SELECT COUNT(CASE WHEN NOT PENDING AND NOT ROUTABLE THEN 1 END),
-           COUNT(CASE WHEN PENDING THEN 1 END)
-      INTO :unroutable, :undecided
-    FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK;
+    -- Session-scoped work tables (exempt from the object COMMENT rule).
+    CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_CONN_CAND (RANK_NO INTEGER, H3_INDEX VARCHAR, LON FLOAT, LAT FLOAT);
+    EXECUTE IMMEDIATE 'INSERT INTO OPENROUTESERVICE_APP.CORE.TMP_CONN_CAND
+        WITH c AS (SELECT ST_CENTROID(ST_COLLECT(CENTER_POINT)) AS G FROM ' || hex_table || ')
+        SELECT ROW_NUMBER() OVER (ORDER BY ST_DISTANCE(h.CENTER_POINT, c.G)), h.H3_INDEX,
+               ST_X(h.CENTER_POINT), ST_Y(h.CENTER_POINT)
+        FROM ' || hex_table || ' h, c
+        QUALIFY ROW_NUMBER() OVER (ORDER BY ST_DISTANCE(h.CENTER_POINT, c.G)) <= 3';
 
-    -- Refuse to empty the list. Reaching here with everything convicted means
-    -- the engine could not answer, not that the region is unroutable.
-    IF (unroutable >= hex_count) THEN
-        RETURN 'ABORTED: every one of ' || hex_count || ' cells failed to snap, which indicates the'
-               || ' routing engine is unavailable for region ' || :P_REGION || ' / profile '
-               || :P_PROFILE || ' rather than unroutable geography. Hex list left UNCHANGED.';
+    WHILE (attempt < 3 AND NOT accepted) DO
+        attempt := attempt + 1;
+        anchor_h3 := NULL;
+        LET cand_rs RESULTSET := (SELECT H3_INDEX, LON, LAT FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_CAND WHERE RANK_NO = :attempt);
+        LET cand_c CURSOR FOR cand_rs;
+        FOR r IN cand_c DO anchor_h3 := r.H3_INDEX; anchor_lon := r.LON; anchor_lat := r.LAT; END FOR;
+        IF (anchor_h3 IS NULL) THEN
+            BREAK;
+        END IF;
+
+        -- PENDING rows leave only on a per-cell verdict. The anchor is the
+        -- origin, not a destination, and is decided by its own outcome below.
+        CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK (
+            H3_INDEX VARCHAR, CENTER_POINT GEOGRAPHY, PENDING BOOLEAN, ROUTABLE BOOLEAN);
+        EXECUTE IMMEDIATE 'INSERT INTO OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK
+            SELECT H3_INDEX, CENTER_POINT, TRUE, NULL FROM ' || hex_table ||
+            ' WHERE H3_INDEX != ''' || anchor_h3 || '''';
+
+        FOR pass_no IN 1 TO 4 DO
+            batch_size := CASE pass_no WHEN 1 THEN 1000 WHEN 2 THEN 100 WHEN 3 THEN 10 ELSE 1 END;
+
+            -- Immutable batching snapshot: renumbering the live PENDING set per
+            -- batch would shift ids as rows are decided and skip most cells.
+            CREATE OR REPLACE TEMPORARY TABLE OPENROUTESERVICE_APP.CORE.TMP_CONN_BATCH AS
+            SELECT H3_INDEX, CENTER_POINT,
+                   ROW_NUMBER() OVER (ORDER BY H3_INDEX) - 1 AS RN,
+                   FLOOR((ROW_NUMBER() OVER (ORDER BY H3_INDEX) - 1) / :batch_size) AS BATCH_ID
+            FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK
+            WHERE PENDING;
+
+            LET batch_rs RESULTSET := (
+                SELECT DISTINCT BATCH_ID AS BID FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_BATCH ORDER BY BID);
+            LET bc CURSOR FOR batch_rs;
+            FOR b IN bc DO
+                LET bid INTEGER := b.BID;
+                BEGIN
+                    -- A response WITH durations is a per-cell verdict (null =
+                    -- not connected). A response without durations is a whole-
+                    -- request rejection: at size 1 a structured ORS error is
+                    -- proof about that one cell; at larger sizes the batch stays
+                    -- PENDING and is split. A SQL error decides nothing.
+                    EXECUTE IMMEDIATE '
+                    MERGE INTO OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK t
+                    USING (
+                        WITH b AS (
+                            SELECT H3_INDEX, CENTER_POINT, RN - MIN(RN) OVER () AS POS
+                            FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_BATCH
+                            WHERE BATCH_ID = ' || bid || '
+                        ),
+                        arr AS (
+                            SELECT ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(CENTER_POINT), ST_Y(CENTER_POINT)))
+                                     WITHIN GROUP (ORDER BY POS) AS A
+                            FROM b
+                        ),
+                        m AS (
+                            SELECT ' || matrix_head || 'ARRAY_CONSTRUCT(' || anchor_lon || '::FLOAT, '
+                                   || anchor_lat || '::FLOAT), (SELECT A FROM arr)) AS R
+                        )
+                        SELECT b.H3_INDEX,
+                               IFF(m.R:durations IS NOT NULL,
+                                   COALESCE(m.R:durations[0][b.POS] IS NOT NULL
+                                            AND NOT IS_NULL_VALUE(m.R:durations[0][b.POS]), FALSE),
+                                   FALSE) AS OK
+                        FROM b, m
+                        WHERE m.R:durations IS NOT NULL
+                           OR (' || batch_size || ' = 1 AND m.R:error IS NOT NULL)
+                    ) v
+                    ON t.H3_INDEX = v.H3_INDEX
+                    WHEN MATCHED THEN UPDATE SET t.PENDING = FALSE, t.ROUTABLE = v.OK';
+                EXCEPTION WHEN OTHER THEN
+                    NULL;  -- batch stays PENDING; the next pass splits it
+                END;
+            END FOR;
+
+            -- Heartbeat for MATRIX_JOB_LIVENESS: this phase writes only TEMP
+            -- tables, which the liveness view cannot see.
+            UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            SET LAST_PROGRESS_AT = SYSDATE()
+            WHERE STATUS = 'RUNNING' AND UPPER(REGION) = UPPER(:P_REGION)
+              AND UPPER(REPLACE(PROFILE, '-', '_')) = :safe_profile AND UPPER(RESOLUTION) = UPPER(:P_RES);
+        END FOR;
+
+        SELECT COUNT_IF(NOT PENDING AND ROUTABLE), COUNT_IF(NOT PENDING AND NOT ROUTABLE), COUNT_IF(PENDING)
+          INTO :reachable, :unroutable, :undecided
+        FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK;
+
+        -- An anchor reaching under half the cells is on an island itself.
+        accepted := (reachable * 2 >= hex_count - 1);
+    END WHILE;
+
+    IF (NOT accepted OR reachable = 0) THEN
+        RETURN 'ABORTED: no anchor reached half of ' || hex_count || ' cells (best reached '
+               || reachable || '), which indicates the routing engine is unavailable for region '
+               || :P_REGION || ' / profile ' || :P_PROFILE
+               || ' rather than unroutable geography. Hex list left UNCHANGED.';
     END IF;
 
     IF (unroutable > 0) THEN
         EXECUTE IMMEDIATE 'DELETE FROM ' || hex_table || ' WHERE H3_INDEX IN
-            (SELECT H3_INDEX FROM OPENROUTESERVICE_APP.CORE.TMP_SNAP_WORK
+            (SELECT H3_INDEX FROM OPENROUTESERVICE_APP.CORE.TMP_CONN_WORK
              WHERE NOT PENDING AND NOT ROUTABLE)';
     END IF;
 
     -- `undecided` is reported, never deleted: a cell nobody could adjudicate is
     -- given the benefit of the doubt.
-    RETURN 'PRUNED: ' || unroutable || ' unreachable of ' || hex_count || ' cells'
+    RETURN 'PRUNED: ' || unroutable || ' unreachable of ' || hex_count || ' cells (anchor '
+           || anchor_h3 || ')'
            || CASE WHEN undecided > 0 THEN ' (' || undecided || ' undecided, kept)' ELSE '' END || '.';
 END;
 $$;
@@ -1154,6 +1196,50 @@ BEGIN
 END;
 $$;
 
+-- =============================================================================
+-- MATRIX_JOB_LIVENESS: last observable activity per RUNNING job
+-- =============================================================================
+-- Liveness is the LATEST of the row's own LAST_PROGRESS_AT and the LAST_ALTERED
+-- of the job's four target tables. The long BUILDING phase is ASYNC chunks
+-- under AWAIT ALL that never touch the job row, but every chunk INSERTs into
+-- MATRIX_RAW, so the table timestamp is a free heartbeat that needs no
+-- concurrent UPDATEs of one row. LAST_ALTERED is LTZ and SYSDATE() is UTC NTZ;
+-- comparing them raw would be off by the session offset, hence the CONVERT.
+-- Table timestamps are per (region, profile, res), which is only sound because
+-- the wrapper refuses a second RUNNING job for the same key.
+CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_JOB_LIVENESS
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","feature":"liveness"}}'
+AS
+SELECT j.JOB_ID, j.REGION, j.PROFILE, j.RESOLUTION,
+       GREATEST(COALESCE(j.LAST_PROGRESS_AT, j.STARTED_AT, j.CREATED_AT),
+                COALESCE(MAX(CONVERT_TIMEZONE('UTC', t.LAST_ALTERED)::TIMESTAMP_NTZ),
+                         j.STARTED_AT, j.CREATED_AT)) AS LAST_ACTIVITY_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS j
+LEFT JOIN OPENROUTESERVICE_APP.INFORMATION_SCHEMA.TABLES t
+  ON t.TABLE_SCHEMA = 'TRAVEL_MATRIX'
+ AND t.TABLE_NAME IN (UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_LIST_' || j.RESOLUTION,
+                      UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_WORK_QUEUE_' || j.RESOLUTION,
+                      UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_MATRIX_RAW_' || j.RESOLUTION,
+                      UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_MATRIX_' || j.RESOLUTION)
+WHERE j.STATUS = 'RUNNING'
+GROUP BY j.JOB_ID, j.REGION, j.PROFILE, j.RESOLUTION, j.LAST_PROGRESS_AT, j.STARTED_AT, j.CREATED_AT;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DISMISS_MATRIX_JOB(P_JOB_ID VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"matrix","action":"dismiss"}}'
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    -- Only finished jobs: hiding a RUNNING one would lose the only handle on it.
+    UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    SET DISMISSED = TRUE
+    WHERE JOB_ID = :P_JOB_ID AND STATUS NOT IN ('PENDING', 'RUNNING');
+    RETURN 'Job ' || :P_JOB_ID || ' dismissed';
+END;
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_JOB_WRAPPER(P_JOB_ID VARCHAR, P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR, P_ROAD_FILTER BOOLEAN DEFAULT FALSE)
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -1201,16 +1287,45 @@ BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
 
+    -- Zombie sweep by INACTIVITY, never by age. The old rule (RUNNING > 2h by
+    -- STARTED_AT) killed a healthy UK RES7 build at 2h40m - which then went on
+    -- to complete - because a high-resolution build legitimately runs for many
+    -- hours. 30 min without any heartbeat is far longer than any single phase
+    -- goes silent (one ORS batch, one work-queue shard).
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
     SET STATUS = 'ERROR',
-        ERROR_MSG = 'Stale job: still RUNNING after 2+ hours, marked as zombie',
+        ERROR_MSG = 'Stale job: no progress for 30+ minutes, marked as zombie',
         COMPLETED_AT = SYSDATE()
     WHERE STATUS = 'RUNNING'
-      AND STARTED_AT < DATEADD('HOUR', -2, SYSDATE())
-      AND JOB_ID != :P_JOB_ID;
+      AND JOB_ID != :P_JOB_ID
+      AND JOB_ID IN (SELECT JOB_ID FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_JOB_LIVENESS
+                     WHERE LAST_ACTIVITY_AT < DATEADD('MINUTE', -30, SYSDATE()));
+
+    -- Single flight per (region, profile, res). Every job of a key shares the
+    -- same LIST / WORK_QUEUE / RAW tables, so a second job TRUNCATEs the first
+    -- one's inputs mid-run: measured on UK RES5, two starts 84 s apart left the
+    -- first counting 0 cells ("No routable cells remain") while the second
+    -- completed. Refuse BEFORE touching any table.
+    LET running_peer VARCHAR DEFAULT NULL;
+    SELECT MAX(JOB_ID) INTO :running_peer
+    FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    WHERE STATUS = 'RUNNING'
+      AND JOB_ID != :P_JOB_ID
+      AND UPPER(REGION) = UPPER(:P_REGION)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = :safe_profile
+      AND UPPER(RESOLUTION) = UPPER(:P_RES);
+    IF (running_peer IS NOT NULL) THEN
+        UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        SET STATUS = 'ERROR', STAGE = 'NOT_STARTED', COMPLETED_AT = SYSDATE(),
+            ERROR_MSG = 'Not started: build ' || :running_peer || ' is already running for '
+                        || :P_REGION || ' / ' || :P_PROFILE || ' / ' || :P_RES
+                        || ' and shares its tables. Wait for it or cancel it.'
+        WHERE JOB_ID = :P_JOB_ID;
+        RETURN 'Job ' || :P_JOB_ID || ' refused: ' || :running_peer || ' already running';
+    END IF;
 
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=SYSDATE()
+    SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=SYSDATE(), LAST_PROGRESS_AT=SYSDATE()
     WHERE JOB_ID = :P_JOB_ID;
 
     CALL OPENROUTESERVICE_APP.CORE.ENSURE_MATRIX_TABLES(:P_REGION, :P_PROFILE, :P_RES);
@@ -1688,7 +1803,7 @@ BEGIN
             RAW_ROWS=:raw_count, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         BEGIN
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
@@ -1760,7 +1875,7 @@ BEGIN
             RAW_ROWS=:raw_count, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         BEGIN
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
@@ -1809,7 +1924,7 @@ BEGIN
     BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_RAW_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
 
     BEGIN
-        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     BEGIN
@@ -1851,7 +1966,7 @@ EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
         BEGIN
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 3600;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 7200;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
