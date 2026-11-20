@@ -246,7 +246,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
       COMMENT = 'Which route this row is: ACTUAL (driven GPS track) or EXPECTED (planned route). Use as the color column of a geojson map layer to show both at once.'
     , trip_paths.path_geojson AS PATH_GEOJSON
       WITH SYNONYMS ('route geometry', 'path geometry', 'route shape', 'driven path', 'planned path')
-      COMMENT = 'Map-ready route geometry as a GeoJSON LineString string, simplified to 250 m. Use as the geo column of a geojson layer. Filter to ONE trip or a handful: rows reach 31 KB and an oversized payload renders a blank map.'
+      COMMENT = 'Map-ready route geometry as a GeoJSON LineString string, at full resolution when it fits 28 KB and otherwise at the finest ST_SIMPLIFY tolerance that does. Use as the geo column of a geojson layer. Filter to ONE trip or a handful: rows reach 28 KB and an oversized payload renders a blank map.'
   )
 
   METRICS (
@@ -260,7 +260,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     , trip_dev.avg_route_deviation_factor AS ROUND(AVG(route_deviation_factor), 4) COMMENT = 'Average actual/expected route factor'
   )
 
-  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable). MAPPING: to draw a trip route select path_geojson with a geojson layer and color by path_type (categorical) - that puts the driven and the planned line on one layer. Filter to a single trip_id or a handful: rows reach 31 KB and an oversized payload renders a blank map rather than an error. A planned route is stored only for deviated trips, so filter has_expected_path (or is_route_deviation) before promising a comparison; on any other trip the driven track reproduces the plan exactly and the two lines coincide.'
+  COMMENT = 'Route deviation analysis: compares actual driven routes against planned routes per trip, with deviation distance/time and rates, broken down by driver, route variation, and origin/destination. Covers EVERY loaded region and asset mode - filter by region (key) or region_label (readable). MAPPING: to draw a trip route select path_geojson with a geojson layer and color by path_type (categorical) - that puts the driven and the planned line on one layer. Filter to a single trip_id or a handful: rows reach 28 KB and an oversized payload renders a blank map rather than an error. A planned route is stored only for deviated trips, so filter has_expected_path (or is_route_deviation) before promising a comparison; on any other trip the driven track reproduces the plan exactly and the two lines coincide.'
 
   AI_SQL_GENERATION 'Route deviation semantic view for the Route Optimisation & Fleet Intelligence solution.
 Two tables: trip_dev (TRIP_DEVIATION_ANALYSIS), one row per analyzed trip, and trip_paths (VW_TRIP_PATHS), one row per (trip, path type) carrying map-ready geometry. They join on trip_id.
@@ -282,7 +282,7 @@ DRAWING A ROUTE (actual vs expected):
 - Selecting path_geojson multiplies rows by path type, so never combine it with a trip-level aggregate. Pick the trip first (ORDER BY distance_deviation_pct DESC LIMIT 1), then select its geometry.
 - Do NOT mix trip_paths dimensions with trip_dev FACTS in one query: Snowflake rejects it with "All expressions referenced in the query must come from the same entity when both FACTS and DIMENSIONS are specified". Use dimensions only for the map query (is_route_deviation and has_expected_path are dimensions, so filtering still works), and run a second query if you also need the deviation figures.
 - A planned route exists ONLY for deviated trips. Filter has_expected_path or is_route_deviation before offering a comparison; asking for a specific non-deviated trip returns one ACTUAL row, and the honest answer is that the driven track matches the plan, not that data is missing.
-- Keep it to one trip or a few: rows reach 31 KB and an oversized payload renders a blank map with no error.
+- Keep it to one trip or a few: rows reach 28 KB and an oversized payload renders a blank map with no error.
 
 A VEHICLE MUST HAVE BEEN DISPATCHED BEFORE IT CAN HAVE A PATH:
 - This view holds one row per TRIP. A vehicle that never ran a trip over the horizon is absent from it entirely - it has no actual path, no expected path, and no schedule row. That is a real operating state (the asset sat at its base all week), NOT a gap in the data.

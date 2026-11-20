@@ -153,11 +153,16 @@ entities:
       -- single struct). Two side-by-side geojson COLUMNS could not be overlaid; one
       -- geojson column plus a PATH_TYPE category column can, coloured categorically.
       --
-      -- ST_SIMPLIFY at 250 m is a hard requirement, not tidiness. Measured over the
-      -- 663 trips that hold both paths: raw ST_ASGEOJSON reaches 388 KB per row,
-      -- which renders a BLANK map with no error raised; at 250 m the worst row is
-      -- 31 KB and the average is 826 B. 250 m is well inside GPS-trace noise for a
-      -- road-following line, so nothing visible is lost.
+      -- SIMPLIFICATION IS SIZE-BUDGETED, NOT A FIXED TOLERANCE. A row over ~31 KB
+      -- renders a BLANK map with no error raised (raw UK long-haul paths reach
+      -- 317 KB). A fixed 250 m kept those small but collapsed every city trip to a
+      -- handful of chords that cut across blocks (357 -> 7 vertices on a 16 km
+      -- Chicago trip). So a path is sent unsimplified when its GeoJSON fits in
+      -- 28,000 bytes, otherwise at the FIRST tolerance on the ladder that fits.
+      -- The budget is bytes, not vertices: bytes per vertex vary ~2x by region
+      -- (coordinate digits), and a 1,000-vertex cap still produced 47 KB rows.
+      -- Measured on 49,521 trips: 0 rows over budget, 100% of Chicago/SF/Antwerp
+      -- paths unsimplified. 250 m is the floor of last resort, never a NULL.
       --
       -- EXPECTED_PATH is populated only on deviated trips (663 of 14,053 loaded),
       -- so the two rows exist together only where there is a real divergence to
@@ -165,43 +170,57 @@ entities:
       -- exactly - measured: Hausdorff distance 0 - hence HAS_BOTH_PATHS, so a
       -- consumer can pick a trip that will actually show two distinct lines instead
       -- of drawing one line twice.
+      WITH paths AS (
+        SELECT
+          d.TRIP_ID,
+          d.VEHICLE_ID,
+          d.DRIVER_ID,
+          d.TRIP_DATE,
+          d.REGION,
+          d.REGION_LABEL,
+          d.VEHICLE_TYPE,
+          d.IS_ROUTE_DEVIATION,
+          d.DISTANCE_DEVIATION_PCT,
+          d.DURATION_DEVIATION_PCT,
+          d.EXPECTED_PATH IS NOT NULL                              AS HAS_BOTH_PATHS,
+          'ACTUAL'                                                 AS PATH_TYPE,
+          d.ACTUAL_DISTANCE_KM                                     AS PATH_DISTANCE_KM,
+          d.ACTUAL_DURATION_MIN                                    AS PATH_DURATION_MIN,
+          d.ACTUAL_PATH                                            AS PATH_GEOM
+        FROM {src} d
+        WHERE d.ACTUAL_PATH IS NOT NULL
+        UNION ALL
+        SELECT
+          d.TRIP_ID,
+          d.VEHICLE_ID,
+          d.DRIVER_ID,
+          d.TRIP_DATE,
+          d.REGION,
+          d.REGION_LABEL,
+          d.VEHICLE_TYPE,
+          d.IS_ROUTE_DEVIATION,
+          d.DISTANCE_DEVIATION_PCT,
+          d.DURATION_DEVIATION_PCT,
+          TRUE                                                     AS HAS_BOTH_PATHS,
+          'EXPECTED'                                               AS PATH_TYPE,
+          d.EXPECTED_DISTANCE_KM                                   AS PATH_DISTANCE_KM,
+          d.EXPECTED_DURATION_MIN                                  AS PATH_DURATION_MIN,
+          d.EXPECTED_PATH                                          AS PATH_GEOM
+        FROM {src} d
+        WHERE d.EXPECTED_PATH IS NOT NULL
+      )
       SELECT
-        d.TRIP_ID,
-        d.VEHICLE_ID,
-        d.DRIVER_ID,
-        d.TRIP_DATE,
-        d.REGION,
-        d.REGION_LABEL,
-        d.VEHICLE_TYPE,
-        d.IS_ROUTE_DEVIATION,
-        d.DISTANCE_DEVIATION_PCT,
-        d.DURATION_DEVIATION_PCT,
-        d.EXPECTED_PATH IS NOT NULL                              AS HAS_BOTH_PATHS,
-        'ACTUAL'                                                 AS PATH_TYPE,
-        d.ACTUAL_DISTANCE_KM                                     AS PATH_DISTANCE_KM,
-        d.ACTUAL_DURATION_MIN                                    AS PATH_DURATION_MIN,
-        ST_ASGEOJSON(ST_SIMPLIFY(d.ACTUAL_PATH, 250))::VARCHAR   AS PATH_GEOJSON
-      FROM {src} d
-      WHERE d.ACTUAL_PATH IS NOT NULL
-      UNION ALL
-      SELECT
-        d.TRIP_ID,
-        d.VEHICLE_ID,
-        d.DRIVER_ID,
-        d.TRIP_DATE,
-        d.REGION,
-        d.REGION_LABEL,
-        d.VEHICLE_TYPE,
-        d.IS_ROUTE_DEVIATION,
-        d.DISTANCE_DEVIATION_PCT,
-        d.DURATION_DEVIATION_PCT,
-        TRUE                                                     AS HAS_BOTH_PATHS,
-        'EXPECTED'                                               AS PATH_TYPE,
-        d.EXPECTED_DISTANCE_KM                                   AS PATH_DISTANCE_KM,
-        d.EXPECTED_DURATION_MIN                                  AS PATH_DURATION_MIN,
-        ST_ASGEOJSON(ST_SIMPLIFY(d.EXPECTED_PATH, 250))::VARCHAR AS PATH_GEOJSON
-      FROM {src} d
-      WHERE d.EXPECTED_PATH IS NOT NULL
+        p.* EXCLUDE (PATH_GEOM),
+        CASE
+          WHEN LENGTH(ST_ASGEOJSON(p.PATH_GEOM)::VARCHAR) <= 28000 THEN ST_ASGEOJSON(p.PATH_GEOM)::VARCHAR
+          WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 5))::VARCHAR) <= 28000 THEN ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 5))::VARCHAR
+          WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 10))::VARCHAR) <= 28000 THEN ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 10))::VARCHAR
+          WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 25))::VARCHAR) <= 28000 THEN ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 25))::VARCHAR
+          WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 50))::VARCHAR) <= 28000 THEN ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 50))::VARCHAR
+          WHEN LENGTH(ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 100))::VARCHAR) <= 28000 THEN ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 100))::VARCHAR
+          ELSE ST_ASGEOJSON(ST_SIMPLIFY(p.PATH_GEOM, 250))::VARCHAR
+        END                                                      AS PATH_GEOJSON
+      FROM paths p
 
   # ---- Context: region/vehicle control row ----------------------------------
   - name: CONFIG
